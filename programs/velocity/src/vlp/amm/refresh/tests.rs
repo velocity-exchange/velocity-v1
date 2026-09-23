@@ -893,3 +893,104 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
     assert_eq!((oracle_price_data.price as u64) > bid, true);
     assert_eq!((oracle_price_data.price as u64) < ask, true);
 }
+
+/// `update_perp_bid_ask_twap` samples the AMM quote into the mark TWAP, so it
+/// must refresh the curve onto the current oracle first. Sampling a stale peg
+/// biases the mark TWAP and, through it, funding.
+#[test]
+pub fn refresh_for_mark_sample_repegs_a_stale_curve() {
+    let oracle_price = 19_000 * PRICE_PRECISION_I64;
+    let mut market = PerpMarket {
+        market_stats: MarketStats {
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: oracle_price,
+                last_oracle_price_twap: oracle_price,
+                last_oracle_price_twap_5min: oracle_price,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        },
+        amm: AMM {
+            base_asset_reserve: 65 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 63015384615,
+            terminal_quote_asset_reserve: 64 * AMM_RESERVE_PRECISION,
+            sqrt_k: 64 * AMM_RESERVE_PRECISION,
+            peg_multiplier: 19_400 * PEG_PRECISION,
+            base_asset_amount_with_amm: -(AMM_RESERVE_PRECISION as i128),
+            base_spread: 250,
+            max_spread: 55500,
+            curve_update_intensity: 100,
+            concentration_coef: 31020710,
+            total_fee_minus_distributions: 1_000_000 * QUOTE_PRECISION as i128,
+            ..AMM::default()
+        },
+        status: MarketStatus::Active,
+        contract_tier: ContractTier::B,
+        margin_ratio_initial: 555,
+        ..PerpMarket::default()
+    };
+    let (_, terminal_base) = amm::calculate_terminal_reserves(&market.amm).unwrap();
+    let (min_base, max_base) =
+        amm::calculate_bid_ask_bounds(market.amm.concentration_coef, terminal_base).unwrap();
+    market.amm.min_base_asset_reserve = min_base;
+    market.amm.max_base_asset_reserve = max_base;
+
+    let state = State {
+        oracle_guard_rails: OracleGuardRails {
+            validity: ValidityGuardRails {
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120),
+                confidence_interval_max_size: 20_000,
+                too_volatile_ratio: 5,
+            },
+            ..OracleGuardRails::default()
+        },
+        ..State::default()
+    };
+    let now = 10_000;
+    let slot = 81_680_085;
+    let oracle_price_data = OraclePriceData {
+        price: oracle_price,
+        confidence: 0,
+        delay: 1,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+    let mm_oracle_price_data = market
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
+        )
+        .unwrap();
+    let validity =
+        compute_amm_refresh_validity(&market, &mm_oracle_price_data, &state, slot).unwrap();
+
+    // The curve sits about 1% below the oracle.
+    let stale_price = market.amm.reserve_price().unwrap();
+    assert!(stale_price < oracle_price as u64 * 995 / 1000);
+
+    // Without the refresh (the crank's behavior before this fix), the quote
+    // state is built on the stale curve and carries the whole gap.
+    let mut unrefreshed = market;
+    unrefreshed
+        .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
+        .unwrap();
+    assert!(unrefreshed.amm.last_oracle_reserve_price_spread_pct < -5_000);
+
+    // With it, the curve is repegged onto the oracle before the quote state is
+    // built, so the sampled quote reflects the market rather than the stale peg.
+    refresh_for_mark_sample(&mut market, &mm_oracle_price_data, validity, now, slot).unwrap();
+    let refreshed_price = market.amm.reserve_price().unwrap();
+    assert_ne!(market.amm.peg_multiplier, 19_400 * PEG_PRECISION);
+    assert!(refreshed_price.abs_diff(oracle_price as u64) <= oracle_price as u64 / 10_000);
+    assert!(market.amm.last_oracle_reserve_price_spread_pct.abs() <= 100);
+    assert_eq!(market.amm.last_update_slot, slot);
+    assert_eq!(market.amm.last_spread_update_slot, slot);
+
+    // Slot-idempotent: a second call in the same slot does not move the curve.
+    let peg_after = market.amm.peg_multiplier;
+    refresh_for_mark_sample(&mut market, &mm_oracle_price_data, validity, now, slot).unwrap();
+    assert_eq!(market.amm.peg_multiplier, peg_after);
+}

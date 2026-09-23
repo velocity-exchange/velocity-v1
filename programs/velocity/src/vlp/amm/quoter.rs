@@ -1339,6 +1339,73 @@ mod amm_maker_tests {
 }
 
 #[cfg(test)]
+mod funding_k_step_tests {
+    use {
+        super::*,
+        crate::{
+            math::constants::{
+                AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION,
+                QUOTE_PRECISION_I128,
+            },
+            state::market_status::MarketStatus,
+            vlp::amm::AMM,
+        },
+    };
+
+    /// sqrt_k after a funding period whose revenue is large enough that the
+    /// k increase is limited by the per-update bound, not by the budget.
+    fn sqrt_k_after_funding(curve_update_intensity: u8) -> u128 {
+        let mut amm = AMM {
+            base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            terminal_quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            sqrt_k: 100 * AMM_RESERVE_PRECISION,
+            peg_multiplier: 100 * PEG_PRECISION,
+            min_base_asset_reserve: 50 * AMM_RESERVE_PRECISION,
+            max_base_asset_reserve: 200 * AMM_RESERVE_PRECISION,
+            concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+            base_spread: 1000,
+            curve_update_intensity,
+            total_fee_minus_distributions: 1_000_000 * QUOTE_PRECISION_I128,
+            ..AMM::default()
+        };
+        let oracle = OraclePriceData {
+            price: 100 * PEG_PRECISION as i64,
+            ..OraclePriceData::default()
+        };
+        // negative imbalance cost is period revenue; tight spreads hand half
+        // of it back as a k increase
+        AmmQuoter::for_amm(&mut amm)
+            .handle_funding_applied(
+                -1_000_000 * QUOTE_PRECISION_I128,
+                &oracle,
+                0,
+                0,
+                MarketStatus::Active,
+                1,
+                0,
+                0,
+            )
+            .unwrap();
+        amm.sqrt_k
+    }
+
+    #[test]
+    fn k_step_bound_stops_at_full_intensity() {
+        let start = 100 * AMM_RESERVE_PRECISION;
+        let full = sqrt_k_after_funding(100);
+        assert!(full > start);
+        // intensities above 100 only size the reference price offset; they must
+        // not enlarge the k step past its full-intensity bound
+        assert_eq!(sqrt_k_after_funding(120), full);
+        assert_eq!(sqrt_k_after_funding(200), full);
+        // below 100 the bound scales down with intensity
+        let half = sqrt_k_after_funding(50);
+        assert!(half > start && half < full);
+    }
+}
+
+#[cfg(test)]
 mod amm_jit_maker_tests {
     use {
         super::*,

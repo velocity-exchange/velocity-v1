@@ -349,6 +349,30 @@ pub fn project_and_apply(
     Ok(())
 }
 
+/// Refresh a market before sampling its AMM quote into the mark TWAP: project
+/// the curve onto this slot's oracle (`project_and_apply`, the same refresh
+/// fills and `update_funding_rate` run), then update the oracle-derived stats
+/// and the cached quote state against the refreshed curve. Used by
+/// `update_perp_bid_ask_twap`. Sampling a stale peg biases the mark TWAP, and
+/// through it funding, by roughly half the peg's gap to the oracle.
+pub fn refresh_for_mark_sample(
+    market: &mut PerpMarket,
+    mm_oracle_price_data: &MMOraclePriceData,
+    oracle_validity: Option<OracleValidity>,
+    now: i64,
+    slot: u64,
+) -> VelocityResult<()> {
+    let projection_inputs = repeg::ProjectionInputs::from_market(market);
+    project_and_apply(
+        &mut market.amm,
+        &projection_inputs,
+        mm_oracle_price_data,
+        oracle_validity,
+        slot,
+    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, oracle_validity, now, slot)
+}
+
 pub fn update_amm_and_check_validity(
     market: &mut PerpMarket,
     mm_oracle_price_data: &MMOraclePriceData,

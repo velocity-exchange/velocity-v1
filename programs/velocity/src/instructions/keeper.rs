@@ -2837,23 +2837,17 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &state,
         slot,
     )?;
-    // This ix samples the AMM's bid/ask into the mark TWAP, so the curve must
-    // be projected onto this slot's oracle first, the same way fills and the
-    // funding update refresh before they read it. Sampling a stale peg biases
-    // the mark TWAP, and through it funding, by roughly half the peg's gap to
-    // the oracle. Slot-idempotent: a no-op when a fill already refreshed the
-    // curve this slot. Runs under the same oracle validity and affordability
-    // gates as every other refresh.
-    let projection_inputs =
-        crate::vlp::amm::math::repeg::ProjectionInputs::from_market(perp_market);
-    crate::vlp::amm::refresh::project_and_apply(
-        &mut perp_market.amm,
-        &projection_inputs,
+    // This ix samples the AMM's bid/ask into the mark TWAP, so the curve is
+    // projected onto this slot's oracle first, as fills and the funding
+    // update do. Slot-idempotent, and gated on oracle validity and
+    // affordability like every other refresh.
+    crate::vlp::amm::refresh::refresh_for_mark_sample(
+        perp_market,
         &mm_oracle_price_data,
         validity,
+        now,
         slot,
     )?;
-    perp_market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let makers = load_user_map(remaining_accounts_iter, false)?;

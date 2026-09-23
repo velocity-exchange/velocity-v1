@@ -5,12 +5,16 @@ import {
 	MMOraclePriceData,
 	LAZER_CONF_FLOOR_PCT,
 	ZERO,
+	applyOracleGuard,
 	calculateAskPrice,
+	calculateBidAskPrice,
 	calculateBidPrice,
+	calculatePrice,
 	calculateReservePrice,
 	calculateSpread,
 	calculateSpreadReserves,
 	calculateVolSpreadBN,
+	squareRootBN,
 } from '../../src';
 import { mockPerpMarkets } from '../dlob/helpers';
 
@@ -289,5 +293,99 @@ describe('vol spread confidence component parity with calculate_spread_conf_comp
 			);
 			previous = component;
 		}
+	});
+});
+
+// Mirrors the program's `oracle_guard_never_quotes_through_the_oracle`: for random
+// curves, spreads and offsets, the quotes the curve produces after the guard sit on
+// the right side of the oracle, and the guard only ever widens.
+describe('oracle guard keeps quotes on the right side of the oracle', () => {
+	const P = new BN(1_000_000);
+	// mulberry32: a small deterministic generator for the property test
+	let seed = 7;
+	const next = () => {
+		seed = (seed + 0x6d2b79f5) | 0;
+		let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return (t ^ (t >>> 14)) >>> 0;
+	};
+	const range = (lo: number, hi: number) => lo + (next() % (hi - lo + 1));
+
+	// The signed composite spread s moves the quote reserve by quote * s / 2P and the
+	// base reserve follows from k, as in `compute_spread_reserves_for_direction`.
+	const quotedPrice = (
+		base: BN,
+		quote: BN,
+		sqrtK: BN,
+		peg: BN,
+		s: number
+	): BN => {
+		const newQuote = quote.add(quote.mul(new BN(s)).div(P.muln(2)));
+		const newBase = sqrtK.mul(sqrtK).div(newQuote);
+		return calculatePrice(newBase, newQuote, peg);
+	};
+
+	it('holds for random markets', () => {
+		let widened = 0;
+		for (let i = 0; i < 2000; i++) {
+			const base = new BN(range(1_000_000_000, 1_000_000_000_000));
+			const quote = base.muln(range(500, 2000)).divn(1000);
+			const peg = new BN(range(1_000, 100_000_000_000));
+			const sqrtK = squareRootBN(base.mul(quote));
+			const reservePrice = calculatePrice(base, quote, peg);
+			if (reservePrice.ltn(1_000)) continue;
+			const oracle = reservePrice.muln(range(800_000, 1_200_000)).div(P);
+			const long = range(0, 30_000);
+			const short = range(0, 30_000);
+			const offset = range(0, 10_000) - 5_000;
+
+			const [gLong, gShort] = applyOracleGuard(
+				long,
+				short,
+				offset,
+				reservePrice,
+				oracle
+			);
+			assert(gLong >= long && gShort >= short, 'the guard only widens');
+			assert(gLong + gShort <= 1_000_000, 'the pair stays legal');
+
+			const bid = quotedPrice(base, quote, sqrtK, peg, offset - gShort);
+			const ask = quotedPrice(base, quote, sqrtK, peg, gLong + offset);
+			assert(bid.lte(oracle), `bid ${bid} above oracle ${oracle}`);
+			assert(ask.gte(oracle), `ask ${ask} below oracle ${oracle}`);
+			if (gLong > long || gShort > short) widened++;
+		}
+		assert(widened > 200 && widened < 1900, `widened ${widened}`);
+	});
+
+	it('holds against the admin adjustments end to end', () => {
+		// The mainnet case: the curve 30bp above the oracle with both admin
+		// adjustments at -25. The bid must not end up above the oracle.
+		const market = _.cloneDeep(mockPerpMarkets[0]);
+		const amm = market.amm;
+		amm.baseAssetReserve = new BN(100).mul(new BN(1_000_000_000));
+		amm.quoteAssetReserve = new BN(100).mul(new BN(1_000_000_000));
+		amm.sqrtK = new BN(100).mul(new BN(1_000_000_000));
+		amm.terminalQuoteAssetReserve = amm.quoteAssetReserve;
+		amm.pegMultiplier = new BN(1_000_000);
+		amm.baseAssetAmountWithAmm = ZERO;
+		amm.baseSpread = 500;
+		amm.maxSpread = 20_000;
+		amm.curveUpdateIntensity = 100;
+		amm.ammSpreadAdjustment = -25;
+		amm.ammInventorySpreadAdjustment = -25;
+		amm.totalFeeMinusDistributions = new BN(100_000_000);
+		amm.netRevenueSinceLastFunding = ZERO;
+		market.marketStats.lastOracleConfPct = new BN(2000);
+
+		const oracle = {
+			price: new BN(997_000),
+			slot: new BN(0),
+			confidence: new BN(1),
+			hasSufficientNumberOfDataPoints: true,
+			isMMOracleActive: true,
+		} as MMOraclePriceData;
+		const [bid] = calculateBidAskPrice(amm, market.marketStats, oracle, false);
+		assert(bid.lte(oracle.price), `bid ${bid} above oracle ${oracle.price}`);
 	});
 });

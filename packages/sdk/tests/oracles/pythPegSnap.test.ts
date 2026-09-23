@@ -40,14 +40,18 @@ describe('Pyth stablecoin peg-snap boundary', () => {
 			// spread == min(confidence, fiveBPS) == 500 exactly
 			stubParsePriceData(500, 1000);
 			const client = new PythClient({} as any, undefined, true);
-			const data = client.getOraclePriceDataFromBuffer(pythPriceAccountBuffer());
+			const data = client.getOraclePriceDataFromBuffer(
+				pythPriceAccountBuffer()
+			);
 			assert(data.price.eq(QUOTE_PRECISION));
 		});
 
 		it('does not snap just past the confidence bound', () => {
 			stubParsePriceData(501, 1000);
 			const client = new PythClient({} as any, undefined, true);
-			const data = client.getOraclePriceDataFromBuffer(pythPriceAccountBuffer());
+			const data = client.getOraclePriceDataFromBuffer(
+				pythPriceAccountBuffer()
+			);
 			assert(!data.price.eq(QUOTE_PRECISION));
 			assert(data.price.eq(QUOTE_PRECISION.add(new BN(501))));
 		});

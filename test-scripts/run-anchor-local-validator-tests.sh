@@ -1,5 +1,5 @@
 if [ "$1" != "--skip-build" ]; then
-  anchor build -- --features anchor-test &&
+  bash deploy-scripts/build-sbf.sh test &&
     cp target/idl/velocity.json packages/sdk/src/idl/
 fi
 

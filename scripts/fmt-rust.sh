@@ -9,6 +9,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# `cargo +toolchain` resolves only through the rustup shim, so it must come
+# before any other cargo on PATH.
+export PATH="$HOME/.cargo/bin:$PATH"
+
 tc="${RUSTFMT_TOOLCHAIN:-nightly}"
 check="${1:-}"
 

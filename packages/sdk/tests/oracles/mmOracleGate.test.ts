@@ -184,9 +184,7 @@ describe('MM oracle validity gate (UseMMOraclePrice semantics)', () => {
 			);
 
 		assert(validityAtDelay(3) === OracleValidity.Valid);
-		assert(
-			validityAtDelay(4) === OracleValidity.isStaleForAmmImmediate
-		);
+		assert(validityAtDelay(4) === OracleValidity.isStaleForAmmImmediate);
 	});
 });
 

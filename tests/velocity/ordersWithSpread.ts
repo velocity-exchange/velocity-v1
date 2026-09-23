@@ -34,9 +34,11 @@ import {
 	OracleSource,
 	PEG_PRECISION,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('amm spread: market order', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -47,7 +49,7 @@ describe('amm spread: market order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -67,32 +69,32 @@ describe('amm spread: market order', () => {
 	let solUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
@@ -106,8 +108,8 @@ describe('amm spread: market order', () => {
 		];
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -162,7 +164,7 @@ describe('amm spread: market order', () => {
 			ammInitialBaseAssetReserve,
 			ammInitialQuoteAssetReserve
 		);
-		await setFeedPriceNoProgram(bankrunContextWrapper, 1, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 1, solUsd, 10000);
 	});
 
 	after(async () => {
@@ -222,9 +224,9 @@ describe('amm spread: market order', () => {
 		});
 		const txSig = await velocityClient.placeAndTakePerpOrder(orderParams);
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			svmContextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('compute units', computeUnits);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
 
@@ -334,9 +336,9 @@ describe('amm spread: market order', () => {
 		});
 		const txSig = await velocityClient.placeAndTakePerpOrder(orderParams);
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			svmContextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('compute units', computeUnits);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -534,7 +536,7 @@ describe('amm spread: market order', () => {
 			velocityClientUser.getUserAccount(),
 			order
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -622,7 +624,7 @@ describe('amm spread: market order', () => {
 			velocityClientUser.getUserAccount(),
 			order
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -655,7 +657,7 @@ describe('amm spread: market order', () => {
 		const marketIndex2 = marketIndex2Num;
 		const peg = 40000;
 		const btcUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			peg,
 			-7,
 			undefined,
@@ -732,9 +734,9 @@ describe('amm spread: market order', () => {
 		});
 		const txSig = await velocityClient.placeAndTakePerpOrder(orderParams);
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			svmContextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('compute units', computeUnits);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();

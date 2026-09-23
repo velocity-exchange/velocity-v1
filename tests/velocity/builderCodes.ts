@@ -51,9 +51,11 @@ import {
 	mockUserUSDCAccount,
 	printTxLogs,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 import { PYTH_STORAGE_DATA } from './pythLazerData';
 import { nanoid } from 'nanoid';
@@ -109,7 +111,7 @@ function buildMsg(
 // the account directly when a test needs referrer_status
 async function fetchUserStats(
 	client: TestClient,
-	ctx: BankrunContextWrapper
+	ctx: LiteSVMContextWrapper
 ): Promise<UserStatsAccount> {
 	const info = await ctx.connection.getAccountInfo(
 		client.getUserStatsAccountPublicKey()
@@ -140,7 +142,7 @@ describe('builder codes', () => {
 
 	let escrowMap: RevenueShareEscrowMap;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solUsd: PublicKey;
 	let marketIndexes;
@@ -150,42 +152,40 @@ describe('builder codes', () => {
 	const usdcAmount = new BN(10000 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		const context = startLiteSVM({
+			accounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
+			],
+		});
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			84,
 			-7,
 			undefined,
 			10000
 		);
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		marketIndexes = [0, 1];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		builderClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -228,7 +228,7 @@ describe('builder codes', () => {
 		builderUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount.add(new BN(1e9).mul(QUOTE_PRECISION)),
-			bankrunContextWrapper,
+			svmContextWrapper,
 			builderClient.wallet.publicKey
 		);
 		await builderClient.initializeUserAccountAndDepositCollateral(
@@ -248,10 +248,10 @@ describe('builder codes', () => {
 		);
 		const tx0 = new Transaction().add(transferIx0);
 		tx0.recentBlockhash = (
-			await bankrunContextWrapper.connection.getLatestBlockhash()
+			await svmContextWrapper.connection.getLatestBlockhash()
 		).blockhash;
 		tx0.sign(builderClient.wallet.payer);
-		await bankrunContextWrapper.connection.sendTransaction(tx0);
+		await svmContextWrapper.connection.sendTransaction(tx0);
 
 		// top up pnl pool for mkt 1
 		const transferIx1 = createTransferInstruction(
@@ -262,10 +262,10 @@ describe('builder codes', () => {
 		);
 		const tx1 = new Transaction().add(transferIx1);
 		tx1.recentBlockhash = (
-			await bankrunContextWrapper.connection.getLatestBlockhash()
+			await svmContextWrapper.connection.getLatestBlockhash()
 		).blockhash;
 		tx1.sign(builderClient.wallet.payer);
-		await bankrunContextWrapper.connection.sendTransaction(tx1);
+		await svmContextWrapper.connection.sendTransaction(tx1);
 
 		await builderClient.updatePerpMarketPnlPool(0, pnlPoolTopupAmount);
 		await builderClient.updatePerpMarketPnlPool(1, pnlPoolTopupAmount);
@@ -277,7 +277,7 @@ describe('builder codes', () => {
 		// );
 
 		[userClient, userUSDCAccount] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -301,7 +301,7 @@ describe('builder codes', () => {
 		);
 
 		[user2Client, user2USDCAccount] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -325,7 +325,7 @@ describe('builder codes', () => {
 		);
 
 		[makerClient, makerUSDCAccount] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -358,7 +358,7 @@ describe('builder codes', () => {
 		await builderClient.initializeRevenueShare(builderClient.wallet.publicKey);
 
 		const builderAccountInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					builderClient.program.programId,
 					builderClient.wallet.publicKey
@@ -419,7 +419,7 @@ describe('builder codes', () => {
 			numOrders
 		);
 
-		const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			getRevenueShareEscrowAccountPublicKey(
 				userClient.program.programId,
 				userClient.wallet.publicKey
@@ -466,7 +466,7 @@ describe('builder codes', () => {
 			newNumOrders
 		);
 
-		const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			getRevenueShareEscrowAccountPublicKey(
 				userClient.program.programId,
 				userClient.wallet.publicKey
@@ -509,7 +509,7 @@ describe('builder codes', () => {
 		);
 
 		// Verify the builder was added
-		let accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		let accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			getRevenueShareEscrowAccountPublicKey(
 				userClient.program.programId,
 				userClient.wallet.publicKey
@@ -545,7 +545,7 @@ describe('builder codes', () => {
 		);
 
 		// Verify the builder was updated
-		accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			getRevenueShareEscrowAccountPublicKey(
 				userClient.program.programId,
 				userClient.wallet.publicKey
@@ -576,7 +576,7 @@ describe('builder codes', () => {
 		);
 
 		// Verify the builder was removed
-		accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			getRevenueShareEscrowAccountPublicKey(
 				userClient.program.programId,
 				userClient.wallet.publicKey
@@ -598,7 +598,7 @@ describe('builder codes', () => {
 
 	it('user with no RevenueShareEscrow can place and fill order with no builder', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		const marketIndex = 0;
@@ -687,7 +687,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTx
 		);
 		const events = parseLogs(builderClient.program, logs);
@@ -714,7 +714,7 @@ describe('builder codes', () => {
 		userOrders = user2Client.getUser().getOpenOrders();
 		assert(userOrders.length === 2);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		// cancel remaining orders
 		await user2Client.cancelOrders();
@@ -748,7 +748,7 @@ describe('builder codes', () => {
 
 	it('user can place and fill order with builder', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		// approve builder again
@@ -889,7 +889,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTx
 		);
 		const events = parseLogs(builderClient.program, logs);
@@ -943,7 +943,7 @@ describe('builder codes', () => {
 			`takerFeePaidBps ${takerFeePaidBps} !== 10.8 bps`
 		);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		await escrowMap.slowSync();
 		escrow = (await escrowMap.mustGet(
@@ -991,7 +991,7 @@ describe('builder codes', () => {
 		);
 
 		const settleLogs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			settleTx
 		);
 		const settleEvents = parseLogs(builderClient.program, settleLogs);
@@ -1079,7 +1079,7 @@ describe('builder codes', () => {
 			marketType: MarketType.PERP,
 		}) as OrderParams;
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const builderFeeBps = 5;
@@ -1141,7 +1141,7 @@ describe('builder codes', () => {
 		);
 
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const feeBpsA = 6;
 		const feeBpsB = 9;
@@ -1197,7 +1197,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logsA = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTxA
 		);
 		const eventsA = parseLogs(builderClient.program, logsA);
@@ -1219,7 +1219,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logsB = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTxB
 		);
 		const eventsB = parseLogs(builderClient.program, logsB);
@@ -1230,7 +1230,7 @@ describe('builder codes', () => {
 			(fillEventB.data['referrerReward'] as number | null) ?? 0
 		);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		await escrowMap.slowSync();
 		const escrowAfterFills = (await escrowMap.mustGet(
@@ -1298,7 +1298,7 @@ describe('builder codes', () => {
 		await userClient.changeApprovedBuilder(builder.publicKey, maxFeeBps, true);
 
 		const builderAccountInfoBefore =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					builderClient.program.programId,
 					builderClient.wallet.publicKey
@@ -1337,7 +1337,7 @@ describe('builder codes', () => {
 		assert(makerOrders.length === 2);
 
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const feeBpsA = 6;
 
@@ -1379,7 +1379,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logsA = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTxA
 		);
 		const eventsA = parseLogs(builderClient.program, logsA);
@@ -1397,7 +1397,7 @@ describe('builder codes', () => {
 			ZERO
 		);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		await escrowMap.slowSync();
 		const escrowAfterFills = (await escrowMap.mustGet(
@@ -1429,10 +1429,7 @@ describe('builder codes', () => {
 			undefined,
 			escrowMap
 		);
-		await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
-			settleTx
-		);
+		await printTxLogs(svmContextWrapper.connection.toConnection(), settleTx);
 
 		await escrowMap.slowSync();
 		const escrowAfterSettle = (await escrowMap.mustGet(
@@ -1459,7 +1456,7 @@ describe('builder codes', () => {
 		);
 
 		const builderAccountInfoAfter =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					builderClient.program.programId,
 					builderClient.wallet.publicKey
@@ -1501,7 +1498,7 @@ describe('builder codes', () => {
 		await userClient.changeApprovedBuilder(builder.publicKey, maxFeeBps, true);
 
 		const builderAccountInfoBefore =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					builderClient.program.programId,
 					builderClient.wallet.publicKey
@@ -1529,7 +1526,7 @@ describe('builder codes', () => {
 		const referralMarket1Before = referralAccruedBefore(1);
 
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		// place 2 orders in different markets
@@ -1586,7 +1583,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logsA = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTxA
 		);
 		const eventsA = parseLogs(builderClient.program, logsA);
@@ -1610,7 +1607,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logsB = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTxB
 		);
 		const eventsB = parseLogs(builderClient.program, logsB);
@@ -1618,7 +1615,7 @@ describe('builder codes', () => {
 		assert(fillsB.length > 0);
 		const fillBReferrerReward = fillsB[0]['data']['referrerReward'] as number;
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		await escrowMap.slowSync();
 		const escrowAfterFills = (await escrowMap.mustGet(
@@ -1661,10 +1658,7 @@ describe('builder codes', () => {
 			SettlePnlMode.MUST_SETTLE,
 			escrowMap
 		);
-		await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
-			settleTxA
-		);
+		await printTxLogs(svmContextWrapper.connection.toConnection(), settleTxA);
 
 		await escrowMap.slowSync();
 		const escrowAfterSettle = (await escrowMap.mustGet(
@@ -1682,7 +1676,7 @@ describe('builder codes', () => {
 		assert(referrerOrdersMarket1AfterSettle[0].feesAccrued.eq(ZERO));
 
 		const builderAccountInfoAfter =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					builderClient.program.programId,
 					builderClient.wallet.publicKey
@@ -1772,7 +1766,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTx
 		);
 		const events = parseLogs(builderClient.program, logs);
@@ -1795,7 +1789,7 @@ describe('builder codes', () => {
 			(fillEvent.data['referrerReward'] as number | null) ?? 0
 		);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		await escrowMap.slowSync();
 		escrow = (await escrowMap.mustGet(
@@ -1824,7 +1818,7 @@ describe('builder codes', () => {
 			escrowMap
 		);
 		const settleLogs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			settleTx
 		);
 		const settleEvents = parseLogs(builderClient.program, settleLogs);
@@ -1904,7 +1898,7 @@ describe('builder codes', () => {
 		);
 		const fillEvent = parseLogs(
 			builderClient.program,
-			await printTxLogs(bankrunContextWrapper.connection.toConnection(), fillTx)
+			await printTxLogs(svmContextWrapper.connection.toConnection(), fillTx)
 		)
 			.filter((e) => e.name === 'orderActionRecord')
 			.pop();
@@ -1915,7 +1909,7 @@ describe('builder codes', () => {
 		);
 		assert(builderFee.gt(ZERO));
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		// The market holds the accrued liability. That amount reserves pnl-pool value against every
 		// other drain until the program pays it.
@@ -1949,10 +1943,7 @@ describe('builder codes', () => {
 		);
 		const settleRecords = parseLogs(
 			makerClient.program,
-			await printTxLogs(
-				bankrunContextWrapper.connection.toConnection(),
-				settleTx
-			)
+			await printTxLogs(svmContextWrapper.connection.toConnection(), settleTx)
 		)
 			.filter((e) => e.name === 'revenueShareSettleRecord')
 			.map((e) => e.data) as RevenueShareSettleRecord[];
@@ -2114,13 +2105,13 @@ describe('builder codes', () => {
 
 		const tx = new Transaction().add(ix);
 		tx.recentBlockhash = (
-			await bankrunContextWrapper.connection.getLatestBlockhash()
+			await svmContextWrapper.connection.getLatestBlockhash()
 		).blockhash;
 		tx.feePayer = makerClient.wallet.publicKey;
 		tx.sign(makerClient.wallet.payer);
 
 		try {
-			await bankrunContextWrapper.connection.sendTransaction(tx);
+			await svmContextWrapper.connection.sendTransaction(tx);
 			assert(false, 'fill of builder order without escrow should fail');
 		} catch (e) {
 			assert(
@@ -2181,7 +2172,7 @@ describe('builder codes', () => {
 			escrowMap.get(userClient.wallet.publicKey.toBase58())
 		);
 		const logs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			placeAndTakeTx
 		);
 		const events = parseLogs(userClient.program, logs);
@@ -2197,7 +2188,7 @@ describe('builder codes', () => {
 			`builderFee ${builderFee.toString()} !== expected`
 		);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 		await escrowMap.slowSync();
 		const escrow = (await escrowMap.mustGet(
 			userClient.wallet.publicKey.toBase58()
@@ -2257,9 +2248,7 @@ describe('builder codes', () => {
 		// include the escrow so the referrer reward accrues.
 		await userClient.fetchAccounts();
 		assert(
-			isBuilderReferral(
-				await fetchUserStats(userClient, bankrunContextWrapper)
-			),
+			isBuilderReferral(await fetchUserStats(userClient, svmContextWrapper)),
 			'userClient should have the BuilderReferral status'
 		);
 
@@ -2333,13 +2322,13 @@ describe('builder codes', () => {
 
 		const tx = new Transaction().add(ix);
 		tx.recentBlockhash = (
-			await bankrunContextWrapper.connection.getLatestBlockhash()
+			await svmContextWrapper.connection.getLatestBlockhash()
 		).blockhash;
 		tx.feePayer = makerClient.wallet.publicKey;
 		tx.sign(makerClient.wallet.payer);
 
 		try {
-			await bankrunContextWrapper.connection.sendTransaction(tx);
+			await svmContextWrapper.connection.sendTransaction(tx);
 			assert(false, 'fill of a referred user without escrow should fail');
 		} catch (e) {
 			assert(
@@ -2372,7 +2361,7 @@ describe('builder codes', () => {
 			takerEscrow
 		);
 		const logs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTx
 		);
 		const events = parseLogs(builderClient.program, logs);
@@ -2401,7 +2390,7 @@ describe('builder codes', () => {
 		await user2Client.fetchAccounts();
 		assert(
 			isBuilderReferral(
-				await fetchUserStats(user2Client, bankrunContextWrapper)
+				await fetchUserStats(user2Client, svmContextWrapper)
 			) === false,
 			'user2 should not have the BuilderReferral status'
 		);
@@ -2438,7 +2427,7 @@ describe('builder codes', () => {
 			{ marketIndex, orderId: placedOrder.orderId }
 		);
 		const logs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTx
 		);
 		const events = parseLogs(builderClient.program, logs);
@@ -2467,7 +2456,7 @@ describe('builder codes', () => {
 		await makerClient.fetchAccounts();
 		assert(
 			isBuilderReferral(
-				await fetchUserStats(makerClient, bankrunContextWrapper)
+				await fetchUserStats(makerClient, svmContextWrapper)
 			) === false,
 			'non-referred escrow holder should not have the BuilderReferral status'
 		);
@@ -2508,7 +2497,7 @@ describe('builder codes', () => {
 			true
 		);
 		const logs = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			fillTx
 		);
 		const events = parseLogs(builderClient.program, logs);

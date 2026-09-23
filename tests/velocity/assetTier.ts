@@ -36,9 +36,11 @@ import {
 	// getFeedData,
 	// sleep,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { ContractTier } from '../../packages/sdk';
 
 describe('asset tiers', () => {
@@ -65,31 +67,31 @@ describe('asset tiers', () => {
 	const solAmount = new BN(10000 * 10 ** 9);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		const bankrunContextWrapper = new BankrunContextWrapper(context);
+		const svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		dogeMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
+		dogeMint = await mockUSDCMint(svmContextWrapper);
 
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount.mul(new BN(2)), // 2x it
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 22500); // a future we all need to believe in
-		dogeOracle = await mockOracleNoProgram(bankrunContextWrapper, 0.05);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 22500); // a future we all need to believe in
+		dogeOracle = await mockOracleNoProgram(svmContextWrapper, 0.05);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -165,7 +167,7 @@ describe('asset tiers', () => {
 			secondUserVelocityClientUSDCAccount,
 			secondUserKeyPair,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -186,7 +188,7 @@ describe('asset tiers', () => {
 		);
 
 		secondUserVelocityClientDogeAccount = await createUSDCAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			secondUserKeyPair,
 			dogeMint,
 			usdcAmount

@@ -36,9 +36,11 @@ import {
 	setFeedConfidenceNoProgram,
 	setFeedPriceNoProgram,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // InvalidOracle
 const INVALID_ORACLE_HEX = '0x1793';
@@ -61,7 +63,7 @@ describe('equity floor fill gates', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let fillerUSDCAccount;
@@ -91,40 +93,40 @@ describe('equity floor fill gates', () => {
 	// Invalidate only the floored accounts' spot deposit oracle: everything
 	// goes stale with the clock, then the perp oracle is re-stamped fresh.
 	const staleSpotOracleOnly = async () => {
-		await bankrunContextWrapper.moveTimeForward(400);
-		await setFeedPriceNoProgram(bankrunContextWrapper, 100, perpOracle);
+		await svmContextWrapper.moveTimeForward(400);
+		await setFeedPriceNoProgram(svmContextWrapper, 100, perpOracle);
 	};
 
 	const refreshSpotOracle = async () => {
-		await setFeedPriceNoProgram(bankrunContextWrapper, 100, solSpotOracle);
+		await setFeedPriceNoProgram(svmContextWrapper, 100, solSpotOracle);
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		fillerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		perpOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
-		solSpotOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		perpOracle = await mockOracleNoProgram(svmContextWrapper, 100);
+		solSpotOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		marketIndexes = [0];
 		spotMarketIndexes = [0, 1];
@@ -134,8 +136,8 @@ describe('equity floor fill gates', () => {
 		];
 
 		fillerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -188,7 +190,7 @@ describe('equity floor fill gates', () => {
 	it('an uncertain perp oracle yields a zero match fill and still cleans up expired makers', async () => {
 		const [takerVelocityClient, takerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -201,7 +203,7 @@ describe('equity floor fill gates', () => {
 
 		const [makerVelocityClient, makerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -223,7 +225,7 @@ describe('equity floor fill gates', () => {
 
 		// a second maker order that expires before the fill, so the fill's
 		// maker sweep has cleanup to do even while matching is withheld
-		const now = bankrunContextWrapper.connection.getTime();
+		const now = svmContextWrapper.connection.getTime();
 		await makerVelocityClient.placePerpOrder({
 			marketIndex: 0,
 			direction: PositionDirection.SHORT,
@@ -245,9 +247,9 @@ describe('equity floor fill gates', () => {
 		});
 
 		// half the price as confidence: TooUncertain for every consumer
-		await setFeedConfidenceNoProgram(bankrunContextWrapper, 50, perpOracle);
+		await setFeedConfidenceNoProgram(svmContextWrapper, 50, perpOracle);
 		// let the maxTs order expire (well inside oracle staleness bounds)
-		await bankrunContextWrapper.moveTimeForward(10);
+		await svmContextWrapper.moveTimeForward(10);
 
 		const makerInfo = [
 			{
@@ -303,7 +305,7 @@ describe('equity floor fill gates', () => {
 		);
 
 		// restore a tight confidence for the next tests
-		await setFeedConfidenceNoProgram(bankrunContextWrapper, 0.1, perpOracle);
+		await setFeedConfidenceNoProgram(svmContextWrapper, 0.1, perpOracle);
 
 		await takerVelocityClient.unsubscribe();
 		await makerVelocityClient.unsubscribe();
@@ -312,7 +314,7 @@ describe('equity floor fill gates', () => {
 	it('a floored maker with an invalid oracle is pruned instead of poisoning the fill', async () => {
 		const [takerVelocityClient, takerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -325,7 +327,7 @@ describe('equity floor fill gates', () => {
 
 		const [makerVelocityClient, makerWSOL, makerUSDC] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -428,7 +430,7 @@ describe('equity floor fill gates', () => {
 	it('a floored account with an invalid oracle rejects the trigger and keeps the order', async () => {
 		const [userVelocityClient, userWSOL, userUSDC] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,

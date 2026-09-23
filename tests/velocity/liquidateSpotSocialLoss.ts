@@ -32,9 +32,11 @@ import {
 	UserStatus,
 	PERCENTAGE_PRECISION,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('liquidate spot w/ social loss', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -43,7 +45,7 @@ describe('liquidate spot w/ social loss', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -59,30 +61,30 @@ describe('liquidate spot w/ social loss', () => {
 	let _throwaway: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 		userWSOLAccount = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			svmContextWrapper.provider.wallet,
 			ZERO
 		);
 
 		solOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			100,
 			-7,
 			undefined,
@@ -90,8 +92,8 @@ describe('liquidate spot w/ social loss', () => {
 		);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -113,7 +115,7 @@ describe('liquidate spot w/ social loss', () => {
 		});
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			chProgram
 		);
 
@@ -147,7 +149,7 @@ describe('liquidate spot w/ social loss', () => {
 			liquidatorVelocityClientWSOLAccount,
 			_throwaway,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -181,7 +183,7 @@ describe('liquidate spot w/ social loss', () => {
 	});
 
 	it('liquidate', async () => {
-		await setFeedPriceNoProgram(bankrunContextWrapper, 200, solOracle, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 200, solOracle, 10000);
 		const spotMarketBefore = velocityClient.getSpotMarketAccount(0);
 		const spotMarket1Before = velocityClient.getSpotMarketAccount(1);
 
@@ -194,9 +196,9 @@ describe('liquidate spot w/ social loss', () => {
 		);
 
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			svmContextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('compute units', computeUnits);
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		svmContextWrapper.connection.printTxLogs(txSig);
 
 		console.log(velocityClient.getUserAccount().status);
 		// assert(velocityClient.getUserAccount().isBeingLiquidated);

@@ -1,19 +1,52 @@
-# Isomorphic Code Explanation
+# Isomorphic code
 
-Soem of the features you might want to add to the SDK may only be compatible with particular execution environments (usually a non-browser one). To get that working without breaking the SDK for people in other environments, you need to get your code working in an isomorphic way.
+Some features you might want to add to the SDK only work in one execution environment, usually node
+rather than the browser. This folder holds the shims that keep those features out of the browser
+build without breaking the types or the developer experience on the SDK side. Follow the existing
+`grpc`, `anchor` and `anchor29` files when you add a new one.
 
-This README will try explain how to do this, and you should be able to follow the example of other pieces of isomorphic code in this folder.
+## How the separation works
 
-## High Level Explanation
+The compiled `.js` in a browser bundle must not pull in a package that cannot run there. A package
+gets pulled in when you import a class, method, or other value from it. Importing only its types does
+not, because the types disappear at compile time. So each isomorphic package gets three source files
+and a build-time swap:
 
-At a high level, we just want to make sure that we're not importing any incompatible code into the final compiled .js output files. The only real way this can "get done" is by importing types or by importing classes/methods/values out of an offending packages. The goal of our isomorphic seperation is to ensure that we have SDK-Side code which is still properly typed and easy for devs to work with, without putting anything bad into the output code. We will do this with some typescript magic and a simple but handy postbuild script.
+- `<pkg>.ts` is the surface the rest of `src/` imports, for example `../isomorphic/anchor`. It
+  re-exports the node implementation, so typechecking and the node build see the real thing.
+  `grpc.ts` re-exports `./grpc.node`; `anchor.ts` and `anchor29.ts` re-export `@coral-xyz/anchor` and
+  `@coral-xyz/anchor-29` directly, which is what their `.node.ts` files do too.
+- `<pkg>.node.ts` holds the node implementation.
+- `<pkg>.browser.ts` holds the browser implementation. Where a feature cannot work in the browser,
+  throw from it so the consumer gets a clear message instead of a bundling failure. `grpc.browser.ts`
+  throws `Only available in node context` from `createClient`, and `anchor.browser.ts` throws from
+  the `AnchorProvider` and `Program` constructors, pointing the caller at `VelocityCore`.
 
-## Step-by-step isomorphic code:
+`tsc -p tsconfig.json` emits `lib/node` and `tsc -p tsconfig.browser.json` emits `lib/browser`. Both
+still contain `isomorphic/<pkg>.js` compiled from `<pkg>.ts`, meaning the node implementation.
+`scripts/postbuild.js` then overwrites `lib/<env>/isomorphic/<pkg>.js` and `<pkg>.d.ts` with the
+`<pkg>.<env>.js` and `<pkg>.<env>.d.ts` output, and deletes the other environment's files from that
+directory.
 
-1. Create [your-package-name].d.ts, [your-package-name].browser.ts, and [your-package-name].node.ts files.
-2. Remove any imports of an offending library which aren't going through our dedicated isomorphic files. Instead import the TYPES of these and place them in the `.d.ts` file (definition file). Note to import ONLY THE TYPES you use `import type {stuff}` instead of just `import {stuff}`.
-3. The definition file should be exporting types only, and the files that were previously importing things directly from the library should be able to import from the definition file now instead. You might see some typescript issues when you import things from this definition file because typescript thinks it's "just a type" -- you can safely @ts-ignore these errors, but the types SHOULD at least be correct when you are using them.
-4. For concrete classes, methods, constants, etc. that you need to make available - you will place them in the `.browser` and `.node` files. You should be able to pretty flexibly export them however you want, just make sure the definition file has a matching type for how you're doing it. See `grpc.d.ts` and `grpc.node.ts` to look at how we're doing this for `createClient`. For the "bad" isomorphic file it's probably best to throw an error so that the consumer knows they shouldn't be using this particular feature.
-5. Note about enums :: they're weird and annoying. If you follow how the enum type `CommitmentLevel` was exported for the grpc package though you should be fine.
-6. Add the name of your package to `postbuild.js`.
-7. when you run `build` it will build the node version of all of these packages. You can run `build:browser` to build the browser side ones instead.
+Only what `<pkg>.browser.ts` exports survives into the browser build. `grpc.browser.ts` defines
+`createClient` and nothing else, so the rest of `grpc.node.ts`'s exports, `CommitmentLevel` and
+`Client` among them, are absent there.
+
+## Adding an isomorphic package
+
+1. Create `[your-package-name].ts`, `[your-package-name].node.ts` and
+   `[your-package-name].browser.ts`.
+2. Remove direct imports of the incompatible library from the rest of `src/`. Everything goes through
+   your isomorphic files instead.
+3. Import types with `import type { ... }`, not `import { ... }`, so no value reference survives
+   compilation. `grpc.node.ts` does this for `Client`, `SubscribeRequest` and `SubscribeUpdate`.
+4. Put the concrete classes, functions and constants in the `.node` and `.browser` files. Export them
+   however suits the package, as long as the two files agree on the names.
+5. For a dependency that may be missing even in node, load it lazily with `await import()` and expose
+   async getters, as `grpc.node.ts` does for the optional `helius-laserstream`. Enum-like values that
+   callers read synchronously can be backed by a `Proxy` returning the known numeric values, which is
+   how `LaserCommitmentLevel` and `CompressionAlgorithms` work.
+6. Add the package name to `isomorphicPackages` in `scripts/postbuild.js`.
+7. Run `bun run build`, which produces the node files in `lib/node` and the browser files in
+   `lib/browser`. `bun run build:browser` passes `--force-env browser` to the postbuild script, which
+   puts the browser files in both output directories.

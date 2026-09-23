@@ -18,16 +18,18 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('spot market deposit cap + configurable withdraw breaker', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
 	let velocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -38,26 +40,26 @@ describe('spot market deposit cap + configurable withdraw breaker', () => {
 	const guardThreshold = new BN(5 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		const context = startLiteSVM();
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -84,7 +86,7 @@ describe('spot market deposit cap + configurable withdraw breaker', () => {
 
 	// Fetch + decode the spot market straight from chain via the program coder,
 	// so the assertion validates the regenerated IDL layout end-to-end and does
-	// not depend on the polling subscriber's refresh timing under bankrun.
+	// not depend on the polling subscriber's refresh timing under LiteSVM.
 	const fetchSpotMarket = async () => {
 		const pk = await getSpotMarketPublicKey(chProgram.programId, 0);
 		return (await velocityClient.program.account.spotMarket.fetch(pk)) as any;
@@ -112,7 +114,7 @@ describe('spot market deposit cap + configurable withdraw breaker', () => {
 	it('warm admin cannot loosen the breaker past 25%', async () => {
 		// rotate the warm admin to a fresh key so it is warm-but-not-cold
 		const warmKp = new Keypair();
-		await bankrunContextWrapper.fundKeypair(warmKp, 10 ** 9);
+		await svmContextWrapper.fundKeypair(warmKp, 10 ** 9);
 		await velocityClient.updateWarmAdmin(warmKp.publicKey);
 
 		const statePk = await velocityClient.getStatePublicKey();
@@ -133,7 +135,7 @@ describe('spot market deposit cap + configurable withdraw breaker', () => {
 			);
 		let threw = false;
 		try {
-			await bankrunContextWrapper.sendTransaction(new Transaction().add(ix), [
+			await svmContextWrapper.sendTransaction(new Transaction().add(ix), [
 				warmKp,
 			]);
 		} catch (e) {

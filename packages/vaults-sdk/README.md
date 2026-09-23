@@ -1,152 +1,172 @@
-# CLI Usage
+# @velocity-exchange/vaults-sdk
 
-This repo has a simple CLI for interacting with the vault (run from this `package.json`):
+TypeScript SDK for the Velocity vaults program (`vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR`).
+`VaultClient` is the entry point: it creates and manages vaults, handles depositor accounts, and
+reads vault state. The package also ships the CLI documented below.
 
-This CLI utility requires an RPC node and keypair to sign transactions. You can either provide these as environment variables, in a `.env` file, or use cli flags (like `--keypair` and `--url`).
-
-Required Environment Variables or Flags:
-
-Environment Variable| command line flag | Description
---------------------|-------------------|------------
-RPC_URL             | --url             | The RPC node to connect to for transactions
-KEYPAIR_PATH        | --keypair         | Path to keypair (file or base58) to sign transactions. This may also be a ledger filepath (e.g. `usb://ledger/<wallet_id>?key=0/0`)
-ENV                 | --env             | 'devnet' or 'mainnet' (default: 'mainnet')
-
-
-View available commands, run with `--help` in nested commands to get available options for each command
-```
-yarn cli --help
+```bash
+npm i @velocity-exchange/vaults-sdk
 ```
 
-## Manager Commands
+## CLI
 
-The following commands are menat to be run by Vault Managers. `KEYPAIR_PATH` should be the manager's keypair.
+Run the CLI from this package directory, which is where its `package.json` lives:
+
+```sh
+bun run cli --help
+```
+
+Add `--help` to any subcommand to see its options.
+
+The CLI needs an RPC node and a keypair to sign transactions. Supply both as environment
+variables, in a `.env` file, or as command line flags.
+
+| Environment variable | Flag         | Description                                                                                                                 |
+| -------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `RPC_URL`            | `--url`      | The RPC node to connect to for transactions. Required                                                                        |
+| `KEYPAIR_PATH`       | `--keypair`  | Path to a keypair, as a file or a base58 string. A ledger path also works, for example `usb://ledger/<wallet_id>?key=0/0`     |
+| `ENV`                | `--env`      | `devnet` or `mainnet-beta`. Defaults to `mainnet-beta`                                                                       |
+| none                 | `--commitment` | State commitment to use. Defaults to `confirmed`                                                                           |
+
+## Manager commands
+
+Vault managers run these. Point `KEYPAIR_PATH` at the manager's keypair.
 
 ### Initialize a new vault
 
-Init a new vault. This will initialize a new vault and update you (the manager) as the delegate, unless `--delegate` is specified.
-```
-$ yarn cli init-vault --help
-Usage: cli init-vault [options]
+`init-vault` creates a vault and makes you, the manager, its delegate unless you pass
+`--delegate`.
 
-Initialize a new vault
-
-Options:
-  -n, --name <string>               Name of the vault to create
-  -i, --market-index <number>       Spot market index to accept for deposits (default 0 == USDC) (default: "0")
-  -r, --redeem-period <number>      The period (in seconds) depositors must wait after requesting a withdraw (default: 7 days) (default: "604800")
-  -x, --max-tokens <number>         The max number of spot marketIndex tokens the vault can accept (default 0 == unlimited) (default: "0")
-  -m, --management-fee <percent>    The annualized management fee to charge depositors (default: "0")
-  -s, --profit-share <percent>      The percentage of profits charged by manager (default: "0")
-  -p, --permissioned                Provide this flag to make the vault permissioned, vault-depositors will need to be initialized by the manager
-                                    (default: false)
-  -a, --min-deposit-amount <number  The minimum token amount allowed to deposit (default: "0")
-  -d, --delegate <publicKey>        The address to make the delegate of the vault
-  -h, --help                        display help for command
+```sh
+bun run cli init-vault --name <VAULT_NAME>
 ```
 
-### Update Vault Params
+| Option | Description |
+| --- | --- |
+| `-n, --name <string>` | Name of the vault to create. Required |
+| `-i, --market-index <number>` | Spot market index to accept for deposits. Default `0`, which is USDC |
+| `-r, --redeem-period <number>` | Seconds a depositor must wait after requesting a withdraw. Default `604800`, which is 7 days |
+| `-x, --max-tokens <number>` | Max spot `marketIndex` tokens the vault can accept. Default `0`, which is unlimited |
+| `-m, --management-fee <percent>` | Annualized management fee charged to depositors. Default `0` |
+| `-s, --profit-share <percent>` | Percentage of profits charged by the manager. Default `0` |
+| `-p, --permissioned` | Make the vault permissioned, so the manager must initialize each vault depositor. Default off |
+| `-a, --min-deposit-amount <number>` | Minimum token amount allowed per deposit. Default `0` |
+| `-d, --delegate <publicKey>` | Address to make the delegate of the vault |
+| `--manager <publicKey>` | The manager for the vault |
+| `--dump-transaction-message` | Print the transaction message to the console |
 
-To update params in a vault:
-```
-$ yarn cli manager-update-vault --help
-Usage: cli manager-update-vault [options]
+### Update vault params
 
-Update vault params for a manager
-
-Options:
-  --vault-address <address>         Address of the vault to update
-  -r, --redeem-period <number>      The new redeem period (can only be lowered)
-  -x, --max-tokens <number>         The max tokens the vault can accept
-  -a, --min-deposit-amount <number  The minimum token amount allowed to deposit
-  -m, --management-fee <percent>    The new management fee (can only be lowered)
-  -s, --profit-share <percent>      The new profit share percentage (can only be lowered)
-  -p, --permissioned <boolean>      Set the vault as permissioned (true) or open (false) (default: false)
-  -h, --help                        display help for command
-```
-
-### Update Margin Trading Enabled
-
-If you wish to trade with spot margin on the vault, you must enable margin trading:
-```
-yarn cli manager-update-margin-trading-enabled --vault-address=<VAULT_ADDRESS> --enabled=<true|false>
+```sh
+bun run cli manager-update-vault --vault-address=<VAULT_ADDRESS> [options]
 ```
 
-### Manager Deposit
+| Option | Description |
+| --- | --- |
+| `--vault-address <address>` | Address of the vault to update. Required |
+| `-r, --redeem-period <number>` | New redeem period. Can only be lowered |
+| `-x, --max-tokens <number>` | Max tokens the vault can accept |
+| `-a, --min-deposit-amount <number>` | Minimum token amount allowed per deposit |
+| `-m, --management-fee <percent>` | New management fee. Can only be lowered here; use the timelocked `manager-update-fees` to raise it |
+| `-s, --profit-share <percent>` | New profit share percentage. Can only be lowered here; use the timelocked `manager-update-fees` to raise it |
+| `-h, --hurdle-rate <percent>` | New hurdle rate percentage. Can only be raised here; use the timelocked `manager-update-fees` to lower it |
+| `-p, --permissioned <boolean>` | Set the vault as permissioned (`true`) or open (`false`) |
+| `--dump-transaction-message` | Print the transaction message to the console |
 
-Make a deposit into a vault as the manager (`DEPOSIT_AMOUNT` in human precision, e.g. 5 for 5 USDC):
-```
-yarn cli manager-deposit --vault-address=<VAULT_ADDRESS> --amount=<DEPOSIT_AMOUNT>
-```
+### Enable margin trading
 
-### Manager Withdraw
+Trading spot on margin in the vault requires margin trading to be turned on first.
 
-Make a withdraw request from a vault as the manager (`SHARES` in raw precision):
-```
-yarn cli manager-request-withdraw --vault-address=<VAULT_ADDRESS> --amount=<SHARES>
-```
-
-After the redeem period has passed, the manager can complete the withdraw:
-```
-yarn cli manager-withdraw --vault-address=<VAULT_ADDRESS>
-```
-
-### Apply Profit Share
-Manager can trigger a profit share calculation (this looks up all `VaultDepositors` for a vault eligible for profit share and batch processes them):
-```
-yarn cli apply-profit-share-all --vault-address=<VAULT_ADDRESS>
+```sh
+bun run cli manager-update-margin-trading-enabled --vault-address=<VAULT_ADDRESS> --enabled=<true|false>
 ```
 
-## Depositor Commands
+### Manager deposit
 
+Deposit into a vault as the manager. `DEPOSIT_AMOUNT` is in human precision, so `5` means 5 USDC.
+
+```sh
+bun run cli manager-deposit --vault-address=<VAULT_ADDRESS> --amount=<DEPOSIT_AMOUNT>
+```
+
+### Manager withdraw
+
+Request a withdraw as the manager. `SHARES` is in raw precision.
+
+```sh
+bun run cli manager-request-withdraw --vault-address=<VAULT_ADDRESS> --amount=<SHARES>
+```
+
+Complete the withdraw once the redeem period has passed:
+
+```sh
+bun run cli manager-withdraw --vault-address=<VAULT_ADDRESS>
+```
+
+### Apply profit share
+
+The manager can trigger a profit share calculation. It looks up every `VaultDepositor` on the
+vault that is eligible for profit share and processes them in batches.
+
+```sh
+bun run cli apply-profit-share-all --vault-address=<VAULT_ADDRESS>
+```
+
+## Depositor commands
 
 ### Deposit into a vault
 
-#### Permissioned Vaults
+**Permissioned vaults.** The manager must initialize the `VaultDepositor` account before that
+authority can deposit.
 
-Permissioned vaults require the __manager__ to initialize the `VaultDepositor` account before a depositor can deposit.
-
-Initialize a `VaultDepositor` account for `AUTHORITY_TO_ALLOW_DEPOSIT` to deposit:
-```
-yarn cli init-vault-depositor --vault-address=<VAULT_ADDRESS> --deposit-authority=<AUTHORITY_TO_ALLOW_DEPOSIT>
+```sh
+bun run cli init-vault-depositor --vault-address=<VAULT_ADDRESS> --deposit-authority=<AUTHORITY_TO_ALLOW_DEPOSIT>
 ```
 
+**Permissionless vaults.** Anyone can deposit. The `deposit` instruction initializes a
+`VaultDepositor` account if one does not already exist. `DEPOSIT_AMOUNT` is in human precision of
+the deposit token, so `5` means 5 USDC.
 
-#### Permissioneless Vaults
-
-Permissionless vaults allow anyone to deposit. The `deposit` instruction will initialize a `VaultDepositor` account if one does not exist.
-`DEPOSIT_AMOUNT` in human precision of the deposit token (e.g. 5 for 5 USDC).
-
-```
-yarn cli deposit --vault-address=<VAULT_ADDRESS> --deposit-authority=<DEPOSIT_AUTHORITY> --amount=<DEPOSIT_AMOUNT>
+```sh
+bun run cli deposit --vault-address=<VAULT_ADDRESS> --deposit-authority=<DEPOSIT_AUTHORITY> --amount=<DEPOSIT_AMOUNT>
 ```
 
-Alternatively, you can pass in the `VaultDepositor` address directly:
-```
-yarn cli deposit --vault-depositor-address=<VAULT_DEPOSITOR_ADDRESS> --amount=<DEPOSIT_AMOUNT>
+You can pass the `VaultDepositor` address directly instead:
+
+```sh
+bun run cli deposit --vault-depositor-address=<VAULT_DEPOSITOR_ADDRESS> --amount=<DEPOSIT_AMOUNT>
 ```
 
 ### Withdraw from a vault
 
-Request a withdraw from a vault:
-```
-yarn cli request-withdraw --vault-address=<VAULT_ADDRESS> --authority=<AUTHORITY> --amount=<WITHDRAW_AMOUNT>
+Request a withdraw, which starts the redeem period:
+
+```sh
+bun run cli request-withdraw --vault-address=<VAULT_ADDRESS> --authority=<AUTHORITY> --amount=<WITHDRAW_AMOUNT>
 ```
 
-After the redeem period has passed, the depositor can complete the withdraw:
-```
-yarn cli withdraw --vault-address=<VAULT_ADDRESS> --authority=<AUTHORITY>
+Complete it once the redeem period has passed:
+
+```sh
+bun run cli withdraw --vault-address=<VAULT_ADDRESS> --authority=<AUTHORITY>
 ```
 
-## View only commands
+## Read-only commands
 
-To print out the current state of a `Vault`:
-```
-yarn cli view-vault --vault-address=<VAULT_ADDRESS>
-```
+Print the current state of a `Vault`:
 
-To print out the current state of a `VaultDepositor`:
-```
-yarn cli view-vault-depositor --vault-depositor-address=<VAULT_DEPOSITOR_ADDRESS>
+```sh
+bun run cli view-vault --vault-address=<VAULT_ADDRESS>
 ```
 
+Print the current state of a `VaultDepositor`:
+
+```sh
+bun run cli view-vault-depositor --vault-depositor-address=<VAULT_DEPOSITOR_ADDRESS>
+```
+
+## Working in this repo
+
+The IDL and generated types under `src/idl/vaults.json` and `src/types/vaults.ts` come from
+`programs/vaults`. Regenerate them with `bun run program:idl:vaults` at the repo root, and never
+hand-edit them.

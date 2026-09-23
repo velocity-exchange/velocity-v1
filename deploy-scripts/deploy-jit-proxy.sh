@@ -59,13 +59,17 @@ BUFFER_ACCOUNT_KEYPAIR="${BUFFER_ACCOUNT_KEYPAIR:-deploy-scripts/out/jit-proxy-s
 cd "$repo_root"
 
 if [ "${SKIP_BUILD:-}" != "1" ]; then
-	anchor build --skip-lint --ignore-keys -p jit-proxy
+	bash deploy-scripts/build-sbf.sh mainnet jit-proxy
 fi
 
 if [ ! -f "$PROGRAM_SO" ]; then
 	echo "Missing $PROGRAM_SO — run without SKIP_BUILD=1" >&2
 	exit 1
 fi
+
+# Refuse to upload anything that isn't the deployable bytecode version, including
+# when SKIP_BUILD=1 hands us an artifact somebody else built.
+bash deploy-scripts/assert-sbpf-version.sh "$PROGRAM_SO"
 
 mkdir -p "$(dirname "$BUFFER_ACCOUNT_KEYPAIR")"
 if [ ! -f "$BUFFER_ACCOUNT_KEYPAIR" ]; then

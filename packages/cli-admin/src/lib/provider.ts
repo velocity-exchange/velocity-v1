@@ -16,6 +16,8 @@ export type GlobalOpts = {
 	keypair: string;
 	env: VelocityEnv;
 	multisig?: string;
+	/** `--dry-run`: build and price the instructions, send nothing. */
+	dryRun?: boolean;
 	/**
 	 * Whether env came from a flag or profile (true) or is the legacy
 	 * fallback default (false). A declared env that contradicts the RPC's

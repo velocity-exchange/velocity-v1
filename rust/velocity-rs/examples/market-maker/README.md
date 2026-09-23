@@ -1,6 +1,8 @@
-## Market Maker Example
+# Market maker example
 
-Place and cancel fixed limit and floating limit orders
+Places and cancels fixed limit and floating (oracle offset) limit orders on sol-perp, using
+the wallet's sub-account 0, and requotes every 400ms. `RPC_URL` defaults to
+`https://api.mainnet-beta.solana.com`.
 
 Run mainnet WebSocket example
 ```shell
@@ -20,6 +22,10 @@ GRPC_X_TOKEN="" \
  cargo run --release -- --grpc
 ```
 
-## JIT Making
-Velocity MMs can also provide Just in Time (JIT) matching via swift and jit-proxy helper program.
-for examples see the `swift-maker` example and the jit-proxy example: https://github.com/velocity-exchange/jit-proxy/tree/master/rust
+Unset `MAINNET` to run against devnet.
+
+## JIT making
+
+Velocity MMs can also provide just in time (JIT) matching via swift and the jit-proxy helper
+program. For examples see the `swift-maker` and `jitter` examples next to this one, and the
+jit-proxy example: https://github.com/velocity-exchange/jit-proxy/tree/master/rust

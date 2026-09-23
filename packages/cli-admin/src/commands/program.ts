@@ -486,10 +486,6 @@ export function registerProgram(parent: Command): void {
 				'--spill <pubkey>',
 				'recipient for the reclaimed buffer rent on upgrade (defaults to the wallet)'
 			)
-			.option(
-				'--dry-run',
-				'print the instruction and proposal costs without sending'
-			)
 	).action(async (_flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as {
@@ -628,10 +624,6 @@ export function registerProgram(parent: Command): void {
 			)
 			.option('--program-only', 'only close BPF program buffers')
 			.option('--metadata-only', 'only close program-metadata (IDL) buffers')
-			.option(
-				'--dry-run',
-				'list the buffers that would be closed and exit without proposing'
-			)
 	).action(async (_flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as {

@@ -50,7 +50,7 @@ function parseTransferDirection(value: string): TransferFeeAndPnlPoolDirection {
 /**
  * Protocol fee operations.
  *
- * The fee design (see FEES.md) gives the protocol a directly-withdrawable
+ * The fee design (see docs/FEES.md) gives the protocol a directly-withdrawable
  * `protocol_fee_pool` on every market, fed by explicit per-fill carveouts and
  * materialized by the streaming sweep. The commands here cover the routine
  * ops: setting the recipient (cold admin), withdrawing (FeeWithdraw hot key),
@@ -519,11 +519,6 @@ export function registerFees(parent: Command): void {
 			.option(
 				'--if-split <pct>',
 				'insurance fund share of the fee remainder, percent'
-			)
-			.option(
-				'--dry-run',
-				'print the resulting structure and expected proposal rent/fees, send nothing',
-				false
 			)
 	).action(
 		async (

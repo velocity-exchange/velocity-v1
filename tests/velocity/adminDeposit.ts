@@ -18,15 +18,17 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 dotenv.config();
 
 describe('admin deposit', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let adminVelocityClient: TestClient;
@@ -43,37 +45,37 @@ describe('admin deposit', () => {
 	const usdcAmount = new BN(100 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
-		userKeyPair = await createFundedKeyPair(bankrunContextWrapper);
-		userKeyPair2 = await createFundedKeyPair(bankrunContextWrapper);
+		userKeyPair = await createFundedKeyPair(svmContextWrapper);
+		userKeyPair2 = await createFundedKeyPair(svmContextWrapper);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		adminUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		user2USDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			userKeyPair2.publicKey
 		);
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -98,7 +100,7 @@ describe('admin deposit', () => {
 		await adminVelocityClient.initializeUserAccount(0, 'admin subacc 0');
 
 		userVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(userKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -117,9 +119,9 @@ describe('admin deposit', () => {
 		await userVelocityClient.subscribe();
 		await userVelocityClient.initializeUserAccount(0, 'user account 0');
 
-		userKeyPair2 = await createFundedKeyPair(bankrunContextWrapper);
+		userKeyPair2 = await createFundedKeyPair(svmContextWrapper);
 		userVelocityClient2 = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(userKeyPair2),
 			programID: chProgram.programId,
 			opts: {

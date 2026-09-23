@@ -24,9 +24,11 @@ import {
 	sleep,
 } from './testHelpers';
 import { PEG_PRECISION } from '../../packages/sdk/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -39,7 +41,7 @@ describe('place and make signedMsg order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	// ammInvariant == k == x * y
 	const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -61,41 +63,41 @@ describe('place and make signedMsg order', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			// @ts-ignore
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 32.821);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 32.821);
 
 		marketIndexes = [0];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		makerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -149,7 +151,7 @@ describe('place and make signedMsg order', () => {
 	it('increase size of signedMsg user orders', async () => {
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -184,7 +186,7 @@ describe('place and make signedMsg order', () => {
 	it('fails to decrease size if authority != payer', async () => {
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -229,7 +231,7 @@ describe('place and make signedMsg order', () => {
 		// replay of their signed orders. Only the authority itself may shrink.
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -274,7 +276,7 @@ describe('place and make signedMsg order', () => {
 	it('decrease size of signedMsg user orders', async () => {
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -308,7 +310,7 @@ describe('place and make signedMsg order', () => {
 });
 
 async function initializeNewTakerClientAndUser(
-	bankrunContextWrapper: BankrunContextWrapper,
+	svmContextWrapper: LiteSVMContextWrapper,
 	chProgram: Program,
 	usdcMint: Keypair,
 	usdcAmount: BN,
@@ -318,17 +320,17 @@ async function initializeNewTakerClientAndUser(
 	bulkAccountLoader: TestBulkAccountLoader
 ): Promise<[TestClient, User]> {
 	const keypair = new Keypair();
-	await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+	await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 	await sleep(1000);
 	const wallet = new Wallet(keypair);
 	const userUSDCAccount = await mockUserUSDCAccount(
 		usdcMint,
 		usdcAmount,
-		bankrunContextWrapper,
+		svmContextWrapper,
 		keypair.publicKey
 	);
 	const takerVelocityClient = new TestClient({
-		connection: bankrunContextWrapper.connection.toConnection(),
+		connection: svmContextWrapper.connection.toConnection(),
 		wallet,
 		programID: chProgram.programId,
 		opts: {

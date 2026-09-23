@@ -11,6 +11,7 @@ import * as multisig from '@sqds/multisig';
 import pc from 'picocolors';
 import { confirmMainnetDirect } from './context';
 import * as ui from './ui';
+import { renderInstructions } from './decode';
 
 /**
  * The authority that will actually sign a dispatched instruction: the Squads
@@ -33,6 +34,7 @@ export function resolveAdminAuthority(
 }
 
 export type DispatchResult =
+	| { kind: 'dry-run' }
 	| { kind: 'sent'; signature: string }
 	| {
 			kind: 'proposed';
@@ -40,6 +42,22 @@ export type DispatchResult =
 			transactionIndex: bigint;
 			signature: string;
 	  };
+
+/**
+ * Process-wide dry-run flag. `readGlobalOpts` sets it, so `--dry-run` works on
+ * every state-changing command without passing the flag through ~58 call sites.
+ * `sendOrPropose` is the only path that signs or proposes, so gating it there
+ * covers the whole CLI. No command can accept `--dry-run` and send anyway.
+ *
+ * Commands that print a fuller preview, such as `wallet swap`'s quote and
+ * `lut extend`'s account diff, read `dryRun` from their own opts and return
+ * before they reach dispatch. This is the fallback for everything else.
+ */
+let DRY_RUN = false;
+
+export function setDryRun(value: boolean): void {
+	DRY_RUN = value;
+}
 
 /**
  * Dispatch admin instructions either directly (signed by the wallet) or via a
@@ -77,6 +95,18 @@ export async function sendOrPropose(
 					`or drop --multisig to send directly with the local wallet.`
 			);
 		}
+	}
+
+	if (DRY_RUN) {
+		await reportDryRun(
+			provider,
+			instructions,
+			multisigPda,
+			vaultIndex,
+			altAccounts,
+			memo
+		);
+		return { kind: 'dry-run' };
 	}
 
 	if (!multisigPda) {
@@ -165,14 +195,10 @@ export async function reportDryRun(
 	memo = ''
 ): Promise<void> {
 	ui.header('dry run', pc.dim('nothing sent'));
-	ui.table(
-		instructions.map((ix, i) => [
-			pc.dim(`${i + 1}.`),
-			pc.dim(ix.programId.toBase58()),
-			pc.dim(`${ix.keys.length} accounts`),
-			pc.dim(`${ix.data.length}B`),
-		])
-	);
+	// Decode rather than just counting accounts: the point of a dry run is to
+	// see what the transaction actually does before it costs a proposal.
+	renderInstructions(instructions);
+	ui.line('');
 
 	if (!multisigPda) {
 		ui.kv('dispatch', 'direct send');
@@ -261,6 +287,9 @@ export async function reportDryRun(
 }
 
 export function reportDispatch(label: string, result: DispatchResult): void {
+	if (result.kind === 'dry-run') {
+		return;
+	}
 	if (result.kind === 'sent') {
 		ui.header(label, ui.ok('sent'));
 		ui.kv('signature', pc.dim(result.signature));

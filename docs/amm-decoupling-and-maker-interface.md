@@ -1,217 +1,297 @@
-# AMM Decoupling and Quoter Interface
-
-## Implementation status (resumption guide for in-flight work)
-
-**Branch:** `feat/decouple-amm`. Single-PR refactor; not incremental.
-
-**Current state — 832 unit tests pass, fmt + clippy clean.** `cargo test -p velocity --lib` is green. The big architectural pieces are landed; remaining work is the fill-path refactor (Task 10), boundary tightening (Task 12), and SDK/IDL/TS catch-up (Task 13-15).
-
-### Done
-
-**Quoter trait + fill engine (state/quoter.rs, controller/match.rs):**
-- `Quoter` + `QuoterCommit` traits with full doc comments. `QuoteContext` carries `stats`, `oracle`, `mm_oracle`/`oracle_validity` (AMM setup), `fee_budget`, `tick`, `step_size`, `slot`, `base_precision`, `market_status`/`market_config` (AMM). `QuoterFill { side, base_filled, quote_filled, clearing_price, refresh_cost, is_fee_exempt, fee_policy, quote_asset_amount_surplus }`.
-- Quote surface: `best_price` (the maker's single price), `level_capacity` (cheap, non-mutating full size at that price), `try_fill_solo` (closed-form fill). Each maker fills at its OWN price (standard CLOB), not uniform-price-at-clearing.
-- Three impls:
-  - `DlobOrderQuoter<'a>` — single resting `Order`; transparently handles both resting DLOB orders and in-auction JIT participants via `Order::get_limit_price`. Discrete single level.
-  - `AmmQuoter<'a>` — the continuous constant-product curve. Matched **solo** via `fill_amm_only`. `is_prio=true`, `is_fee_exempt=true`, `fee_policy=AmmHouse`. Keeps an inherent `cumulative_size` (analytical inverse, `math::spread::calculate_base_asset_amount_to_trade_to_price`) used only to cap a take at the taker's limit — not on the `Quoter` trait.
-  - `AmmJitQuoter<'a>` — AMM in JIT-making mode; a **discrete** single-price level. `best_price = jit_price`, `level_capacity = min(max_jit_base, reserve-bounded max)`. `is_prio=true`. `quote_asset_amount_surplus` captures the gap between `jit_price × base` and the AMM curve's natural quote (negative when the AMM subsidises the fill).
-- Two-path fill engine (`controller/match.rs`): `fill_amm_only` (sole continuous AMM — analytical `try_fill_solo` capped by `cumulative_size`) and `match_take` (discrete level walk over single-price makers: sort best-first, fill fully-crossed levels, distribute the clearing level priority-first then pro-rata). No bisection, no continuous-curve search. Quote is computed ONCE per winning maker via `try_fill_solo` on its total filled base (avoids sum-of-slices inflation for the JIT AMM). Unit tests cover empty/sole-AMM/discrete-walk/priority-ties/partial-fills/JIT-with-DLOB scenarios.
-
-**Stats migration (15+ fields fully moved from AMM to MarketStats):**
-- mark TWAPs + std (`last_mark_price_twap`, `_5min`, `_ts`, `last_bid_price_twap`, `last_ask_price_twap`, `mark_std`).
-- Oracle data (`historical_oracle_data` (48-byte nested struct), `last_oracle_normalised_price`, `last_oracle_valid`, `oracle_std`, `last_oracle_conf_pct`).
-- Volume / intensity (`volume_24h`, `long_intensity_volume`, `short_intensity_volume`, `last_trade_ts`).
-- MM oracle snapshot (`mm_oracle_price`, `mm_oracle_slot`, `mm_oracle_sequence_id`).
-- Writer pattern: 4 methods on `MarketStats` (`update_mark_std`, `update_oracle_std`, `update_oracle_conf_pct`, `update_volume_24h`). `&mut MarketStats` threaded through `update_mark_twap*` / `update_oracle_price_twap`. `calculate_new_oracle_price_twap` takes `&MarketStats`; `estimate_best_bid_ask_price` + `calculate_oracle_twap_5min_price_spread_pct` take `&HistoricalOracleData`. Native handler `handle_update_mm_oracle_native` writes via byte offsets into MarketStats (offsets verified by `state/traits/tests.rs::amm_zero_copy_offsets`).
-- Mirror function deleted entirely (was no-op once all writers moved). `controller/market_stats.rs` is now a doc-only module marking the future home for matcher-fed market-stat plumbing.
-- Production readers all migrated; AMM-internal methods that read these fields (`get_fallback_price`, `last_ask_premium`, `last_bid_discount`) now take `&MarketStats`.
-
-**AMM struct cleanup (Task 3 aggressive, landed):**
-- 18 dead stats fields deleted from AMM.
-- `PerpMarket::SIZE` is **1208 bytes** (1200 struct + 8 discriminator). AMM retains the cached spread state (long/short spread, reference offset, oracle-reserve spread pct, ask/bid spread reserves, `last_spread_update_slot`), refreshed in place by `math::spread::update_amm_quote_state`.
-- Native handler byte offsets pinned by the regression test: `mm_oracle_price` 720, `mm_oracle_slot` 728, `mm_oracle_sequence_id` 736 (MarketStats), `amm_spread_adjustment` 1202 (AMM).
-- 21 base64 PerpMarket snapshots regenerated via byte surgery (excise dead-field ranges, copy values into corresponding MarketStats positions, zero-extend to new SIZE).
-- Sync helpers + auto-mirror test hook deleted; nothing left to mirror.
-
-**Other infra:**
-- `controller/perp_pools.rs`: hosts `update_pool_balances`, `update_pnl_pool_and_user_balance`, `calculate_revenue_pool_transfer` (moved out of `controller/amm.rs`).
-- `math/perp_market.rs`: hosts `calculate_perp_market_amm_summary_stats` (moved out of `controller/amm.rs`).
-- `controller::matching::fill_perp_market_against_amm` — sole-AMM fill helper wrapping `fill_amm_only`. Drop-in replacement for legacy `swap_base_asset` + manual bookkeeping. The post-fill AMM bookkeeping (reserves, net counterparty position, cached spread-reserve refresh) lives in `AmmQuoter::commit_fill`; no separate post-match wrapper is needed. (The old `apply_match_to_perp_market` was a no-op once the spread cache moved into `commit_fill`, and was deleted.)
-- Tuple-return cleanup: `calculate_base_swap_output` returns `AmmSwapOutput { new_base_asset_reserve, new_quote_asset_reserve, quote_asset_amount, quote_asset_amount_surplus }`. No `VelocityResult<(_, _, _)>` in branch-authored code.
-
-### Soft spots (deferred)
-
-- **`refresh_cost` plumbing.** `fill_amm_only` and `match_take`'s commit loop both surface `QuoterFill::refresh_cost` into `Match.total_refresh_cost`. Only the AMM produces a non-zero refresh cost today (repeg / k-update during `setup`); discrete makers report zero.
-- **`match_take` uses `Vec` for per-fill scratch (the level list).** For CU budget, `SmallVec<[T; 4]>` would be better for the common (≤2-maker) case. Optimise after profiling.
-
-### What's next (in execution order)
-
-1. **Task 10 fulfill_perp_order migration.** Replace `math::amm_jit::calculate_amm_jit_liquidity + controller::orders::fulfill_perp_order_with_amm(jit_amount)` with `match_take([DlobOrderQuoter, AmmJitQuoter::new(amm, maker_price, jit_amount)])`. The matcher owns AMM-side reserve mutation via `AmmJitQuoter::commit_fill`. The outer `fulfill_perp_order_with_match` keeps taker-side updates (margin, fees, social loss, builder referrals) driven off `Match.fills`. **Multi-session work** — `fulfill_perp_order_with_amm` is 420 lines tangled with margin/fee accounting; needs careful unraveling.
-2. **AMM struct split into `AmmQuoteState` + `AmmBookkeeping`.** Not yet started. `AMM { quote: AmmQuoteState, books: AmmBookkeeping }` shape per the design below. AMM-side fee field split (`total_fee`, `total_fee_minus_distributions`, `net_revenue_since_last_funding`) — protocol portion → PerpMarket fields, AMM portion stays in `AmmBookkeeping`. **Behavioural change**, not just a move. Defer the placeholder types — define `AmmQuoteState` / `AmmBookkeeping` when the split actually happens.
-3. **Move AMM-stays fields per design.** Position counters, protocol fees (split half), funding state, oracle identity, order parameters move from AMM to PerpMarket. ~1,605 reach-through `market.amm.X` accesses to mass-substitute.
-4. **Move AMM to the tail of PerpMarket.** Forces future excision to be a clean truncate.
-5. **Task 12 — `pub(in crate::state::amm)` boundary.** Move AMM into its own `state::amm` module, tighten field visibility. Compile error wherever there's still a `market.amm.X` reach-through is the migration checklist.
-6. **Task 13 — IDL regen + SDK migration** (`sdk/src/idl/velocity.{json,ts}`, `sdk/src/user.ts`, `sdk/src/math/*`, `sdk/src/decode/user.ts`). Wait until layout stabilises.
-7. **Task 14 — TypeScript integration tests** (`tests/*.ts`).
-8. **Task 15 — Final verification:** `cargo fmt && cargo clippy -p velocity && cargo test -p velocity && bash test-scripts/run-anchor-tests.sh`, SDK lint/test, CU benchmarks within ~10% of baseline, litmus greps return zero.
-
-**Post-merge (NOT part of PR):** devnet wipe-and-reinit per CLAUDE.md runbook.
-
-**Pointers:**
-- Plan file (more granular, includes execution strategy + sub-agent parallelization plan): `/Users/noahprince/.claude/plans/how-much-of-what-twinkly-pillow.md`.
-- Task list IDs 1-15 via TaskCreate. Tasks 1, 2, 4, 6, 7, 8, 9, 11 completed. Tasks 3 and 10 in_progress. Tasks 5, 12, 13, 14, 15 pending.
+# AMM decoupling and maker interface
 
 ## Why
 
-`PerpMarket.amm: AMM` started as one struct holding the vAMM's state and over time absorbed everything adjacent to it: position counters, fee accounting, funding cumulatives, oracle metadata, order parameters. The result: ~80 fields, ~2,272 `.amm.` accesses across the program, ~1,605 of them outside AMM-dedicated modules. Insurance, liquidation, settlement, margin, funding, and admin code all reach into `perp_market.amm.X` for state that has nothing to do with AMM mechanics.
+`PerpMarket.amm: AMM` began as one struct holding the vAMM's state. Over time it absorbed
+everything adjacent to it, including position counters, fee accounting, funding cumulatives, oracle
+metadata and order parameters. Before the refactor it carried roughly 80 fields, and the program read `.amm.` in
+about 2,270 places, some 1,600 of them outside AMM-dedicated modules. Insurance, liquidation,
+settlement, margin, funding and admin code all reached into `perp_market.amm.X` for state that has
+nothing to do with AMM mechanics.
 
-This blocks two things:
+That arrangement blocks two things.
 
-1. **Replacing the vAMM, or running it alongside other makers.** Today the vAMM is the only liquidity source `controller/orders.rs` and `controller/amm_jit.rs` know how to talk to. The matching logic is hard-coded for AMM-vs-DLOB-order pairs. Adding a Phoenix-style parametric quoter, or running multiple AMMs on the same market, requires an entirely new code path.
+1. Replacing the vAMM, or running it alongside other makers. Before the refactor the vAMM was the
+   only liquidity source `controller/orders.rs` knew how to talk to, and the matching logic was
+   hard-coded for AMM-versus-DLOB-order pairs. Adding a parametric quoter, or running two AMMs on
+   one market, would have meant an entirely new code path.
 
-2. **Eventually extracting the AMM into its own on-chain program.** Every reader currently assumes `AMM` is inline in the perp market account. Moving it to a separate account / program means rewriting every one of those readers.
+2. Extracting the AMM into its own onchain program. Every reader assumed `AMM` sat inline in the
+   perp market account. Moving it to a separate account or program means rewriting every one of
+   those readers.
 
-This refactor fixes both. After it lands:
+The refactor, once it lands in full, gives the program four properties.
 
-- `PerpMarket` is self-sufficient: every consumer outside the AMM module reads and writes `PerpMarket` fields directly. No code outside `state/amm.rs` references AMM internals.
-- The AMM is one `Quoter` implementation. DLOB resting orders are another. JIT auction participants are a third. A real matcher in `controller/match.rs` walks them via the trait.
-- The AMM struct is split into two explicit sub-structs (`AmmQuoteState` — the small fast-mutating part; `AmmBookkeeping` — the accounting layer) so the future excision is a clean cut along an existing line.
-- The `amm` field is the last field of `PerpMarket`, so excising it later doesn't disturb any other field offset.
+- `PerpMarket` is self-sufficient. Every consumer outside the AMM module reads and writes
+  `PerpMarket` fields directly, and no code outside `programs/velocity/src/vlp/amm/` references AMM
+  internals.
+- The AMM is one `Quoter` implementation. DLOB resting orders are another. JIT auction participants
+  are a third. The fill engine in `controller/matching.rs` walks them through the trait.
+- The AMM struct splits into two explicit sub-structs, `AmmQuoteState` for the small fast-mutating
+  part and `AmmBookkeeping` for the accounting layer, so the later excision cuts along a line that
+  already exists.
+- The `amm` field sits last in `PerpMarket`, so excising it does not disturb any other field offset.
+
+## What has landed and what has not
+
+The AMM now lives under `programs/velocity/src/vlp/amm/`, split into `state.rs` (the struct),
+`quoter.rs` (the `Quoter` impls), `controller.rs` (swap application), `refresh.rs` (the curve
+refresh), `admin.rs` and `math/` (`amm.rs`, `cp_curve.rs`, `jit.rs`, `repeg.rs`, `spread.rs`). The
+`Quoter` trait lives in `programs/velocity/src/state/quoter.rs` and the fill engine in
+`programs/velocity/src/controller/matching.rs`. `PerpMarket.market_stats: MarketStats` exists and
+carries the migrated stats. The AMM struct is down to 38 fields
+(`programs/velocity/src/vlp/amm/state.rs:80`).
+
+Three pieces of the design are not in the code yet.
+
+- The AMM struct is still flat. `AmmQuoteState` and `AmmBookkeeping` do not exist as types, and the
+  fee-field split between the protocol portion and the AMM portion has not happened. That split
+  changes behavior, not just field placement, so it is a separate change.
+- `amm` is not the last field of `PerpMarket`. `hedge_config` and `_padding_future` follow it.
+- Field visibility is not yet locked down to the AMM module, so reach-throughs still compile. About
+  268 non-test lines outside `vlp/amm/` still write `perp_market.amm.X` or `market.amm.X`, and about
+  1,102 lines including tests.
 
 ## Long-term architecture
 
-The future system is a shared orderbook that takes liquidity from `n` interchangeable makers — the vAMM, DLOB resting orders, JIT auction participants, and whatever else we add later (parametric curve quoters, cross-program makers via CPI, etc.). Each maker is two things:
+The target is a shared orderbook that takes liquidity from `n` interchangeable makers: the vAMM,
+DLOB resting orders, JIT auction participants, and whatever comes later, such as parametric curve
+quoters or cross-program makers reached by CPI. Each maker is two things.
 
-1. **Some bytes of internal state.** Opaque to everyone outside the maker. The vAMM's bytes are reserves, peg, sqrt_k, spreads, AMM-private oracle snapshots, inventory. A DLOB-order maker's bytes are the resting `Order`. A future maker decides for itself what to store.
+1. Some bytes of internal state, opaque to everyone outside the maker. The vAMM's bytes are
+   reserves, peg, sqrt_k, spreads, AMM-private oracle snapshots and inventory. A DLOB-order maker's
+   bytes are the resting `Order`. A future maker decides for itself what to store.
 
-2. **A quoting formula plus a fill-effect formula.** Both are pure functions of `(self.bytes, ctx)`. The quoting formula computes `best_price`, `level_capacity`, and the closed-form `try_fill_solo`; the fill-effect formula (`commit_fill`) defines how the maker's bytes change when a fill lands. `ctx` carries the inputs the fill engine shares across all makers — `MarketStats`, oracle data, available fee budget, tick/step size.
+2. A quoting formula plus a fill-effect formula. Both are pure functions of `(self.bytes, ctx)`. The
+   quoting formula computes `best_price`, `level_capacity` and the closed-form `try_fill_solo`. The
+   fill-effect formula, `commit_fill`, defines how the maker's bytes change when a fill lands. `ctx`
+   carries the inputs the fill engine shares across all makers, which are `MarketStats`, oracle
+   data, the available fee budget, and the tick and step sizes.
 
-The matcher walks makers via this uniform interface and computes the optimal blended fill. Settlement happens via per-maker `commit_fill` after the matcher decides who won which slice.
+The engine walks makers through this uniform interface and computes the blended fill. Settlement
+happens through per-maker `commit_fill` after the engine decides who won which slice.
 
-Eventually the vAMM lives in its own program. The orderbook program holds `AmmQuoteState` (or equivalent) next to whatever other makers' quote-state structs it tracks. The AMM program holds `AmmBookkeeping`. The orderbook emits fill deltas the AMM program consumes to update its books. This refactor lays the groundwork by structuring AMM state along that line *today*, even though everything still lives in one program.
+Eventually the vAMM lives in its own program. The orderbook program holds `AmmQuoteState` or its
+equivalent next to whatever other makers' quote-state structs it tracks, and the AMM program holds
+`AmmBookkeeping`. The orderbook emits fill deltas that the AMM program consumes to update its books.
+This refactor structures AMM state along that division today, while everything still lives in one
+program.
 
 ## Field partition
 
-The bright line: **PerpMarket should not know whether a trade was filled by the AMM, a DLOB maker, or a JIT participant.** Anything tagged specifically to "this came from the AMM" is AMM-internal. Anything that aggregates across all fills is protocol-level.
+One rule decides where a field goes. `PerpMarket` should not know whether a trade was filled by the
+AMM, a DLOB maker or a JIT participant. Anything tagged specifically to "this came from the AMM"
+is AMM-internal. Anything that aggregates across all fills is protocol-level.
 
-### Moves from AMM → PerpMarket
+### Moved from AMM to PerpMarket
 
-**Position / open-interest counters** (aggregates across all positions, not specific to AMM as counterparty):
+Position and open-interest counters aggregate across all positions and are not specific to the AMM
+as counterparty. They are `base_asset_amount_long`, `base_asset_amount_short`, `quote_asset_amount`,
+`quote_entry_amount_long`, `quote_entry_amount_short`, `quote_break_even_amount_long`,
+`quote_break_even_amount_short`, `total_social_loss`, `max_open_interest`.
 
-`base_asset_amount_long`, `base_asset_amount_short`, `quote_asset_amount`, `quote_entry_amount_long`, `quote_entry_amount_short`, `quote_break_even_amount_long`, `quote_break_even_amount_short`, `total_social_loss`, `max_open_interest`.
+`base_asset_amount_with_amm` does not move. It is the AMM's own net counterparty position, used for
+inventory-aware quoting, and it stays in the AMM struct. The pre-refactor code updated it from
+`update_position_with_base_asset_amount` on every position delta, which was correct only because
+every fill had the AMM as counterparty. Only AMM-side fills update it now, through
+`QuoterCommit::commit_fill`. DLOB-to-DLOB matches do not, and should not.
 
-`base_asset_amount_with_amm` **does not move** — that's the AMM's own net counterparty position, used for inventory-aware quoting. Stays in `AmmQuoteState`. Today's code updates it from `update_position_with_base_asset_amount` on every position delta, which is correct only because every fill currently has the AMM as counterparty. Post-refactor, only AMM-side fills update it (via `AmmMakerMut::commit_fill`); DLOB-DLOB matches don't, and shouldn't.
+Protocol fees are collected on every fill regardless of maker. `total_exchange_fee` (taker fees) and
+`total_liquidation_fee` (routed to the insurance fund or the protocol) now live in
+`PerpMarket.fee_ledger: FeeLedger` alongside `pending_protocol_fee`, `pending_if_fee`,
+`amm_protocol_fees_received` and `pending_amm_provision`.
 
-**Protocol fees** (collected on every fill regardless of maker):
+The AMM's own books stay with the AMM: `total_fee`, `total_mm_fee`, `total_fee_minus_distributions`,
+`total_fee_withdrawn`, `net_revenue_since_last_funding`, `fee_pool`. The AMM is a self-contained
+market maker with its own profit and loss accounting and its own token vault. The protocol learns
+about AMM revenue through explicit AMM-side instructions, such as an admin withdrawal to the revenue
+pool, and never by reading AMM bytes.
 
-`total_exchange_fee` (taker fees), `total_liquidation_fee` (goes to insurance fund / protocol).
+One behavioral change deserves calling out. Before the refactor, some of these "AMM" fee fields were
+written on every fill, including DLOB-to-DLOB matches where the AMM was not a counterparty.
+`total_fee` and `total_fee_minus_distributions` were touched from both the AMM-side and the DLOB-side
+fill paths in `controller/orders.rs`. That was an artifact of the AMM-centric architecture, in which
+"AMM fields" doubled as "protocol fields" because the AMM was the only counterparty model.
 
-The AMM's own books — `total_fee`, `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `net_revenue_since_last_funding`, `fee_pool` — stay in `AmmBookkeeping`. The AMM is essentially a self-contained market maker with its own P&L accounting and token vault. The protocol learns about AMM revenue through explicit, AMM-side instructions (admin withdrawal to revenue pool), never by reaching into AMM bytes.
+The target rule is that `QuoterCommit::commit_fill` is the only writer of the AMM's books, so they
+move only when the AMM filled a slice of the take. Protocol-level fees collected on every trade go
+to the `FeeLedger`. The AMM-specific portion, meaning its earned spread plus the part of the fee
+pool it manages, stays with the AMM. Where the current code conflates the two under one name such as
+`total_fee`, the split gives the protocol portion a `PerpMarket` field and leaves the AMM portion on
+the AMM.
 
-**Behavioral change to be explicit about.** Today some of these "AMM" fee fields are written on *every* fill — including DLOB-DLOB matches where the AMM was not a counterparty. Specifically `total_fee` and `total_fee_minus_distributions` are touched from both `fulfill_perp_order_with_amm` (AMM-side) and `fulfill_perp_order_with_match` (DLOB-side) in `controller/orders.rs`. That's an artifact of the AMM-centric current architecture, where "AMM fields" doubled as "protocol fields" because the AMM was the only counterparty model.
+None of the following has landed yet.
 
-Post-refactor, the rule is: **the AMM's books are touched only by `AmmMakerMut::commit_fill`** — that is, only when the AMM filled a slice of the take. Protocol-level fees (taker fees collected on every trade) go to `PerpMarket.total_exchange_fee`. The AMM-specific portion (its earned spread + the portion of the fee pool it manages) stays in `AmmBookkeeping`. Where today's code conflates the two under a single name like `total_fee`, the refactor splits it into a PerpMarket field for the protocol portion and an AMM field for the AMM portion.
+- `AmmBookkeeping.total_fee` (i128) is incremented only by AMM-side fills. The same holds for
+  `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`,
+  `net_revenue_since_last_funding` and `fee_pool`.
+- A new protocol-level accumulator on `PerpMarket` captures today's "fee minus distributions" value
+  written from non-AMM paths. The AMM-side equivalent, its own fee-minus-distributions figure used
+  for the repeg budget, stays as `AmmBookkeeping.total_fee_minus_distributions`.
+- A protocol-level `net_revenue_since_last_funding` on `PerpMarket` holds the rolling revenue
+  window. The AMM keeps its own copy for `has_too_much_drawdown`
+  (`programs/velocity/src/vlp/amm/state.rs:389`), and the fill controller writes the `PerpMarket`
+  copy on every fill.
 
-Concretely, the split:
+The split is mechanical at the write sites. AMM-side writes go through `commit_fill`, and DLOB-side
+writes go to `PerpMarket` fields directly from the fill controller.
 
-- `PerpMarket.total_exchange_fee` (u128) — already protocol-only today; just moves out of AMM.
-- `PerpMarket.total_liquidation_fee` (u128) — already protocol-only; moves out of AMM.
-- `PerpMarket.total_protocol_fee_minus_distributions` (i128) — new field, captures today's "fee minus distributions" accumulator written from non-AMM paths. The AMM-side equivalent (its own fee-minus-distributions for repeg budget) stays as `AmmBookkeeping.total_fee_minus_distributions`.
-- `PerpMarket.net_revenue_since_last_funding` (i64) — protocol-level rolling revenue window. The AMM has its own `AmmBookkeeping.net_revenue_since_last_funding` for `has_too_much_drawdown` (AMM-internal drawdown check); the matcher / fill controller writes to PerpMarket's version on every fill.
-- `AmmBookkeeping.total_fee` (i128) — only AMM-side fills increment this. Same for `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `net_revenue_since_last_funding`, `fee_pool`.
+Funding state applies to all positions, so it moved to `PerpMarket`. That covers
+`cumulative_funding_rate_long`, `cumulative_funding_rate_short`, `last_funding_rate`,
+`last_funding_rate_long`, `last_funding_rate_short`, `last_funding_rate_ts`,
+`net_unsettled_funding_pnl`. Three funding-adjacent values went to `MarketStats` instead, because
+the AMM reads them while quoting: `last_24h_avg_funding_rate`, `funding_period` and
+`last_funding_oracle_twap`.
 
-The split is mechanical at the write sites: `fulfill_perp_order_with_amm`'s writes go to AMM via `commit_fill`; `fulfill_perp_order_with_match`'s writes go to PerpMarket fields directly (post-matcher, via the fill controller).
+Oracle identity is configuration, set at market creation and not updated per fill, so it moved to
+`PerpMarket`. That covers `oracle: Pubkey`, `oracle_source: OracleSource`,
+`oracle_slot_delay_override` and `oracle_low_risk_slot_delay_override`. Oracle data is fresh market state and belongs in
+`MarketStats`, covered below.
 
-**Funding state** (protocol-wide; applies to all positions):
+Order parameters split by reader. `order_step_size` and `order_tick_size` sit on `PerpMarket`.
+`min_order_size` sits in `MarketStats`, because the AMM reads it when computing fallback prices,
+spread reserves and the `can_lower_k` check.
 
-`cumulative_funding_rate_long`, `cumulative_funding_rate_short`, `last_funding_rate`, `last_funding_rate_long`, `last_funding_rate_short`, `last_24h_avg_funding_rate`, `last_funding_rate_ts`, `funding_period`, `net_unsettled_funding_pnl`, `last_funding_oracle_twap`.
+### Moved from PerpMarket to the AMM side
 
-**Oracle identity (config — set at market creation, not updated per-fill):**
+The hedge-pool fee-routing configuration moved into `PerpMarket.hedge_config: HedgeConfig`
+(`programs/velocity/src/vlp/hedge/state.rs`), which holds `pool_id`, `status`, `paused_operations`,
+`exchange_fee_exclusion_scalar` and `fee_transfer_scalar`. The scalars are AMM-fee-allocation
+policy. `status` and `paused_operations` are market-level operational gates.
 
-`oracle: Pubkey`, `oracle_source: OracleSource`, `oracle_slot_delay_override`, `oracle_low_risk_slot_delay_override`.
+### `PerpMarket.market_stats: MarketStats`
 
-Note: oracle *data* (`historical_oracle_data`, `last_oracle_normalised_price`, `last_oracle_valid`) is fresh market state and belongs in `MarketStats`, not here — see the MarketStats partition below. Only oracle identity/config lives on PerpMarket.
-
-**Order parameters:**
-
-`order_step_size`, `order_tick_size`, `min_order_size`.
-
-### Moves from PerpMarket → AMM (`AmmBookkeeping`)
-
-DLP fee-routing config: `lp_pool_id`, `lp_fee_transfer_scalar`, `lp_exchange_fee_excluscion_scalar`. These configure how AMM-side revenue routes to the DLP. Currently on PerpMarket; they're AMM-fee-allocation policy that belongs with the AMM's books. `lp_status` and `lp_paused_operations` stay on PerpMarket — those are market-level operational gates.
-
-### Introduces `PerpMarket.market_stats: MarketStats`
-
-A new sub-struct on PerpMarket holding historic market data that any quoter would want:
+`MarketStats` holds historic market data that any quoter would want. It is defined at
+`programs/velocity/src/state/perp_market.rs:1746` and is 216 bytes.
 
 ```rust
 pub struct MarketStats {
-    // Mark TWAPs and std
+    // Mark TWAPs and volatility
     pub last_mark_price_twap: u64,
     pub last_mark_price_twap_5min: u64,
     pub last_mark_price_twap_ts: i64,
     pub last_bid_price_twap: u64,
     pub last_ask_price_twap: u64,
     pub mark_std: u64,
-    // Oracle data (moves from AMM)
-    pub historical_oracle_data: HistoricalOracleData,
-    pub last_oracle_normalised_price: i64,
-    pub last_oracle_valid: bool,
     pub oracle_std: u64,
     pub last_oracle_conf_pct: u64,
-    // Volume / intensity / activity
+    // Volume, intensity, activity
     pub volume_24h: u64,
     pub long_intensity_volume: u64,
     pub short_intensity_volume: u64,
     pub last_trade_ts: i64,
+    // Market-wide config the AMM reads while quoting (moved from PerpMarket)
+    pub last_24h_avg_funding_rate: i64,
+    pub funding_period: i64,
+    pub min_order_size: u64,
     // MM oracle snapshot (native handler target)
     pub mm_oracle_price: i64,
     pub mm_oracle_slot: u64,
     pub mm_oracle_sequence_id: u64,
-    pub padding: [u8; N],
+    // Oracle data (moved from AMM)
+    pub last_oracle_normalised_price: i64,
+    pub last_reference_price_offset: i32,
+    pub last_oracle_valid: bool,
+    pub padding: [u8; 3],
+    pub last_funding_oracle_twap: i64,
+    pub historical_oracle_data: HistoricalOracleData,
 }
 ```
 
-**Update-cadence rule.** A field belongs in `MarketStats` if it must update on every market fill — vAMM fill, DLOB fill, JIT fill, future maker fill. The matcher writes to `MarketStats` via `controller/market_stats.rs` from each fill path. The AMM reads `&MarketStats` as input but does not write to it. This is the architectural lever that makes the vAMM safe to call rarely in the future world: anything that needs updating on every market event is no longer the AMM's job.
+A field belongs in `MarketStats` if it must update on every market fill, whether that fill came from
+the vAMM, the DLOB, the JIT path or a future maker. The AMM reads `&MarketStats` as input and never
+writes to it. This is what makes the vAMM safe to call rarely in the future system, because nothing
+that needs updating on every market event depends on the AMM being touched.
 
-The mm-oracle native handler (`handle_update_mm_oracle_native`) targets `mm_oracle_*` fields, which now live in `MarketStats`. Native-handler offsets get recomputed.
+All `MarketStats` writers are methods on `MarketStats` itself, defined in `state/perp_market.rs`.
+They are `update_mark_std`, `update_oracle_std`, `update_oracle_conf_pct`, `update_volume_24h`,
+`update_mark_twap`, `update_mark_twap_with_amm_bid_ask`, `update_mark_twap_crank` and
+`update_oracle_twap`. The TWAP writers take `&AMM` read-only when they need to derive an input such
+as the reserve price, the AMM bid and ask, or `base_spread`, and otherwise mutate only `self`.
+`controller/market_stats.rs` documents that contract and is reserved for stat writes fed from the
+fill engine once the engine owns fill orchestration.
 
-### Stays in AMM (`AmmQuoteState`)
+`last_reference_price_offset` caches the reference price offset written by the AMM refresh after a
+successful repeg or k-update. `update_amm_quote_state` reads it to reproduce the legacy time-decayed
+smoothing transition, which clamps the per-slot move when the freshly computed offset flips sign
+against the cached value and `curve_update_intensity > 100`.
 
-Reserves and curve: `base_asset_reserve`, `quote_asset_reserve`, `sqrt_k`, `peg_multiplier`, `concentration_coef`, `min_base_asset_reserve`, `max_base_asset_reserve`, `terminal_quote_asset_reserve`, `ask_base_asset_reserve`, `ask_quote_asset_reserve`, `bid_base_asset_reserve`, `bid_quote_asset_reserve`.
+### Native handler offsets
 
-Spread and behavior: `base_spread`, `max_spread`, `long_spread`, `short_spread`, `amm_spread_adjustment`, `amm_inventory_spread_adjustment`, `amm_jit_intensity`, `curve_update_intensity`, `reference_price_offset`, `reference_price_offset_deadband_pct`.
+`handle_update_mm_oracle_native` (`programs/velocity/src/instructions/admin.rs:3911`, native
+dispatch opcode 0) writes the `mm_oracle_*` fields by byte offset rather than deserializing the
+account. `handle_update_amm_spread_adjustment_native` does the same for `amm_spread_adjustment`. The
+offsets are pinned by `native_instruction_offsets::amm_zero_copy_offsets` in
+`programs/velocity/src/state/traits/tests.rs`. The table measures from the start of the account,
+including the 8-byte discriminator.
 
-AMM's own counterparty position (for inventory-aware quoting): `base_asset_amount_with_amm`.
+| Field | Struct | Absolute offset |
+| --- | --- | --- |
+| `mm_oracle_price` | `MarketStats` | 800 |
+| `mm_oracle_slot` | `MarketStats` | 808 |
+| `mm_oracle_sequence_id` | `MarketStats` | 816 |
+| `amm_spread_adjustment` | `AMM` | 1282 |
 
-AMM-private oracle snapshots: `last_oracle_reserve_price_spread_pct`, `last_update_slot`. These are AMM-specific (depend on AMM-specific reserves) — stale-tolerant, updated when the AMM is touched. (`last_oracle_normalised_price` is NOT AMM-private despite its current location; it's the canonical sanitised oracle reading any quoter would want, so it moves to `MarketStats`.)
+`PerpMarket::SIZE` is 1560 bytes, which is 1552 for the struct plus the 8-byte discriminator
+(`programs/velocity/src/state/perp_market.rs:626`). `MarketStats` starts at struct offset 672 and
+`AMM` at 896. `AMM` is 384 bytes and `MarketStats` is 216.
 
-### Stays in AMM (`AmmBookkeeping`)
+### Stays in the AMM: quote state
 
-`fee_pool: PoolBalance`, `total_fee`, `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `net_revenue_since_last_funding`, and the DLP routing config moved in from PerpMarket.
+The reserves and the curve are `base_asset_reserve`, `quote_asset_reserve`, `sqrt_k`, `peg_multiplier`,
+`concentration_coef`, `min_base_asset_reserve`, `max_base_asset_reserve`,
+`terminal_quote_asset_reserve`, `ask_base_asset_reserve`, `ask_quote_asset_reserve`,
+`bid_base_asset_reserve`, `bid_quote_asset_reserve`.
 
-The AMM's bookkeeping is never read by the matcher to produce a quote. `total_fee_minus_distributions` feeds repeg budgets via `ctx.fee_budget` — but that's a scalar the *fill controller* reads off bookkeeping and passes in. The AMM does not read its own books to quote.
+The spread and behavior fields are `base_spread`, `max_spread`, `long_spread`, `short_spread`,
+`amm_spread_adjustment`, `amm_inventory_spread_adjustment`, `amm_jit_intensity`,
+`curve_update_intensity`, `reference_price_offset`, `reference_price_offset_deadband_pct`,
+`max_fill_reserve_fraction`, `max_slippage_ratio`, `funding_bias_sensitivity`.
 
-### Dead-LP padding — reclaimed
+`base_asset_amount_with_amm` holds the AMM's own counterparty position, which drives
+inventory-aware quoting.
 
-User-direct vAMM-LP was removed in earlier commits (`e1e22230bf`, `e1c92f5789`, `7435cddb38`). Seven AMM padding fields and three `PerpPosition` padding fields remain as dead bytes. Since devnet uses wipe-and-reinit, this padding is removed outright instead of preserved.
+The AMM-private oracle and funding snapshots are `last_oracle_reserve_price_spread_pct`,
+`last_update_slot`, `last_spread_update_slot`, `last_cumulative_funding_rate_long` and
+`last_cumulative_funding_rate_short`. These depend on AMM-specific reserves, tolerate staleness, and
+refresh when the AMM is touched. `last_oracle_normalised_price` is not AMM-private despite its old
+location. It is the canonical sanitised oracle reading that any quoter would want, so it moved to
+`MarketStats`.
+
+### Stays in the AMM: bookkeeping
+
+`fee_pool: PoolBalance`, `total_fee`, `total_mm_fee`, `total_fee_minus_distributions`,
+`total_fee_withdrawn`, `net_revenue_since_last_funding`.
+
+The fill engine never reads the AMM's bookkeeping to produce a quote.
+`total_fee_minus_distributions` feeds repeg budgets through `ctx.fee_budget`, but that is a scalar
+the fill controller reads off bookkeeping and passes in. Quoting never touches the books.
+
+### Dead LP padding, reclaimed
+
+User-direct vAMM LP was removed in earlier commits (`e1e22230b`, `e1c92f578`, `7435cddb3`). Seven
+AMM padding fields and three `PerpPosition` padding fields were left as dead bytes. Because devnet
+uses wipe-and-reinit, that padding was removed outright rather than preserved.
 
 ## The `Quoter` interface
 
-The module `state/quoter.rs` defines the trait every liquidity source implements. The module-level doc comment carries the architectural narrative; the trait-level doc carries the fill-algorithm spec.
+`programs/velocity/src/state/quoter.rs` defines the trait every liquidity source implements. The
+module doc comment carries the architectural narrative and the trait doc carries the fill-algorithm
+specification.
 
 ```rust
 pub struct QuoteContext<'a> {
     pub stats: &'a MarketStats,
     pub oracle: &'a OraclePriceData,
-    pub mm_oracle: Option<&'a MMOraclePriceData>,  // AMM setup only
-    pub oracle_validity: Option<OracleValidity>,   // AMM setup only
+    pub mm_oracle: Option<&'a MMOraclePriceData>,   // AMM setup only
+    pub oracle_validity: Option<OracleValidity>,    // AMM setup only
     pub fee_budget: u64,
     pub tick: u64,
     pub step_size: u64,
     pub slot: u64,
+    pub slot_clock: SlotClock,
     pub base_precision: u64,
-    pub market_status: MarketStatus,               // AMM only
+    pub market_status: MarketStatus,                // AMM only
     pub market_config: u8,                          // AMM only
 }
 
@@ -229,12 +309,13 @@ pub struct QuoterFill {
 pub trait Quoter {
     fn setup(&mut self, _ctx: &QuoteContext) -> VelocityResult<()> { Ok(()) }
 
-    /// The maker's single quoted price on this side (no-quote sentinel
-    /// otherwise: u64::MAX for Long, 0 for Short).
+    /// The maker's single quoted price on this side. Returns the no-quote
+    /// sentinel otherwise: u64::MAX for Long, 0 for Short.
     fn best_price(&self, ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64>;
 
-    /// Full fillable base at `best_price`. Cheap and non-mutating — analytic,
-    /// never runs the actual fill. The discrete walk sizes each level with it.
+    /// Full fillable base at `best_price`. Cheap and non-mutating, computed
+    /// analytically, never by running the actual fill. The discrete walk sizes
+    /// each level with it.
     fn level_capacity(&self, ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64>;
 
     fn is_prio(&self) -> bool { false }
@@ -258,23 +339,60 @@ pub trait QuoterCommit: Quoter {
 }
 ```
 
-Quote methods are pure functions of `(self, ctx)`. `commit_fill` is the only mutation hook. The maker is the sole authority on how its bytes change; the fill engine just hands it the fill it won.
+Quote methods are pure functions of `(self, ctx)`. `commit_fill` is the only mutation hook, so the
+maker stays the sole authority on how its bytes change. `on_market_event` is the second mutation
+channel, carrying market-level signals such as a funding application. The AMM uses it to fold its
+formulaic k-update inside the maker boundary, which replaces the old pattern of the funding
+controller writing into `market.amm`.
 
-> **Note on the continuous AMM.** The constant-product vAMM is the one *continuous* maker. It is matched solo via `fill_amm_only` (below), which uses an inherent `AmmQuoter::cumulative_size` (the analytical inverse of its curve) to cap a take at the taker's limit — `cumulative_size` is **not** on the `Quoter` trait, because the discrete level walk never needs it. When the vAMM participates alongside DLOB orders it does so as `AmmJitQuoter`, which quotes a single fixed `jit_price` — i.e. it's discrete, like a DLOB order.
+Three implementations exist today.
 
-**`level_capacity` semantics.** The full base a maker can fill at its level. It must be cheap and non-mutating: compute it analytically (DLOB: remaining size; JIT vAMM: `min(throttle, reserve-bounded max)`), never by running the swap — probing capacity by swapping the AMM-JIT to its reserve boundary errors.
+- `DlobOrderQuoter<'a>` (`state/quoter.rs:394`) wraps a single resting `Order`. It handles both
+  resting DLOB orders and in-auction JIT participants through `Order::get_limit_price`, so the
+  auction and oracle-offset pricing rules apply without a second code path. Discrete, single level.
+- `AmmQuoter<'a>` (`vlp/amm/quoter.rs:237`) is the continuous constant-product curve, matched solo
+  through `fill_amm_only`. It reports `is_prio = true`, `is_fee_exempt = true` and
+  `fee_policy = AmmHouse`.
+- `AmmJitQuoter<'a>` (`vlp/amm/quoter.rs:776`) is the AMM in JIT-making mode, exposed as a discrete
+  single-price level. `best_price` is `jit_price` and `level_capacity` is
+  `min(max_jit_base, reserve-bounded max)`. It reports the same three flags as `AmmQuoter`.
 
-**`is_prio` semantics.** Priority makers take their full level capacity at the clearing price before pro-rata distributes the remainder to non-priority makers. Priority does *not* override price priority — a better `best_price` still wins regardless of `is_prio`. The JIT vAMM is prio; DLOB orders are not.
+> Note on the continuous AMM. The constant-product vAMM is the one continuous maker. It is matched
+> solo through `fill_amm_only`, which uses the inherent method `AmmQuoter::cumulative_size`
+> (`vlp/amm/quoter.rs:286`), the analytical inverse of its curve, to cap a take at the taker's
+> limit. `cumulative_size` is not on the `Quoter` trait, because the discrete level walk never needs
+> it. It is built on `math::spread::calculate_base_asset_amount_to_trade_to_price`
+> (`vlp/amm/math/spread.rs:1486`). When the vAMM participates alongside DLOB orders it does so as
+> `AmmJitQuoter`, which quotes a single fixed `jit_price` and is therefore discrete, like a DLOB
+> order.
 
-**`is_fee_exempt` / `fee_policy` semantics.** Fee-exempt makers don't pay/receive maker fees (the vAMM earns from spread, not rebates). `fee_policy` selects the fill controller's fee path (`AmmHouse` for AMM-side fills, `DlobMatch` for DLOB). Both are copied into each `QuoterFill`.
+`level_capacity` reports the full base a maker can fill at its level. It must be cheap and
+non-mutating, so compute it analytically. For a DLOB order that is the remaining size. For the JIT
+vAMM it is `min(throttle, reserve-bounded max)`. Probing capacity by swapping the AMM-JIT to its
+reserve boundary errors out, so never run the swap.
 
-**`try_fill_solo`** computes a maker's closed-form fill at its price. `fill_amm_only` calls it to fill the whole take; the discrete walk calls it per winning maker on its allocated base. Every `Quoter` in the crate implements it.
+`is_prio` marks makers that take their full level capacity at the clearing price before pro-rata
+distributes the remainder to non-priority makers. Priority does not override price priority, so a
+better `best_price` still wins regardless of `is_prio`. Both AMM quoters are priority makers and
+DLOB orders are not.
+
+`is_fee_exempt` marks makers that neither pay nor receive maker fees, because the vAMM earns from
+the spread rather than from rebates. `fee_policy` selects the fill controller's fee path, which is
+`AmmHouse` for AMM-side fills and `DlobMatch` for DLOB fills. Both flags are copied into each
+`QuoterFill`.
+
+`try_fill_solo` computes a maker's closed-form fill at its price. `fill_amm_only` calls it to fill
+the whole take, and the discrete walk calls it once per winning maker on that maker's allocated
+base. Every `Quoter` in the crate implements it.
 
 ## Fill algorithm
 
-`controller/match.rs` has **two explicit fill paths** — there is no general continuous-curve clearing algorithm (no bisection, no price-domain search). The split reflects that the only continuous maker (the constant-product vAMM) is always matched solo; every multi-maker fill is over discrete single-price makers.
+`controller/matching.rs` has two explicit fill paths. There is no general continuous-curve clearing
+algorithm, no bisection and no price-domain search. The split reflects the fact that the only
+continuous maker, the constant-product vAMM, is always matched solo, while every multi-maker fill
+runs over discrete single-price makers.
 
-### Path 1 — `fill_amm_only` (sole continuous vAMM)
+### Path 1, `fill_amm_only` for the sole continuous vAMM
 
 ```text
 fill_amm_only(amm, ctx, side, T, taker_limit):
@@ -285,9 +403,11 @@ fill_amm_only(amm, ctx, side, T, taker_limit):
     return fill   # clearing_price = None on a partial
 ```
 
-This is the only path that touches the curve. `cumulative_size` is an inherent `AmmQuoter` method (one call, not a loop) used purely to cap the take at the taker's limit. Byte-exact with the legacy `swap_base_asset`.
+This is the only path that touches the curve. `cumulative_size` is an inherent `AmmQuoter` method,
+called once rather than in a loop, and it exists purely to cap the take at the taker's limit. The
+result is byte-exact with the legacy `swap_base_asset`.
 
-### Path 2 — `match_take` (discrete level walk)
+### Path 2, `match_take` for the discrete level walk
 
 ```text
 match_take(makers, ctx, side, T, taker_limit):
@@ -298,12 +418,12 @@ match_take(makers, ctx, side, T, taker_limit):
 
     cumulative = 0
     for tie_group in levels grouped by equal price:
-        group_supply = Σ capacity in tie_group
+        group_supply = sum of capacity in tie_group
         if cumulative + group_supply <= T:
             fill each member its full capacity; cumulative += group_supply
             if cumulative == T: clearing_price = group.price; break
         else:
-            # clearing level — distribute the residual across the tie group:
+            # clearing level: distribute the residual across the tie group
             residual = T - cumulative
             prio members take full capacity first;
             non-prio split the rest pro-rata by capacity (last absorbs rounding)
@@ -316,88 +436,154 @@ match_take(makers, ctx, side, T, taker_limit):
         maker.commit_fill(fill)
 ```
 
-No bisection, no tick-walking, no `cumulative_size`. Quote is computed once per maker on its total base (not summed per slice) so the reported `quote_filled` equals what `commit_fill` actually moved — this matters for the JIT vAMM, whose underlying swap is non-linear.
+No bisection, no tick-walking, no `cumulative_size`. The sort is stable, so price ties keep the
+makers' original order and pro-rata stays deterministic. The quote is computed once per maker on its
+total base rather than summed per slice, so the reported `quote_filled` equals what `commit_fill`
+actually moved. That matters for the JIT vAMM, whose underlying swap is non-linear.
 
-Cost: one `best_price` + one `level_capacity` per maker, plus one `try_fill_solo` + `commit_fill` per *winning* maker. For the dominant sole-AMM case (`fill_amm_only`) it's a single analytical fill.
+The cost is one `best_price` plus one `level_capacity` per maker, plus one `try_fill_solo` and one
+`commit_fill` per winning maker. For the dominant sole-AMM case handled by `fill_amm_only` it is a
+single analytical fill.
+
+`match_take` allocates a `Vec` for the level list and another for the per-maker base scratch. For
+the common case of two or fewer makers a `SmallVec<[T; 4]>` would use fewer compute units. Profile
+before changing it.
 
 ### AMM-side details
 
-`fill_amm_only` runs on `AmmQuoter`, whose `Quoter::setup` (called by the orchestrator before the fill) folds the conditional repeg / k-update into the AMM via `project_post_refresh_scalar` and refreshes the cached spread state (`update_amm_quote_state`). `setup` is slot-idempotent — re-running it in the same slot is a no-op on the curve. `commit_fill` applies the swap to the reserves, updates `base_asset_amount_with_amm`, and re-derives the cached ask/bid spread reserves (`refresh_cached_spread_reserves`). It reports `refresh_cost` via `QuoterFill` for the fill controller to apply to PerpMarket.
+`fill_amm_only` runs on `AmmQuoter`. Its `Quoter::setup`, called by the orchestrator before the
+fill, folds the conditional repeg and k-update into the AMM through `project_post_refresh_scalar`
+(`vlp/amm/math/repeg.rs:463`) and refreshes the cached spread state through `update_amm_quote_state`.
+`setup` is slot-idempotent, so re-running it in the same slot leaves the curve unchanged.
+`commit_fill` applies the swap to the reserves, updates `base_asset_amount_with_amm` and re-derives
+the cached ask and bid spread reserves through `refresh_cached_spread_reserves`
+(`vlp/amm/math/spread.rs:305`). It reports `refresh_cost` on the `QuoterFill` for the fill
+controller to apply to `PerpMarket`.
 
-The JIT vAMM (`AmmJitQuoter`) participates in `match_take` as a discrete level: `best_price = jit_price`, `level_capacity = min(max_jit_base, reserve-bounded max)`. Its `commit_fill` moves reserves per the curve while the taker pays `jit_price`; the gap is `quote_asset_amount_surplus` (negative when the AMM subsidises the fill).
+Only the AMM produces a non-zero `refresh_cost` today, from a repeg or k-update during `setup`.
+Discrete makers report zero. Both `fill_amm_only` and the commit loop in `match_take` sum it into
+`Match.total_refresh_cost`.
+
+`calculate_base_swap_output` (`vlp/amm/controller.rs:93`) returns a named struct rather than a
+tuple: `AmmSwapOutput { new_base_asset_reserve, new_quote_asset_reserve, quote_asset_amount,
+quote_asset_amount_surplus }`.
+
+`AmmJitQuoter` participates in `match_take` as a discrete level. Its `commit_fill` moves reserves
+along the curve while the taker pays `jit_price`, and the gap between the two is
+`quote_asset_amount_surplus`, which goes negative when the AMM subsidises the fill.
+
+`controller::matching::fill_perp_market_against_amm` (`controller/matching.rs:389`) wraps
+`fill_amm_only` for sole-AMM fills and replaces the legacy `swap_base_asset` plus manual bookkeeping.
+The post-fill AMM bookkeeping lives in `AmmQuoter::commit_fill`, so no separate post-match wrapper
+is needed.
 
 ### Snapshot consistency
 
-Quote methods (`best_price`, `level_capacity`, `try_fill_solo`) must be pure functions of `(self, ctx)` — no mutation, no global side effects, no clock reads not already in `ctx`. `commit_fill` is the only place state changes, after the fill resolves.
+`best_price`, `level_capacity` and `try_fill_solo` must be pure functions of `(self, ctx)`. They
+perform no mutation, no global side effects, and no clock reads that are not already in `ctx`.
+`commit_fill` is the only place state changes, and it runs after the fill resolves.
 
 ## Fill paths after the refactor
 
-- **Pure AMM fill** (settlement, liquidation, the keeper/AMM order path) — `fill_amm_only(amm_quoter, ctx, side, T, limit)`. The dominant production case.
-- **AMM JIT alongside a DLOB cross** — `match_take(&mut [&mut amm_jit, &mut dlob_quoter], ctx, side, T, limit)`. Both are discrete single-price levels; the walk routes by price (prio JIT vAMM wins ties).
-- **DLOB-only** — `match_take` over the DLOB order levels (the AMM-JIT contributes zero when it declines). Today this is the AMM-JIT-declines case; later it's spline levels.
-- **Future spline liquidity** — off-chain MMs push compact spline regions; the program materialises them into discrete levels (a `SplineQuoter`) that feed the same `match_take` walk. At that point `fill_amm_only` and the constant-product math are deleted with the vAMM, and the discrete walk is the whole engine.
+- Pure AMM fill, covering settlement, liquidation and the keeper or AMM order path, runs
+  `fill_amm_only(amm_quoter, ctx, side, T, limit)`. This is the dominant production case.
+- AMM JIT alongside a DLOB cross runs
+  `match_take(&mut [&mut amm_jit, &mut dlob_quoter], ctx, side, T, limit)`. Both are discrete
+  single-price levels, and the walk routes by price, with the priority JIT vAMM winning ties.
+- DLOB-only runs `match_take` over the DLOB order levels, with the AMM-JIT contributing zero when it
+  declines. Today that is the AMM-JIT-declines case. Later it is spline levels.
+- Future spline liquidity arrives as compact spline regions pushed by off-chain market makers, which
+  the program materialises into discrete levels through a `SplineQuoter` that feeds the same
+  `match_take` walk. At that point `fill_amm_only` and the constant-product math can be removed along
+  with the vAMM, leaving the discrete walk as the whole engine.
 
-After the match, the fill controller applies the aggregate `Match`: position counters on PerpMarket, protocol fees (per each maker's `is_fee_exempt` flag), pnl_pool, social loss, funding state if a funding update is due, `MarketStats` updates via `controller/market_stats.rs`, and `total_refresh_cost` deducted from AMM bookkeeping via the AMM module's helper.
+After the match, the fill controller applies the aggregate `Match`: position counters on
+`PerpMarket`, protocol fees driven by each maker's `is_fee_exempt` flag, the pnl pool, social loss,
+funding state when a funding update is due, `MarketStats` updates, and `total_refresh_cost` deducted
+from AMM bookkeeping through the AMM module's helper.
 
-The hard-coded pairwise matching rules in `controller/amm_jit.rs` and the DLOB-fill / JIT-auction logic in `controller/orders.rs` disappear.
+The hard-coded pairwise matching rules and the DLOB-fill and JIT-auction logic in
+`controller/orders.rs` can then be removed.
 
 ## Boundary enforcement
 
-AMM field visibility is `pub(crate)` scoped to `state/amm.rs` and submodules. Trait impls and `commit_fill` helpers live inside that module. External callers reach AMM state only through the `Quoter` interface or through AMM-defined methods on `&PerpMarket` for AMM-specific operations that don't fit the trait (admin withdrawals from `fee_pool` to revenue pool, operator-forced repegs).
+AMM field visibility is scoped to `programs/velocity/src/vlp/amm/` and its submodules. Trait impls
+and `commit_fill` helpers live inside that tree. External callers reach AMM state only through the
+`Quoter` interface, or through AMM-defined methods on `&PerpMarket` for AMM-specific operations that
+do not fit the trait, such as admin withdrawals from `fee_pool` to the revenue pool and
+operator-forced repegs.
 
-Post-refactor litmus tests:
+Three checks say the boundary holds.
 
-- `rg 'perp_market\.amm\.|market\.amm\.' programs/velocity/src/` outside `state/amm.rs`, `controller/amm*.rs`, `math/amm*.rs`, `math/cp_curve.rs` returns zero.
-- `rg 'PerpMarket' programs/velocity/src/state/amm.rs programs/velocity/src/controller/amm*.rs programs/velocity/src/math/amm*.rs programs/velocity/src/math/cp_curve.rs` returns zero matches in function signatures (only `use` imports).
-- An external module attempting `market.amm.total_fee` (or any AMM field) is a compile error.
+- `rg 'perp_market\.amm\.|market\.amm\.' programs/velocity/src/ -g '!vlp/amm/**'` returns nothing.
+  It currently returns about 1,102 lines, 268 of them outside tests.
+- `rg 'PerpMarket' programs/velocity/src/vlp/amm/` matches nothing in function signatures, only in
+  `use` imports.
+- An external module writing `market.amm.total_fee`, or any other AMM field, fails to compile.
 
 ## Out of scope
 
-- **Cross-program `Quoter`** (CPI to maker programs in other on-chain programs). For now the trait is in-program Rust polymorphism. The cross-program form would require serialized-curve returns + read-only CPI; design when needed.
-- **Tolerance-band pro-rata** (distributing pro-rata across makers whose prices are within ε of each other rather than exactly tied). The matcher ships with strict price priority and pro-rata only at exactly-tied ticks. Tolerance-band is a future policy knob.
-- **Cross-program AMM excision itself.** This refactor structures the code along the future split line but keeps everything in `programs/velocity`. The actual move to a separate AMM program is a follow-up.
-- **Parametric-curve quoters** (Phoenix-style spline liquidity). These will land as additional `Quoter` impls without matcher changes.
+- Cross-program `Quoter`, meaning CPI into maker programs. For now the trait is in-program Rust
+  polymorphism. The cross-program form needs serialized-curve returns plus read-only CPI, so design
+  it when it is needed.
+- Tolerance-band pro-rata, meaning distribution across makers whose prices are within epsilon of
+  each other rather than exactly tied. The engine ships with strict price priority and pro-rata only
+  at exactly-tied ticks. Tolerance bands are a future policy knob.
+- Cross-program AMM excision itself. This refactor structures the code along the future division but
+  keeps everything in `programs/velocity`. Moving to a separate AMM program is a follow-up.
+- Parametric-curve quoters, meaning spline liquidity. These land as additional `Quoter` impls
+  without changes to the engine.
 
-## File layout after the refactor
+## File layout
 
 ```
 docs/
   amm-decoupling-and-maker-interface.md      this file
-  alignment-and-native-offsets.md            updated offsets
+  alignment-and-native-offsets.md            zero-copy layout invariants
 
 programs/velocity/src/
   state/
-    perp_market.rs       PerpMarket; market_stats: MarketStats; amm: AMM (tail)
-    amm.rs               new: AMM { quote, books }, AmmQuoter, AmmMakerMut impls
-    market_stats.rs      new: MarketStats struct
-    maker.rs             new: Quoter trait, QuoteContext, QuoterFill, QuoterCommit
+    perp_market.rs       PerpMarket, FeeLedger, MarketStats
+    quoter.rs            Quoter, QuoteContext, QuoterFill, QuoterCommit,
+                         FillFeePolicy, MarketEvent, DlobOrderQuoter
+    traits/tests.rs      native-handler offset regression tests
   controller/
-    match.rs             new: matcher
-    market_stats.rs      new: writers callable from every fill path
-    perp_pools.rs        new: market-level pool accounting (former update_pool_balances)
-    amm.rs               AMM-specific controller fns; signatures take only AMM + ctx
-    amm_jit.rs           shrinks; hard-coded pairwise rules removed
-    orders.rs            DLOB fill / JIT auction logic uses match_take
-    funding.rs           reads/writes PerpMarket funding fields (moved)
-    pnl.rs               reads PerpMarket position counters (moved)
+    matching.rs          fill engine: fill_amm_only, match_take, Match,
+                         fill_perp_market_against_amm
+    market_stats.rs      documented landing place for engine-fed stat writes
+    perp_pools.rs        market-level pool accounting: sweep_market_fees,
+                         update_pool_balances, update_pnl_pool_and_user_balance,
+                         get_pnl_pool_drain_reserve_price
+    orders.rs            DLOB fill and JIT auction logic
+    funding.rs           reads and writes PerpMarket funding fields
+    pnl.rs               reads PerpMarket position counters
   math/
-    amm.rs               pure AMM math, takes &AMM + ctx
-    perp_market.rs       new home for calculate_perp_market_amm_summary_stats
+    perp_market.rs       calculate_perp_market_amm_summary_stats
+  vlp/amm/
+    state.rs             the AMM struct
+    quoter.rs            AmmQuoter, AmmJitQuoter, their Quoter/QuoterCommit impls
+    controller.rs        swap application, AmmSwapOutput
+    refresh.rs           curve refresh applied during Quoter::setup
+    admin.rs             AMM admin instructions
+    math/                amm.rs, cp_curve.rs, jit.rs, repeg.rs, spread.rs
   instructions/
-    admin.rs             native handler offsets recomputed
+    admin.rs             native handlers reading MarketStats and AMM by offset
 ```
 
 ## Verification
 
-Before merging:
+All of the following must hold before a change to this area merges.
 
-- `cargo fmt && cargo clippy -p velocity` clean.
-- `cargo test -p velocity` — full unit suite. Particular scrutiny: `size`, `market_index_offset`, `native_instruction_offsets`, matcher property tests, AMM-JIT differential tests.
-- `bash test-scripts/run-anchor-tests.sh` — full integration suite.
-- `cd sdk && bun run prettify && bun run lint && bun run test:ci && bun run test:dlob`.
-- CU benchmarks on representative fills: pure-AMM, AMM-JIT, JIT-auction-with-residual. Each within ~10% of pre-refactor baseline.
-- Litmus greps above return zero.
+- `bun run fmt:rust && cargo clippy -p velocity` is clean.
+- `cargo test -p velocity` passes the full unit suite. Give particular scrutiny to `size`,
+  `market_index_offset`, `native_instruction_offsets`, the engine property tests and the AMM-JIT
+  differential tests.
+- `bash test-scripts/run-anchor-tests.sh` passes the full integration suite.
+- `cd packages/sdk && bun run prettify && bun run lint && bun run test:ci && bun run test:dlob` is
+  clean.
+- Compute-unit benchmarks on representative fills (pure AMM, AMM JIT, JIT auction with residual)
+  land within about 10% of the pre-change baseline.
+- The boundary checks above do not regress.
 
-After merging:
-
-- Devnet wipe-and-reinit per the CLAUDE.md runbook. `deploy-scripts/verify-devnet.ts` reports a clean post-init state.
+After merging a layout-breaking change, run the devnet wipe-and-reinit described in the root
+`CLAUDE.md` runbook.

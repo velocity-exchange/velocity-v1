@@ -178,7 +178,7 @@ if [ "$MODE" = "full" ]; then
   # die with "Access violation in unknown section" at entry. Always clean
   # before the suite build; CI builds from scratch so it never hits this.
   echo "==> cleaning SBF cache (flavor-poisoning guard)"
-  rm -rf target/sbpf-solana-solana target/deploy
+  rm -rf target/sbpf*-solana-solana target/deploy
 
   run_check "router svm tests"         bash -c "
     anchor build --ignore-keys --skip-lint -p protocol_revenue_router -- --features anchor-test &&

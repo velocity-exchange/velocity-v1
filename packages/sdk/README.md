@@ -23,14 +23,14 @@ npm i @velocity-exchange/sdk
 
 ### Requirements
 
-- **Node ≥ 20.**
-- **CommonJS only.** The package ships a `module` field, but it points at a
-  browser-shimmed CommonJS build, not ESM. Import it with `require`, or from
-  TypeScript/bundlers configured for interop.
-- **Anchor and web3.js are bundled, not peer dependencies.** The SDK depends on pinned
-  versions directly (`@coral-xyz/anchor` aliased to `@anchor-lang/core@1.0.1`, a second
-  `@coral-xyz/anchor-29` for legacy paths, and `@solana/web3.js@1.98.4`). If your app
-  installs its own copy of either, expect two copies in the tree and structurally
+- Node 20 or newer.
+- CommonJS only. The package ships a `module` field, but it points at a
+  browser-shimmed CommonJS build rather than ESM. Import it with `require`, or
+  from TypeScript and bundlers configured for interop.
+- Anchor and web3.js are bundled, not peer dependencies. The SDK depends on pinned
+  versions directly: `@coral-xyz/anchor` aliased to `@anchor-lang/core@1.0.1`, a second
+  `@coral-xyz/anchor-29` for legacy paths, and `@solana/web3.js@1.99.0`. If your app
+  installs its own copy of either, expect two copies in the tree, and structurally
   identical types that TypeScript treats as distinct.
 
 ## Quickstart
@@ -102,8 +102,8 @@ console.log(`vAMM ask: $${convertToNumber(ask, PRICE_PRECISION)}`);
 
 ### Placing an order
 
-Continuing from the `client` and `marketIndex` above, but on devnet and with a
-wallet that already has an initialized Velocity account with collateral. Full
+This continues from the `client` and `marketIndex` above, but runs on devnet and needs
+a wallet whose Velocity account is already initialized and funded with collateral. Full
 runnable file: [`examples/place-order.ts`](./examples/place-order.ts).
 
 ```typescript
@@ -123,7 +123,7 @@ const txSig = await client.placePerpOrder(
 );
 ```
 
-Both examples are typechecked in CI, so they stay in step with the API.
+CI typechecks both examples, so they stay in step with the API.
 
 ## What's inside
 
@@ -143,19 +143,19 @@ Both examples are typechecked in CI, so they stay in step with the API.
 `accountSubscription` accepts three types, and this choice sets both your latency and
 your RPC bill.
 
-- **`polling`** — a `BulkAccountLoader` batches `getMultipleAccounts` on an interval.
+- `polling`: a `BulkAccountLoader` batches `getMultipleAccounts` on an interval.
   Works against any plain RPC with no extra infrastructure. Start here.
-- **`websocket`** — account subscriptions pushed by the RPC. Lower latency than polling,
-  at the cost of resubscription handling on flaky connections.
-- **`grpc`** — a Yellowstone gRPC stream. Lowest latency, and what keepers and market
+- `websocket`: account subscriptions pushed by the RPC. Lower latency than polling,
+  at the cost of handling resubscription on flaky connections.
+- `grpc`: a Yellowstone gRPC stream. Lowest latency, and what keepers and market
   makers run, but it needs a gRPC endpoint that most public RPCs do not offer.
 
 ### Signed-message (Swift) orders
 
-Beyond `placePerpOrder`, which builds and sends a transaction, the SDK can place orders
-by signing an off-chain message that a keeper then lands on chain. You give up direct
+`placePerpOrder` builds and sends a transaction. The SDK can also place an order by
+signing an off-chain message that a keeper then lands on chain. You give up direct
 control of the transaction and gain a faster path into the auction without paying for
-your own blockspace, which matters most for takers competing on fill quality. See the
+your own blockspace. That trade favors takers competing on fill quality. See the
 [Swift docs](https://docs.velocity.exchange/developers/velocity-sdk/swift).
 
 ## BN and precision
@@ -175,13 +175,13 @@ A BN of `10,500,000` at precision `10^6` means `10.5`, because `10,500,000 / 10^
 | `AMM_RESERVE_PRECISION` | 10^9 |
 | `BASE_PRECISION` | 10^9 |
 
-BN division truncates, so converting back to a JavaScript number by dividing will
-silently lose the fractional part. Always use `convertToNumber`:
+BN division truncates, so converting back to a JavaScript number by dividing silently
+loses the fractional part. Always use `convertToNumber`:
 
 ```typescript
 import { BN, convertToNumber } from '@velocity-exchange/sdk';
 
-new BN(10500).div(new BN(1000)).toNumber(); // 10  — wrong
+new BN(10500).div(new BN(1000)).toNumber(); // 10, wrong
 convertToNumber(new BN(10500), new BN(1000)); // 10.5
 ```
 
@@ -190,21 +190,21 @@ Keep values as BN for as long as possible and convert only for display. See
 
 ## Relationship to the on-chain program
 
-This SDK is a hand-maintained mirror of the Velocity program: the account layouts in
+This SDK is a hand-maintained mirror of the Velocity program. The account layouts in
 `types.ts` track the program's structs, and `math/` re-implements the program's pricing,
 margin, funding, and fee logic in TypeScript so you can predict on-chain results before
 sending a transaction.
 
-That mirroring is why the SDK version matters. Running an SDK older than the deployed
-program can leave you with stale layouts or stale math, and the symptom is not an error
-but a wrong answer: mispredicted fills, margin, liquidation prices, or funding. Track
-the current release.
+That mirroring is why the SDK version matters. An SDK older than the deployed program
+can carry stale layouts or stale math. It will not usually throw. It will quietly return
+a wrong answer: a mispredicted fill, margin number, liquidation price, or funding rate.
+Track the current release.
 
 ## Links
 
-- [Developer docs](https://docs.velocity.exchange/developers) — guides, API reference, and the Data API
+- [Developer docs](https://docs.velocity.exchange/developers) for guides, the API reference, and the Data API
 - [Migrating from Drift](https://docs.velocity.exchange/developers/migrate-from-drift)
-- [Discord](https://discord.com/invite/95kByNnDy5) — `#research-and-dev-chat`
+- [Discord](https://discord.com/invite/95kByNnDy5), channel `#research-and-dev-chat`
 - Working in Rust instead? See [`velocity-rs`](https://docs.velocity.exchange/developers/velocity-rs).
 
 ## Working in this repo

@@ -99,6 +99,15 @@ describe('StreamSelector', () => {
 		expect(selector.getActiveStream()).toBe(B);
 	});
 
+	it('switches to a sustained leader whose slot steps slower than the silent window', () => {
+		const stepTicks = 8; // 3.2s per slot step on both feeds
+		runTicks(ticksFor(STREAM_SWITCH_THRESHOLD_MS) + stepTicks, {
+			[A]: (i) => 100 + Math.floor(i / stepTicks),
+			[B]: (i) => 110 + Math.floor(i / stepTicks),
+		});
+		expect(selector.getActiveStream()).toBe(B);
+	});
+
 	it('does not switch to a feed whose lead is intermittent', () => {
 		runTicks(ticksFor(STREAM_SWITCH_THRESHOLD_MS) * 2, {
 			[A]: (i) => 100 + i,

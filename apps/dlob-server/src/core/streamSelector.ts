@@ -40,16 +40,16 @@ export class StreamSelector {
 		const lastProgress = this.streamLastProgressTime.get(stream);
 		return (
 			!lastMessage ||
-			now - lastMessage > STREAM_STALE_THRESHOLD_MS ||
+			now - lastMessage >= STREAM_STALE_THRESHOLD_MS ||
 			!lastProgress ||
-			now - lastProgress > STREAM_FROZEN_THRESHOLD_MS
+			now - lastProgress >= STREAM_FROZEN_THRESHOLD_MS
 		);
 	}
 
 	private staleReason(stream: string, now: number): string {
 		const sinceMessage = now - (this.streamLastMessageTime.get(stream) ?? 0);
 		const sinceProgress = now - (this.streamLastProgressTime.get(stream) ?? 0);
-		return sinceMessage > STREAM_STALE_THRESHOLD_MS
+		return sinceMessage >= STREAM_STALE_THRESHOLD_MS
 			? `no message for ${sinceMessage}ms`
 			: `slot not advanced for ${sinceProgress}ms`;
 	}
@@ -57,7 +57,7 @@ export class StreamSelector {
 	// Record a message from a stream and return whether it should be forwarded
 	recordMessage(stream: string, slot: number): boolean {
 		const now = Date.now();
-		const lastProgress = this.streamLastProgressTime.get(stream) ?? 0;
+		const wasStale = this.isStale(stream, now);
 
 		this.streamLastMessageTime.set(stream, now);
 		if (slot > (this.streamLastSlot.get(stream) ?? -1)) {
@@ -95,18 +95,18 @@ export class StreamSelector {
 		// Check if this stream has a more recent slot
 		const activeSlot = this.streamLastSlot.get(this.activeStream) || 0;
 		if (slot > activeSlot) {
-			// Track how long this stream has been leading. The lead only counts
-			// while the stream keeps advancing, so a silent or frozen standby
-			// cannot bank a lead and cash it in later.
-			if (
-				!this.streamLeadingSince.has(stream) ||
-				now - lastProgress > STREAM_STALE_THRESHOLD_MS
-			) {
+			// Track how long this stream has been leading. A lead only counts
+			// while the stream stays fresh, so a silent or frozen standby cannot
+			// bank a lead and cash it in later.
+			if (!this.streamLeadingSince.has(stream) || wasStale) {
 				this.streamLeadingSince.set(stream, now);
 			}
 
 			const leadingDuration = now - this.streamLeadingSince.get(stream)!;
-			if (leadingDuration >= STREAM_SWITCH_THRESHOLD_MS) {
+			if (
+				leadingDuration >= STREAM_SWITCH_THRESHOLD_MS &&
+				!this.isStale(stream, now)
+			) {
 				console.log(
 					`Stream ${stream} has been leading for ${leadingDuration}ms, switching from ${this.activeStream}`
 				);

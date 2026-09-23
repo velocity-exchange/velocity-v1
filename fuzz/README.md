@@ -36,8 +36,8 @@ to host crates); it is never enabled by any SBF/mainnet/devnet build.
   ```bash
   bun run program:build:devnet     # from the repo root
   ```
-  `e2e-svm` also loads the CLOB book program, because every perp fill routes
-  through the market's book:
+  `e2e-svm` and `e2e-svm-revshare` also load the CLOB book program, because
+  every perp fill routes through the market's book:
   ```bash
   bun run program:build:clob       # writes anchor-v2/target/deploy/clob.so
   ```

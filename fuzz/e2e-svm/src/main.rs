@@ -58,7 +58,7 @@ use {
 // through `raw_call`.
 crucible_idl_gen::declare_fuzz_program!(velocity_idl = "../../packages/sdk/src/idl/velocity.json");
 
-mod clob;
+use velocity_fuzz_common::clob;
 mod orders;
 
 // ---------------------------------------------------------------------------

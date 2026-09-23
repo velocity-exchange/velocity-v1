@@ -10,9 +10,8 @@
 //! account the program adds or renames breaks this file at compile time.
 
 use {
-    crate::{system_program_id, velocity_program_id},
     anchor_lang::{InstructionData, ToAccountMetas},
-    crucible_fuzzer::{AccountBuilderBase, TestContext},
+    crucible_test_context::{AccountBuilderBase, TestContext},
     solana_instruction::{AccountMeta, Instruction},
     solana_keypair::Keypair,
     solana_pubkey::Pubkey,
@@ -40,6 +39,14 @@ const CLOB_SO_PATHS: [&str; 2] = [
 
 /// Orders the book can hold. The arena is sized from the account length.
 const BOOK_CAPACITY: usize = 256;
+
+fn velocity_program_id() -> Pubkey {
+    Pubkey::new_from_array(velocity::ID.to_bytes())
+}
+
+fn system_program_id() -> Pubkey {
+    Pubkey::new_from_array([0u8; 32])
+}
 
 pub fn clob_program_id() -> Pubkey {
     Pubkey::from_str_const("BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU")

@@ -117,6 +117,19 @@ describe('StreamSelector', () => {
 		expect(selector.getActiveStream()).toBe(A);
 	});
 
+	it('does not switch when the standby is ahead only at the moment it sends', () => {
+		// A and B alternate, each one slot past the other: A 100, B 101, A 102...
+		const pairs = ticksFor(STREAM_SWITCH_THRESHOLD_MS) * 2;
+		let forwardedB = 0;
+		for (let i = 0; i < pairs; i++) {
+			selector.recordMessage(A, 100 + 2 * i);
+			if (selector.recordMessage(B, 101 + 2 * i)) forwardedB++;
+			jest.advanceTimersByTime(TICK_MS);
+		}
+		expect(selector.getActiveStream()).toBe(A);
+		expect(forwardedB).toBe(0);
+	});
+
 	it('does not let a standby bank a lead across its own silence', () => {
 		// B leads for two ticks, then goes silent while A keeps advancing.
 		runTicks(2, { [A]: (i) => 100 + i, [B]: (i) => 110 + i });

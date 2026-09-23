@@ -75,6 +75,12 @@ export class StreamSelector {
 
 		// If this is from the active stream, forward it
 		if (stream === this.activeStream) {
+			// A standby only leads while it stays ahead of the active stream.
+			for (const s of this.streams) {
+				if (s !== stream && slot >= (this.streamLastSlot.get(s) ?? 0)) {
+					this.streamLeadingSince.delete(s);
+				}
+			}
 			return true;
 		}
 

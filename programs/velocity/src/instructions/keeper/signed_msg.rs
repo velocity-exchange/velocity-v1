@@ -306,8 +306,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
     };
 
     // Immediate-or-cancel asked for no residual. The order never persisted, so
-    // dropping it is enough. Nothing of it can fill after the window its signer
-    // allowed.
+    // dropping it is enough.
     if placed.is_immediate_or_cancel {
         return Ok(());
     }
@@ -486,12 +485,11 @@ fn verify_signed_msg(
 /// Decide whether the message may still be placed, and reserve its record.
 ///
 /// `None` means the message is too old, already placed, or past its landing
-/// deadline, the message slot plus `SIGNED_MSG_FILL_WINDOW`. Those are no-ops
-/// rather than failures. The returned id carries that deadline as `max_slot`.
-/// It bounds when a keeper may place the message. The order's own `max_ts`
-/// bounds how long it lives, and `activation_delay_slots` how long its
-/// remainder waits on the book. The entry's own order id and route digest are
-/// written onto it later, once the sidecars have taken their ids.
+/// deadline, [`crate::state::signed_msg_user::signed_msg_max_slot`]. Those are
+/// no-ops rather than failures. The returned id carries that deadline as
+/// `max_slot`. It bounds placement, not the order's life, which `max_ts`
+/// bounds. The entry's own order id and route digest are written onto it
+/// later, once the sidecars have taken their ids.
 ///
 /// Immediate-or-cancel is allowed. This instruction routes and fills in the same
 /// transaction, and it cancels the residual instead of storing it. Nothing of an
@@ -509,9 +507,8 @@ fn signed_msg_order_slot(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
-    // A limit order rests from placement. Its message slot is a placement deadline, and `max_slot`
-    // below equals it. A client stamps that deadline ahead by its signing budget of about 14
-    // seconds, so the order may be placed before the slot arrives. The lead is bounded.
+    // A limit order rests from placement, and its message slot is its placement deadline. A client
+    // stamps it ahead by its signing budget of about 14 seconds, so the lead is bounded.
     let is_resting_limit = params.order_type == OrderType::Limit;
     let max_resting_limit_lead = Millis::from_secs(30);
     // About 200 seconds of wall-clock age, integrated per slot duration regime.
@@ -550,12 +547,10 @@ fn signed_msg_order_slot(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
-    // How long a keeper may take to land the message. Past it the order is
-    // stale: the oracle its worst price was measured against has moved, and
-    // the price the signer agreed to no longer describes the market.
-    let max_slot = env.state.slot_clock().slot_at_or_after_duration(
+    let max_slot = crate::state::signed_msg_user::signed_msg_max_slot(
+        env.state.slot_clock(),
         order_slot,
-        crate::state::signed_msg_user::SIGNED_MSG_FILL_WINDOW,
+        is_resting_limit,
     );
 
     if max_slot < env.clock.slot {

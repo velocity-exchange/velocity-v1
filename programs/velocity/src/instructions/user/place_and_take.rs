@@ -27,10 +27,8 @@ pub struct PlaceAndTakeRequest {
     pub synchronous_take: bool,
 }
 
-/// The CLOB accounts a V1 taker route carries, so an unfilled restable
-/// remainder can migrate onto the book instead of being cancelled. Built by
-/// `instructions::clob::place_and_take_v1` and the keeper's
-/// keeper route.
+/// The CLOB accounts a v1 take carries, so an unfilled restable remainder can
+/// migrate onto the book instead of being cancelled.
 pub struct ClobRemainderRoute<'a, 'info> {
     pub quoter_slab: &'a AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
     pub clob_market: &'a AccountInfo<'info>,
@@ -420,16 +418,10 @@ fn fill_detached_take(
 /// Rest what the take did not fill, then hold the caller's success condition
 /// against the result.
 ///
-/// An unfilled IOC needs no cancel. The order is detached and never
-/// persisted, so dropping it is enough. A restable remainder lives on the book
-/// and not in `User.orders`, so it migrates instead. `restable_remainder_price`
-/// is the whole rule, shared with every keeper route. Otherwise a remainder's
-/// fate depends on which route reached it, and a remainder left in a slot is
-/// an order nothing fills.
-///
-/// Any can't-rest outcome downgrades to a cancel rather than reverting the fill
+/// An unfilled IOC is dropped, because the detached order was never persisted.
+/// A remainder that cannot rest is dropped too, rather than reverting the fill
 /// that already landed. The CLOB's `OrderRef` is left as the transaction's
-/// return data for the client to persist as its cancel hint.
+/// return data for the client to keep as its cancel handle.
 fn settle_take_remainder<'info>(
     accounts: &PlaceAndTakeAccounts<'_, 'info>,
     clob: &ClobRemainderRoute<'_, 'info>,
@@ -487,7 +479,8 @@ fn settle_take_remainder<'info>(
 
 /// The v1 `place_and_take` body. The taker order is detached: it is built on
 /// the stack, margin-checked, filled through the router, and never written into
-/// `User.orders`. A restable remainder rests on the market's CLOB.
+/// `User.orders`. A restable remainder rests on the market's CLOB. The router
+/// fill snaps the AMM itself, so the body calls no `update_amm`.
 pub fn place_and_take_perp_order_v1<'info>(
     accounts: PlaceAndTakeAccounts<'_, 'info>,
     request: PlaceAndTakeRequest,
@@ -517,14 +510,6 @@ pub fn place_and_take_perp_order_v1<'info>(
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
 
-    let is_immediate_or_cancel = params.is_immediate_or_cancel();
-
-    // No `update_amm` here: the router fill snaps the AMM and refreshes
-    // PerpMarket-level oracle stats internally before reading peg /
-    // reserves.
-
-    let success_condition = request.success_condition;
-
     let (order, mut escrow, referrer_is_accelerated) = create_detached_take(
         &accounts,
         remaining_accounts_iter,
@@ -536,13 +521,9 @@ pub fn place_and_take_perp_order_v1<'info>(
 
     let Some(mut detached_order) = order else {
         // An order whose `max_ts` already passed builds nothing. It is the one
-        // soft skip reachable here. The other skip, a failed try-post-only, is
-        // refused above. Nothing was placed or filled, so enforce the success
-        // condition against an empty take and stop.
-        return validate_place_and_take_success_condition(success_condition, 0, false);
+        // soft skip reachable here, because a post-only take is refused above.
+        return validate_place_and_take_success_condition(request.success_condition, 0, false);
     };
-
-    let mode = FillMode::PlaceAndTake;
 
     let base_asset_amount_filled = if !request.synchronous_take {
         validate_order_can_rest(&detached_order)?;
@@ -565,7 +546,7 @@ pub fn place_and_take_perp_order_v1<'info>(
             },
             &state,
             &clock,
-            mode,
+            FillMode::PlaceAndTake,
             request.taker_served_window,
             referrer_is_accelerated,
         )?
@@ -578,8 +559,8 @@ pub fn place_and_take_perp_order_v1<'info>(
         &detached_order,
         &TakeOutcome {
             base_asset_amount_filled,
-            is_immediate_or_cancel,
-            success_condition,
+            is_immediate_or_cancel: params.is_immediate_or_cancel(),
+            success_condition: request.success_condition,
             activation_delay_slots: params.activation_delay_slots,
         },
     )

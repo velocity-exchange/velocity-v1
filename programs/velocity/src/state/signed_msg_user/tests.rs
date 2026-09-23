@@ -535,3 +535,26 @@ mod resting_route {
         assert_eq!(orders.get(1).uuid, [0xEF; 8]);
     }
 }
+
+#[cfg(test)]
+mod signed_msg_max_slot {
+    use crate::{
+        math::time::SlotClock,
+        state::signed_msg_user::{signed_msg_max_slot, SIGNED_MSG_FILL_WINDOW},
+    };
+
+    #[test]
+    fn a_resting_limit_is_placeable_only_until_its_stamp() {
+        assert_eq!(signed_msg_max_slot(SlotClock::baseline(), 100, true), 100);
+    }
+
+    #[test]
+    fn a_taker_order_gets_the_fill_window_past_its_stamp() {
+        let clock = SlotClock::baseline();
+        assert_eq!(
+            signed_msg_max_slot(clock, 100, false),
+            clock.slot_at_or_after_duration(100, SIGNED_MSG_FILL_WINDOW)
+        );
+        assert!(signed_msg_max_slot(clock, 100, false) > 100);
+    }
+}

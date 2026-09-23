@@ -23,7 +23,7 @@ use {
         math::constants::PRICE_PRECISION,
         program::{
             math::time::{Millis, SlotClock, SlotDuration},
-            state::signed_msg_user::SIGNED_MSG_FILL_WINDOW,
+            state::signed_msg_user::signed_msg_max_slot,
         },
         types::{MarketId, MarketType, OraclePriceData, OracleSource, OrderParams, OrderType},
         Pubkey,
@@ -536,9 +536,8 @@ pub fn should_poll_swift(
 
 /// The two slot gates mirror `place_signed_msg_taker_order` exactly. The program rejects
 /// the order once its wall clock age, integrated over each slot duration regime, exceeds
-/// about 200 seconds. It also does nothing once `max_slot < current_slot`. `max_slot` is
-/// the landing deadline: the first slot `SIGNED_MSG_FILL_WINDOW` past the message slot,
-/// across every known slot-duration transition. The `max_ts` check mirrors the placement's
+/// about 200 seconds. It also does nothing once `max_slot < current_slot`, where `max_slot`
+/// is the program's own `signed_msg_max_slot`. The `max_ts` check mirrors the placement's
 /// soft skip of an expired order, which lands as a no-op.
 ///
 /// An order stamped ahead of the chain is early rather than dead. [`swift_slot_wait`]
@@ -546,6 +545,7 @@ pub fn should_poll_swift(
 /// gate first.
 pub fn swift_order_expired(
     order_slot: u64,
+    resting_limit: bool,
     max_ts: i64,
     current_slot: u64,
     now_ts: i64,
@@ -556,7 +556,7 @@ pub fn swift_order_expired(
         return true;
     }
     // placement deadline: program no-ops once max_slot < current_slot
-    let max_slot = slot_clock.slot_at_or_after_duration(order_slot, SIGNED_MSG_FILL_WINDOW);
+    let max_slot = signed_msg_max_slot(slot_clock, order_slot, resting_limit);
     if current_slot > max_slot {
         return true;
     }
@@ -995,7 +995,7 @@ mod tests {
             is_resting_swift_limit, preview_pyth_lazer_oracle, should_poll_swift,
             swift_order_expired, swift_slot_wait, swift_slot_wait_if_known, OrderParams,
             OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate,
-            SwiftSlotWait, TxIntent, SIGNED_MSG_FILL_WINDOW,
+            SwiftSlotWait, TxIntent,
         },
         pyth_lazer_protocol::{
             message::SolanaMessage,
@@ -1005,7 +1005,10 @@ mod tests {
         solana_signature::Signature,
         std::num::NonZeroI64,
         velocity_rs::{
-            program::math::time::{Millis, SlotClock},
+            program::{
+                math::time::{Millis, SlotClock},
+                state::signed_msg_user::SIGNED_MSG_FILL_WINDOW,
+            },
             types::{MarketType, OracleSource},
         },
     };
@@ -1268,8 +1271,18 @@ mod tests {
         let clock = SlotClock::baseline();
         let deadline = clock.slot_at_or_after_duration(0, SIGNED_MSG_FILL_WINDOW);
 
-        assert!(!swift_order_expired(0, 0, deadline, 0, clock));
-        assert!(swift_order_expired(0, 0, deadline + 1, 0, clock));
+        assert!(!swift_order_expired(0, false, 0, deadline, 0, clock));
+        assert!(swift_order_expired(0, false, 0, deadline + 1, 0, clock));
+    }
+
+    /// A resting limit's stamp is its placement deadline, with no fill window
+    /// past it.
+    #[test]
+    fn a_resting_limit_expires_at_its_stamp() {
+        let clock = SlotClock::baseline();
+
+        assert!(!swift_order_expired(100, true, 0, 100, 0, clock));
+        assert!(swift_order_expired(100, true, 0, 101, 0, clock));
     }
 
     #[test]
@@ -1277,6 +1290,7 @@ mod tests {
         // max_ts == 0 disables the ts check.
         assert!(!swift_order_expired(
             100,
+            false,
             0,
             100,
             i64::MAX,
@@ -1285,6 +1299,7 @@ mod tests {
         // now == max_ts is still valid; now > max_ts expires.
         assert!(!swift_order_expired(
             100,
+            false,
             5_000,
             100,
             5_000,
@@ -1292,6 +1307,7 @@ mod tests {
         ));
         assert!(swift_order_expired(
             100,
+            false,
             5_000,
             100,
             5_001,

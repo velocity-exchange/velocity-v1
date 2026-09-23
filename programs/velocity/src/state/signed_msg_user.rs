@@ -29,6 +29,17 @@ pub const SIGNED_MSG_EVICTION_BUFFER: Millis = Millis::from_ms(4_000);
 /// later than this no longer describes the market the signer agreed to.
 pub const SIGNED_MSG_FILL_WINDOW: Millis = Millis::from_ms(30_000);
 
+/// The last slot a keeper may place a signed message at. A resting limit's
+/// message slot is itself the deadline, because the client stamps it ahead by
+/// its signing budget. Any other order gets `SIGNED_MSG_FILL_WINDOW` past it.
+pub fn signed_msg_max_slot(slot_clock: SlotClock, order_slot: u64, is_resting_limit: bool) -> u64 {
+    if is_resting_limit {
+        return order_slot;
+    }
+
+    slot_clock.slot_at_or_after_duration(order_slot, SIGNED_MSG_FILL_WINDOW)
+}
+
 mod tests;
 
 /// One signed message this user sent, and what is still live from it.

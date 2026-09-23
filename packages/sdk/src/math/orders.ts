@@ -348,13 +348,19 @@ export function isOrderExpired(
 
 /**
  * Last slot a signed-message (swift) order may still be placed on chain.
- * Mirrors `max_slot` in `place_signed_msg_taker_order`: the message slot plus
- * `SIGNED_MSG_FILL_WINDOW_MS`, integrated across slot duration transitions.
+ * Mirrors the program's `signed_msg_max_slot`. A resting limit's message slot
+ * is itself the deadline. Any other order gets `SIGNED_MSG_FILL_WINDOW_MS`
+ * past it, integrated across slot duration transitions.
  */
 export function signedMsgOrderMaxSlot(
 	state: SlotDurationState,
-	orderSlot: BN
+	orderSlot: BN,
+	isRestingLimit: boolean
 ): BN {
+	if (isRestingLimit) {
+		return orderSlot;
+	}
+
 	return slotAtOrAfterDuration(
 		state,
 		orderSlot,

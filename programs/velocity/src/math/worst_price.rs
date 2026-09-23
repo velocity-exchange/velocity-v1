@@ -5,12 +5,9 @@
 //! from the oracle holds the offset in `Order::oracle_price_offset` instead,
 //! and resolves it at fill time.
 //!
-//! This replaced a price that ramped from a start to an end over a duration.
-//! The ramp existed because an order rested and competing fillers watched it
-//! cross their price. An order routes to the book now, so the only thing the
-//! ramp still did was make the fill price depend on how long the sender took
-//! to land the transaction. A remainder that waits for a counterparty waits on
-//! the book at one price, and `activation_delay_slots` sets how long it waits.
+//! The price does not move while the order waits. A remainder that waits for a
+//! counterparty waits on the book at one price, and `activation_delay_slots`
+//! sets how long.
 
 use crate::{
     controller::position::PositionDirection,
@@ -25,8 +22,8 @@ mod tests;
 /// The worst price to stamp on an order, from the price its sender named.
 ///
 /// A named price is the order's cap, and the sender chooses how far from the
-/// oracle it sits. A sender that names no price takes
-/// [`DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION`] of the oracle as the cap.
+/// oracle it sits. A sender that names no price gets the oracle moved away from
+/// the taker by `oracle / DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION`.
 pub fn derive_worst_price(
     oracle_price_data: &OraclePriceData,
     direction: PositionDirection,

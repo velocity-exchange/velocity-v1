@@ -298,8 +298,9 @@ becomes `unusedAuctionDuration`. The account layout is unchanged.
 
 `math/auction` is deleted. `math/worstPrice` replaces it with `deriveWorstPrice`.
 `isFallbackAvailableLiquiditySource` moves to `math/orders`. `getLimitPrice`, `hasLimitPrice`,
-`isRestingLimitOrder`, `isRestingSignedMsgLimitOrder` and `signedMsgOrderMaxSlot` lose their
-auction and slot arguments, and `hasAuctionPrice` is removed. `SIGNED_MSG_FILL_WINDOW_MS` and
+`isRestingLimitOrder` and `isRestingSignedMsgLimitOrder` lose their auction and slot arguments,
+`signedMsgOrderMaxSlot` trades its auction duration for `isRestingLimit`, and `hasAuctionPrice` is
+removed. `SIGNED_MSG_FILL_WINDOW_MS` and
 `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` are new.
 
 `placeAndTakePerpOrder`, `getPlaceAndTakePerpOrderIx` and

@@ -514,6 +514,7 @@ impl FillerBot {
                     .as_secs() as i64;
                 if swift_order_expired(
                     order_slot,
+                    is_resting_swift_limit(&order_params),
                     order_params.max_ts.unwrap_or(0),
                     slot,
                     now_ts,

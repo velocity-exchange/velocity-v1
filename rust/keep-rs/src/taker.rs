@@ -18,9 +18,9 @@
 //!     side and getting stuck,
 //!   - when a market is stuck one-sided (`|position|` ≥ threshold) it is logged
 //!     at INFO so an operator can see the bot is actively unwinding it,
-//!   - place one market order of `taker_size_base` with auction params left to
-//!     the program to derive (so it routes through the normal
-//!     fill/auction path and a filler — local or deployed — matches it).
+//!   - place one market order of `taker_size_base` with no named price, so the
+//!     program bounds it at the oracle's default slippage and routes it through
+//!     the normal fill path.
 //!
 //! The **rebalance threshold** is `rebalance_base_per_market` when set,
 //! otherwise `taker_max_base_per_market`. Set both to 0 to disable the
@@ -146,9 +146,9 @@ impl TakerBot {
 
         let direction = self.choose_direction(market_index, base_position);
 
-        // Market order; the program derives auction params (direction-correct
-        // sanitization) and routes it against the book, quoters, and AMM in
-        // one instruction. A stuck one-sided order goes `reduce_only`, so a
+        // A market order with no named price takes the program's default worst
+        // price, and routes against the book, quoters, and AMM in one
+        // instruction. A stuck one-sided order goes `reduce_only`, so a
         // chunk larger than the remaining position can't flip it to the other side.
         let order = OrderParams {
             order_type: OrderType::Market,

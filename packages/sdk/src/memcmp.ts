@@ -34,7 +34,6 @@ export function getUserFilter(): MemcmpFilter {
  */
 const USER_IDLE_OFFSET = 4470;
 const USER_HAS_OPEN_ORDER_OFFSET = 4472;
-const USER_HAS_OPEN_AUCTION_OFFSET = 4474;
 const USER_POOL_ID_OFFSET = 4475;
 
 /**
@@ -75,20 +74,6 @@ export function getUserWithoutOrderFilter(): MemcmpFilter {
 		memcmp: {
 			offset: USER_HAS_OPEN_ORDER_OFFSET,
 			bytes: bs58.encode(Uint8Array.from([0])),
-		},
-	};
-}
-
-/**
- * Builds a memcmp filter matching `User` accounts with `hasOpenAuction` (offset 4474) set to
- * `true` — i.e. at least one order still in its Dutch-auction window.
- * @returns A memcmp filter for `User` accounts with an active order auction.
- */
-export function getUserWithAuctionFilter(): MemcmpFilter {
-	return {
-		memcmp: {
-			offset: USER_HAS_OPEN_AUCTION_OFFSET,
-			bytes: bs58.encode(Uint8Array.from([1])),
 		},
 	};
 }

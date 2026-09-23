@@ -24,10 +24,6 @@ pub fn get_non_idle_user_filter() -> RpcFilterType {
     RpcFilterType::Memcmp(Memcmp::new_raw_bytes(4_470, vec![0]))
 }
 
-pub fn get_user_with_auction_filter() -> RpcFilterType {
-    RpcFilterType::Memcmp(Memcmp::new_raw_bytes(4_474, vec![1]))
-}
-
 pub fn get_user_with_order_filter() -> RpcFilterType {
     RpcFilterType::Memcmp(Memcmp::new_raw_bytes(4_472, vec![1]))
 }

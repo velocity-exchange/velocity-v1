@@ -163,8 +163,8 @@ pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_VERIFY_SIGNATURE: &str =
     "Error verifying signed message";
 pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_ORDER_SLOT_TOO_OLD: &str = "Order slot too old";
 pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER: &str = "Invalid order";
-pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND: &str =
-    "Auction price outside oracle band";
+pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_WORST_PRICE_OUTSIDE_ORACLE_BAND: &str =
+    "Worst price outside oracle band";
 pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET: &str = "Delisted market";
 pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT: &str =
     "Invalid base_asset_amount in tp/sl";
@@ -626,8 +626,8 @@ mod tests {
     }
 
     /// Shared order params for the `_v0`/`_v1` round-trip fixtures: an authority order with
-    /// tp/sl trigger params and a 10-slot auction.
-    fn auction_order_params() -> OrderParams {
+    /// tp/sl trigger params and a worst price.
+    fn market_order_params() -> OrderParams {
         OrderParams {
             order_type: OrderType::Market,
             market_type: MarketType::Perp,
@@ -657,7 +657,7 @@ mod tests {
     fn deser_signed_msg_type_with_len_from_raw_bytes_v0() {
         // current-format message with max_margin_ratio = None
         let order = SignedMsgOrderParamsMessage {
-            signed_msg_order_params: auction_order_params(),
+            signed_msg_order_params: market_order_params(),
             sub_account_id: 2,
             slot: 2345,
             uuid: *b"CRO3irG1",
@@ -717,7 +717,7 @@ mod tests {
     fn deser_signed_msg_type_with_len_from_raw_bytes_v1() {
         // current-format message with max_margin_ratio = Some(65535)
         let order = SignedMsgOrderParamsMessage {
-            signed_msg_order_params: auction_order_params(),
+            signed_msg_order_params: market_order_params(),
             sub_account_id: 2,
             slot: 2345,
             uuid: *b"CRO3irG1",

@@ -108,16 +108,6 @@ impl<const N: usize> OrderSlotLimiter<N> {
 pub enum TxIntent {
     #[default]
     None,
-    AuctionFill {
-        market_index: u16,
-        taker_order_id: u32,
-        /// taker subaccount the fill was sent for (order ids are per-user counters,
-        /// so `taker_order_id` alone is ambiguous across users)
-        taker_user: Pubkey,
-        has_trigger: bool,
-        /// The slot the fill was built against.
-        slot: u64,
-    },
     SwiftFill {
         uuid: [u8; 8],
         market_index: u16,
@@ -204,7 +194,6 @@ impl TxIntent {
     pub fn label(&self) -> &'static str {
         match self {
             TxIntent::None => "none",
-            TxIntent::AuctionFill { .. } => "auction_fill",
             TxIntent::SwiftFill { .. } => "swift_fill",
             TxIntent::SwiftPlace { .. } => "swift_place",
             TxIntent::LimitUncross { .. } => "limit_uncross",
@@ -226,7 +215,6 @@ impl TxIntent {
             // The router decides how many sources a fill reaches, and the
             // keeper learns the count from the fill records rather than
             // predicting it.
-            TxIntent::AuctionFill { .. } => 1,
             TxIntent::SwiftFill { .. } => 1,
             // place-only: no fill expected in this tx (the fill happens later via the slot loop)
             TxIntent::SwiftPlace { .. } => 0,
@@ -246,7 +234,6 @@ impl TxIntent {
     /// true if tx was expected to trigger the taker order
     pub fn expected_trigger(&self) -> bool {
         match self {
-            TxIntent::AuctionFill { has_trigger, .. } => *has_trigger,
             TxIntent::Trigger { .. } => true,
             _ => false,
         }
@@ -256,7 +243,6 @@ impl TxIntent {
     pub fn sent_slot(&self) -> u64 {
         match self {
             TxIntent::None => 0,
-            TxIntent::AuctionFill { slot, .. } => *slot,
             TxIntent::SwiftFill { slot, .. } => *slot,
             TxIntent::SwiftPlace { slot, .. } => *slot,
             Self::VAMMTakerFill { slot, .. } => *slot,
@@ -290,8 +276,7 @@ impl TxIntent {
     /// Market index this tx acts on, where the intent carries one. Used for wide-event logging.
     pub fn market_index(&self) -> Option<u16> {
         match self {
-            Self::AuctionFill { market_index, .. }
-            | Self::SwiftFill { market_index, .. }
+            Self::SwiftFill { market_index, .. }
             | Self::SwiftPlace { market_index, .. }
             | Self::VAMMTakerFill { market_index, .. }
             | Self::LimitUncross { market_index, .. }
@@ -317,8 +302,7 @@ impl TxIntent {
     /// Taker/target order id, where the intent carries one. Used for wide-event logging.
     pub fn order_id(&self) -> Option<u32> {
         match self {
-            Self::AuctionFill { taker_order_id, .. }
-            | Self::LimitUncross { taker_order_id, .. } => Some(*taker_order_id),
+            Self::LimitUncross { taker_order_id, .. } => Some(*taker_order_id),
             Self::VAMMTakerFill { maker_order_id, .. } => Some(*maker_order_id),
             Self::Trigger { order_id, .. } => Some(*order_id),
             _ => None,
@@ -332,8 +316,7 @@ impl TxIntent {
     /// intent, not just `limit_uncross`.
     pub fn user(&self) -> Option<Pubkey> {
         match self {
-            Self::AuctionFill { taker_user, .. }
-            | Self::SwiftFill { taker_user, .. }
+            Self::SwiftFill { taker_user, .. }
             | Self::SwiftPlace { taker_user, .. }
             | Self::VAMMTakerFill { taker_user, .. }
             | Self::LimitUncross { taker_user, .. }
@@ -483,14 +466,14 @@ pub fn is_resting_swift_limit(order_params: &OrderParams) -> bool {
     order_params.order_type == OrderType::Limit
 }
 
-/// For an auction order, `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
+/// For a taker order, `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
 /// with `InvalidSignedMsgOrderParam`, so an early order can be neither filled nor placed
 /// yet. A signer adds a buffer so the message stays valid while it travels, and the UI
 /// stamps a few slots ahead. An early stamp is therefore a normal arrival state. The swift
 /// feed delivers each order once, so the only way to keep it is to hold it until its slot
 /// arrives. `max_wait` bounds how far ahead a stamp is still credible as a signing buffer.
 ///
-/// A resting limit, the `resting_limit` argument, has no auction to start. See
+/// A resting limit, the `resting_limit` argument, is the exception. See
 /// [`is_resting_swift_limit`]. Its message slot is the placement deadline, and the program
 /// places it before that slot when the stamp is within [`SWIFT_RESTING_LIMIT_MAX_LEAD`].
 /// Waiting would leave one slot to land the transaction, so the order is ready on arrival.
@@ -1202,7 +1185,7 @@ mod tests {
 
     #[test]
     fn swift_slot_wait_places_a_resting_limit_ahead_of_its_slot() {
-        // A no-auction limit's stamp is its placement deadline, set a whole signing budget
+        // A resting limit's stamp is its placement deadline, set a whole signing budget
         // (~14s, 35 baseline slots) ahead: past the deferral bound, yet ready now.
         assert_eq!(
             swift_slot_wait(135, 100, Millis::from_secs(10), true, SlotClock::baseline()),

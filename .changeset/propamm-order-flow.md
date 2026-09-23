@@ -289,7 +289,8 @@ the fill. Take, make and signed-message orders all read it, and a value below th
 needs the flow-authority attestation. A trigger order refuses it. `maxTs` still only ends the
 order. `placeAndMakePerpOrder`, `getPlaceAndMakePerpOrderIx` and
 `buildPlaceAndMakePerpOrderInstruction` drop their separate `activationDelaySlots` argument, and
-`modifyOrder` / `modifyOrderByUserOrderId` drop theirs.
+`modifyOrder` / `modifyOrderByUserOrderId` drop theirs. `getUserWithAuctionFilter` is removed,
+because nothing sets `User.hasOpenAuction`.
 
 On `Order`, `auctionStartPrice` and `auctionEndPrice` are renamed `clobNodeIndex` and
 `clobOrderId`, which is what a placed-trigger shadow already stored in them, and `auctionDuration`

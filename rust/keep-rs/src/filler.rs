@@ -286,7 +286,7 @@ impl FillerBot {
         let mut deferred_swift_orders: Vec<SignedOrderInfo> = Vec::new();
         // Cap so a stuck slot feed cannot grow the queue without bound.
         const MAX_DEFERRED_SWIFT_ORDERS: usize = 1_024;
-        // An auction order stamped further ahead than this is not a signing buffer. The
+        // A taker order stamped further ahead than this is not a signing buffer. The
         // UI's buffer is a few slots. Refuse to hold such an order rather than trust an
         // unbounded future slot. A resting limit is never held. See `swift_slot_wait`.
         const MAX_SWIFT_ORDER_DEFERRAL: Millis = Millis::from_secs(10);
@@ -476,7 +476,7 @@ impl FillerBot {
 
             for signed_order in std::mem::take(&mut swift_orders) {
                 // Until the stamped message slot arrives, the program accepts neither a
-                // fill nor a bare placement of an auction order. Acting now spends a
+                // fill nor a bare placement of a taker order. Acting now spends a
                 // transaction, and for a fill it spends the order's one place-and-fill
                 // attempt. A resting limit is the exception. Its stamp is a deadline, so
                 // it is placed at once.
@@ -535,8 +535,6 @@ impl FillerBot {
 
                 // A fill transaction lands about 1 slot ahead, per the tx_event
                 // latency_slots telemetry. Fillability is evaluated at that landing slot.
-                // A higher estimate assumes a higher auction price than the program
-                // computes, and sends fill legs that do nothing on chain.
                 let landing_slot = slot + 1;
                 let Ok(oracle_price_data) =
                     velocity.try_get_mmoracle_for_perp_market(market_index, landing_slot)
@@ -564,8 +562,8 @@ impl FillerBot {
                 }
 
                 // Placement routes the order: it fills against the book and the routed
-                // quoters, and any remainder rests as a taker-origin remainder for the
-                // activation-slot auction. There is no separate fill decision here.
+                // quoters, and any remainder rests as a taker-origin remainder through
+                // its activation window. There is no separate fill decision here.
                 log::info!(
                     target: TARGET,
                     "placing swift order. market={market_index} oracle={} delay={} uuid={}",
@@ -837,7 +835,7 @@ async fn route_quoter_metas(
 ///
 /// The placement routes the order as it places it, so the path can fill. What
 /// it cannot fill rests on the market's book as a taker-origin remainder, where
-/// the activation-slot auction reaches it. The path emits a `swift_place` wide
+/// the cross cranks reach it once its activation window passes. The path emits a `swift_place` wide
 /// event at transaction confirmation, so the gas spent on placements can be
 /// measured against the fills they yield.
 ///

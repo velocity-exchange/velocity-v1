@@ -13,7 +13,7 @@ Required environment variables:
 ~- `PYTH_LAZER_TOKEN` - Pyth price feed access token~
 
 ## Run Perp Filler
-The perp filler matches swift orders and onchain auction orders against resting liquidity.
+The perp filler places swift orders, which route against resting liquidity as they land.
 It also attempts to uncross resting limit orders.
 
 ```shell
@@ -92,7 +92,7 @@ flowchart TD
         C1["Slot Receiver (from gRPC)"]
         C2["Swift Order Stream"]
         C3["Find Crosses"]
-        C4["try_auction_fill / try_swift_fill"]
+        C4["place swift order / uncross limits"]
     end
 
     subgraph Transaction_Worker

@@ -90,7 +90,6 @@ pub mod websocket_account_subscriber;
 pub mod websocket_program_account_subscriber;
 
 // subscribers
-pub mod auction_subscriber;
 pub mod blockhash_subscriber;
 pub mod event_subscriber;
 pub mod priority_fee_subscriber;

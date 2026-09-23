@@ -34,7 +34,7 @@ use {
 /// Off-chain replay of `create_detached_perp_order`.
 ///
 /// `signing_slot` is the slot the taker signed at. The chain backdates the
-/// order to it and prices the auction from it. A caller that holds only the
+/// order to it. A caller that holds only the
 /// current slot passes that, which is what the chain resolves to anyway.
 ///
 /// `user` is cloned before the call so the caller's value is not mutated,

@@ -4,13 +4,13 @@ use {
         types::{
             messages::{
                 DepositAndPlaceRequest, IncomingSignedMessage, OrderMetadataAndMessage,
-                ProcessOrderResponse, PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND,
-                PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET,
+                ProcessOrderResponse, PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_DELIVERY_FAILED,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_ORDER_SLOT_TOO_OLD,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_VERIFY_SIGNATURE,
+                PROCESS_ORDER_RESPONSE_ERROR_MSG_WORST_PRICE_OUTSIDE_ORACLE_BAND,
                 PROCESS_ORDER_RESPONSE_IGNORE_PUBKEY, PROCESS_ORDER_RESPONSE_INVALID_UUID_UTF8,
                 PROCESS_ORDER_RESPONSE_MESSAGE_SUCCESS,
             },
@@ -92,19 +92,17 @@ struct Config {
     /// `AccountNotFound` before the program runs. Defaults to the
     /// gas-station-maintained fee payer; override with `SIM_FEE_PAYER`.
     sim_fee_payer: Pubkey,
-    /// Reject signed orders whose auction start/end prices sit more than this
-    /// many bps from the live oracle — a server-side fat-finger / stale-order
-    /// guard. The program preserves signed A/B auctions verbatim (it no longer
-    /// re-prices them), so genuinely-off auctions are caught here instead of
-    /// on-chain, protecting the client without hijacking a well-formed
-    /// aggressive one. `0` disables. Override with `AUCTION_ORACLE_BAND_BPS`
+    /// Reject a signed order whose worst price sits more than this many bps from
+    /// the live oracle. It is a fat-finger and stale-order guard. The program
+    /// takes a named worst price as given, so an order priced far off the market
+    /// is stopped here. `0` disables. Override with `WORST_PRICE_ORACLE_BAND_BPS`
     /// (default 300 = 3%).
-    auction_oracle_band_bps: u32,
+    worst_price_oracle_band_bps: u32,
     /// Skip the oracle-band guard, failing open, when the server's own oracle
     /// is more than this far behind the latest slot. `0` disables the gate.
-    /// Override with `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10, about
+    /// Override with `ORACLE_BAND_MAX_STALENESS_SLOTS` (default 10, about
     /// 4 seconds of wall clock at 400ms per slot).
-    auction_oracle_max_staleness_slots: u64,
+    oracle_band_max_staleness_slots: u64,
 }
 
 /// Gas-station-maintained fee payer (see infrastructure-v3 gas-station-bot,
@@ -123,11 +121,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse::<Pubkey>().ok())
                 .unwrap_or(DEFAULT_SIM_FEE_PAYER),
-            auction_oracle_band_bps: std::env::var("AUCTION_ORACLE_BAND_BPS")
+            worst_price_oracle_band_bps: std::env::var("WORST_PRICE_ORACLE_BAND_BPS")
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(300),
-            auction_oracle_max_staleness_slots: std::env::var("AUCTION_ORACLE_MAX_STALENESS_SLOTS")
+            oracle_band_max_staleness_slots: std::env::var("ORACLE_BAND_MAX_STALENESS_SLOTS")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(10),
@@ -402,10 +400,8 @@ pub async fn process_order(
         ));
     }
 
-    // Server-side stale / fat-finger guard: reject auctions priced far off the
-    // live oracle. Replaces the on-chain sanitizer for signed A/B orders, which
-    // the program now preserves verbatim. Skips itself (fail open) if the
-    // server's own oracle is stale — see validate_auction_within_oracle_band.
+    // Reject an order whose worst price sits far off the live oracle. The check
+    // fails open when the server's own oracle is stale.
     server_params.validate_worst_price_within_oracle_band(&order_params, current_slot, context)?;
 
     if !skip_sim {
@@ -1025,11 +1021,11 @@ fn validate_signed_order_params(
     Ok(())
 }
 
-/// Pure check: are the order's auction start & end prices within `band_bps` of
-/// `oracle_price`? `OrderType::Oracle` auctions carry oracle-relative offsets
-/// (already stale-immune); every other type carries an absolute price, which is
-/// normalised to a signed distance from oracle before comparison. Returns true
-/// when there is nothing to bound (band disabled, no price, or bad oracle).
+/// Whether the order's worst price sits within `band_bps` of `oracle_price`. An
+/// `OrderType::Oracle` order carries its worst price as an offset from the
+/// oracle. Every other type carries an absolute price, compared as a distance
+/// from the oracle. Returns true when there is nothing to bound: the band is
+/// disabled, the order names no price, or the oracle is unusable.
 fn worst_price_within_oracle_band(
     order_params: &OrderParams,
     oracle_price: i64,
@@ -1475,18 +1471,13 @@ impl ServerParams {
         }
     }
 
-    /// Simulate if auction params will be sanitized
-    /// Server-side stale / fat-finger guard. Rejects a signed order whose
-    /// auction prices sit outside `config.auction_oracle_band_bps` of the live
-    /// oracle. The program preserves signed A/B auctions verbatim, so this is
-    /// where a genuinely-off auction (stale data, fat finger) is stopped —
-    /// off-program, still saving the client, without re-pricing a well-formed
-    /// aggressive auction.
+    /// Reject a signed order whose worst price sits outside
+    /// `config.worst_price_oracle_band_bps` of the live oracle.
     ///
     /// The guard is designed to never itself become a source of rejections:
     /// it **fails open** if the oracle can't be read, and it **skips the check**
     /// (also failing open) when the server's own oracle is more than
-    /// `auction_oracle_max_staleness_slots` behind the latest slot — a lagging
+    /// `oracle_band_max_staleness_slots` behind the latest slot — a lagging
     /// swift-side oracle must not start bouncing otherwise-valid orders. Every
     /// rejection logs the oracle's staleness (oracle slot vs current slot) for
     /// debuggability.
@@ -1496,7 +1487,7 @@ impl ServerParams {
         current_slot: Slot,
         context: &RequestContext,
     ) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
-        let band_bps = self.config.auction_oracle_band_bps;
+        let band_bps = self.config.worst_price_oracle_band_bps;
         if band_bps == 0 {
             return Ok(());
         }
@@ -1504,7 +1495,7 @@ impl ServerParams {
         let market_index_str = order_params.market_index.to_string();
         let record = |outcome: &str| {
             self.metrics
-                .auction_band_guard
+                .oracle_band_guard
                 .with_label_values(&[&market_index_str, outcome])
                 .inc();
         };
@@ -1517,7 +1508,7 @@ impl ServerParams {
                 record("skip_oracle_missing");
                 log::warn!(
                     target: "server",
-                    "{}: oracle price None (market {market_id:?}); skipping auction band check",
+                    "{}: oracle price None (market {market_id:?}); skipping oracle band check",
                     context.log_prefix
                 );
                 return Ok(());
@@ -1527,7 +1518,7 @@ impl ServerParams {
         let oracle_slot = oracle.slot;
         let oracle_staleness_slots = current_slot.saturating_sub(oracle_slot);
         self.metrics
-            .auction_oracle_staleness_slots
+            .oracle_band_staleness_slots
             .with_label_values(&[&market_index_str])
             .set(oracle_staleness_slots as f64);
 
@@ -1538,8 +1529,7 @@ impl ServerParams {
         let slot_subscriber_stale = self.slot_subscriber.is_stale();
         // The env knob is configured in 400ms units. The measured age is
         // wall clock, integrated over each slot duration regime.
-        let max_staleness =
-            Millis::from_stored_units(self.config.auction_oracle_max_staleness_slots);
+        let max_staleness = Millis::from_stored_units(self.config.oracle_band_max_staleness_slots);
         let oracle_age = self
             .velocity
             .slot_clock()
@@ -1553,7 +1543,7 @@ impl ServerParams {
             });
             log::warn!(
                 target: "server",
-                "{}: skipping auction band check (fail open) — slot_subscriber_stale={slot_subscriber_stale} \
+                "{}: skipping oracle band check (fail open) — slot_subscriber_stale={slot_subscriber_stale} \
                  oracle_stale_by={oracle_staleness_slots} slots (oracle_slot={oracle_slot} \
                  current_slot={current_slot} max={}ms)",
                 context.log_prefix,
@@ -1580,7 +1570,7 @@ impl ServerParams {
         Err((
             axum::http::StatusCode::BAD_REQUEST,
             ProcessOrderResponse {
-                message: PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND,
+                message: PROCESS_ORDER_RESPONSE_ERROR_MSG_WORST_PRICE_OUTSIDE_ORACLE_BAND,
                 error: None,
             },
         ))
@@ -1597,7 +1587,7 @@ impl ServerParams {
     ///     would add about 1.8e10 base units of imaginary notional per order,
     ///     which hides every real number.
     ///   - No readable oracle price. This is the same condition that makes the
-    ///     auction band guard fail open.
+    ///     oracle band guard fail open.
     fn record_order_notional(&self, order_params: &OrderParams, context: &RequestContext) {
         let market_index_str = order_params.market_index.to_string();
         let labels = [order_params.market_type.as_str(), &market_index_str];

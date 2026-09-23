@@ -915,23 +915,20 @@ fn on_account_update_fn(
             }
             return;
         };
-        // always feed the DLOB with the same lineage the account_map stores (this hook
-        // runs before the account_map write): a slot-based skip here while the map still
-        // accepts the update would desync `old_user` from the book and strand orders
-        let existing = velocity
-            .backend()
-            .account_map()
-            .account_data_and_slot::<User>(&update.pubkey);
-        if let Some(ref existing) = existing {
-            if existing.slot > update.slot {
-                log::debug!(
-                    target: TARGET,
-                    "out of order user update: {} > {}",
-                    existing.slot,
-                    update.slot
-                );
-            }
+        // this hook runs before the account_map write and diffs against the map's old
+        // copy, so it must skip exactly the updates the map skips: feeding the book an
+        // update the map drops leaves `old_user` behind and strands orders (BE-592)
+        let account_map = velocity.backend().account_map();
+        if account_map.is_stale(&update.pubkey, update.slot, update.write_version) {
+            log::debug!(
+                target: TARGET,
+                "skip stale user update: {} slot={}",
+                update.pubkey,
+                update.slot
+            );
+            return;
         }
+        let existing = account_map.account_data_and_slot::<User>(&update.pubkey);
         dlob_notifier.user_update(
             update.pubkey,
             existing.as_ref().map(|x| &x.data),

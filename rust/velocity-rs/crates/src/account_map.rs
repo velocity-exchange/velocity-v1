@@ -43,6 +43,59 @@ pub struct AccountSlot {
     write_version: u64,
 }
 
+impl AccountSlot {
+    /// Slot orders updates across gRPC connections. `write_version` is a per-node
+    /// counter (a reconnect can land on a node counting from a lower base), so it
+    /// only breaks ties inside one slot.
+    fn accepts(&self, slot: Slot, write_version: u64) -> bool {
+        (slot, write_version) >= (self.slot, self.write_version)
+    }
+}
+
+/// Apply a gRPC account update, dropping it if the cached copy is newer
+fn grpc_on_account(
+    accounts: &DashMap<Pubkey, AccountSlot, ahash::RandomState>,
+    subscriptions: &DashMap<Pubkey, AccountSub<Subscribed>, ahash::RandomState>,
+    update: &AccountUpdate,
+) {
+    if update.lamports == 0 {
+        accounts.remove(&update.pubkey);
+        return;
+    }
+    accounts
+        .entry(update.pubkey)
+        .and_modify(|x| {
+            if !x.accepts(update.slot, update.write_version) {
+                log::debug!(
+                    target: LOG_TARGET,
+                    "skip stale update pubkey={:?}. update: slot={} wv={}, current: slot={} wv={}",
+                    update.pubkey, update.slot, update.write_version, x.slot, x.write_version
+                );
+                return;
+            }
+            x.slot = update.slot;
+            x.write_version = update.write_version;
+            x.raw = Arc::new(AlignedAccountData::from_bytes(update.data));
+        })
+        .or_insert({
+            subscriptions.insert(
+                update.pubkey,
+                AccountSub {
+                    pubkey: update.pubkey,
+                    subscription: SubscriptionImpl::Grpc,
+                    state: Subscribed {
+                        unsub: Mutex::default(),
+                    },
+                },
+            );
+            AccountSlot {
+                slot: update.slot,
+                raw: Arc::new(AlignedAccountData::from_bytes(update.data)),
+                write_version: update.write_version,
+            }
+        });
+}
+
 /// Set of subscriptions to network accounts
 ///
 /// Accounts are subscribed by either Ws or polling at fixed intervals
@@ -188,39 +241,16 @@ impl AccountMap {
     pub fn on_account_fn(&self) -> impl Fn(&AccountUpdate) {
         let accounts = Arc::clone(&self.inner);
         let subscriptions = Arc::clone(&self.subscriptions);
-        move |update| {
-            if update.lamports == 0 {
-                accounts.remove(&update.pubkey);
-                return;
-            }
-            accounts
-                .entry(update.pubkey)
-                .and_modify(|x| {
-                    if update.write_version < x.write_version {
-                        log::debug!(target: LOG_TARGET, "skip stale update pubkey={:?}. update: {}, current: {}", update.pubkey, update.write_version, x.write_version);
-                        return;
-                    }
-                    x.slot = update.slot;
-                    x.raw = Arc::new(AlignedAccountData::from_bytes(update.data));
-                })
-                .or_insert({
-                    subscriptions.insert(
-                        update.pubkey,
-                        AccountSub {
-                            pubkey: update.pubkey,
-                            subscription: SubscriptionImpl::Grpc,
-                            state: Subscribed {
-                                unsub: Mutex::default(),
-                            },
-                        },
-                    );
-                    AccountSlot {
-                        slot: update.slot,
-                        raw: Arc::new(AlignedAccountData::from_bytes(update.data)),
-                        write_version: update.write_version,
-                    }
-                });
-        }
+        move |update| grpc_on_account(&accounts, &subscriptions, update)
+    }
+    /// True when [`on_account_fn`](Self::on_account_fn) would drop this update as stale.
+    ///
+    /// Hooks that derive state from the map (e.g. diffing the old account against the
+    /// new one) must skip exactly what the map skips, or the two drift apart.
+    pub fn is_stale(&self, pubkey: &Pubkey, slot: Slot, write_version: u64) -> bool {
+        self.inner
+            .get(pubkey)
+            .is_some_and(|x| !x.accepts(slot, write_version))
     }
     /// Unsubscribe user account
     pub fn unsubscribe_account(&self, account: &Pubkey) {
@@ -601,6 +631,80 @@ mod tests {
         extended.extend_from_slice(&[0xaa; 128]);
         let r = AccountRef::<User>::try_new(&extended).expect("extended User bytes");
         assert_eq!(*r, User::default());
+    }
+
+    #[test]
+    fn grpc_updates_order_by_slot_not_write_version() {
+        use crate::utils::zero_account_to_bytes;
+
+        let accounts = DashMap::default();
+        let subscriptions = DashMap::default();
+        let pubkey = Pubkey::new_unique();
+        let feed = |slot: Slot, write_version: u64, sub_account_id: u16| {
+            let data = zero_account_to_bytes(User {
+                sub_account_id,
+                ..User::default()
+            });
+            grpc_on_account(
+                &accounts,
+                &subscriptions,
+                &AccountUpdate {
+                    pubkey,
+                    data: &data,
+                    lamports: 1,
+                    owner: PROGRAM_ID,
+                    rent_epoch: u64::MAX,
+                    write_version,
+                    executable: false,
+                    slot,
+                },
+            );
+        };
+        let stored = || {
+            let x = accounts.get(&pubkey).expect("cached");
+            let user = crate::utils::try_deser_zero_copy::<User>(x.raw.as_slice()).expect("User");
+            (x.slot, user.sub_account_id)
+        };
+        let is_stale = |slot, wv| accounts.get(&pubkey).is_some_and(|x| !x.accepts(slot, wv));
+
+        // first cached through node A with a high write_version
+        feed(100, 1000, 1);
+        assert_eq!(stored(), (100, 1));
+
+        // after a gRPC reconnect node B counts write_version from a lower base:
+        // later slots must still win, and every one must be accepted
+        for (slot, wv, id) in [(101, 10, 2), (102, 11, 3), (103, 12, 4)] {
+            assert!(!is_stale(slot, wv));
+            feed(slot, wv, id);
+            assert_eq!(stored(), (slot, id));
+        }
+
+        // same slot, lower write_version: stale
+        assert!(is_stale(103, 5));
+        feed(103, 5, 99);
+        assert_eq!(stored(), (103, 4));
+
+        // older slot, however high the write_version: stale
+        assert!(is_stale(50, u64::MAX));
+        feed(50, u64::MAX, 98);
+        assert_eq!(stored(), (103, 4));
+
+        // account closed: removed regardless of ordering
+        grpc_on_account(
+            &accounts,
+            &subscriptions,
+            &AccountUpdate {
+                pubkey,
+                data: &[],
+                lamports: 0,
+                owner: PROGRAM_ID,
+                rent_epoch: u64::MAX,
+                write_version: 0,
+                executable: false,
+                slot: 0,
+            },
+        );
+        assert!(accounts.get(&pubkey).is_none());
     }
 
     #[cfg(feature = "rpc_tests")]

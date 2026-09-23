@@ -1107,7 +1107,8 @@ const runBot = async () => {
 	logger.info(`Health check server listening on port ${healthCheckPort}`);
 
 	if (config.global.runOnce) {
-		process.exit(0);
+		// No argument, so a bot that set process.exitCode can fail the run.
+		process.exit();
 	}
 };
 

@@ -478,6 +478,10 @@ export class ProtocolFeeCollectorBot implements Bot {
 					}
 					if (!result.sent && !this.dryRun) {
 						this.unhealthyReason = 'distribute failed';
+						// A CronJob only sees the exit code, so fail the run.
+						if (this.runOnce) {
+							process.exitCode = 1;
+						}
 						await webhookMessage(
 							`[${this.name}]: :x: router distribute failed; fees are stranded in the router ATA until the next run`
 						);

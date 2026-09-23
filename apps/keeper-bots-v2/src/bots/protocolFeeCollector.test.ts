@@ -27,12 +27,14 @@ function makeBot(opts: {
 	withdrawResult: { sent: boolean; confirmedSlot?: number };
 	distributeResult?: { sent: boolean; confirmedSlot?: number };
 	routerOk?: boolean;
+	runOnce?: boolean;
 }): { bot: ProtocolFeeCollectorBot; calls: SendCall[] } {
 	const bot = Object.create(ProtocolFeeCollectorBot.prototype) as any;
 	const calls: SendCall[] = [];
 
 	bot.name = 'test-protocol-fee-collector';
 	bot.dryRun = false;
+	bot.runOnce = opts.runOnce ?? false;
 	bot.defaultIntervalMs = 24 * 60 * 60 * 1000;
 	bot.watchdogTimerLastPatTime = Date.now();
 	bot.watchdogTimerMutex = { runExclusive: (fn: () => any) => fn() };
@@ -127,6 +129,51 @@ describe('ProtocolFeeCollectorBot router distribute step', () => {
 
 		expect((bot as any).unhealthyReason).to.equal('distribute failed');
 		expect(await bot.healthCheck()).to.equal(false);
+	});
+
+	describe('exit code', () => {
+		let savedExitCode: typeof process.exitCode;
+		beforeEach(() => {
+			savedExitCode = process.exitCode;
+			process.exitCode = undefined;
+		});
+		afterEach(() => {
+			process.exitCode = savedExitCode;
+		});
+
+		it('fails a runOnce process when distribute fails', async () => {
+			const { bot } = makeBot({
+				withdrawResult: { sent: true, confirmedSlot: 42 },
+				distributeResult: { sent: false },
+				runOnce: true,
+			});
+
+			await (bot as any).tryCollectProtocolFees();
+
+			expect(process.exitCode).to.equal(1);
+		});
+
+		it('leaves the exit code alone when distribute succeeds', async () => {
+			const { bot } = makeBot({
+				withdrawResult: { sent: true, confirmedSlot: 42 },
+				runOnce: true,
+			});
+
+			await (bot as any).tryCollectProtocolFees();
+
+			expect(process.exitCode).to.equal(undefined);
+		});
+
+		it('leaves the exit code alone in interval mode', async () => {
+			const { bot } = makeBot({
+				withdrawResult: { sent: true, confirmedSlot: 42 },
+				distributeResult: { sent: false },
+			});
+
+			await (bot as any).tryCollectProtocolFees();
+
+			expect(process.exitCode).to.equal(undefined);
+		});
 	});
 
 	it('marks the bot unhealthy when the distribute ix cannot be built', async () => {

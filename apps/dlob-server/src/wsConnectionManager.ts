@@ -343,7 +343,7 @@ async function main() {
 			'message',
 			(subscribedChannel, message) => {
 				const sanitizedChannel = sanitiseChannelForClient(subscribedChannel);
-				const channelPrefix = getChannelPrefix(sanitizedChannel);
+				const channelPrefix = getChannelPrefix(subscribedChannel);
 				const subscribers = channelSubscribers.get(sanitizedChannel);
 				if (subscribers) {
 					if (sanitizedChannel.includes('orderbook')) {

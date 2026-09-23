@@ -1,12 +1,18 @@
 import { GaugeValue } from './metricsV2';
 
 // Stream selector with hysteresis to prevent flip-flopping between sources
-export const STREAM_SWITCH_THRESHOLD_MS = 10_000; // 10 seconds
-export const STREAM_STALE_THRESHOLD_MS = 3_000; // Consider stream stale if its slot has not advanced for 3 seconds
+export const STREAM_SWITCH_THRESHOLD_MS = 10_000; // a standby must lead for this long to take over
+export const STREAM_STALE_THRESHOLD_MS = 3_000; // no message at all for this long
+// A publisher whose RPC froze keeps publishing the same slot every tick, so
+// "alive" also needs the slot to move. Production publishers take their slot
+// from getProgramAccounts polling, which can take a few seconds per cycle,
+// hence the wider window.
+export const STREAM_FROZEN_THRESHOLD_MS = 10_000;
 
 export class StreamSelector {
 	private activeStream: string | null = null;
 	private streamLastMessageTime: Map<string, number> = new Map();
+	private streamLastProgressTime: Map<string, number> = new Map();
 	private streamLastSlot: Map<string, number> = new Map();
 	private streamLeadingSince: Map<string, number> = new Map();
 	private streamHealthyGauge: GaugeValue;
@@ -29,16 +35,38 @@ export class StreamSelector {
 		}
 	}
 
+	private isStale(stream: string, now: number): boolean {
+		const lastMessage = this.streamLastMessageTime.get(stream);
+		const lastProgress = this.streamLastProgressTime.get(stream);
+		return (
+			!lastMessage ||
+			now - lastMessage > STREAM_STALE_THRESHOLD_MS ||
+			!lastProgress ||
+			now - lastProgress > STREAM_FROZEN_THRESHOLD_MS
+		);
+	}
+
+	private staleReason(stream: string, now: number): string {
+		const sinceMessage = now - (this.streamLastMessageTime.get(stream) ?? 0);
+		const sinceProgress = now - (this.streamLastProgressTime.get(stream) ?? 0);
+		return sinceMessage > STREAM_STALE_THRESHOLD_MS
+			? `no message for ${sinceMessage}ms`
+			: `slot not advanced for ${sinceProgress}ms`;
+	}
+
 	// Record a message from a stream and return whether it should be forwarded
 	recordMessage(stream: string, slot: number): boolean {
 		const now = Date.now();
-		// A feed whose upstream froze keeps publishing the same slot every tick,
-		// so a stream only counts as alive when its slot moves forward.
+		const lastProgress = this.streamLastProgressTime.get(stream) ?? 0;
+
+		this.streamLastMessageTime.set(stream, now);
 		if (slot > (this.streamLastSlot.get(stream) ?? -1)) {
-			this.streamLastMessageTime.set(stream, now);
 			this.streamLastSlot.set(stream, slot);
-			this.streamHealthyGauge.setLatestValue(1, { source: stream });
+			this.streamLastProgressTime.set(stream, now);
 		}
+		this.streamHealthyGauge.setLatestValue(this.isStale(stream, now) ? 0 : 1, {
+			source: stream,
+		});
 
 		if (this.activeStream === null) {
 			this.setActiveStream(stream);
@@ -50,26 +78,30 @@ export class StreamSelector {
 			return true;
 		}
 
-		// This message is from a non-active stream
-		const activeSlot = this.streamLastSlot.get(this.activeStream) || 0;
-		const activeLastMessage =
-			this.streamLastMessageTime.get(this.activeStream) || 0;
-
-		// Check if active stream is stale
-		if (now - activeLastMessage > STREAM_STALE_THRESHOLD_MS) {
+		// This message is from a non-active stream. Switch to it only if the
+		// active stream is stale and this one is not, or two frozen feeds would
+		// flip on every message.
+		if (this.isStale(this.activeStream, now) && !this.isStale(stream, now)) {
 			console.log(
-				`Active stream ${this.activeStream} is stale (no message for ${
-					now - activeLastMessage
-				}ms), switching to ${stream}`
+				`Active stream ${this.activeStream} is stale (${this.staleReason(
+					this.activeStream,
+					now
+				)}), switching to ${stream}`
 			);
 			this.setActiveStream(stream);
 			return true;
 		}
 
 		// Check if this stream has a more recent slot
+		const activeSlot = this.streamLastSlot.get(this.activeStream) || 0;
 		if (slot > activeSlot) {
-			// Track how long this stream has been leading
-			if (!this.streamLeadingSince.has(stream)) {
+			// Track how long this stream has been leading. The lead only counts
+			// while the stream keeps advancing, so a silent or frozen standby
+			// cannot bank a lead and cash it in later.
+			if (
+				!this.streamLeadingSince.has(stream) ||
+				now - lastProgress > STREAM_STALE_THRESHOLD_MS
+			) {
 				this.streamLeadingSince.set(stream, now);
 			}
 
@@ -111,38 +143,29 @@ export class StreamSelector {
 		let anyHealthy = false;
 
 		for (const stream of this.streams) {
-			const lastMessage = this.streamLastMessageTime.get(stream);
-			const isHealthy =
-				lastMessage && now - lastMessage < STREAM_STALE_THRESHOLD_MS;
-
+			const isHealthy = !this.isStale(stream, now);
 			this.streamHealthyGauge.setLatestValue(isHealthy ? 1 : 0, {
 				source: stream,
 			});
-
 			if (isHealthy) {
 				anyHealthy = true;
 			}
 		}
 
 		// If active stream is no longer healthy, try to switch
-		if (this.activeStream) {
-			const activeLastMessage = this.streamLastMessageTime.get(
-				this.activeStream
-			);
-			if (
-				!activeLastMessage ||
-				now - activeLastMessage > STREAM_STALE_THRESHOLD_MS
-			) {
-				// Find a healthy stream to switch to
-				for (const stream of this.streams) {
-					const lastMessage = this.streamLastMessageTime.get(stream);
-					if (lastMessage && now - lastMessage < STREAM_STALE_THRESHOLD_MS) {
-						console.log(
-							`Active stream ${this.activeStream} is unhealthy, switching to ${stream}`
-						);
-						this.setActiveStream(stream);
-						break;
-					}
+		if (this.activeStream && this.isStale(this.activeStream, now)) {
+			for (const stream of this.streams) {
+				if (!this.isStale(stream, now)) {
+					console.log(
+						`Active stream ${
+							this.activeStream
+						} is unhealthy (${this.staleReason(
+							this.activeStream,
+							now
+						)}), switching to ${stream}`
+					);
+					this.setActiveStream(stream);
+					break;
 				}
 			}
 		}

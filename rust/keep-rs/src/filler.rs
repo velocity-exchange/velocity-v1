@@ -919,7 +919,7 @@ fn on_account_update_fn(
         // copy, so it must skip exactly the updates the map skips: feeding the book an
         // update the map drops leaves `old_user` behind and strands orders (BE-592)
         let account_map = velocity.backend().account_map();
-        if account_map.is_stale(&update.pubkey, update.slot, update.write_version) {
+        if account_map.is_stale(&update.pubkey, update.slot) {
             log::debug!(
                 target: TARGET,
                 "skip stale user update: {} slot={}",

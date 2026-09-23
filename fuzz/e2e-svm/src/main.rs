@@ -1543,7 +1543,7 @@ impl Fixture {
         let ix = if is_trigger {
             self.place_trigger_orders_ix(user_idx, vec![params])
         } else if order_type == OrderType::Limit && post_only != PostOnlyParam::None {
-            self.place_and_make_ix(user_idx, params, None)
+            self.place_and_make_ix(user_idx, params)
         } else {
             self.place_and_take_ix(
                 user_idx,
@@ -2094,7 +2094,13 @@ impl Fixture {
         };
 
         let maker = self.users[maker_idx].clone();
-        let ix = self.place_and_make_ix(maker_idx, params, Some(activation_delay_slots));
+        let ix = self.place_and_make_ix(
+            maker_idx,
+            OrderParams {
+                activation_delay_slots: Some(activation_delay_slots),
+                ..params
+            },
+        );
         self.send_order_ixs(
             vec![ix],
             &maker.keypair,
@@ -2685,7 +2691,7 @@ impl Fixture {
                     post_only: PostOnlyParam::MustPostOnly,
                     ..Default::default()
                 };
-                self.place_and_make_ix(user_idx, params, None)
+                self.place_and_make_ix(user_idx, params)
             })
             .collect();
 

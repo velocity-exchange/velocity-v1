@@ -46,7 +46,7 @@
 //!   other, with the protocol `User` as the pass-through taker. It fires only
 //!   when the spread nets positive after fees.
 //! - [`crank_taker_origin_cross`]: give a migrated taker remainder the
-//!   improvement its auction window earned. The crank consumes the crossing
+//!   improvement its activation window earned. The crank consumes the crossing
 //!   counterparty, lifts the remainder off the book, and settles the pair at
 //!   the counterparty's price. The difference pays the cranker. There is no
 //!   protocol pass-through here. One side is the aggressor and the improvement

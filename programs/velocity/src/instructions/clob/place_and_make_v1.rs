@@ -73,10 +73,6 @@ pub struct PlaceAndMakeV1<'info> {
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct PlaceAndMakePerpOrderV1Args {
     pub params: OrderParams,
-    /// The book speed bump the maker rests behind. `None` takes the book's
-    /// default. A value below the default needs the flow-authority
-    /// attestation.
-    pub activation_delay_slots: Option<u32>,
 }
 
 #[access_control(
@@ -86,10 +82,8 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
     ctx: Context<'info, PlaceAndMakeV1<'info>>,
     args: PlaceAndMakePerpOrderV1Args,
 ) -> Result<()> {
-    let PlaceAndMakePerpOrderV1Args {
-        params,
-        activation_delay_slots,
-    } = args;
+    let PlaceAndMakePerpOrderV1Args { params } = args;
+    let activation_delay_slots = params.activation_delay_slots;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
     let user_key = ctx.accounts.user.key();

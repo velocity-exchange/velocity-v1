@@ -508,7 +508,7 @@ fn register_clob_quoter(
 /// call sites stay unchanged. It maps onto `place_and_make_perp_order_v1`: the
 /// direction/price/size/max_ts become a limit `OrderParams`, `reject_if_crossed`
 /// maps onto `post_only` (true = MustPostOnly, false = rest crossed), and
-/// `activation_delay_slots` rides through.
+/// `activation_delay_slots` rides on the `OrderParams`.
 #[allow(dead_code)]
 struct PlaceClobOrderParams {
     market_index: u16,
@@ -550,6 +550,7 @@ fn place_clob_order_ix(
         },
 
         max_ts: (params.max_ts != 0).then_some(params.max_ts),
+        activation_delay_slots: params.activation_delay_slots,
         ..Default::default()
     };
     let mut accounts = velocity::accounts::PlaceAndMakeV1 {
@@ -573,7 +574,6 @@ fn place_clob_order_ix(
         data: velocity::instruction::PlaceAndMakePerpOrderV1 {
             args: PlaceAndMakePerpOrderV1Args {
                 params: order_params,
-                activation_delay_slots: params.activation_delay_slots,
             },
         }
         .data(),
@@ -7480,7 +7480,6 @@ fn place_and_make_v1_rests_a_maker_order_on_the_book() {
         accounts,
         data: velocity::instruction::PlaceAndMakePerpOrderV1 {
             args: PlaceAndMakePerpOrderV1Args {
-                activation_delay_slots: None,
                 params: OrderParams {
                     order_type: OrderType::Limit,
                     market_type: MarketType::Perp,
@@ -8000,6 +7999,44 @@ fn rest_taker_origin_order(
 ) -> ClobOrderRefV0 {
     use velocity::state::order_params::{OrderParams, PostOnlyParam};
 
+    let ix = take_ix(
+        fixture,
+        party,
+        OrderParams {
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            direction,
+            base_asset_amount: size,
+            price,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            ..OrderParams::default()
+        },
+    );
+    let authority = party.authority.insecure_clone();
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    // The book writes the rested remainder's handle as return data.
+    let data = &meta.return_data.data;
+    ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
+    }
+}
+
+/// `place_and_take_perp_order_v1` for `party` with no makers, so any remainder
+/// is the whole unfilled order.
+fn take_ix(
+    fixture: &Fixture,
+    party: &Party,
+    params: velocity::state::order_params::OrderParams,
+) -> Instruction {
     let mut accounts = velocity::accounts::PlaceAndTakeV1 {
         state: state_pda(),
         user: party.user,
@@ -8014,46 +8051,145 @@ fn rest_taker_origin_order(
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    // No makers: the remainder is the whole order.
     accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
-
-    let ix = Instruction {
+    Instruction {
         program_id: velocity_id(),
         accounts,
         data: velocity::instruction::PlaceAndTakePerpOrderV1 {
             args: PlaceAndTakePerpOrderV1Args {
-                params: OrderParams {
-                    order_type: OrderType::Limit,
-                    market_type: MarketType::Perp,
-                    direction,
-                    base_asset_amount: size,
-                    price,
-                    market_index: 0,
-                    post_only: PostOnlyParam::None,
-                    ..OrderParams::default()
-                },
-
+                params,
                 success_condition: None,
             },
         }
         .data(),
-    };
-    let authority = party.authority.insecure_clone();
-    let meta = send_with_ixs(
+    }
+}
+
+/// A resting limit bid of one unit at 99, as a taker names it.
+fn delayed_bid(activation_delay_slots: Option<u32>) -> velocity::state::order_params::OrderParams {
+    velocity::state::order_params::OrderParams {
+        order_type: OrderType::Limit,
+        market_type: MarketType::Perp,
+        direction: PositionDirection::Long,
+        base_asset_amount: UNIT,
+        price: 99 * PRICE,
+        market_index: 0,
+        post_only: velocity::state::order_params::PostOnlyParam::None,
+        activation_delay_slots,
+        ..Default::default()
+    }
+}
+
+/// A taker's `activation_delay_slots` reaches the book. The remainder stays
+/// out of the book's matchable set until the delay passes, though the book's
+/// own default is zero.
+#[test]
+fn a_take_rests_its_remainder_behind_the_delay_it_names() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+
+    let ix = take_ix(&fixture, &taker, delayed_bid(Some(6)));
+    let authority = taker.authority.insecure_clone();
+    send_with_ixs(
         &mut fixture.svm,
         &authority,
         &[compute_unit_limit_ix(400_000), ix],
         &[],
     )
     .unwrap();
-    // The book writes the rested remainder's handle as return data.
-    let data = &meta.return_data.data;
-    ClobOrderRefV0 {
-        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
-        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
-    }
+    assert_eq!(clob_bid_count(&fixture), 0, "inside its activation window");
+
+    let slot = fixture.svm.get_sysvar::<solana_clock::Clock>().slot;
+    fixture.svm.warp_to_slot(slot + 7);
+    assert_eq!(clob_bid_count(&fixture), 1, "active once the delay passes");
+}
+
+/// A delay below the book's default is a way past the speed bump, so a take
+/// that names one needs the flow authority's attestation, as a maker does.
+#[test]
+fn a_take_below_the_books_default_delay_needs_the_flow_authority() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    set_clob_default_activation_delay(&mut fixture, 4);
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let authority = taker.authority.insecure_clone();
+
+    let ix = take_ix(&fixture, &taker, delayed_bid(Some(0)));
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&err, ErrorCode::UnattestedFastActivation);
+
+    let ix = take_ix(&fixture, &taker, delayed_bid(Some(4)));
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect("the default itself needs no attestation");
+}
+
+/// A trigger order waits in a slot, and a slot stores no activation delay. A
+/// trigger that names one is refused rather than resting behind the default.
+#[test]
+fn a_trigger_order_that_names_an_activation_delay_is_refused() {
+    use velocity::{
+        instructions::PlaceTriggerOrdersV1Args,
+        state::{
+            order_params::{OrderParams, PostOnlyParam},
+            user::OrderTriggerCondition,
+        },
+    };
+
+    let mut fixture = setup();
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let arm = |fixture: &mut Fixture, activation_delay_slots: Option<u32>| {
+        let mut accounts = velocity::accounts::PlaceTriggerOrdersV1 {
+            state: state_pda(),
+            user: owner.user,
+            authority: owner.authority.pubkey(),
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        let params = OrderParams {
+            order_type: OrderType::TriggerMarket,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: UNIT,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            trigger_price: Some(110 * PRICE),
+            trigger_condition: OrderTriggerCondition::Above,
+            activation_delay_slots,
+            ..OrderParams::default()
+        };
+        let ix = Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::PlaceTriggerOrdersV1 {
+                args: PlaceTriggerOrdersV1Args {
+                    params: vec![params],
+                },
+            }
+            .data(),
+        };
+        let authority = owner.authority.insecure_clone();
+        send(&mut fixture.svm, &authority, ix, &[])
+    };
+
+    let err = arm(&mut fixture, Some(3)).unwrap_err();
+    assert_velocity_error(&err, ErrorCode::InvalidOrder);
+    arm(&mut fixture, None).expect("the same trigger without a delay arms");
 }
 
 /// The crank, signed-keeper mode: `filler` is the caller's own `User` and the

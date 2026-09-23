@@ -282,7 +282,7 @@ struct FiredRouteInputs {
     /// reduce.
     unfilled: u64,
     taker: ClobUserRefV0,
-    /// The worst price the fill accepts, from the order's auction.
+    /// The worst price the fill accepts, stamped when the order fired.
     limit_price: u64,
 }
 
@@ -456,7 +456,7 @@ fn route_fill_fired_order<'info>(
 /// is safe only because a migrated remainder is taker-origin. A cross settles
 /// at the counterparty's price, so a maker that arrives in the activation
 /// window competes on price rather than on transaction landing. A fired
-/// trigger-market's auction bound is stored relative to the oracle, so the rest
+/// trigger-market's worst price is stored relative to the oracle, so the rest
 /// price is read against the live oracle.
 ///
 /// A remainder that cannot rest is lost. The trigger slot was freed and the

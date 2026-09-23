@@ -554,9 +554,9 @@ pub fn should_poll_swift(
 /// The two slot gates mirror `place_signed_msg_taker_order` exactly. The program rejects
 /// the order once its wall clock age, integrated over each slot duration regime, exceeds
 /// about 200 seconds. It also does nothing once `max_slot < current_slot`. `max_slot` is
-/// the first slot that reaches the auction duration across every known slot-duration
-/// transition. The `max_ts` check is an extra client-side guard, because the program does
-/// not gate placement on `max_ts`. An order whose `max_ts` has passed is already dead.
+/// the landing deadline: the first slot `SIGNED_MSG_FILL_WINDOW` past the message slot,
+/// across every known slot-duration transition. The `max_ts` check mirrors the placement's
+/// soft skip of an expired order, which lands as a no-op.
 ///
 /// An order stamped ahead of the chain is early rather than dead. [`swift_slot_wait`]
 /// handles it, and this function reports "not expired" for one. A caller must run the wait

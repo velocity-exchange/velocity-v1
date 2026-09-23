@@ -85,7 +85,6 @@ describe('VelocityCore perp order instruction builders', () => {
 		// v1 takes one args struct, then the accounts object — no taker.
 		expect(called[0][0]).toEqual({
 			params: {},
-			activationDelaySlots: null,
 		});
 		expect(called[0][1].accounts.quoterSlab).toBe(clobAccounts.quoterSlab);
 		// An omitted flow authority encodes as the program id (anchor's `None`).

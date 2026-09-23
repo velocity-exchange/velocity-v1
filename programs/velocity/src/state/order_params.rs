@@ -39,7 +39,10 @@ pub struct OrderParams {
     /// take it. `None` takes the book's default. A longer wait gives more
     /// counterparties the chance to cross it, and a taker-origin remainder is
     /// crossed at the counterparty's price, so the wait can only improve the
-    /// fill. The book caps it at `max_activation_delay_slots`.
+    /// fill. The book caps it at `max_activation_delay_slots`, and a value
+    /// below the default needs the flow-authority attestation. `max_ts` is a
+    /// separate bound: it ends the order, and this delays when it can fill.
+    /// A trigger order refuses it, because a slot stores no delay.
     pub activation_delay_slots: Option<u32>,
     /// the index into the placing user's RevenueShareEscrow.approved_builders list, if this order
     /// carries a builder code. Only honored for non-swift orders; swift orders carry the builder
@@ -235,7 +238,6 @@ pub struct ModifyOrderParams {
     pub trigger_price: Option<u64>,
     pub trigger_condition: Option<OrderTriggerCondition>,
     pub oracle_price_offset: Option<i64>,
-    pub activation_delay_slots: Option<u32>,
     pub policy: Option<u8>,
 }
 

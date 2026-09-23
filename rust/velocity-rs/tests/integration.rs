@@ -217,7 +217,6 @@ async fn place_and_cancel_orders() {
             .post_only(PostOnlyParam::MustPostOnly)
             .build(),
         clob,
-        None,
     )
     .cancel_orders(btc_perp.to_parts(), None)
     .build();
@@ -352,7 +351,6 @@ async fn settle_pnl_txs() {
                 .post_only(PostOnlyParam::None)
                 .build(),
             doge_clob,
-            None,
         )
         .settle_pnl(doge_perp.index(), None, None)
         .build();
@@ -375,7 +373,6 @@ async fn settle_pnl_txs() {
                 .post_only(PostOnlyParam::None)
                 .build(),
             doge_clob,
-            None,
         )
         .place_and_make(
             NewOrder::limit(sol_perp)
@@ -384,7 +381,6 @@ async fn settle_pnl_txs() {
                 .post_only(PostOnlyParam::None)
                 .build(),
             sol_clob,
-            None,
         )
         .settle_pnl_multi(
             &[sol_perp.index(), doge_perp.index()],

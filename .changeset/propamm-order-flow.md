@@ -282,9 +282,14 @@ is its cap, and the sender chooses how far from the oracle it sits. A market ord
 price takes `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` (oracle / 200, which is 0.5 percent). An oracle-relative order holds the bound in `oracle_price_offset`.
 
 `OrderParams` and `ModifyOrderParams` lose `auctionDuration`, `auctionStartPrice` and
-`auctionEndPrice`, and gain `activationDelaySlots`. That sets how long a rested remainder waits
-before the book will take it, which is the duration knob the ramp used to serve. A taker-origin
-remainder is crossed at the counterparty's price, so a longer wait can only improve the fill.
+`auctionEndPrice`. `OrderParams` gains `activationDelaySlots`, which sets how long a rested
+remainder waits before the book will take it. That is the duration knob the ramp used to serve. A
+taker-origin remainder is crossed at the counterparty's price, so a longer wait can only improve
+the fill. Take, make and signed-message orders all read it, and a value below the book's default
+needs the flow-authority attestation. A trigger order refuses it. `maxTs` still only ends the
+order. `placeAndMakePerpOrder`, `getPlaceAndMakePerpOrderIx` and
+`buildPlaceAndMakePerpOrderInstruction` drop their separate `activationDelaySlots` argument, and
+`modifyOrder` / `modifyOrderByUserOrderId` drop theirs.
 
 On `Order`, `auctionStartPrice` and `auctionEndPrice` are renamed `clobNodeIndex` and
 `clobOrderId`, which is what a placed-trigger shadow already stored in them, and `auctionDuration`
@@ -312,7 +317,7 @@ argument. A maker that filtered on the flag receives the flow it was filtering.
 ## Signed-message orders
 
 A signed-message order is routed when it is placed, and whatever it cannot fill rests on the market's
-book as a taker-origin remainder rather than in a slot. The activation-slot auction then decides
+book as a taker-origin remainder rather than in a slot. The activation window then decides
 who fills it on price rather than on who lands a transaction first.
 `place_and_make_signed_msg_perp_order` is removed, because it existed only to match a signed-message
 order already resting in `User.orders`.

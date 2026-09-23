@@ -988,6 +988,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				price,
 				postOnly: PostOnlyParams.NONE,
 				...(maxTs.isZero() ? {} : { maxTs }),
+				// No activationDelaySlots, so the book's default applies and
+				// there is no attestation.
 			}),
 
 			{
@@ -995,9 +997,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
 			}
-
-			// activationDelaySlots is omitted, so the book's default applies
-			// and there is no attestation.
 		);
 
 		await client.sendTransaction(new Transaction().add(ix));

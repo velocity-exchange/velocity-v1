@@ -312,8 +312,9 @@ pub mod velocity {
 
     /// Rest a maker limit order on the market's CLOB. The order goes straight
     /// to the book as a maker quote and never occupies a `User.orders` slot.
-    /// `activation_delay_slots` sets the book speed bump, or `None` for the
-    /// default. A value below the default needs the flow-authority attestation.
+    /// `params.activation_delay_slots` sets the book speed bump, or `None` for
+    /// the default. A value below the default needs the flow-authority
+    /// attestation.
     pub fn place_and_make_perp_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndMakeV1<'info>>,
         args: PlaceAndMakePerpOrderV1Args,
@@ -322,7 +323,7 @@ pub mod velocity {
     }
 
     /// Place, route and rest one signed-message taker order in one call. It verifies the signature. It
-    /// routes through the market's quoters and books at or better than the auction start price. It
+    /// routes through the market's quoters and books at or better than the order's worst price. It
     /// rests any remainder as a taker-origin remainder. The order never occupies a slot.
     /// `flow_attestation` is swift's detached signature over the order and an expiry. It stands in for
     /// the flow authority's signature on this keeper-built transaction. An absent attestation reads as

@@ -8478,16 +8478,14 @@ export class VelocityClient {
 		clobAccounts: ClobAccounts,
 
 		txParams?: TxParams,
-		subAccountId?: number,
-		activationDelaySlots?: number | null
+		subAccountId?: number
 	): Promise<TransactionSignature> {
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(
 				await this.getPlaceAndMakePerpOrderIx(
 					orderParams,
 					clobAccounts,
-					subAccountId,
-					activationDelaySlots
+					subAccountId
 				),
 
 				txParams
@@ -8511,8 +8509,7 @@ export class VelocityClient {
 		orderParams: OptionalOrderParams,
 		clobAccounts?: ClobAccounts,
 
-		subAccountId?: number,
-		activationDelaySlots?: number | null
+		subAccountId?: number
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const clob =
@@ -8535,7 +8532,6 @@ export class VelocityClient {
 			authority: this.wallet.publicKey,
 			remainingAccounts,
 			clobAccounts: clob,
-			activationDelaySlots,
 		});
 	}
 
@@ -9052,7 +9048,6 @@ export class VelocityClient {
 	 * (non-`undefined`) in `orderParams` are changed.
 	 * @param orderParams - `newBaseAmount` is BASE_PRECISION (1e9). `newLimitPrice`,
 	 * `newTriggerPrice` and `newOraclePriceOffset` are PRICE_PRECISION (1e6), both signed.
-	 * `activationDelaySlots` is how long the rested remainder waits before the book will take it.
 	 * `policy` is a bitmask of `ModifyOrderPolicy`, for example `MustModify` or `ExcludePreviousFill`.
 	 * @param orderParams.bitFlags - Bitmask, see `OrderParamsBitFlag`.
 	 * @param orderParams.maxTs - Unix timestamp after which the order expires.
@@ -9068,7 +9063,6 @@ export class VelocityClient {
 			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
-			activationDelaySlots?: number;
 			reduceOnly?: boolean;
 			postOnly?: PostOnlyParams;
 			bitFlags?: number;
@@ -9106,7 +9100,6 @@ export class VelocityClient {
 			newOraclePriceOffset,
 			newTriggerPrice,
 			newTriggerCondition,
-			activationDelaySlots,
 			reduceOnly,
 			postOnly,
 			bitFlags,
@@ -9120,7 +9113,6 @@ export class VelocityClient {
 			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
-			activationDelaySlots?: number;
 			reduceOnly?: boolean;
 			postOnly?: PostOnlyParams;
 			bitFlags?: number;
@@ -9155,7 +9147,6 @@ export class VelocityClient {
 			oraclePriceOffset: newOraclePriceOffset || null,
 			triggerPrice: newTriggerPrice || null,
 			triggerCondition: newTriggerCondition || null,
-			activationDelaySlots: activationDelaySlots || null,
 			reduceOnly: reduceOnly != undefined ? reduceOnly : null,
 			postOnly: postOnly != undefined ? postOnly : null,
 			bitFlags: bitFlags != undefined ? bitFlags : null,
@@ -9192,9 +9183,6 @@ export class VelocityClient {
 	 * @param orderParams.newLimitPrice - The new limit price for the order, PRICE_PRECISION (1e6).
 	 * @param orderParams.newOraclePriceOffset - The new oracle price offset for the order, PRICE_PRECISION (1e6), signed.
 	 * @param orderParams.newTriggerPrice - Optional - the new trigger price for the order, PRICE_PRECISION (1e6).
-	 * @param orderParams.auctionDuration - Only required if order type changed to market from something else; fixed 400ms units.
-	 * @param orderParams.auctionStartPrice - Only required if order type changed to market from something else; PRICE_PRECISION (1e6), signed.
-	 * @param orderParams.auctionEndPrice - Only required if order type changed to market from something else; PRICE_PRECISION (1e6), signed.
 	 * @param orderParams.reduceOnly - Whether the modified order must only reduce the position; defaults to `false` if omitted.
 	 * @param orderParams.postOnly - Post-only behavior for the modified order.
 	 * @param orderParams.bitFlags - Bitmask, see `OrderParamsBitFlag`; defaults to unset if omitted.
@@ -9213,7 +9201,6 @@ export class VelocityClient {
 			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
-			activationDelaySlots?: number;
 			reduceOnly?: boolean;
 			postOnly?: PostOnlyParams;
 			bitFlags?: number;
@@ -9250,7 +9237,6 @@ export class VelocityClient {
 			newOraclePriceOffset,
 			newTriggerPrice,
 			newTriggerCondition,
-			activationDelaySlots,
 			reduceOnly,
 			postOnly,
 			bitFlags,
@@ -9264,7 +9250,6 @@ export class VelocityClient {
 			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
-			activationDelaySlots?: number;
 			reduceOnly?: boolean;
 			postOnly?: PostOnlyParams;
 			bitFlags?: number;
@@ -9287,7 +9272,6 @@ export class VelocityClient {
 			oraclePriceOffset: newOraclePriceOffset || null,
 			triggerPrice: newTriggerPrice || null,
 			triggerCondition: newTriggerCondition || null,
-			activationDelaySlots: activationDelaySlots || null,
 			reduceOnly: reduceOnly || false,
 			postOnly: postOnly || null,
 			bitFlags: bitFlags || null,

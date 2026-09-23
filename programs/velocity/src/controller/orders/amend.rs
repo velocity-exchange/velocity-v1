@@ -499,7 +499,7 @@ fn merge_modify_order_params_with_existing_order(
         oracle_price_offset: modify_order_params
             .oracle_price_offset
             .or(Some(existing_order.oracle_price_offset)),
-        activation_delay_slots: modify_order_params.activation_delay_slots,
+        activation_delay_slots: None,
         builder_idx: None,
         builder_fee_tenth_bps: None,
     }))

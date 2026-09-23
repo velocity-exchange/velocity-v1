@@ -64,6 +64,12 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
 
     let taker_served_window =
         verify_taker_served_window(&flow_attestation, taker_order_signature, &state, &clock)?;
+    crate::instructions::attest_activation_delay(
+        &ctx.accounts.quoter_slab,
+        market_index,
+        placed.activation_delay_slots,
+        taker_served_window,
+    )?;
     let synchronous_take = crate::instructions::synchronous_take_allowed(
         taker_served_window,
         &ctx.accounts.quoter_slab,
@@ -160,7 +166,7 @@ fn verify_taker_served_window(
 }
 
 /// Route the freshly placed signed-message order and fill what the route
-/// reaches at or better than its auction start price.
+/// reaches at or better than its worst price.
 ///
 /// The taker did not sign this transaction, so the keeper is a filler and the
 /// obligation rules apply. The keeper owes the taker every maker it had room to
@@ -331,7 +337,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         true,
         false,
         remainder.reduce_only,
-        None,
+        placed.activation_delay_slots,
         clock,
     )?;
 
@@ -479,9 +485,12 @@ fn verify_signed_msg(
 
 /// Decide whether the message may still be placed, and reserve its record.
 ///
-/// `None` means the message is too old, already placed, or past the slot its
-/// auction runs to. Those are no-ops rather than failures. The returned id
-/// carries that max slot. The entry's own order id and route digest are
+/// `None` means the message is too old, already placed, or past its landing
+/// deadline, the message slot plus `SIGNED_MSG_FILL_WINDOW`. Those are no-ops
+/// rather than failures. The returned id carries that deadline as `max_slot`.
+/// It bounds when a keeper may place the message. The order's own `max_ts`
+/// bounds how long it lives, and `activation_delay_slots` how long its
+/// remainder waits on the book. The entry's own order id and route digest are
 /// written onto it later, once the sidecars have taken their ids.
 ///
 /// Immediate-or-cancel is allowed. This instruction routes and fills in the same
@@ -783,6 +792,7 @@ fn place_entry_order(
         route_digest: order_id.route_digest,
         route: message.route.take().unwrap_or_default(),
         is_immediate_or_cancel: entry.is_immediate_or_cancel(),
+        activation_delay_slots: entry.activation_delay_slots,
     }))
 }
 
@@ -808,6 +818,9 @@ pub struct PlacedSignedMsgOrder {
     pub route_digest: crate::state::order_params::RouteDigest,
     /// The taker asked for no remainder to rest.
     pub is_immediate_or_cancel: bool,
+    /// The speed bump the remainder rests behind. `None` takes the book's
+    /// default.
+    pub activation_delay_slots: Option<u32>,
 }
 
 #[derive(Accounts)]

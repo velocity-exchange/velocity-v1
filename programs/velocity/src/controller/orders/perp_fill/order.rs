@@ -502,8 +502,8 @@ impl OrderUnderFill<'_> {
 
     /// Withhold every maker-priced source the oracle does not admit.
     ///
-    /// An external quoter book executes at its maker's price with no auction
-    /// protection, so a NonPositive, TooVolatile or TooUncertain oracle blocks
+    /// An external quoter book executes at its maker's price with no oracle
+    /// band of its own, so a NonPositive, TooVolatile or TooUncertain oracle blocks
     /// it the way the AMM's own gates block an AMM fill. `OracleOrderPrice` is
     /// weaker and only decides whether an oracle-relative limit resolves. The
     /// vAMM keeps its own inclusion gate.

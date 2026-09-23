@@ -62,18 +62,15 @@ pub fn restable_remainder(
 }
 
 /// The price a remainder can rest at, or `None` when it cannot rest. A
-/// market or fired trigger-market rests at its auction bound, its worst
-/// agreed price. Resting there is safe. A taker-origin remainder can be
+/// market or fired trigger-market rests at its worst agreed price. Resting there is safe. A taker-origin remainder can be
 /// crossed only at the counterparty's price, never taken as a free option.
 pub fn restable_remainder_price(
     order: &crate::state::user::Order,
-    // The oracle price a fired trigger-market's auction is relative to. An
-    // `OracleTriggerMarket` stores its auction bound as an offset from the
-    // oracle rather than as an absolute price, and
-    // `calculate_auction_price_with_progress` reads it that way. Its rest price
-    // therefore cannot be recovered without the oracle. Every other order type
-    // ignores this argument, so a caller that never rests a fired trigger
-    // passes `None`.
+    // The oracle price a fired trigger-market's worst price is relative to. An
+    // `OracleTriggerMarket` stores its worst price as an offset from the
+    // oracle, so its rest price cannot be recovered without the oracle. Every
+    // other order type ignores this argument, so a caller that never rests a
+    // fired trigger passes `None`.
     oracle_price: Option<i64>,
 ) -> Option<u64> {
     use crate::state::user::{OrderBitFlag, OrderStatus, OrderType};
@@ -83,9 +80,9 @@ pub fn restable_remainder_price(
 
     let price = match order.order_type {
         OrderType::Limit => order.price,
-        // A market order and a fired trigger-market both rest at their
-        // auction bound. That bound is the worst fill they already agreed to,
-        // and it is the only price a market order has. A fired trigger-market
+        // A market order and a fired trigger-market both rest at their worst
+        // price. It is the worst fill they already agreed to, and it is the
+        // only price a market order has. A fired trigger-market
         // is a market order that started as a conditional. Once it fires, its
         // remainder belongs on the book like any other remainder.
         OrderType::Market | OrderType::TriggerMarket => {
@@ -268,7 +265,7 @@ pub fn rest_admission(
         return RestAdmission::Refused(RestRefusal::SizeOffStep);
     }
 
-    // A fired trigger-market rests at the oracle plus its auction offset,
+    // A fired trigger-market rests at the oracle plus its worst-price offset,
     // which is an arbitrary value. Snap it toward the price the order already
     // agreed to, then hold the result to the book's rule.
     let price = align_rest_price_to_tick(price, rules.tick_size, direction);
@@ -591,7 +588,7 @@ mod restable_remainder_price_tests {
 
     #[test]
     fn short_fired_trigger_rests_at_oracle_plus_offset() {
-        // A short's auction bound is a negative offset. Read as an absolute
+        // A short's worst price is a negative offset. Read as an absolute
         // price it clamps to zero and the rest is dropped. Adding the oracle
         // recovers the price the fill settles at.
         let order = fired_trigger(PositionDirection::Short, -1_371_000);

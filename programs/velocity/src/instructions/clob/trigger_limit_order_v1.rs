@@ -311,8 +311,8 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         max_ts,
         user: user_ref,
         // A fired trigger rests taker-origin, so a live counterparty crosses
-        // it at the counterparty's price, and the activation-slot auction
-        // decides the fill by price rather than by who lands a transaction
+        // it at the counterparty's price, and the activation window decides
+        // the fill by price rather than by who lands a transaction
         // first. Taker-origin is also what routes it into the cross crank.
         taker_origin: true,
         // The slot the trigger armed keeps its id. To the owner this is the

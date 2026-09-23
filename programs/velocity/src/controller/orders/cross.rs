@@ -196,7 +196,7 @@ pub fn clob_notional(price: u64, base_asset_amount: u64) -> VelocityResult<u64> 
 /// fill afterward, and the order shrinks in place against its reservation.
 ///
 /// Its price is the taker's own resting limit, so a routed fill matches
-/// only at or better, reaching the taker with the auction's improvement.
+/// only at or better, reaching the taker with the price improvement.
 /// The CLOB's order id is wider than velocity's. Narrowing it keeps fill
 /// records pointing at the book's order, since ids are sequential per
 /// book. The crank's own record keeps the full-width id.

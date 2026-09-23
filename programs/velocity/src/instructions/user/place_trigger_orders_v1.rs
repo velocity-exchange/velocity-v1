@@ -121,6 +121,12 @@ fn arm_trigger(
     )?;
 
     validate!(
+        params.activation_delay_slots.is_none(),
+        ErrorCode::InvalidOrder,
+        "a trigger order stores no activation delay; it rests behind the book's default"
+    )?;
+
+    validate!(
         !params.is_immediate_or_cancel(),
         ErrorCode::InvalidOrderIOC,
         "a trigger order cannot be immediate or cancel"

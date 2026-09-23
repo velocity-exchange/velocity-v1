@@ -4807,7 +4807,6 @@ pub mod types {
         pub trigger_price: Option<u64>,
         pub trigger_condition: Option<OrderTriggerCondition>,
         pub oracle_price_offset: Option<i64>,
-        pub activation_delay_slots: Option<u32>,
         pub policy: Option<u8>,
     }
     #[repr(C)]
@@ -5378,7 +5377,6 @@ pub mod types {
     )]
     pub struct PlaceAndMakePerpOrderV1Args {
         pub params: OrderParams,
-        pub activation_delay_slots: Option<u32>,
     }
     #[derive(
         AnchorSerialize,

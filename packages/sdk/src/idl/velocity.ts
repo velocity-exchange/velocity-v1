@@ -7447,8 +7447,9 @@ export type Velocity = {
       "docs": [
         "Rest a maker limit order on the market's CLOB. The order goes straight",
         "to the book as a maker quote and never occupies a `User.orders` slot.",
-        "`activation_delay_slots` sets the book speed bump, or `None` for the",
-        "default. A value below the default needs the flow-authority attestation."
+        "`params.activation_delay_slots` sets the book speed bump, or `None` for",
+        "the default. A value below the default needs the flow-authority",
+        "attestation."
       ],
       "discriminator": [
         29,
@@ -7609,7 +7610,7 @@ export type Velocity = {
       "name": "placeSignedMsgTakerOrder",
       "docs": [
         "Place, route and rest one signed-message taker order in one call. It verifies the signature. It",
-        "routes through the market's quoters and books at or better than the auction start price. It",
+        "routes through the market's quoters and books at or better than the order's worst price. It",
         "rests any remainder as a taker-origin remainder. The order never occupies a slot.",
         "`flow_attestation` is swift's detached signature over the order and an expiry. It stands in for",
         "the flow authority's signature on this keeper-built transaction. An absent attestation reads as",
@@ -25870,12 +25871,6 @@ export type Velocity = {
             }
           },
           {
-            "name": "activationDelaySlots",
-            "type": {
-              "option": "u32"
-            }
-          },
-          {
             "name": "policy",
             "type": {
               "option": "u8"
@@ -26861,7 +26856,10 @@ export type Velocity = {
               "take it. `None` takes the book's default. A longer wait gives more",
               "counterparties the chance to cross it, and a taker-origin remainder is",
               "crossed at the counterparty's price, so the wait can only improve the",
-              "fill. The book caps it at `max_activation_delay_slots`."
+              "fill. The book caps it at `max_activation_delay_slots`, and a value",
+              "below the default needs the flow-authority attestation. `max_ts` is a",
+              "separate bound: it ends the order, and this delays when it can fill.",
+              "A trigger order refuses it, because a slot stores no delay."
             ],
             "type": {
               "option": "u32"
@@ -27884,17 +27882,6 @@ export type Velocity = {
               "defined": {
                 "name": "orderParams"
               }
-            }
-          },
-          {
-            "name": "activationDelaySlots",
-            "docs": [
-              "The book speed bump the maker rests behind. `None` takes the book's",
-              "default. A value below the default needs the flow-authority",
-              "attestation."
-            ],
-            "type": {
-              "option": "u32"
             }
           }
         ]

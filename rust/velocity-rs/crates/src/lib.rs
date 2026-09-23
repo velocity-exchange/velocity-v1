@@ -2767,15 +2767,11 @@ impl<'a> TransactionBuilder<'a> {
     ///
     /// * `order` - the maker order to rest
     /// * `clob` - the market's book, its quoter slab and the CLOB program
-    /// * `activation_delay_slots` - the book speed bump the maker rests behind.
-    ///   `None` takes the book's default. A value below the default needs the
-    ///   flow authority's signature, which this builder does not carry.
-    pub fn place_and_make(
-        mut self,
-        order: OrderParams,
-        clob: ClobFillAccounts,
-        activation_delay_slots: Option<u32>,
-    ) -> Self {
+    ///
+    /// `order.activation_delay_slots` sets the book speed bump the maker rests
+    /// behind. A value below the book's default needs the flow authority's
+    /// signature, which this builder does not carry.
+    pub fn place_and_make(mut self, order: OrderParams, clob: ClobFillAccounts) -> Self {
         assert!(
             order.market_type == MarketType::Perp,
             "only perp place-and-make is supported"
@@ -2813,10 +2809,7 @@ impl<'a> TransactionBuilder<'a> {
             program_id: constants::PROGRAM_ID,
             accounts,
             data: InstructionData::data(&program::instruction::PlaceAndMakePerpOrderV1 {
-                args: program::instructions::PlaceAndMakePerpOrderV1Args {
-                    params: order,
-                    activation_delay_slots,
-                },
+                args: program::instructions::PlaceAndMakePerpOrderV1Args { params: order },
             }),
         };
 

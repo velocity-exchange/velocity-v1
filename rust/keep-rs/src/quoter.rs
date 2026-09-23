@@ -526,7 +526,7 @@ impl QuoterBot {
                 // and trades rather than resting.
                 tx.place_and_take(order, book.accounts, None)
             } else {
-                tx.place_and_make(order, book.accounts, None)
+                tx.place_and_make(order, book.accounts)
             };
         }
 

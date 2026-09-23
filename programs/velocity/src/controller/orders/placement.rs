@@ -367,13 +367,6 @@ fn resolve_order_size(
     })
 }
 
-/// Resolve the order's auction and its time in force.
-///
-/// A crossing limit order without an auction duration gets its auction params
-/// here. A liquidation keeps the params it was given.
-///
-/// `None` means the order has already expired, which is not an error. The
-/// caller skips the placement.
 /// The price the order fills no worse than, and the time it lives.
 #[derive(Clone, Copy)]
 struct OrderTerms {
@@ -415,14 +408,13 @@ fn resolve_order_terms(
     }))
 }
 
-/// The time in force an auctioned order gets when its params name none.
+/// The `max_ts` an order gets when its params name none.
 ///
-/// The default is at least 30 seconds. Otherwise it is the auction's
-/// wall-clock length plus a quarter again, plus 10 seconds of pad. The default
-/// therefore always outlives the auction. The division by 800 reproduces the
-/// historical `auction_duration_slots / 2 + 10` exactly. A 400ms unit is one
-/// historical slot, so units/2 equals ms/800. An order type that runs no
-/// auction never expires by default.
+/// A market or oracle order lives `DEFAULT_MARKET_ORDER_LIFETIME_SECONDS`, so
+/// a remainder that rests on the book cannot outlast the market its worst
+/// price was set against. `max_ts` only ends the order. How long the book
+/// holds a remainder before it can fill is `activation_delay_slots`. Every
+/// other order type lives until it is cancelled.
 fn default_order_max_ts(order_type: OrderType, now: i64) -> VelocityResult<i64> {
     match order_type {
         OrderType::Market | OrderType::Oracle => {
@@ -547,10 +539,8 @@ fn validate_built_order(
 /// its condition. A live order rests on the market's book instead, through
 /// [`create_detached_perp_order`], so a slot now holds only conditionals.
 ///
-/// The order carries no auction. [`get_auction_params`] and
-/// `OrderParams::update_perp_auction_params` both decline a trigger type, and
-/// [`crate::math::auction::calculate_auction_params_for_trigger_order`] gives
-/// the order its auction when it fires. Only `max_ts` is resolved here.
+/// Only `max_ts` is resolved here. The worst price is stamped when the order
+/// fires, because the oracle it is measured against moves while it waits.
 pub fn place_perp_trigger_order(
     state: &State,
     user: &mut User,

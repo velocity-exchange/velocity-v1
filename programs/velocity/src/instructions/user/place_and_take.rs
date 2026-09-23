@@ -65,6 +65,7 @@ struct TakeOutcome {
     base_asset_amount_filled: u64,
     is_immediate_or_cancel: bool,
     success_condition: Option<PlaceAndTakeOrderSuccessCondition>,
+    activation_delay_slots: Option<u32>,
 }
 
 /// Enforce the caller's success condition against what the take filled.
@@ -137,7 +138,7 @@ fn load_taker_escrow<'a>(
 }
 
 /// An unattested taker on a bumped book rests whole and fills through the
-/// activation-slot auction. A shape that demands a synchronous outcome cannot
+/// activation window. A shape that demands a synchronous outcome cannot
 /// have one, so it is refused rather than rested. An IOC has nothing to rest.
 /// A success condition measures a fill this transaction does not perform.
 fn validate_unattested_take(request: &PlaceAndTakeRequest) -> Result<()> {
@@ -161,7 +162,7 @@ fn validate_unattested_take(request: &PlaceAndTakeRequest) -> Result<()> {
 }
 
 /// Maker priority rests the order whole, and the cross cranks fill it through
-/// the activation-slot auction. An order that cannot rest would do nothing, so
+/// the activation window. An order that cannot rest would do nothing, so
 /// it is refused instead. An `OrderType::Oracle` taker trips this. Its bound
 /// floats with the oracle, so it has no fixed price to rest at.
 fn validate_order_can_rest(order: &Order) -> Result<()> {
@@ -470,7 +471,7 @@ fn settle_take_remainder<'info>(
                     true,
                     false,
                     remainder.reduce_only,
-                    None,
+                    outcome.activation_delay_slots,
                     &Clock::get()?,
                 )?;
             }
@@ -506,6 +507,12 @@ pub fn place_and_take_perp_order_v1<'info>(
 
     validate_take_is_not_post_only(&params)?;
     validate_unattested_take(&request)?;
+    crate::instructions::attest_activation_delay(
+        clob.quoter_slab,
+        params.market_index,
+        params.activation_delay_slots,
+        request.taker_served_window,
+    )?;
 
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
@@ -573,6 +580,7 @@ pub fn place_and_take_perp_order_v1<'info>(
             base_asset_amount_filled,
             is_immediate_or_cancel,
             success_condition,
+            activation_delay_slots: params.activation_delay_slots,
         },
     )
 }

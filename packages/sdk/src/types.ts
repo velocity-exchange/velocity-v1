@@ -2196,7 +2196,7 @@ export type OrderParams = {
 	oraclePriceOffset: BN | null;
 	/** unix timestamp after which the order expires */
 	maxTs: BN | null;
-	/** how many slots the rested remainder waits before the book will take it; null takes the book default, and the book caps it at `maxActivationDelaySlots` */
+	/** how many slots the rested remainder waits before the book will take it; null takes the book default, the book caps it at `maxActivationDelaySlots`, and a value below the default needs the flow-authority attestation. Distinct from `maxTs`, which ends the order. A trigger order refuses it */
 	activationDelaySlots: number | null;
 	/** index into the placing user's RevenueShareEscrow.approved_builders list (non-swift builder codes) */
 	builderIdx?: number | null;
@@ -2276,8 +2276,11 @@ export type OptionalOrderParams = {
 } & NecessaryOrderParams;
 
 /** Fields to change on an existing order via `modifyOrder`. Only the fields present (non-`undefined`) are changed on-chain; the rest of the order is left as-is. `null` explicitly clears an optional on-chain field (e.g. `triggerPrice: null` removes the trigger). */
+/** A slot order holds a trigger, which stores no activation delay, so a modify names none. */
 export type ModifyOrderParams = {
-	[Property in keyof OrderParams]?: OrderParams[Property] | null;
+	[Property in keyof Omit<OrderParams, 'activationDelaySlots'>]?:
+		| OrderParams[Property]
+		| null;
 } & { policy?: ModifyOrderPolicy | null };
 
 /** Bitmask passed as `ModifyOrderParams.policy` (combine with `|`). `MustModify`: fail the instruction instead of silently no-op'ing if the target order id can't be found. `ExcludePreviousFill`: when a new `baseAssetAmount` is given, treat it as the new *remaining* size — the already-filled amount is subtracted off it (rather than replacing the order's total size outright). */

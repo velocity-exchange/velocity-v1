@@ -110,12 +110,7 @@ impl Fixture {
         }
     }
 
-    pub(crate) fn place_and_make_ix(
-        &self,
-        user_idx: usize,
-        params: OrderParams,
-        activation_delay_slots: Option<u32>,
-    ) -> Instruction {
+    pub(crate) fn place_and_make_ix(&self, user_idx: usize, params: OrderParams) -> Instruction {
         let user = &self.users[user_idx];
         let mut accounts = velocity::accounts::PlaceAndMakeV1 {
             state: self.state_pda(),
@@ -133,10 +128,7 @@ impl Fixture {
             program_id: velocity_program_id(),
             accounts,
             data: velocity::instruction::PlaceAndMakePerpOrderV1 {
-                args: PlaceAndMakePerpOrderV1Args {
-                    params,
-                    activation_delay_slots,
-                },
+                args: PlaceAndMakePerpOrderV1Args { params },
             }
             .data(),
         }

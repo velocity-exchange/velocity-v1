@@ -285,7 +285,6 @@ impl TestCtx {
                                     .reduce_only(true)
                                     .build(),
                                 clob,
-                                None,
                             )
                             .build();
                         // Best-effort: submit the close (the deployed filler fills

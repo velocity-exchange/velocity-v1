@@ -595,7 +595,6 @@ async fn dlob_maker_taker_filled_by_filler() {
                 .post_only(PostOnlyParam::MustPostOnly)
                 .build(),
             clob,
-            None,
         )
         .build();
     ctx.send_confirmed(tx).await;
@@ -614,7 +613,6 @@ async fn dlob_maker_taker_filled_by_filler() {
                 .price(taker_ask)
                 .build(),
             clob,
-            None,
         )
         .build();
     ctx.send_confirmed(tx).await;
@@ -787,7 +785,7 @@ async fn bad_perp_trade_gets_liquidated() {
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_and_make(marketable_limit(px, PositionDirection::Long), clob, None)
+        .place_and_make(marketable_limit(px, PositionDirection::Long), clob)
         .build();
     if ctx.client.sign_and_send(tx).await.is_err() {
         log::warn!("INCONCLUSIVE: could not place opening order");
@@ -891,7 +889,7 @@ async fn unsettled_pnl_gets_settled() {
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_and_make(marketable_limit(px, PositionDirection::Long), clob, None)
+        .place_and_make(marketable_limit(px, PositionDirection::Long), clob)
         .build();
     ctx.send_confirmed(open).await;
     if ctx
@@ -907,7 +905,7 @@ async fn unsettled_pnl_gets_settled() {
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_and_make(marketable_limit(px, PositionDirection::Short), clob, None)
+        .place_and_make(marketable_limit(px, PositionDirection::Short), clob)
         .build();
     ctx.send_confirmed(close).await;
     ctx.wait_perp_base_eq(sub, 0, 0, Duration::from_secs(60))

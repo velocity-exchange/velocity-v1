@@ -5666,6 +5666,127 @@ impl Fixture {
     fn read_user(&self, pk: &Pubkey) -> Option<User> {
         read_zc::<User>(&self.ctx, pk)
     }
+
+    /// Where `user`'s perp reservation on market 0 disagrees with the orders
+    /// that hold it: its open slot orders and its orders on the book.
+    fn order_reservation_mismatches(&self, user: &User) -> Vec<String> {
+        use velocity::state::user::{MarketType, OrderStatus};
+
+        let book_data = self
+            .ctx
+            .get_account(&self.clob.book)
+            .map(|account| account.data)
+            .unwrap_or_default();
+        let book_orders: Vec<clob_state::OrderNodeV0> = clob_state::live_orders(&book_data)
+            .map(|(_, node)| node)
+            .filter(|node| {
+                node.authority.to_bytes() == user.authority.to_bytes()
+                    && node.sub_account_id == user.sub_account_id
+            })
+            .collect();
+        let slot_orders: Vec<&velocity::state::user::Order> = user
+            .orders
+            .iter()
+            .filter(|order| order.status == OrderStatus::Open && !order.is_placed_on_clob())
+            .collect();
+
+        let expected = ExpectedReservation::of(&slot_orders, &book_orders);
+        let market_slot_orders = slot_orders
+            .iter()
+            .filter(|order| order.market_type == MarketType::Perp && order.market_index == 0)
+            .count();
+
+        // An unused position slot is all zeros and reads as market 0, so the
+        // sum over every market-0 slot is the live position's value. It also
+        // catches a count left behind on a slot that emptied.
+        let held = |field: fn(&velocity::state::user::PerpPosition) -> i128| -> i128 {
+            user.perp_positions
+                .iter()
+                .filter(|position| position.market_index == 0)
+                .map(field)
+                .sum()
+        };
+
+        let mut mismatches = Vec::new();
+        let mut check = |what: &str, held: i128, expected: i128| {
+            if held != expected {
+                mismatches.push(format!("{what}: held {held}, orders need {expected}"));
+            }
+        };
+        check(
+            "position open_orders",
+            held(|position| position.open_orders.into()),
+            (market_slot_orders + book_orders.len()) as i128,
+        );
+        check(
+            "open_bids",
+            held(|position| position.open_bids.into()),
+            expected.open_bids,
+        );
+        check(
+            "open_asks",
+            held(|position| position.open_asks.into()),
+            -expected.open_asks,
+        );
+        check(
+            "reduce_only_clob_orders",
+            held(|position| position.reduce_only_clob_orders.into()),
+            expected.reduce_only_book_orders,
+        );
+        check(
+            "account open_orders",
+            user.open_orders.into(),
+            (slot_orders.len() + book_orders.len()) as i128,
+        );
+
+        mismatches
+    }
+}
+
+/// What a user's open orders on perp market 0 require its position to hold.
+struct ExpectedReservation {
+    open_bids: i128,
+    open_asks: i128,
+    reduce_only_book_orders: i128,
+}
+
+impl ExpectedReservation {
+    fn of(
+        slot_orders: &[&velocity::state::user::Order],
+        book_orders: &[clob_state::OrderNodeV0],
+    ) -> Self {
+        use velocity::{controller::position::PositionDirection, state::user::MarketType};
+
+        let mut expected = Self {
+            open_bids: 0,
+            open_asks: 0,
+            reduce_only_book_orders: 0,
+        };
+        for order in slot_orders
+            .iter()
+            .filter(|order| order.market_type == MarketType::Perp && order.market_index == 0)
+            .filter(|order| order.update_open_bids_and_asks())
+        {
+            let unfilled = i128::from(order.get_base_asset_amount_unfilled(None).unwrap_or(0));
+            match order.direction {
+                PositionDirection::Long => expected.open_bids += unfilled,
+                PositionDirection::Short => expected.open_asks += unfilled,
+            }
+        }
+
+        for node in book_orders {
+            match node.side() {
+                clob_state::Side::Bid => expected.open_bids += i128::from(node.base_asset_amount),
+                clob_state::Side::Ask => expected.open_asks += i128::from(node.base_asset_amount),
+            }
+
+            if node.is_reduce_only() {
+                expected.reduce_only_book_orders += 1;
+            }
+        }
+
+        expected
+    }
 }
 
 #[cfg(test)]
@@ -5918,6 +6039,28 @@ mod smoke {
         assert!(f.action_cancel_book_order(f.book_orders.len() - 1));
     }
 
+    /// The reservation check reads the book's own orders, so it sees a
+    /// resting order, and it reports a count that no order backs.
+    #[test]
+    fn the_reservation_check_catches_a_count_no_order_backs() {
+        let mut f = Fixture::setup();
+        assert!(f.action_deposit(1, 500_000 * QUOTE_PRECISION as u64, 0, 0));
+        assert!(f.action_place_and_make_perp_order(1, 1, 10_000_000, 0, 0, 0, 0));
+
+        let maker_pda = f.users[1].user_pda;
+        let mut maker = f.read_user(&maker_pda).unwrap();
+        assert_eq!(maker.perp_positions[0].open_orders, 1);
+        assert_eq!(f.order_reservation_mismatches(&maker), Vec::<String>::new());
+
+        maker.perp_positions[0].reduce_only_clob_orders = 1;
+        inject(&mut f.ctx, maker_pda, &mut maker);
+        let maker = f.read_user(&maker_pda).unwrap();
+        assert_eq!(
+            f.order_reservation_mismatches(&maker),
+            vec!["reduce_only_clob_orders: held 1, orders need 0".to_string()]
+        );
+    }
+
     #[test]
     fn signed_msg_taker_order_reachable() {
         let mut f = Fixture::setup();
@@ -6058,6 +6201,7 @@ mod smoke {
     fn action_census() {
         let mut f = Fixture::setup();
         let mut results: Vec<(&str, bool)> = Vec::new();
+        let mut reservation_mismatches: Vec<String> = Vec::new();
         let debug = std::env::var_os("FUZZ_DEBUG").is_some();
         macro_rules! run {
             ($name:expr, $e:expr) => {
@@ -6066,6 +6210,16 @@ mod smoke {
                 }
 
                 results.push(($name, $e));
+                for user in f.users.clone() {
+                    let Some(state) = f.read_user(&user.user_pda) else {
+                        continue;
+                    };
+                    reservation_mismatches.extend(
+                        f.order_reservation_mismatches(&state)
+                            .into_iter()
+                            .map(|mismatch| format!("after {}: {}", $name, mismatch)),
+                    );
+                }
             };
         }
 
@@ -6502,6 +6656,11 @@ mod smoke {
             "actions that should succeed but did not: {:?}",
             unexpected
         );
+        assert!(
+            reservation_mismatches.is_empty(),
+            "order reservations that no order backs: {:#?}",
+            reservation_mismatches
+        );
     }
 
     #[test]
@@ -6909,6 +7068,25 @@ fn invariant_solvency(fixture: &mut Fixture) {
                 );
             }
             fixture.last_interest[idx] = Some(now);
+        }
+    }
+
+    // =====================================================================
+    // ORDER RESERVATION: every open order is reserved exactly once. The book
+    // side is read from the market account's own node arena, so an order that
+    // left the book without its release is a count the book no longer backs.
+    // =====================================================================
+    for user in fixture.users.clone() {
+        let Some(state) = fixture.read_user(&user.user_pda) else {
+            continue;
+        };
+        for mismatch in fixture.order_reservation_mismatches(&state) {
+            fuzz_assert!(
+                false,
+                "order reservation for {}: {}",
+                user.user_pda,
+                mismatch
+            );
         }
     }
 

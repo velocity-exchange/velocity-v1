@@ -22,6 +22,9 @@ velocity = { path = "../../programs/velocity", default-features = false, feature
   "fuzz-fixtures",
 ] }
 velocity-fuzz-common = { path = "../velocity-fuzz-common", features = ["clob"] }
+# The CLOB market account's node layout, so the reservation invariant reads the
+# book's own orders rather than the harness's record of them.
+clob-state = { path = "../../crates/clob-state" }
 
 # Same crate velocity itself verifies Lazer messages with. Used to BUILD the
 # signed price update (`SolanaMessage` envelope + LE payload) so the harness

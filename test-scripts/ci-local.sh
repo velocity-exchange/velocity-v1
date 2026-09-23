@@ -181,7 +181,7 @@ if [ "$MODE" = "full" ]; then
   rm -rf target/sbpf*-solana-solana target/deploy
 
   run_check "router svm tests"         bash -c "
-    anchor build --ignore-keys --skip-lint -p protocol_revenue_router -- --features anchor-test &&
+    bash deploy-scripts/build-sbf.sh test protocol-revenue-router &&
     cargo test --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml --locked
   "
   run_check "anchor integration suite" bash test-scripts/run-anchor-tests.sh

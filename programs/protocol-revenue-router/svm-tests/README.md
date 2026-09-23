@@ -3,7 +3,7 @@
 LiteSVM tests that run the router's `distribute` against the real dfx-redemption program.
 
 ```bash
-anchor build --ignore-keys -p protocol_revenue_router -- --features anchor-test
+bash deploy-scripts/build-sbf.sh test protocol-revenue-router
 cargo test --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml
 ```
 

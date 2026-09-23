@@ -4,7 +4,7 @@
 //! real dfx-redemption program so the CPI, the cap clamp and the tier ladder
 //! are exercised end to end.
 //!
-//! Build the router first: `anchor build --ignore-keys -p protocol_revenue_router -- --features anchor-test`
+//! Build the router first: `bash deploy-scripts/build-sbf.sh test protocol-revenue-router`
 //! (the default build enables the mainnet init gate, which these tests do not
 //! sign for). The redemption program loads from `fixtures/dfx_redemption.so`,
 //! or from `DFX_REDEMPTION_SO` when set; see the README to refresh it.
@@ -91,7 +91,7 @@ fn setup_without_router() -> Env {
 
     let mut svm = LiteSVM::new();
     svm.add_program_from_file(ROUTER_ID, ROUTER_SO)
-        .expect("load protocol_revenue_router.so (run `anchor build -p protocol_revenue_router`)");
+        .expect("load protocol_revenue_router.so (run `bash deploy-scripts/build-sbf.sh test protocol-revenue-router`)");
     svm.add_program_from_file(dfx_redemption::ID, &redemption_so)
         .unwrap_or_else(|e| panic!("load {redemption_so}: {e:?}"));
 

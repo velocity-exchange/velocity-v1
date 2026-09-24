@@ -1,7 +1,7 @@
 use {
     crate::{
         error::MidpointError,
-        state::{CancelAllOutcomeV0, CancelSidesExt, CancelSidesV0, Direction, MidpointQuoterV0},
+        state::{CancelAllOutcomeV0, CancelSidesExt, CancelSidesV0, DirectionV0, MidpointQuoterV0},
     },
     anchor_lang::prelude::*,
 };
@@ -55,8 +55,8 @@ pub fn handle_cancel_all_v0(
     for direction in args.sides.directions().iter().copied() {
         let rungs = quoter.clear_side(direction);
         match direction {
-            Direction::Long => outcome.ask_rungs = rungs,
-            Direction::Short => outcome.bid_rungs = rungs,
+            DirectionV0::Long => outcome.ask_rungs = rungs,
+            DirectionV0::Short => outcome.bid_rungs = rungs,
         }
 
         quoter.validate_cleared_side(direction, rungs)?;

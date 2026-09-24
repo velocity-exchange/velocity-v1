@@ -21,7 +21,7 @@
 //! belongs to a different wallet.
 //!
 //! `quote_v0` and `execute_v0` write their response in place. They stream
-//! borsh into the `response` tail of this account and return a
+//! wincode into the `response` tail of this account and return a
 //! [`ResponsePointerV0`] to it. No intermediate `Vec` is built and no bytes
 //! are copied twice.
 
@@ -51,27 +51,27 @@ pub const MAX_SPLINE_LEVELS: usize = 64;
 pub const RESPONSE_BUFFER_BYTES: usize = 2048;
 
 /// Which sides a `cancel_all_v0` withdraws. It is the same wire enum and the
-/// same borsh tags the CLOB uses. Named sides replace a pair of bools because
+/// same wincode tags the CLOB uses. Named sides replace a pair of bools because
 /// the wire must not express "neither".
 pub use quoter_spec::CancelSidesV0;
 /// Taker direction on the quoter interface. `quoter-spec` declares it once.
-pub use quoter_spec::DirectionV0 as Direction;
+pub use quoter_spec::DirectionV0;
 pub use quoter_spec::ZERO_ADDRESS;
 
 /// What the wire's named sides mean to a spline. The spline holds no orders,
 /// so it reads a side as the flow that consumes its rungs.
 pub trait CancelSidesExt {
-    fn directions(self) -> &'static [Direction];
+    fn directions(self) -> &'static [DirectionV0];
 }
 
 impl CancelSidesExt for CancelSidesV0 {
     /// The taker directions that consume the named sides. A `Short` taker
     /// hits a bid. A `Long` taker hits an ask.
-    fn directions(self) -> &'static [Direction] {
+    fn directions(self) -> &'static [DirectionV0] {
         match self {
-            CancelSidesV0::Bids => &[Direction::Short],
-            CancelSidesV0::Asks => &[Direction::Long],
-            CancelSidesV0::Both => &[Direction::Short, Direction::Long],
+            CancelSidesV0::Bids => &[DirectionV0::Short],
+            CancelSidesV0::Asks => &[DirectionV0::Long],
+            CancelSidesV0::Both => &[DirectionV0::Short, DirectionV0::Long],
         }
     }
 }
@@ -90,6 +90,20 @@ pub struct CancelAllOutcomeV0 {
     pub mid_cleared: bool,
 }
 
+/// Sub-minimum cancelled remainder, present for wire compatibility with the
+/// quoter interface. The midpoint never emits one. Spline intent has no orders
+/// to cancel, and a level below the minimum is not quoted.
+pub use quoter_spec::CancelledRemainderV0;
+/// One priced, sized rung on the wire. `quoter-spec` declares it.
+pub use quoter_spec::PriceLevelV0;
+/// Where in the quoter account the program wrote the wincode response.
+/// `quoter-spec` declares it.
+pub use quoter_spec::ResponsePointerV0;
+/// One user's share of an executed fill. The midpoint always has exactly one,
+/// the quoted user, and never completes an order because the ladder holds
+/// none. [`MidpointQuoterV0::write_execute_response`] writes the same bytes
+/// field by field. A unit test pins the two encodings equal.
+pub use quoter_spec::UserBalanceChangeV0;
 /// Per-user budgets, also declared by `quoter-spec`. The midpoint does not
 /// spend them, because it settles against one standing-intent user and holds
 /// no orders to skip. The args carry them because the args are one layout.
@@ -103,23 +117,6 @@ pub use quoter_spec::UserRefV0;
 /// wire reads that one declaration. A mirror that drifts by a field decodes
 /// the args wrong and reports nothing at all.
 pub use quoter_spec::{user_set_within_capacity, USER_SET_CAPACITY, USER_SET_MAX_BYTES};
-
-/// `quoter-spec` declares this type. The alias keeps this program's name for
-/// it.
-pub type PriceLevel = quoter_spec::PriceLevelV0;
-
-/// Sub-minimum cancelled remainder, present for wire compatibility with the
-/// quoter interface. The midpoint never emits one. Spline intent has no orders
-/// to cancel, and a level below the minimum is not quoted.
-pub use quoter_spec::CancelledRemainderV0;
-/// Where in the quoter account the program wrote the borsh response.
-/// `quoter-spec` declares it.
-pub use quoter_spec::ResponsePointerV0;
-/// One user's share of an executed fill. The midpoint always has exactly one,
-/// the quoted user, and never completes an order because the ladder holds
-/// none. [`MidpointQuoterV0::write_execute_response`] writes the same bytes
-/// field by field. A unit test pins the two encodings equal.
-pub use quoter_spec::UserBalanceChangeV0;
 pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
 
 /// One rung of the spline. It holds standing intent `size` at `mid ± offset`.
@@ -219,7 +216,7 @@ pub struct MidpointQuoterV0 {
     pub padding: [u8; 64],
     pub bids: [SplineLevelV0; MAX_SPLINE_LEVELS],
     pub asks: [SplineLevelV0; MAX_SPLINE_LEVELS],
-    /// The region `quote_v0` and `execute_v0` stream their borsh response
+    /// The region `quote_v0` and `execute_v0` stream their wincode response
     /// into. Return data carries a [`ResponsePointerV0`] to it.
     pub response: [u8; RESPONSE_BUFFER_BYTES],
 }
@@ -289,7 +286,7 @@ impl SplineParams {
     /// 128-bit divide, and each `u128 / u128` costs hundreds of compute units.
     /// `mid × offset_ppm` fits u64 for any plausible market, because a 1e8
     /// price times 1e6 ppm is 1e14. A unit test pins the u128 fallback equal.
-    pub fn level_price(&self, direction: Direction, offset_ppm: u64) -> Option<u64> {
+    pub fn level_price(&self, direction: DirectionV0, offset_ppm: u64) -> Option<u64> {
         let mid = self.mid_price;
         let delta = match mid.checked_mul(offset_ppm) {
             Some(product) => product / PERCENTAGE_PRECISION_U64,
@@ -298,12 +295,13 @@ impl SplineParams {
                     .ok()?
             }
         };
-        let tick = self.price_tick_size.max(1);
+        // validate() rejects a zero tick, so this never divides by zero.
+        let tick = self.price_tick_size;
         let price = match direction {
             // Taker buys: ask above mid, rounded up.
-            Direction::Long => mid.checked_add(delta)?.div_ceil(tick).checked_mul(tick)?,
+            DirectionV0::Long => mid.checked_add(delta)?.div_ceil(tick).checked_mul(tick)?,
             // Taker sells: bid below mid, rounded down.
-            Direction::Short => mid.checked_sub(delta)? / tick * tick,
+            DirectionV0::Short => mid.checked_sub(delta)? / tick * tick,
         };
 
         (price != 0).then_some(price)
@@ -312,7 +310,8 @@ impl SplineParams {
     /// A level's quotable remainder. It is intent minus consumed, floored to
     /// the step. It is zero when it falls below the minimum quote size.
     pub fn level_remaining(&self, level: &SplineLevelV0) -> u64 {
-        let step = self.size_step.max(1);
+        // validate() rejects a zero step, so this never divides by zero.
+        let step = self.size_step;
         let remaining = level.size.saturating_sub(level.filled) / step * step;
         if remaining < self.min_quote_size {
             0
@@ -374,22 +373,22 @@ impl MidpointQuoterV0 {
 
     /// The whole rung array of the side a taker of `direction` consumes,
     /// live prefix and zeroed tail together.
-    fn side(&self, direction: Direction) -> &[SplineLevelV0; MAX_SPLINE_LEVELS] {
+    fn side(&self, direction: DirectionV0) -> &[SplineLevelV0; MAX_SPLINE_LEVELS] {
         match direction {
-            Direction::Long => &self.asks,
-            Direction::Short => &self.bids,
+            DirectionV0::Long => &self.asks,
+            DirectionV0::Short => &self.bids,
         }
     }
 
     /// The same side and its live count, borrowed together so a write can
     /// resize the ladder.
-    fn side_mut(&mut self, direction: Direction) -> SideMut<'_> {
+    fn side_mut(&mut self, direction: DirectionV0) -> SideMut<'_> {
         match direction {
-            Direction::Long => SideMut {
+            DirectionV0::Long => SideMut {
                 levels: &mut self.asks,
                 count: &mut self.ask_count,
             },
-            Direction::Short => SideMut {
+            DirectionV0::Short => SideMut {
                 levels: &mut self.bids,
                 count: &mut self.bid_count,
             },
@@ -397,7 +396,7 @@ impl MidpointQuoterV0 {
     }
 
     /// The live rungs of the side a taker of `direction` consumes.
-    pub fn side_levels(&self, direction: Direction) -> &[SplineLevelV0] {
+    pub fn side_levels(&self, direction: DirectionV0) -> &[SplineLevelV0] {
         &self.side(direction)[..self.side_count(direction) as usize]
     }
 
@@ -429,7 +428,7 @@ impl MidpointQuoterV0 {
 
     /// Walk the consumed prefix for a fill of `size`. The walk mutates
     /// nothing. Execute applies `consumed` after the walk.
-    pub fn fill(&self, direction: Direction, size: u64, slot: u64) -> Result<SplineFill> {
+    pub fn fill(&self, direction: DirectionV0, size: u64, slot: u64) -> Result<SplineFill> {
         let mut fill = SplineFill {
             base: 0,
             quote: 0,
@@ -477,7 +476,7 @@ impl MidpointQuoterV0 {
     /// Apply a walked fill's consumption to the side's `filled` counters. It
     /// then asserts the post-state invariants in
     /// [`MidpointQuoterV0::validate_consumption`].
-    pub fn apply_fill(&mut self, direction: Direction, fill: &SplineFill) -> Result<()> {
+    pub fn apply_fill(&mut self, direction: DirectionV0, fill: &SplineFill) -> Result<()> {
         let count = self.side_count(direction) as usize;
         let side = self.side_mut(direction);
 
@@ -493,7 +492,7 @@ impl MidpointQuoterV0 {
     /// `filled`.
     pub fn write_side(
         &mut self,
-        direction: Direction,
+        direction: DirectionV0,
         inputs: &[SplineLevelInputV0],
     ) -> Result<()> {
         require!(
@@ -533,7 +532,7 @@ impl MidpointQuoterV0 {
     /// the count to zero, and returns the number of rungs it cleared. The tail
     /// past `count` is already zero, so a maker who runs eight rungs pays for
     /// eight rather than for the ladder's capacity.
-    pub fn clear_side(&mut self, direction: Direction) -> u8 {
+    pub fn clear_side(&mut self, direction: DirectionV0) -> u8 {
         let count = self.side_count(direction) as usize;
         let side = self.side_mut(direction);
         side.levels[..count].fill(SplineLevelV0::zeroed());
@@ -546,7 +545,7 @@ impl MidpointQuoterV0 {
     /// `cleared` rungs alone, because the tail past the old count was already
     /// zero. Every other mutating instruction runs the full
     /// [`Self::validate`], which catches a tail that anything else corrupted.
-    pub fn validate_cleared_side(&self, direction: Direction, cleared: u8) -> Result<()> {
+    pub fn validate_cleared_side(&self, direction: DirectionV0, cleared: u8) -> Result<()> {
         require!(
             self.side_count(direction) == 0,
             MidpointError::InvariantViolated
@@ -609,10 +608,10 @@ impl MidpointQuoterV0 {
         Ok(())
     }
 
-    fn side_count(&self, direction: Direction) -> u8 {
+    fn side_count(&self, direction: DirectionV0) -> u8 {
         match direction {
-            Direction::Long => self.ask_count,
-            Direction::Short => self.bid_count,
+            DirectionV0::Long => self.ask_count,
+            DirectionV0::Short => self.bid_count,
         }
     }
 
@@ -634,6 +633,10 @@ impl MidpointQuoterV0 {
                 && self.authority != ZERO_ADDRESS
                 && self.hot_authority != ZERO_ADDRESS
                 && self.execute_authority != ZERO_ADDRESS,
+            MidpointError::InvalidConfig
+        );
+        require!(
+            self.price_tick_size != 0 && self.size_step != 0,
             MidpointError::InvalidConfig
         );
 
@@ -677,7 +680,7 @@ impl MidpointQuoterV0 {
     /// - The walk touches no rung outside the live count.
     /// - `filled <= size` on every rung, and the per-rung deltas sum to the
     ///   `base` the response reports.
-    fn validate_consumption(&self, direction: Direction, fill: &SplineFill) -> Result<()> {
+    fn validate_consumption(&self, direction: DirectionV0, fill: &SplineFill) -> Result<()> {
         let params = self.params();
         let count = self.side_count(direction) as usize;
         require!(
@@ -711,7 +714,7 @@ impl MidpointQuoterV0 {
     /// writes an empty level vec, which the wire reads as no liquidity.
     pub fn write_quote_response(
         &mut self,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         limit_price: u64,
         slot: u64,
@@ -729,8 +732,8 @@ impl MidpointQuoterV0 {
             ..
         } = self;
         let side: &[SplineLevelV0] = match direction {
-            Direction::Long => &asks[..count],
-            Direction::Short => &bids[..count],
+            DirectionV0::Long => &asks[..count],
+            DirectionV0::Short => &bids[..count],
         };
 
         let mut writer = QuoteWriter::new();
@@ -760,7 +763,7 @@ impl MidpointQuoterV0 {
             writer
                 .push_level(
                     &mut response[..],
-                    PriceLevel {
+                    PriceLevelV0 {
                         price,
                         size: quoted,
                     },
@@ -774,7 +777,7 @@ impl MidpointQuoterV0 {
         // settles against one standing-intent user and holds no resting
         // orders, so it withholds no liquidity for want of an account.
         let len = writer
-            .finish(&mut response[..], PriceLevel::default())
+            .finish(&mut response[..], PriceLevelV0::default())
             .map_err(MidpointError::from)?;
         Ok(response_pointer(len))
     }
@@ -846,10 +849,10 @@ mod tests {
         };
 
         quoter
-            .write_side(Direction::Short, &inputs(bids))
+            .write_side(DirectionV0::Short, &inputs(bids))
             .expect("bids");
         quoter
-            .write_side(Direction::Long, &inputs(asks))
+            .write_side(DirectionV0::Long, &inputs(asks))
             .expect("asks");
         quoter.validate().expect("armed quoter is valid");
         quoter
@@ -877,7 +880,7 @@ mod tests {
 
     /// A `Vec`-building encoder, kept as the reference for the streaming
     /// writer.
-    fn reference_quote(quoter: &MidpointQuoterV0, direction: Direction, size: u64) -> Vec<u8> {
+    fn reference_quote(quoter: &MidpointQuoterV0, direction: DirectionV0, size: u64) -> Vec<u8> {
         let params = quoter.params();
         let mut levels = Vec::new();
         let mut wanted = size;
@@ -895,7 +898,7 @@ mod tests {
                 continue;
             };
             let quoted = remaining.min(wanted);
-            levels.push(PriceLevel {
+            levels.push(PriceLevelV0 {
                 price,
                 size: quoted,
             });
@@ -905,7 +908,7 @@ mod tests {
 
         wincode::serialize(&QuoteResponseV0 {
             levels: &levels,
-            withheld: PriceLevel::default(),
+            withheld: PriceLevelV0::default(),
         })
         .unwrap()
     }
@@ -958,7 +961,7 @@ mod tests {
     #[test]
     fn streamed_quote_response_matches_the_wire_struct() {
         for size in [0, UNIT / 4, UNIT, 3 * UNIT, u64::MAX] {
-            for direction in [Direction::Long, Direction::Short] {
+            for direction in [DirectionV0::Long, DirectionV0::Short] {
                 let mut quoter = quoter(
                     &[(1_000, UNIT), (3_000, UNIT / 2)],
                     &[(500, UNIT / 2), (2_500, UNIT), (9_000, 5 * UNIT)],
@@ -981,12 +984,12 @@ mod tests {
     fn a_closed_gate_streams_an_empty_level_vec() {
         let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
         let closed = quoter
-            .write_quote_response(Direction::Long, UNIT, 0, 0, false)
+            .write_quote_response(DirectionV0::Long, UNIT, 0, 0, false)
             .unwrap();
         assert_eq!(written(&quoter, closed), vec![0u8; EMPTY_QUOTE]);
         // A stale mid quotes nothing, even with the gate open.
         let stale = quoter
-            .write_quote_response(Direction::Long, UNIT, 0, 10_000, true)
+            .write_quote_response(DirectionV0::Long, UNIT, 0, 10_000, true)
             .unwrap();
         assert_eq!(written(&quoter, stale), vec![0u8; EMPTY_QUOTE]);
     }
@@ -1005,7 +1008,7 @@ mod tests {
     fn quote_truncates_at_the_takers_size_and_rounds_away_from_mid() {
         let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT), (3_000, UNIT)]);
         let pointer = quoter
-            .write_quote_response(Direction::Long, UNIT + UNIT / 2, 0, 0, true)
+            .write_quote_response(DirectionV0::Long, UNIT + UNIT / 2, 0, 0, true)
             .unwrap();
         let bytes = written(&quoter, pointer);
         let response = QuoteResponseV0::parse(&bytes).unwrap();
@@ -1026,7 +1029,7 @@ mod tests {
 
         // A long taker paying no more than 100.2 gets the first rung only.
         let pointer = quoter
-            .write_quote_response(Direction::Long, u64::MAX, 100_200_000, 0, true)
+            .write_quote_response(DirectionV0::Long, u64::MAX, 100_200_000, 0, true)
             .unwrap();
         let bytes = written(&quoter, pointer);
         let response = QuoteResponseV0::parse(&bytes).unwrap();
@@ -1035,14 +1038,14 @@ mod tests {
 
         // The rung exactly at the limit is acceptable.
         let pointer = quoter
-            .write_quote_response(Direction::Long, u64::MAX, 100_300_000, 0, true)
+            .write_quote_response(DirectionV0::Long, u64::MAX, 100_300_000, 0, true)
             .unwrap();
         let bytes = written(&quoter, pointer);
         assert_eq!(QuoteResponseV0::parse(&bytes).unwrap().levels.len(), 2);
 
         // Zero is no bound.
         let pointer = quoter
-            .write_quote_response(Direction::Long, u64::MAX, 0, 0, true)
+            .write_quote_response(DirectionV0::Long, u64::MAX, 0, 0, true)
             .unwrap();
         let bytes = written(&quoter, pointer);
         assert_eq!(QuoteResponseV0::parse(&bytes).unwrap().levels.len(), 2);
@@ -1051,7 +1054,7 @@ mod tests {
         // side.
         let mut bid_side = super::tests::quoter(&[(1_000, UNIT), (3_000, UNIT)], &[(1_000, UNIT)]);
         let pointer = bid_side
-            .write_quote_response(Direction::Short, u64::MAX, 99_800_000, 0, true)
+            .write_quote_response(DirectionV0::Short, u64::MAX, 99_800_000, 0, true)
             .unwrap();
         let bytes = written(&bid_side, pointer);
         let response = QuoteResponseV0::parse(&bytes).unwrap();
@@ -1066,7 +1069,7 @@ mod tests {
             .collect();
         let mut quoter = quoter(&side, &side);
         let pointer = quoter
-            .write_quote_response(Direction::Long, u64::MAX, 0, 0, true)
+            .write_quote_response(DirectionV0::Long, u64::MAX, 0, 0, true)
             .unwrap();
         assert_eq!(
             pointer.len as usize,
@@ -1079,8 +1082,8 @@ mod tests {
     #[test]
     fn execute_consumes_a_monotone_prefix() {
         let mut quoter = quoter(&[], &[(1_000, UNIT), (3_000, UNIT)]);
-        let fill = quoter.fill(Direction::Long, UNIT + UNIT / 2, 0).unwrap();
-        quoter.apply_fill(Direction::Long, &fill).unwrap();
+        let fill = quoter.fill(DirectionV0::Long, UNIT + UNIT / 2, 0).unwrap();
+        quoter.apply_fill(DirectionV0::Long, &fill).unwrap();
         assert_eq!(fill.base, UNIT + UNIT / 2);
         assert_eq!(quoter.asks[0].filled, UNIT);
         assert_eq!(quoter.asks[1].filled, UNIT / 2);
@@ -1088,8 +1091,8 @@ mod tests {
 
         // The partially consumed rung is still quotable, so a second fill
         // starts there and the invariant still holds.
-        let fill = quoter.fill(Direction::Long, UNIT, 0).unwrap();
-        quoter.apply_fill(Direction::Long, &fill).unwrap();
+        let fill = quoter.fill(DirectionV0::Long, UNIT, 0).unwrap();
+        quoter.apply_fill(DirectionV0::Long, &fill).unwrap();
         assert_eq!(fill.base, UNIT / 2);
         assert_eq!(quoter.asks[1].filled, UNIT);
         quoter.validate().unwrap();
@@ -1109,7 +1112,7 @@ mod tests {
             consumed,
         };
 
-        assert!(quoter.apply_fill(Direction::Long, &fill).is_err());
+        assert!(quoter.apply_fill(DirectionV0::Long, &fill).is_err());
     }
 
     #[test]
@@ -1124,7 +1127,7 @@ mod tests {
             consumed,
         };
 
-        assert!(quoter.apply_fill(Direction::Long, &fill).is_err());
+        assert!(quoter.apply_fill(DirectionV0::Long, &fill).is_err());
     }
 
     #[test]
@@ -1138,7 +1141,7 @@ mod tests {
             consumed,
         };
 
-        assert!(quoter.apply_fill(Direction::Long, &fill).is_err());
+        assert!(quoter.apply_fill(DirectionV0::Long, &fill).is_err());
     }
 
     #[test]
@@ -1146,10 +1149,10 @@ mod tests {
         let mut quoter = quoter(&[(1_000, UNIT), (3_000, UNIT / 2)], &[(500, 2 * UNIT)]);
         // A partly consumed rung is withdrawn like any other, `filled`
         // included.
-        let fill = quoter.fill(Direction::Short, UNIT / 4, 0).unwrap();
-        quoter.apply_fill(Direction::Short, &fill).unwrap();
+        let fill = quoter.fill(DirectionV0::Short, UNIT / 4, 0).unwrap();
+        quoter.apply_fill(DirectionV0::Short, &fill).unwrap();
 
-        assert_eq!(quoter.clear_side(Direction::Short), 2);
+        assert_eq!(quoter.clear_side(DirectionV0::Short), 2);
         assert_eq!(quoter.bid_count, 0);
         assert!(quoter
             .bids
@@ -1160,10 +1163,10 @@ mod tests {
         assert_eq!(quoter.asks[0].size, 2 * UNIT);
         quoter.validate().unwrap();
         assert!(quoter
-            .write_quote_response(Direction::Short, UNIT, 0, 0, true)
+            .write_quote_response(DirectionV0::Short, UNIT, 0, 0, true)
             .is_ok());
-        assert!(quoter.fill(Direction::Short, UNIT, 0).unwrap().base == 0);
-        assert_eq!(quoter.fill(Direction::Long, UNIT, 0).unwrap().base, UNIT);
+        assert!(quoter.fill(DirectionV0::Short, UNIT, 0).unwrap().base == 0);
+        assert_eq!(quoter.fill(DirectionV0::Long, UNIT, 0).unwrap().base, UNIT);
     }
 
     /// The mid withdrawal is the maker's kill switch, so it must work on an
@@ -1200,10 +1203,10 @@ mod tests {
     #[test]
     fn clearing_an_empty_side_is_a_valid_no_op() {
         let mut quoter = quoter(&[], &[(500, UNIT)]);
-        assert_eq!(quoter.clear_side(Direction::Short), 0);
+        assert_eq!(quoter.clear_side(DirectionV0::Short), 0);
         quoter.validate().unwrap();
-        assert_eq!(quoter.clear_side(Direction::Long), 1);
-        assert_eq!(quoter.clear_side(Direction::Long), 0);
+        assert_eq!(quoter.clear_side(DirectionV0::Long), 1);
+        assert_eq!(quoter.clear_side(DirectionV0::Long), 0);
         quoter.validate().unwrap();
     }
 
@@ -1215,36 +1218,36 @@ mod tests {
     #[test]
     fn the_withdrawal_post_check_covers_what_the_withdrawal_wrote() {
         let mut quoter = quoter(&[(1_000, UNIT), (3_000, UNIT)], &[(500, UNIT)]);
-        let cleared = quoter.clear_side(Direction::Short);
+        let cleared = quoter.clear_side(DirectionV0::Short);
         quoter
-            .validate_cleared_side(Direction::Short, cleared)
+            .validate_cleared_side(DirectionV0::Short, cleared)
             .unwrap();
 
         // A rung the withdrawal should have zeroed and did not.
         quoter.bids[1].size = UNIT;
         assert!(quoter
-            .validate_cleared_side(Direction::Short, cleared)
+            .validate_cleared_side(DirectionV0::Short, cleared)
             .is_err());
         quoter.bids[1].size = 0;
 
         // A count that failed to drop, which would leave the side quotable.
         quoter.bid_count = 1;
         assert!(quoter
-            .validate_cleared_side(Direction::Short, cleared)
+            .validate_cleared_side(DirectionV0::Short, cleared)
             .is_err());
         quoter.bid_count = 0;
 
         // The check covers only the side it was asked about. The ask side is
         // still live and that is not an error.
         quoter
-            .validate_cleared_side(Direction::Short, cleared)
+            .validate_cleared_side(DirectionV0::Short, cleared)
             .unwrap();
         assert_eq!(quoter.ask_count, 1);
 
         // Stale tail rungs are out of scope here. `validate` catches them.
         quoter.bids[7].size = UNIT;
         quoter
-            .validate_cleared_side(Direction::Short, cleared)
+            .validate_cleared_side(DirectionV0::Short, cleared)
             .unwrap();
         assert!(quoter.validate().is_err());
     }
@@ -1276,7 +1279,7 @@ mod tests {
     /// fast path the program runs.
     fn reference_level_price(
         params: &SplineParams,
-        direction: Direction,
+        direction: DirectionV0,
         offset_ppm: u64,
     ) -> Option<u64> {
         let mid = params.mid_price as u128;
@@ -1285,8 +1288,8 @@ mod tests {
             .checked_div(PERCENTAGE_PRECISION)?;
         let tick = (params.price_tick_size as u128).max(1);
         let price = match direction {
-            Direction::Long => mid.checked_add(delta)?.div_ceil(tick).checked_mul(tick)?,
-            Direction::Short => {
+            DirectionV0::Long => mid.checked_add(delta)?.div_ceil(tick).checked_mul(tick)?,
+            DirectionV0::Short => {
                 let raw = mid.checked_sub(delta)?;
                 raw / tick * tick
             }
@@ -1321,7 +1324,8 @@ mod tests {
     fn the_u64_price_math_matches_the_u128_form() {
         let mids = [0, 1, 99, 100_000_000, u64::MAX / 2, u64::MAX - 1, u64::MAX];
         let offsets = [0, 1, 999, 1_000_000, u64::MAX / 3, u64::MAX];
-        let ticks = [0, 1, 7, 100, 1_000_000, u64::MAX];
+        // A live account can never hold a zero tick; validate() rejects it.
+        let ticks = [1, 7, 100, 1_000_000, u64::MAX];
         for mid in mids {
             for tick in ticks {
                 let params = SplineParams {
@@ -1333,7 +1337,7 @@ mod tests {
                 };
 
                 for offset_ppm in offsets {
-                    for direction in [Direction::Long, Direction::Short] {
+                    for direction in [DirectionV0::Long, DirectionV0::Short] {
                         assert_eq!(
                             params.level_price(direction, offset_ppm),
                             reference_level_price(&params, direction, offset_ppm),

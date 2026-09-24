@@ -15,7 +15,7 @@ mod tests {
     };
 
     /// The stack-built bytes must equal anchor's. A decoder keys on the
-    /// discriminator and then reads the body as borsh.
+    /// discriminator and then reads the body as the record's raw bytes.
     #[test]
     fn the_execute_record_emits_the_bytes_the_event_impl_would() {
         assert_pod_matches_event!(MidpointExecuteRecordV0 {

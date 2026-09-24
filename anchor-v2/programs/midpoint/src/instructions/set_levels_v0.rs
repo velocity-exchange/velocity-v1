@@ -1,7 +1,7 @@
 use {
     crate::{
         error::MidpointError,
-        state::{Direction, MidpointQuoterV0, SplineLevelInputV0},
+        state::{DirectionV0, MidpointQuoterV0, SplineLevelInputV0},
     },
     anchor_lang::prelude::*,
 };
@@ -29,10 +29,10 @@ pub struct SetLevelsArgsV0 {
 pub fn handle_set_levels_v0(ctx: &mut Context<SetLevelsV0>, args: SetLevelsArgsV0) -> Result<()> {
     let quoter = &mut ctx.accounts.quoter;
     if let Some(bids) = &args.bids {
-        quoter.write_side(Direction::Short, bids)?;
+        quoter.write_side(DirectionV0::Short, bids)?;
     }
     if let Some(asks) = &args.asks {
-        quoter.write_side(Direction::Long, asks)?;
+        quoter.write_side(DirectionV0::Long, asks)?;
     }
     if let Some(mid) = args.mid {
         let slot = Clock::get()?.slot;

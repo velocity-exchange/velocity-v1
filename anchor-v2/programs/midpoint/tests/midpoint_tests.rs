@@ -13,7 +13,7 @@ use {
         anchor_lang::solana_program::instruction::{AccountMeta, Instruction},
         instruction,
         state::{
-            CancelSidesV0, Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0,
+            CancelSidesV0, DirectionV0, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0,
             UserCapsV0, UserRefV0, RESPONSE_OFFSET,
         },
         CancelAllArgsV0, ExecuteArgsV0, QuoteArgsV0, SetLevelsArgsV0, SetMidArgsV0,
@@ -245,7 +245,7 @@ fn arm(ctx: &mut Ctx) {
     .unwrap();
 }
 
-fn quote_args<'a>(direction: Direction, size: u64) -> QuoteArgsV0<'a> {
+fn quote_args<'a>(direction: DirectionV0, size: u64) -> QuoteArgsV0<'a> {
     QuoteArgsV0 {
         taker_served_window: true,
         include_taker_origin_reservations: false,
@@ -265,17 +265,17 @@ fn quote_ix_with(ctx: &Ctx, args: QuoteArgsV0<'_>) -> Instruction {
     })
 }
 
-fn quote_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
+fn quote_ix(ctx: &Ctx, direction: DirectionV0, size: u64) -> Instruction {
     quote_ix_with(ctx, quote_args(direction, size))
 }
 
-fn execute_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
+fn execute_ix(ctx: &Ctx, direction: DirectionV0, size: u64) -> Instruction {
     execute_ix_served(ctx, direction, size, true)
 }
 
 fn execute_ix_served(
     ctx: &Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     taker_served_window: bool,
 ) -> Instruction {
@@ -322,7 +322,7 @@ fn parse_cancel_all(data: &[u8]) -> (u8, u8, bool) {
     (data[0], data[1], data[2] == 1)
 }
 
-fn quote_levels(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
+fn quote_levels(ctx: &mut Ctx, direction: DirectionV0, size: u64) -> Vec<(u64, u64)> {
     let ix = quote_ix(ctx, direction, size);
     let meta = send(ctx, ix).unwrap();
     let response = read_response(ctx, &meta);
@@ -342,15 +342,15 @@ fn spline_quotes_both_sides_around_mid() {
     arm(&mut ctx);
 
     // Ask side (taker Long): mid + 10bps = 100_100_000, + 30bps = 100_300_000.
-    let asks = quote_levels(&mut ctx, Direction::Long, 2 * UNIT);
+    let asks = quote_levels(&mut ctx, DirectionV0::Long, 2 * UNIT);
     assert_eq!(asks, vec![(100_100_000, UNIT), (100_300_000, UNIT)]);
     // Bid side: mid - 10bps, - 30bps.
-    let bids = quote_levels(&mut ctx, Direction::Short, 2 * UNIT);
+    let bids = quote_levels(&mut ctx, DirectionV0::Short, 2 * UNIT);
     assert_eq!(bids, vec![(99_900_000, UNIT), (99_700_000, UNIT)]);
 
     // Quote truncates at the taker's size: half a unit consumes only the
     // first rung.
-    let asks = quote_levels(&mut ctx, Direction::Long, UNIT / 2);
+    let asks = quote_levels(&mut ctx, DirectionV0::Long, UNIT / 2);
     assert_eq!(asks, vec![(100_100_000, UNIT / 2)]);
 }
 
@@ -377,9 +377,9 @@ fn prices_round_away_from_mid_to_the_tick() {
     .unwrap();
     // Offset 0: raw price = mid on both sides; ask rounds up to the next
     // tick, bid rounds down.
-    let asks = quote_levels(&mut ctx, Direction::Long, UNIT);
+    let asks = quote_levels(&mut ctx, DirectionV0::Long, UNIT);
     assert_eq!(asks, vec![(100_000_100, UNIT)]);
-    let bids = quote_levels(&mut ctx, Direction::Short, UNIT);
+    let bids = quote_levels(&mut ctx, DirectionV0::Short, UNIT);
     assert_eq!(bids, vec![(100_000_000, UNIT)]);
 }
 
@@ -387,12 +387,12 @@ fn prices_round_away_from_mid_to_the_tick() {
 fn stale_mid_stops_quoting_and_a_fresh_write_resumes() {
     let mut ctx = setup();
     arm(&mut ctx);
-    assert_eq!(quote_levels(&mut ctx, Direction::Long, UNIT).len(), 1);
+    assert_eq!(quote_levels(&mut ctx, DirectionV0::Long, UNIT).len(), 1);
 
     // Warp past the staleness window: the book goes silent.
     let clock: Clock = ctx.svm.get_sysvar();
     ctx.svm.warp_to_slot(clock.slot + 26);
-    assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
+    assert!(quote_levels(&mut ctx, DirectionV0::Long, UNIT).is_empty());
 
     // A fresh mid write revives it.
     {
@@ -400,7 +400,7 @@ fn stale_mid_stops_quoting_and_a_fresh_write_resumes() {
         send(&mut ctx, ix).unwrap();
     }
 
-    assert_eq!(quote_levels(&mut ctx, Direction::Long, UNIT).len(), 1);
+    assert_eq!(quote_levels(&mut ctx, DirectionV0::Long, UNIT).len(), 1);
 }
 
 #[test]
@@ -569,7 +569,7 @@ fn the_config_authority_is_independent_of_the_quoted_wallet() {
     );
 
     send(&mut ctx, ix).unwrap();
-    assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
+    assert!(quote_levels(&mut ctx, DirectionV0::Long, UNIT).is_empty());
 }
 
 /// Creation is still consent: the instance lives at a PDA seeded by the
@@ -611,7 +611,7 @@ fn execute_consumes_the_spline_and_reports_one_balance_change() {
     arm(&mut ctx);
 
     // Take 1.5 units of the ask side: full first rung + half the second.
-    let ix = execute_ix(&ctx, Direction::Long, UNIT + UNIT / 2);
+    let ix = execute_ix(&ctx, DirectionV0::Long, UNIT + UNIT / 2);
     let meta = send(&mut ctx, ix).unwrap();
     let changes = parse_execute(&read_response(&ctx, &meta));
     assert_eq!(changes.len(), 1);
@@ -624,7 +624,7 @@ fn execute_consumes_the_spline_and_reports_one_balance_change() {
 
     // The consumed intent stays consumed: the next quote starts at the
     // second rung's remainder.
-    let asks = quote_levels(&mut ctx, Direction::Long, 2 * UNIT);
+    let asks = quote_levels(&mut ctx, DirectionV0::Long, 2 * UNIT);
     assert_eq!(asks, vec![(100_300_000, UNIT / 2)]);
 
     // Rewriting the side resets `filled`.
@@ -638,7 +638,7 @@ fn execute_consumes_the_spline_and_reports_one_balance_change() {
         },
     )
     .unwrap();
-    let asks = quote_levels(&mut ctx, Direction::Long, 2 * UNIT);
+    let asks = quote_levels(&mut ctx, DirectionV0::Long, 2 * UNIT);
     assert_eq!(asks, vec![(100_100_000, UNIT)]);
 }
 
@@ -657,7 +657,7 @@ fn a_shrinking_rewrite_drops_the_tail() {
         },
     )
     .unwrap();
-    let ix = execute_ix(&ctx, Direction::Long, UNIT + UNIT / 2);
+    let ix = execute_ix(&ctx, DirectionV0::Long, UNIT + UNIT / 2);
     send(&mut ctx, ix).unwrap();
 
     send_levels(
@@ -677,7 +677,7 @@ fn a_shrinking_rewrite_drops_the_tail() {
         assert_eq!((level.offset_ppm, level.size, level.filled), (0, 0, 0));
     }
 
-    let asks = quote_levels(&mut ctx, Direction::Long, 10 * UNIT);
+    let asks = quote_levels(&mut ctx, DirectionV0::Long, 10 * UNIT);
     assert_eq!(asks, vec![(100_500_000, UNIT)]);
 }
 
@@ -685,7 +685,7 @@ fn a_shrinking_rewrite_drops_the_tail() {
 fn execute_requires_the_execute_authority() {
     let mut ctx = setup();
     arm(&mut ctx);
-    let mut ix = execute_ix(&ctx, Direction::Long, UNIT);
+    let mut ix = execute_ix(&ctx, DirectionV0::Long, UNIT);
     ix.accounts[1] = AccountMeta::new_readonly(ctx.hot.pubkey(), true);
     assert!(send(&mut ctx, ix).is_err());
 }
@@ -710,7 +710,7 @@ fn quoted_user_gates_apply() {
             taker_served_window: true,
             include_taker_origin_reservations: false,
             users: &[stranger],
-            ..quote_args(Direction::Long, UNIT)
+            ..quote_args(DirectionV0::Long, UNIT)
         },
     );
     let meta = send(&mut ctx, ix).unwrap();
@@ -725,7 +725,7 @@ fn quoted_user_gates_apply() {
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: Some(quoted),
-            ..quote_args(Direction::Long, UNIT)
+            ..quote_args(DirectionV0::Long, UNIT)
         },
     );
     let meta = send(&mut ctx, ix).unwrap();
@@ -741,7 +741,7 @@ fn quoted_user_gates_apply() {
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: Some(stranger),
-            ..quote_args(Direction::Long, UNIT)
+            ..quote_args(DirectionV0::Long, UNIT)
         },
     );
     let meta = send(&mut ctx, ix).unwrap();
@@ -766,22 +766,22 @@ fn a_protected_flow_instance_refuses_an_unprotected_taker() {
         QuoteArgsV0 {
             taker_served_window: false,
             include_taker_origin_reservations: false,
-            ..quote_args(Direction::Long, UNIT)
+            ..quote_args(DirectionV0::Long, UNIT)
         },
     );
     let meta = send(&mut ctx, ix).unwrap();
     assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
 
     // Protected flow quotes.
-    let ix = quote_ix(&ctx, Direction::Long, UNIT);
+    let ix = quote_ix(&ctx, DirectionV0::Long, UNIT);
     let meta = send(&mut ctx, ix).unwrap();
     assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
 
     // Execute is gated the same way.
-    let ix = execute_ix_served(&ctx, Direction::Long, UNIT, false);
+    let ix = execute_ix_served(&ctx, DirectionV0::Long, UNIT, false);
     let meta = send(&mut ctx, ix).unwrap();
     assert!(parse_execute(&read_response(&ctx, &meta)).is_empty());
-    let ix = execute_ix(&ctx, Direction::Long, UNIT);
+    let ix = execute_ix(&ctx, DirectionV0::Long, UNIT);
     let meta = send(&mut ctx, ix).unwrap();
     assert_eq!(parse_execute(&read_response(&ctx, &meta)).len(), 1);
 }
@@ -797,7 +797,7 @@ fn an_unprotected_instance_ignores_the_flag() {
         QuoteArgsV0 {
             taker_served_window: false,
             include_taker_origin_reservations: false,
-            ..quote_args(Direction::Long, UNIT)
+            ..quote_args(DirectionV0::Long, UNIT)
         },
     );
     let meta = send(&mut ctx, ix).unwrap();
@@ -819,7 +819,7 @@ fn dusty_remainders_and_misaligned_sizes_do_not_quote() {
         },
     )
     .unwrap();
-    let asks = quote_levels(&mut ctx, Direction::Long, UNIT);
+    let asks = quote_levels(&mut ctx, DirectionV0::Long, UNIT);
     assert_eq!(asks, vec![(100_100_000, 10_000)]);
 }
 
@@ -892,9 +892,9 @@ fn paused_quoter_is_silent() {
     );
 
     send(&mut ctx, ix).unwrap();
-    assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
+    assert!(quote_levels(&mut ctx, DirectionV0::Long, UNIT).is_empty());
     let meta = {
-        let ix = execute_ix(&ctx, Direction::Long, UNIT);
+        let ix = execute_ix(&ctx, DirectionV0::Long, UNIT);
         send(&mut ctx, ix).unwrap()
     };
 
@@ -906,7 +906,7 @@ fn cancel_all_withdraws_the_named_side_and_leaves_the_other_quoting() {
     let mut ctx = setup();
     arm(&mut ctx);
     // A partly-consumed rung is withdrawn like any other.
-    let ix = execute_ix(&ctx, Direction::Short, UNIT / 2);
+    let ix = execute_ix(&ctx, DirectionV0::Short, UNIT / 2);
     send(&mut ctx, ix).unwrap();
 
     let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Bids, false);
@@ -916,8 +916,8 @@ fn cancel_all_withdraws_the_named_side_and_leaves_the_other_quoting() {
     assert!(!mid_cleared);
 
     // The bid side quotes nothing; the ask side is untouched, mid intact.
-    assert!(quote_levels(&mut ctx, Direction::Short, u64::MAX).is_empty());
-    assert_eq!(quote_levels(&mut ctx, Direction::Long, u64::MAX).len(), 2);
+    assert!(quote_levels(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
+    assert_eq!(quote_levels(&mut ctx, DirectionV0::Long, u64::MAX).len(), 2);
     let quoter = read_quoter(&ctx);
     assert_eq!((quoter.bid_count, quoter.ask_count), (0, 2));
     assert_eq!(quoter.mid_price, MID);
@@ -935,7 +935,7 @@ fn cancel_all_withdraws_the_named_side_and_leaves_the_other_quoting() {
     )
     .unwrap();
     assert_eq!(
-        quote_levels(&mut ctx, Direction::Short, u64::MAX),
+        quote_levels(&mut ctx, DirectionV0::Short, u64::MAX),
         vec![(99_900_000, UNIT)]
     );
 }
@@ -954,8 +954,8 @@ fn cancel_all_can_take_both_sides_and_the_mid_at_once() {
     let quoter = read_quoter(&ctx);
     assert_eq!((quoter.bid_count, quoter.ask_count), (0, 0));
     assert_eq!(quoter.mid_price, 0);
-    assert!(quote_levels(&mut ctx, Direction::Long, u64::MAX).is_empty());
-    assert!(quote_levels(&mut ctx, Direction::Short, u64::MAX).is_empty());
+    assert!(quote_levels(&mut ctx, DirectionV0::Long, u64::MAX).is_empty());
+    assert!(quote_levels(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
 
     // A zeroed mid silences the spline even once the ladders are back, so
     // re-arming shape alone can't accidentally resume quoting.
@@ -969,10 +969,10 @@ fn cancel_all_can_take_both_sides_and_the_mid_at_once() {
         },
     )
     .unwrap();
-    assert!(quote_levels(&mut ctx, Direction::Long, u64::MAX).is_empty());
+    assert!(quote_levels(&mut ctx, DirectionV0::Long, u64::MAX).is_empty());
     let ix = set_mid_ix(&ctx, MID, 0);
     send(&mut ctx, ix).unwrap();
-    assert_eq!(quote_levels(&mut ctx, Direction::Long, u64::MAX).len(), 1);
+    assert_eq!(quote_levels(&mut ctx, DirectionV0::Long, u64::MAX).len(), 1);
 }
 
 /// Both of the maker's keys can withdraw, and nobody else can. The cold key
@@ -1097,9 +1097,9 @@ fn set_mid_cu_stays_near_the_floor() {
          set_levels(32 one side): {cu32_one_side}, set_levels(32×2 + mid): {cu32_both}"
     );
 
-    let ix = quote_ix(&ctx, Direction::Long, u64::MAX);
+    let ix = quote_ix(&ctx, DirectionV0::Long, u64::MAX);
     let quote_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
-    let ix = execute_ix(&ctx, Direction::Long, u64::MAX);
+    let ix = execute_ix(&ctx, DirectionV0::Long, u64::MAX);
     let execute_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
 
     println!(
@@ -1357,7 +1357,7 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
         &ctx,
         QuoteArgsV0 {
             reference_price: MID as i64,
-            ..quote_args(Direction::Long, UNIT)
+            ..quote_args(DirectionV0::Long, UNIT)
         },
     );
     let meta = send(&mut ctx, ix).unwrap();
@@ -1369,7 +1369,7 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
         &ctx,
         QuoteArgsV0 {
             reference_price: off,
-            ..quote_args(Direction::Long, UNIT)
+            ..quote_args(DirectionV0::Long, UNIT)
         },
     );
     let meta = send(&mut ctx, ix).unwrap();
@@ -1380,7 +1380,7 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
         args: ExecuteArgsV0 {
             taker_served_window: true,
             include_taker_origin_reservations: false,
-            direction: Direction::Long,
+            direction: DirectionV0::Long,
             size: UNIT,
             users: &[],
             caps: UserCapsV0::EMPTY,

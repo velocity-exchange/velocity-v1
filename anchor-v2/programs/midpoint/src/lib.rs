@@ -10,7 +10,7 @@
 //! compute use.
 //!
 //! Velocity reaches this program through the quoter interface. `quote_v0` and
-//! `execute_v0` stream borsh responses into the instance's response tail and
+//! `execute_v0` stream wincode responses into the instance's response tail and
 //! return a `ResponsePointerV0` through return data. Execute is gated on the
 //! registered `execute_authority`, which is velocity's quoter CPI signer PDA.
 //! Velocity clamps size to the quoted user's margin before it calls here. The

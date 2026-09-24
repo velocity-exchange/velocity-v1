@@ -453,7 +453,10 @@ impl VelocityGrpcClient {
                                         account.owner.as_slice().try_into().unwrap(),
                                     ),
                                     pubkey,
-                                    slot: latest_slot,
+                                    // the update's own write slot, not the stream's last slot
+                                    // message: the latter is 0 until the first slot arrives and
+                                    // sticky across reconnects, which mis-orders updates
+                                    slot: account_update.slot,
                                     lamports: account.lamports,
                                     executable: account.executable,
                                     rent_epoch: account.rent_epoch,

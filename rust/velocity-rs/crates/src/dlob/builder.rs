@@ -115,6 +115,11 @@ impl<'a> DLOBBuilder<'a> {
                 }
                 return;
             };
+            // this runs before the account_map write and diffs against the map's old copy,
+            // so it must skip exactly the updates the map skips or the book drifts
+            if account_map.is_stale(&update.pubkey, update.slot) {
+                return;
+            }
             let old_user = account_map
                 .account_data_and_slot::<User>(&update.pubkey)
                 .map(|x| x.data);

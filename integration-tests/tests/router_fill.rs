@@ -781,7 +781,6 @@ fn ask_ref(order_ref: ClobOrderRefV0) -> velocity::instructions::ForceCancelClob
 fn force_cancel_clob_ix(
     fixture: &Fixture,
     filler_user: Pubkey,
-    filler_stats: Pubkey,
     user: Pubkey,
     user_stats: Pubkey,
     authority: Pubkey,
@@ -791,7 +790,6 @@ fn force_cancel_clob_ix(
         state: state_pda(),
         authority,
         filler: filler_user,
-        filler_stats,
         user,
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
@@ -4447,7 +4445,6 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
         force_cancel_clob_ix(
             fixture,
             filler_user,
-            filler_stats,
             fixture.clob_maker_user,
             maker_stats,
             fixture.keeper.pubkey(),
@@ -4547,7 +4544,6 @@ fn a_tripped_equity_breaker_is_not_grounds_on_its_own() {
         force_cancel_clob_ix(
             fixture,
             filler_user,
-            filler_stats,
             fixture.clob_maker_user,
             maker_stats,
             fixture.keeper.pubkey(),
@@ -4621,7 +4617,6 @@ fn force_cancel_passes_over_a_risk_reducing_order() {
     let ix = force_cancel_clob_ix(
         &fixture,
         filler_user,
-        filler_stats,
         fixture.clob_maker_user,
         maker_stats,
         fixture.keeper.pubkey(),
@@ -4699,7 +4694,6 @@ fn a_maker_cannot_outrun_cleanup_by_resting_more_orders() {
     let ix = force_cancel_clob_ix(
         &fixture,
         filler_user,
-        filler_stats,
         fixture.clob_maker_user,
         maker_stats,
         fixture.keeper.pubkey(),
@@ -4771,7 +4765,6 @@ fn a_misdeclared_side_fails_loudly() {
     let ix = force_cancel_clob_ix(
         &fixture,
         filler_user,
-        filler_stats,
         fixture.clob_maker_user,
         maker_stats,
         fixture.keeper.pubkey(),
@@ -7246,13 +7239,8 @@ fn run_liq_resolver(
 
 /// Cancelling comes before liquidating, and one watch drives both.
 ///
-/// `force_cancel_clob_orders` answers to the initial requirement and
-/// liquidation to the maintenance one, so anything liquidatable was already
-/// cancellable — they are stages of one ladder, not two watches. While the
-/// account rests orders the resolver stages the sweep; once the book is clear
-/// the same wake resolves to the liquidation. Orders first matters: a
-/// liquidation that leaves risk-increasing orders resting hands the account
-/// new exposure the moment one fills.
+/// While the account rests risk-increasing orders the resolver stages the
+/// sweep. Once the book is clear, the same wake resolves to the liquidation.
 #[test]
 fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
     let mut fixture = setup();
@@ -7337,6 +7325,77 @@ fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
         resolved.executor_disc,
         velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
         "with the book clear the ladder moves on to the position"
+    );
+}
+
+/// A book order that only reduces the position gives a force cancel no work,
+/// so the ladder stages the liquidation at once. The liquidation sweeps the
+/// order off the book and releases its reservation before it fills.
+#[test]
+fn a_liquidation_sweeps_a_reducing_book_order() {
+    let mut fixture = setup();
+    arm_liquidation_throttle(&mut fixture.svm);
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    // The maker rests an ask far above the market, then holds a long that
+    // fails maintenance at $95. The ask faces the long, so it reduces risk.
+    // At $95 the vAMM stays inside the oracle band, so it takes the fill.
+    place_clob_ask(&mut fixture, 150 * PRICE, UNIT / 2);
+    let maker_user = fixture.clob_maker_user;
+    let mut maker = trading_user(
+        &fixture.clob_maker_authority.pubkey(),
+        60 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+
+    maker.perp_positions[0].market_index = 0;
+    maker.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    maker.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    maker.perp_positions[0].open_asks = -((UNIT / 2) as i64);
+    maker.perp_positions[0].open_orders = 1;
+    maker.open_orders = 1;
+    maker.has_open_order = true;
+    maker.next_order_id = 2;
+    set_user_account(&mut fixture.svm, maker_user, &maker);
+    sync_liq_conditions(&mut fixture, maker_user, market_conditions, 0);
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (95 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let resolved = run_liq_resolver(&mut fixture, maker_user)
+        .expect("an underwater account stages a liquidation");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+        payout,
+    );
+
+    assert_eq!(clob_ask_count(&fixture), 0);
+    let after: User = read_zero_copy(&fixture.svm, &maker_user);
+    assert_eq!(after.perp_positions[0].open_orders, 0);
+    assert_eq!(after.perp_positions[0].open_asks, 0);
+    assert!(
+        after.perp_positions[0].base_asset_amount < (10 * UNIT) as i64,
+        "the liquidation closed part of the position"
     );
 }
 
@@ -9022,7 +9081,6 @@ fn a_remainder_cannot_be_pulled_inside_its_window_but_force_cancel_reaches_it() 
     let ix = force_cancel_clob_ix(
         &forced,
         filler_user,
-        filler_stats,
         failing.user,
         failing.stats,
         forced.keeper.pubkey(),

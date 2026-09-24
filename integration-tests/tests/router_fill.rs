@@ -874,6 +874,49 @@ fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
     assert_eq!(slot.config.book_default_activation_delay_slots, slots);
 }
 
+/// Change the book's reservation grace the way production does: through
+/// velocity, which is the book's config authority.
+fn set_clob_reservation_grace_slots(fixture: &mut Fixture, slots: u16) {
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::AdminUpdatePerpMarketClobBookConfig {
+            admin: fixture.admin.pubkey(),
+            state: state_pda(),
+            perp_market: perp_market_pda(0),
+            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdatePerpMarketClobBookConfig {
+            args: velocity::state::prop_amm::ClobUpdateMarketArgsV0 {
+                reservation_grace_slots: Some(slots),
+                ..Default::default()
+            },
+        }
+        .data(),
+    };
+
+    let admin = fixture.admin.insecure_clone();
+    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+}
+
+/// The reservation grace a test arms a fixture with, so a cancel, modify or
+/// evict of a taker remainder can warp past its claim by a known amount
+/// instead of assuming the book's built-in default.
+const CLAIM_GRACE_SLOTS: u64 = 5;
+
+/// Sets the book's reservation grace to [`CLAIM_GRACE_SLOTS`] and warps to the
+/// first slot at which a remainder activated at `activation_slot` is no
+/// longer bound.
+fn warp_past_claim(fixture: &mut Fixture, activation_slot: u64) {
+    set_clob_reservation_grace_slots(fixture, CLAIM_GRACE_SLOTS as u16);
+    fixture
+        .svm
+        .warp_to_slot(activation_slot + CLAIM_GRACE_SLOTS);
+}
+
 /// The speed bump replaced JIT, and only a signed-message order can carry the
 /// attestation that skips it. A maker's below-default activation delay is
 /// refused. A delay at or above the default stays permissionless.
@@ -3253,7 +3296,9 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     assert!(format!("{:?}", err.meta.logs).contains("already rests on the CLOB"));
 
     // Evict (fixture soft cap = 1): the shadow re-arms in the same tx,
-    // edge-gated on a recross.
+    // edge-gated on a recross. Eviction passes over a bound remainder, so the
+    // claim on this lone ask must lapse first.
+    warp_past_claim(&mut fixture, 12);
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::CrankClobOrderRemoval {
@@ -3303,10 +3348,10 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
         &mut fixture.svm,
         fixture.oracle,
         (100 * PRICE_PRECISION) as i64,
-        13,
+        18,
     );
 
-    fixture.svm.warp_to_slot(13);
+    fixture.svm.warp_to_slot(18);
     let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
@@ -3318,10 +3363,10 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
         &mut fixture.svm,
         fixture.oracle,
         (97 * PRICE_PRECISION) as i64,
-        14,
+        19,
     );
 
-    fixture.svm.warp_to_slot(14);
+    fixture.svm.warp_to_slot(19);
     let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
@@ -3638,6 +3683,9 @@ fn a_reduce_only_modify_is_clamped_to_the_position() {
     let mut maker = maker;
     maker.perp_positions[0].base_asset_amount = 0;
     set_user_account(&mut fixture.svm, fixture.clob_maker_user, &maker);
+    // The first modify's replacement activated at the current slot, so its
+    // own claim must lapse before a second modify can cancel it.
+    warp_past_claim(&mut fixture, 100);
     fixture.svm.expire_blockhash();
     let ix = modify_order_v1_ix(
         &fixture,
@@ -3701,6 +3749,9 @@ fn a_taker_remainder_modify_keeps_its_taker_origin_flag() {
         101 * PRICE,
         UNIT,
     );
+    // The remainder's own claim binds a modify's cancel leg the same way it
+    // binds a plain cancel, so the claim must lapse first.
+    warp_past_claim(&mut fixture, 10);
 
     let authority = taker.authority.insecure_clone();
     let ix = modify_order_v1_ix(
@@ -3836,6 +3887,9 @@ fn cancel_all_frees_placed_trigger_shadows() {
     assert_eq!(before.perp_positions[0].open_orders, 2);
     assert_eq!(clob_ask_count(&fixture), 2);
 
+    // An unforced sweep passes over a bound remainder, so the fired trigger's
+    // claim must lapse before it counts as swept.
+    warp_past_claim(&mut fixture, 12);
     let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Asks);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
 
@@ -3925,6 +3979,10 @@ fn placed_trigger_cancels_through_the_clob_only() {
     };
     let err = send(&mut fixture.svm, &maker_authority, ix, &[]).expect_err("shadow is CLOB-owned");
     assert!(format!("{:?}", err.meta.logs).contains("placed on the CLOB"));
+
+    // The fired trigger rests taker-origin, so its own claim binds the
+    // cancel until it lapses.
+    warp_past_claim(&mut fixture, 12);
 
     // cancel_clob_order removes the book order AND frees the shadow.
     let ix = Instruction {
@@ -8985,22 +9043,52 @@ fn a_remainder_cannot_be_pulled_inside_its_window_but_force_cancel_reaches_it() 
         "the bound order came off and its reservation was unwound"
     );
 
-    // Past the activation slot the owner may pull it like any other order.
-    fixture.svm.warp_to_slot(30);
+    // At the activation slot the order becomes matchable depth, but its own
+    // claim still binds a cancel: matchable and cancellable are not the same
+    // thing until the claim lapses. Both cancels are built now, so the
+    // closure's borrow of `fixture` ends before the warps below need it back
+    // mutably.
+    let activation_slot = 14;
+    let cancel_at_activation = cancel_ix(subject);
+    let cancel_after_claim = cancel_ix(subject);
+
+    fixture.svm.warp_to_slot(activation_slot);
     set_oracle(
         &mut fixture.svm,
         fixture.oracle,
         (100 * PRICE_PRECISION) as i64,
-        30,
+        activation_slot,
     );
 
     assert_eq!(
         clob_bid_count(&fixture),
         1,
-        "the window opened, so the order is matchable depth now"
+        "activation opened the window, so the order is matchable depth now"
     );
 
-    send(&mut fixture.svm, &authority, cancel_ix(subject), &[]).expect("the window has passed");
+    let err = send(&mut fixture.svm, &authority, cancel_at_activation, &[])
+        .expect_err("the claim still binds it at activation");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("0x1789"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).open_bids,
+        UNIT as i64,
+        "a refused cancel releases nothing"
+    );
+
+    // Past the claim's own grace: the owner may pull it like any other order.
+    warp_past_claim(&mut fixture, activation_slot);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        activation_slot + CLAIM_GRACE_SLOTS,
+    );
+
+    send(&mut fixture.svm, &authority, cancel_after_claim, &[]).expect("the claim has lapsed");
     assert_eq!(clob_bid_count(&fixture), 0);
     assert_eq!(perp_position(&fixture.svm, &taker.user).open_bids, 0);
 }

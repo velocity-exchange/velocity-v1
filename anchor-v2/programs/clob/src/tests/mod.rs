@@ -11,6 +11,7 @@
 mod book;
 mod emit;
 mod market;
+mod randomized;
 mod response;
 mod taker_origin;
 mod wire;

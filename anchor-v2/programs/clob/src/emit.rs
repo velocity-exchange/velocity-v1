@@ -87,8 +87,7 @@ pub const CANCEL_ALL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
 
 /// Append-only stack buffer holding one `sol_log_data` field.
 ///
-/// Every push checks its bounds, so an over-wide payload is an error rather
-/// than a truncated event. `N` comes from the config ceilings that init and update already enforce.
+/// A push past `N` is an error, not a truncated event.
 pub struct LogBuf<const N: usize> {
     /// The buffer is uninitialized rather than zeroed. At the fill ceiling it
     /// is about 2KB, and zeroing it costs more compute than the `Vec` this path
@@ -136,13 +135,13 @@ impl<const N: usize> LogBuf<N> {
         Ok(())
     }
 
-    /// Push `len` zero bytes and return their offset, for a field whose value is
-    /// not known until later fields are written, such as the cancel-all record's
-    /// totals and id count, which settle only at the end of the walk. The bytes
-    /// are zeros rather than a gap, so every counted byte stays initialized, as [`Self::as_slice`] relies on.
+    /// Push `len` zero bytes and return their offset, for a field filled in
+    /// only after later fields are written, such as the cancel-all record's
+    /// totals.
     pub fn reserve(&mut self, len: usize) -> Result<usize> {
+        const ZEROS: [u8; 64] = [0; 64];
         let at = self.len;
-        (0..len).try_for_each(|_| self.push(&[0]))?;
+        self.push(ZEROS.get(..len).ok_or(ClobError::EventTooLarge)?)?;
         Ok(at)
     }
 
@@ -226,8 +225,8 @@ pub fn write_execute_record<const N: usize>(
 
 /// Streaming writer for an [`OrdersCancelRecordV0`]. The sweep does not know
 /// its totals, `exhaustive` flag, or id count until the last removal, so the
-/// prefix reserves those fields and the walk appends ids as it frees them,
-/// avoiding a second buffer; [`Self::finish`] patches and emits, pinned against [`OrdersCancelRecordV0`] by `tests::emit`.
+/// prefix reserves those fields and the walk appends ids as it frees them.
+/// [`Self::finish`] patches and emits.
 pub struct CancelAllRecord {
     log: LogBuf<CANCEL_ALL_RECORD_LOG_BYTES>,
     bid_base_at: usize,
@@ -297,7 +296,10 @@ impl CancelAllRecord {
     /// what the walk pushed. A count that disagrees with the outcome is an
     /// error, rather than a record an indexer would reconcile wrongly.
     fn patch_totals(&mut self, outcome: &CancelAllOutcome) -> Result<()> {
-        require!(self.ids == outcome.orders(), ClobError::EventTooLarge);
+        require!(
+            self.ids == outcome.orders(),
+            ClobError::BookInvariantViolated
+        );
         let (bid_base_at, ask_base_at) = (self.bid_base_at, self.ask_base_at);
         let (exhaustive_at, count_at) = (self.exhaustive_at, self.count_at);
         self.log

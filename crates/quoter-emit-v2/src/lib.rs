@@ -29,9 +29,12 @@ pub use {anchor_lang, bytemuck};
 pub const DISCRIMINATOR_BYTES: usize = 8;
 
 /// `[discriminator][body]` for a fixed-size `#[event(bytemuck)]` record.
-/// `N` is the record's full log width; call through [`emit_pod`], which
-/// derives `N` from the type and checks the discriminator width at compile
-/// time. A wrong `N` would truncate or pad the event.
+///
+/// `N` must equal the record's full log width, or the internal copy panics on
+/// a length mismatch. [`emit_pod`] and [`assert_pod_matches_event`] are the
+/// only callers, and both derive `N` from the type rather than passing it by
+/// hand, so this stays hidden from anything else.
+#[doc(hidden)]
 pub fn pod_log_bytes<E, const N: usize>(record: &E) -> [u8; N]
 where
     E: anchor_lang::Discriminator + bytemuck::Pod,

@@ -11,9 +11,10 @@
 //! padding and the lowest cost. `side` and `direction` are raw `u8` values.
 //! Zero is a bid or a long.
 //!
-//! None of them is emitted through anchor's `emit!`. Every `Event::data()`
-//! flavour allocates, so [`crate::emit`] builds the same log bytes in a stack
-//! buffer. The types here stay the schema of record for what goes on the wire,
+//! No order record is emitted through anchor's `emit!`. Every
+//! `Event::data()` flavour allocates, so [`crate::emit`] builds the same log
+//! bytes in a stack buffer. The market initialize and update records carry a
+//! nested settings struct and run on admin paths, so they use `emit!`. The types here stay the schema of record for what goes on the wire,
 //! and `tests::emit` pins the two encodings against each other.
 
 use anchor_lang::prelude::*;
@@ -205,4 +206,103 @@ pub struct MarketAuthorityAcceptedRecordV0 {
     pub previous_authority: Address,
     pub authority: Address,
     pub ts: i64,
+}
+
+/// Every mutable setting of a market, as `update_market_v0` can change it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
+pub struct MarketSettingsV0 {
+    pub order_tick_size: u64,
+    pub order_step_size: u64,
+    pub min_order_size: u64,
+    pub blocking_min_size: u64,
+    pub default_activation_delay_slots: u32,
+    pub max_activation_delay_slots: u32,
+    pub unknown_user_grace_slots: u32,
+    pub evict_threshold_per_side: u32,
+    pub max_quote_levels: u16,
+    pub max_execute_fills: u16,
+    pub max_execute_users: u16,
+    pub reservation_grace_slots: u16,
+}
+
+impl MarketSettingsV0 {
+    pub fn of(header: &crate::state::ClobHeaderV0) -> Self {
+        Self {
+            order_tick_size: header.order_tick_size,
+            order_step_size: header.order_step_size,
+            min_order_size: header.min_order_size,
+            blocking_min_size: header.blocking_min_size,
+            default_activation_delay_slots: header.default_activation_delay_slots,
+            max_activation_delay_slots: header.max_activation_delay_slots,
+            unknown_user_grace_slots: header.unknown_user_grace_slots,
+            evict_threshold_per_side: header.evict_threshold_per_side,
+            max_quote_levels: header.max_quote_levels,
+            max_execute_fills: header.max_execute_fills,
+            max_execute_users: header.max_execute_users,
+            reservation_grace_slots: header.reservation_grace_slots,
+        }
+    }
+}
+
+/// `initialize_market_v0` created a market.
+#[event]
+pub struct MarketInitializeRecordV0 {
+    pub market: Address,
+    pub authority: Address,
+    pub place_authority: Address,
+    pub ts: i64,
+    pub base_precision: u64,
+    pub capacity: u32,
+    pub market_index: u16,
+    pub settings: MarketSettingsV0,
+}
+
+/// `update_market_v0` changed a market's settings.
+#[event]
+pub struct MarketUpdateRecordV0 {
+    pub market: Address,
+    pub authority: Address,
+    pub ts: i64,
+    pub before: MarketSettingsV0,
+    pub after: MarketSettingsV0,
+}
+
+/// `resize_market_v0` grew a market's arena.
+#[event(bytemuck)]
+#[repr(C)]
+pub struct MarketResizeRecordV0 {
+    pub market: Address,
+    pub authority: Address,
+    pub ts: i64,
+    pub previous_capacity: u32,
+    pub capacity: u32,
+}
+
+/// `close_market_v0` closed an empty market and paid its rent to
+/// `rent_recipient`.
+#[event(bytemuck)]
+#[repr(C)]
+pub struct MarketCloseRecordV0 {
+    pub market: Address,
+    pub authority: Address,
+    pub rent_recipient: Address,
+    pub ts: i64,
+}
+
+/// `set_crank_conditions_v0` registered the resolver program for each of the
+/// book's four conditions. A zero program deactivated that condition.
+#[event(bytemuck)]
+#[repr(C)]
+pub struct CrankConditionsRecordV0 {
+    pub market: Address,
+    pub place_authority: Address,
+    pub expiry_program: Address,
+    pub activation_program: Address,
+    pub capacity_program: Address,
+    pub cross_program: Address,
+    pub ts: i64,
+    /// Accounts the registered resolvers take.
+    pub account_count: u32,
+    pub _pad: [u8; 4],
 }

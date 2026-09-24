@@ -1,5 +1,5 @@
 use {
-    crate::{error::ClobError, state::ClobMarketV0},
+    crate::{emit::emit_pod, error::ClobError, events::MarketCloseRecordV0, state::ClobMarketV0},
     anchor_lang::prelude::*,
 };
 
@@ -24,6 +24,13 @@ pub fn handle_close_market_v0(ctx: &mut Context<CloseMarketV0>) -> Result<()> {
         market.bid_count == 0 && market.ask_count == 0,
         ClobError::MarketNotEmpty
     );
+
+    emit_pod!(MarketCloseRecordV0 {
+        market: *market.address(),
+        authority: *ctx.accounts.authority.address(),
+        rent_recipient: *ctx.accounts.rent_recipient.address(),
+        ts: Clock::get()?.unix_timestamp,
+    });
 
     Ok(())
 }

@@ -21,7 +21,9 @@
 pub use clob_wire::{CrankAccountV0, CrankBlockV0, CrankConditionsArgsV0, CrankResolverV0};
 use {
     crate::{
+        emit::emit_pod,
         error::ClobError,
+        events::CrankConditionsRecordV0,
         instructions::GatedMarketV0,
         state::{
             CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY, CRANK_CROSS, CRANK_EXPIRY,
@@ -115,9 +117,35 @@ pub fn handle_set_crank_conditions_v0(
         }
     }
 
+    emit_crank_conditions_record(
+        Address::new_from_array(watched),
+        *ctx.accounts.place_authority.address(),
+        &args,
+    )?;
+
     Ok(CrankBlockV0 {
         block_offset: CRANK_BLOCK_OFFSET as u32,
         top_of_book_offset: TOP_OF_BOOK_OFFSET as u32,
         top_of_book_len: TOP_OF_BOOK_BYTES as u32,
     })
+}
+
+fn emit_crank_conditions_record(
+    market: Address,
+    place_authority: Address,
+    args: &CrankConditionsArgsV0,
+) -> Result<()> {
+    emit_pod!(CrankConditionsRecordV0 {
+        market,
+        place_authority,
+        expiry_program: Address::new_from_array(args.expiry.program),
+        activation_program: Address::new_from_array(args.activation.program),
+        capacity_program: Address::new_from_array(args.capacity.program),
+        cross_program: Address::new_from_array(args.cross.program),
+        ts: Clock::get()?.unix_timestamp,
+        account_count: args.accounts.len() as u32,
+        _pad: [0; 4],
+    });
+
+    Ok(())
 }

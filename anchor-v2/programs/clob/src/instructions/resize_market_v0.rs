@@ -2,7 +2,10 @@
 /// the market's authority.
 pub use clob_wire::ResizeMarketArgsV0;
 use {
-    crate::{book::ClobBook, error::ClobError, state::ClobMarketV0},
+    crate::{
+        book::ClobBook, emit::emit_pod, error::ClobError, events::MarketResizeRecordV0,
+        state::ClobMarketV0,
+    },
     anchor_lang::prelude::*,
 };
 
@@ -26,9 +29,12 @@ pub fn handle_resize_market_v0(
     ctx: &mut Context<ResizeMarketV0>,
     args: ResizeMarketArgsV0,
 ) -> Result<()> {
+    let market_address = *ctx.accounts.market.address();
+    let authority = *ctx.accounts.authority.address();
     let market = &mut ctx.accounts.market;
+    let previous_capacity = market.capacity() as u32;
     require!(
-        args.new_capacity as usize > market.capacity(),
+        args.new_capacity > previous_capacity,
         ClobError::InvalidCapacity
     );
 
@@ -37,5 +43,18 @@ pub fn handle_resize_market_v0(
     market.grow_free_list()?;
     // The eviction threshold is bounded by the per-side capacity, and this is
     // the other instruction that moves that bound.
-    crate::book::validate_evict_threshold(market.evict_threshold_per_side, market.capacity() as u32)
+    crate::book::validate_evict_threshold(
+        market.evict_threshold_per_side,
+        market.capacity() as u32,
+    )?;
+
+    emit_pod!(MarketResizeRecordV0 {
+        market: market_address,
+        authority,
+        ts: Clock::get()?.unix_timestamp,
+        previous_capacity,
+        capacity: market.capacity() as u32,
+    });
+
+    Ok(())
 }

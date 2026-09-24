@@ -556,10 +556,9 @@
     {
       "name": "CancelSidesV0",
       "docs": [
-        "Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of bools,",
-        "because the wire must not express \"neither\" and leave a maker believing its quotes",
-        "are gone. What a side means differs by reader. A book walks it as a book side and a",
-        "caller unwinds it as a position direction. The tags are the part that has to agree."
+        "Which sides a `cancel_all_v0` withdraws. The wire cannot express \"neither\",",
+        "which would leave a maker believing its quotes are gone. A book reads a side",
+        "as a book side and a caller as a position direction. Only the tags must agree."
       ],
       "type": {
         "kind": "enum",
@@ -579,11 +578,8 @@
     {
       "name": "DirectionV0",
       "docs": [
-        "Taker direction, from the taker's perspective.",
-        "",
-        "Encoded as its discriminant, `Long = 0`, and every program on this wire",
-        "reads the same declaration. A taker direction inverted across the boundary",
-        "would fill the wrong side of a book."
+        "Taker direction, from the taker's perspective. Encoded as its discriminant,",
+        "`Long = 0`. A direction inverted across the boundary fills the wrong side."
       ],
       "type": {
         "kind": "enum",
@@ -600,10 +596,10 @@
     {
       "name": "ExecuteArgsV0",
       "docs": [
-        "Arguments to `execute_v0`: commit a fill. [`QuoteArgsV0`] without the price bound,",
-        "because `size` is only the depth the caller chose off the ladder, so the walk visits",
-        "no level a bound would have cut. A quoter may fill less than `size`, and what it",
-        "filled is whatever its balance changes sum to."
+        "Arguments to `execute_v0`: commit a fill. [`QuoteArgsV0`] without the price",
+        "bound, because `size` is depth the caller chose off the ladder. A quoter may",
+        "fill less than `size`, and what it filled is the sum of its balance changes.",
+        "Every field must carry the value its quote carried."
       ],
       "type": {
         "kind": "struct",
@@ -645,9 +641,8 @@
           {
             "name": "reference_price",
             "docs": [
-              "The same mark the quote was taken against. A quoter that spends",
-              "budgets must be handed the identical price here, or it passes over a",
-              "different set of orders than the one it quoted."
+              "The mark the quote was taken against. A different price makes a quoter",
+              "that spends budgets pass over a different set of orders than it quoted."
             ],
             "type": "i64"
           },
@@ -663,19 +658,10 @@
           },
           {
             "name": "taker_served_window",
-            "docs": [
-              "Same contract as [`QuoteArgsV0::taker_served_window`]. The execute",
-              "must carry the value its quote carried."
-            ],
             "type": "bool"
           },
           {
             "name": "include_taker_origin_reservations",
-            "docs": [
-              "Same contract as [`QuoteArgsV0::include_taker_origin_reservations`].",
-              "The execute must carry the value its quote carried. Otherwise it walks",
-              "a different set of orders than the one it quoted."
-            ],
             "type": "bool"
           }
         ]
@@ -1076,11 +1062,10 @@
     {
       "name": "QuoteArgsV0",
       "docs": [
-        "Arguments to `quote_v0`: what a taker wants, and who the caller can settle against. A",
-        "quote promises what `execute_v0` will deliver, so it takes the same `users` and `caps`",
-        "and spends them the same way. `users` is a slice into the caller's instruction data,",
-        "so a quoter walks it without standing a copy in a 4 KB frame. It leads the struct to",
-        "keep its offset even, and a field added ahead of it must preserve that."
+        "Arguments to `quote_v0`: what a taker wants, and who the caller can settle",
+        "against. `users` is a slice into the caller's instruction data, so a quoter",
+        "walks it without a copy in a 4 KB frame. It leads the struct to keep its",
+        "offset even, and a field added ahead of it must preserve that."
       ],
       "type": {
         "kind": "struct",
@@ -1149,30 +1134,26 @@
           {
             "name": "limit_price",
             "docs": [
-              "The worst price the caller will fill at, in PRICE_PRECISION. Zero means no",
-              "bound. A ladder is walked best price first, so a quoter may stop as soon as a",
-              "level is worse. Not a trust boundary. Ignoring it wastes the caller's compute and",
-              "returns levels it drops, and never widens what a quoter may fill."
+              "The worst price the caller will fill at, in PRICE_PRECISION. Zero means",
+              "no bound. Not a trust boundary: a quoter that ignores it returns levels",
+              "the caller drops, and never widens what it may fill."
             ],
             "type": "u64"
           },
           {
             "name": "taker_served_window",
             "docs": [
-              "Whether the taker's flow served a protection window before this call: the swift",
-              "hold, or the book's activation delay. The caller asserts it, like `users` and",
-              "`caps`. A quoter that only serves protected flow refuses when this is false, as",
-              "the midpoint does under `require_attested_flow`."
+              "Whether the taker's flow served a protection window before this call:",
+              "the swift hold, or the book's activation delay. The caller asserts it. A",
+              "quoter that serves only protected flow refuses when this is false."
             ],
             "type": "bool"
           },
           {
             "name": "include_taker_origin_reservations",
             "docs": [
-              "Fill the depth that a taker-origin order reserves. The crank that settles the",
-              "cross is the one caller that may take it, and it says so here. Unrelated to the",
-              "margin a maker reserves at placement. A quoter that reserves no depth ignores",
-              "it."
+              "Fill the depth that a taker-origin order reserves. Only the crank that",
+              "settles the cross sets it. A quoter that reserves no depth ignores it."
             ],
             "type": "bool"
           }
@@ -1237,10 +1218,9 @@
     {
       "name": "ResponsePointerV0",
       "docs": [
-        "Where in the quoter's response account it wrote the response. Return data of",
-        "`quote_v0` and `execute_v0`. Every quoter answers with this one shape, declared here",
-        "rather than per program, because three copies of two `u32`s are three chances to",
-        "disagree about which comes first."
+        "Where in its response account a quoter wrote the response: the return data of",
+        "`quote_v0` and `execute_v0`. Declared once, so no two quoters can disagree",
+        "about which `u32` comes first."
       ],
       "type": {
         "kind": "struct",
@@ -1466,12 +1446,10 @@
     {
       "name": "UserCapV0",
       "docs": [
-        "What one named user may still lose on the side this call sweeps, in quote.",
-        "",
-        "A quote amount, not base, because the conversion needs the price each order fills",
-        "at, which the quoter has and the caller does not. The quoter charges",
-        "`base * |price - reference_price| / BASE_PRECISION` where the fill moves against the",
-        "owner. `u64::MAX` is unbounded, and zero belongs in the exclusion bitmap."
+        "What one named user may still lose on the swept side, in quote. The quoter",
+        "has each fill price and the caller does not, so the cap is not in base. The",
+        "quoter charges `base * |price - reference_price| / BASE_PRECISION` where the",
+        "fill moves against the owner. Zero belongs in the exclusion bitmap."
       ],
       "type": {
         "kind": "struct",
@@ -1479,20 +1457,19 @@
           {
             "name": "quote_cap",
             "docs": [
-              "Quote this user may lose filling on the swept side. `u64::MAX` is unbounded.",
-              "This bounds depth that was margin-reserved at placement, so filling it moves",
-              "collateral rather than the worst case. Base cannot express that bound, because",
-              "at a price in the owner's favour the cost per base is zero."
+              "`u64::MAX` is unbounded. It bounds depth that was margin-reserved at",
+              "placement. Base cannot express that bound, because a fill at a price in",
+              "the owner's favour costs nothing per base."
             ],
             "type": "u64"
           },
           {
             "name": "base_cap",
             "docs": [
-              "The most base this user may give up on the swept side. `u64::MAX` is unbounded.",
-              "A book is position-blind, so it enforces this at match time and will not fill a",
-              "reduce-only order whose owner carries no cap here. That makes the field a trust",
-              "boundary, unlike [`Self::quote_cap`]. Every other quoter reads it as advisory."
+              "The most base this user may give up on the swept side. `u64::MAX` is",
+              "unbounded. A book enforces it at match time and will not fill a reduce-only",
+              "order whose owner has no cap here, so for a book this field is a trust",
+              "boundary. Every other quoter reads it as advisory."
             ],
             "type": "u64"
           },
@@ -1509,12 +1486,10 @@
     {
       "name": "UserCapsV0",
       "docs": [
-        "Per-user room, parallel to the caller's user set. A user absent from all of this is",
-        "unconstrained. The quoter skips an excluded user's orders, because depth standing on",
-        "them would be depth the fill declines. An exclusion never fails the call, unlike",
-        "absence from the user set.",
-        "",
-        "Not a trust boundary. A caller's own post-fill checks still refuse the fill."
+        "Per-user room, parallel to the caller's user set. A user absent from all of",
+        "this is unconstrained. The quoter skips an excluded user's orders, and an",
+        "exclusion never fails the call. Not a trust boundary: the caller's own",
+        "post-fill checks still refuse the fill."
       ],
       "type": {
         "kind": "struct",

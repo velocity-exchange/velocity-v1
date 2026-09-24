@@ -2764,7 +2764,7 @@ minimum order size are nonzero and the minimum is a multiple of the step,
 `max_execute_users` at most 48, the user-set capacity. `order_rules_v0` reports the book's
 `authority`. The book rotates its authority in two steps (`propose_market_authority_v0`, then
 `accept_market_authority_v0` signed by the proposed key), and each step emits a record. A book
-attached to velocity has no velocity path that proposes a rotation. SDK:
+attached to velocity has no velocity path that proposes a rotation. Every market admin instruction logs a versioned record: `MarketInitializeRecordV0` and `MarketUpdateRecordV0` carry the full settings (the update carries them before and after), and `MarketResizeRecordV0`, `MarketCloseRecordV0`, `CrankConditionsRecordV0` (the four resolver programs it registered), `MarketAuthorityProposedRecordV0` and `MarketAuthorityAcceptedRecordV0` cover the rest. The CLOB IDL (`tests/e2e/idl/clob.json`) declares them. SDK:
 `AdminClient.getUpdatePerpMarketClobBookConfigIx`, `getResizePerpMarketClobBookIx` and the
 `ClobUpdateMarketArgsV0` type. Admin CLI: `clob-market update-config` goes through velocity, and
 `clob-market resize` is new.

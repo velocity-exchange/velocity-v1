@@ -14,9 +14,10 @@ use {
             LogBuf, EXECUTE_RECORD_LOG_BYTES, FILL_RECORD_LOG_BYTES,
         },
         events::{
-            ExecuteRecordV0, FillEntryV0, FillRecordV0, FillSlimV0, MarketAuthorityAcceptedRecordV0,
-            MarketAuthorityProposedRecordV0, OrderCancelRecordV0,
-            OrderEvictRecordV0, OrderExpireRecordV0, OrderPlaceRecordV0, OrdersCancelRecordV0,
+            CrankConditionsRecordV0, ExecuteRecordV0, FillEntryV0, FillRecordV0, FillSlimV0,
+            MarketAuthorityAcceptedRecordV0, MarketAuthorityProposedRecordV0, MarketCloseRecordV0,
+            MarketResizeRecordV0, OrderCancelRecordV0, OrderEvictRecordV0, OrderExpireRecordV0,
+            OrderPlaceRecordV0, OrdersCancelRecordV0,
         },
         state::{
             CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, FILL_BATCH_CEILING,
@@ -94,6 +95,35 @@ fn the_authority_records_emit_the_bytes_the_event_impl_would() {
         previous_authority: key(2),
         authority: key(3),
         ts: -7,
+    });
+}
+
+#[test]
+fn the_market_admin_records_emit_the_bytes_the_event_impl_would() {
+    let key = |seed: u8| Address::new_from_array([seed; 32]);
+    assert_pod_matches_event!(MarketResizeRecordV0 {
+        market: key(1),
+        authority: key(2),
+        ts: -7,
+        previous_capacity: 9,
+        capacity: 11,
+    });
+    assert_pod_matches_event!(MarketCloseRecordV0 {
+        market: key(1),
+        authority: key(2),
+        rent_recipient: key(3),
+        ts: -7,
+    });
+    assert_pod_matches_event!(CrankConditionsRecordV0 {
+        market: key(1),
+        place_authority: key(2),
+        expiry_program: key(3),
+        activation_program: key(4),
+        capacity_program: key(5),
+        cross_program: key(6),
+        ts: -7,
+        account_count: 8,
+        _pad: [0; 4],
     });
 }
 

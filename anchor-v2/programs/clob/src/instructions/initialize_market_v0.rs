@@ -1,6 +1,7 @@
 use {
     crate::{
         book::ClobBook,
+        events::{MarketInitializeRecordV0, MarketSettingsV0},
         state::{ClobMarketV0, MarketConfigV0},
     },
     anchor_lang::prelude::*,
@@ -39,7 +40,20 @@ pub fn handle_initialize_market_v0(
 ) -> Result<()> {
     let authority = *ctx.accounts.authority.address();
     let place_authority = *ctx.accounts.place_authority.address();
-    ctx.accounts
-        .market
-        .initialize(authority, place_authority, config)
+    let market_address = *ctx.accounts.market.address();
+    let market = &mut ctx.accounts.market;
+    market.initialize(authority, place_authority, config)?;
+
+    emit!(MarketInitializeRecordV0 {
+        market: market_address,
+        authority,
+        place_authority,
+        ts: Clock::get()?.unix_timestamp,
+        base_precision: market.base_precision,
+        capacity: market.capacity() as u32,
+        market_index: market.market_index,
+        settings: MarketSettingsV0::of(market),
+    });
+
+    Ok(())
 }

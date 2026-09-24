@@ -2,7 +2,12 @@
 /// the market's authority.
 pub use clob_wire::ClobUpdateMarketArgsV0 as UpdateMarketArgsV0;
 use {
-    crate::{config::validate_market_config, error::ClobError, state::ClobMarketV0},
+    crate::{
+        config::validate_market_config,
+        error::ClobError,
+        events::{MarketSettingsV0, MarketUpdateRecordV0},
+        state::ClobMarketV0,
+    },
     anchor_lang::prelude::*,
 };
 
@@ -24,7 +29,10 @@ pub fn handle_update_market_v0(
     ctx: &mut Context<UpdateMarketV0>,
     args: UpdateMarketArgsV0,
 ) -> Result<()> {
+    let market_address = *ctx.accounts.market.address();
+    let authority = *ctx.accounts.authority.address();
     let market = &mut ctx.accounts.market;
+    let before = MarketSettingsV0::of(market);
     let UpdateMarketArgsV0 {
         order_tick_size,
         order_step_size,
@@ -66,7 +74,17 @@ pub fn handle_update_market_v0(
     set(&mut header.max_execute_users, max_execute_users);
     set(&mut header.reservation_grace_slots, reservation_grace_slots);
 
-    validate_market_config(market)
+    validate_market_config(market)?;
+
+    emit!(MarketUpdateRecordV0 {
+        market: market_address,
+        authority,
+        ts: Clock::get()?.unix_timestamp,
+        before,
+        after: MarketSettingsV0::of(market),
+    });
+
+    Ok(())
 }
 
 fn set<T>(field: &mut T, value: Option<T>) {

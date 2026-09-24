@@ -10,7 +10,10 @@ use {
         anchor_lang::{
             prelude::Address, solana_program::instruction::Instruction, Discriminator, Event,
         },
-        events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0},
+        events::{
+            ExecuteRecordV0, FillSlimV0, MarketSettingsV0, MarketUpdateRecordV0,
+            OrdersCancelRecordV0,
+        },
         instruction, relay_spec,
         state::{
             CancelSidesV0, ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
@@ -2952,6 +2955,54 @@ fn accept_authority_ix(ctx: &Ctx, signer: Pubkey) -> Instruction {
         market: addr(ctx.market),
         pending_authority: addr(signer),
     })
+}
+
+/// `update_market_v0` logs the settings before and after the change, so an
+/// indexer sees every rule change without diffing account snapshots.
+#[test]
+fn a_config_update_logs_the_settings_before_and_after() {
+    let mut ctx = setup();
+    let before = MarketSettingsV0::of(&market_state(&ctx));
+    let ix = instruction::UpdateMarketV0 {
+        args: UpdateMarketArgsV0 {
+            order_tick_size: Some(2),
+            ..Default::default()
+        },
+    }
+    .to_instruction(accounts::UpdateMarketV0 {
+        market: addr(ctx.market),
+        authority: addr(ctx.admin.pubkey()),
+    });
+
+    let meta = send(&mut ctx, ix).unwrap();
+    let after = MarketSettingsV0::of(&market_state(&ctx));
+    assert_eq!(after.order_tick_size, 2);
+
+    let clock: Clock = ctx.svm.get_sysvar();
+    let expected = MarketUpdateRecordV0 {
+        market: addr(ctx.market),
+        authority: addr(ctx.admin.pubkey()),
+        ts: clock.unix_timestamp,
+        before,
+        after,
+    };
+    assert_eq!(program_data(&meta), Event::data(&expected));
+
+    // A config the book refuses changes nothing and logs nothing.
+    let ix = instruction::UpdateMarketV0 {
+        args: UpdateMarketArgsV0 {
+            order_step_size: Some(0),
+            ..Default::default()
+        },
+    }
+    .to_instruction(accounts::UpdateMarketV0 {
+        market: addr(ctx.market),
+        authority: addr(ctx.admin.pubkey()),
+    });
+    assert_clob_err(
+        send(&mut ctx, ix),
+        err_code(clob::error::ClobError::InvalidConfig),
+    );
 }
 
 /// The config authority moves only when the proposed key signs, so a mistyped

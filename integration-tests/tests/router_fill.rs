@@ -41,7 +41,7 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 ClobCancelSides, ClobOrderRefV0, Direction, L3ArgsV0, L3ResponseV0, L3RowV0,
-                QuoterType, ResponsePointerV0,
+                QuoterType, ResponsePointerV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
             },
             pyth_lazer_oracle::PythLazerOracle,
             spot_market::{SpotBalanceType, SpotMarket},
@@ -3511,13 +3511,15 @@ fn a_consumed_reduce_only_order_disarms_its_owner() {
 
 fn modify_order_v1_ix(
     fixture: &Fixture,
+    user: Pubkey,
+    authority: Pubkey,
     order_ref: ClobOrderRefV0,
     base_asset_amount: Option<u64>,
 ) -> Instruction {
     let mut accounts = velocity::accounts::ModifyOrderV1 {
         state: state_pda(),
-        user: fixture.clob_maker_user,
-        authority: fixture.clob_maker_authority.pubkey(),
+        user,
+        authority,
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
@@ -3569,6 +3571,8 @@ fn a_reduce_only_modify_is_clamped_to_the_position() {
     let authority = fixture.clob_maker_authority.insecure_clone();
     let ix = modify_order_v1_ix(
         &fixture,
+        fixture.clob_maker_user,
+        authority.pubkey(),
         ClobOrderRefV0 {
             node_index,
             order_id,
@@ -3591,6 +3595,8 @@ fn a_reduce_only_modify_is_clamped_to_the_position() {
     fixture.svm.expire_blockhash();
     let ix = modify_order_v1_ix(
         &fixture,
+        fixture.clob_maker_user,
+        authority.pubkey(),
         ClobOrderRefV0 {
             node_index,
             order_id,
@@ -3602,6 +3608,117 @@ fn a_reduce_only_modify_is_clamped_to_the_position() {
         format!("{:?}", err.meta.logs).contains("no position left to reduce"),
         "unexpected: {:?}",
         err.meta.logs
+    );
+}
+
+/// A modify of an ordinary maker quote rests it as a maker quote again. It
+/// never carries the taker-origin flag, so it never joins the cross crank's
+/// queue.
+#[test]
+fn a_maker_modify_rests_as_a_maker_quote() {
+    let mut fixture = setup();
+    let order_ref = place_clob_ask(&mut fixture, 101 * PRICE, UNIT / 2);
+
+    let authority = fixture.clob_maker_authority.insecure_clone();
+    let ix = modify_order_v1_ix(
+        &fixture,
+        fixture.clob_maker_user,
+        authority.pubkey(),
+        order_ref,
+        Some(UNIT / 4),
+    );
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+
+    let asks = clob_side(&fixture, Direction::Long);
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].size, UNIT / 4);
+    assert_eq!(
+        asks[0].flags & (L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_REDUCE_ONLY),
+        0,
+        "an ordinary maker quote carries neither flag"
+    );
+}
+
+/// A modify of a migrated taker remainder keeps it taker-origin. Losing the
+/// flag would rest it as a maker quote and drop it from the cross crank's
+/// queue.
+#[test]
+fn a_taker_remainder_modify_keeps_its_taker_origin_flag() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+
+    let order_ref = rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+
+    let authority = taker.authority.insecure_clone();
+    let ix = modify_order_v1_ix(
+        &fixture,
+        taker.user,
+        authority.pubkey(),
+        order_ref,
+        Some(UNIT / 2),
+    );
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+
+    let bids = clob_side(&fixture, Direction::Short);
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0].size, UNIT / 2);
+    assert_ne!(
+        bids[0].flags & L3_ROW_FLAG_TAKER_ORIGIN,
+        0,
+        "the replacement is still the taker's migrated remainder"
+    );
+}
+
+/// A modify of a reduce-only remainder keeps both flags. Reduce-only, because
+/// the book still clamps its fills to the position it covers. Taker-origin,
+/// because every reduce-only book order is one by construction.
+#[test]
+fn a_reduce_only_remainder_modify_keeps_both_flags() {
+    let mut fixture = setup();
+    let stop = arm_reduce_only_sell_stop(&mut fixture, UNIT as i64);
+
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = trigger_limit_order_v1_ix(
+        &fixture,
+        1,
+        stop.filler_user,
+        stop.filler_stats,
+        stop.maker_stats,
+    );
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    let (node_index, order_id) = maker.orders[0].clob_order_ref();
+    fixture.svm.warp_to_slot(100);
+    fixture.svm.expire_blockhash();
+
+    let authority = fixture.clob_maker_authority.insecure_clone();
+    let ix = modify_order_v1_ix(
+        &fixture,
+        fixture.clob_maker_user,
+        authority.pubkey(),
+        ClobOrderRefV0 {
+            node_index,
+            order_id,
+        },
+        Some(UNIT / 4),
+    );
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+
+    let asks = clob_side(&fixture, Direction::Long);
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].size, UNIT / 4);
+    assert_eq!(
+        asks[0].flags & (L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_REDUCE_ONLY),
+        L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_REDUCE_ONLY,
+        "a reduce-only book order is a taker remainder by construction"
     );
 }
 

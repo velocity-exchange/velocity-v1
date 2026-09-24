@@ -204,11 +204,6 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         clock.slot,
     )?;
 
-    // Reduce-only CLOB orders are taker-origin by construction. Every path
-    // that fills or removes one relies on that to keep the reduce-only
-    // counter balanced, so a modify must preserve it.
-    let taker_origin = removed.reduce_only;
-
     let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side: removed.side,
         price: terms.price,
@@ -216,7 +211,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         activation_delay_slots: params.activation_delay_slots,
         max_ts: terms.max_ts,
         user: user_ref,
-        taker_origin,
+        taker_origin: terms.taker_origin,
         // The id stays the same, so a reprice reads as one order moved rather
         // than two orders. A placed trigger's shadow slot keeps the id it
         // armed under; a new id here would orphan the shadow.
@@ -250,7 +245,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
             base_asset_amount_filled: 0,
             max_ts: terms.max_ts,
             slot: clock.slot,
-            taker_origin,
+            taker_origin: terms.taker_origin,
         },
         is_isolated_position,
     )?;
@@ -338,6 +333,8 @@ struct ReplacementTerms {
     max_ts: i64,
     /// Carried from the cancelled order. The replacement cannot change it.
     reduce_only: bool,
+    /// Carried from the cancelled order. The replacement cannot change it.
+    taker_origin: bool,
 }
 
 /// Read the replacement's terms from the parameters and the removed order. A
@@ -390,6 +387,7 @@ fn resolve_replacement_terms(
         base_asset_amount,
         max_ts,
         reduce_only: removed.reduce_only,
+        taker_origin: removed.taker_origin,
     })
 }
 
@@ -482,4 +480,75 @@ fn restamp_placed_trigger_shadow<'info>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod resolve_replacement_terms_tests {
+    use {
+        super::{resolve_replacement_terms, ModifyOrderV1Params},
+        crate::state::prop_amm::{ClobOrderRefV0, ClobRemovedOrderV0, WireDirectionExt},
+        quoter_spec::{SideV0, UserRefV0},
+    };
+
+    fn removed(taker_origin: bool, reduce_only: bool) -> ClobRemovedOrderV0 {
+        ClobRemovedOrderV0 {
+            user: UserRefV0 {
+                authority: Default::default(),
+                sub_account_id: 0,
+            },
+            order_id: 1,
+            client_order_id: 1,
+            price: 100_000,
+            base_asset_amount: 1_000,
+            side: SideV0::Bid,
+            taker_origin,
+            reduce_only,
+            max_ts: 0,
+        }
+    }
+
+    fn params() -> ModifyOrderV1Params {
+        ModifyOrderV1Params {
+            market_index: 0,
+            order_ref: ClobOrderRefV0 {
+                node_index: 0,
+                order_id: 1,
+            },
+            price: None,
+            base_asset_amount: None,
+            max_ts: None,
+            activation_delay_slots: None,
+            reject_if_crossed: false,
+        }
+    }
+
+    #[test]
+    fn a_maker_order_replaces_as_a_maker_order() {
+        let terms = resolve_replacement_terms(&params(), &removed(false, false), 0).unwrap();
+        assert!(!terms.taker_origin);
+        assert!(!terms.reduce_only);
+    }
+
+    #[test]
+    fn a_taker_remainder_replaces_as_a_taker_remainder() {
+        let terms = resolve_replacement_terms(&params(), &removed(true, false), 0).unwrap();
+        assert!(terms.taker_origin);
+        assert!(!terms.reduce_only);
+    }
+
+    #[test]
+    fn a_reduce_only_taker_remainder_replaces_as_a_reduce_only_taker_remainder() {
+        // Reduce-only book orders are taker-origin by construction, so this is
+        // the only reachable case with `reduce_only` set. The removed order is
+        // a bid, so a short position is what it has left to reduce.
+        let terms = resolve_replacement_terms(&params(), &removed(true, true), -1_000).unwrap();
+        assert!(terms.taker_origin);
+        assert!(terms.reduce_only);
+    }
+
+    #[test]
+    fn side_still_carries_the_removed_orders_direction() {
+        let terms = resolve_replacement_terms(&params(), &removed(true, false), 0).unwrap();
+        assert_eq!(terms.direction, SideV0::Bid.to_position_direction());
+    }
 }

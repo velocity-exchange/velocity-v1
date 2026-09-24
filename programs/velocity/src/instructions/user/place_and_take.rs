@@ -432,56 +432,6 @@ fn rest_take_remainder<'info>(
     })
 }
 
-#[cfg(test)]
-mod take_remainder_tests {
-    use {
-        super::TakeRemainder,
-        crate::{
-            controller::position::PositionDirection,
-            state::user::{Order, OrderType},
-        },
-    };
-
-    fn sell(base_asset_amount: u64, filled: u64, reduce_only: bool) -> Order {
-        Order {
-            order_type: OrderType::Limit,
-            direction: PositionDirection::Short,
-            base_asset_amount,
-            base_asset_amount_filled: filled,
-            reduce_only,
-            ..Order::default()
-        }
-    }
-
-    #[test]
-    fn a_whole_fill_leaves_nothing() {
-        let remainder = TakeRemainder::of(&sell(10, 10, false), 0, 1, false).unwrap();
-        assert_eq!(remainder, TakeRemainder::Filled);
-        assert!(!remainder.order_unfilled());
-    }
-
-    #[test]
-    fn a_reduce_only_rest_below_one_step_counts_as_filled() {
-        let remainder = TakeRemainder::of(&sell(10, 6, true), 3, 5, false).unwrap();
-        assert_eq!(remainder, TakeRemainder::ReduceOnlySpent);
-        assert!(!remainder.order_unfilled());
-    }
-
-    #[test]
-    fn a_reduce_only_rest_of_one_step_rests() {
-        let remainder = TakeRemainder::of(&sell(10, 5, true), 5, 5, false).unwrap();
-        assert_eq!(remainder, TakeRemainder::Rest);
-        assert!(remainder.order_unfilled());
-    }
-
-    #[test]
-    fn an_unfilled_ioc_is_cancelled() {
-        let remainder = TakeRemainder::of(&sell(10, 4, false), 0, 1, true).unwrap();
-        assert_eq!(remainder, TakeRemainder::ImmediateOrCancel);
-        assert!(remainder.order_unfilled());
-    }
-}
-
 /// The v1 `place_and_take` body. The taker order is detached: it is built on
 /// the stack, margin-checked, filled through the router, and never written into
 /// `User.orders`. A restable remainder rests on the market's CLOB. The router
@@ -568,4 +518,54 @@ pub fn place_and_take_perp_order_v1<'info>(
             activation_delay_slots: params.activation_delay_slots,
         },
     )
+}
+
+#[cfg(test)]
+mod take_remainder_tests {
+    use {
+        super::TakeRemainder,
+        crate::{
+            controller::position::PositionDirection,
+            state::user::{Order, OrderType},
+        },
+    };
+
+    fn sell(base_asset_amount: u64, filled: u64, reduce_only: bool) -> Order {
+        Order {
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount,
+            base_asset_amount_filled: filled,
+            reduce_only,
+            ..Order::default()
+        }
+    }
+
+    #[test]
+    fn a_whole_fill_leaves_nothing() {
+        let remainder = TakeRemainder::of(&sell(10, 10, false), 0, 1, false).unwrap();
+        assert_eq!(remainder, TakeRemainder::Filled);
+        assert!(!remainder.order_unfilled());
+    }
+
+    #[test]
+    fn a_reduce_only_rest_below_one_step_counts_as_filled() {
+        let remainder = TakeRemainder::of(&sell(10, 6, true), 3, 5, false).unwrap();
+        assert_eq!(remainder, TakeRemainder::ReduceOnlySpent);
+        assert!(!remainder.order_unfilled());
+    }
+
+    #[test]
+    fn a_reduce_only_rest_of_one_step_rests() {
+        let remainder = TakeRemainder::of(&sell(10, 5, true), 5, 5, false).unwrap();
+        assert_eq!(remainder, TakeRemainder::Rest);
+        assert!(remainder.order_unfilled());
+    }
+
+    #[test]
+    fn an_unfilled_ioc_is_cancelled() {
+        let remainder = TakeRemainder::of(&sell(10, 4, false), 0, 1, true).unwrap();
+        assert_eq!(remainder, TakeRemainder::ImmediateOrCancel);
+        assert!(remainder.order_unfilled());
+    }
 }

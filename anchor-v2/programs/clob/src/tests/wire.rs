@@ -6,8 +6,8 @@
 
 use {
     crate::instruction::{
-        CancelAllV0, CancelOrderV0, EvictWorstV0, FillV0, NextCrossV0, NextRemovalV0, OrderRulesV0, OrdersV0,
-        PlaceOrderV0, RemoveExpiredV0, SetCrankConditionsV0,
+        CancelAllV0, CancelOrderV0, EvictWorstV0, FillV0, NextCrossV0, NextRemovalV0, OrderRulesV0,
+        OrdersV0, PlaceOrderV0, RemoveExpiredV0, SetCrankConditionsV0,
     },
     anchor_lang::Discriminator,
     clob_wire::discriminator,

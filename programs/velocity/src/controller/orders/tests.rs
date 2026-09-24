@@ -15,19 +15,6 @@ use {
     },
     anchor_lang::prelude::Pubkey,
 };
-#[test]
-fn validate_spot_dlob_trading_enabled_for_market_type_rejects_spot() {
-    let result = super::validate_spot_dlob_trading_enabled_for_market_type(MarketType::Spot);
-    assert_eq!(
-        result,
-        Err(crate::error::ErrorCode::SpotDlobTradingDisabled)
-    );
-}
-#[test]
-fn validate_spot_dlob_trading_enabled_for_market_type_allows_perp() {
-    let result = super::validate_spot_dlob_trading_enabled_for_market_type(MarketType::Perp);
-    assert_eq!(result, Ok(()));
-}
 fn get_fee_structure() -> FeeStructure {
     let mut fee_tiers = [FeeTier::default(); 10];
     fee_tiers[0] = FeeTier {

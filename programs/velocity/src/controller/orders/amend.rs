@@ -1,8 +1,9 @@
-//! Cancelling and modifying an order that already exists.
+//! Cancelling and modifying an order in a `User.orders` slot.
 //!
-//! Every cancel path ends in [`cancel_order`], which is the one place that
-//! unwinds what an open order reserved. A modify is a cancel and a re-place of
-//! the merged params.
+//! Every slot cancel ends in [`cancel_order`], which is the one place that
+//! unwinds what a slot order reserved. A modify is a cancel and a re-place of
+//! the merged params. A book order unwinds through `User::close_book_order`
+//! or `User::release_swept_orders` instead.
 
 use super::*;
 
@@ -342,16 +343,6 @@ pub enum ModifyOrderId {
     OrderId(u32),
 }
 
-pub fn validate_spot_dlob_trading_enabled_for_market_type(
-    market_type: MarketType,
-) -> VelocityResult {
-    if market_type == MarketType::Spot {
-        return Err(ErrorCode::SpotDlobTradingDisabled);
-    }
-
-    Ok(())
-}
-
 pub fn modify_order(
     order_id: ModifyOrderId,
     modify_order_params: ModifyOrderParams,
@@ -399,8 +390,7 @@ pub fn modify_order(
         merge_modify_order_params_with_existing_order(&existing_order, &modify_order_params)?;
 
     if let Some(order_params) = order_params {
-        validate_spot_dlob_trading_enabled_for_market_type(order_params.market_type)?;
-
+        let order_id = user.next_order_id;
         place_perp_trigger_order(
             state,
             &mut user,
@@ -411,9 +401,26 @@ pub fn modify_order(
             PlaceOrderOptions::default(),
             &mut None,
         )?;
+
+        carry_trigger_recross(&mut user, &existing_order, order_id);
     }
 
     Ok(())
+}
+
+/// Preserve the recross gate across a modify. A triggered order that must see
+/// the price recross before it re-arms carries `AwaitingTriggerRecross`.
+/// Without the carry, a user could re-arm the order by modifying it while the
+/// price never recrosses. `order_id` is the id the re-place minted. A skipped
+/// re-place left no order under it, so nothing is carried.
+fn carry_trigger_recross(user: &mut User, existing_order: &Order, order_id: u32) {
+    if !existing_order.is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross) {
+        return;
+    }
+
+    if let Ok(order_index) = user.get_order_index(order_id) {
+        user.orders[order_index].add_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
+    }
 }
 
 /// The slot of the order a modify names.
@@ -464,12 +471,7 @@ fn merge_modify_order_params_with_existing_order(
             .reduce_only
             .unwrap_or(existing_order.reduce_only),
         post_only: merged_post_only(existing_order, modify_order_params),
-        // Preserve the recross gate across a modify. A triggered order that
-        // must observe the price recross before it re-arms carries
-        // `AwaitingTriggerRecross`. Rebuilding with `bit_flags = 0` would
-        // clear the flag. A user could then re-arm the order by modifying it,
-        // with the price never recrossing.
-        bit_flags: existing_order.bit_flags & (OrderBitFlag::AwaitingTriggerRecross as u8),
+        bit_flags: 0,
         max_ts: modify_order_params.max_ts.or(Some(existing_order.max_ts)),
         trigger_price: modify_order_params
             .trigger_price
@@ -535,4 +537,53 @@ fn merged_trigger_condition(
                 OrderTriggerCondition::Below
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::carry_trigger_recross,
+        crate::state::user::{MarketType, Order, OrderBitFlag, OrderStatus, OrderType, User},
+    };
+
+    fn trigger(order_id: u32, bit_flags: u8) -> Order {
+        Order {
+            order_id,
+            status: OrderStatus::Open,
+            order_type: OrderType::TriggerLimit,
+            market_type: MarketType::Perp,
+            bit_flags,
+            ..Order::default()
+        }
+    }
+
+    #[test]
+    fn a_modify_keeps_the_recross_gate_on_the_replacement() {
+        let existing = trigger(3, OrderBitFlag::AwaitingTriggerRecross as u8);
+        let mut user = User::default();
+        user.orders[1] = trigger(4, 0);
+
+        carry_trigger_recross(&mut user, &existing, 4);
+        assert!(user.orders[1].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
+    }
+
+    #[test]
+    fn a_modify_of_an_armed_trigger_adds_no_recross_gate() {
+        let existing = trigger(3, 0);
+        let mut user = User::default();
+        user.orders[1] = trigger(4, 0);
+
+        carry_trigger_recross(&mut user, &existing, 4);
+        assert!(!user.orders[1].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
+    }
+
+    #[test]
+    fn a_skipped_re_place_carries_nothing() {
+        let existing = trigger(3, OrderBitFlag::AwaitingTriggerRecross as u8);
+        let mut user = User::default();
+        user.orders[1] = trigger(2, 0);
+
+        carry_trigger_recross(&mut user, &existing, 4);
+        assert!(!user.orders[1].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
+    }
 }

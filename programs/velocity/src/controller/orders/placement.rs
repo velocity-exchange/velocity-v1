@@ -613,7 +613,7 @@ fn commit_order_to_slot(user: &mut User, order_index: usize, order: &Order) -> V
 ///
 /// A cap of zero is no cap. An order that does not increase risk cannot breach
 /// one.
-fn validate_open_interest_after_order(
+pub fn validate_open_interest_after_order(
     market: &PerpMarket,
     order: &Order,
     risk_increasing: bool,

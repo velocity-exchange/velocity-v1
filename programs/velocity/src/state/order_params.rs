@@ -233,6 +233,8 @@ pub struct ModifyOrderParams {
     pub price: Option<u64>,
     pub reduce_only: Option<bool>,
     pub post_only: Option<PostOnlyParam>,
+    /// Unused. The modify reads no bit flags. The field stays because it is
+    /// part of the instruction's arguments.
     pub bit_flags: Option<u8>,
     pub max_ts: Option<i64>,
     pub trigger_price: Option<u64>,

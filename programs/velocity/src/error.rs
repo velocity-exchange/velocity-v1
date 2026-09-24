@@ -764,6 +764,7 @@ pub enum ErrorCode {
     // --- index 349 (error 0x192D / 6349) --- last variant
     #[msg("Insurance fund withdrawal recipient must be the designated treasury address")]
     InvalidInsuranceFundWithdrawalRecipient,
+    /// @deprecated No path produces this. A spot order is refused as a non-perp order.
     #[msg("Spot DLOB trading is disabled")]
     SpotDlobTradingDisabled,
     #[msg("Signer is not authorized for this admin tier")]

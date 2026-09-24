@@ -44,9 +44,22 @@ goes through velocity's `update_perp_market_clob_book_config` and a resize throu
 
 ## Design
 
-`src/state.rs` holds the account layout and the wire types; `src/book.rs` holds the order-book
-algorithm and the streaming encoder that writes quote and execute payloads into the market's
-response region; `src/emit.rs` holds the allocation-free event log path. `crates/clob-wire`
+`src/state.rs` holds the account layout and the wire types. `src/book/` holds the order-book
+algorithm, one subject per file:
+
+- `mod.rs`: the `ClobBook` and `NodeArena` traits, and the impl that routes each operation to its
+  file.
+- `arena.rs`: arena access, the free list, market initialization, and the link and unlink steps
+  every mutation goes through.
+- `walk.rs`: the side walks, and `quote`, `quote_l3` and `execute`, which stream their payloads
+  into the market's response region. `quote` and `execute` share one skip step, so a quote ends
+  where the fill would end.
+- `placement.rs`: `place`, `cancel`, `cancel_all`, `evict_worst`, `remove_expired` and `fill`.
+- `budget.rs`: the caller's per-user limits on one walk.
+- `reservation.rs`: the claims a crossing taker remainder holds on the depth it crosses.
+- `hints.rs`: the wake hints the book's crank conditions publish.
+
+`src/emit.rs` holds the allocation-free event log path. `crates/clob-wire`
 declares the instruction arguments and return data velocity and the book must agree on bit for
 bit, and `crates/clob-state` declares the order-node layout an off-chain indexer decodes from the
 same account. See [`docs/taker-remainder-auction.md`](../../../docs/taker-remainder-auction.md)

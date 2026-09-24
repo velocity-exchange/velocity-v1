@@ -317,18 +317,19 @@ fn unwind_removed_order(
         removed.base_asset_amount,
         removed.reduce_only,
     );
-    let re_arms = is_evict
-        && user
-            .find_placed_trigger_slot(market_index, removed.order_id)
-            .is_some();
-    if !re_arms {
+    let re_armed_slot = if is_evict {
+        user.find_placed_trigger_slot(market_index, removed.order_id)
+    } else {
+        None
+    };
+    let Some(slot_index) = re_armed_slot else {
         return Ok(user.close_book_order(
             &removed_order,
             ReleaseCheck::ClampedForExit,
             removed.order_id,
             crate::state::user::OrderStatus::Canceled,
         )?);
-    }
+    };
 
     user.re_arm_placed_trigger_slot(
         market_index,
@@ -336,7 +337,8 @@ fn unwind_removed_order(
         removed.base_asset_amount,
         slot,
     )?;
-    user.reserve_orders(&OrderReservation::armed_trigger(market_index))?;
+    let armed = OrderReservation::of_order(&user.orders[slot_index])?;
+    user.reserve_orders(&armed)?;
     Ok(user.release_orders(&removed_order, ReleaseCheck::ClampedForExit)?)
 }
 

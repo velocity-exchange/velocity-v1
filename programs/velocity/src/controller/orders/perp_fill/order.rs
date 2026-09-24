@@ -774,7 +774,6 @@ impl SettledMatch {
             state,
             rules: PricingRules::of(state, false),
             conditions: self.conditions,
-            market_index,
         }
         .after_fill(filled, parties)
     }

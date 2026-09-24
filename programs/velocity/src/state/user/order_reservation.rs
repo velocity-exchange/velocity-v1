@@ -69,16 +69,6 @@ impl OrderReservation {
         .with_open_base(direction, unfilled)
     }
 
-    /// One trigger order armed in a `User.orders` slot. It holds no base
-    /// until it fires.
-    pub fn armed_trigger(market_index: u16) -> Self {
-        Self {
-            market_index,
-            open_orders: 1,
-            ..Self::default()
-        }
-    }
-
     /// What a perp `order` holds while it is open outside a book, in a
     /// `User.orders` slot or modelled for a detached order's margin check.
     pub fn of_order(order: &Order) -> VelocityResult<Self> {

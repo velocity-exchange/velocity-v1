@@ -31,9 +31,8 @@ use {
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
 pub struct TriggerSlotMetaV0 {
-    /// The market's quoter slab, book and program. They are set when this
-    /// slot's executor is `trigger_limit_order_v1`, and zeroed for
-    /// `trigger_order`.
+    /// The market's quoter slab, book and program. Both executors,
+    /// `trigger_limit_order_v1` and `trigger_market_order_v1`, fire onto them.
     pub quoter_slab: Pubkey,
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,

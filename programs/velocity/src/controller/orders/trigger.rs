@@ -20,14 +20,10 @@ pub struct TriggerAccounts<'a, 'info> {
 /// Fire an armed trigger order and hand back the now-live order for the caller to
 /// route straight to the book.
 ///
-/// This is the v1 trigger path. [`trigger_order`] leaves the fired order
-/// resting live in `User.orders`, and this one does not. It validates the
-/// trigger, transforms a copy of the slot's order into a live market order,
-/// frees the slot, pays the keeper, and returns the order as a detached value.
-/// The caller fills it against the book and rests only the remainder, which is
-/// the straight-to-book shape a v1 place takes. The armed slot reserved no
-/// exposure, so freeing it releases only the order count. The remainder the
-/// caller rests adds one back for its CLOB order.
+/// Nothing stays live in `User.orders`. The caller fills the returned order
+/// against the book and rests only the remainder, the shape a v1 place takes.
+/// The armed slot reserved no exposure, so freeing it releases only the order
+/// count. The remainder the caller rests adds one back for its CLOB order.
 ///
 /// Returns `None` when there is no payable work. That happens when the order
 /// is past its `max_ts`, or when a risk-increasing trigger on a failing

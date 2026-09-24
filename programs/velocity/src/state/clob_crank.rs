@@ -113,7 +113,7 @@ pub struct CrankCostUnitsV0 {
     pub cross: u32,
     /// `crank_taker_origin_cross`: the same, against a taker remainder.
     pub taker_origin_cross: u32,
-    /// `trigger_order` / `trigger_limit_order_v1` in program-keeper mode.
+    /// `trigger_market_order_v1` / `trigger_limit_order_v1` in program-keeper mode.
     pub trigger: u32,
     /// `liquidate_perp_with_fill` in program-keeper mode.
     pub liquidation: u32,

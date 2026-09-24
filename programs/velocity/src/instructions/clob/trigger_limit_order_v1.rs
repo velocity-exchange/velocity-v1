@@ -8,8 +8,8 @@
 //! armed order. Only the [`OrderBitFlag::PlacedOnClob`] bit marks it, and the
 //! CLOB order carries the slot's open-order count from that point on.
 //!
-//! The gates are the gates of `trigger_order`: oracle validity and TWAP
-//! divergence. A risk-increasing, non-reduce-only trigger is cancelled with
+//! The gates are the gates of `trigger_market_order_v1`: oracle validity and
+//! TWAP divergence. A risk-increasing, non-reduce-only trigger is cancelled with
 //! `InsufficientFreeCollateral` rather than placed when the account fails
 //! initial margin, the buffered equity floor, or the authority equity breaker.
 //! Such an order is never re-armed, so an underfunded stop cannot repeat
@@ -622,7 +622,7 @@ enum TriggerGate {
 }
 
 /// Moves the fired order's reservation from its slot to the book, then gates
-/// exactly like `trigger_order`.
+/// exactly like `trigger_market_order_v1`.
 ///
 /// A reduce-only order rests at most the position it can reduce, so the margin
 /// exemption it gets is true of its reservation as well as its fills. With no
@@ -651,7 +651,7 @@ fn gate_trigger(
         ));
     }
 
-    let armed = OrderReservation::armed_trigger(market_index);
+    let armed = OrderReservation::of_order(&user.orders[order_index])?;
     let placed =
         OrderReservation::book_order(market_index, direction, base_asset_amount, reduce_only);
     let (_, worst_case_before) = user

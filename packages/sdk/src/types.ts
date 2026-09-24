@@ -553,7 +553,7 @@ export type CrankPaymentsV0 = {
 	cross: number;
 	/** `crankTakerOriginCross` */
 	takerOriginCross: number;
-	/** `triggerOrder` / `triggerLimitOrderV1` in program-keeper mode */
+	/** `triggerMarketOrderV1` / `triggerLimitOrderV1` in program-keeper mode */
 	trigger: number;
 	/** `liquidatePerpWithFill` in program-keeper mode */
 	liquidation: number;

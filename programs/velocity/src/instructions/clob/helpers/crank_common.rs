@@ -234,21 +234,20 @@ pub fn crank_clob_removal(
 
         // An evicted placed trigger re-arms with the unfilled remainder, behind
         // an edge gate on a price recross. Its slot takes the order back.
-        let re_arms = is_evict
-            && user
-                .find_placed_trigger_slot(market_index, removed.order_id)
-                .is_some();
-        let position_index = if re_arms {
+        let re_armed_slot = if is_evict {
+            user.find_placed_trigger_slot(market_index, removed.order_id)
+        } else {
+            None
+        };
+        let position_index = if let Some(slot_index) = re_armed_slot {
             user.re_arm_placed_trigger_slot(
                 market_index,
                 removed.order_id,
                 removed.base_asset_amount,
                 clock.slot,
             )?;
-            user.replace_reservation(
-                &removed_order,
-                &OrderReservation::armed_trigger(market_index),
-            )?
+            let armed = OrderReservation::of_order(&user.orders[slot_index])?;
+            user.replace_reservation(&removed_order, &armed)?
         } else {
             user.close_book_order(
                 &removed_order,
@@ -417,7 +416,7 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
     Ok(call.account(pdas::signed_msg_user_orders(&found.user.authority), true))
 }
 
-/// The shared tail of the trigger cranks `trigger_order` and
+/// The shared tail of the trigger cranks `trigger_market_order_v1` and
 /// `trigger_limit_order_v1`. It releases the fired slot on the user's relay
 /// trigger conditions so that its level-triggered wake goes quiet. In
 /// program-keeper mode it also pays the caller from the fired market's

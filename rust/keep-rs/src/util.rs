@@ -29,6 +29,7 @@ use {
             },
             state::state::ValidityGuardRails,
         },
+        slot_clock_from_state,
         types::{
             accounts::PerpMarket, MarketId, MarketType, OraclePriceData, OracleSource, OrderParams,
             OrderType,
@@ -704,7 +705,7 @@ pub fn project_perp_oracle(
         exchange_oracle,
         slot,
         &validity_guard_rails,
-        velocity.slot_clock(),
+        slot_clock_from_state(&state),
     )
     .map(|projected| ProjectedPerpOracle {
         uses_pyth_update,

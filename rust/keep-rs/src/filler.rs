@@ -2127,10 +2127,10 @@ fn order_dedup_key(user: &Pubkey, order_id: u32) -> u32 {
 ///   safe oracle — a *tighter* staleness bound than the low-risk one (`mm_stale_immediate`) —
 ///   in addition to the AMM *wanting* to JIT-make in the taker's direction.
 ///
-/// When the safe price is the MM oracle, a pyth-lazer post in the fill tx does not refresh it,
-/// so a crank landing one slot late closes the JIT leg (the `vamm_taker no_fill` spam). When
-/// the MM oracle is stale or diverged (or never cranked), the safe price is the exchange
-/// oracle, which must be same-slot fresh, i.e. posted by this tx.
+/// A pyth-lazer post in the fill tx newer than the MM oracle's sequence id switches the safe
+/// price to that same-slot exchange price, which opens the JIT leg. Without one, a MM crank
+/// landing one slot late closes it (the `vamm_taker no_fill` spam), and a stale, diverged or
+/// never-cranked MM oracle leaves the cached exchange oracle, which must be same-slot fresh.
 ///
 /// Best-effort economy filter only — the program re-checks everything; a `true` here that the
 /// program rejects just costs a failed simulation.

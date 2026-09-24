@@ -46,6 +46,12 @@ pub const PERCENTAGE_PRECISION: u128 = PERCENTAGE_PRECISION_U64 as u128;
 /// Ladder capacity per side.
 pub const MAX_SPLINE_LEVELS: usize = 64;
 
+/// Ceiling on `max_mid_staleness_slots`, about one hour at Solana's roughly
+/// 400ms slot time. A live feed re-stamps the mid far more often than that;
+/// the ceiling only stops a miswritten config from leaving the staleness gate
+/// unbounded.
+pub const MAX_MID_STALENESS_SLOTS_CEILING: u64 = 9_000;
+
 /// Response region size. A full-ladder quote response is `4 + 64 × 16` bytes.
 /// The execute response is one balance change. Both fit with room to spare.
 pub const RESPONSE_BUFFER_BYTES: usize = 2048;
@@ -207,13 +213,17 @@ pub struct MidpointQuoterV0 {
     pub bid_count: u8,
     pub ask_count: u8,
     /// The largest `|mid − reference_price| / reference_price` the quoter
-    /// fills at, in parts per million. Zero disables the bound. The config key
-    /// owns the field, so a compromised hot key cannot move the mid past this
-    /// band around velocity's oracle.
+    /// fills at, in parts per million. `validate` rejects zero, so the bound
+    /// can never be disabled. The config key owns the field, so a compromised
+    /// hot key cannot move the mid past this band around velocity's oracle.
     pub max_mid_deviation_ppm: u64,
-    /// Room for two more pubkeys and a scalar or two. A future field lands
+    /// Proposed next `authority`, or [`ZERO_ADDRESS`] when no rotation is
+    /// pending. `authority` stays the signer until `accept_authority_v0`
+    /// completes the swap, so a mistyped target cannot lock the maker out.
+    pub pending_authority: Address,
+    /// Room for one more pubkey and a scalar or two. A future field lands
     /// here without moving the ladders or the response tail.
-    pub padding: [u8; 64],
+    pub padding: [u8; 32],
     pub bids: [SplineLevelV0; MAX_SPLINE_LEVELS],
     pub asks: [SplineLevelV0; MAX_SPLINE_LEVELS],
     /// The region `quote_v0` and `execute_v0` stream their wincode response
@@ -224,7 +234,7 @@ pub struct MidpointQuoterV0 {
 const_assert_eq!(core::mem::size_of::<MidpointQuoterV0>(), 5392);
 // The header, which is everything before the ladders, stays 8-aligned and
 // free of holes.
-const_assert_eq!(4 * 32 + 8 * 8 + 8 + 8 + 64, 272);
+const_assert_eq!(5 * 32 + 8 * 8 + 8 + 8 + 32, 272);
 
 /// Account-data offset of the `response` region.
 pub const RESPONSE_OFFSET: usize =
@@ -368,6 +378,30 @@ impl MidpointQuoterV0 {
             size_step: self.size_step,
             min_quote_size: self.min_quote_size,
             base_precision: self.base_precision,
+        }
+    }
+
+    /// Snapshot for [`crate::events::MidpointConfigRecordV0`]. Every
+    /// config-mutating instruction emits it, so a reader never has to
+    /// special-case which one fired.
+    pub fn config_record(&self, ts: i64) -> crate::events::MidpointConfigRecordV0 {
+        crate::events::MidpointConfigRecordV0 {
+            authority: self.authority,
+            hot_authority: self.hot_authority,
+            pending_authority: self.pending_authority,
+            ts,
+            max_mid_staleness_slots: self.max_mid_staleness_slots,
+            price_tick_size: self.price_tick_size,
+            size_step: self.size_step,
+            min_quote_size: self.min_quote_size,
+            max_mid_deviation_ppm: self.max_mid_deviation_ppm,
+            mid_sequence: self.mid_sequence,
+            market_index: self.market_index,
+            sub_account_id: self.user_sub_account_id,
+            is_paused: self.is_paused,
+            require_attested_flow: self.require_attested_flow,
+            version: crate::events::MIDPOINT_EVENT_VERSION,
+            _pad: [0; 1],
         }
     }
 
@@ -639,6 +673,17 @@ impl MidpointQuoterV0 {
             self.price_tick_size != 0 && self.size_step != 0,
             MidpointError::InvalidConfig
         );
+        require!(
+            self.max_mid_staleness_slots != 0
+                && self.max_mid_staleness_slots <= MAX_MID_STALENESS_SLOTS_CEILING,
+            MidpointError::InvalidConfig
+        );
+        // Nonzero at creation and on every later update, so a compromised hot
+        // key can never fill the maker at an off-market mid.
+        require!(
+            self.max_mid_deviation_ppm != 0,
+            MidpointError::InvalidConfig
+        );
 
         Self::validate_side(&self.bids, self.bid_count)?;
         Self::validate_side(&self.asks, self.ask_count)
@@ -838,6 +883,9 @@ mod tests {
         quoter.size_step = 1_000;
         quoter.min_quote_size = 10_000;
         quoter.max_mid_staleness_slots = 25;
+        // Widest legal band. validate() rejects zero, and most tests here
+        // are not exercising the deviation gate.
+        quoter.max_mid_deviation_ppm = u64::MAX;
         quoter.mid_price = MID;
         let inputs = |side: &[(u64, u64)]| {
             side.iter()
@@ -861,8 +909,8 @@ mod tests {
     #[test]
     fn mid_deviation_bound_gates_an_off_market_mid() {
         let mut q = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
-        // The bound is disabled, so any mid passes and a zero reference never
-        // gates.
+        // The helper's band is as wide as it can be, so any mid passes and a
+        // zero reference never gates.
         assert!(q.mid_within_deviation(MID as i64));
         assert!(q.mid_within_deviation(0));
 
@@ -1273,6 +1321,31 @@ mod tests {
         let mut no_precision = quoter(&[], &[(1_000, UNIT)]);
         no_precision.base_precision = 0;
         assert!(no_precision.validate().is_err());
+    }
+
+    #[test]
+    fn validate_bounds_the_config_scalars() {
+        let mut zero_staleness = quoter(&[], &[(1_000, UNIT)]);
+        zero_staleness.max_mid_staleness_slots = 0;
+        assert!(zero_staleness.validate().is_err());
+
+        let mut unbounded_staleness = quoter(&[], &[(1_000, UNIT)]);
+        unbounded_staleness.max_mid_staleness_slots = u64::MAX;
+        assert!(unbounded_staleness.validate().is_err());
+        unbounded_staleness.max_mid_staleness_slots = MAX_MID_STALENESS_SLOTS_CEILING;
+        assert!(unbounded_staleness.validate().is_ok());
+
+        let mut zero_tick = quoter(&[], &[(1_000, UNIT)]);
+        zero_tick.price_tick_size = 0;
+        assert!(zero_tick.validate().is_err());
+
+        let mut zero_step = quoter(&[], &[(1_000, UNIT)]);
+        zero_step.size_step = 0;
+        assert!(zero_step.validate().is_err());
+
+        let mut zero_deviation = quoter(&[], &[(1_000, UNIT)]);
+        zero_deviation.max_mid_deviation_ppm = 0;
+        assert!(zero_deviation.validate().is_err());
     }
 
     /// The all-u128 form of `level_price`, kept as the reference for the u64

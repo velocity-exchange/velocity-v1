@@ -8,6 +8,35 @@
   },
   "instructions": [
     {
+      "name": "accept_authority_v0",
+      "discriminator": [
+        109,
+        186,
+        93,
+        145,
+        140,
+        108,
+        120,
+        34
+      ],
+      "accounts": [
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "new_authority",
+          "docs": [
+            "No key maps to [`ZERO_ADDRESS`], so this constraint alone refuses an",
+            "accept while no rotation is pending."
+          ],
+          "signer": true,
+          "address": "quoter.pending_authority"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "cancel_all_v0",
       "discriminator": [
         212,
@@ -27,11 +56,10 @@
         {
           "name": "authority",
           "docs": [
-            "Either of the maker's keys — matched in the handler, since anchor's",
-            "`address =` locks to one. The hot key because withdrawing quotes is part",
-            "of the quoting loop and must not need the cold key; the config key",
-            "because a maker's panic button must work when the hot key is exactly",
-            "what they no longer trust."
+            "Either of the maker's keys. The handler matches them, since anchor's",
+            "`address =` locks to one key. The hot key covers withdrawal so the",
+            "quoting loop does not need the cold key. The config key covers it",
+            "when the maker no longer trusts the hot key."
           ],
           "signer": true
         }
@@ -114,40 +142,36 @@
         {
           "name": "authority",
           "docs": [
-            "The maker's config key: pause, reconfigure, rotate the hot key. Free of",
-            "the quoted user — a desk can run this cold, or share one operator key",
-            "across the wallets it quotes for."
+            "The maker's config key. It pauses the instance, reconfigures it, and",
+            "rotates the hot key. It is independent of the quoted user, so a desk can",
+            "hold it cold, or share one operator key across the wallets it quotes",
+            "for."
           ],
           "signer": true
         },
         {
           "name": "user_authority",
           "docs": [
-            "The quoted wallet. Its signature is the consent to quote for its",
-            "sub-account — the same rule the velocity registry enforces on",
-            "Custom-entry creation — and it rides the seeds, so one instance exists",
-            "per (market, quoted wallet, sub-account) and nobody can squat another",
-            "maker's address. Consent survives the split from `authority` precisely",
-            "because it is *this* key, not the config key, that seeds the PDA and",
-            "signs here: an operator who wants to quote a wallet's sub-account must",
-            "get that wallet to sign creation, and the binding is immutable",
-            "afterwards (a different quoted user means a new instance, signed for",
-            "again)."
+            "The quoted wallet. Its signature is the consent to quote its sub-account,",
+            "which velocity's registry enforces on Custom-entry creation. The address",
+            "seeds the PDA, so only one instance exists per market, wallet and",
+            "sub-account, and the binding is immutable once set."
           ],
           "signer": true
         },
         {
           "name": "execute_authority",
           "docs": [
-            "The only signer `execute_v0` accepts (velocity's quoter CPI signer PDA).",
-            "Immutable after init. Accounts, not args: duplicated accounts cost",
-            "one index byte in the tx."
+            "The only signer `execute_v0` accepts. It is velocity's quoter CPI signer",
+            "PDA, and it is immutable after creation. It arrives as an account and",
+            "not as an argument, because a duplicated account costs one index byte in",
+            "the transaction."
           ]
         },
         {
           "name": "hot_authority",
           "docs": [
-            "Hot key for mid/level writes; rotatable by `authority`."
+            "The hot key for mid and level writes. `authority` can rotate it."
           ]
         },
         {
@@ -171,6 +195,41 @@
       ]
     },
     {
+      "name": "propose_authority_v0",
+      "discriminator": [
+        229,
+        83,
+        16,
+        110,
+        91,
+        160,
+        181,
+        67
+      ],
+      "accounts": [
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "quoter"
+          ]
+        },
+        {
+          "name": "new_authority",
+          "docs": [
+            "The proposed next config key. It gains no power until it signs",
+            "`accept_authority_v0`, so a mistyped target cannot lock the maker out",
+            "of its own instance."
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "quote_v0",
       "discriminator": [
         235,
@@ -186,7 +245,7 @@
         {
           "name": "quoter",
           "docs": [
-            "mut only for the response tail — the ladder is not touched."
+            "Mutable only for the response tail. The ladder is not written."
           ],
           "writable": true
         }
@@ -299,11 +358,11 @@
         {
           "name": "authority",
           "docs": [
-            "The maker's config key — the only key allowed to reconfigure.",
-            "Deliberately not reassignable: the maker's kill switch must stay",
-            "theirs. Note this is *not* the quoted wallet: the quoted user is fixed",
-            "at creation (it seeds the PDA), so no config update can redirect fills",
-            "to a different `User`."
+            "The maker's config key. It is the only key that can reconfigure the",
+            "instance, and no instruction reassigns it, so the maker keeps the pause",
+            "control. It is not the quoted wallet. The quoted user seeds the PDA and",
+            "is fixed at creation, so no config update can send fills to a different",
+            "`User`."
           ],
           "signer": true,
           "relations": [
@@ -313,7 +372,7 @@
         {
           "name": "new_hot_authority",
           "docs": [
-            "Present = becomes the new hot key."
+            "When present, this account becomes the new hot key."
           ],
           "optional": true
         }
@@ -346,6 +405,19 @@
     }
   ],
   "events": [
+    {
+      "name": "MidpointConfigRecordV0",
+      "discriminator": [
+        234,
+        116,
+        175,
+        79,
+        236,
+        227,
+        93,
+        97
+      ]
+    },
     {
       "name": "MidpointExecuteRecordV0",
       "discriminator": [
@@ -439,13 +511,10 @@
           {
             "name": "clear_mid",
             "docs": [
-              "Also zero the mid, which stops *every* side quoting regardless of what",
-              "the ladders hold (see `MidpointQuoterV0::is_quoting`). Cheap belt to the",
-              "braces when withdrawing both sides.",
-              "",
-              "Not a durable kill: the hot key can stamp a new mid straight after. The",
-              "durable one is `update_quoter_v0 { is_paused: true }`, which only the",
-              "config key can set and only the config key can undo."
+              "Also zero the mid, which stops every side from quoting whatever the",
+              "ladders hold. See `MidpointQuoterV0::is_quoting`. The stop is not",
+              "durable: the hot key can stamp a new mid at once. The durable stop",
+              "is `update_quoter_v0 { is_paused: true }`, set and cleared only by the config key."
             ],
             "type": "bool"
           }
@@ -455,15 +524,10 @@
     {
       "name": "CancelAllOutcomeV0",
       "docs": [
-        "What a `cancel_all_v0` withdrew.",
-        "",
-        "Rung counts and nothing more, deliberately. Unlike the CLOB's, this sweep",
-        "reserves nothing on velocity's side — spline depth is standing intent,",
-        "margin-clamped at execute — so no caller has aggregates to unwind and the",
-        "response is informational. Totalling the withdrawn intent as well would mean",
-        "reading every rung back before zeroing it, which costs more per rung than",
-        "the withdrawal itself and reports a number the maker (who wrote the shape)",
-        "already knows."
+        "What a `cancel_all_v0` withdrew. It carries rung counts and nothing more.",
+        "Unlike the CLOB sweep, this one reserves nothing on velocity's side, so no",
+        "caller has aggregates to unwind. A total of the withdrawn intent would mean",
+        "reading every rung back, which costs more per rung than the withdrawal."
       ],
       "type": {
         "kind": "struct",
@@ -492,16 +556,10 @@
     {
       "name": "CancelSidesV0",
       "docs": [
-        "Which sides a `cancel_all_v0` withdraws.",
-        "",
-        "Named sides rather than a pair of bools, because the wire must not be able",
-        "to express \"neither\" — that is a maker believing their quotes are gone",
-        "when nothing happened.",
-        "",
-        "What the sides *mean* differs by who is reading: a book walks them as book",
-        "sides, a caller unwinds them as position directions, a spline reads them as",
-        "taker directions. Each program adds that reading itself; the tags are the",
-        "part that has to agree."
+        "Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of bools,",
+        "because the wire must not express \"neither\" and leave a maker believing its quotes",
+        "are gone. What a side means differs by reader. A book walks it as a book side and a",
+        "caller unwinds it as a position direction. The tags are the part that has to agree."
       ],
       "type": {
         "kind": "enum",
@@ -524,8 +582,8 @@
         "Taker direction, from the taker's perspective.",
         "",
         "Encoded as its discriminant, `Long = 0`, and every program on this wire",
-        "reads the same declaration — a taker direction inverted across the",
-        "boundary would fill the wrong side of a book."
+        "reads the same declaration. A taker direction inverted across the boundary",
+        "would fill the wrong side of a book."
       ],
       "type": {
         "kind": "enum",
@@ -542,13 +600,10 @@
     {
       "name": "ExecuteArgsV0",
       "docs": [
-        "Arguments to `execute_v0`: commit a fill.",
-        "",
-        "[`QuoteArgsV0`] without the price bound, because it answers the same",
-        "question having committed to it: `size` is already only the depth the",
-        "caller chose off the ladder, so the walk that fills it visits no level a",
-        "bound would have cut. A quoter may fill less than `size`; what it actually",
-        "filled is whatever its returned balance changes sum to."
+        "Arguments to `execute_v0`: commit a fill. [`QuoteArgsV0`] without the price bound,",
+        "because `size` is only the depth the caller chose off the ladder, so the walk visits",
+        "no level a bound would have cut. A quoter may fill less than `size`, and what it",
+        "filled is whatever its balance changes sum to."
       ],
       "type": {
         "kind": "struct",
@@ -627,6 +682,99 @@
       }
     },
     {
+      "name": "MidpointConfigRecordV0",
+      "docs": [
+        "One per config-mutating instruction: `update_quoter_v0`,",
+        "`propose_authority_v0` and `accept_authority_v0`. Every one of them emits",
+        "the whole config rather than a diff, so a reader never has to replay",
+        "earlier records to know the instance's current shape."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "hot_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_authority",
+            "docs": [
+              "[`crate::state::ZERO_ADDRESS`] when no rotation is pending."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "max_mid_staleness_slots",
+            "type": "u64"
+          },
+          {
+            "name": "price_tick_size",
+            "type": "u64"
+          },
+          {
+            "name": "size_step",
+            "type": "u64"
+          },
+          {
+            "name": "min_quote_size",
+            "type": "u64"
+          },
+          {
+            "name": "max_mid_deviation_ppm",
+            "type": "u64"
+          },
+          {
+            "name": "mid_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "sub_account_id",
+            "type": "u16"
+          },
+          {
+            "name": "is_paused",
+            "type": "u8"
+          },
+          {
+            "name": "require_attested_flow",
+            "type": "u8"
+          },
+          {
+            "name": "version",
+            "docs": [
+              "[`MIDPOINT_EVENT_VERSION`]."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u8",
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "MidpointExecuteRecordV0",
       "serialization": "bytemuck",
       "repr": {
@@ -638,9 +786,8 @@
           {
             "name": "user_authority",
             "docs": [
-              "The quoted wallet (`MidpointQuoterV0::user_authority`) — the maker's",
-              "config authority is deliberately not in the record; it is not part of",
-              "the fill."
+              "The quoted wallet, `MidpointQuoterV0::user_authority`. The maker's",
+              "config authority is not in the record. It is not part of the fill."
             ],
             "type": "pubkey"
           },
@@ -667,15 +814,10 @@
           {
             "name": "configured_market_index",
             "docs": [
-              "The market index this instance was created for. It rides the PDA",
-              "seeds, so it is fixed and it is a fact about the instance.",
-              "",
-              "It is not proof of where the fill settled. Velocity's registry decides",
-              "which market an instance quotes, and it can hold an entry whose market",
-              "differs from this one. A reader that needs the settled market takes it",
-              "from velocity's own fill record, which is the account that knows. No",
-              "value turns on it either way: velocity matches the balance-change user",
-              "against its registry before it settles anything."
+              "The market index this instance was created for. It rides the PDA seeds,",
+              "so it is fixed, not proof of where the fill settled. Velocity's registry",
+              "decides the settled market and matches the balance-change user against it",
+              "before settling, so no value here turns on this field."
             ],
             "type": "u16"
           },
@@ -686,7 +828,7 @@
           {
             "name": "direction",
             "docs": [
-              "0 = Long (taker bought the ask side), 1 = Short."
+              "0 is Long, which means the taker bought the ask side. 1 is Short."
             ],
             "type": "u8"
           },
@@ -721,59 +863,60 @@
           {
             "name": "authority",
             "docs": [
-              "The maker's config key: pause, reconfigure, rotate the hot key. Signs",
-              "creation. Never reassigned — the maker's kill switch stays theirs.",
-              "Independent of `user_authority`: a desk can hold this cold."
+              "The maker's config key. It pauses, reconfigures and rotates the hot",
+              "key, and it signs creation. Nothing reassigns it, so the maker keeps",
+              "the kill switch. It is independent of `user_authority`, so a desk can",
+              "hold it cold."
             ],
             "type": "pubkey"
           },
           {
             "name": "hot_authority",
             "docs": [
-              "Hot key allowed to write mid/levels. Rotatable by `authority`, so the",
-              "key that signs thousands of mid updates a day carries no other power."
+              "The key allowed to write the mid and the levels. `authority` rotates",
+              "it. The key that signs thousands of mid updates a day carries no other",
+              "power."
             ],
             "type": "pubkey"
           },
           {
             "name": "execute_authority",
             "docs": [
-              "Only signer allowed to execute (velocity's quoter CPI signer PDA —",
-              "velocity clamps size to the quoted user's margin before CPI'ing here).",
-              "Immutable after init."
+              "The only signer allowed to execute. It is velocity's quoter CPI signer",
+              "PDA. Velocity clamps size to the quoted user's margin before it calls",
+              "here. The field never changes after init."
             ],
             "type": "pubkey"
           },
           {
             "name": "user_authority",
             "docs": [
-              "Wallet half of the quoted velocity `User` — fills settle against",
-              "`(user_authority, user_sub_account_id)`. It signs creation (consent)",
-              "and rides the PDA seeds, so it is fixed for the life of the instance;",
-              "quoting a different wallet means a new instance that wallet signs for."
+              "Wallet half of the quoted velocity `User`. Fills settle against",
+              "`(user_authority, user_sub_account_id)`. It signs creation and is part",
+              "of the PDA seeds, so quoting a different wallet needs a new instance."
             ],
             "type": "pubkey"
           },
           {
             "name": "mid_price",
             "docs": [
-              "Mid price, in the market's price precision (velocity perps:",
-              "PRICE_PRECISION = 1e6). 0 = not quoting."
+              "Mid price, in the market's price precision. Velocity perps use a",
+              "PRICE_PRECISION of 1e6. Zero means the instance does not quote."
             ],
             "type": "u64"
           },
           {
             "name": "mid_slot",
             "docs": [
-              "Slot of the last mid write — the staleness gate's input."
+              "Slot of the last mid write. The staleness gate reads it."
             ],
             "type": "u64"
           },
           {
             "name": "mid_sequence",
             "docs": [
-              "Monotonic guard for racing mid writers (see",
-              "[`MidpointQuoterV0::set_mid`])."
+              "Monotonic guard for racing mid writers. See",
+              "[`MidpointQuoterV0::set_mid`]."
             ],
             "type": "u64"
           },
@@ -787,8 +930,8 @@
           {
             "name": "price_tick_size",
             "docs": [
-              "Quote prices round to a multiple of this, away from mid (same price",
-              "precision as `mid_price`)."
+              "Quote prices round to a multiple of this, away from mid. It uses the",
+              "same price precision as `mid_price`."
             ],
             "type": "u64"
           },
@@ -802,24 +945,24 @@
           {
             "name": "min_quote_size",
             "docs": [
-              "Level remainders below this are not quoted. Base precision — a floor",
-              "on the *base* size of a rung, despite the name."
+              "The quoter does not quote a level remainder below this. The value is",
+              "in base precision. It floors the base size of a rung despite the name."
             ],
             "type": "u64"
           },
           {
             "name": "base_precision",
             "docs": [
-              "Base units per whole unit. Always [`BASE_PRECISION`]; see there for why",
-              "an instance cannot choose another one."
+              "Base units per whole unit. It is always [`BASE_PRECISION`]. See there",
+              "for why an instance cannot choose another value."
             ],
             "type": "u64"
           },
           {
             "name": "user_sub_account_id",
             "docs": [
-              "Sub-account half of the quoted user's identity (`user_authority`",
-              "above is the wallet half)."
+              "Sub-account half of the quoted user's identity. `user_authority` is",
+              "the wallet half."
             ],
             "type": "u16"
           },
@@ -833,18 +976,18 @@
           {
             "name": "is_paused",
             "docs": [
-              "Maker kill switch (config path; the registry's `is_active` is the",
-              "velocity-side one)."
+              "The maker's kill switch on the config path. The registry's `is_active`",
+              "is the velocity-side one."
             ],
             "type": "u8"
           },
           {
             "name": "require_attested_flow",
             "docs": [
-              "Quote only protected flow: takers whose flow served a window before",
-              "the call — the swift hold, or the book's activation delay. Velocity",
-              "asserts the fact on the wire (`taker_served_window`), and this",
-              "program trusts its caller for it as it does for `users` and `caps`."
+              "Quote only protected flow. The taker's flow must serve a window before",
+              "the call, either the swift hold or the book's activation delay.",
+              "Velocity asserts the fact on the wire as `taker_served_window`. This",
+              "program trusts its caller for it, as it does for `users` and `caps`."
             ],
             "type": "u8"
           },
@@ -859,24 +1002,32 @@
           {
             "name": "max_mid_deviation_ppm",
             "docs": [
-              "Max `|mid − reference_price| / reference_price` the quoter fills at,",
-              "parts per million. 0 disables the bound. Owned by the config key, not",
-              "the hot key. A compromised hot key cannot move mid past this band of",
-              "velocity's oracle, so a bad mid quotes and fills nothing rather than",
-              "draining the maker's collateral at an off-market price."
+              "The largest `|mid − reference_price| / reference_price` the quoter",
+              "fills at, in parts per million. `validate` rejects zero, so the bound",
+              "can never be disabled. The config key owns the field, so a compromised",
+              "hot key cannot move the mid past this band around velocity's oracle."
             ],
             "type": "u64"
           },
           {
+            "name": "pending_authority",
+            "docs": [
+              "Proposed next `authority`, or [`ZERO_ADDRESS`] when no rotation is",
+              "pending. `authority` stays the signer until `accept_authority_v0`",
+              "completes the swap, so a mistyped target cannot lock the maker out."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "docs": [
-              "Room for two more pubkeys plus a scalar or two, so a future field",
-              "lands without moving the ladders or the response tail."
+              "Room for one more pubkey and a scalar or two. A future field lands",
+              "here without moving the ladders or the response tail."
             ],
             "type": {
               "array": [
                 "u8",
-                64
+                32
               ]
             }
           },
@@ -909,8 +1060,8 @@
           {
             "name": "response",
             "docs": [
-              "Scratch region `quote_v0`/`execute_v0` stream their borsh response",
-              "into; return data carries a [`ResponsePointerV0`] locating it."
+              "The region `quote_v0` and `execute_v0` stream their wincode response",
+              "into. Return data carries a [`ResponsePointerV0`] to it."
             ],
             "type": {
               "array": [
@@ -925,20 +1076,11 @@
     {
       "name": "QuoteArgsV0",
       "docs": [
-        "Arguments to `quote_v0`: what a taker wants, and who the caller can settle",
-        "against.",
-        "",
-        "A quote is a promise about what `execute_v0` will deliver, so it is given",
-        "the same `users` and `caps` and must spend them the same way. A ladder",
-        "standing on liquidity the matching execute would decline is a ladder its",
-        "reader cannot route against.",
-        "",
-        "Read in place, like the responses: `users` is a slice into the caller's",
-        "instruction data, so a quoter walks the set without allocating and without",
-        "standing a copy of it in a 4 KB frame. It leads the struct for that to be",
-        "sound — the count puts the refs four bytes in, which is the two-byte",
-        "alignment a [`UserRefV0`] reference needs. A field added ahead of it must",
-        "keep that offset even."
+        "Arguments to `quote_v0`: what a taker wants, and who the caller can settle against. A",
+        "quote promises what `execute_v0` will deliver, so it takes the same `users` and `caps`",
+        "and spends them the same way. `users` is a slice into the caller's instruction data,",
+        "so a quoter walks it without standing a copy in a 4 KB frame. It leads the struct to",
+        "keep its offset even, and a field added ahead of it must preserve that."
       ],
       "type": {
         "kind": "struct",
@@ -946,8 +1088,8 @@
           {
             "name": "users",
             "docs": [
-              "The loaded-user set, at most [`USER_SET_CAPACITY`] entries — which a",
-              "reader checks with [`user_set_within_capacity`], since the count comes",
+              "The loaded-user set, at most [`USER_SET_CAPACITY`] entries. A reader",
+              "checks that with [`user_set_within_capacity`], because the count comes",
               "off the wire."
             ],
             "type": {
@@ -985,8 +1127,8 @@
             "name": "reference_price",
             "docs": [
               "The price the caller marks a filled position at, in PRICE_PRECISION.",
-              "Only [`UserCapV0`] budgets are spent against it; it does not bound",
-              "what a quoter may fill at."
+              "Only [`UserCapV0`] budgets are spent against it. It does not bound what a",
+              "quoter may fill at."
             ],
             "type": "i64"
           },
@@ -1007,50 +1149,30 @@
           {
             "name": "limit_price",
             "docs": [
-              "The worst price the caller will fill at, in PRICE_PRECISION. Zero",
-              "means no bound.",
-              "",
-              "A ladder is walked best price first, so a quoter may stop as soon as a",
-              "level is worse than this: the caller discards those levels anyway. The",
-              "walk is what a quoter is charged for, and a transaction is charged for",
-              "the compute limit it requests, so a bound the quoter ignores is paid",
-              "for by whoever sent the transaction.",
-              "",
-              "**Not a trust boundary**, like the caps above. Honouring it saves the",
-              "caller compute; ignoring it wastes the caller's compute and returns",
-              "levels the caller drops. It never widens what a quoter may fill."
+              "The worst price the caller will fill at, in PRICE_PRECISION. Zero means no",
+              "bound. A ladder is walked best price first, so a quoter may stop as soon as a",
+              "level is worse. Not a trust boundary. Ignoring it wastes the caller's compute and",
+              "returns levels it drops, and never widens what a quoter may fill."
             ],
             "type": "u64"
           },
           {
             "name": "taker_served_window",
             "docs": [
-              "Whether the taker's flow served a protection window before this call:",
-              "the swift hold (an attested transaction), or the book's activation",
-              "delay (a protocol crank that fills an order which rested through it).",
-              "The caller asserts it, like `users` and `caps` — a quoter already",
-              "authenticates the caller, and the caller is the settlement engine. A",
-              "quoter that only serves protected flow (the midpoint's",
-              "`require_attested_flow`) refuses when this is false."
+              "Whether the taker's flow served a protection window before this call: the swift",
+              "hold, or the book's activation delay. The caller asserts it, like `users` and",
+              "`caps`. A quoter that only serves protected flow refuses when this is false, as",
+              "the midpoint does under `require_attested_flow`."
             ],
             "type": "bool"
           },
           {
             "name": "include_taker_origin_reservations",
             "docs": [
-              "Fill the depth that a taker-origin order reserves.",
-              "",
-              "A taker-origin order is an unfilled taker remainder that rests on the",
-              "book. The book withholds the depth that order crosses, so the",
-              "improvement over its resting price reaches the taker and not whoever",
-              "lands a transaction first. The crank that settles the cross is the one",
-              "caller that may take that depth, and it says so here.",
-              "",
-              "This is unrelated to the margin a maker reserves at placement.",
-              "",
-              "The caller asserts it, like `users` and `caps`. The quoter",
-              "authenticates the caller, and the caller is the settlement engine. A",
-              "quoter that reserves no depth ignores it."
+              "Fill the depth that a taker-origin order reserves. The crank that settles the",
+              "cross is the one caller that may take it, and it says so here. Unrelated to the",
+              "margin a maker reserves at placement. A quoter that reserves no depth ignores",
+              "it."
             ],
             "type": "bool"
           }
@@ -1060,8 +1182,9 @@
     {
       "name": "QuoterConfigV0",
       "docs": [
-        "Immutable + rarely-changed config, set at init (the addresses ride the",
-        "accounts list — duplicated accounts cost one index byte in the tx)."
+        "Config that init sets and that changes rarely. The addresses ride the",
+        "accounts list, because a duplicated account costs one index byte in the",
+        "transaction."
       ],
       "type": {
         "kind": "struct",
@@ -1101,14 +1224,10 @@
           {
             "name": "max_mid_deviation_ppm",
             "docs": [
-              "Max `|mid - reference_price| / reference_price` the instance fills at,",
-              "parts per million. Must be nonzero at creation.",
-              "",
-              "This band is what stops a compromised hot key from filling the maker",
-              "at an off-market mid, so an instance must not start without one. The",
-              "config key can set it to zero later through `update_quoter_v0`, which",
-              "is a maker deciding to run unbounded rather than a maker who never",
-              "learned the field exists."
+              "The largest `|mid - reference_price| / reference_price` the instance",
+              "fills at, in parts per million. It must be nonzero at creation, so a",
+              "compromised hot key cannot fill the maker at an off-market mid. The",
+              "config key can set it to zero later through `update_quoter_v0`."
             ],
             "type": "u64"
           }
@@ -1118,13 +1237,9 @@
     {
       "name": "ResponsePointerV0",
       "docs": [
-        "Where in the quoter's response account it wrote the response. Return data",
-        "of `quote_v0` and `execute_v0`.",
-        "",
-        "The one shape a caller reads back from every quoter, whatever it is: the",
-        "response itself lives in an account the caller then borrows, and this says",
-        "where to look. Declared here rather than per program for the same reason",
-        "the rest of the wire is — three copies of two `u32`s are three chances to",
+        "Where in the quoter's response account it wrote the response. Return data of",
+        "`quote_v0` and `execute_v0`. Every quoter answers with this one shape, declared here",
+        "rather than per program, because three copies of two `u32`s are three chances to",
         "disagree about which comes first."
       ],
       "type": {
@@ -1149,8 +1264,8 @@
           {
             "name": "mid",
             "docs": [
-              "Present = also stamp a new mid in the same write (atomic shape+mid",
-              "moves); the sequence rule from `set_mid_v0` applies."
+              "When present, the write also stamps a new mid, so a shape move and a",
+              "mid move stay atomic. The sequence rule from `set_mid_v0` applies."
             ],
             "type": {
               "option": "u64"
@@ -1207,9 +1322,10 @@
           {
             "name": "sequence",
             "docs": [
-              "Opt-in monotonic guard for racing writers: nonzero must strictly",
-              "increase; zero skips the check. A mid of 0 is a withdrawal, so it",
-              "skips the guard whatever the sequence says."
+              "An optional monotonic guard for racing writers. A nonzero sequence must",
+              "strictly increase. A sequence of 0 skips the check only while no writer",
+              "has stamped a sequence yet. A mid of 0 is a withdrawal, so it skips the",
+              "guard whatever the sequence holds."
             ],
             "type": "u64"
           }
@@ -1219,7 +1335,7 @@
     {
       "name": "SplineLevelInputV0",
       "docs": [
-        "A maker's spline-level input on the wire: `filled` is program-owned, so",
+        "A maker's spline-level input on the wire. The program owns `filled`, so",
         "the setter takes only the shape."
       ],
       "type": {
@@ -1239,8 +1355,8 @@
     {
       "name": "SplineLevelV0",
       "docs": [
-        "One rung of the spline: standing intent `size` at `mid ± offset`, with",
-        "`filled` tracking what executes have consumed since the side was written."
+        "One rung of the spline. It holds standing intent `size` at `mid ± offset`.",
+        "`filled` counts what executes consumed since the maker wrote the side."
       ],
       "type": {
         "kind": "struct",
@@ -1248,8 +1364,8 @@
           {
             "name": "offset_ppm",
             "docs": [
-              "Distance from mid toward this side, parts-per-million of mid.",
-              "Strictly ascending within a side; 0 quotes at mid itself."
+              "Distance from mid toward this side, in parts per million of mid.",
+              "Offsets ascend strictly within a side. Zero quotes at mid itself."
             ],
             "type": "u64"
           },
@@ -1263,7 +1379,7 @@
           {
             "name": "filled",
             "docs": [
-              "Consumed since the side was last written."
+              "Base consumed since the maker last wrote the side."
             ],
             "type": "u64"
           }
@@ -1277,6 +1393,10 @@
         "fields": [
           {
             "name": "max_mid_staleness_slots",
+            "docs": [
+              "Bounded by `MidpointQuoterV0::validate` to a nonzero value at or below",
+              "`MAX_MID_STALENESS_SLOTS_CEILING`."
+            ],
             "type": {
               "option": "u64"
             }
@@ -1302,10 +1422,10 @@
           {
             "name": "require_attested_flow",
             "docs": [
-              "Quote only flow that served a protection window. The claim rides the",
-              "wire as `taker_served_window`, and this program trusts its caller for",
-              "it the way it trusts `users` and `caps`. Turning it on takes no local",
-              "key and reads no velocity account."
+              "Quote only flow that served a protection window. The claim arrives on",
+              "the wire as `taker_served_window`, and this program trusts its caller",
+              "for it the way it trusts `users` and `caps`. Enabling it configures no",
+              "flow key here and reads no velocity account."
             ],
             "type": {
               "option": "bool"
@@ -1320,9 +1440,9 @@
           {
             "name": "max_mid_deviation_ppm",
             "docs": [
-              "Max mid deviation from velocity's oracle, parts per million. 0 disables",
-              "the bound, which only the config key can choose. Creation refuses zero,",
-              "so an instance never starts without the band."
+              "The maximum mid deviation from velocity's oracle, in parts per million.",
+              "`MidpointQuoterV0::validate` rejects 0 on every path, so a compromised",
+              "hot key can never disable the bound."
             ],
             "type": {
               "option": "u64"
@@ -1332,13 +1452,9 @@
             "name": "mid_sequence",
             "docs": [
               "New value for the racing-writer sequence counter. Any value is legal,",
-              "including a lower one.",
-              "",
-              "The counter only ever rises through `set_mid_v0`, so a writer that",
-              "sends `u64::MAX`, by accident or by a bug, makes every later mid write",
-              "fail for the life of the instance. This field is the recovery, and it",
-              "belongs to the config key alone. A reset re-opens the sequences below",
-              "the old value, so the maker must stop the racing writers first."
+              "including a lower one. The counter only rises through `set_mid_v0`; a",
+              "writer that sends `u64::MAX` by mistake blocks all later mid writes,",
+              "and only the config key can reset it. Stop racing writers before a reset."
             ],
             "type": {
               "option": "u64"
@@ -1352,34 +1468,10 @@
       "docs": [
         "What one named user may still lose on the side this call sweeps, in quote.",
         "",
-        "A quote_cap rather than a base amount, because the caller cannot convert the",
-        "one into the other. What a fill costs a maker is collateral, and the",
-        "conversion needs the price each order fills at — which the caller does not",
-        "have and the quoter does. So the caller sends what it knows and the quoter",
-        "spends it:",
-        "",
-        "```text",
-        "cost = base * |price - reference_price| / BASE_PRECISION",
-        "```",
-        "",
-        "counted only where the fill moves against the owner: an order resting on",
-        "the bid side costs its owner when it fills *above* the reference, an ask",
-        "when it fills *below*. An order priced in the owner's favour costs nothing",
-        "and is filled whole. Once the quote_cap is spent, that user's remaining",
-        "orders are passed over and the depth behind them is still filled.",
-        "",
-        "Why this is the cost that matters: a resting order is normally already",
-        "collateralized against the position it would become, priced at the",
-        "reference. Filling it converts that reservation into the position it stood",
-        "for. What the reservation does not price is the owner paying its own limit",
-        "price for a position marked at the reference, and that difference scales",
-        "with size.",
-        "",
-        "One number, not one per side, because a call sweeps one side of the book:",
-        "[`QuoteArgsV0::direction`] says which, and the quote_cap is for that side.",
-        "",
-        "`u64::MAX` means unbounded. Zero means the user is excluded outright, and",
-        "belongs in the bitmap rather than here."
+        "A quote amount, not base, because the conversion needs the price each order fills",
+        "at, which the quoter has and the caller does not. The quoter charges",
+        "`base * |price - reference_price| / BASE_PRECISION` where the fill moves against the",
+        "owner. `u64::MAX` is unbounded, and zero belongs in the exclusion bitmap."
       ],
       "type": {
         "kind": "struct",
@@ -1387,40 +1479,20 @@
           {
             "name": "quote_cap",
             "docs": [
-              "Quote this user may lose filling on the swept side. `u64::MAX` means",
-              "unbounded.",
-              "",
-              "The bound for depth that was margin-reserved before the fill, which",
-              "is a book's resting orders. The base behind such an order was priced",
-              "into its owner's worst case at placement, so filling it does not grow",
-              "that worst case — what moves is collateral, by the gap between the",
-              "order's price and the mark. Base cannot express it: at a price in the",
-              "owner's favour the cost per base is zero and any size is affordable."
+              "Quote this user may lose filling on the swept side. `u64::MAX` is unbounded.",
+              "This bounds depth that was margin-reserved at placement, so filling it moves",
+              "collateral rather than the worst case. Base cannot express that bound, because",
+              "at a price in the owner's favour the cost per base is zero."
             ],
             "type": "u64"
           },
           {
             "name": "base_cap",
             "docs": [
-              "The most base this user may give up on the swept side. `u64::MAX`",
-              "means unbounded.",
-              "",
-              "One axis, two readers, and the caller sends the tighter of what each",
-              "needs — which in all but one shape is exactly one of them, because the",
-              "other is unbounded:",
-              "",
-              "- A **book** holds its owner's **reduce-only** orders to it. The book",
-              "  is position-blind, so a reduce-only order is safe only if the caller",
-              "  bounds its fill to the position it may reduce. Here that makes this",
-              "  **a trust boundary**, unlike [`Self::quote_cap`]: the book enforces",
-              "  it at match time, and a reduce-only order whose owner carries no cap",
-              "  here is not filled at all.",
-              "- Every **other quoter** holds its own depth to it, reading the entry",
-              "  for the user on its registry slot. That depth was never reserved, so",
-              "  a fill grows its owner's worst case and pays initial margin on the",
-              "  base taken. Quote cannot express that, which is why this figure is",
-              "  in base. Advisory there, like the quote cap: the caller trims the",
-              "  returned ladder to it either way."
+              "The most base this user may give up on the swept side. `u64::MAX` is unbounded.",
+              "A book is position-blind, so it enforces this at match time and will not fill a",
+              "reduce-only order whose owner carries no cap here. That makes the field a trust",
+              "boundary, unlike [`Self::quote_cap`]. Every other quoter reads it as advisory."
             ],
             "type": "u64"
           },
@@ -1437,24 +1509,12 @@
     {
       "name": "UserCapsV0",
       "docs": [
-        "Per-user room, parallel to the caller's user set.",
+        "Per-user room, parallel to the caller's user set. A user absent from all of this is",
+        "unconstrained. The quoter skips an excluded user's orders, because depth standing on",
+        "them would be depth the fill declines. An exclusion never fails the call, unlike",
+        "absence from the user set.",
         "",
-        "A user absent from all of this is unconstrained. An excluded user has",
-        "their orders passed over entirely — the caller has said it cannot settle a",
-        "fill against them, so quoting depth standing on their orders would promise",
-        "depth the fill declines.",
-        "",
-        "Distinct from membership of the user set: absent from *that* means the",
-        "caller's account set is stale and, past the grace window, the whole call",
-        "fails. An exclusion is a deliberate constraint, not a mistake, and never",
-        "fails the call.",
-        "",
-        "**Not a trust boundary.** A quoter that ignores these leaves its caller",
-        "exactly where it stands without them — the caller's own post-fill checks",
-        "still refuse the fill. What honouring them buys is that the honest case",
-        "stops reverting. The exclusions are firmer than the budgets: a caller may",
-        "also refuse a response that names an excluded user, while a quote_cap it",
-        "cannot reprice is left to those post-fill checks."
+        "Not a trust boundary. A caller's own post-fill checks still refuse the fill."
       ],
       "type": {
         "kind": "struct",
@@ -1475,7 +1535,7 @@
           {
             "name": "len",
             "docs": [
-              "Live entries at the head of `caps`; the tail is undefined."
+              "Live entries at the head of `caps`. The tail is undefined."
             ],
             "type": "u8"
           },
@@ -1498,15 +1558,10 @@
     {
       "name": "UserRefV0",
       "docs": [
-        "A velocity user in derivable form: the wallet and sub-account index that",
-        "both the `User` and `UserStats` PDAs derive from.",
-        "",
-        "Stored rather than the `User` key so an off-chain reader — a relay resolver",
-        "staging a crank — can reach every user-derived account from a quoter's",
-        "state alone. A stored `User` key is a dead end, because its authority lives",
-        "inside account data the reader cannot load. Velocity matches refs against",
-        "its loaded users by field, never by derivation, so the hot path pays",
-        "nothing for this."
+        "A velocity user in derivable form: the wallet and sub-account index that both",
+        "the `User` and `UserStats` PDAs derive from. An off-chain reader can reach every",
+        "user-derived account from a quoter's state alone. A stored `User` key cannot,",
+        "because its authority lives in account data the reader cannot load."
       ],
       "type": {
         "kind": "struct",

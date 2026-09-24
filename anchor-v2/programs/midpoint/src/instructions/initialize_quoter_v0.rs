@@ -53,15 +53,6 @@ pub fn handle_initialize_quoter_v0(
         MidpointError::InvalidConfig
     );
 
-    // A fresh instance must never quote without the oracle-deviation band.
-    // The band is what keeps a compromised hot key from filling the maker at
-    // an off-market mid, and an instance that starts at zero runs unprotected
-    // until a separate call arrives.
-    require!(
-        config.max_mid_deviation_ppm != 0,
-        MidpointError::InvalidConfig
-    );
-
     let quoter = &mut ctx.accounts.quoter;
     quoter.authority = *ctx.accounts.authority.address();
     quoter.hot_authority = *ctx.accounts.hot_authority.address();

@@ -22,6 +22,33 @@ use anchor_lang::prelude::*;
 /// Current semantic revision of every `…RecordV0` in this module.
 pub const MIDPOINT_EVENT_VERSION: u8 = 0;
 
+/// One per config-mutating instruction: `update_quoter_v0`,
+/// `propose_authority_v0` and `accept_authority_v0`. Every one of them emits
+/// the whole config rather than a diff, so a reader never has to replay
+/// earlier records to know the instance's current shape.
+#[event(bytemuck)]
+#[repr(C)]
+pub struct MidpointConfigRecordV0 {
+    pub authority: Address,
+    pub hot_authority: Address,
+    /// [`crate::state::ZERO_ADDRESS`] when no rotation is pending.
+    pub pending_authority: Address,
+    pub ts: i64,
+    pub max_mid_staleness_slots: u64,
+    pub price_tick_size: u64,
+    pub size_step: u64,
+    pub min_quote_size: u64,
+    pub max_mid_deviation_ppm: u64,
+    pub mid_sequence: u64,
+    pub market_index: u16,
+    pub sub_account_id: u16,
+    pub is_paused: u8,
+    pub require_attested_flow: u8,
+    /// [`MIDPOINT_EVENT_VERSION`].
+    pub version: u8,
+    pub _pad: [u8; 1],
+}
+
 #[event(bytemuck)]
 #[repr(C)]
 pub struct MidpointExecuteRecordV0 {

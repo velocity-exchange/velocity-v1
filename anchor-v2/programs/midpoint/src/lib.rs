@@ -66,6 +66,14 @@ pub mod midpoint {
         instructions::set_mid_v0::handle_set_mid_v0(ctx, args)
     }
 
+    pub fn propose_authority_v0(ctx: &mut Context<ProposeAuthorityV0>) -> Result<()> {
+        instructions::propose_authority_v0::handle_propose_authority_v0(ctx)
+    }
+
+    pub fn accept_authority_v0(ctx: &mut Context<AcceptAuthorityV0>) -> Result<()> {
+        instructions::accept_authority_v0::handle_accept_authority_v0(ctx)
+    }
+
     pub fn set_levels_v0(ctx: &mut Context<SetLevelsV0>, args: SetLevelsArgsV0) -> Result<()> {
         instructions::set_levels_v0::handle_set_levels_v0(ctx, args)
     }

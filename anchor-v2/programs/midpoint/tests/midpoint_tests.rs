@@ -1020,6 +1020,103 @@ fn cancel_all_is_idempotent() {
     assert_eq!(parse_cancel_all(&meta.return_data.data), (0, 0, true));
 }
 
+/// A live instance can never disable its own safety gates through
+/// `update_quoter_v0`: the deviation band, the staleness bound and the price
+/// grid must all stay nonzero, and staleness stays under the ceiling.
+#[test]
+fn update_quoter_cannot_disable_a_safety_gate() {
+    let mut ctx = setup();
+
+    let zero_deviation = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
+            max_mid_deviation_ppm: Some(0),
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(send(&mut ctx, zero_deviation).is_err());
+
+    let zero_staleness = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
+            max_mid_staleness_slots: Some(0),
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(send(&mut ctx, zero_staleness).is_err());
+
+    let unbounded_staleness = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
+            max_mid_staleness_slots: Some(midpoint::state::MAX_MID_STALENESS_SLOTS_CEILING + 1),
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(send(&mut ctx, unbounded_staleness).is_err());
+
+    let zero_tick = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
+            price_tick_size: Some(0),
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(send(&mut ctx, zero_tick).is_err());
+}
+
+/// The config key rotates in two steps. The proposed key holds no power
+/// until it signs `accept_authority_v0`, and the swap then binds every later
+/// config call to it.
+#[test]
+fn authority_rotation_requires_the_proposed_key_to_accept() {
+    let mut ctx = setup();
+    let next = Keypair::new();
+    ctx.svm.airdrop(&next.pubkey(), 1_000_000_000).unwrap();
+
+    let propose = instruction::ProposeAuthorityV0 {}.to_instruction(accounts::ProposeAuthorityV0 {
+        quoter: addr(ctx.quoter),
+        authority: addr(ctx.authority.pubkey()),
+        new_authority: addr(next.pubkey()),
+    });
+    send(&mut ctx, propose).unwrap();
+    assert_eq!(
+        read_quoter(&ctx).pending_authority.as_array(),
+        &next.pubkey().to_bytes()
+    );
+
+    // A stranger cannot accept in the proposed key's place.
+    let stranger = Keypair::new();
+    ctx.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let stray_accept =
+        instruction::AcceptAuthorityV0 {}.to_instruction(accounts::AcceptAuthorityV0 {
+            quoter: addr(ctx.quoter),
+            new_authority: addr(stranger.pubkey()),
+        });
+    assert!(send_signed_by(&mut ctx, stray_accept, Some(&stranger)).is_err());
+
+    let accept = instruction::AcceptAuthorityV0 {}.to_instruction(accounts::AcceptAuthorityV0 {
+        quoter: addr(ctx.quoter),
+        new_authority: addr(next.pubkey()),
+    });
+    send_signed_by(&mut ctx, accept, Some(&next)).unwrap();
+    assert_eq!(
+        read_quoter(&ctx).authority.as_array(),
+        &next.pubkey().to_bytes()
+    );
+    assert_eq!(
+        read_quoter(&ctx).pending_authority,
+        midpoint::state::ZERO_ADDRESS
+    );
+
+    // The old config key no longer signs for this instance.
+    let stale_update = update_ix(&ctx, UpdateQuoterArgsV0::default(), None);
+    assert!(send(&mut ctx, stale_update).is_err());
+}
+
 /// THE number this program exists for: a mid write must be near the compute
 /// floor so makers can track fair value tick-by-tick for ~free. The budget
 /// is deliberately above the measured cost (headroom for anchor-v2 drift)

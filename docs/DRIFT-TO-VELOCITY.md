@@ -3006,6 +3006,14 @@ gains `mid_sequence` so a runaway sequence is recoverable; a zero mid is exempt 
 sequence guard, so the withdrawal that stops an instance quoting can never lose a race;
 `MidpointExecuteRecordV0.market_index` becomes `configured_market_index`, which names the
 market the instance was created for rather than the market the fill settled.
+`MidpointQuoterV0::validate` now also rejects a zero or above-`MAX_MID_STALENESS_SLOTS_CEILING`
+`max_mid_staleness_slots`, a zero `price_tick_size` or `size_step`, and, on every config path
+rather than only at creation, a zero `max_mid_deviation_ppm`. `update_quoter_v0` emits a new
+`MidpointConfigRecordV0` with the resulting config. Two new instructions,
+`propose_authority_v0` and `accept_authority_v0`, rotate the config `authority` in two steps and
+emit the same record; `MidpointQuoterV0` gains `pending_authority: Address`, carved from the
+trailing padding, so the account size is unchanged but a decoder that reads that offset as
+padding must add the field.
 
 Behaviour an integrator can observe. A liquidation refuses while the account holds orders on a
 book, and that refusal now covers `set_user_status_to_being_liquidated` and the four spot and

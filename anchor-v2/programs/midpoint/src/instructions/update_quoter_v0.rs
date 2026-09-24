@@ -1,5 +1,8 @@
 use {
-    crate::{error::MidpointError, state::MidpointQuoterV0},
+    crate::{
+        emit::emit_pod, error::MidpointError, events::MidpointConfigRecordV0,
+        state::MidpointQuoterV0,
+    },
     anchor_lang::prelude::*,
 };
 
@@ -21,6 +24,8 @@ pub struct UpdateQuoterV0 {
 #[derive(Clone, Default, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct UpdateQuoterArgsV0 {
+    /// Bounded by `MidpointQuoterV0::validate` to a nonzero value at or below
+    /// `MAX_MID_STALENESS_SLOTS_CEILING`.
     pub max_mid_staleness_slots: Option<u64>,
     pub price_tick_size: Option<u64>,
     pub size_step: Option<u64>,
@@ -32,9 +37,8 @@ pub struct UpdateQuoterArgsV0 {
     pub require_attested_flow: Option<bool>,
     pub is_paused: Option<bool>,
     /// The maximum mid deviation from velocity's oracle, in parts per million.
-    /// A value of 0 disables the bound, and only the config key can choose
-    /// that. Creation refuses 0, so an instance never starts without the
-    /// bound.
+    /// `MidpointQuoterV0::validate` rejects 0 on every path, so a compromised
+    /// hot key can never disable the bound.
     pub max_mid_deviation_ppm: Option<u64>,
     /// New value for the racing-writer sequence counter. Any value is legal,
     /// including a lower one. The counter only rises through `set_mid_v0`; a
@@ -81,5 +85,11 @@ pub fn handle_update_quoter_v0(
         quoter.mid_sequence = v;
     }
 
-    quoter.validate()
+    quoter.validate()?;
+
+    let ts = Clock::get()?.unix_timestamp;
+    emit_pod!(MidpointConfigRecordV0 {
+        ..quoter.config_record(ts)
+    });
+    Ok(())
 }

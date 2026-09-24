@@ -246,7 +246,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             &maps.perp_market_map,
             &mut maps.oracle_map,
             &state,
-            market_index,
+            &user.orders[order_index],
             now,
         )?;
 
@@ -434,28 +434,29 @@ struct TriggerPrices {
 /// Reads the prices for a trigger, and refuses a market or an oracle that
 /// cannot carry one.
 ///
-/// The market must be active, out of settlement, and not fill-paused. The
-/// oracle must be valid for a trigger, and it must stay near the five-minute
-/// TWAP. A stale feed or a divergent feed can fire a stop that the market
-/// never reached.
-///
-/// Firing rests a live order on the book and pays the keeper out of the
-/// owner, so it takes the same market gates as any other step in the fill
-/// lifecycle. `Active` is stricter than those gates require, because the
-/// fired order rests instead of routing to a fill: a `ReduceOnly` market
-/// admits a reducing fill but must not take a new resting order.
+/// The market must be active, out of settlement, and not fill-paused. A
+/// `ReduceOnly` market admits a reduce-only trigger, which rests flagged so
+/// the book clamps its fills to the owner's position. The oracle must be
+/// valid for a trigger, and it must stay near the five-minute TWAP. A stale
+/// feed or a divergent feed can fire a stop that the market never reached.
 fn read_trigger_prices(
     perp_market_map: &PerpMarketMap<'_>,
     oracle_map: &mut OracleMap<'_>,
     state: &State,
-    market_index: u16,
+    armed: &Order,
     now: i64,
 ) -> Result<TriggerPrices> {
-    let perp_market = perp_market_map.get_ref(&market_index)?;
+    let perp_market = perp_market_map.get_ref(&armed.market_index)?;
     validate!(
-        matches!(perp_market.status, MarketStatus::Active),
+        match perp_market.status {
+            MarketStatus::Active => true,
+            MarketStatus::ReduceOnly => armed.reduce_only,
+            _ => false,
+        },
         ErrorCode::MarketPlaceOrderPaused,
-        "market not active"
+        "market takes no trigger of this order (status {:?}, reduce only {})",
+        perp_market.status,
+        armed.reduce_only
     )?;
 
     crate::controller::orders::trigger_market_gates(&perp_market, now)?;

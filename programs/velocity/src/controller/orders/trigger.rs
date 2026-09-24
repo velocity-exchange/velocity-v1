@@ -212,10 +212,8 @@ fn find_triggerable_order(
 
 /// The market gates every trigger passes, whichever endpoint fires it.
 ///
-/// The fill pause gate matches `fill_perp_order`. `MarketStatus` is judged per
-/// endpoint: a market order admits `ReduceOnly`, a limit order needs `Active`.
-/// Triggering is also forbidden in settlement. Otherwise the reward creates a
-/// claim that drains PnL-pool headroom owed to expiry claimants.
+/// Each endpoint judges `MarketStatus` itself. A trigger in settlement would
+/// pay a reward out of PnL-pool headroom owed to expiry claimants.
 pub(crate) fn trigger_market_gates(perp_market: &PerpMarket, now: i64) -> VelocityResult {
     validate!(
         !perp_market.is_operation_paused(PerpOperation::Fill),

@@ -506,6 +506,15 @@ pub fn place_perp_trigger_order(
         "a live order rests on the market's book, not in a user order slot"
     )?;
 
+    // Both trigger executors fire onto the market's CLOB, so a trigger armed
+    // on a market with none would stay armed with nothing to fire it.
+    validate!(
+        maps.perp_market_map.get_ref(&params.market_index)?.clob_market != Pubkey::default(),
+        ErrorCode::TriggerMarketHasNoClob,
+        "market {} has no CLOB to fire a trigger onto",
+        params.market_index
+    )?;
+
     validate_placement_preconditions(state, user, maps, &options, &params)?;
 
     if options.try_expire_orders {

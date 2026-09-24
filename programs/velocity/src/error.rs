@@ -993,6 +993,8 @@ pub enum ErrorCode {
     SelfSyncIntervalTooShort,
     #[msg("A signed-message entry that neither fills nor rests places nothing of its bundle")]
     SignedMsgEntryNeitherFilledNorRested,
+    #[msg("The market has no CLOB, so no crank can fire a trigger order on it")]
+    TriggerMarketHasNoClob,
 }
 
 #[macro_export]

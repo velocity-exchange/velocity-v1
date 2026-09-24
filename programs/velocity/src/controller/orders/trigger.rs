@@ -77,23 +77,28 @@ pub fn trigger_and_route_order(
     let is_isolated = user
         .get_perp_position(market_index)
         .is_ok_and(|position| position.is_isolated());
-    let bit_flags = set_order_bit_flag(0, is_isolated, OrderBitFlag::IsIsolatedPosition);
 
     // The fill the caller runs settles its own fees. This is the trigger's
     // own reward, paid once for the crank that fired the order.
-    pay_and_record_trigger(
+    let filler_reward = pay_trigger_reward(
         user,
-        &fired,
+        market_index,
         accounts,
-        &TriggerRecord {
-            oracle_price,
-            trigger_price,
-            bit_flags,
-            flat_filler_fee: state.perp_fee_structure.flat_filler_fee,
-        },
+        state.perp_fee_structure.flat_filler_fee,
         maps,
-        clock,
+        slot,
     )?;
+
+    TriggerRecord {
+        fired,
+        user: accounts.user.key(),
+        filler: accounts.filler.key(),
+        filler_reward,
+        oracle_price,
+        trigger_price,
+        is_isolated_position: is_isolated,
+    }
+    .emit(now)?;
 
     free_fired_order_slot(user, order_index)?;
 
@@ -402,78 +407,87 @@ fn cancel_trigger_order(
     controller::equity_floor::try_lazy_equity_breaker_trip(user, &mut user_stats, maps)
 }
 
-/// What the trigger record says beyond the order itself.
-struct TriggerRecord {
-    oracle_price: i64,
-    trigger_price: u64,
-    bit_flags: u8,
-    flat_filler_fee: u64,
-}
-
-/// Pay the keeper the flat trigger reward, and record the trigger.
+/// Pay the keeper the flat trigger reward, and report what it was paid.
 ///
 /// A keeper that owns the order is paid nothing. It is already loaded as the
 /// user, and it cannot be loaded a second time as the filler.
-fn pay_and_record_trigger(
+fn pay_trigger_reward(
     user: &mut User,
-    fired: &Order,
+    market_index: u16,
     accounts: &TriggerAccounts,
-    record: &TriggerRecord,
+    flat_filler_fee: u64,
     maps: &mut AccountMaps,
-    clock: &Clock,
-) -> VelocityResult {
-    let filler_key = accounts.filler.key();
-    let user_key = accounts.user.key();
-    let mut filler = if user_key != filler_key {
+    slot: u64,
+) -> VelocityResult<u64> {
+    let mut filler = if accounts.user.key() != accounts.filler.key() {
         Some(load_mut!(accounts.filler)?)
     } else {
         None
     };
 
-    let filler_reward = {
-        let mut perp_market = maps.perp_market_map.get_ref_mut(&fired.market_index)?;
-        pay_keeper_flat_reward_for_perps(
-            user,
-            filler.as_deref_mut(),
-            &mut perp_market,
-            record.flat_filler_fee,
-            clock.slot,
-        )?
-    };
+    let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
+    pay_keeper_flat_reward_for_perps(
+        user,
+        filler.as_deref_mut(),
+        &mut perp_market,
+        flat_filler_fee,
+        slot,
+    )
+}
 
-    let order_action_record = get_order_action_record(
-        clock.unix_timestamp,
-        OrderAction::Trigger,
-        OrderActionExplanation::None,
-        fired.market_index,
-        Some(filler_key),
-        None,
-        Some(filler_reward),
-        None,
-        None,
-        Some(filler_reward),
-        None,
-        None,
-        None,
-        None,
-        Some(user_key),
-        Some(*fired),
-        None,
-        None,
-        record.oracle_price,
-        record.bit_flags,
-        None,
-        None,
-        None,
-        None,
-        Some(record.trigger_price),
-        None,
-        None,
-    )?;
+/// The `OrderAction::Trigger` record of one fired trigger, on either
+/// endpoint.
+pub(crate) struct TriggerRecord {
+    pub fired: Order,
+    pub user: Pubkey,
+    pub filler: Pubkey,
+    pub filler_reward: u64,
+    pub oracle_price: i64,
+    pub trigger_price: u64,
+    pub is_isolated_position: bool,
+}
 
-    emit!(order_action_record);
+impl TriggerRecord {
+    pub(crate) fn emit(&self, now: i64) -> VelocityResult {
+        let bit_flags = set_order_bit_flag(
+            0,
+            self.is_isolated_position,
+            OrderBitFlag::IsIsolatedPosition,
+        );
+        let order_action_record = get_order_action_record(
+            now,
+            OrderAction::Trigger,
+            OrderActionExplanation::None,
+            self.fired.market_index,
+            Some(self.filler),
+            None,
+            Some(self.filler_reward),
+            None,
+            None,
+            Some(self.filler_reward),
+            None,
+            None,
+            None,
+            None,
+            Some(self.user),
+            Some(self.fired),
+            None,
+            None,
+            self.oracle_price,
+            bit_flags,
+            None,
+            None,
+            None,
+            None,
+            Some(self.trigger_price),
+            None,
+            None,
+        )?;
 
-    Ok(())
+        emit!(order_action_record);
+
+        Ok(())
+    }
 }
 
 /// Free the armed slot the fired order left behind. The order is now a

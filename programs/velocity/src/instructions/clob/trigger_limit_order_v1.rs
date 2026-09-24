@@ -56,7 +56,7 @@ use {
             constraints::*,
             optional_accounts::{load_maps, AccountMaps},
         },
-        load, load_mut,
+        load_mut,
         math::{
             casting::Cast,
             liquidation::validate_user_not_being_liquidated,
@@ -79,7 +79,10 @@ use {
                 ClobMarket, ClobOrderRefV0, PlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0,
             },
             state::State,
-            user::{MarketType, OrderBitFlag, OrderReservation, OrderType, User, UserStats},
+            user::{
+                MarketType, Order, OrderBitFlag, OrderReservation, OrderTriggerCondition,
+                OrderType, User, UserStats,
+            },
         },
         validate,
     },
@@ -272,7 +275,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
 
         // The trigger is accepted, so pay the keeper the flat reward out of
         // the user.
-        pay_trigger_keeper(
+        let filler_reward = pay_trigger_keeper(
             user,
             &ctx.accounts.filler,
             &maps.perp_market_map,
@@ -283,19 +286,29 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             slot,
         )?;
 
-        let side = SideV0::from(reserved.direction);
+        // The reservation above holds `open_orders` on the position, so the
+        // order's margin regime is fixed from here on and the records can
+        // state it.
+        let is_isolated_position = user.get_perp_position(market_index)?.is_isolated();
+        crate::controller::orders::TriggerRecord {
+            fired: fired_view(&user.orders[order_index]),
+            user: user_key,
+            filler: filler_key,
+            filler_reward,
+            oracle_price,
+            trigger_price,
+            is_isolated_position,
+        }
+        .emit(now)?;
 
         (
-            side,
+            SideV0::from(reserved.direction),
             user.orders[order_index].price,
             reserved.base_asset_amount,
             user.orders[order_index].max_ts,
             reserved.reduce_only,
             user.clob_user_ref(),
-            // The reservation above holds `open_orders` on the position, so
-            // the order's margin regime is fixed from here on and the place
-            // record can state it.
-            user.get_perp_position(market_index)?.is_isolated(),
+            is_isolated_position,
         )
     };
 
@@ -700,7 +713,21 @@ fn account_carries_risk_increase(
         && !user_stats.is_equity_breaker_tripped())
 }
 
-/// Pays the crank its flat reward out of the user.
+/// The armed slot as the trigger record states it: fired through its
+/// condition, as a fired stop-market reads. The slot itself stays
+/// untriggered.
+fn fired_view(armed: &Order) -> Order {
+    let mut fired = *armed;
+    fired.trigger_condition = match armed.trigger_condition {
+        OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
+        OrderTriggerCondition::Below => OrderTriggerCondition::TriggeredBelow,
+        other => other,
+    };
+
+    fired
+}
+
+/// Pays the crank its flat reward out of the user, and reports the reward.
 ///
 /// A user that cranks its own trigger pays nothing. The account is already
 /// borrowed here, and a reward it paid itself would move no value.
@@ -714,7 +741,7 @@ fn pay_trigger_keeper(
     user_key: &Pubkey,
     filler_key: &Pubkey,
     slot: u64,
-) -> Result<()> {
+) -> Result<u64> {
     let is_filler_user = user_key == filler_key;
     let mut filler = if !is_filler_user {
         Some(load_mut!(filler)?)
@@ -722,15 +749,13 @@ fn pay_trigger_keeper(
         None
     };
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
-    pay_keeper_flat_reward_for_perps(
+    Ok(pay_keeper_flat_reward_for_perps(
         user,
         filler.as_deref_mut(),
         &mut perp_market,
         flat_filler_fee,
         slot,
-    )?;
-
-    Ok(())
+    )?)
 }
 
 /// Marks the armed slot as the shadow of the order that now rests on the book.

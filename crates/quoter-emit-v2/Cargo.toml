@@ -12,6 +12,3 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-emi
 # sides must see one anchor crate.
 anchor-lang = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
-
-[lints.rust.unexpected_cfgs]
-level = "allow"

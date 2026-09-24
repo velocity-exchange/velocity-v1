@@ -902,12 +902,12 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             return Ok(());
         }
 
-        // The count of orders this change completed, walked once for both the
-        // band check and the open-order decrement.
-        let completed = response.completed_count(change_index);
+        // The orders behind this change, read once for the band check, the
+        // open-order decrement and the order the fill is filed under.
+        let orders = response.orders_for(change_index);
         let maker_key = self.resolve_user(&change.user)?;
         self.mark_settled(&maker_key);
-        self.check_external_change(leg, change, &maker_key, completed)?;
+        self.check_external_change(leg, change, &maker_key, orders.completed)?;
         let mut maker = self.makers_and_referrer.get_ref_mut(&maker_key)?;
         self.settle_maker_funding(&mut maker, &maker_key, market)?;
         let mut maker_stats = maker_stats_for(
@@ -922,7 +922,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.taker.direction,
             self.market_index,
             leg.maker_aggregates_tracked,
-            response.sole_client_order_id(change_index),
+            orders.sole_client_order_id,
         )?;
         let (base_filled, quote_filled) = settle_external_match_fill(
             FillAmounts {

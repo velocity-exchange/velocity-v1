@@ -3768,7 +3768,8 @@
           {
             "name": "len",
             "docs": [
-              "Live entries at the head of `caps`. The tail is undefined."
+              "Live entries at the head of `caps`. This crate fills the tail with the",
+              "entries of [`Self::EMPTY`], but a reader must not rely on the tail."
             ],
             "type": "u8"
           },

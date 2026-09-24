@@ -37,5 +37,7 @@ quoter-test-support = { path = "../quoter-test-support" }
 solana-clock = "3"
 solana-pubkey = "3.0"
 
-[lints.rust.unexpected_cfgs]
-level = "allow"
+# The anchor `#[program]` macro and pinocchio gate the on-chain entrypoint on
+# `target_os = "solana"`, which the host compiler does not list.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

@@ -48,10 +48,10 @@ pub use {
         USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
     },
     response::{
-        len_prefix, CancelledRemainderV0, CompletedOrderV0, ExecuteResponseV0, L3ResponseV0,
-        L3RowV0, PartiallyFilledOrderV0, PriceLevelV0, QuoteResponseV0, ResponsePointerV0,
-        UserBalanceChangeV0, CANCELLED_BYTES, CHANGE_BYTES, COMPLETED_BYTES, L3_ROW_BYTES,
-        L3_ROW_FLAG_BLOCKS_WALK, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_RESERVED,
+        len_prefix, CancelledRemainderV0, ChangeOrders, CompletedOrderV0, ExecuteResponseV0,
+        L3ResponseV0, L3RowV0, PartiallyFilledOrderV0, PriceLevelV0, QuoteResponseV0,
+        ResponsePointerV0, UserBalanceChangeV0, CANCELLED_BYTES, CHANGE_BYTES, COMPLETED_BYTES,
+        L3_ROW_BYTES, L3_ROW_FLAG_BLOCKS_WALK, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_RESERVED,
         L3_ROW_FLAG_TAKER_ORIGIN, LEN_BYTES, PARTIAL_BYTES, PRICE_LEVEL_BYTES, USER_REF_BYTES,
     },
     write::{ExecuteWriter, L3Writer, QuoteWriter},
@@ -106,10 +106,10 @@ pub struct UserRefV0 {
     pub sub_account_id: u16,
 }
 
-// The wincode schema is written out because the derive needs `Address` to carry
-// wincode's traits, which it does only from solana-address 2.7. Litesvm and the
-// agave RPC crates hold these trees to 2.6. The schema delegates to `[u8; 32]`
-// and `u16`, and `the_user_ref_schema_matches_its_byte_form` pins its bytes.
+// The derive needs `Address` to carry wincode's traits, which only solana-address
+// 2.7 gives, and litesvm and the agave RPC crates hold these trees to 2.6. So the
+// schema delegates to `[u8; 32]` and `u16`, and a test pins it against `to_bytes`.
+// TODO: derive `SchemaRead` and `SchemaWrite` once solana-address 2.7 can be taken.
 type AuthoritySchema = [u8; 32];
 
 /// The shape the derive computes for a `#[repr(C)]` struct: the fields' sizes

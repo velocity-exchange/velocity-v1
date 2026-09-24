@@ -654,3 +654,54 @@ fn a_pointer_past_u32_is_refused() {
         Err(SpecError::PointerOverflow)
     );
 }
+
+/// A change names one order only when exactly one order stands behind it,
+/// whether consumed or left partial.
+#[test]
+fn a_change_names_its_order_only_when_it_has_one() {
+    let (c, x, p) = (changes(), cancelled(), partial());
+    let one = [completed()[0]];
+    let merged = completed();
+    let both = ExecuteResponseV0 {
+        changes: &c,
+        cancelled: &x,
+        completed: &one,
+        partial: &p,
+    };
+    let consumed_only = ExecuteResponseV0 {
+        partial: &[],
+        ..both
+    };
+    let partial_only = ExecuteResponseV0 {
+        completed: &[],
+        ..both
+    };
+    let many = ExecuteResponseV0 {
+        completed: &merged,
+        partial: &[],
+        ..both
+    };
+
+    let orders = |response: ExecuteResponseV0, index| response.orders_for(index);
+    assert_eq!(orders(consumed_only, 0).sole_client_order_id, Some(90));
+    assert_eq!(orders(partial_only, 0).sole_client_order_id, Some(110));
+    assert_eq!(orders(both, 0).sole_client_order_id, None);
+    assert_eq!(orders(many, 0).completed, 2);
+    assert_eq!(orders(many, 0).sole_client_order_id, None);
+    assert_eq!(orders(many, 1).completed, 0);
+    assert_eq!(orders(many, 1).sole_client_order_id, None);
+}
+
+/// A set built from caps leaves the unused slots as `EMPTY` leaves them, so
+/// two sets that carry the same caps are equal.
+#[test]
+fn the_unused_slots_match_the_empty_set() {
+    let set = UserCapsV0::from_caps([UserCapV0 {
+        index: 2,
+        quote_cap: 10,
+        base_cap: u64::MAX,
+    }])
+    .unwrap();
+
+    assert_eq!(set.caps[1..], UserCapsV0::EMPTY.caps[1..]);
+}

@@ -188,34 +188,45 @@ impl<'a> ExecuteResponseV0<'a> {
             .filter(move |entry| entry.change_index as usize == change_index)
     }
 
-    /// How many orders the fill consumed for `change_index`.
-    pub fn completed_count(&self, change_index: usize) -> usize {
-        self.completed_for(change_index).count()
-    }
+    /// The orders behind `change_index`, read in one pass over each section.
+    pub fn orders_for(&self, change_index: usize) -> ChangeOrders {
+        let mut completed = 0;
+        let mut named = 0;
+        let mut client_order_id = None;
+        for entry in self.completed_for(change_index) {
+            completed += 1;
+            named += 1;
+            client_order_id = Some(entry.client_order_id);
+        }
 
-    /// The caller's id for the one order behind `change_index`, when there is
-    /// exactly one. A change usually merges several orders of one maker. It names
-    /// one order when the fill consumed one and left none partial, or left one
-    /// partial and consumed none.
-    pub fn sole_client_order_id(&self, change_index: usize) -> Option<u32> {
-        let mut ids = self
-            .completed
-            .iter()
-            .filter(|entry| entry.change_index as usize == change_index)
-            .map(|entry| entry.client_order_id)
-            .chain(
-                self.partial
-                    .iter()
-                    .filter(|entry| entry.change_index as usize == change_index)
-                    .map(|entry| entry.client_order_id),
-            );
-        let first = ids.next()?;
-        ids.next().is_none().then_some(first)
+        for entry in self.partial.iter() {
+            if entry.change_index as usize == change_index {
+                named += 1;
+                client_order_id = Some(entry.client_order_id);
+            }
+        }
+
+        ChangeOrders {
+            completed,
+            sole_client_order_id: if named == 1 { client_order_id } else { None },
+        }
     }
 
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty() && self.cancelled.is_empty() && self.completed.is_empty()
     }
+}
+
+/// What an execute response says about the orders behind one balance change.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ChangeOrders {
+    /// How many orders the fill consumed for the change.
+    pub completed: usize,
+    /// The caller's id for the one order behind the change, when there is
+    /// exactly one. A change usually merges several orders of one maker. It
+    /// names one order when the fill consumed one and left none partial, or
+    /// left one partial and consumed none.
+    pub sole_client_order_id: Option<u32>,
 }
 
 /// What `quote_v0` answers: the ladder the quoter is standing behind, and

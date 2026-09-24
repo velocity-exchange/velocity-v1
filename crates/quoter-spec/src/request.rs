@@ -24,7 +24,6 @@ pub const USER_EXCLUSION_BITMAP_BYTES: usize = USER_SET_CAPACITY.div_ceil(8);
 /// has each fill price and the caller does not, so the cap is not in base. The
 /// quoter charges `base * |price - reference_price| / BASE_PRECISION` where the
 /// fill moves against the owner. Zero belongs in the exclusion bitmap.
-#[repr(C)]
 #[cfg_attr(
     feature = "anchor-derive",
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
@@ -60,7 +59,8 @@ pub struct UserCapsV0 {
     /// One bit per index in the set: set means no room on the swept side, so
     /// pass that user's orders over.
     pub excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
-    /// Live entries at the head of `caps`. The tail is undefined.
+    /// Live entries at the head of `caps`. This crate fills the tail with the
+    /// entries of [`Self::EMPTY`], but a reader must not rely on the tail.
     pub len: u8,
     pub caps: [UserCapV0; USER_CAPS_CAPACITY],
 }
@@ -123,9 +123,7 @@ impl UserCapsV0 {
     pub fn from_caps(caps: impl IntoIterator<Item = UserCapV0>) -> Result<Self, SpecError> {
         let mut set = Self::EMPTY;
         let mut named = [0u8; USER_EXCLUSION_BITMAP_BYTES];
-        let mut partial: [UserCapV0; USER_CAPS_CAPACITY] =
-            [UserCapV0::default(); USER_CAPS_CAPACITY];
-        let mut partial_len = 0usize;
+        let mut len = 0usize;
         for cap in caps {
             let index = cap.index as usize;
             if index >= USER_SET_CAPACITY || named[index / 8] & (1 << (index % 8)) != 0 {
@@ -135,7 +133,7 @@ impl UserCapsV0 {
             named[index / 8] |= 1 << (index % 8);
 
             if cap.quote_cap == 0 {
-                set.exclude(cap.index as usize);
+                set.exclude(index);
                 continue;
             }
 
@@ -145,37 +143,22 @@ impl UserCapsV0 {
                 continue;
             }
 
-            let mut slot = partial_len;
-            while slot > 0 && partial[slot - 1].quote_cap > cap.quote_cap {
-                slot -= 1;
-            }
-
-            if partial_len < USER_CAPS_CAPACITY {
-                let mut index = partial_len;
-                while index > slot {
-                    partial[index] = partial[index - 1];
-                    index -= 1;
-                }
-
-                partial[slot] = cap;
-                partial_len += 1;
+            let slot = set.caps[..len].partition_point(|kept| kept.quote_cap <= cap.quote_cap);
+            if len < USER_CAPS_CAPACITY {
+                set.caps.copy_within(slot..len, slot + 1);
+                set.caps[slot] = cap;
+                len += 1;
             } else if slot < USER_CAPS_CAPACITY {
-                let evicted = partial[USER_CAPS_CAPACITY - 1];
-                let mut index = USER_CAPS_CAPACITY - 1;
-                while index > slot {
-                    partial[index] = partial[index - 1];
-                    index -= 1;
-                }
-
-                partial[slot] = cap;
+                let evicted = set.caps[USER_CAPS_CAPACITY - 1];
+                set.caps.copy_within(slot..USER_CAPS_CAPACITY - 1, slot + 1);
+                set.caps[slot] = cap;
                 set.exclude(evicted.index as usize);
             } else {
-                set.exclude(cap.index as usize);
+                set.exclude(index);
             }
         }
 
-        set.caps = partial;
-        set.len = partial_len as u8;
+        set.len = len as u8;
         Ok(set)
     }
 }

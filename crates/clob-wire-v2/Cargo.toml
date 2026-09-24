@@ -13,5 +13,8 @@ anchor-lang-v2 = { package = "anchor-lang", git = "https://github.com/otter-sec/
 default = []
 idl-build = []
 idl-build-v2 = ["dep:anchor-lang-v2", "idl-build", "quoter-spec/idl-build-v2"]
-[lints.rust.unexpected_cfgs]
-level = "allow"
+
+# The shared source gates the anchor v1 derives on the v1 crate's
+# `anchor-derive` feature, which this crate does not declare.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("anchor-derive"))'] }

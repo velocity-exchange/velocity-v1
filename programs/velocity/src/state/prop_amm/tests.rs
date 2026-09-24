@@ -453,7 +453,7 @@ fn the_reader_agrees_with_the_specs_writer() {
             .collect::<Vec<_>>(),
         vec![10]
     );
-    assert_eq!(response.completed_count(0), 1);
+    assert_eq!(response.orders_for(0).completed, 1);
 }
 
 /// The CPI buffer is reserved once, at exactly the width the args serialize

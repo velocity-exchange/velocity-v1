@@ -26,5 +26,7 @@ default = []
 anchor-derive = ["dep:anchor-lang", "quoter-spec/anchor-derive"]
 idl-build = ["anchor-derive", "anchor-lang/idl-build", "quoter-spec/idl-build"]
 
-[lints.rust.unexpected_cfgs]
-level = "allow"
+# The source is shared with the `-v2` crate through `include!`, and gates the
+# anchor v2 derives on that crate's `idl-build-v2` feature.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("idl-build-v2"))'] }

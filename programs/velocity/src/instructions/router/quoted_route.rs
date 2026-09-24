@@ -394,7 +394,7 @@ impl<'info> QuotedRoute<'info> {
     ) -> Result<QuotedRoute<'info>> {
         let mut route = QuotedRoute {
             accounts: tail,
-            // The one heap holder left, and that is deliberate. A fixed array
+            // Heap holder. A fixed array
             // of these is about a kilobyte, and this fill's stack frame is
             // four. The program has overflowed that frame before on a struct
             // this size.

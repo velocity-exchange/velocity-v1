@@ -109,6 +109,32 @@ fn trim_to_quoter_room(
     Ok(start..kept)
 }
 
+/// Whether a book rests depth this fill would refuse at the oracle band.
+///
+/// A book fills best price first and cannot skip a level, so a level outside
+/// the band would fill before any level inside it. The band cuts the
+/// taker-favourable end, so such a level leads the ladder. The fill must then
+/// take nothing from this book, or the band check after the fill reverts it.
+fn book_rests_outside_band(
+    levels: &[PriceLevelV0],
+    maker_direction: PositionDirection,
+    band_oracle_price: i64,
+    oracle_band: u32,
+) -> Result<bool> {
+    for level in levels {
+        if crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+            level.price,
+            maker_direction,
+            band_oracle_price,
+            oracle_band,
+        )? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 /// The market's slab, found on the account tail.
 ///
 /// Returns `None` when the tail carries no slab, which is a fill that
@@ -539,6 +565,34 @@ impl<'info> QuotedRoute<'info> {
         }
     }
 
+    /// Drop a book's whole run when it rests depth outside the oracle band.
+    ///
+    /// The fill then takes from the other sources, and the order outside the
+    /// band stays on the book for its owner or a keeper to remove.
+    fn drop_book_outside_band(
+        &mut self,
+        run: std::ops::Range<usize>,
+        sized: &SizedQuote<'_, 'info>,
+        oracle_band: u32,
+        index: usize,
+    ) -> Result<Option<std::ops::Range<usize>>> {
+        if !book_rests_outside_band(
+            &self.levels[run.clone()],
+            sized.inputs.maker_direction(),
+            sized.inputs.reference_price,
+            oracle_band,
+        )? {
+            return Ok(Some(run));
+        }
+
+        msg!(
+            "quoter slot {} rests depth outside the oracle band; the fill skips it",
+            index
+        );
+        self.levels.truncate(run.start);
+        Ok(None)
+    }
+
     /// Keep what one slot quoted, cut to what this fill will settle.
     fn record_quote(
         &mut self,
@@ -552,23 +606,35 @@ impl<'info> QuotedRoute<'info> {
             oracle_band,
         } = quoted;
 
-        // A custom quoter's ladder is cut before anything else reads it. One
-        // trim and one ladder: the split allocates against the same levels the
-        // settle checks against. Two lists cannot promise that.
-        let levels = if quoter_type == QuoterType::Custom {
-            self.trim_ladder(ladder.levels, sized, oracle_band, index)?
-        } else {
-            ladder.levels
-        };
-
-        // Only a book can withhold. A book walks the orders of many owners and
-        // stops at one this transaction cannot settle for. Every other quoter
-        // fills from the single `user` in its own registry slot. The report
-        // arms the filler obligation, so it is zeroed here rather than trusted.
-        let withheld = if quoter_type == QuoterType::Clob {
-            ladder.withheld
-        } else {
-            PriceLevelV0::default()
+        // A ladder is cut before anything else reads it. One trim and one
+        // ladder: the split allocates against the same levels the settle
+        // checks against. Two lists cannot promise that.
+        let (levels, withheld) = match quoter_type {
+            QuoterType::Custom => (
+                self.trim_ladder(ladder.levels, sized, oracle_band, index)?,
+                PriceLevelV0::default(),
+            ),
+            // Only a book can withhold. It walks the orders of many owners and
+            // stops at one this transaction cannot settle for. A book the fill
+            // skips offers nothing, so it arms no filler obligation.
+            QuoterType::Clob => {
+                match self.drop_book_outside_band(
+                    ladder.levels.clone(),
+                    sized,
+                    oracle_band,
+                    index,
+                )? {
+                    Some(levels) => (levels, ladder.withheld),
+                    None => (
+                        ladder.levels.start..ladder.levels.start,
+                        PriceLevelV0::default(),
+                    ),
+                }
+            }
+            // Every other quoter fills from the single `user` in its own
+            // registry slot. The report arms the filler obligation, so it is
+            // zeroed here rather than trusted.
+            QuoterType::Vamm => (ladder.levels, PriceLevelV0::default()),
         };
 
         self.ladders
@@ -869,6 +935,49 @@ mod trim_tests {
             ),
             [(99, 2)]
         );
+    }
+}
+
+/// A book with a level outside the oracle band offers this fill nothing.
+#[cfg(test)]
+mod book_band_tests {
+    use super::*;
+
+    const PRICE: u64 = crate::math::constants::PRICE_PRECISION_U64;
+    /// Five percent.
+    const BAND: u32 = crate::math::constants::MARGIN_PRECISION / 20;
+
+    fn levels(prices: &[u64]) -> Vec<PriceLevelV0> {
+        prices
+            .iter()
+            .map(|price| PriceLevelV0 {
+                price: price * PRICE,
+                size: 1,
+            })
+            .collect()
+    }
+
+    fn outside(prices: &[u64], maker_direction: PositionDirection) -> bool {
+        book_rests_outside_band(&levels(prices), maker_direction, (100 * PRICE) as i64, BAND)
+            .unwrap()
+    }
+
+    #[test]
+    fn an_ask_below_the_band_skips_the_book() {
+        // A maker that sells at 90 with the oracle at 100 is outside a 5% band.
+        // The book would fill that ask first, so nothing of it is offered.
+        assert!(outside(&[90, 99, 100], PositionDirection::Short));
+    }
+
+    #[test]
+    fn a_bid_above_the_band_skips_the_book() {
+        assert!(outside(&[110, 101, 100], PositionDirection::Long));
+    }
+
+    #[test]
+    fn a_book_inside_the_band_is_kept() {
+        assert!(!outside(&[96, 99, 120], PositionDirection::Short));
+        assert!(!outside(&[104, 101, 80], PositionDirection::Long));
     }
 }
 

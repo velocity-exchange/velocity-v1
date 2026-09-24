@@ -51,6 +51,13 @@ struct Case {
     /// Quote held by the market's own isolated position, in whole dollars.
     /// `None` leaves the position cross-margined.
     isolated: Option<u64>,
+    /// The maker is latched for liquidation.
+    liquidated: bool,
+    reduce_only_market: bool,
+    /// Orders the maker rests on the book, and how many of them are
+    /// reduce-only.
+    clob_orders: u8,
+    reduce_only_clob_orders: u16,
 }
 
 impl Default for Case {
@@ -66,6 +73,10 @@ impl Default for Case {
             taker_size: BASE_PRECISION_I64 as u64,
             books: 1,
             isolated: None,
+            liquidated: false,
+            reduce_only_market: false,
+            clob_orders: 0,
+            reduce_only_clob_orders: 0,
         }
     }
 }
@@ -106,18 +117,65 @@ fn quoter_room(case: Case) -> u64 {
     measure(case, Measure::QuoterRoom)
 }
 
+/// The maker account a case describes.
+fn maker_account(case: &Case, authority: Pubkey) -> User {
+    let mut orders = [Order::default(); 32];
+    if case.slot_bid > 0 {
+        orders[0] = Order {
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            market_index: 0,
+            direction: PositionDirection::Long,
+            base_asset_amount: case.slot_bid,
+            ..Order::default()
+        };
+    }
+
+    User {
+        orders,
+        authority,
+        equity_floor: case.floor,
+        perp_positions: get_positions(PerpPosition {
+            market_index: 0,
+            base_asset_amount: case.position_base,
+            open_bids: case.open_bids,
+            open_orders: case.clob_orders,
+            reduce_only_clob_orders: case.reduce_only_clob_orders,
+            position_flag: case
+                .isolated
+                .map(|_| crate::state::user::PositionFlag::IsolatedPosition as u8)
+                .unwrap_or(0),
+            isolated_position_scaled_balance: case
+                .isolated
+                .map(|quote| quote * SPOT_BALANCE_PRECISION_U64)
+                .unwrap_or(0),
+            ..PerpPosition::default()
+        }),
+
+        spot_positions: get_spot_positions(SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: case.deposit * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        }),
+        status: if case.liquidated {
+            crate::state::user::UserStatus::BeingLiquidated as u8
+        } else {
+            0
+        },
+        ..User::default()
+    }
+}
+
 fn measure(case: Case, measure: Measure) -> u64 {
     let Case {
-        deposit,
-        floor,
         latched,
-        position_base,
-        open_bids,
         stale_oracle,
-        slot_bid,
         taker_size,
         books,
-        isolated,
+        reduce_only_market,
+        ..
     } = case;
     let slot = if stale_oracle { 100_000 } else { 1 };
 
@@ -143,7 +201,11 @@ fn measure(case: Case, measure: Measure) -> u64 {
 
         margin_ratio_initial: 1000,
         margin_ratio_maintenance: 500,
-        status: crate::state::market_status::MarketStatus::Active,
+        status: if reduce_only_market {
+            crate::state::market_status::MarketStatus::ReduceOnly
+        } else {
+            crate::state::market_status::MarketStatus::Active
+        },
         order_step_size: 1000,
         order_tick_size: 1,
         oracle: oracle_key,
@@ -183,44 +245,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
     let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
     let authority = Pubkey::from_str(AUTHORITY).unwrap();
-    let mut orders = [Order::default(); 32];
-    if slot_bid > 0 {
-        orders[0] = Order {
-            status: OrderStatus::Open,
-            order_type: OrderType::Limit,
-            market_type: MarketType::Perp,
-            market_index: 0,
-            direction: PositionDirection::Long,
-            base_asset_amount: slot_bid,
-            ..Order::default()
-        };
-    }
-
-    let mut maker = User {
-        orders,
-        authority,
-        equity_floor: floor,
-        perp_positions: get_positions(PerpPosition {
-            market_index: 0,
-            base_asset_amount: position_base,
-            open_bids,
-            position_flag: isolated
-                .map(|_| crate::state::user::PositionFlag::IsolatedPosition as u8)
-                .unwrap_or(0),
-            isolated_position_scaled_balance: isolated
-                .map(|quote| quote * SPOT_BALANCE_PRECISION_U64)
-                .unwrap_or(0),
-            ..PerpPosition::default()
-        }),
-
-        spot_positions: get_spot_positions(SpotPosition {
-            market_index: 0,
-            balance_type: SpotBalanceType::Deposit,
-            scaled_balance: deposit * SPOT_BALANCE_PRECISION_U64,
-            ..SpotPosition::default()
-        }),
-        ..User::default()
-    };
+    let mut maker = maker_account(&case, authority);
     let maker_key = Pubkey::new_unique();
     create_anchor_account_info!(maker, &maker_key, User, maker_info);
     let makers = crate::state::user_map::UserMap::load_one(&maker_info).unwrap();
@@ -411,6 +436,50 @@ fn a_slot_order_is_not_mistaken_for_book_depth() {
     );
 }
 
+#[test]
+fn a_maker_under_liquidation_has_no_room() {
+    assert_eq!(
+        budget(Case {
+            liquidated: true,
+            ..thin_maker()
+        }),
+        0
+    );
+}
+
+/// The book ignores `base_cap` on an ordinary order, so in a `ReduceOnly`
+/// market only exclusion keeps such an order from growing its owner's position.
+#[test]
+fn a_reduce_only_market_excludes_a_maker_whose_ordinary_orders_grow_it() {
+    let flat_with_an_ordinary_order = Case {
+        reduce_only_market: true,
+        clob_orders: 1,
+        ..thin_maker()
+    };
+    assert_eq!(budget(flat_with_an_ordinary_order), 0);
+
+    // Every order is reduce-only, so the book holds each one to its cover.
+    assert!(
+        budget(Case {
+            reduce_only_market: true,
+            clob_orders: 1,
+            reduce_only_clob_orders: 1,
+            ..thin_maker()
+        }) > 0
+    );
+
+    // A short of 300 covers the 200 of bids, so every fill reduces it.
+    assert!(
+        budget(Case {
+            reduce_only_market: true,
+            clob_orders: 1,
+            position_base: -300 * BASE_PRECISION_I64,
+            deposit: 100_000,
+            ..thin_maker()
+        }) > 0
+    );
+}
+
 /// An isolated maker is budgeted from the collateral of the isolated position
 /// itself, not from whatever the account holds in cross.
 ///
@@ -502,6 +571,75 @@ mod quoter_base_room {
             }),
             0
         );
+    }
+
+    /// A short the quoter's long fill would reduce.
+    const SHORT: i64 = -5 * BASE_PRECISION_I64;
+
+    #[test]
+    fn a_quoter_user_under_liquidation_has_no_room() {
+        assert_eq!(
+            quoter_room(Case {
+                deposit: 100_000,
+                liquidated: true,
+                ..Case::default()
+            }),
+            0
+        );
+    }
+
+    #[test]
+    fn a_latched_quoter_user_keeps_only_the_room_that_reduces() {
+        let reducing = quoter_room(Case {
+            deposit: 100_000,
+            position_base: SHORT,
+            latched: true,
+            ..Case::default()
+        });
+        assert_eq!(reducing, SHORT.unsigned_abs());
+
+        assert_eq!(
+            quoter_room(Case {
+                deposit: 100_000,
+                position_base: 0,
+                latched: true,
+                ..Case::default()
+            }),
+            0,
+            "a flat user has nothing to reduce"
+        );
+    }
+
+    #[test]
+    fn an_unverifiable_floor_keeps_only_the_room_that_reduces() {
+        assert_eq!(
+            quoter_room(Case {
+                deposit: 100_000,
+                position_base: SHORT,
+                floor: FLOOR,
+                stale_oracle: true,
+                ..Case::default()
+            }),
+            SHORT.unsigned_abs()
+        );
+    }
+
+    #[test]
+    fn a_reduce_only_market_keeps_only_the_room_that_reduces() {
+        let open = quoter_room(Case {
+            deposit: 100_000,
+            position_base: SHORT,
+            ..Case::default()
+        });
+        let reduce_only = quoter_room(Case {
+            deposit: 100_000,
+            position_base: SHORT,
+            reduce_only_market: true,
+            ..Case::default()
+        });
+
+        assert!(open > SHORT.unsigned_abs());
+        assert_eq!(reduce_only, SHORT.unsigned_abs());
     }
 
     #[test]

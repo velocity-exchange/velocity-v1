@@ -151,7 +151,7 @@ use {
             constants::{BASE_PRECISION_U64, MARGIN_PRECISION},
             margin::{
                 calculate_margin_requirement_and_total_collateral_and_liability_info,
-                calculate_net_equity_for_floor, MarginRequirementType,
+                calculate_net_equity_for_floor, FloorNetEquity, MarginRequirementType,
             },
             safe_math::SafeMath,
         },
@@ -525,6 +525,10 @@ impl CapInputs<'_, '_> {
             return Ok(u64::MAX);
         }
 
+        if self.book_fill_barred(&maker, market_index, resting_side, resting)? {
+            return Ok(0);
+        }
+
         // And the most it can cost them. The maker can end up with nothing for that base, so the bound
         // is its whole value at reference.
         let worst_loss = resting
@@ -544,28 +548,19 @@ impl CapInputs<'_, '_> {
             signed_fill,
         )?;
 
-        // Two checks answer without pricing anything. An authority-wide latch
-        // bars every subaccount from risk-increasing activity. A floor the
-        // program cannot verify cannot authorise one either.
-        if tier.risk_increasing
-            && self
-                .makers_and_referrer_stats
-                .get_ref(&maker.authority)
-                .map(|stats| stats.is_equity_breaker_tripped())
-                .unwrap_or(false)
-        {
+        let gate = risk_gate(
+            &maker,
+            self.makers_and_referrer_stats,
+            self.maps,
+            tier.risk_increasing,
+        )?;
+        if gate.refuses_risk {
             return Ok(0);
         }
 
-        // Equity above `floor + buffer` is the first budget. A floor the
-        // program cannot verify, or one already breached, leaves no budget.
+        // Equity above `floor + buffer` is the first budget.
         let mut budget = i128::MAX;
-        if let Some(net_equity) = calculate_net_equity_for_floor(&maker, self.maps)? {
-            if tier.risk_increasing
-                && (!net_equity.all_oracles_valid || !net_equity.clears_buffered_floor(&maker))
-            {
-                return Ok(0);
-            }
+        if let Some(net_equity) = gate.floor_equity {
             if maker.equity_floor > 0 {
                 budget = net_equity
                     .value
@@ -630,6 +625,11 @@ impl CapInputs<'_, '_> {
     /// the account supports right now. The position the fill lands in is
     /// created first, because the margin walk sizes the order against the
     /// position it will settle into.
+    ///
+    /// The fill's own gates apply first, as [`Self::maker_budget`] applies
+    /// them to a book maker. A user under liquidation gets no room. A tripped
+    /// breaker, an unverifiable or breached floor, or a `ReduceOnly` market
+    /// leaves only the room that reduces the position.
     fn quoter_base_room(
         &mut self,
         quoter_user_key: &Pubkey,
@@ -637,14 +637,58 @@ impl CapInputs<'_, '_> {
         maker_direction: PositionDirection,
     ) -> Result<u64> {
         let maker = self.makers_and_referrer.get_ref(quoter_user_key)?;
-        Ok(
-            crate::math::orders::max_perp_order_size_for_prospective_position(
-                &maker,
-                market_index,
-                maker_direction,
-                self.maps,
-            )?,
-        )
+        if maker.is_being_liquidated() {
+            return Ok(0);
+        }
+
+        let room = crate::math::orders::max_perp_order_size_for_prospective_position(
+            &maker,
+            market_index,
+            maker_direction,
+            self.maps,
+        )?;
+        let reducing_only = self.market_is_reduce_only(market_index)?
+            || risk_gate(&maker, self.makers_and_referrer_stats, self.maps, true)?.refuses_risk;
+        if !reducing_only {
+            return Ok(room);
+        }
+
+        let position_base = maker
+            .get_perp_position(market_index)
+            .map_or(0, |position| position.base_asset_amount);
+        Ok(room.min(crate::math::orders::reduce_only_cover(
+            position_base,
+            maker_direction,
+        )))
+    }
+
+    /// Whether the fill must take nothing of this maker's book depth.
+    ///
+    /// A maker under liquidation takes no fill. The book ignores `base_cap` on
+    /// an ordinary order, so in a `ReduceOnly` market a maker whose ordinary
+    /// orders could grow its position is excluded whole.
+    fn book_fill_barred(
+        &self,
+        maker: &crate::state::user::User,
+        market_index: u16,
+        resting_side: SideV0,
+        resting: u64,
+    ) -> Result<bool> {
+        if maker.is_being_liquidated() {
+            return Ok(true);
+        }
+
+        Ok(self.market_is_reduce_only(market_index)?
+            && rests_ordinary_clob_orders(maker, market_index)
+            && resting > position_cover(maker, market_index, resting_side))
+    }
+
+    fn market_is_reduce_only(&self, market_index: u16) -> Result<bool> {
+        Ok(self
+            .maps
+            .perp_market_map
+            .get_ref(&market_index)?
+            .is_reduce_only()?)
     }
 
     /// The most base the book may fill against this user's reduce-only orders on
@@ -672,16 +716,86 @@ impl CapInputs<'_, '_> {
             return Ok(u64::MAX);
         }
 
-        // An ask sells, so filling it is a short fill and it reduces a long.
-        let fill_direction = match resting_side {
-            SideV0::Ask => PositionDirection::Short,
-            SideV0::Bid => PositionDirection::Long,
-        };
-
         Ok(crate::math::orders::reduce_only_cover(
             position.base_asset_amount,
-            fill_direction,
+            resting_side_fill(resting_side),
         ))
+    }
+}
+
+/// What the fill's equity gates say about a maker, read before any budget is
+/// priced.
+struct RiskGate {
+    /// A tripped breaker, or a floor the program cannot verify or that is
+    /// breached, refuses a risk-increasing fill.
+    refuses_risk: bool,
+    /// The floor equity the gate read, so a caller that prices a budget does
+    /// not walk it twice. `None` when the maker sets no floor, or when the
+    /// breaker answered first.
+    floor_equity: Option<FloorNetEquity>,
+}
+
+/// The equity gates `TakerRiskLimits::check_maker` holds a maker to.
+///
+/// A fill that only reduces is exempt, so a floored maker can still deleverage.
+/// The breaker is an authority-wide latch and costs no walk, so it answers
+/// first.
+fn risk_gate(
+    maker: &crate::state::user::User,
+    stats: &UserStatsMap,
+    maps: &mut AccountMaps,
+    risk_increasing: bool,
+) -> Result<RiskGate> {
+    let breaker_tripped = stats
+        .get_ref(&maker.authority)
+        .map(|stats| stats.is_equity_breaker_tripped())
+        .unwrap_or(false);
+    if risk_increasing && breaker_tripped {
+        return Ok(RiskGate {
+            refuses_risk: true,
+            floor_equity: None,
+        });
+    }
+
+    let floor_equity = calculate_net_equity_for_floor(maker, maps)?;
+    let floor_refuses = floor_equity.as_ref().is_some_and(|net_equity| {
+        !net_equity.all_oracles_valid || !net_equity.clears_buffered_floor(maker)
+    });
+
+    Ok(RiskGate {
+        refuses_risk: risk_increasing && floor_refuses,
+        floor_equity,
+    })
+}
+
+/// Whether this maker rests an order on the market's book that is not
+/// reduce-only.
+fn rests_ordinary_clob_orders(maker: &crate::state::user::User, market_index: u16) -> bool {
+    let reduce_only_orders = maker
+        .get_perp_position(market_index)
+        .map_or(0, |position| position.reduce_only_clob_orders);
+    u16::from(maker.clob_resident_open_orders(market_index)) > reduce_only_orders
+}
+
+/// The base a fill of the orders on `resting_side` can take before it grows
+/// the maker's position.
+fn position_cover(
+    maker: &crate::state::user::User,
+    market_index: u16,
+    resting_side: SideV0,
+) -> u64 {
+    let position_base = maker
+        .get_perp_position(market_index)
+        .map_or(0, |position| position.base_asset_amount);
+    crate::math::orders::reduce_only_cover(position_base, resting_side_fill(resting_side))
+}
+
+/// The direction a maker fills in when an order on `resting_side` fills. An
+/// ask sells, so filling it is a short fill.
+fn resting_side_fill(resting_side: SideV0) -> PositionDirection {
+    match resting_side {
+        SideV0::Ask => PositionDirection::Short,
+        SideV0::Bid => PositionDirection::Long,
     }
 }
 

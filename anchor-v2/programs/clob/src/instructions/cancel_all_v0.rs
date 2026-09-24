@@ -24,8 +24,8 @@ use {
 /// the call. Velocity drives its unwind from the reported totals, so a repeat
 /// is safe. Each call unwinds what that call removed.
 ///
-/// The sweep passes over a taker-origin remainder that has not reached its
-/// activation slot, and then reports itself as not exhaustive. `force` removes
+/// The sweep passes over a taker-origin remainder whose claim the book still
+/// honours, and then reports itself as not exhaustive. `force` removes
 /// those too, which is what liquidation needs.
 pub fn handle_cancel_all_v0(
     ctx: &mut Context<GatedMarketV0>,

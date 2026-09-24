@@ -2200,10 +2200,13 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
     );
     assert!(!node(&ctx, ordinary.node_index).is_taker_origin());
 
-    // Past the remainder's activation slot, so this is an ordinary cancel
-    // rather than the bound-window refusal. What is under test is the flag on
-    // the removal, not the window.
-    advance_slot(&mut ctx, 1);
+    // Past the remainder's one-slot delay and its claim, so this is an ordinary
+    // cancel rather than the bound refusal. What is under test is the flag on the
+    // removal, not the bind.
+    advance_slot(
+        &mut ctx,
+        1 + clob::state::DEFAULT_RESERVATION_GRACE_SLOTS as u64,
+    );
     let meta = cancel(&mut ctx, remainder, user).unwrap();
     let (_, order_id, client_order_id, price, base, side, taker_origin) =
         parse_removed(&meta.return_data.data);
@@ -2250,7 +2253,12 @@ fn a_crossed_taker_remainder_and_the_depth_it_crosses_are_both_withheld() {
     let changes = execute_consuming(&mut ctx, Direction::Long, 5);
     assert_eq!(changes, vec![(maker.to_bytes(), 5, 495, vec![2])]);
 
-    // Then the remainder comes off, reporting which side was the aggressor.
+    // Then the remainder comes off once its claim lapses, reporting which side
+    // was the aggressor.
+    advance_slot(
+        &mut ctx,
+        clob::state::DEFAULT_RESERVATION_GRACE_SLOTS as u64,
+    );
     let meta = cancel(&mut ctx, remainder, taker).unwrap();
     let (_, _, _, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(

@@ -728,32 +728,67 @@ fn quote_follows_the_counterpartys_activation_slot() {
     );
 }
 
-/// The window binds the taker that asked for it. A remainder rests at its own
-/// slippage bound so counterparties can compete on price inside the window; a
-/// taker able to withdraw at the last slot would hold a free option on that
-/// window, and the makers who priced against it wrote it.
+/// The bind lasts as long as the remainder's claim. A remainder rests at its
+/// own slippage bound so counterparties can compete on price inside the window,
+/// and its claim then holds the depth it crosses for the grace. A taker able to
+/// withdraw while the claim holds would have a free option on that depth.
 #[test]
-fn a_bound_remainder_cannot_be_cancelled_inside_its_window() {
+fn a_bound_remainder_cannot_be_cancelled_until_its_claim_lapses() {
     let market = TestMarket::new(16);
     let mut book = market.book();
-    let taker = user(0xA);
+    let (taker, maker) = (user(0xA), user(0xB));
+    assert_eq!(book.reservation_grace_slots, 32);
 
+    place(&mut book, Side::Ask, 100, 5, maker);
     let remainder = place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
 
-    assert_err(
-        book.cancel(taker, remainder, 0, false),
-        ClobError::TakerOriginBound,
-    );
+    for slot in [5, 10, 20, 41] {
+        assert_err(
+            book.cancel(taker, remainder, slot, false),
+            ClobError::TakerOriginBound,
+        );
+        // The claim still holds the maker's ask at every slot the cancel refuses.
+        assert_eq!(
+            quoted(&mut book, Direction::Long, u64::MAX, slot),
+            encode_quote(&[]),
+            "slot {slot}"
+        );
+    }
 
-    // The slot before activation is still inside the window.
-    assert_err(
-        book.cancel(taker, remainder, 9, false),
-        ClobError::TakerOriginBound,
+    // The claim lapses at activation plus the grace, and the bind ends with it.
+    assert_eq!(
+        quoted(&mut book, Direction::Long, u64::MAX, 42),
+        encode_quote(&[PriceLevel {
+            price: 100,
+            size: 5
+        }])
     );
+    assert!(book.cancel(taker, remainder, 42, false).is_ok());
+    assert_consistent(&book);
+}
 
-    // The order becomes matchable in its activation slot, and the window ends
-    // with it.
-    assert!(book.cancel(taker, remainder, 10, false).is_ok());
+/// The sweep reads the same bind as the single cancel.
+#[test]
+fn cancel_all_keeps_a_remainder_until_its_claim_lapses() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (taker, maker) = (user(0xA), user(0xB));
+
+    place(&mut book, Side::Ask, 100, 5, maker);
+    place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
+
+    let bound = book
+        .cancel_all(taker, CancelSidesV0::Both, 41, false, &mut |_| Ok(()))
+        .expect("sweep succeeds");
+    assert_eq!(bound.bid_orders, 0);
+    assert!(!bound.exhaustive);
+
+    let lapsed = book
+        .cancel_all(taker, CancelSidesV0::Both, 42, false, &mut |_| Ok(()))
+        .expect("sweep succeeds");
+    assert_eq!(lapsed.bid_orders, 1);
+    assert!(lapsed.exhaustive);
+    assert_consistent(&book);
 }
 
 /// Liquidation must be able to clear a bound remainder: it is an open order
@@ -764,8 +799,20 @@ fn force_takes_a_bound_remainder() {
     let mut book = market.book();
     let taker = user(0xA);
 
+    place(&mut book, Side::Ask, 100, 5, user(0xB));
     let remainder = place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
-    assert!(book.cancel(taker, remainder, 0, true).unwrap().taker_origin);
+    for slot in [0, 10, 41] {
+        assert_err(
+            book.cancel(taker, remainder, slot, false),
+            ClobError::TakerOriginBound,
+        );
+    }
+
+    assert!(
+        book.cancel(taker, remainder, 20, true)
+            .unwrap()
+            .taker_origin
+    );
 }
 
 /// The binding is about the taker-origin flag, not about the activation delay.

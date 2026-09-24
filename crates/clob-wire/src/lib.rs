@@ -291,7 +291,7 @@ pub struct CancelAllOutcomeV0 {
     pub ask_reduce_only_orders: u32,
     /// The sweep took every order it was asked for. False means the book stopped at its
     /// per-call cap, which repeating the call clears, or passed over a taker-origin
-    /// remainder inside its activation window, which clears itself.
+    /// remainder whose claim the book still honours, which clears itself.
     pub exhaustive: bool,
 }
 

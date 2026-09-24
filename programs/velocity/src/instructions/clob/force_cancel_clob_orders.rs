@@ -409,8 +409,8 @@ fn select_cancellable_refs(
 /// are still current. The sweep below moves the book and would invalidate them.
 /// The sweep itself names no index, so it is safe to run second.
 ///
-/// `force` is set on this path alone. A taker-origin remainder is bound to its
-/// activation window against its own owner, but it is still an open order that
+/// `force` is set on this path alone. A taker-origin remainder is bound against
+/// its own owner until its claim lapses, but it is still an open order that
 /// holds margin, so a liquidation must be able to reclaim it.
 fn cancel_orders_on_book(
     clob: &ClobMarket<'_, '_>,

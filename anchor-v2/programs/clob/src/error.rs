@@ -73,11 +73,12 @@ pub enum ClobError {
     #[msg("Order would rest crossed with the opposite side and asked not to")]
     OrderWouldCross,
     /// A taker remainder rests for its activation window so counterparties can
-    /// compete on price inside it. A taker that could withdraw at the last slot
-    /// would hold a free option over that window, at the cost of the makers who
-    /// priced against it. The window ends at the activation slot. `max_ts`
-    /// still expires the order, and liquidation passes `force`.
-    #[msg("Taker-origin remainder is bound until its activation slot")]
+    /// compete on price inside it, and its claim holds the depth it crosses for
+    /// `reservation_grace_slots` after that. A taker that could withdraw while
+    /// the claim holds would have a free option on that depth, at the cost of
+    /// the makers who priced against it. The bind ends when the claim lapses.
+    /// `max_ts` still expires the order, and liquidation passes `force`.
+    #[msg("Taker-origin remainder is bound until its claim lapses")]
     TakerOriginBound,
     /// Only a taker remainder aggresses, so only a taker remainder can be
     /// filled from outside. An ordinary maker quote is filled by `execute`,

@@ -268,9 +268,10 @@ the claimant activates, so at 0 the window is the grace alone.
 
 A nonzero delay buys one thing: a pre-window in which the order is not matchable at all, so makers
 can line up before anyone trades with it. It costs one thing: the owner cannot cancel until the
-window ends, because the cancel refusal keys on the same activation slot. A market that wants
-makers to compete before the first fill pays that cost. A market that wants immediacy sets 0, and
-the taker keeps the right to pull its order at any time.
+claim lapses, `reservation_grace_slots` after the activation slot. The cancel refusal and the
+claim read the same lapse, so the taker never holds a claim it can walk away from. A market that
+wants makers to compete before the first fill pays that cost. A market that wants immediacy sets 0,
+and the taker is bound for the grace alone.
 
 **R8. Discovery, on the conditions that already exist.** The crank is permissionless, so something
 has to notice a resolvable cross; relay turners do, through the market's `CLOB_CRANK_CROSS`

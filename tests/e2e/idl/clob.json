@@ -945,7 +945,7 @@
     {
       "code": 6025,
       "name": "TakerOriginBound",
-      "msg": "Taker-origin remainder is bound until its activation slot"
+      "msg": "Taker-origin remainder is bound until its claim lapses"
     },
     {
       "code": 6026,

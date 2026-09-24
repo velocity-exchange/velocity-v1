@@ -2550,7 +2550,7 @@ A standalone CLOB program holds plain limit orders, reached only through velocit
 gate margin and unwind aggregates; trigger orders migrate onto it and leave a shadow in
 `User.orders`, and a fired trigger rests taker-origin. It came to trade, so a cross settles at
 the counterparty's price rather than picking it off at its own, and its owner cannot cancel it
-inside the activation window; an activation-slot speed bump replaces JIT, and `jit-proxy` is
+until its claim on the depth it crosses lapses, `reservation_grace_slots` after activation; an activation-slot speed bump replaces JIT, and `jit-proxy` is
 deleted. The book gained `fill_v0`: velocity reports base it settled against a resting order
 and the order shrinks in place, keeping its id and its queue position, so a cross no longer
 costs a taker the place in line it waited for. Cancel takes a `force` flag, which is how

@@ -852,11 +852,10 @@ impl ClobBook for ClobMarketV0 {
     /// Fails closed on a stale hint. The node may be out of range, free, or
     /// hold a different order. `user` must own the order.
     ///
-    /// A taker-origin remainder inside its activation window is refused unless
-    /// `force`. See [`ClobError::TakerOriginBound`] for why the window binds.
-    /// The window does not affect `crank_taker_origin_cross`. That path reaches
-    /// only an order the book reports as matchable, and such an order has
-    /// already activated.
+    /// A taker-origin remainder is refused unless `force` while [`is_bound`]
+    /// holds. See [`ClobError::TakerOriginBound`] for why it binds. The bind does
+    /// not affect `crank_taker_origin_cross`, which removes an order through
+    /// `fill` and never through this path.
     fn cancel(
         &mut self,
         user: UserRefV0,
@@ -867,7 +866,7 @@ impl ClobBook for ClobMarketV0 {
         let node = live_order(self, order_ref)?;
         require!(node.user_ref() == user, ClobError::OrderUserMismatch);
         require!(
-            force || !node.is_taker_origin() || node.is_active(slot),
+            force || !is_bound(&node, slot, self.reservation_grace_slots),
             ClobError::TakerOriginBound
         );
 
@@ -937,7 +936,7 @@ impl ClobBook for ClobMarketV0 {
                 // order a maker cannot pull yet does not block a whole ladder. The
                 // flag is read after both sides run, because ending the walk here
                 // would stop the other side too.
-                if !force && node.is_taker_origin() && !node.is_active(slot) {
+                if !force && is_bound(node, slot, book.reservation_grace_slots) {
                     skipped_bound = true;
                     return Ok(Walk::Continue);
                 }
@@ -1830,6 +1829,19 @@ pub(crate) fn is_live(node: &OrderNodeV0, slot: u64, now: i64) -> bool {
     !node.is_expired(now) && node.is_active(slot)
 }
 
+/// Past the window in which the book honours this remainder's claim on the
+/// depth it crosses. The window runs from the activation slot, which is when the
+/// auction the claim protects ends.
+fn is_claim_lapsed(claimant: &OrderNodeV0, slot: u64, grace_slots: u64) -> bool {
+    slot >= claimant.activation_slot.saturating_add(grace_slots)
+}
+
+/// A taker remainder whose claim the book still honours. Its owner cannot
+/// cancel it without `force`. The bind ends exactly when the claim lapses.
+fn is_bound(node: &OrderNodeV0, slot: u64, grace_slots: u16) -> bool {
+    node.is_taker_origin() && !is_claim_lapsed(node, slot, grace_slots as u64)
+}
+
 /// The caller's own resting order. No read of a side offers such an order back
 /// to the caller, which is self-trade prevention.
 fn is_takers_own(node: &OrderNodeV0, taker: Option<&UserRefV0>) -> bool {
@@ -2322,12 +2334,10 @@ impl CrossReservation {
             && self.cover.is_crossed_by(cover_price, claimant.price)
     }
 
-    /// Past the window in which the book honours this remainder's claim. The
-    /// window runs from the activation slot, which is when the auction the claim
-    /// protects ends. A claimant inside its delay is the ordinary case, and the
-    /// claim is what holds its cover while it waits.
+    /// A claimant inside its delay is the ordinary case, and the claim is what
+    /// holds its cover while it waits.
     fn lapsed(&self, claimant: &OrderNodeV0) -> bool {
-        self.slot >= claimant.activation_slot.saturating_add(self.grace_slots)
+        is_claim_lapsed(claimant, self.slot, self.grace_slots)
     }
 
     /// Whether a counterparty that could match this slot crosses `price`.

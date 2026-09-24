@@ -5772,8 +5772,8 @@ impl ExpectedReservation {
 
         for node in book_orders {
             match node.side() {
-                clob_state::Side::Bid => expected.open_bids += i128::from(node.base_asset_amount),
-                clob_state::Side::Ask => expected.open_asks += i128::from(node.base_asset_amount),
+                clob_state::SideV0::Bid => expected.open_bids += i128::from(node.base_asset_amount),
+                clob_state::SideV0::Ask => expected.open_asks += i128::from(node.base_asset_amount),
             }
 
             if node.is_reduce_only() {

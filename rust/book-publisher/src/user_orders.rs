@@ -84,7 +84,7 @@ fn order_json_at(node: &OrderNodeV0, node_index: u32, market_index: u16) -> Valu
         // row that could not name its own market would be unusable in it.
         "marketIndex": market_index,
         "clobOrderId": node.order_id.to_string(),
-        "direction": if node.side() == clob_state::Side::Bid { "long" } else { "short" },
+        "direction": if node.side() == clob_state::SideV0::Bid { "long" } else { "short" },
         "price": node.price.to_string(),
         "baseAssetAmount": node.base_asset_amount.to_string(),
         "maxTs": node.max_ts.to_string(),

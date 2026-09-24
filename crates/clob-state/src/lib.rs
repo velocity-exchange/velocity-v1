@@ -1,38 +1,21 @@
-// The CLOB market account's order-node layout.
+// Not a `//!` crate doc: `clob-state-v2` brings this file in with `include!`,
+// and `include!` cannot splice an inner doc comment into a module that has
+// already started, so the comment would fail to compile in that twin.
 //
-// # Why this is a crate and not the book's private business
-//
-// `clob-wire` states the rule this crate is the exception to. A caller that
-// reads the market account's bytes reads the book's memory rather than calling
-// it, and on chain that is always wrong. A shared layout is an ABI that two
-// programs can disagree about, and velocity removed every such read.
-//
-// An indexer is the case the rule does not cover. It has to answer which orders
-// a user holds, over every order on the book, at the tick rate of a live feed.
-// No call answers that. `orders_v0` describes refs a caller already holds.
-// `quote_v0` reports the depth a taker of some size would reach, which is a
-// different question and a truncated answer. What is left is the account, and
-// the account is public data an indexer already subscribes to.
-//
-// So the layout is declared once, here, and the book uses these types rather
-// than its own. An indexer that decodes a node cannot drift from the book that
-// wrote it, because there is one declaration. This crate must never become a
-// way for another program to read the book. Nothing on chain depends on it, and
-// an assertion inside the book pins [`ORDERS_OFFSET`] so the book stays free to
-// move anything above it.
-//
-// # What is not here
-//
-// The header, the free list, the two sorted lists, and every traversal over
-// them. A reader that wants the best bid asks the book. A reader that wants
-// every live order walks the arena, which needs no links at all.
+// The CLOB market account's order-node layout, declared once so an indexer
+// that decodes a node cannot drift from the book that wrote it. `clob-wire`
+// states the no-shared-layout rule; this crate is its one exception, because
+// an indexer has no call that answers "which orders does this user hold".
+// Does not cover the header, the free list, or the two sorted lists: a reader
+// wants the best bid from the book, and every live order from an arena walk,
+// which needs no links at all.
 
 // The v2 IdlType derive emits `anchor_lang::`, so the v2 IDL build points that
 // path at the fork. The feature is undefined in the v1 crate, so this is inert.
 #[cfg(feature = "idl-build-v2")]
 extern crate anchor_lang_v2 as anchor_lang;
 
-pub use quoter_spec::{SideV0 as Side, UserRefV0};
+pub use quoter_spec::{SideV0, UserRefV0};
 use {
     bytemuck::{Pod, Zeroable},
     solana_address::Address as Pubkey,
@@ -84,7 +67,8 @@ impl OrderBitFlag {
 ///
 /// 104 bytes, with one spare. Capacity times this size is the account's rent, so growth
 /// room lives on the header and a field belongs here only when a walk of one side has
-/// to read it.
+/// to read it. `authority` and `sub_account_id` stay two fields rather than one
+/// [`UserRefV0`]: at 34 bytes it would misalign every `u64` field after it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
@@ -166,11 +150,11 @@ impl OrderNodeV0 {
         self.is_bit_flag_set(OrderBitFlag::ReduceOnly)
     }
 
-    pub fn side(&self) -> Side {
+    pub fn side(&self) -> SideV0 {
         if self.is_bit_flag_set(OrderBitFlag::Ask) {
-            Side::Ask
+            SideV0::Ask
         } else {
-            Side::Bid
+            SideV0::Bid
         }
     }
 
@@ -192,9 +176,11 @@ impl OrderNodeV0 {
 
 /// Every live order in a market account, paired with its arena index. Iteration is in
 /// arena order, because a reader after one user's orders does not care about price
-/// queues and a walk of the array skips the links. A short or misaligned account yields
-/// nothing rather than failing, because an account feed can hand over a partial write.
-/// The index is the node's own slot, which is half of the handle a cancel takes.
+/// queues and a walk of the array skips the links. A short account yields nothing
+/// rather than failing, because an account feed can hand over a partial write. A
+/// misaligned one decodes normally: `pod_read_unaligned` reads a copy, so the slice
+/// need not start on the node's alignment. The index is the node's own slot, which
+/// is half of the handle a cancel takes.
 pub fn live_orders(account_data: &[u8]) -> impl Iterator<Item = (u32, OrderNodeV0)> + '_ {
     account_data
         .get(ORDERS_OFFSET..)

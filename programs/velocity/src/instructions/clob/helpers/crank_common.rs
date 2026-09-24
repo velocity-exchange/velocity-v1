@@ -39,9 +39,10 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0, L3RowV0,
-                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType,
-                RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
+                OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterSlotV0,
+                QuoterType, RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
             },
+            signed_msg_user::release_removed_remainders,
             state::State,
             user::{OrderReservation, ReleaseCheck, User, UserStats},
         },
@@ -172,6 +173,8 @@ pub fn crank_clob_removal(
             ctx.accounts.user.key()
         )?;
     }
+
+    release_removed_remainders(ctx.remaining_accounts.first(), market_index, &[removed]);
 
     // Both removals charge the maker the flat removal reward before they
     // unwind. In program-keeper mode the filler is the protocol `User`. Unwinding an
@@ -379,9 +382,10 @@ pub fn derive_protocol_user_pdas(signer: &Pubkey) -> (Pubkey, Pubkey) {
     pdas::user_pair(signer, 0)
 }
 
-/// The removal executor's call. `CrankClobOrderRemoval`'s `#[derive(Accounts)]`
-/// struct is its full account list, with no remaining accounts, so the whole
-/// call is typed.
+/// The removal executor's call for the order `found` names.
+/// `CrankClobOrderRemoval`'s `#[derive(Accounts)]` struct is the typed account
+/// list. A taker-origin order adds its owner's signed-message record as the one
+/// remaining account, so the removal releases the entry.
 ///
 /// `I` names which executor the caller stages. `crank_clob_evict` and
 /// `crank_clob_remove_expired` share this account list but are different
@@ -389,24 +393,28 @@ pub fn derive_protocol_user_pdas(signer: &Pubkey) -> (Pubkey, Pubkey) {
 /// out of the condition, so the resolver has to name it.
 pub fn removal_call<I: anchor_lang::Discriminator>(
     ctx: &Context<ResolveClobCrank>,
-    maker: Pubkey,
+    found: &OrderViewV0,
 ) -> Result<StagedCall> {
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
-    Ok(StagedCall::new::<I>(
-        crate::accounts::CrankClobOrderRemoval {
-            state: ctx.accounts.state.key(),
-            authority: pdas::keeper_placeholder(),
-            filler: protocol_user,
-            filler_stats: protocol_user_stats,
-            user: maker,
-            perp_market: pdas::perp_market(market_index),
-            quoter_slab: ctx.accounts.quoter_slab.key(),
-            clob_market: ctx.accounts.clob_market.key(),
-            clob_program: crate::ids::clob_program::id(),
-            crank_conditions: Some(ctx.accounts.crank_conditions.key()),
-        },
-    ))
+    let call = StagedCall::new::<I>(crate::accounts::CrankClobOrderRemoval {
+        state: ctx.accounts.state.key(),
+        authority: pdas::keeper_placeholder(),
+        filler: protocol_user,
+        filler_stats: protocol_user_stats,
+        user: derive_user_pdas(&found.user).0,
+        perp_market: pdas::perp_market(market_index),
+        quoter_slab: ctx.accounts.quoter_slab.key(),
+        clob_market: ctx.accounts.clob_market.key(),
+        clob_program: crate::ids::clob_program::id(),
+        crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+    });
+
+    if !found.taker_origin {
+        return Ok(call);
+    }
+
+    Ok(call.account(pdas::signed_msg_user_orders(&found.user.authority), true))
 }
 
 /// The shared tail of the trigger cranks `trigger_order` and

@@ -24,6 +24,11 @@
 //! rather than a delta, and it is measured against what the cancel returned. A
 //! partially-filled order therefore modifies against its remaining size, never
 //! against its original size.
+//!
+//! The replacement takes a new book id. The owner's writable
+//! `SignedMsgUserOrders` record may ride after the margin maps. A modified
+//! signed-message remainder then keeps its route under the new id. Without the
+//! record the replacement fills as unrouted.
 
 use {
     crate::{
@@ -49,6 +54,7 @@ use {
                 CancelOrderArgsV0, ClobMarket, ClobOrderRefV0, PlaceOrderArgsV0, QuoterSlabExt,
                 QuoterSlabV0, RemovedOrderV0,
             },
+            signed_msg_user::carried_signed_msg_record,
             state::State,
             user::{Order, OrderReservation, User},
         },
@@ -230,6 +236,14 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         order_ref,
         &terms,
     )?;
+
+    if terms.taker_origin {
+        if let Some(mut record) =
+            carried_signed_msg_record(remaining_accounts.next(), &user_ref.authority)
+        {
+            record.move_resting_route(params.market_index, removed.order_id, order_ref.order_id);
+        }
+    }
 
     // One record rather than a cancel and a place. The order kept its id, so a
     // reader sees the same order at new terms.

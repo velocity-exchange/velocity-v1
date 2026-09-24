@@ -2730,6 +2730,8 @@ export type SignedMsgOrderId = {
 	/** the CLOB order this message's remainder rests as. Zero when nothing of it rests */
 	clobOrderId: BN;
 	orderId: number;
+	/** the market whose book `clobOrderId` names. Each book numbers its own orders */
+	marketIndex: number;
 	padding: number;
 	/** digest of the quoter entries the taker's signed route named; all-zero when the message named no route. See `getRouteDigest`. */
 	routeDigest: number[];

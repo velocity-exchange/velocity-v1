@@ -563,7 +563,10 @@ These public exports were added, or restored, relative to the fork point:
   `ModifyOrderV1Params`, `CancelOrdersV1Params`, `ClobOrderRefV0` and `CancelSidesV0`.
   Placement is `placeAndMakePerpOrder` (§2, jit-proxy row). A caller names a market and
   nothing else. The book's program and account resolve from the market's quoter slab (slot 0),
-  and the rest are PDAs.
+  and the rest are PDAs. `cancelOrderV1` and `modifyOrderV1` take a trailing `takerOrigin` flag,
+  which a `UserClobOrder` row carries. With it set, the instruction carries the signed-message
+  record, so a cancelled signed-message remainder releases its entry and a modified one keeps
+  its route. `getForceCancelClobOrdersIx` always carries the liquidatee's record.
 - `UserClobOrdersClient` and `UserClobOrder` (feat/propamm) read a user's resting book orders
   over the dlob-server's `GET /userOrders` and its `user_orders` websocket channel. This
   replaces `user.getOpenOrders()` for orders that rest on a book, which have no `User.orders`
@@ -1008,10 +1011,18 @@ the current ones.
   rests on the book rather than in `User.orders` and its record is what names the resting order
   and the route it signed for. The account's size derives from `size_of` rather than a
   hardcoded constant, so `space()` and any client allocation must be recomputed. The previous
-  816-byte figure is wrong. Entry lifetime changes with it: an entry holding a live
-  `clob_order_id` survives past the `max_slot` prune until that order leaves the book, and is
-  cleared on fill, cancel, eviction and expiry. A missed clear leaks an entry against the
-  128-entry cap.
+  816-byte figure is wrong. The old `padding: u32` is now `market_index: u16` and
+  `padding: u16`. Each book numbers its own orders, so an entry names its order by market and
+  `clob_order_id` together. Entry lifetime changes with it: an entry holding a live
+  `clob_order_id` survives past the `max_slot` prune until that order leaves the book. A
+  removal clears the entry only when its instruction carries the owner's writable record:
+  `cancel_order_v1`, `modify_order_v1` and `force_cancel_clob_orders` take it as an optional
+  remaining account, the eviction and expiry cranks take it when the resolver stages a
+  taker-origin order, and `crank_taker_origin_cross` carries it as a now-writable account.
+  `modify_order_v1` moves the entry to the replacement's new id. A sweep (`cancel_orders_v1`,
+  or the sweep half of `force_cancel_clob_orders`) reports no ids and clears nothing, and
+  neither does a fill by another taker. Such an entry cannot match another order, because a
+  book never reuses an id. A full account reclaims it once it is past the eviction buffer.
 - `QuoterV0` (new account, feat/propamm). Zero-copy, 792 bytes including the 8-byte
   discriminator; PDA seeds `["quoter", market_index as u16 LE, quoter_program, user]`. The
   staging half of the registry: `{ config: QuoterConfigV0 (736 bytes), padding: [u8; 48] }`.
@@ -2552,8 +2563,9 @@ resting where a landing race decides who fills it. `place_and_make_signed_msg_pe
 deleted. It existed only to match a signed-message order already resting in `User.orders`. The
 taker-facing signed message and its broadcast to swift are unchanged; the ABI break is on the
 keeper side, which velocity controls. Signed-msg orders carry a `network` tag and an optional
-signed route that binds the filler; that route now rides `SignedMsgUserOrders` next to the CLOB
-order id it rests under, rather than five spare bytes on `Order`, and is eight bytes wide. A
+signed route that binds the filler; that route now rides `SignedMsgUserOrders` next to the
+market and CLOB order id it rests under, rather than five spare bytes on `Order`, and is eight
+bytes wide. A
 quoter reports depth it could not reach and the router reserves it, so a worse price cannot
 take what a book was standing on. IOC is exempt.
 

@@ -9365,6 +9365,365 @@ fn cancel_clob_order_for(fixture: &mut Fixture, party: &Party, order_ref: ClobOr
     send(&mut fixture.svm, &authority, ix, &[]).unwrap();
 }
 
+/// The taker's signed-message entries, in account order.
+fn signed_msg_entries(
+    svm: &litesvm::LiteSVM,
+    authority: &Pubkey,
+) -> Vec<velocity::state::signed_msg_user::SignedMsgOrderId> {
+    use anchor_lang::AnchorDeserialize;
+
+    let data = svm
+        .get_account(&signed_msg_user_orders_pda(authority))
+        .unwrap()
+        .data;
+    // The discriminator and the fixed header come first.
+    data[48..]
+        .chunks_exact(40)
+        .map(|entry| {
+            velocity::state::signed_msg_user::SignedMsgOrderId::try_from_slice(entry).unwrap()
+        })
+        .collect()
+}
+
+fn signed_msg_entry(
+    svm: &litesvm::LiteSVM,
+    authority: &Pubkey,
+    uuid: [u8; 8],
+) -> velocity::state::signed_msg_user::SignedMsgOrderId {
+    signed_msg_entries(svm, authority)
+        .into_iter()
+        .find(|entry| entry.uuid == uuid)
+        .expect("the message holds an entry")
+}
+
+/// Overwrite the taker's first signed-message entry.
+fn set_first_signed_msg_entry(
+    svm: &mut litesvm::LiteSVM,
+    authority: &Pubkey,
+    entry: &velocity::state::signed_msg_user::SignedMsgOrderId,
+) {
+    use anchor_lang::AnchorSerialize;
+
+    let address = signed_msg_user_orders_pda(authority);
+    let mut account = svm.get_account(&address).unwrap();
+    let mut bytes = Vec::new();
+    entry.serialize(&mut bytes).unwrap();
+    account.data[48..88].copy_from_slice(&bytes);
+    svm.set_account(address, account).unwrap();
+}
+
+/// The signed envelope of a one-unit limit bid from `taker`.
+fn signed_bid_envelope(taker: &Party, uuid: [u8; 8], price: u64, slot: u64) -> Vec<u8> {
+    use {
+        anchor_lang::AnchorSerialize,
+        velocity::state::order_params::{OrderParams, PostOnlyParam, SignedMsgOrderParamsMessage},
+    };
+
+    let message = SignedMsgOrderParamsMessage {
+        signed_msg_order_params: OrderParams {
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: UNIT,
+            price,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            ..OrderParams::default()
+        },
+        sub_account_id: 0,
+        slot,
+        uuid,
+        take_profit_order_params: None,
+        stop_loss_order_params: None,
+        max_margin_ratio: None,
+        builder_idx: None,
+        builder_fee_tenth_bps: None,
+        isolated_position_deposit: None,
+        network: Some(velocity::state::order_params::expected_signed_msg_network()),
+        route: None,
+    };
+    let mut borsh_body = vec![0u8; 8];
+    message.serialize(&mut borsh_body).unwrap();
+    let hex_msg = hex_lower(&borsh_body);
+    let signature = taker.authority.sign_message(hex_msg.as_bytes());
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(signature.as_ref());
+    envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());
+    envelope.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+    envelope.extend_from_slice(hex_msg.as_bytes());
+    envelope
+}
+
+/// Sign a limit bid for `taker` and land it through a keeper. The book holds
+/// no asks, so the whole order rests as a taker-origin remainder.
+fn rest_signed_msg_bid(
+    fixture: &mut Fixture,
+    taker: &Party,
+    keeper: &Party,
+    uuid: [u8; 8],
+    price: u64,
+) -> ClobOrderRefV0 {
+    let slot = fixture.svm.get_sysvar::<solana_clock::Clock>().slot;
+    let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+        authority: keeper.authority.pubkey(),
+        ix_sysvar: instructions_sysvar(),
+        filler: keeper.user,
+        filler_stats: keeper.stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceSignedMsgTakerOrder {
+            signed_msg_order_params_message_bytes: signed_bid_envelope(taker, uuid, price, slot),
+            is_delegate_signer: false,
+            flow_attestation: None,
+        }
+        .data(),
+    };
+    let keeper_authority = keeper.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(600_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    let entry = signed_msg_entry(&fixture.svm, &taker.authority.pubkey(), uuid);
+    let row = clob_side(fixture, DirectionV0::Short)
+        .into_iter()
+        .find(|row| row.order_id == entry.clob_order_id)
+        .expect("the remainder rests on the book");
+    ClobOrderRefV0 {
+        node_index: row.node_index,
+        order_id: row.order_id,
+    }
+}
+
+fn cancel_clob_order_ix(
+    fixture: &Fixture,
+    party: &Party,
+    order_ref: ClobOrderRefV0,
+    signed_msg_record: Option<Pubkey>,
+) -> Instruction {
+    let mut accounts = velocity::accounts::CancelOrderV1 {
+        perp_market: perp_market_pda(0),
+        user: party.user,
+        authority: party.authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.extend(signed_msg_record.map(|record| AccountMeta::new(record, false)));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CancelOrderV1 {
+            params: CancelOrderV1Params {
+                market_index: 0,
+                order_ref,
+            },
+        }
+        .data(),
+    }
+}
+
+/// A cancel that carries the owner's record releases the remainder's entry,
+/// so the stale sweep can reclaim it. A cancel without the record still
+/// succeeds, and the entry waits for a full account to reclaim it.
+#[test]
+fn a_cancelled_signed_msg_remainder_releases_its_entry() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    let authority = taker.authority.pubkey();
+    set_signed_msg_user_orders(&mut fixture.svm, &authority, 8);
+
+    let released = rest_signed_msg_bid(&mut fixture, &taker, &keeper, *b"released", 99 * PRICE);
+    let kept = rest_signed_msg_bid(&mut fixture, &taker, &keeper, *b"keptrest", 98 * PRICE);
+    let entry = signed_msg_entry(&fixture.svm, &authority, *b"released");
+    assert!(entry.rests_on_clob());
+    assert_eq!(entry.market_index, 0);
+    assert_eq!(entry.clob_order_id, released.order_id);
+
+    // The owner cannot pull a remainder while the book still binds it.
+    warp_past_claim(&mut fixture, 30);
+    let signer = taker.authority.insecure_clone();
+    let ix = cancel_clob_order_ix(
+        &fixture,
+        &taker,
+        released,
+        Some(signed_msg_user_orders_pda(&authority)),
+    );
+    send(&mut fixture.svm, &signer, ix, &[]).unwrap();
+    assert!(!signed_msg_entry(&fixture.svm, &authority, *b"released").rests_on_clob());
+
+    let ix = cancel_clob_order_ix(&fixture, &taker, kept, None);
+    send(&mut fixture.svm, &signer, ix, &[]).unwrap();
+    assert_eq!(clob_bid_count(&fixture), 0);
+    assert!(signed_msg_entry(&fixture.svm, &authority, *b"keptrest").rests_on_clob());
+}
+
+/// The cross crank carries the taker's record, so a fill that takes the whole
+/// remainder releases its entry.
+#[test]
+fn a_filled_signed_msg_remainder_releases_its_entry() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    let authority = taker.authority.pubkey();
+    set_signed_msg_user_orders(&mut fixture.svm, &authority, 8);
+
+    rest_signed_msg_bid(&mut fixture, &taker, &keeper, *b"crossed1", 101 * PRICE);
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+
+    fixture.svm.warp_to_slot(40);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        40,
+    );
+
+    send_cross_crank(&mut fixture, &keeper, &taker, &maker).unwrap();
+
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        UNIT as i64
+    );
+    assert!(!signed_msg_entry(&fixture.svm, &authority, *b"crossed1").rests_on_clob());
+}
+
+fn send_cross_crank(
+    fixture: &mut Fixture,
+    keeper: &Party,
+    taker: &Party,
+    maker: &Party,
+) -> Result<litesvm::types::TransactionMetadata, litesvm::types::FailedTransactionMetadata> {
+    let ix = crank_taker_origin_cross_ix(fixture, keeper, taker, &[maker]);
+    let keeper_authority = keeper.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+}
+
+/// Each book numbers its own orders, so an entry for another market's order
+/// with the same id must not bind this remainder to that order's route.
+///
+/// The control puts the same entry on this market. The crank then claims no
+/// route against a digest that names one, and it is refused.
+#[test]
+fn a_route_on_another_market_does_not_bind_a_remainder_with_the_same_id() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    let authority = taker.authority.pubkey();
+
+    let subject = rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    set_signed_msg_user_orders(&mut fixture.svm, &authority, 8);
+    let other_market = velocity::state::signed_msg_user::SignedMsgOrderId {
+        uuid: *b"othermkt",
+        max_slot: 10,
+        clob_order_id: subject.order_id,
+        order_id: 1,
+        market_index: 1,
+        padding: 0,
+        route_digest: [7; 8],
+    };
+
+    set_first_signed_msg_entry(
+        &mut fixture.svm,
+        &authority,
+        &velocity::state::signed_msg_user::SignedMsgOrderId {
+            market_index: 0,
+            ..other_market
+        },
+    );
+    let err = send_cross_crank(&mut fixture, &keeper, &taker, &maker).unwrap_err();
+    assert_velocity_error(&err, ErrorCode::SignedRouteMismatch);
+
+    set_first_signed_msg_entry(&mut fixture.svm, &authority, &other_market);
+    send_cross_crank(&mut fixture, &keeper, &taker, &maker).unwrap();
+
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        UNIT as i64
+    );
+    assert_eq!(
+        signed_msg_entry(&fixture.svm, &authority, *b"othermkt"),
+        other_market,
+        "the fill releases no entry of another market's order"
+    );
+}
+
 /// Two migrated taker remainders crossing each other, and nothing else on the
 /// book — `early` resting first, `late` a slot later.
 ///
@@ -9702,7 +10061,7 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
         (fixture.clob_market, true),
         (clob_id(), false),
         (conditions, true),
-        (signed_msg_user_orders_pda(&taker.authority.pubkey()), false),
+        (signed_msg_user_orders_pda(&taker.authority.pubkey()), true),
         (instructions_sysvar(), false),
         (fixture.oracle, false),
         (spot_market_pda(0), true),

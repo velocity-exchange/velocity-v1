@@ -4,8 +4,8 @@
 
 use {
     super::helpers::crank_common::{
-        clob_reader, crank_clob_removal, derive_user_pdas, removal_call, ClobRemoval,
-        CrankClobOrderRemoval, ResolveClobCrank,
+        clob_reader, crank_clob_removal, removal_call, ClobRemoval, CrankClobOrderRemoval,
+        ResolveClobCrank,
     },
     crate::{
         instructions::relay_harness::StagedCall,
@@ -54,13 +54,11 @@ pub(super) fn stage_expired_removal(ctx: &Context<ResolveClobCrank>) -> Result<O
 
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     Ok(Some(
-        removal_call::<crate::instruction::CrankClobRemoveExpired>(
-            ctx,
-            derive_user_pdas(&found.user).0,
-        )?
-        .arg(CrankClobRemoveExpiredArgs {
-            market_index,
-            order_ref: found.order_ref,
-        })?,
+        removal_call::<crate::instruction::CrankClobRemoveExpired>(ctx, &found)?.arg(
+            CrankClobRemoveExpiredArgs {
+                market_index,
+                order_ref: found.order_ref,
+            },
+        )?,
     ))
 }

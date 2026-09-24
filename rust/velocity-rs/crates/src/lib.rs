@@ -2507,7 +2507,7 @@ impl<'a> TransactionBuilder<'a> {
         order_refs: Vec<program::instructions::ForceCancelClobRefV0>,
         clob: ClobFillAccounts,
     ) -> Self {
-        let accounts = build_accounts(
+        let mut accounts = build_accounts(
             self.program_data,
             program::accounts::ForceCancelClobOrders {
                 state: *state_account(),
@@ -2531,6 +2531,11 @@ impl<'a> TransactionBuilder<'a> {
             ]
             .iter(),
         );
+        // A cancelled signed-message remainder releases its entry in the user's record.
+        accounts.push(AccountMeta::new(
+            Wallet::derive_swift_order_account(&user_account.authority),
+            false,
+        ));
 
         self.ixs.push(Instruction {
             program_id: constants::PROGRAM_ID,

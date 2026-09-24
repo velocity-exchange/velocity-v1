@@ -65,7 +65,10 @@ pub struct SignedMsgOrderId {
     /// because the fill that resolves it still needs the route below.
     pub clob_order_id: u64,
     pub order_id: u32,
-    pub padding: u32,
+    /// The market whose book `clob_order_id` names. Each book numbers its own
+    /// orders, so the id alone can name an order on another market.
+    pub market_index: u16,
+    pub padding: u16,
     /// [`crate::state::order_params::route_digest`] of the quoter entries the
     /// taker's signed route named. Zero when the message named no route.
     pub route_digest: [u8; crate::state::order_params::ROUTE_DIGEST_LEN],
@@ -86,6 +89,7 @@ impl SignedMsgOrderId {
             max_slot,
             clob_order_id: 0,
             order_id,
+            market_index: 0,
             padding: 0,
             route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
         }
@@ -94,6 +98,12 @@ impl SignedMsgOrderId {
     /// Whether this entry still describes an order resting on a book.
     pub fn rests_on_clob(&self) -> bool {
         self.clob_order_id != 0
+    }
+
+    fn rests_as(&self, market_index: u16, clob_order_id: u64) -> bool {
+        clob_order_id != 0
+            && self.clob_order_id == clob_order_id
+            && self.market_index == market_index
     }
 }
 
@@ -171,21 +181,16 @@ impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
         (0..self.len()).map(move |i| self.get(i))
     }
 
-    /// The route the signer chose for the order resting as `clob_order_id`.
-    ///
-    /// `None` means the order carries no signed route. It was placed directly,
-    /// or its entry was reclaimed. Both read as unrouted, which is the same
-    /// answer a zero digest gives.
+    /// The route the signer chose for the order resting as `clob_order_id` on
+    /// the book of `market_index`. `None` means the order carries no signed
+    /// route: it was placed directly, or its entry was reclaimed.
     pub fn route_for_clob_order(
         &self,
+        market_index: u16,
         clob_order_id: u64,
     ) -> Option<crate::state::order_params::RouteDigest> {
-        if clob_order_id == 0 {
-            return None;
-        }
-
         self.iter()
-            .find(|entry| entry.clob_order_id == clob_order_id)
+            .find(|entry| entry.rests_as(market_index, clob_order_id))
             .map(|entry| entry.route_digest)
     }
 }
@@ -304,6 +309,7 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     pub fn set_resting_route(
         &mut self,
         uuid: [u8; 8],
+        market_index: u16,
         clob_order_id: u64,
         route_digest: crate::state::order_params::RouteDigest,
     ) -> bool {
@@ -311,8 +317,27 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
             return false;
         };
 
+        entry.market_index = market_index;
         entry.clob_order_id = clob_order_id;
         entry.route_digest = route_digest;
+        true
+    }
+
+    /// Point the entry of a replaced order at its replacement, so the route
+    /// follows the order through a modify. The book gives the replacement a
+    /// new id.
+    pub fn move_resting_route(
+        &mut self,
+        market_index: u16,
+        clob_order_id: u64,
+        new_clob_order_id: u64,
+    ) -> bool {
+        let Some(entry) = self.find_entry_mut(|entry| entry.rests_as(market_index, clob_order_id))
+        else {
+            return false;
+        };
+
+        entry.clob_order_id = new_clob_order_id;
         true
     }
 
@@ -326,17 +351,11 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     }
 
     /// Release the entry's hold once its order leaves the book, so the stale
-    /// sweep can reclaim the slot the ordinary way. Nothing calls this yet: it
-    /// shortens how long a retained entry holds a slot, but reclaim safety in
-    /// `add_signed_msg_order_id` rests on the eviction buffer, not this.
-    /// Wiring it needs the account on the cancel and crank instructions that
-    /// remove a book order, and only `crank_taker_origin_cross` carries it today.
-    pub fn clear_resting_route(&mut self, clob_order_id: u64) -> bool {
-        if clob_order_id == 0 {
-            return false;
-        }
-
-        let Some(entry) = self.find_entry_mut(|entry| entry.clob_order_id == clob_order_id) else {
+    /// sweep can reclaim the slot the ordinary way. Reclaim safety in
+    /// `add_signed_msg_order_id` rests on the eviction buffer, not on this.
+    pub fn clear_resting_route(&mut self, market_index: u16, clob_order_id: u64) -> bool {
+        let Some(entry) = self.find_entry_mut(|entry| entry.rests_as(market_index, clob_order_id))
+        else {
             return false;
         };
 
@@ -401,6 +420,48 @@ impl<'a> SignedMsgUserOrdersLoader<'a> for AccountInfo<'a> {
             data,
         })
     }
+}
+
+/// The record of `authority`, when a removal path carries it as an optional
+/// account. Any other account reads as absent, so a crank cannot fail on the
+/// record of the user whose order it removes. A read-only record reads as
+/// absent too, because a write to it fails the transaction.
+pub fn carried_signed_msg_record<'a>(
+    account: Option<&'a AccountInfo<'_>>,
+    authority: &Pubkey,
+) -> Option<SignedMsgUserOrdersZeroCopyMut<'a>> {
+    let account = account.filter(|account| {
+        account.owner == &ID
+            && account.is_writable
+            && account
+                .try_borrow_data()
+                .is_ok_and(|data| data.starts_with(SignedMsgUserOrders::DISCRIMINATOR))
+    })?;
+    let record = account.load_mut().ok()?;
+
+    (record.fixed.user_pubkey == *authority).then_some(record)
+}
+
+/// Release the entries of the taker-origin remainders a removal took off the
+/// book of `market_index`. The removals belong to one user, and `account` may
+/// be that user's record.
+pub fn release_removed_remainders(
+    account: Option<&AccountInfo<'_>>,
+    market_index: u16,
+    removed: &[crate::state::prop_amm::RemovedOrderV0],
+) {
+    let mut remainders = removed.iter().filter(|order| order.taker_origin).peekable();
+    let Some(owner) = remainders.peek().map(|order| order.user.authority) else {
+        return;
+    };
+
+    let Some(mut record) = carried_signed_msg_record(account, &owner) else {
+        return;
+    };
+
+    remainders.for_each(|order| {
+        record.clear_resting_route(market_index, order.order_id);
+    });
 }
 
 pub fn derive_signed_msg_user_pda(user_account_pubkey: &Pubkey) -> VelocityResult<Pubkey> {

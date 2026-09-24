@@ -6214,7 +6214,8 @@ pub mod types {
         pub max_slot: u64,
         pub clob_order_id: u64,
         pub order_id: u32,
-        pub padding: u32,
+        pub market_index: u16,
+        pub padding: u16,
         pub route_digest: [u8; 8],
     }
     #[repr(C)]
@@ -10804,7 +10805,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.signed_msg_user_orders,
                     is_signer: false,
-                    is_writable: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.instructions_sysvar,

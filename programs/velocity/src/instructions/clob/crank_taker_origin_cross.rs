@@ -148,9 +148,12 @@ pub struct CrankTakerOriginCross<'info> {
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
     /// The taker's signed-message record, which carries the route its signer
     /// chose. Derived seeds mean a caller cannot omit or substitute it. An
-    /// absent record arrives system-owned and reads as unrouted.
+    /// absent record arrives system-owned and reads as unrouted. It is
+    /// writable so that a fill that takes the whole remainder releases its
+    /// entry.
     /// CHECK: `SignedMsgUserOrdersLoader` checks the owner and discriminator.
     #[account(
+        mut,
         seeds = [SIGNED_MSG_PDA_SEED.as_bytes(), taker.load()?.authority.as_ref()],
         bump
     )]
@@ -324,6 +327,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         quoters: &signed_route,
         digest: signed_route_digest(
             &ctx.accounts.signed_msg_user_orders,
+            market_index,
             subject_order.order_ref.order_id,
         )?,
     };
@@ -407,6 +411,19 @@ struct TakerOriginContext<'a, 'info> {
     program_keeper_mode: bool,
     /// True when the taker's referrer earns the accelerated rate.
     referrer_is_accelerated: bool,
+}
+
+impl TakerOriginContext<'_, '_> {
+    /// Release the taker's signed-message entry for a remainder that left the
+    /// book. A taker with no record has no entry to release.
+    fn release_taker_route(&self, clob_order_id: u64) {
+        if let Some(mut record) = crate::state::signed_msg_user::carried_signed_msg_record(
+            Some(&*self.accounts.signed_msg_user_orders),
+            &self.taker_ref.authority,
+        ) {
+            record.clear_resting_route(self.market_index, clob_order_id);
+        }
+    }
 }
 
 /// The cross this crank settles, and its two rows.
@@ -517,12 +534,13 @@ struct SignedRouteClaim<'a> {
 /// this taker, and names this order carries a route.
 fn signed_route_digest(
     record: &UncheckedAccount<'_>,
+    market_index: u16,
     clob_order_id: u64,
 ) -> Result<crate::state::order_params::RouteDigest> {
     let digest = if record.owner == &crate::ID {
         record
             .load()?
-            .route_for_clob_order(clob_order_id)
+            .route_for_clob_order(market_index, clob_order_id)
             .unwrap_or(NO_ROUTE_DIGEST)
     } else {
         NO_ROUTE_DIGEST
@@ -737,6 +755,8 @@ fn report_fill_to_book<'info>(
             OrderStatus::Canceled,
         )?;
 
+        drop(taker);
+        cx.release_taker_route(subject_order.order_ref.order_id);
         return Ok(0);
     }
 
@@ -1367,6 +1387,13 @@ fn report_pair_fill_to_book<'info>(
             leg.order_id,
             OrderStatus::Canceled,
         )?;
+
+        drop(owner);
+        // The counterparty's record is not in this transaction, so only the
+        // taker's entry is released here.
+        if owner_is_taker {
+            cx.release_taker_route(leg.order_id);
+        }
     }
 
     Ok(())

@@ -24,6 +24,10 @@
 //! lands second must not fail the transaction. A caller that is wrong about
 //! something it declared still fails loudly. That covers a ref belonging to
 //! another user, and a side that does not match the order.
+//!
+//! The user's writable `SignedMsgUserOrders` record may ride after the maps.
+//! A remainder that a per-order cancel removes then releases its entry. A
+//! missing record is not an error.
 
 use {
     crate::{
@@ -50,6 +54,7 @@ use {
                 CancelAllArgsV0, CancelAllOutcomeV0, CancelOrderArgsV0, CancelSidesV0, ClobMarket,
                 ClobOrderRefV0, QuoterSlabV0, RemovedOrderV0, SideV0, UserRefV0,
             },
+            signed_msg_user::release_removed_remainders,
             spot_market_map::{get_writable_spot_market_set, SpotMarketMap},
             state::State,
             user::{OrderReservation, OrderStatus, ReleaseCheck, User, UserStats},
@@ -160,8 +165,9 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         order_refs.len()
     )?;
 
+    let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
     let mut maps = load_maps(
-        &mut ctx.remaining_accounts.iter().peekable(),
+        &mut remaining_accounts,
         &MarketSet::new(),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
@@ -203,6 +209,8 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     }
 
     let removals = cancel_orders_on_book(&clob, &plan)?;
+    // The sweep reports totals and no ids, so its remainders keep their entries.
+    release_removed_remainders(remaining_accounts.next(), market_index, &removals.orders);
 
     // Every cancel record below is stamped with this price. Read it once,
     // before the user borrow, because the records are its only readers.

@@ -1818,8 +1818,11 @@ export type Velocity = {
           "docs": [
             "The taker's signed-message record, which carries the route its signer",
             "chose. Derived seeds mean a caller cannot omit or substitute it. An",
-            "absent record arrives system-owned and reads as unrouted."
+            "absent record arrives system-owned and reads as unrouted. It is",
+            "writable so that a fill that takes the whole remainder releases its",
+            "entry."
           ],
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -29894,8 +29897,16 @@ export type Velocity = {
             "type": "u32"
           },
           {
+            "name": "marketIndex",
+            "docs": [
+              "The market whose book `clob_order_id` names. Each book numbers its own",
+              "orders, so the id alone can name an order on another market."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "padding",
-            "type": "u32"
+            "type": "u16"
           },
           {
             "name": "routeDigest",

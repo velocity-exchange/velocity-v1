@@ -129,7 +129,11 @@ caller resting several orders against one position.
 `VelocityClient` gains `cancelOrderV1`, `cancelOrdersV1` and `modifyOrderV1` with their `get*Ix`
 builders. A caller names a market and nothing else, because the book's account, its program and the
 PDAs resolve from the market's quoter slab. Those instructions take `quoterSlab`, `clobMarket` and
-`clobProgram`, and `clobProgram` is pinned to velocity's CLOB program id. The keeper arms are
+`clobProgram`, and `clobProgram` is pinned to velocity's CLOB program id. `cancelOrderV1` and
+`modifyOrderV1` take a trailing `takerOrigin` flag, which a `UserClobOrder` row carries. With it
+set, the instruction carries the signed-message record, so a cancelled signed-message remainder
+releases its entry and a modified one keeps its route. `SignedMsgOrderId` gains `marketIndex`,
+because each book numbers its own orders. The keeper arms are
 `force_cancel_clob_orders`, `crank_clob_evict` and `crank_clob_remove_expired`. `force_cancel_clob_orders`
 cancels during a full exchange halt but pays no keeper fee, so the halt means the same thing for
 it as for its `User.orders` twin, which refuses outright.

@@ -198,6 +198,7 @@ mod zero_copy {
                 uuid: [0; 8],
                 max_slot: 0,
                 order_id: i as u32,
+                market_index: 0,
                 padding: 0,
                 clob_order_id: 0,
                 route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
@@ -223,6 +224,7 @@ mod zero_copy {
                     uuid: [0; 8],
                     max_slot: 0,
                     order_id: i,
+                    market_index: 0,
                     padding: 0,
                     clob_order_id: 0,
                     route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
@@ -269,6 +271,7 @@ mod zero_copy {
                 uuid: [0; 8],
                 max_slot: 0,
                 order_id: i as u32,
+                market_index: 0,
                 padding: 0,
                 clob_order_id: 0,
                 route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
@@ -295,6 +298,7 @@ mod zero_copy {
                     uuid: [0; 8],
                     max_slot: 0,
                     order_id: i,
+                    market_index: 0,
                     padding: 0,
                     clob_order_id: 0,
                     route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
@@ -350,6 +354,7 @@ mod resting_route {
 
     const LEN: u32 = 4;
     const DIGEST: [u8; 8] = [9; 8];
+    const MARKET: u16 = 3;
 
     /// A stale sweep leaves an entry alone while its order rests, and takes it
     /// once the order is gone.
@@ -373,7 +378,7 @@ mod resting_route {
                 SlotClock::default(),
             )
             .unwrap();
-        assert!(orders.set_resting_route([1; 8], 77, DIGEST));
+        assert!(orders.set_resting_route([1; 8], MARKET, 77, DIGEST));
 
         // Far past the eviction buffer, but the order still rests.
         let probe = SignedMsgOrderId::new([2; 8], 10_000, 2);
@@ -388,7 +393,7 @@ mod resting_route {
 
         // Once the order leaves the book the hold is released and the next
         // sweep reclaims the slot.
-        assert!(orders.clear_resting_route(77));
+        assert!(orders.clear_resting_route(MARKET, 77));
         assert_eq!(orders.get(0).route_digest, NO_ROUTE_DIGEST);
         orders.check_exists_and_prune_stale_signed_msg_order_ids(
             probe,
@@ -411,7 +416,7 @@ mod resting_route {
                     SlotClock::default(),
                 )
                 .unwrap();
-            assert!(orders.set_resting_route([i as u8; 8], u64::from(i), DIGEST));
+            assert!(orders.set_resting_route([i as u8; 8], MARKET, u64::from(i), DIGEST));
         }
     }
 
@@ -485,7 +490,7 @@ mod resting_route {
         assert_eq!(orders.get(0).clob_order_id, 0);
         // Clob order 1 lost its entry, so its fill reads as unrouted. Every
         // other order keeps its route.
-        assert!(!orders.clear_resting_route(1));
+        assert!(!orders.clear_resting_route(MARKET, 1));
         assert_eq!(orders.get(1).clob_order_id, 2);
         assert_eq!(orders.get(1).route_digest, DIGEST);
 
@@ -524,7 +529,7 @@ mod resting_route {
 
         // The new entry rests nothing, so the next add takes it as a free
         // slot only after it is itself resting. Mark it, then reclaim again.
-        assert!(orders.set_resting_route([0xEE; 8], 99, DIGEST));
+        assert!(orders.set_resting_route([0xEE; 8], MARKET, 99, DIGEST));
         orders
             .add_signed_msg_order_id(
                 SignedMsgOrderId::new([0xEF; 8], 10_000, 100),
@@ -533,6 +538,181 @@ mod resting_route {
             )
             .unwrap();
         assert_eq!(orders.get(1).uuid, [0xEF; 8]);
+    }
+}
+
+/// Each book numbers its own orders, so an entry answers only for the market
+/// it rests on.
+#[cfg(test)]
+mod market_scoped_route {
+    use {
+        crate::{
+            math::time::SlotClock,
+            state::{
+                order_params::NO_ROUTE_DIGEST,
+                signed_msg_user::{
+                    carried_signed_msg_record, SignedMsgOrderId, SignedMsgUserOrders,
+                    SignedMsgUserOrdersFixed, SignedMsgUserOrdersZeroCopy,
+                    SignedMsgUserOrdersZeroCopyMut,
+                },
+            },
+            test_utils::create_account_info,
+            ID,
+        },
+        anchor_lang::{prelude::Pubkey, Discriminator},
+        std::cell::RefCell,
+    };
+
+    const LEN: u32 = 4;
+    const MARKET_A: u16 = 1;
+    const MARKET_B: u16 = 2;
+    const SHARED_ID: u64 = 5;
+    const DIGEST_A: [u8; 8] = [0xA; 8];
+    const DIGEST_B: [u8; 8] = [0xB; 8];
+
+    struct Record {
+        fixed: RefCell<SignedMsgUserOrdersFixed>,
+        data: RefCell<[u8; 1280]>,
+    }
+
+    impl Record {
+        fn new() -> Self {
+            Self {
+                fixed: RefCell::new(SignedMsgUserOrdersFixed {
+                    user_pubkey: Pubkey::default(),
+                    padding: 0,
+                    len: LEN,
+                }),
+                data: RefCell::new([0u8; 1280]),
+            }
+        }
+
+        fn orders_mut(&self) -> SignedMsgUserOrdersZeroCopyMut<'_> {
+            SignedMsgUserOrdersZeroCopyMut {
+                fixed: self.fixed.borrow_mut(),
+                data: self.data.borrow_mut(),
+            }
+        }
+
+        fn orders(&self) -> SignedMsgUserOrdersZeroCopy<'_> {
+            SignedMsgUserOrdersZeroCopy {
+                fixed: self.fixed.borrow(),
+                data: self.data.borrow(),
+            }
+        }
+
+        fn rest(&self, uuid: [u8; 8], market_index: u16, clob_order_id: u64, digest: [u8; 8]) {
+            let mut orders = self.orders_mut();
+            orders
+                .add_signed_msg_order_id(
+                    SignedMsgOrderId::new(uuid, 10, u32::from(uuid[0])),
+                    10,
+                    SlotClock::default(),
+                )
+                .unwrap();
+            assert!(orders.set_resting_route(uuid, market_index, clob_order_id, digest));
+        }
+    }
+
+    /// The same id on another market is another order, and it carries no
+    /// route of this entry's.
+    #[test]
+    fn a_route_answers_only_for_its_own_market() {
+        let record = Record::new();
+        record.rest([1; 8], MARKET_A, SHARED_ID, DIGEST_A);
+
+        let orders = record.orders();
+        assert_eq!(
+            orders.route_for_clob_order(MARKET_A, SHARED_ID),
+            Some(DIGEST_A)
+        );
+        assert_eq!(orders.route_for_clob_order(MARKET_B, SHARED_ID), None);
+        assert_eq!(orders.route_for_clob_order(MARKET_A, 0), None);
+    }
+
+    /// Two remainders with one id on two books each keep their own route, and
+    /// releasing one leaves the other resting.
+    #[test]
+    fn a_clear_releases_only_the_entry_on_its_market() {
+        let record = Record::new();
+        record.rest([1; 8], MARKET_A, SHARED_ID, DIGEST_A);
+        record.rest([2; 8], MARKET_B, SHARED_ID, DIGEST_B);
+
+        {
+            let orders = record.orders();
+            assert_eq!(
+                orders.route_for_clob_order(MARKET_B, SHARED_ID),
+                Some(DIGEST_B)
+            );
+        }
+
+        let mut orders = record.orders_mut();
+        assert!(orders.clear_resting_route(MARKET_B, SHARED_ID));
+        assert!(!orders.clear_resting_route(MARKET_B, SHARED_ID));
+        assert!(!orders.get(1).rests_on_clob());
+        assert_eq!(orders.get(1).route_digest, NO_ROUTE_DIGEST);
+        assert!(orders.get(0).rests_on_clob());
+        assert_eq!(orders.get(0).route_digest, DIGEST_A);
+    }
+
+    /// A modify rests the order under a new id, and the route follows it.
+    #[test]
+    fn a_moved_route_follows_the_replacement_id() {
+        let record = Record::new();
+        record.rest([1; 8], MARKET_A, SHARED_ID, DIGEST_A);
+
+        {
+            let mut orders = record.orders_mut();
+            assert!(!orders.move_resting_route(MARKET_B, SHARED_ID, 9));
+            assert!(orders.move_resting_route(MARKET_A, SHARED_ID, 9));
+        }
+
+        let orders = record.orders();
+        assert_eq!(orders.route_for_clob_order(MARKET_A, 9), Some(DIGEST_A));
+        assert_eq!(orders.route_for_clob_order(MARKET_A, SHARED_ID), None);
+    }
+
+    fn record_bytes(authority: &Pubkey) -> Vec<u8> {
+        let orders = SignedMsgUserOrders {
+            authority_pubkey: *authority,
+            padding: 0,
+            signed_msg_order_data: vec![SignedMsgOrderId::default(); LEN as usize],
+        };
+        let mut bytes = SignedMsgUserOrders::DISCRIMINATOR.to_vec();
+        bytes.extend_from_slice(&borsh::to_vec(&orders).unwrap());
+        bytes
+    }
+
+    /// A removal path reads anything but the owner's writable record as
+    /// absent, so it never fails on the account.
+    #[test]
+    fn only_the_owners_writable_record_is_carried() {
+        let authority = Pubkey::new_unique();
+        let key = Pubkey::new_unique();
+        let mut lamports = 0;
+
+        assert!(carried_signed_msg_record(None, &authority).is_none());
+
+        let mut bytes = record_bytes(&authority);
+        let read_only = create_account_info(&key, false, &mut lamports, &mut bytes, &ID);
+        assert!(carried_signed_msg_record(Some(&read_only), &authority).is_none());
+
+        let mut bytes = record_bytes(&authority);
+        let system = Pubkey::default();
+        let foreign_owner = create_account_info(&key, true, &mut lamports, &mut bytes, &system);
+        assert!(carried_signed_msg_record(Some(&foreign_owner), &authority).is_none());
+
+        let mut bytes = record_bytes(&Pubkey::new_unique());
+        let other_user = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+        assert!(carried_signed_msg_record(Some(&other_user), &authority).is_none());
+
+        let mut bytes = vec![0u8; 8 + 40];
+        let wrong_type = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+        assert!(carried_signed_msg_record(Some(&wrong_type), &authority).is_none());
+
+        let mut bytes = record_bytes(&authority);
+        let owners = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+        assert!(carried_signed_msg_record(Some(&owners), &authority).is_some());
     }
 }
 

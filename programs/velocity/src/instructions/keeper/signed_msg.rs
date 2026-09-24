@@ -311,7 +311,12 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         ctx.accounts
             .signed_msg_user_orders
             .load_mut()?
-            .set_resting_route(placed.uuid, clob_order_id, placed.route_digest);
+            .set_resting_route(
+                placed.uuid,
+                market_index,
+                clob_order_id,
+                placed.route_digest,
+            );
     }
 
     Ok(())

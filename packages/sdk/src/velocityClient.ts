@@ -7731,6 +7731,8 @@ export class VelocityClient {
 			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 			writablePerpMarketIndexes: [marketIndex],
 		});
+		// A cancelled signed-message remainder releases its entry in the user's record.
+		remainingAccounts.push(this.signedMsgRecordMeta(userAccount.authority));
 
 		return await this.program.instruction.forceCancelClobOrders(
 			{ marketIndex, orderRefs },
@@ -13073,10 +13075,14 @@ export class VelocityClient {
 	 *
 	 * It is deliberately ungated on the quoter entry's active and approved flags. A maker must
 	 * always be able to pull orders off a killed or delisted book.
+	 * @param takerOrigin - The order is a taker remainder, as the user-orders feed flags it. The
+	 * instruction then carries the signed-message record, so a signed-message remainder releases
+	 * its entry.
 	 */
 	public async getCancelOrderV1Ix(
 		params: CancelOrderV1Params,
-		subAccountId?: number
+		subAccountId?: number,
+		takerOrigin = false
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
 		return await this.program.instruction.cancelOrderV1(params, {
@@ -13092,7 +13098,24 @@ export class VelocityClient {
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
 			},
+
+			remainingAccounts: takerOrigin ? [this.signedMsgRecordMeta()] : [],
 		});
+	}
+
+	/**
+	 * This client's signed-message record, writable, as a CLOB removal carries it. The program
+	 * reads a record that does not exist as absent.
+	 */
+	private signedMsgRecordMeta(authority = this.authority): AccountMeta {
+		return {
+			pubkey: getSignedMsgUserAccountPublicKey(
+				this.program.programId,
+				authority
+			),
+			isSigner: false,
+			isWritable: true,
+		};
 	}
 
 	/**
@@ -13102,11 +13125,12 @@ export class VelocityClient {
 	public async cancelOrderV1(
 		params: CancelOrderV1Params,
 		txParams?: TxParams,
-		subAccountId?: number
+		subAccountId?: number,
+		takerOrigin = false
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getCancelOrderV1Ix(params, subAccountId),
+				await this.getCancelOrderV1Ix(params, subAccountId, takerOrigin),
 				txParams
 			),
 
@@ -13123,12 +13147,23 @@ export class VelocityClient {
 	 * position, because the book has no in-place mutation. A `null` field keeps what the resting
 	 * order carries, except `baseAssetAmount`, where `null` keeps the remaining size rather than the
 	 * original. An `activationDelaySlots` below the book's default is refused.
+	 * @param takerOrigin - The order is a taker remainder. The instruction then carries the
+	 * signed-message record, so a signed-message remainder keeps its route under the new book id.
 	 */
 	public async getModifyOrderV1Ix(
 		params: ModifyOrderV1Params,
-		subAccountId?: number
+		subAccountId?: number,
+		takerOrigin = false
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
+			readablePerpMarketIndex: [params.marketIndex],
+		});
+		if (takerOrigin) {
+			remainingAccounts.push(this.signedMsgRecordMeta());
+		}
+
 		return await this.program.instruction.modifyOrderV1(params, {
 			accounts: {
 				state: await this.getStatePublicKey(),
@@ -13138,6 +13173,8 @@ export class VelocityClient {
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
 			},
+
+			remainingAccounts,
 		});
 	}
 
@@ -13148,11 +13185,12 @@ export class VelocityClient {
 	public async modifyOrderV1(
 		params: ModifyOrderV1Params,
 		txParams?: TxParams,
-		subAccountId?: number
+		subAccountId?: number,
+		takerOrigin = false
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getModifyOrderV1Ix(params, subAccountId),
+				await this.getModifyOrderV1Ix(params, subAccountId, takerOrigin),
 				txParams
 			),
 

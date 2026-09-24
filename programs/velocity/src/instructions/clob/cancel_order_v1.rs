@@ -6,6 +6,10 @@
 //! The handler is not gated on the quoter entry's active or approved flags. A
 //! maker must always be able to remove orders from a killed or de-listed
 //! book.
+//!
+//! The owner's writable `SignedMsgUserOrders` record may ride as the first
+//! remaining account. A cancelled signed-message remainder then releases its
+//! entry. Without the record the entry stays until a full account reclaims it.
 
 use {
     crate::{
@@ -16,6 +20,7 @@ use {
         state::{
             perp_market::PerpMarket,
             prop_amm::{CancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterSlabV0},
+            signed_msg_user::release_removed_remainders,
             user::{OrderReservation, OrderStatus, ReleaseCheck, User},
         },
         validate,
@@ -118,6 +123,12 @@ pub fn handle_cancel_order_v1(
         .map(|position| position.is_isolated())
         .unwrap_or(false);
     drop(user);
+
+    release_removed_remainders(
+        ctx.remaining_accounts.first(),
+        params.market_index,
+        &[removed],
+    );
 
     super::emit_clob_cancel_record(
         clock.unix_timestamp,

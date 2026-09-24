@@ -5,8 +5,8 @@
 
 use {
     super::helpers::crank_common::{
-        clob_reader, crank_clob_removal, derive_user_pdas, removal_call, ClobRemoval,
-        CrankClobOrderRemoval, ResolveClobCrank,
+        clob_reader, crank_clob_removal, removal_call, ClobRemoval, CrankClobOrderRemoval,
+        ResolveClobCrank,
     },
     crate::{
         instructions::relay_harness::StagedCall,
@@ -47,11 +47,9 @@ pub(super) fn stage_eviction(ctx: &Context<ResolveClobCrank>) -> Result<Option<S
         return Ok(None);
     }
 
-    let maker = derive_user_pdas(&found.user).0;
-
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     Ok(Some(
-        removal_call::<crate::instruction::CrankClobEvict>(ctx, maker)?.arg(
+        removal_call::<crate::instruction::CrankClobEvict>(ctx, &found)?.arg(
             CrankClobEvictArgs {
                 market_index,
                 side: found.side,

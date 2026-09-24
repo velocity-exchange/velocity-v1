@@ -45,7 +45,10 @@ impl AccountSlot {
     /// Only the slot orders updates. A gRPC stream already delivers an account's
     /// writes in order, and `write_version` is a per-node counter, so comparing it
     /// across a reconnect can reject a genuinely newer same-slot write for good.
-    /// Accepting an equal slot risks at most a brief rollback until the next write.
+    /// Accepting an equal slot risks at most a brief rollback: a `from_slot` replay
+    /// re-sends a slot's writes in order, so the next message in the same burst
+    /// restores the later state. Nothing sets `from_slot` today, so a reconnect
+    /// streams only new writes and never replays.
     fn accepts(&self, slot: Slot) -> bool {
         slot >= self.slot
     }

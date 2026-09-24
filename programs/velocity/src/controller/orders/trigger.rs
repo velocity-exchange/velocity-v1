@@ -66,15 +66,10 @@ pub fn trigger_and_route_order(
         update_trigger_order_params(&mut fired, &oracle_price_data, slot, state.slot_clock())?;
     }
 
-    let is_risk_increasing = fired_order_increases_risk(user, &fired, oracle_price)?;
-
     // A risk-increasing trigger on a failing account cancels instead of
-    // firing. `trigger_must_cancel` is the same gate `trigger_order` runs, and
-    // it runs before any reward.
-    if is_risk_increasing
-        && !fired.reduce_only
-        && trigger_must_cancel(user, accounts.user_stats, maps)?
-    {
+    // firing. The gate runs before any reward.
+    let armed = user.orders[order_index];
+    if fired_order_must_cancel(user, &armed, &fired, oracle_price, accounts.user_stats, maps)? {
         cancel_trigger_order(user, order_index, accounts, maps, clock)?;
         return Ok(None);
     }
@@ -296,31 +291,38 @@ fn validate_trigger_condition(order: &Order, trigger_price: u64) -> VelocityResu
     )
 }
 
-/// Turn a dormant trigger order into the live market order it fires as.
+/// Whether the fired order increases the account's risk on an account that
+/// may not take more, so that it must be cancelled instead of fired.
 ///
-/// Whether the fired order increases the account's risk.
-///
-/// The check applies the order's worst-case exposure to the position,
-/// measures, then removes the exposure again. The detached fill does not rest
-/// the order, so the reservation must not stay.
-fn fired_order_increases_risk(
+/// The fired order's exposure replaces the armed slot's reservation while the
+/// gate measures, so initial margin counts the order it admits. The slot's
+/// reservation comes back after. The detached fill does not rest the order.
+fn fired_order_must_cancel(
     user: &mut User,
+    armed: &Order,
     fired: &Order,
     oracle_price: i64,
+    user_stats_loader: &AccountLoader<UserStats>,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<bool> {
     let market_index = fired.market_index;
     let (_, worst_case_before) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
 
-    let reservation = OrderReservation::of_order(fired)?;
-    user.reserve_orders(&reservation)?;
+    let armed_reservation = OrderReservation::of_order(armed)?;
+    let fired_reservation = OrderReservation::of_order(fired)?;
+    user.replace_reservation(&armed_reservation, &fired_reservation)?;
+
     let (_, worst_case_after) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
-    user.release_orders(&reservation, ReleaseCheck::HeldToReservation)?;
+    let must_cancel = worst_case_after > worst_case_before
+        && !fired.reduce_only
+        && trigger_must_cancel(user, user_stats_loader, maps)?;
 
-    Ok(worst_case_after > worst_case_before)
+    user.replace_reservation(&fired_reservation, &armed_reservation)?;
+    Ok(must_cancel)
 }
 
 /// Whether a risk-increasing trigger must be cancelled instead of fired.
@@ -527,6 +529,9 @@ pub(super) fn update_trigger_order_params(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod cancel_gate_tests;
 
 #[cfg(test)]
 mod gate_tests {

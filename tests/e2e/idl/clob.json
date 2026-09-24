@@ -3211,6 +3211,14 @@
               "touches one settles at the other side's price."
             ],
             "type": "bool"
+          },
+          {
+            "name": "reduce_only",
+            "docs": [
+              "The order may only reduce its owner's position. A caller that judges",
+              "whether the order reduces risk clamps its size to the position first."
+            ],
+            "type": "bool"
           }
         ]
       }

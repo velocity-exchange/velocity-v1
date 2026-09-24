@@ -32800,6 +32800,8 @@ pub mod errors {
         SpotMarketVaultInvariantNotViolated,
         #[msg("The self-sync interval is too short for the payment it carries")]
         SelfSyncIntervalTooShort,
+        #[msg("A signed-message entry that neither fills nor rests places nothing of its bundle")]
+        SignedMsgEntryNeitherFilledNorRested,
     }
 }
 pub mod events {

@@ -25,11 +25,8 @@
 use {
     crate::{
         error::ErrorCode,
-        math::constants::PRICE_PRECISION_I128,
         state::{
             clob_crank::ClobCrankConditionsV0,
-            oracle::OracleSource,
-            oracle_watch::{oracle_watch, OracleWatchV0},
             pdas,
             perp_market::PerpMarket,
             prop_amm::{QuoterSlabExt, QuoterSlabV0},
@@ -181,18 +178,9 @@ struct MarketInputs {
     /// crank conditions account, and is the only kind of market the staged
     /// liquidation can fill against.
     has_clob: bool,
-    /// Where a raw-price watch reads this market's oracle, when the oracle
-    /// source has a registered layout.
-    watch: Option<OracleWatchV0>,
-    oracle_source: Option<OracleSource>,
-    /// The oracle price in `PRICE_PRECISION`. The raw oracle field matches it
-    /// only on a six-decimal feed.
-    price: i128,
     /// What this market's conditions account pays. `None` when that account
     /// did not ride along.
     crank_payment: Option<CrankPayment>,
-    decimals: u32,
-    cumulative_deposit_interest: u128,
 }
 
 pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
@@ -231,9 +219,13 @@ pub fn rewrite_liq_conditions<'info>(
         sync_fallback_slots: args.sync_fallback_slots,
     };
     let user_key = user_loader.key();
-    let mut inputs = collect_sync_inputs(remaining_accounts)?;
+    let inputs = collect_sync_inputs(remaining_accounts)?;
     let exposed_perps = validate_market_coverage(user_loader, &inputs.coverage())?;
-    let oracle_refs = resolve_oracle_watches(&mut inputs);
+    let oracle_refs = inputs
+        .oracles
+        .iter()
+        .map(|key| AccountRefV0::readonly(key.to_bytes()))
+        .collect();
     let sync_accounts = build_sync_accounts(
         liq_conditions.key(),
         user_key,
@@ -271,18 +263,15 @@ pub fn rewrite_liq_conditions<'info>(
 
 /// The classified `remaining_accounts`. It holds the per-market inputs and the
 /// account references a staged executor reuses.
-struct SyncInputs<'info> {
+struct SyncInputs {
     perps: BTreeMap<u16, MarketInputs>,
     spots: BTreeMap<u16, MarketInputs>,
-    /// Which market an oracle belongs to. The flag is true for a perp
-    /// market.
-    oracle_of_market: BTreeMap<Pubkey, (bool, u16)>,
     market_refs: Vec<AccountRefV0>,
     tail_refs: Vec<AccountRefV0>,
-    oracle_infos: BTreeMap<Pubkey, &'info AccountInfo<'info>>,
+    oracles: BTreeSet<Pubkey>,
 }
 
-impl SyncInputs<'_> {
+impl SyncInputs {
     /// The view [`validate_market_coverage`] answers over.
     fn coverage(&self) -> MarketCoverage {
         MarketCoverage {
@@ -308,7 +297,7 @@ impl SyncInputs<'_> {
                 .filter(|(_, inputs)| inputs.crank_payment.is_some())
                 .map(|(index, _)| *index)
                 .collect(),
-            oracles: self.oracle_infos.keys().copied().collect(),
+            oracles: self.oracles.clone(),
         }
     }
 }
@@ -318,13 +307,12 @@ impl SyncInputs<'_> {
 /// candidate oracle.
 fn collect_sync_inputs<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
-) -> Result<SyncInputs<'info>> {
+) -> Result<SyncInputs> {
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut spots: BTreeMap<u16, MarketInputs> = BTreeMap::new();
-    let mut oracle_of_market: BTreeMap<Pubkey, (bool, u16)> = BTreeMap::new();
     let mut market_refs: Vec<AccountRefV0> = Vec::new();
     let mut tail_refs: Vec<AccountRefV0> = Vec::new();
-    let mut oracle_infos: BTreeMap<Pubkey, &AccountInfo<'info>> = BTreeMap::new();
+    let mut oracles: BTreeSet<Pubkey> = BTreeSet::new();
 
     for info in remaining_accounts {
         if info.owner == &crate::ID {
@@ -332,9 +320,7 @@ fn collect_sync_inputs<'info>(
                 let market = loader.load()?;
                 let entry = perps.entry(market.market_index).or_default();
                 entry.oracle = Some(market.oracle);
-                entry.oracle_source = Some(market.oracle_source);
                 entry.has_clob = market.clob_market != Pubkey::default();
-                oracle_of_market.insert(market.oracle, (true, market.market_index));
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
@@ -342,10 +328,6 @@ fn collect_sync_inputs<'info>(
                 let market = loader.load()?;
                 let entry = spots.entry(market.market_index).or_default();
                 entry.oracle = Some(market.oracle);
-                entry.oracle_source = Some(market.oracle_source);
-                entry.decimals = market.decimals;
-                entry.cumulative_deposit_interest = market.cumulative_deposit_interest;
-                oracle_of_market.insert(market.oracle, (false, market.market_index));
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
@@ -396,16 +378,15 @@ fn collect_sync_inputs<'info>(
             // section.
         }
 
-        oracle_infos.insert(*info.key, info);
+        oracles.insert(*info.key);
     }
 
     Ok(SyncInputs {
         perps,
         spots,
-        oracle_of_market,
         market_refs,
         tail_refs,
-        oracle_infos,
+        oracles,
     })
 }
 
@@ -509,38 +490,6 @@ pub struct MarketCoverage {
     pub perp_cranks: BTreeSet<u16>,
     /// Oracle accounts the call carried.
     pub oracles: BTreeSet<Pubkey>,
-}
-
-/// The oracle references, readonly and first in map order. Each oracle's
-/// watch layout is resolved off its bytes once, here. The layout carries the
-/// current price and the offset a raw-price condition reads it from.
-fn resolve_oracle_watches(inputs: &mut SyncInputs<'_>) -> Vec<AccountRefV0> {
-    let mut oracle_refs: Vec<AccountRefV0> = Vec::new();
-    for (key, info) in &inputs.oracle_infos {
-        oracle_refs.push(AccountRefV0::readonly(key.to_bytes()));
-        let Some((is_perp, market_index)) = inputs.oracle_of_market.get(key).copied() else {
-            continue;
-        };
-        let entry = if is_perp {
-            inputs.perps.entry(market_index).or_default()
-        } else {
-            inputs.spots.entry(market_index).or_default()
-        };
-        let Some(source) = entry.oracle_source else {
-            continue;
-        };
-        let Some(watch) = oracle_watch(info, source) else {
-            continue;
-        };
-        let Some(price) = watch.protocol_price() else {
-            continue;
-        };
-
-        entry.watch = Some(watch);
-        entry.price = price;
-    }
-
-    oracle_refs
 }
 
 /// The account list staged executors reuse, in `load_maps` order.
@@ -658,12 +607,6 @@ fn arm_self_maintenance(
 
     Ok(())
 }
-
-// Keeps the `PRICE_PRECISION_I128` import live for the precision note on
-// `MarketInputs::price`.
-const _: () = {
-    let _ = PRICE_PRECISION_I128;
-};
 
 /// The bounds that can be read off the arguments alone.
 ///

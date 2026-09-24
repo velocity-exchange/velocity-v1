@@ -11,7 +11,6 @@ use {
         math::casting::Cast,
         msg,
         state::prop_amm::{
-            find_account, CancelAllArgsV0, CancelAllOutcomeV0, CancelSidesV0, ClobMarket,
             DirectionV0, ExecuteArgsV0, ExternalQuoterExecutor, QuoterSlabExt, QuoterSlabV0,
             QuoterSlotV0, QuoterSubjects, QuoterType, ResponseLocationV0, UserRefV0,
         },
@@ -118,57 +117,6 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             QuoterSubjects::Book
         } else {
             QuoterSubjects::Account(self.quoter_user(index))
-        })
-    }
-
-    fn cancel_all(
-        &mut self,
-        index: usize,
-        user: UserRefV0,
-        sides: CancelSidesV0,
-    ) -> VelocityResult<Option<CancelAllOutcomeV0>> {
-        if self.quoter_type(index) != QuoterType::Clob {
-            return Ok(None);
-        }
-
-        let slab = self.slab()?;
-        let slot = self.slot_index(index)?;
-        let (book, program) = {
-            let slots = slab.slots().map_err(|_| {
-                msg!("router executor failed to load the quoter slab");
-                ErrorCode::InvalidQuoterConfig
-            })?;
-            let config = &slots[slot].config;
-            let book = find_account(self.accounts, &config.response_account).ok_or_else(|| {
-                msg!(
-                    "clob book {} missing from the account map",
-                    config.response_account
-                );
-
-                ErrorCode::QuoterCpiAccountMissing
-            })?;
-            let program = find_account(self.accounts, &config.program_id).ok_or_else(|| {
-                msg!(
-                    "clob program {} missing from the account map",
-                    config.program_id
-                );
-
-                ErrorCode::QuoterCpiAccountMissing
-            })?;
-
-            (book, program)
-        };
-        let clob = ClobMarket::from_slab(slab, self.market_index, book, program)
-            .map_err(|_| ErrorCode::InvalidQuoterConfig)?;
-        clob.cancel_all(CancelAllArgsV0 {
-            user,
-            sides,
-            force: false,
-        })
-        .map(Some)
-        .map_err(|e| {
-            msg!("clob cancel_all failed: {}", e);
-            ErrorCode::FailedQuoterCpi
         })
     }
 

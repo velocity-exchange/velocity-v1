@@ -15,10 +15,7 @@ pub use quoter_spec::{
     USER_CAPS_CAPACITY, USER_SET_CAPACITY,
 };
 use {
-    super::{
-        get_quoter_slab_signer_seeds, AmmAccountMeta, CancelAllOutcomeV0, CancelSidesV0,
-        QuoterSlabV0, QuoterSlotV0, QuoterType,
-    },
+    super::{get_quoter_slab_signer_seeds, AmmAccountMeta, QuoterSlabV0, QuoterSlotV0, QuoterType},
     crate::{
         controller::position::PositionDirection,
         error::{ErrorCode, VelocityResult},
@@ -508,18 +505,6 @@ pub trait ExternalQuoterExecutor<'info> {
         direction: DirectionV0,
         size: u64,
     ) -> VelocityResult<QuoterSubjects>;
-
-    /// CPI a whole-side cancel on quoter `index` for one of its makers. Only book-backed
-    /// entries honour it, and a `Custom` quoter answers `None`. The caller clears a maker
-    /// the fill proved may not rest risk-increasing orders.
-    fn cancel_all(
-        &mut self,
-        _index: usize,
-        _user: UserRefV0,
-        _sides: CancelSidesV0,
-    ) -> VelocityResult<Option<CancelAllOutcomeV0>> {
-        Ok(None)
-    }
 
     /// CPI `execute_v0` on quoter `index` with the routed allocation. The response is
     /// untrusted. The router pass validates overfill, checks the executed price against

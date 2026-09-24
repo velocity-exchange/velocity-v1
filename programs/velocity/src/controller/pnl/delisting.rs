@@ -2399,6 +2399,7 @@ pub mod delisting_test {
                 clock.slot,
                 clock.unix_timestamp,
                 &state,
+                &mut crate::controller::liquidation::NoBooks,
             )
             .unwrap();
 
@@ -2480,6 +2481,7 @@ pub mod delisting_test {
                 PERCENTAGE_PRECISION,
                 Millis::from_stored_units(150),
                 false,
+                &mut crate::controller::liquidation::NoBooks,
             )
             .unwrap();
 
@@ -2570,6 +2572,7 @@ pub mod delisting_test {
                 PERCENTAGE_PRECISION,
                 Millis::from_stored_units(150),
                 false,
+                &mut crate::controller::liquidation::NoBooks,
             )
             .unwrap();
 

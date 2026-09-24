@@ -89,6 +89,10 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         now,
         clock.slot,
         &state,
+        &mut super::liquidation::LiquidationBookAccounts::after(
+            ctx.remaining_accounts,
+            remaining_accounts_iter,
+        ),
     )?;
 
     open_flash_loan(

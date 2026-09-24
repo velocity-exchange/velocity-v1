@@ -28,8 +28,9 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
     let clock = Clock::get()?;
     let slot = clock.slot;
     let now = clock.unix_timestamp;
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let mut maps = load_maps(
-        &mut ctx.remaining_accounts.iter().peekable(),
+        remaining_accounts_iter,
         &MarketSet::new(),
         &get_market_set_for_spot_positions(&user.spot_positions),
         slot,
@@ -39,7 +40,15 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
 
     require_deletable(user, &state, &mut maps, slot)?;
 
-    // cancel all open orders
+    controller::liquidation::cancel_book_orders(
+        user,
+        controller::liquidation::BookCancelScope::All,
+        &mut super::liquidation::LiquidationBookAccounts::after(
+            ctx.remaining_accounts,
+            remaining_accounts_iter,
+        ),
+    )?;
+
     cancel_orders(
         user,
         &user_key,

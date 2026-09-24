@@ -95,28 +95,9 @@ use {
 #[cfg(test)]
 mod tests;
 
-/// Refuse a fresh liquidation while the user holds orders on a CLOB.
-///
-/// A book order reserves `open_bids` and `open_asks`, which inflates the
-/// worst-case margin a liquidation entry reads. A liquidation slot cancel cannot
-/// remove it, so `force_cancel_clob_orders` runs first. A latched user is exempt,
-/// because that cancel refuses a latched user and would leave no way to liquidate.
-fn validate_no_clob_resident_orders(user: &User) -> VelocityResult {
-    if user.is_being_liquidated() {
-        return Ok(());
-    }
+mod book_orders;
 
-    if let Some(clob_market) = user.first_market_with_clob_resident_orders() {
-        msg!(
-            "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
-            clob_market
-        );
-
-        return Err(ErrorCode::LiquidationConflictsWithClobOrders);
-    }
-
-    Ok(())
-}
+pub use book_orders::*;
 
 pub fn liquidate_perp(
     market_index: u16,
@@ -132,6 +113,7 @@ pub fn liquidate_perp(
     slot: u64,
     now: i64,
     state: &State,
+    books: &mut dyn BookOrderSweep,
 ) -> VelocityResult {
     let slot_clock = maps.oracle_map.slot_clock;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
@@ -213,7 +195,6 @@ pub fn liquidate_perp(
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;
-    validate_no_clob_resident_orders(user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -268,6 +249,12 @@ pub fn liquidate_perp(
         true,
     )?;
 
+    let book_cancel = cancel_book_orders(
+        user,
+        BookCancelScope::of_liquidation(liquidation_mode.get_cancel_orders_params()),
+        books,
+    )?;
+
     let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
     let oracle_price_data = maps.oracle_map.get_price_data(&market.oracle_id())?;
     let mm_oracle_price_data = market.get_mm_oracle_price_data(
@@ -295,7 +282,8 @@ pub fn liquidate_perp(
     drop(market);
 
     // check if user exited liquidation territory
-    let intermediate_margin_calculation = if !canceled_order_ids.is_empty() {
+    let orders_cancelled = !canceled_order_ids.is_empty() || book_cancel.orders > 0;
+    let intermediate_margin_calculation = if orders_cancelled {
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
@@ -344,6 +332,11 @@ pub fn liquidate_perp(
     } else {
         margin_calculation.clone()
     };
+
+    if book_cancel.orders_remain {
+        msg!("book orders remain in the liquidation's scope; the next call continues");
+        return Ok(());
+    }
 
     if user.perp_positions[position_index].base_asset_amount == 0 {
         msg!("User has no base asset amount");
@@ -863,6 +856,7 @@ pub fn place_liquidation_order<'info>(
     maps: &mut AccountMaps<'info>,
     clock: &Clock,
     state: &State,
+    books: &mut dyn BookOrderSweep,
     // This returns Anchor's `Result` rather than `VelocityResult`. The
     // caller's fill runs CPIs into quoter programs, and the settle half returns
     // the same type, so both halves use one error type.
@@ -959,7 +953,6 @@ pub fn place_liquidation_order<'info>(
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(&user)?;
-    validate_no_clob_resident_orders(&user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -1005,6 +998,12 @@ pub fn place_liquidation_order<'info>(
         true,
     )?;
 
+    let book_cancel = cancel_book_orders(
+        &mut user,
+        BookCancelScope::of_liquidation(liquidation_mode.get_cancel_orders_params()),
+        books,
+    )?;
+
     let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
     let oracle_price_data = maps.oracle_map.get_price_data(&market.oracle_id())?;
     let mm_oracle_price_data = market.get_mm_oracle_price_data(
@@ -1032,7 +1031,8 @@ pub fn place_liquidation_order<'info>(
     drop(market);
 
     // check if user exited liquidation territory
-    let intermediate_margin_calculation = if !canceled_order_ids.is_empty() {
+    let orders_cancelled = !canceled_order_ids.is_empty() || book_cancel.orders > 0;
+    let intermediate_margin_calculation = if orders_cancelled {
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 &user,
@@ -1081,6 +1081,11 @@ pub fn place_liquidation_order<'info>(
     } else {
         margin_calculation.clone()
     };
+
+    if book_cancel.orders_remain {
+        msg!("book orders remain in the liquidation's scope; the next call continues");
+        return Ok(LiquidationStep::Settled);
+    }
 
     if user.perp_positions[position_index].base_asset_amount == 0 {
         msg!("User has no base asset amount");
@@ -1411,6 +1416,7 @@ pub fn liquidate_spot(
     now: i64,
     slot: u64,
     state: &State,
+    books: &mut dyn BookOrderSweep,
 ) -> VelocityResult {
     let slot_clock = maps.oracle_map.slot_clock;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
@@ -1667,8 +1673,6 @@ pub fn liquidate_spot(
         margin_context,
     )?;
 
-    validate_no_clob_resident_orders(user)?;
-
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
     {
@@ -1698,8 +1702,11 @@ pub fn liquidate_spot(
         true,
     )?;
 
+    let book_cancel = cancel_book_orders(user, BookCancelScope::Cross, books)?;
+
     // check if user exited liquidation territory
-    let intermediate_margin_calculation = if !canceled_order_ids.is_empty() {
+    let orders_cancelled = !canceled_order_ids.is_empty() || book_cancel.orders > 0;
+    let intermediate_margin_calculation = if orders_cancelled {
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
@@ -1751,6 +1758,11 @@ pub fn liquidate_spot(
     } else {
         margin_calculation.clone()
     };
+
+    if book_cancel.orders_remain {
+        msg!("book orders remain in the liquidation's scope; the next call continues");
+        return Ok(());
+    }
 
     let margin_shortage = intermediate_margin_calculation.cross_margin_margin_shortage()?;
 
@@ -2065,6 +2077,7 @@ pub fn liquidate_spot_with_swap_begin(
     now: i64,
     slot: u64,
     state: &State,
+    books: &mut dyn BookOrderSweep,
 ) -> VelocityResult {
     let slot_clock = maps.oracle_map.slot_clock;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
@@ -2267,8 +2280,6 @@ pub fn liquidate_spot_with_swap_begin(
         margin_context,
     )?;
 
-    validate_no_clob_resident_orders(user)?;
-
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
     {
@@ -2297,8 +2308,11 @@ pub fn liquidate_spot_with_swap_begin(
         true,
     )?;
 
+    let book_cancel = cancel_book_orders(user, BookCancelScope::Cross, books)?;
+
     // check if user exited liquidation territory
-    let intermediate_margin_calculation = if !canceled_order_ids.is_empty() {
+    let orders_cancelled = !canceled_order_ids.is_empty() || book_cancel.orders > 0;
+    let intermediate_margin_calculation = if orders_cancelled {
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
@@ -2350,6 +2364,14 @@ pub fn liquidate_spot_with_swap_begin(
     } else {
         margin_calculation.clone()
     };
+
+    // The swap opens in this transaction, so the sweep cannot resume in a
+    // later call. Another liquidation entry clears the rest first.
+    validate!(
+        !book_cancel.orders_remain,
+        ErrorCode::LiquidationConflictsWithClobOrders,
+        "book orders remain in the liquidation's scope"
+    )?;
 
     let margin_shortage = intermediate_margin_calculation.cross_margin_margin_shortage()?;
 
@@ -2767,6 +2789,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     initial_pct_to_liquidate: u128,
     liquidation_duration: Millis,
     funding_paused: bool,
+    books: &mut dyn BookOrderSweep,
 ) -> VelocityResult {
     let slot_clock = maps.oracle_map.slot_clock;
     // liquidator takes over a user borrow in exchange for that user's positive perpetual pnl
@@ -2987,8 +3010,6 @@ pub fn liquidate_borrow_for_perp_pnl(
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
-    validate_no_clob_resident_orders(user)?;
-
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
     {
@@ -3018,8 +3039,11 @@ pub fn liquidate_borrow_for_perp_pnl(
         true,
     )?;
 
+    let book_cancel = cancel_book_orders(user, BookCancelScope::Cross, books)?;
+
     // check if user exited liquidation territory
-    let intermediate_margin_calculation = if !canceled_order_ids.is_empty() {
+    let orders_cancelled = !canceled_order_ids.is_empty() || book_cancel.orders > 0;
+    let intermediate_margin_calculation = if orders_cancelled {
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
@@ -3069,6 +3093,11 @@ pub fn liquidate_borrow_for_perp_pnl(
     } else {
         margin_calculation.clone()
     };
+
+    if book_cancel.orders_remain {
+        msg!("book orders remain in the liquidation's scope; the next call continues");
+        return Ok(());
+    }
 
     let margin_shortage = intermediate_margin_calculation.cross_margin_margin_shortage()?;
 
@@ -3281,6 +3310,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     initial_pct_to_liquidate: u128,
     liquidation_duration: Millis,
     funding_paused: bool,
+    books: &mut dyn BookOrderSweep,
 ) -> VelocityResult {
     let slot_clock = maps.oracle_map.slot_clock;
     // liquidator takes over remaining negative perpetual pnl in exchange for a user deposit
@@ -3488,7 +3518,6 @@ pub fn liquidate_perp_pnl_for_deposit(
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;
-    validate_no_clob_resident_orders(user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -3520,13 +3549,20 @@ pub fn liquidate_perp_pnl_for_deposit(
         true,
     )?;
 
+    let book_cancel = cancel_book_orders(
+        user,
+        BookCancelScope::of_liquidation(liquidation_mode.get_cancel_orders_params()),
+        books,
+    )?;
+
     let (safest_tier_spot_liability, safest_tier_perp_liability) = liquidation_mode
         .calculate_user_safest_position_tiers(user, &maps.perp_market_map, &maps.spot_market_map)?;
     let is_contract_tier_violation =
         !(contract_tier.is_as_safe_as(&safest_tier_perp_liability, &safest_tier_spot_liability));
 
     // check if user exited liquidation territory
-    let intermediate_margin_calculation = if !canceled_order_ids.is_empty() {
+    let orders_cancelled = !canceled_order_ids.is_empty() || book_cancel.orders > 0;
+    let intermediate_margin_calculation = if orders_cancelled {
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
@@ -3593,6 +3629,11 @@ pub fn liquidate_perp_pnl_for_deposit(
     } else {
         margin_calculation.clone()
     };
+
+    if book_cancel.orders_remain {
+        msg!("book orders remain in the liquidation's scope; the next call continues");
+        return Ok(());
+    }
 
     validate!(
         !(is_contract_tier_violation),
@@ -4942,6 +4983,7 @@ pub fn set_user_status_to_being_liquidated(
     maps: &mut AccountMaps,
     slot: u64,
     state: &State,
+    books: &mut dyn BookOrderSweep,
 ) -> VelocityResult {
     validate!(
         !user.is_bankrupt(),
@@ -4955,8 +4997,6 @@ pub fn set_user_status_to_being_liquidated(
         "user is already being liquidated",
     )?;
 
-    validate_no_clob_resident_orders(user)?;
-
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
@@ -4964,11 +5004,11 @@ pub fn set_user_status_to_being_liquidated(
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
-    let mut updated_liquidation_status = false;
+    let mut latched_scopes: Vec<BookCancelScope> = Vec::new();
     if !user.is_cross_margin_being_liquidated()
         && !margin_calculation.meets_cross_margin_requirement()
     {
-        updated_liquidation_status = true;
+        latched_scopes.push(BookCancelScope::Cross);
         user.enter_cross_margin_liquidation(slot)?;
     }
 
@@ -4978,70 +5018,20 @@ pub fn set_user_status_to_being_liquidated(
         if !user.is_isolated_margin_being_liquidated(*market_index)?
             && !isolated_margin_calculation.meets_margin_requirement()
         {
-            updated_liquidation_status = true;
+            latched_scopes.push(BookCancelScope::Isolated(*market_index));
             user.enter_isolated_margin_liquidation(*market_index, slot)?;
         }
     }
 
-    if !updated_liquidation_status {
+    if latched_scopes.is_empty() {
         return Err(ErrorCode::SufficientCollateral);
     }
 
+    // A latched account cannot rest new book orders. Orders a sweep leaves
+    // behind go with the next liquidation call.
+    for scope in latched_scopes {
+        cancel_book_orders(user, scope, books)?;
+    }
+
     Ok(())
-}
-
-#[cfg(test)]
-mod clob_guard_tests {
-    use {
-        super::{validate_no_clob_resident_orders, ErrorCode},
-        crate::state::user::{
-            MarketType, Order, OrderBitFlag, OrderStatus, PerpPosition, User, UserStatus,
-        },
-    };
-
-    const MARKET: u16 = 7;
-
-    fn user_with_shadow() -> User {
-        let mut user = User::default();
-        user.perp_positions[0] = PerpPosition {
-            market_index: MARKET,
-            open_orders: 1,
-            open_bids: 1,
-            ..PerpPosition::default()
-        };
-
-        user.orders[0] = Order {
-            status: OrderStatus::Open,
-            market_type: MarketType::Perp,
-            market_index: MARKET,
-            ..Order::default()
-        };
-        user.orders[0].add_bit_flag(OrderBitFlag::PlacedOnClob);
-        user
-    }
-
-    #[test]
-    fn a_placed_trigger_shadow_refuses_a_fresh_liquidation() {
-        let user = user_with_shadow();
-        assert_eq!(
-            validate_no_clob_resident_orders(&user),
-            Err(ErrorCode::LiquidationConflictsWithClobOrders)
-        );
-    }
-
-    #[test]
-    fn a_slot_order_alone_allows_a_fresh_liquidation() {
-        let mut user = user_with_shadow();
-        user.orders[0].remove_bit_flag(OrderBitFlag::PlacedOnClob);
-        assert_eq!(validate_no_clob_resident_orders(&user), Ok(()));
-    }
-
-    /// `force_cancel_clob_orders` refuses a latched account, so the guard must
-    /// exempt one. A refusal here would leave the account unliquidatable.
-    #[test]
-    fn a_latched_account_stays_liquidatable() {
-        let mut user = user_with_shadow();
-        user.add_user_status(UserStatus::BeingLiquidated);
-        assert_eq!(validate_no_clob_resident_orders(&user), Ok(()));
-    }
 }

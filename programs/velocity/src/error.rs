@@ -873,9 +873,7 @@ pub enum ErrorCode {
     /// @deprecated A reduce-only maker order rests on the CLOB. No path produces this.
     #[msg("A reduce-only order cannot rest on the CLOB; the book cannot clamp its fill to the position")]
     ReduceOnlyOrderCannotRestOnClob,
-    #[msg(
-        "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
-    )]
+    #[msg("Orders in the liquidation's scope still rest on a CLOB book")]
     LiquidationConflictsWithClobOrders,
     #[msg(
         "A quoter reported more base or more retired orders than velocity reserved for that user"

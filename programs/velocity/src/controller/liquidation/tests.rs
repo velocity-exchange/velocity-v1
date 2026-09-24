@@ -155,6 +155,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert!(!user.is_cross_margin_being_liquidated());
@@ -275,6 +276,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 0);
@@ -421,6 +423,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::EquityBelowFloor));
     }
@@ -545,6 +548,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(
@@ -685,6 +689,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // the pre-pause funding delta was settled into the position before the
@@ -813,6 +818,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 0);
@@ -950,6 +956,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, BASE_PRECISION_I64);
@@ -1074,6 +1081,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(
@@ -1212,6 +1220,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 200000000);
@@ -1406,6 +1415,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // user pays liquidator (1%) + IF (1%) + protocol (0.5%); the extra
@@ -1554,6 +1564,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::LiquidationDoesntSatisfyLimitPrice));
     }
@@ -1674,6 +1685,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::LiquidationDoesntSatisfyLimitPrice));
     }
@@ -1788,6 +1800,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 0);
@@ -1931,6 +1944,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -1952,6 +1966,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -1988,6 +2003,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -2009,6 +2025,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -2045,6 +2062,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.status, 0);
@@ -2171,6 +2189,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.status, 0);
@@ -2286,6 +2305,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -2404,6 +2424,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
@@ -2522,6 +2543,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
@@ -2679,6 +2701,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::SufficientCollateral));
         liquidate_perp(
@@ -2695,6 +2718,7 @@ pub mod liquidate_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         let isolated_position_after = user.perp_positions[1];
@@ -2774,7 +2798,14 @@ pub mod liquidate_perp_with_fill {
             liquidator_key,
         };
 
-        match place_liquidation_order(market_index, refreshed(), maps, clock, state)? {
+        match place_liquidation_order(
+            market_index,
+            refreshed(),
+            maps,
+            clock,
+            state,
+            &mut crate::controller::liquidation::NoBooks,
+        )? {
             LiquidationStep::Settled => Ok(0),
             LiquidationStep::Placed(mut placed) => {
                 let filled = fill_perp_order_without_external_books(
@@ -3248,6 +3279,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 0);
@@ -3383,6 +3415,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // the full 9500 usdc borrow is repaid, and the sol seized for it is priced at the
@@ -3516,6 +3549,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // the margin shortage requires repaying 5089.910089 usdc; the sol seized for it is
@@ -3648,6 +3682,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // 81.809090 sol of borrow is repaid; the usdc handed over for it is priced with
@@ -3786,6 +3821,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(res, Err(ErrorCode::PriceBandsBreached));
         // Control: the refresh did run and did drag the stored 5-minute TWAP up to the
@@ -3934,6 +3970,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // liquidation proceeded at the raw $100 oracle price:
@@ -4053,6 +4090,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .is_err());
         // move twap closer to oracle price (within 80% below)
@@ -4076,6 +4114,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 89989990000);
@@ -4203,6 +4242,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 45558159000);
@@ -4399,6 +4439,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::LiquidationDoesntSatisfyLimitPrice));
     }
@@ -4514,6 +4555,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Ok(()));
     }
@@ -4629,6 +4671,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 0);
@@ -4749,6 +4792,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -4785,6 +4829,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -4821,6 +4866,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -4960,6 +5006,7 @@ pub mod liquidate_spot {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         let liability_market = maps.spot_market_map.get_ref(&1).unwrap();
@@ -5149,6 +5196,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 199999999);
@@ -5296,6 +5344,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // 0.8 sol of borrow is taken over; the pnl handed over for it is priced with the
@@ -5449,6 +5498,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // Control: this instruction's own refresh did drag the stored 5min TWAP nearly all
@@ -5605,6 +5655,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 357739999);
@@ -5784,6 +5835,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 208711999);
@@ -5927,6 +5979,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::LiquidationDoesntSatisfyLimitPrice));
     }
@@ -6062,6 +6115,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Ok(()));
     }
@@ -6198,6 +6252,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 0);
@@ -6342,6 +6397,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             LIQUIDATION_PCT_PRECISION / 10,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -6380,6 +6436,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             LIQUIDATION_PCT_PRECISION / 10,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -6418,6 +6475,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             LIQUIDATION_PCT_PRECISION / 10,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.liquidation_margin_freed, 0);
@@ -6595,6 +6653,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         );
         (result, user.spot_positions[0].scaled_balance)
     }
@@ -6761,6 +6820,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 494445000);
@@ -6911,6 +6971,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
     }
@@ -7027,6 +7088,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
         // the deposit and the pnl stay where they were: the transfer is refused
@@ -7172,6 +7234,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 740788000);
@@ -7316,6 +7379,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 0);
@@ -7463,6 +7527,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // the 1 sol deposit is exchanged at the protective $100 (twap), so the user is
@@ -7609,6 +7674,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::LiquidationDoesntSatisfyLimitPrice));
     }
@@ -7744,6 +7810,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Ok(()));
     }
@@ -7879,6 +7946,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // The whole $1.82 of pnl moves, and it buys $1.8402 of the deposit at the
@@ -8027,6 +8095,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             LIQUIDATION_PCT_PRECISION / 10,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -8060,6 +8129,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             LIQUIDATION_PCT_PRECISION / 10,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -8093,6 +8163,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             LIQUIDATION_PCT_PRECISION / 10,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.last_active_slot, 1);
@@ -8240,6 +8311,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .is_err());
         let state = State {
@@ -8261,6 +8333,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[1].scaled_balance, 0);
@@ -8280,6 +8353,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].quote_asset_amount, -50000000);
@@ -8301,6 +8375,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 0);
@@ -8497,6 +8572,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .is_err());
         assert_eq!(user.perp_positions[0].quote_asset_amount, -100000000);
@@ -8516,6 +8592,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
@@ -8535,6 +8612,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.spot_positions[0].scaled_balance, 48484849000);
@@ -8722,6 +8800,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(
@@ -12196,7 +12275,13 @@ pub mod set_user_status_to_being_liquidated {
             liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
-        let result = set_user_status_to_being_liquidated(&mut user, &mut maps, slot, &state);
+        let result = set_user_status_to_being_liquidated(
+            &mut user,
+            &mut maps,
+            slot,
+            &state,
+            &mut crate::controller::liquidation::NoBooks,
+        );
         assert_eq!(result, Err(ErrorCode::SufficientCollateral));
     }
     #[test]
@@ -12236,11 +12321,23 @@ pub mod set_user_status_to_being_liquidated {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
-        let mut result = set_user_status_to_being_liquidated(&mut user, &mut maps, slot, &state);
+        let mut result = set_user_status_to_being_liquidated(
+            &mut user,
+            &mut maps,
+            slot,
+            &state,
+            &mut crate::controller::liquidation::NoBooks,
+        );
         assert_eq!(result, Err(ErrorCode::UserBankrupt));
         user.remove_user_status(UserStatus::Bankrupt);
         user.add_user_status(UserStatus::BeingLiquidated);
-        result = set_user_status_to_being_liquidated(&mut user, &mut maps, slot, &state);
+        result = set_user_status_to_being_liquidated(
+            &mut user,
+            &mut maps,
+            slot,
+            &state,
+            &mut crate::controller::liquidation::NoBooks,
+        );
         assert_eq!(result, Err(ErrorCode::UserIsBeingLiquidated));
     }
     #[test]
@@ -12329,7 +12426,13 @@ pub mod set_user_status_to_being_liquidated {
             liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
-        let result = set_user_status_to_being_liquidated(&mut user, &mut maps, slot, &state);
+        let result = set_user_status_to_being_liquidated(
+            &mut user,
+            &mut maps,
+            slot,
+            &state,
+            &mut crate::controller::liquidation::NoBooks,
+        );
         assert_eq!(user.status, UserStatus::BeingLiquidated as u8);
         assert_eq!(result, Ok(()));
     }
@@ -12483,6 +12586,7 @@ pub mod liquidate_spot_with_swap {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(res, Err(ErrorCode::InvalidLiquidation));
         let res = liquidate_spot_with_swap_begin(
@@ -12497,6 +12601,7 @@ pub mod liquidate_spot_with_swap {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(res, Ok(()));
         liquidate_spot_with_swap_end(
@@ -12661,6 +12766,7 @@ pub mod liquidate_spot_with_swap {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // a swap executed at the stale $90 (4500 usdc for 50 sol) is below the protective
@@ -12827,6 +12933,7 @@ pub mod liquidate_spot_with_swap {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // begin left the 5-minute TWAP exactly where it found it, so end still reads $100.
@@ -12996,6 +13103,7 @@ pub mod liquidate_spot_with_swap {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         // a swap returning sol at the stale $110 (45.454545 sol for 5000 usdc) is below
@@ -13065,7 +13173,7 @@ mod liquidate_dust_spot_market {
     // 800) and load via aligned_account_bytes_from_b64; the User blob's fields
     // are unchanged vs its snapshot vintage (only trailing `padding` grew) so it
     // loads the same way. With the data loading correctly, the test now fails
-    // behaviorally rather than on layout: liquidate_spot() returns
+    // behaviorally rather than on layout: liquidate_spot(, &mut crate::controller::liquidation::NoBooks) returns
     // Err(SufficientCollateral) instead of Ok(()) — under the current margin math
     // (and the hardcoded USDC=1 / SOL=220 / BTC=97000 oracle prices) this
     // snapshot's user is no longer below the maintenance margin, so it is not
@@ -13208,6 +13316,7 @@ mod liquidate_dust_spot_market {
             now,
             clock_slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Ok(()));
     }
@@ -13374,6 +13483,7 @@ pub mod liquidate_isolated_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 0);
@@ -13513,6 +13623,7 @@ pub mod liquidate_isolated_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 0);
@@ -13649,6 +13760,7 @@ pub mod liquidate_isolated_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 200000000);
@@ -13811,6 +13923,7 @@ pub mod liquidate_isolated_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 2000000000);
@@ -13924,6 +14037,7 @@ pub mod liquidate_isolated_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
@@ -14038,6 +14152,7 @@ pub mod liquidate_isolated_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
@@ -14201,6 +14316,7 @@ pub mod liquidate_isolated_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::SufficientCollateral));
         let result = liquidate_spot(
@@ -14216,6 +14332,7 @@ pub mod liquidate_isolated_perp {
             now,
             slot,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         );
         assert_eq!(result, Err(ErrorCode::SufficientCollateral));
         let margin_calculation =
@@ -14250,6 +14367,7 @@ pub mod liquidate_isolated_perp {
             slot,
             now,
             &state,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         let spot_position_one_after = user.spot_positions[0];
@@ -14575,6 +14693,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(
@@ -14718,6 +14837,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             PERCENTAGE_PRECISION,
             Millis::from_stored_units(150),
             false,
+            &mut crate::controller::liquidation::NoBooks,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].isolated_position_scaled_balance, 0);

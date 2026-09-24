@@ -4,7 +4,16 @@
 //! book. The flash-loan pair lives in [`super::liquidation_swap`], and the
 //! insurance-fund resolvers in [`super::bankruptcy`].
 
-use super::*;
+use {
+    super::*,
+    crate::{
+        error::VelocityResult,
+        state::prop_amm::{
+            find_account, CancelAllArgsV0, CancelAllOutcomeV0, CancelSidesV0, ClobMarket,
+            QuoterSlabExt, QuoterSlabV0, UserRefV0,
+        },
+    },
+};
 
 #[access_control(
     liq_not_paused(&ctx.accounts.state)
@@ -47,8 +56,9 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
 
     require_liquidator_not_frozen(liquidator_stats)?;
 
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let mut maps = load_maps(
-        &mut ctx.remaining_accounts.iter().peekable(),
+        remaining_accounts_iter,
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
@@ -70,6 +80,7 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
         slot,
         now,
         &state,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
     )?;
 
     Ok(())
@@ -104,6 +115,9 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
+    let mut liquidation_books =
+        LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter);
+    skip_foreign_books(remaining_accounts_iter, market_index);
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
     // Whatever the map and user sections did not take is the quoter section. It
@@ -140,6 +154,7 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         &mut maps,
         &clock,
         &state,
+        &mut liquidation_books,
     )? {
         controller::liquidation::LiquidationStep::Settled => 0,
         controller::liquidation::LiquidationStep::Placed(mut placed) => {
@@ -287,6 +302,91 @@ impl<'info> LiquidationBooks<'_, 'info> {
             slot,
             cpi_scratch,
         )
+    }
+}
+
+/// The CLOB books a liquidation's account list carries. Each book is its
+/// market's `QuoterSlabV0` and the book account it names, found by key.
+pub(crate) struct LiquidationBookAccounts<'info> {
+    accounts: &'info [AccountInfo<'info>],
+}
+
+impl<'info> LiquidationBookAccounts<'info> {
+    /// The accounts after the ones `consumed` already took.
+    pub(crate) fn after(
+        remaining_accounts: &'info [AccountInfo<'info>],
+        consumed: &std::iter::Peekable<std::slice::Iter<'info, AccountInfo<'info>>>,
+    ) -> Self {
+        Self {
+            accounts: &remaining_accounts[remaining_accounts.len() - consumed.len()..],
+        }
+    }
+
+    fn slab(&self, market_index: u16) -> Option<AccountLoader<'info, QuoterSlabV0>> {
+        self.accounts
+            .iter()
+            .filter_map(|info| AccountLoader::<QuoterSlabV0>::try_from(info).ok())
+            .find(|slab| slab.load().is_ok_and(|slab| slab.market == market_index))
+    }
+}
+
+impl controller::liquidation::BookOrderSweep for LiquidationBookAccounts<'_> {
+    fn cancel_all(
+        &mut self,
+        market_index: u16,
+        user: UserRefV0,
+    ) -> VelocityResult<Option<CancelAllOutcomeV0>> {
+        let Some(slab) = self.slab(market_index) else {
+            return Ok(None);
+        };
+
+        let book_key = slab
+            .clob_slot(market_index)
+            .map_err(|_| ErrorCode::InvalidQuoterConfig)?
+            .config
+            .response_account;
+        let (Some(book), Some(program)) = (
+            find_account(self.accounts, &book_key),
+            find_account(self.accounts, &crate::ids::clob_program::id()),
+        ) else {
+            msg!(
+                "the book or the clob program of market {} is absent",
+                market_index
+            );
+            return Ok(None);
+        };
+
+        let clob = ClobMarket::from_slab(&slab, market_index, book, program)
+            .map_err(|_| ErrorCode::InvalidQuoterConfig)?;
+        clob.cancel_all(CancelAllArgsV0 {
+            user,
+            sides: CancelSidesV0::Both,
+            // A bound taker-origin remainder holds margin like any other
+            // order, so the liquidation takes it too.
+            force: true,
+        })
+        .map(Some)
+        .map_err(|e| {
+            msg!("clob cancel_all failed: {}", e);
+            ErrorCode::FailedQuoterCpi
+        })
+    }
+}
+
+/// Step past the books of other markets, which ride between the margin map
+/// and the maker section. The route reads the section after the makers, and
+/// it refuses a slab of another market there.
+fn skip_foreign_books<'info>(
+    remaining_accounts: &mut std::iter::Peekable<std::slice::Iter<'info, AccountInfo<'info>>>,
+    market_index: u16,
+) {
+    while remaining_accounts.peek().is_some_and(|info| {
+        AccountLoader::<QuoterSlabV0>::try_from(info)
+            .is_ok_and(|slab| slab.load().is_ok_and(|slab| slab.market != market_index))
+    }) {
+        // The slab, then the book it names.
+        remaining_accounts.next();
+        remaining_accounts.next();
     }
 }
 
@@ -443,8 +543,9 @@ pub fn handle_liquidate_spot<'c: 'info, 'info>(
     let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
     require_liquidator_not_frozen(&liquidator_stats)?;
 
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let mut maps = load_maps(
-        &mut ctx.remaining_accounts.iter().peekable(),
+        remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![asset_market_index, liability_market_index]),
         clock.slot,
@@ -465,6 +566,7 @@ pub fn handle_liquidate_spot<'c: 'info, 'info>(
         now,
         clock.slot,
         &state,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
     )?;
 
     Ok(())
@@ -499,8 +601,9 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
     let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
     require_liquidator_not_frozen(&liquidator_stats)?;
 
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let mut maps = load_maps(
-        &mut ctx.remaining_accounts.iter().peekable(),
+        remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
@@ -524,6 +627,7 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
         state.initial_pct_to_liquidate as u128,
         state.liquidation_duration_ms(),
         state.funding_paused()?,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
     )?;
 
     Ok(())
@@ -558,8 +662,9 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
     let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
     require_liquidator_not_frozen(&liquidator_stats)?;
 
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let mut maps = load_maps(
-        &mut ctx.remaining_accounts.iter().peekable(),
+        remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
@@ -583,6 +688,7 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
         state.initial_pct_to_liquidate as u128,
         state.liquidation_duration_ms(),
         state.funding_paused()?,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
     )?;
 
     Ok(())
@@ -598,8 +704,9 @@ pub fn handle_set_user_status_to_being_liquidated<'c: 'info, 'info>(
     let clock = Clock::get()?;
     let user = &mut load_mut!(ctx.accounts.user)?;
 
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let mut maps = load_maps(
-        &mut ctx.remaining_accounts.iter().peekable(),
+        remaining_accounts_iter,
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
@@ -608,7 +715,11 @@ pub fn handle_set_user_status_to_being_liquidated<'c: 'info, 'info>(
     )?;
 
     controller::liquidation::set_user_status_to_being_liquidated(
-        user, &mut maps, clock.slot, &state,
+        user,
+        &mut maps,
+        clock.slot,
+        &state,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
     )?;
 
     Ok(())

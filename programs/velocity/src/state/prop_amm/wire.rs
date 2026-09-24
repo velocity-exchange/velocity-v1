@@ -39,6 +39,51 @@ pub(super) fn write_quoter_account_metas<'a>(
     }));
 }
 
+/// Mirrors `StableVec`, which the runtime reads as an address, a capacity it
+/// ignores, and a length. Not `StableVec` itself, which owns its allocation and
+/// would hand the allocator a pointer this program still owns.
+#[allow(dead_code)]
+#[repr(C)]
+struct BorrowedVec {
+    addr: u64,
+    cap: u64,
+    len: u64,
+}
+
+/// Mirrors `StableInstruction`. The asserts below pin the size, the alignment
+/// and every field offset of both mirrors on every target. The host build
+/// CPIs through [`invoke_signed`], so it only checks the mirrors.
+#[allow(dead_code)]
+#[repr(C)]
+struct BorrowedInstruction {
+    accounts: BorrowedVec,
+    data: BorrowedVec,
+    program_id: Pubkey,
+}
+
+const _: () = {
+    use {
+        core::mem::{align_of, offset_of, size_of},
+        solana_program::stable_layout::{
+            stable_instruction::StableInstruction, stable_vec::StableVec,
+        },
+    };
+
+    assert!(size_of::<BorrowedVec>() == size_of::<StableVec<u8>>());
+    assert!(align_of::<BorrowedVec>() == align_of::<StableVec<u8>>());
+    assert!(offset_of!(BorrowedVec, addr) == offset_of!(StableVec<u8>, addr));
+    assert!(offset_of!(BorrowedVec, cap) == offset_of!(StableVec<u8>, cap));
+    assert!(offset_of!(BorrowedVec, len) == offset_of!(StableVec<u8>, len));
+
+    assert!(size_of::<BorrowedInstruction>() == size_of::<StableInstruction>());
+    assert!(align_of::<BorrowedInstruction>() == align_of::<StableInstruction>());
+    assert!(offset_of!(BorrowedInstruction, accounts) == offset_of!(StableInstruction, accounts));
+    assert!(offset_of!(BorrowedInstruction, data) == offset_of!(StableInstruction, data));
+    assert!(
+        offset_of!(BorrowedInstruction, program_id) == offset_of!(StableInstruction, program_id)
+    );
+};
+
 /// CPI a quoter without handing the runtime an owned instruction.
 ///
 /// [`invoke_signed`] builds its argument as
@@ -81,38 +126,6 @@ fn invoke_quoter_signed(
 
     #[cfg(target_os = "solana")]
     {
-        /// Mirrors `StableVec`, which the runtime reads as an address, a capacity it
-        /// ignores, and a length. Not `StableVec` itself, which owns its allocation and
-        /// would hand the allocator a pointer this program still owns.
-        #[repr(C)]
-        struct BorrowedVec {
-            addr: u64,
-            cap: u64,
-            len: u64,
-        }
-
-        /// Mirrors `StableInstruction`. The asserts below pin it to that type,
-        /// so an SDK that moves a field fails the build rather than writing
-        /// through the wrong offset.
-        #[repr(C)]
-        struct BorrowedInstruction {
-            accounts: BorrowedVec,
-            data: BorrowedVec,
-            program_id: Pubkey,
-        }
-
-        const _: () = {
-            use solana_program::stable_layout::stable_instruction::StableInstruction;
-            assert!(
-                core::mem::size_of::<BorrowedInstruction>()
-                    == core::mem::size_of::<StableInstruction>()
-            );
-            assert!(
-                core::mem::align_of::<BorrowedInstruction>()
-                    == core::mem::align_of::<StableInstruction>()
-            );
-        };
-
         let borrowed = BorrowedInstruction {
             accounts: BorrowedVec {
                 addr: instruction.accounts.as_ptr() as u64,
@@ -129,9 +142,10 @@ fn invoke_quoter_signed(
             program_id: instruction.program_id,
         };
 
-        // SAFETY: `borrowed` has `StableInstruction`'s layout, asserted above. The
-        // metas and args it addresses are the caller's and outlive this call. Every
-        // meta came from a real `AccountMeta`, so its flag bytes are 0 or 1.
+        // SAFETY: `borrowed` has `StableInstruction`'s layout, which the asserts on
+        // `BorrowedInstruction` pin. The metas and args it addresses are the caller's
+        // and outlive this call. Every meta came from a real `AccountMeta`, so its
+        // flag bytes are 0 or 1.
         let result = unsafe {
             solana_cpi::syscalls::sol_invoke_signed_rust(
                 &borrowed as *const _ as *const u8,

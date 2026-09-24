@@ -160,8 +160,8 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 
     // Firing is irreversible: it frees the trigger slot, charges the flat
     // reward, and turns the order into a book rest. Refuse before anything
-    // moves rather than leave the owner with a paid fee and no order. The v0
-    // `trigger_order` crank still fires such an order into `User.orders`.
+    // moves rather than leave the owner with a paid fee and no order. The
+    // trigger stays armed until the book quotes again.
     validate!(
         ctx.accounts.quoter_slab.clob_slot(market_index)?.quotes(),
         ErrorCode::ClobRestUnavailable,
@@ -171,11 +171,14 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 
     // Fire the trigger. This validates it, turns a copy of the slot order into
     // a live market order, frees the slot, and pays the flat reward. `None`
-    // means there was no payable work. The order was already triggered, or a
+    // means there was no payable work. The order was past its `max_ts`, or a
     // risk-increasing trigger on a failing account was cancelled. Either way,
     // skip the fill and the reservoir payout.
     let Some(mut fired) = controller::orders::trigger_and_route_order(
-        order_id,
+        controller::orders::OrderToFire {
+            market_index,
+            order_id,
+        },
         &state,
         &controller::orders::TriggerAccounts {
             user: &ctx.accounts.user,

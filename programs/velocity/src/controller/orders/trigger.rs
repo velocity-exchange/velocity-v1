@@ -31,12 +31,12 @@ pub struct TriggerAccounts<'a, 'info> {
 /// caller rests adds one back for its CLOB order.
 ///
 /// Returns `None` when there is no payable work. That happens when the order
-/// is already triggered, or when a risk-increasing trigger on a failing
+/// is past its `max_ts`, or when a risk-increasing trigger on a failing
 /// account is cancelled instead of fired. The caller skips the fill and the
 /// reservoir payout on `None`, so a failing account's cancel cannot drain the
 /// market reservoir.
 pub fn trigger_and_route_order(
-    order_id: u32,
+    order_to_fire: OrderToFire,
     state: &State,
     accounts: &TriggerAccounts,
     maps: &mut AccountMaps,
@@ -46,7 +46,7 @@ pub fn trigger_and_route_order(
     let slot = clock.slot;
     let user = &mut load_mut!(accounts.user)?;
 
-    let Some(firing) = open_trigger(user, order_id, state, maps, now)? else {
+    let Some(firing) = open_trigger(user, order_to_fire, state, maps, now)? else {
         return Ok(None);
     };
     let FiringOrder {
@@ -107,6 +107,13 @@ pub fn trigger_and_route_order(
     Ok(Some(fired))
 }
 
+/// The armed order a trigger crank names, and the market the crank runs on.
+#[derive(Clone, Copy)]
+pub struct OrderToFire {
+    pub market_index: u16,
+    pub order_id: u32,
+}
+
 /// The order a trigger crank fires, and the prices it fires at.
 struct FiringOrder {
     order_index: usize,
@@ -118,18 +125,21 @@ struct FiringOrder {
 /// Find the order a trigger names, and hold it, its account and its market to
 /// every gate before anything moves.
 ///
-/// `None` means the order is already triggered, which is not payable work.
+/// `None` means the order is past its `max_ts`, which is not payable work.
 fn open_trigger(
     user: &mut User,
-    order_id: u32,
+    order_to_fire: OrderToFire,
     state: &State,
     maps: &mut AccountMaps,
     now: i64,
 ) -> VelocityResult<Option<FiringOrder>> {
-    let Some(order_index) = find_triggerable_order(user, order_id, now)? else {
+    let OrderToFire {
+        market_index,
+        order_id,
+    } = order_to_fire;
+    let Some(order_index) = find_triggerable_order(user, order_id, market_index, now)? else {
         return Ok(None);
     };
-    let market_index = user.orders[order_index].market_index;
 
     validate_user_not_being_liquidated(user, maps, state.liquidation_margin_buffer_ratio)?;
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
@@ -149,11 +159,21 @@ fn open_trigger(
     }))
 }
 
-/// The slot of the order a trigger crank names, once it is known triggerable.
+/// The slot of the armed stop-market a trigger crank names.
 ///
-/// `None` means the order is already triggered, which is not an error. The
+/// The order must be a trigger-market on the crank's perp market. The rest
+/// places behind that market's book, so an order on another market would
+/// rest on the wrong book. A trigger-limit fires through
+/// `trigger_limit_order_v1`, which rests it whole.
+///
+/// `None` means the order is past its `max_ts`, which is not an error. The
 /// caller reports no payable work and leaves the order alone.
-fn find_triggerable_order(user: &User, order_id: u32, now: i64) -> VelocityResult<Option<usize>> {
+fn find_triggerable_order(
+    user: &User,
+    order_id: u32,
+    market_index: u16,
+    now: i64,
+) -> VelocityResult<Option<usize>> {
     let order_index = user
         .orders
         .iter()
@@ -162,39 +182,16 @@ fn find_triggerable_order(user: &User, order_id: u32, now: i64) -> VelocityResul
     let order = &user.orders[order_index];
 
     validate!(
-        order.status == OrderStatus::Open,
-        ErrorCode::OrderNotOpen,
-        "Order not open"
-    )?;
-    validate!(
-        order.must_be_triggered(),
+        order.order_type == OrderType::TriggerMarket,
         ErrorCode::OrderNotTriggerable,
-        "Order is not triggerable"
+        "only trigger-market orders fire here (trigger-limits go through trigger_limit_order_v1)"
     )?;
-
-    // A placed trigger's slot reads as untriggered, which keeps it out of
-    // every discovery path. Its live order already rests on the CLOB, so
-    // this guards against it explicitly.
     validate!(
-        !order.is_placed_on_clob(),
-        ErrorCode::OrderPlacedOnClob,
-        "Order is placed on the CLOB"
+        order.market_type == MarketType::Perp && order.market_index == market_index,
+        ErrorCode::InvalidOrderMarketType,
+        "order is not a perp order on market {}",
+        market_index
     )?;
-
-    // An evicted trigger rearms behind an edge gate. Only the book crank that
-    // set the gate clears it, once price moves back off the trigger side. This
-    // path makes no such observation, so firing here would refire the order at
-    // the price that already evicted it.
-    validate!(
-        !order.is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross),
-        ErrorCode::OrderAwaitingTriggerRecross,
-        "Order waits for the trigger price to cross back after an eviction"
-    )?;
-
-    if order.triggered() {
-        msg!("Order is already triggered");
-        return Ok(None);
-    }
 
     // An armed trigger past its own max_ts is dead. should_expire_order exempts
     // anything that must trigger, so it sits until the owner cancels it. Firing
@@ -209,12 +206,6 @@ fn find_triggerable_order(user: &User, order_id: u32, now: i64) -> VelocityResul
 
         return Ok(None);
     }
-
-    validate!(
-        order.market_type == MarketType::Perp,
-        ErrorCode::InvalidOrderMarketType,
-        "Order must be a perp order"
-    )?;
 
     Ok(Some(order_index))
 }
@@ -552,6 +543,8 @@ mod gate_tests {
         },
     };
 
+    const MARKET: u16 = 3;
+
     /// A user holding one armed stop-market with the given expiry.
     fn user_with_armed_trigger(max_ts: i64) -> User {
         let mut user = User::default();
@@ -560,6 +553,7 @@ mod gate_tests {
             status: OrderStatus::Open,
             order_type: OrderType::TriggerMarket,
             market_type: MarketType::Perp,
+            market_index: MARKET,
             trigger_condition: OrderTriggerCondition::Above,
             max_ts,
             ..Order::default()
@@ -575,20 +569,44 @@ mod gate_tests {
     #[test]
     fn an_expired_armed_trigger_is_not_payable_work() {
         let user = user_with_armed_trigger(100);
-        assert!(find_triggerable_order(&user, 7, 101).unwrap().is_none());
+        assert!(find_triggerable_order(&user, 7, MARKET, 101).unwrap().is_none());
     }
 
     #[test]
     fn a_live_armed_trigger_is_payable_work() {
         let user = user_with_armed_trigger(100);
-        assert_eq!(find_triggerable_order(&user, 7, 99).unwrap(), Some(0));
+        assert_eq!(find_triggerable_order(&user, 7, MARKET, 99).unwrap(), Some(0));
     }
 
     /// Zero means the order never expires, which is the default for a stop.
     #[test]
     fn a_trigger_without_an_expiry_never_reads_as_expired() {
         let user = user_with_armed_trigger(0);
-        assert_eq!(find_triggerable_order(&user, 7, i64::MAX).unwrap(), Some(0));
+        assert_eq!(find_triggerable_order(&user, 7, MARKET, i64::MAX).unwrap(), Some(0));
+    }
+
+    /// The rest places behind the crank's book, so an order on another market
+    /// must not fire through it.
+    #[test]
+    fn an_order_on_another_market_is_refused() {
+        let user = user_with_armed_trigger(0);
+        assert_eq!(
+            find_triggerable_order(&user, 7, MARKET + 1, 0).err().unwrap(),
+            ErrorCode::InvalidOrderMarketType
+        );
+    }
+
+    /// A stop-limit rests whole through `trigger_limit_order_v1`. Fired here,
+    /// it has no price to rest at, and the owner loses it after paying the
+    /// reward.
+    #[test]
+    fn a_trigger_limit_is_refused() {
+        let mut user = user_with_armed_trigger(0);
+        user.orders[0].order_type = OrderType::TriggerLimit;
+        assert_eq!(
+            find_triggerable_order(&user, 7, MARKET, 0).err().unwrap(),
+            ErrorCode::OrderNotTriggerable
+        );
     }
 
     fn active_market() -> PerpMarket {

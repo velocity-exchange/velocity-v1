@@ -53,6 +53,9 @@ export async function buildPlaceTriggerOrdersInstruction(args: {
  * @param args.clobAccounts - the market's CLOB accounts, which are `quoterSlab`, a
  * writable `clobMarket`, and `clobProgram`. The order routes through them, and a
  * restable remainder rests on the book.
+ * On a book with a speed bump the order carries no flow attestation, so it rests whole
+ * and the cross cranks fill it. An IOC order or a `successCondition` is then refused
+ * with `UnattestedSynchronousTake`.
  * @returns the unsigned `placeAndTakePerpOrderV1` `TransactionInstruction`.
  */
 export async function buildPlaceAndTakePerpOrderInstruction(args: {
@@ -65,37 +68,22 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
 	clobAccounts: ClobAccounts;
-
-	/** The flow authority, when it signs this transaction. Its presence attests the
-	 * flow, so a take on a book with a speed bump fills synchronously. */
-	flowAuthority?: PublicKey;
 }): Promise<TransactionInstruction> {
-	{
-		// Anchor encodes an omitted `Option` account as the program id, which the
-		// program decodes as `None`.
-		const omitted = args.program.programId;
-		return await args.program.instruction.placeAndTakePerpOrderV1(
-			{ params: args.orderParams, successCondition: args.successCondition },
-			{
-				accounts: {
-					state: args.state,
-					user: args.user,
-					userStats: args.userStats,
-					authority: args.authority,
-					quoterSlab: args.clobAccounts.quoterSlab,
-					clobMarket: args.clobAccounts.clobMarket,
-					clobProgram: args.clobAccounts.clobProgram,
-					// This account is the attestation. The flow authority signs
-					// the transaction as it. On a book with a speed bump, an
-					// unattested take rests the whole order instead of filling
-					// synchronously, which gives the maker priority.
-					flowAuthority: args.flowAuthority ?? omitted,
-				},
-
-				remainingAccounts: args.remainingAccounts,
-			}
-		);
-	}
+	return await args.program.instruction.placeAndTakePerpOrderV1(
+		{ params: args.orderParams, successCondition: args.successCondition },
+		{
+			accounts: {
+				state: args.state,
+				user: args.user,
+				userStats: args.userStats,
+				authority: args.authority,
+				quoterSlab: args.clobAccounts.quoterSlab,
+				clobMarket: args.clobAccounts.clobMarket,
+				clobProgram: args.clobAccounts.clobProgram,
+			},
+			remainingAccounts: args.remainingAccounts,
+		}
+	);
 }
 
 /**
@@ -112,8 +100,8 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`.
  * @param args.clobAccounts - the market's CLOB accounts. All of them are required.
  * `args.orderParams.activationDelaySlots` is the book speed bump the maker rests behind.
- * A `null` value takes the book's default. A value below the default needs the flow
- * authority to co-sign the transaction as `flowAuthority`, which is the attestation.
+ * A `null` value takes the book's default. A value below the default is refused with
+ * `UnattestedFastActivation`.
  * @returns the unsigned `placeAndMakePerpOrderV1` `TransactionInstruction`.
  */
 export async function buildPlaceAndMakePerpOrderInstruction(args: {
@@ -125,15 +113,7 @@ export async function buildPlaceAndMakePerpOrderInstruction(args: {
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
 	clobAccounts: ClobAccounts;
-
-	/** The flow authority, when it signs this transaction. It is required for an
-	 * `orderParams.activationDelaySlots` below the book's default. */
-	flowAuthority?: PublicKey;
 }): Promise<TransactionInstruction> {
-	// An omitted `Option` account is encoded as the program id, which the program
-	// decodes as `None`. The maker rests straight on the CLOB. It names no taker
-	// and matches nothing on placement.
-	const omitted = args.program.programId;
 	return await args.program.instruction.placeAndMakePerpOrderV1(
 		{ params: args.orderParams },
 		{
@@ -145,10 +125,6 @@ export async function buildPlaceAndMakePerpOrderInstruction(args: {
 				quoterSlab: args.clobAccounts.quoterSlab,
 				clobMarket: args.clobAccounts.clobMarket,
 				clobProgram: args.clobAccounts.clobProgram,
-				// This account attests an activation delay below the book's
-				// default. The flow authority signs the transaction as it. It
-				// is needed for nothing else.
-				flowAuthority: args.flowAuthority ?? omitted,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

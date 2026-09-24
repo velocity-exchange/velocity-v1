@@ -16,10 +16,9 @@ pub struct PlaceAndTakeAccounts<'a, 'info> {
     pub remaining_accounts: &'info [AccountInfo<'info>],
 }
 
-/// What the caller asked a v1 take to do.
-/// `taker_served_window` and `synchronous_take` come from the caller's accounts.
-/// Attested flow fills synchronously. Unattested flow on a speed-bumped book
-/// rests the order whole instead, which is maker priority.
+/// What the caller asked a v1 take to do. Only a verified signed-message
+/// attestation sets `taker_served_window`. Unattested flow on a speed-bumped
+/// book rests the order whole instead of filling, which is maker priority.
 pub struct PlaceAndTakeRequest {
     pub params: OrderParams,
     pub success_condition: Option<PlaceAndTakeOrderSuccessCondition>,

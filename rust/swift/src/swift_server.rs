@@ -218,7 +218,7 @@ pub async fn process_order_wrapper(
             let topic = format!("swift_orders_{}_{}", metrics_labels[0], metrics_labels[1]);
             let payload = order_metadata.encode();
             // The order is now attestable. A keeper may request the
-            // flow-authority co-signature once the hold window elapses.
+            // flow-authority attestation once the hold window elapses.
             server_params.attest.record(
                 order_metadata.uuid,
                 order_metadata.ts,

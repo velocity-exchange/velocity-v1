@@ -2711,22 +2711,24 @@ Limit orders no longer accept `oracle_price_offset` (§2).
 
 ##### Maker priority
 
-On a book with a nonzero `default_activation_delay_slots`, only attested flow (a transaction
-co-signed by `State.hot_flow_authority`) fills against the book in the same transaction. An
-unattested taker (`place_and_take_perp_order_v1`, `place_signed_msg_taker_order`, a keeper tail
-on `trigger_market_order_v1`) rests its whole order taker-origin through the default window and
+On a book with a nonzero `default_activation_delay_slots`, only attested flow (a
+signed-message order that carries `State.hot_flow_authority`'s attestation) fills against the
+book in the same transaction. An unattested taker (`place_and_take_perp_order_v1`,
+`place_signed_msg_taker_order` without an attestation, a keeper tail on
+`trigger_market_order_v1`) rests its whole order taker-origin through the default window and
 the cross cranks fill it; an unattested shape that demands a synchronous outcome (an IOC, a
 success condition) is refused with `UnattestedSynchronousTake` (6404). Cancels are never
 delayed, so a maker can always reprice ahead of unattested aggression. A book with a zero
-default delay opts out entirely. Attestation has two transports, and the flow authority never
-signs a keeper-built transaction: `place_and_take_perp_order_v1`,
-`place_and_make_perp_order_v1` and `modify_order_v1` carry an optional `flow_authority` signer
-account (swift signs the transactions it builds itself), and `place_signed_msg_taker_order`
-gains a `flow_attestation: Option<FlowAttestationV0>` argument: swift's detached signature over
-the order's own signature plus an expiry, verified in-program next to the taker signature (no
-second signature fee, no `/attest` transaction custody). Swift's `/attest` returns the
-attestation blob for a held order instead of co-signing a posted transaction. Velocity reads
-the co-signature once and forwards the verdict on the quoter wire:
+default delay opts out entirely. The only attestation transport is the
+`flow_attestation: Option<FlowAttestationV0>` argument of `place_signed_msg_taker_order`:
+swift's detached signature over the order's own signature plus an expiry, verified in-program
+next to the taker signature. The flow authority never signs a transaction, so there is no
+second signature fee and swift never takes custody of a transaction. Swift's `/attest` returns
+the attestation blob for a held order. `place_and_take_perp_order_v1`,
+`place_and_make_perp_order_v1` and `modify_order_v1` take no flow-authority account and are
+always unattested: a maker or a modify that asks for an activation delay below the book's
+default is refused with `UnattestedFastActivation` (6382). Velocity verifies the attestation
+once and forwards the verdict on the quoter wire:
 `QuoteArgsV0`/`ExecuteArgsV0` gain `taker_served_window` (true for attested flow, and for the
 protocol cranks only when the orders they settle measurably rested (`SERVED_WINDOW_MIN_SLOTS`,
 two slots), so a zero-delay book cannot launder fresh flow into the flag). The midpoint's

@@ -113,15 +113,12 @@ pub fn align_rest_price_to_tick(price: u64, tick_size: u64, direction: PositionD
 
 /// Gate a below-default activation delay on the flow authority's
 /// attestation. The speed bump is the taker protection that replaced
-/// just-in-time matching. Attested flow is a transaction the flow
-/// authority, swift, signed after serving the hold window off-chain.
+/// just-in-time matching. Attested flow is a signed-message order that swift
+/// held for the hold window and then attested with a detached signature.
 pub fn attest_activation_delay(
     quoter_slab: &AccountLoader<QuoterSlabV0>,
     market_index: u16,
     requested: Option<u32>,
-    // Whether the transaction is attested flow. The flow authority signs
-    // swift-built transactions as a named account, so the caller reads that
-    // signer rather than the instructions sysvar.
     attested: bool,
 ) -> Result<()> {
     let Some(requested) = requested else {
@@ -141,8 +138,8 @@ pub fn attest_activation_delay(
     validate!(
         attested,
         ErrorCode::UnattestedFastActivation,
-        "activation delay {} is below the default {} and the transaction is \
-         not signed by the flow authority",
+        "activation delay {} is below the default {} and the order carries \
+         no flow attestation",
         requested,
         default_delay
     )?;

@@ -7254,17 +7254,6 @@ export type Velocity = {
             "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "flowAuthority",
-          "docs": [
-            "The flow authority, signing this transaction as a named account.",
-            "It is required only for an activation delay below the default on the",
-            "replacement. The signature is the attestation. The zero key cannot sign,",
-            "so an unset flow authority admits nobody."
-          ],
-          "signer": true,
-          "optional": true
         }
       ],
       "args": [
@@ -7448,8 +7437,8 @@ export type Velocity = {
         "Rest a maker limit order on the market's CLOB. The order goes straight",
         "to the book as a maker quote and never occupies a `User.orders` slot.",
         "`params.activation_delay_slots` sets the book speed bump, or `None` for",
-        "the default. A value below the default needs the flow-authority",
-        "attestation."
+        "the default. A value below the default is refused, because only a",
+        "signed-message taker order can carry the flow-authority attestation."
       ],
       "discriminator": [
         29,
@@ -7501,17 +7490,6 @@ export type Velocity = {
             "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "flowAuthority",
-          "docs": [
-            "The flow authority, signing this transaction as a named account.",
-            "It is required only for an activation delay below the default. The",
-            "signature is the attestation. The zero key cannot sign, so an unset flow",
-            "authority admits nobody."
-          ],
-          "signer": true,
-          "optional": true
         }
       ],
       "args": [
@@ -7529,7 +7507,9 @@ export type Velocity = {
       "name": "placeAndTakePerpOrderV1",
       "docs": [
         "Place a taker order and fill it in one instruction. Whatever the route",
-        "leaves unfilled rests on the market's book when the order can rest."
+        "leaves unfilled rests on the market's book when the order can rest.",
+        "The order carries no flow attestation. On a book with a speed bump it",
+        "rests whole, and the cross cranks fill it."
       ],
       "discriminator": [
         168,
@@ -7581,18 +7561,6 @@ export type Velocity = {
             "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "flowAuthority",
-          "docs": [
-            "The flow authority, signing this transaction as a named account. Swift",
-            "builds and signs its own user transactions, so a signature here marks",
-            "the flow attested. An absent signer reads as unattested. On a book with",
-            "a speed bump, an unattested order rests whole instead of filling. The",
-            "zero key cannot sign, so an unset flow authority admits nobody."
-          ],
-          "signer": true,
-          "optional": true
         }
       ],
       "args": [
@@ -25934,8 +25902,7 @@ export type Velocity = {
             "name": "activationDelaySlots",
             "docs": [
               "The rule of `place_and_make_perp_order_v1` applies. `None` takes the",
-              "book's default speed bump. A value below it needs the flow-authority",
-              "attestation."
+              "book's default speed bump. A value below it is refused."
             ],
             "type": {
               "option": "u32"
@@ -31248,9 +31215,9 @@ export type Velocity = {
             "name": "hotFlowAuthority",
             "docs": [
               "The retail-flow attestation key (swift's), not an admin signer. It",
-              "signs as `flow_authority` on a swift transaction, or a detached",
-              "`FlowAttestationV0` on a keeper fill, to unlock faster activation.",
-              "`Pubkey::default()` disables that, since the zero key signs neither."
+              "signs a detached `FlowAttestationV0` over a signed-message order to",
+              "unlock faster activation. `Pubkey::default()` disables it, because",
+              "`verify_flow_attestation` refuses the zero key."
             ],
             "type": "pubkey"
           },

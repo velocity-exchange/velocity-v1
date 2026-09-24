@@ -243,24 +243,22 @@ to a market requires a `min_cross_surplus` above zero.
 ## Attested flow and the activation delay
 
 An activation-slot speed bump replaces JIT. On a book with a nonzero `default_activation_delay_slots`,
-a transaction not co-signed by the flow authority cannot fill against the book in the same
-transaction. `placeAndTakePerpOrder` (v1) and signed-message orders rest the whole order
+an order without the flow authority's attestation cannot fill against the book in the same
+transaction. `placeAndTakePerpOrder` (v1) and unattested signed-message orders rest the whole order
 taker-origin through the default window instead, and the cross cranks fill it. An immediate-or-cancel
 order or a success condition on such a take is refused with `UnattestedSynchronousTake` (6404).
 Cancels are never delayed, so a maker can always reprice ahead of unattested aggression. A book
 with a zero default delay is unaffected.
 
-Attestation has two transports. `placeAndTakePerpOrderV1`, `placeAndMakePerpOrderV1` and
-`modifyOrderV1` carry an optional `flowAuthority` signer account, and `placeSignedMsgTakerOrder`
-takes a `flowAttestation` argument, which is swift's detached signature over the order's own
-signature plus an expiry, verified in-program. The flow authority never signs a keeper-built
-transaction, and an attested fill pays no second signature fee.
+Only a signed-message order can be attested. `placeSignedMsgTakerOrder` takes a `flowAttestation`
+argument, which is swift's detached signature over the order's own signature plus an expiry,
+verified in-program. The flow authority never signs a transaction, and an attested fill pays no
+second signature fee. `placeAndTakePerpOrderV1`, `placeAndMakePerpOrderV1` and `modifyOrderV1` take
+no flow-authority account. A maker or a modify that asks for an activation delay below the book's
+default is refused with `UnattestedFastActivation` (6382).
 
 `VelocityCore`'s instruction statics are re-exports of the builders in `core/instructions/`, so each
-one takes exactly what its builder takes. `VelocityCore.buildPlaceAndTakePerpOrderInstruction` and
-`buildPlaceAndMakePerpOrderInstruction` had re-declared their argument type without `flowAuthority`,
-which left a `VelocityCore` caller unable to attest a flow. Every static keeps its name and call
-shape.
+one takes exactly what its builder takes. Every static keeps its name and call shape.
 
 The quoter wire carries the verdict. `QuoteArgsV0` and `ExecuteArgsV0` carry `taker_served_window`,
 which velocity sets for attested flow, and for the protocol cranks only when the orders they settle

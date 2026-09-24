@@ -1265,10 +1265,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					quoterSlab,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
-					// The taker signs this transaction, so no separate flow
-					// attestation is needed. Anchor reads the program id as
-					// `None`.
-					flowAuthority: VELOCITY_ID,
 				},
 
 				remainingAccounts: routerTail(makerKps),

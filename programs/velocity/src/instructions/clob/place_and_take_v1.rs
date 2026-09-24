@@ -57,17 +57,6 @@ pub struct PlaceAndTakeV1<'info> {
     /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// The flow authority, signing this transaction as a named account. Swift
-    /// builds and signs its own user transactions, so a signature here marks
-    /// the flow attested. An absent signer reads as unattested. On a book with
-    /// a speed bump, an unattested order rests whole instead of filling. The
-    /// zero key cannot sign, so an unset flow authority admits nobody.
-    #[account(
-        constraint = flow_authority.key()
-            == state.load()?.hot_key(crate::state::state::HotRole::FlowAuthority)
-            @ crate::error::ErrorCode::UnattestedSynchronousTake
-    )]
-    pub flow_authority: Option<Signer<'info>>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -87,16 +76,15 @@ pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
         params,
         success_condition,
     } = args;
-    let (taker_served_window, synchronous_take) = {
-        let attested = ctx.accounts.flow_authority.is_some();
-        let synchronous = crate::instructions::synchronous_take_allowed(
-            attested,
-            &ctx.accounts.quoter_slab,
-            params.market_index,
-        )?;
 
-        (attested, synchronous)
-    };
+    // The transaction carries no flow attestation. Only the signed-message
+    // route can attest, so a book with a speed bump rests this order whole.
+    let taker_served_window = false;
+    let synchronous_take = crate::instructions::synchronous_take_allowed(
+        taker_served_window,
+        &ctx.accounts.quoter_slab,
+        params.market_index,
+    )?;
 
     place_and_take_perp_order_v1(
         PlaceAndTakeAccounts {

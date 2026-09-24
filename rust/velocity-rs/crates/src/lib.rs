@@ -2727,9 +2727,6 @@ impl<'a> TransactionBuilder<'a> {
                 quoter_slab: clob.quoter_slab,
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,
-                // The taker signs this transaction themselves, so the flow
-                // authority's separate attestation is not needed.
-                flow_authority: None,
             },
             [self.account_data.as_ref()].into_iter(),
             self.force_markets.readable.iter(),
@@ -2787,9 +2784,6 @@ impl<'a> TransactionBuilder<'a> {
                 quoter_slab: clob.quoter_slab,
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,
-                // Only an activation delay below the book's default needs the
-                // attestation, and this builder never asks for one.
-                flow_authority: None,
             },
             [self.account_data.as_ref()].into_iter(),
             self.force_markets.readable.iter(),

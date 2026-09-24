@@ -13122,14 +13122,11 @@ export class VelocityClient {
 	 * change. The order keeps its id, because a reprice is one order that moved, and loses its queue
 	 * position, because the book has no in-place mutation. A `null` field keeps what the resting
 	 * order carries, except `baseAssetAmount`, where `null` keeps the remaining size rather than the
-	 * original.
-	 * @param flowAuthority - The flow authority, when it signs this transaction. It is required for
-	 * a below-default activation delay.
+	 * original. An `activationDelaySlots` below the book's default is refused.
 	 */
 	public async getModifyOrderV1Ix(
 		params: ModifyOrderV1Params,
-		subAccountId?: number,
-		flowAuthority?: PublicKey
+		subAccountId?: number
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
 		return await this.program.instruction.modifyOrderV1(params, {
@@ -13140,7 +13137,6 @@ export class VelocityClient {
 				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
-				flowAuthority: flowAuthority ?? null,
 			},
 		});
 	}

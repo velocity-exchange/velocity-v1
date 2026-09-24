@@ -93,7 +93,6 @@ impl Fixture {
             quoter_slab: self.clob.quoter_slab,
             clob_market: self.clob.book,
             clob_program: self.clob.program,
-            flow_authority: None,
         }
         .to_account_metas(None);
         accounts.extend(self.route_remaining_accounts(user_idx));
@@ -120,7 +119,6 @@ impl Fixture {
             quoter_slab: self.clob.quoter_slab,
             clob_market: self.clob.book,
             clob_program: self.clob.program,
-            flow_authority: None,
         }
         .to_account_metas(None);
         accounts.extend(self.market_ras(true));
@@ -295,7 +293,6 @@ impl Fixture {
             quoter_slab: self.clob.quoter_slab,
             clob_market: self.clob.book,
             clob_program: self.clob.program,
-            flow_authority: None,
         }
         .to_account_metas(None);
         accounts.extend(self.market_ras(true));

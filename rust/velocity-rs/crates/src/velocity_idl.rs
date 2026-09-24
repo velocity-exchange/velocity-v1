@@ -16021,7 +16021,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub flow_authority: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ModifyOrderV1 {
@@ -16067,11 +16066,6 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.clob_program,
                     is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.flow_authority,
-                    is_signer: true,
                     is_writable: false,
                 },
             ]
@@ -16332,7 +16326,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub flow_authority: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceAndMakePerpOrderV1 {
@@ -16385,11 +16378,6 @@ pub mod accounts {
                     is_signer: false,
                     is_writable: false,
                 },
-                AccountMeta {
-                    pubkey: self.flow_authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
             ]
         }
     }
@@ -16432,7 +16420,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub flow_authority: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceAndTakePerpOrderV1 {
@@ -16483,11 +16470,6 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.clob_program,
                     is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.flow_authority,
-                    is_signer: true,
                     is_writable: false,
                 },
             ]

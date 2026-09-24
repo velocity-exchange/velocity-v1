@@ -151,9 +151,9 @@ pub struct State {
     /// including `hot_amm_spread_adjust`, retain their offsets.
     pub hot_vamm_quote_management: Pubkey,
     /// The retail-flow attestation key (swift's), not an admin signer. It
-    /// signs as `flow_authority` on a swift transaction, or a detached
-    /// `FlowAttestationV0` on a keeper fill, to unlock faster activation.
-    /// `Pubkey::default()` disables that, since the zero key signs neither.
+    /// signs a detached `FlowAttestationV0` over a signed-message order to
+    /// unlock faster activation. `Pubkey::default()` disables it, because
+    /// `verify_flow_attestation` refuses the zero key.
     pub hot_flow_authority: Pubkey,
     /// What one transaction costs the account that sends it, as the network
     /// prices it now. Every relay crank payment derives from this, so a fee

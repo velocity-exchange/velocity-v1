@@ -50,8 +50,7 @@ describe('VelocityCore perp order instruction builders', () => {
 		expect(accounts.quoterSlab).toBe(clobAccounts.quoterSlab);
 		expect(accounts.clobMarket).toBe(clobAccounts.clobMarket);
 		expect(accounts.clobProgram).toBe(clobAccounts.clobProgram);
-		// An omitted flow authority encodes as the program id (anchor's `None`).
-		expect(accounts.flowAuthority).toBe(programId);
+		expect(accounts).not.toHaveProperty('flowAuthority');
 	});
 
 	test('buildPlaceAndMakePerpOrderInstruction', async () => {
@@ -87,8 +86,7 @@ describe('VelocityCore perp order instruction builders', () => {
 			params: {},
 		});
 		expect(called[0][1].accounts.quoterSlab).toBe(clobAccounts.quoterSlab);
-		// An omitted flow authority encodes as the program id (anchor's `None`).
-		expect(called[0][1].accounts.flowAuthority).toBe(programId);
+		expect(called[0][1].accounts).not.toHaveProperty('flowAuthority');
 	});
 
 	test('buildCancelOrderInstruction', async () => {

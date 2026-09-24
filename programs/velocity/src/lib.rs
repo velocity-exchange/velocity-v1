@@ -303,6 +303,8 @@ pub mod velocity {
 
     /// Place a taker order and fill it in one instruction. Whatever the route
     /// leaves unfilled rests on the market's book when the order can rest.
+    /// The order carries no flow attestation. On a book with a speed bump it
+    /// rests whole, and the cross cranks fill it.
     pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndTakeV1<'info>>,
         args: PlaceAndTakePerpOrderV1Args,
@@ -313,8 +315,8 @@ pub mod velocity {
     /// Rest a maker limit order on the market's CLOB. The order goes straight
     /// to the book as a maker quote and never occupies a `User.orders` slot.
     /// `params.activation_delay_slots` sets the book speed bump, or `None` for
-    /// the default. A value below the default needs the flow-authority
-    /// attestation.
+    /// the default. A value below the default is refused, because only a
+    /// signed-message taker order can carry the flow-authority attestation.
     pub fn place_and_make_perp_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndMakeV1<'info>>,
         args: PlaceAndMakePerpOrderV1Args,

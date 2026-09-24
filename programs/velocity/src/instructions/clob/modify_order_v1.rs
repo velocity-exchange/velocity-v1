@@ -14,7 +14,7 @@
 //! margin for double the exposure. Place-then-cancel does.
 //!
 //! The replacement leg follows `place_and_make_perp_order_v1`, with the same
-//! margin gate, the same activation-delay attestation rule and the same wake
+//! margin gate, the same activation-delay rule and the same wake
 //! hints. The removal leg follows `cancel_order_v1` and is not gated on the
 //! quoter entry's active and approved flags. The replacement leg is gated on
 //! them, so on a killed book a modify fails and a cancel is the way out.
@@ -82,16 +82,6 @@ pub struct ModifyOrderV1<'info> {
     /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// The flow authority, signing this transaction as a named account.
-    /// It is required only for an activation delay below the default on the
-    /// replacement. The signature is the attestation. The zero key cannot sign,
-    /// so an unset flow authority admits nobody.
-    #[account(
-        constraint = flow_authority.key()
-            == state.load()?.hot_key(crate::state::state::HotRole::FlowAuthority)
-            @ crate::error::ErrorCode::UnattestedFastActivation
-    )]
-    pub flow_authority: Option<Signer<'info>>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -110,8 +100,7 @@ pub struct ModifyOrderV1Params {
     /// reports. `Some(0)` makes the replacement good-till-cancelled.
     pub max_ts: Option<i64>,
     /// The rule of `place_and_make_perp_order_v1` applies. `None` takes the
-    /// book's default speed bump. A value below it needs the flow-authority
-    /// attestation.
+    /// book's default speed bump. A value below it is refused.
     pub activation_delay_slots: Option<u32>,
     /// The rule of `place_and_make_perp_order_v1` applies: refuse rather than
     /// rest crossed. The original is already off the book, so a refused
@@ -147,14 +136,13 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         params.market_index,
     )?;
 
-    // The attestation rule belongs to the replacement rather than to the
-    // original. A modify that asks for a bump below the default is a new fast
-    // placement.
+    // The replacement is a new placement with no flow attestation, so it
+    // cannot ask for an activation delay below the book's default.
     crate::instructions::attest_activation_delay(
         &ctx.accounts.quoter_slab,
         params.market_index,
         params.activation_delay_slots,
-        ctx.accounts.flow_authority.is_some(),
+        false,
     )?;
 
     let user_ref = {

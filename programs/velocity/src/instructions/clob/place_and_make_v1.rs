@@ -58,16 +58,6 @@ pub struct PlaceAndMakeV1<'info> {
     /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// The flow authority, signing this transaction as a named account.
-    /// It is required only for an activation delay below the default. The
-    /// signature is the attestation. The zero key cannot sign, so an unset flow
-    /// authority admits nobody.
-    #[account(
-        constraint = flow_authority.key()
-            == state.load()?.hot_key(crate::state::state::HotRole::FlowAuthority)
-            @ crate::error::ErrorCode::UnattestedFastActivation
-    )]
-    pub flow_authority: Option<Signer<'info>>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -168,12 +158,13 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         .get_base_asset_amount_unfilled(Some(position_base))
         .unwrap_or(order.base_asset_amount);
 
-    // A below-default activation delay is reserved for attested flow.
+    // Only the signed-message route carries a flow attestation, so a maker
+    // cannot ask for an activation delay below the book's default.
     crate::instructions::attest_activation_delay(
         &ctx.accounts.quoter_slab,
         params.market_index,
         activation_delay_slots,
-        ctx.accounts.flow_authority.is_some(),
+        false,
     )?;
 
     try_place_remainder_on_clob(

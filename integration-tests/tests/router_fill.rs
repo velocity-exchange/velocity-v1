@@ -561,7 +561,6 @@ fn place_clob_order_ix(
         quoter_slab,
         clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     // Margin maps: oracle, spot market, perp market.
@@ -844,10 +843,6 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
     }
 }
 
-/// The speed bump replaced JIT; skipping it is attested flow only. A
-/// below-default activation delay must fail without the flow authority
-/// co-signing the transaction, and pass with it — while at-or-above the
-/// default stays permissionless.
 /// `UpdateMarketArgsV0` setting only `default_activation_delay_slots`:
 /// twelve `Option`s, each a presence byte, in the order the book declares them.
 fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
@@ -898,18 +893,18 @@ fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
     write_slab_slot(&mut fixture.svm, 0, 0, &slot);
 }
 
+/// The speed bump replaced JIT, and only a signed-message order can carry the
+/// attestation that skips it. A maker's below-default activation delay is
+/// refused. A delay at or above the default stays permissionless.
 #[test]
-fn fast_activation_requires_the_flow_authority_attestation() {
-    use velocity::state::state::HotRole;
-
+fn a_maker_below_the_books_default_delay_is_refused() {
     let mut fixture = setup();
-    // The fixture's book has a zero default (every test placement is
-    // "fast"); raise it through the book's own admin instruction so
-    // below-default is expressible.
+    // The fixture's book has a zero default. Raising it makes a below-default
+    // delay expressible.
     set_clob_default_activation_delay(&mut fixture, 2);
 
-    let place = |fixture: &Fixture, delay: Option<u32>, flow: Option<Pubkey>| {
-        let mut ix = place_clob_order_ix(
+    let place = |fixture: &Fixture, delay: Option<u32>| {
+        place_clob_order_ix(
             fixture.clob_maker_user,
             &fixture.clob_maker_authority,
             fixture.quoter_slab,
@@ -924,58 +919,18 @@ fn fast_activation_requires_the_flow_authority_attestation() {
                 activation_delay_slots: delay,
                 reject_if_crossed: false,
             },
-        );
-
-        if let Some(flow_key) = flow {
-            // The optional `flow_authority` slot is encoded as a program-id
-            // placeholder; provide the account, as a signer — presence of
-            // the signing flow authority is the attestation.
-            let placeholder = ix
-                .accounts
-                .iter()
-                .rposition(|meta| meta.pubkey == velocity_id() && !meta.is_writable)
-                .expect("optional placeholder present");
-            ix.accounts[placeholder] = AccountMeta::new_readonly(flow_key, true);
-        }
-
-        ix
+        )
     };
 
-    // At-or-above the default: permissionless, exactly as before.
     let keeper = fixture.clob_maker_authority.insecure_clone();
-    let default_delay_ix = place(&fixture, None, None);
-    let at_default_ix = place(&fixture, Some(2), None);
+    let default_delay_ix = place(&fixture, None);
+    let at_default_ix = place(&fixture, Some(2));
     send(&mut fixture.svm, &keeper, default_delay_ix, &[]).unwrap();
     send(&mut fixture.svm, &keeper, at_default_ix, &[]).unwrap();
 
-    // Below the default with no flow authority named: refused.
-    let no_flow_ix = place(&fixture, Some(0), None);
-    let err = send(&mut fixture.svm, &keeper, no_flow_ix, &[]).unwrap_err();
+    let below_default_ix = place(&fixture, Some(0));
+    let err = send(&mut fixture.svm, &keeper, below_default_ix, &[]).unwrap_err();
     assert_velocity_error(&err, ErrorCode::UnattestedFastActivation);
-
-    // A signer that is not the configured flow authority fails the account
-    // constraint — and with no flow authority configured, the zero key on
-    // `State` matches no signer at all.
-    let flow = Keypair::new();
-    fixture.svm.airdrop(&flow.pubkey(), 1_000_000_000).unwrap();
-    let impostor_ix = place(&fixture, Some(0), Some(flow.pubkey()));
-    let err = send(&mut fixture.svm, &keeper, impostor_ix, &[&flow]).unwrap_err();
-    assert_velocity_error(&err, ErrorCode::UnattestedFastActivation);
-
-    // Configure the flow authority; the same signer now attests the fast
-    // placement and it lands.
-    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
-    state.set_hot_key(HotRole::FlowAuthority, flow.pubkey());
-    set_zero_copy_account(
-        &mut fixture.svm,
-        state_pda(),
-        State::DISCRIMINATOR,
-        &state,
-        State::SIZE,
-    );
-
-    let attested_ix = place(&fixture, Some(0), Some(flow.pubkey()));
-    send(&mut fixture.svm, &keeper, attested_ix, &[&flow]).unwrap();
 }
 
 /// A keeper cannot route around the book by leaving its maker's accounts at
@@ -1181,7 +1136,6 @@ fn a_taker_that_signs_fills_in_full_at_the_price_present() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -1772,7 +1726,6 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
             quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
-            flow_authority: None,
         }
         .to_account_metas(None);
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -3568,7 +3521,6 @@ fn modify_order_v1_ix(
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4676,7 +4628,6 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4801,7 +4752,6 @@ fn a_reduce_only_ephemeral_take_that_can_reduce_nothing_is_declined() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4851,18 +4801,14 @@ fn a_reduce_only_ephemeral_take_that_can_reduce_nothing_is_declined() {
     assert_eq!(clob_ask_count(&fixture), 1);
 }
 
-/// Maker priority: on a book with a speed bump, only attested flow fills in
-/// its own transaction. An unattested taker rests whole, taker-origin,
-/// through the default window — a maker can always reprice ahead of it. A
-/// shape that demands a synchronous outcome (an IOC, a success condition) is
-/// refused, and a transaction the flow authority co-signs keeps the
-/// synchronous fill.
+/// Maker priority: on a book with a speed bump, `place_and_take_perp_order_v1`
+/// carries no attestation and never fills in its own transaction. The taker
+/// rests whole, taker-origin, through the default window, so a maker can always
+/// reprice ahead of it. A shape that demands a synchronous outcome, an IOC or a
+/// success condition, is refused.
 #[test]
 fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
-    use velocity::state::{
-        order_params::{OrderParams, PostOnlyParam},
-        state::HotRole,
-    };
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
 
     let mut fixture = setup();
     let maker_stats = maker_stats_address(&fixture);
@@ -4874,19 +4820,6 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
 
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
     set_clob_default_activation_delay(&mut fixture, 5);
-
-    // The flow authority is configured, so attestation is expressible.
-    let flow = Keypair::new();
-    fixture.svm.airdrop(&flow.pubkey(), 1_000_000_000).unwrap();
-    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
-    state.set_hot_key(HotRole::FlowAuthority, flow.pubkey());
-    set_zero_copy_account(
-        &mut fixture.svm,
-        state_pda(),
-        State::DISCRIMINATOR,
-        &state,
-        State::SIZE,
-    );
 
     let taker_authority = Keypair::new();
     fixture
@@ -4916,8 +4849,7 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
     let build = |bit_flags: u8,
                  success_condition: Option<
         velocity::state::order_params::PlaceAndTakeOrderSuccessCondition,
-    >,
-                 attest: bool| {
+    >| {
         let mut accounts = velocity::accounts::PlaceAndTakeV1 {
             state: state_pda(),
             user: taker_user,
@@ -4926,9 +4858,6 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
             quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
-            // The attestation transport for swift-built transactions: the
-            // flow authority signs as this named account.
-            flow_authority: attest.then(|| flow.pubkey()),
         }
         .to_account_metas(None);
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4965,11 +4894,10 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
 
     // A synchronous shape is refused rather than silently rested.
     for ix in [
-        build(1, None, false),
+        build(1, None),
         build(
             0,
             Some(velocity::state::order_params::PlaceAndTakeOrderSuccessCondition::FullFill),
-            false,
         ),
     ] {
         let err = send_with_ixs(
@@ -4987,7 +4915,7 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
     send_with_ixs(
         &mut fixture.svm,
         &taker_authority,
-        &[compute_unit_limit_ix(400_000), build(0, None, false)],
+        &[compute_unit_limit_ix(400_000), build(0, None)],
         &[],
     )
     .unwrap();
@@ -5004,35 +4932,15 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
 
     // The rested bid is invisible to the matchable-set reader here: it is
     // inside its activation window, and the ask crosses it. It is counted
-    // below, once the ask is consumed and the window has passed.
+    // below, once the window has passed.
     assert_eq!(
         clob_ask_count(&fixture),
         1,
         "the maker's quote was not taken"
     );
 
-    // Attested flow fills off the book, but only depth no remainder has
-    // claimed. The order that just rested crosses this ask and holds it, and a
-    // claim outranks any later taker however its flow is attested — taking
-    // that ask at the maker's price is exactly the frontrun the claim exists
-    // to stop, and attestation is not a ticket past it. So this take fills
-    // nothing and the ask still stands.
-    send_with_ixs(
-        &mut fixture.svm,
-        &taker_authority,
-        &[compute_unit_limit_ix(400_000), build(0, None, true)],
-        &[&flow],
-    )
-    .unwrap();
-    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
-    assert_eq!(
-        taker.perp_positions[0].base_asset_amount, 0,
-        "the claimed ask is withheld from attested flow too"
-    );
-    assert_eq!(clob_ask_count(&fixture), 1, "the claimed ask still stands");
-
-    // Once the claim lapses the ask is ordinary depth again, and both orders
-    // rest: the unattested one never filled, and neither did the attested one.
+    // Once the claim lapses the ask is ordinary depth again, and the bid that
+    // never filled still rests.
     let clock: solana_clock::Clock = fixture.svm.get_sysvar();
     let lapsed = clock.slot + RESERVATION_GRACE_SLOTS + 1;
     fixture.svm.warp_to_slot(lapsed);
@@ -5043,11 +4951,7 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
         lapsed,
     );
 
-    assert_eq!(
-        clob_bid_count(&fixture),
-        2,
-        "both takes rest: neither reached the claimed ask"
-    );
+    assert_eq!(clob_bid_count(&fixture), 1, "the unattested take rests");
 }
 
 /// A fill skips a latched maker and lands, instead of reverting on them.
@@ -5109,7 +5013,6 @@ fn a_fill_skips_a_latched_maker_instead_of_reverting() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -5230,7 +5133,6 @@ fn a_maker_fills_as_far_as_its_collateral_reaches() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -5334,7 +5236,6 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -5460,7 +5361,6 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -5817,7 +5717,6 @@ fn fill_long_through_midpoint(
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -5991,7 +5890,6 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -7751,7 +7649,6 @@ fn place_and_make_v1_rests_a_maker_order_on_the_book() {
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -8328,7 +8225,6 @@ fn take_ix(
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -8391,9 +8287,9 @@ fn a_take_rests_its_remainder_behind_the_delay_it_names() {
 }
 
 /// A delay below the book's default is a way past the speed bump, so a take
-/// that names one needs the flow authority's attestation, as a maker does.
+/// that names one is refused, as a maker's is.
 #[test]
-fn a_take_below_the_books_default_delay_needs_the_flow_authority() {
+fn a_take_below_the_books_default_delay_is_refused() {
     let mut fixture = setup();
     pause_amm_fill(&mut fixture.svm);
     set_clob_default_activation_delay(&mut fixture, 4);
@@ -10877,7 +10773,6 @@ fn vamm_take(
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
-        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));

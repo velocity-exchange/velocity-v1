@@ -8698,7 +8698,9 @@ export class VelocityClient {
 	 * owes the taker every maker it had room for.
 	 * The program refuses a post-only entry (`InvalidOrderPostOnly`) and a trigger entry
 	 * (`InvalidSignedMsgOrderParam`). Without `flowAttestation` on a book with a speed bump, it also
-	 * refuses an IOC entry or one that cannot rest (`UnattestedSynchronousTake`).
+	 * refuses an IOC entry or one that cannot rest (`UnattestedSynchronousTake`). An entry that
+	 * neither fills nor rests reverts the whole bundle with `SignedMsgEntryNeitherFilledNorRested`,
+	 * so its stop-loss and take-profit do not arm and its uuid stays unspent.
 	 * @param fillerInfo - The keeper's own `User`/`UserStats`, credited for the fill it lands. Defaults
 	 * to the client's own margin account.
 	 * @param clobAccounts - The market's CLOB registry entry and book accounts, where the remainder

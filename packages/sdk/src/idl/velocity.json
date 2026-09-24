@@ -21726,6 +21726,11 @@
       "code": 6458,
       "name": "SelfSyncIntervalTooShort",
       "msg": "The self-sync interval is too short for the payment it carries"
+    },
+    {
+      "code": 6459,
+      "name": "SignedMsgEntryNeitherFilledNorRested",
+      "msg": "A signed-message entry that neither fills nor rests places nothing of its bundle"
     }
   ],
   "types": [

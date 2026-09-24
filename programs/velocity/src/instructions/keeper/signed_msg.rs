@@ -83,7 +83,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         validate_unattested_entry(&placed.order)?;
     }
 
-    let _filled = if synchronous_take {
+    let filled = if synchronous_take {
         fill_signed_msg_taker_order(
             &ctx,
             &mut sections,
@@ -97,7 +97,15 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         0
     };
 
-    rest_signed_msg_remainder(&ctx, &placed, &mut sections.maps, &clock)?;
+    let rested = rest_signed_msg_remainder(&ctx, &placed, &mut sections.maps, &clock)?;
+
+    // The sidecars are armed and the uuid is spent by now. An entry that left
+    // nothing must revert them, so the bundle is placed whole or not at all.
+    validate!(
+        filled > 0 || rested,
+        ErrorCode::SignedMsgEntryNeitherFilledNorRested,
+        "the signed-message entry neither filled nor rested"
+    )?;
 
     if let Some(ref mut escrow) = sections.route.escrow {
         let taker = load_mut!(ctx.accounts.user)?;
@@ -258,40 +266,36 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
 /// The CLOB order id goes back onto the message's own record. The fill at the
 /// activation slot runs in a different transaction, built by somebody else, and
 /// that record is how it finds the route this taker signed for.
+///
+/// Returns whether a remainder now rests on the book.
 fn rest_signed_msg_remainder<'c: 'info, 'info>(
     ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     placed: &PlacedSignedMsgOrder,
     maps: &mut AccountMaps,
     clock: &Clock,
-) -> Result<()> {
+) -> Result<bool> {
+    // Immediate-or-cancel asked for no residual. The order never persisted, so
+    // dropping it is enough.
+    if placed.is_immediate_or_cancel {
+        return Ok(false);
+    }
+
     let market_index = placed.market_index;
     let remainder = {
         let user = load!(ctx.accounts.user)?;
         if user.is_being_liquidated() {
-            return Ok(());
+            return Ok(false);
         }
 
-        // The order lives on `placed`, not `user.orders`. Its filled amounts
-        // were updated in place by the fill leg.
-        let order = &placed.order;
-        // `restable_remainder` is the single decision. It answers `None` for a
-        // post-only order, for a type that cannot rest, and for a zero price.
-        crate::instructions::restable_remainder(&user, order, market_index, None)
+        // The fill leg updated the filled amounts of `placed.order` in place.
+        // `restable_remainder` answers `None` for a post-only order, for a
+        // type that cannot rest, and for a zero price.
+        crate::instructions::restable_remainder(&user, &placed.order, market_index, None)
     };
 
-    // Immediate-or-cancel asked for no residual. The order never persisted, so
-    // dropping it is enough.
-    if placed.is_immediate_or_cancel {
-        return Ok(());
-    }
-
-    let Some(remainder) = remainder else {
-        return Ok(());
+    let Some(remainder) = remainder.filter(|remainder| remainder.unfilled != 0) else {
+        return Ok(false);
     };
-
-    if remainder.unfilled == 0 {
-        return Ok(());
-    }
 
     // There is no slot to cancel, because the order never entered
     // `user.orders`. Its remainder migrates straight onto the CLOB.
@@ -314,19 +318,21 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         clock,
     )?;
 
-    if let Some(clob_order_id) = rested {
-        ctx.accounts
-            .signed_msg_user_orders
-            .load_mut()?
-            .set_resting_route(
-                placed.uuid,
-                market_index,
-                clob_order_id,
-                placed.route_digest,
-            );
-    }
+    let Some(clob_order_id) = rested else {
+        return Ok(false);
+    };
 
-    Ok(())
+    ctx.accounts
+        .signed_msg_user_orders
+        .load_mut()?
+        .set_resting_route(
+            placed.uuid,
+            market_index,
+            clob_order_id,
+            placed.route_digest,
+        );
+
+    Ok(true)
 }
 
 /// The taker's own accounts, borrowed for the placement leg.
@@ -414,7 +420,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     // This function does not run `revoke_completed_orders`. The fill leg follows
     // in the same instruction and completes orders of its own, so the caller
     // revokes once, after it.
-    Ok((escrow_zc, placed))
+    Ok((escrow_zc, Some(placed)))
 }
 
 /// Authenticate the message and bind it to the taker account it names.
@@ -737,15 +743,15 @@ fn place_bracket_orders(
 /// The record outlives the message, so a fill in a later transaction is still
 /// held to it.
 ///
-/// `None` means the order soft-skipped its build, so there is nothing to fill
-/// or rest.
+/// A soft skip of the build reverts. The sidecars are armed by then, and they
+/// must not stand without their entry.
 fn place_entry_order(
     taker: &mut SignedMsgTaker<'_, '_>,
     message: &mut VerifiedMessage,
     order_id: &mut SignedMsgOrderId,
     builder: &mut BuilderRows<'_, '_>,
     env: &mut PlacementEnv<'_, '_>,
-) -> Result<Option<PlacedSignedMsgOrder>> {
+) -> Result<PlacedSignedMsgOrder> {
     let entry = message.signed_msg_order_params;
 
     order_id.order_id = taker.user.next_order_id;
@@ -793,7 +799,7 @@ fn place_entry_order(
         &mut builder_order,
     )?
     else {
-        return Ok(None);
+        return Err(print_error!(ErrorCode::SignedMsgEntryNeitherFilledNorRested)().into());
     };
 
     // `signature` is `[u8; 64]`, and borsh serializes it as its raw bytes. Hash
@@ -810,7 +816,7 @@ fn place_entry_order(
         ts: env.clock.unix_timestamp,
     });
 
-    Ok(Some(PlacedSignedMsgOrder {
+    Ok(PlacedSignedMsgOrder {
         order_id: order_id.order_id,
         order,
         uuid: order_id.uuid,
@@ -819,7 +825,7 @@ fn place_entry_order(
         route: message.route.take().unwrap_or_default(),
         is_immediate_or_cancel: entry.is_immediate_or_cancel(),
         activation_delay_slots: entry.activation_delay_slots,
-    }))
+    })
 }
 
 /// What the placement leg hands the fill leg.

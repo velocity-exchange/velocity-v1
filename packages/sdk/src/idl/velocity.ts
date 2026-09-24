@@ -21732,6 +21732,11 @@ export type Velocity = {
       "code": 6458,
       "name": "selfSyncIntervalTooShort",
       "msg": "The self-sync interval is too short for the payment it carries"
+    },
+    {
+      "code": 6459,
+      "name": "signedMsgEntryNeitherFilledNorRested",
+      "msg": "A signed-message entry that neither fills nor rests places nothing of its bundle"
     }
   ],
   "types": [

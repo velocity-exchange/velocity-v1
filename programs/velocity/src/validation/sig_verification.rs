@@ -226,7 +226,7 @@ pub fn verify_flow_attestation(
         now
     )?;
 
-    brine_ed25519::verify(
+    brine_ed25519::verify_strict(
         &brine_ed25519::Address::new_from_array(flow_authority.to_bytes()),
         &attestation.signature,
         &[
@@ -248,10 +248,10 @@ pub fn verify_flow_attestation(
 /// is the hex text the taker signed. `signer` is the taker's on-chain
 /// authority (or delegate) the public key must equal.
 ///
-/// The signature is checked over the payload with `brine_ed25519::verify`,
-/// which uses the curve25519 syscalls and rejects the eight small-order
-/// points. That matches the native ed25519 precompile this replaced, so no
-/// sibling instruction and no instructions sysvar are needed.
+/// The signature is checked over the payload with
+/// `brine_ed25519::verify_strict`, which refuses a small-order public key or
+/// `R`, as the native ed25519 precompile did. No sibling instruction and no
+/// instructions sysvar are needed.
 pub fn verify_and_decode_signed_msg(
     message_bytes: &[u8],
     signer: &[u8; 32],
@@ -287,7 +287,7 @@ pub fn verify_and_decode_signed_msg(
         return Err(ErrorCode::SigVerificationFailed.into());
     }
 
-    brine_ed25519::verify(
+    brine_ed25519::verify_strict(
         &brine_ed25519::Address::new_from_array(public_key),
         &signature,
         &[payload],

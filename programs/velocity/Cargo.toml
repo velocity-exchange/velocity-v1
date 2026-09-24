@@ -70,9 +70,8 @@ byteorder = "1.4.3"
 # In-program ed25519 verification via the curve25519 syscalls, replacing the
 # native ed25519 precompile for swift order authentication. `fast-sha512`
 # hashes in-program, so it does not depend on the SIMD-0512 sol_sha512 syscall
-# being active on the cluster. Pinned to 0.9.0: its `verify` rejects the eight
-# small-order points inline, matching the native precompile, and later 0.9.x
-# raise their solana-* requirements above this program's tree.
+# being active on the cluster. The program calls `verify_strict`, because the
+# plain `verify` accepts a small-order key, and the all-zero key is one.
 # 0.9.3 is the first release that declares the curve25519 syscall with
 # solana-define-syscall. 0.9.0 used an `extern "C"` block, which SBPFv3 cannot
 # resolve: it has no relocations, so the linker emits `call -1`, which builds
@@ -91,3 +90,5 @@ base64 = "0.13.0"
 # Signs real ed25519 messages so the in-program signature verifier can be
 # exercised against genuine signatures on the host.
 ed25519-dalek = "2"
+# Forges a signature under a small-order key, to prove the verifier refuses it.
+curve25519-dalek = "4"

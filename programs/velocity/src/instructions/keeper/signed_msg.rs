@@ -8,6 +8,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 #[access_control(
     exchange_not_paused(&ctx.accounts.state)
     fill_not_paused(&ctx.accounts.state)
@@ -421,12 +424,9 @@ fn verify_signed_msg(
     message_bytes: &[u8],
     is_delegate_signer: bool,
 ) -> Result<VerifiedMessage> {
-    let signer = if is_delegate_signer {
-        taker.user.delegate.to_bytes()
-    } else {
-        taker.user.authority.to_bytes()
-    };
-    let message = verify_and_decode_signed_msg(message_bytes, &signer, is_delegate_signer)?;
+    let signer = message_signer(taker.user, is_delegate_signer)?;
+    let message =
+        verify_and_decode_signed_msg(message_bytes, &signer.to_bytes(), is_delegate_signer)?;
 
     if is_delegate_signer {
         validate!(
@@ -452,6 +452,24 @@ fn verify_signed_msg(
     }
 
     Ok(message)
+}
+
+/// The key that must have signed the message.
+///
+/// A user with no delegate holds the all-zero key. That key is a small-order
+/// point, so it cannot sign for anybody.
+fn message_signer(user: &User, is_delegate_signer: bool) -> Result<Pubkey> {
+    if !is_delegate_signer {
+        return Ok(user.authority);
+    }
+
+    validate!(
+        user.delegate != Pubkey::default(),
+        ErrorCode::SigVerificationFailed,
+        "a delegate-signed message names a user with no delegate"
+    )?;
+
+    Ok(user.delegate)
 }
 
 /// Decide whether the message may still be placed, and reserve its record.

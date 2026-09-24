@@ -3378,6 +3378,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "clob-wire",
+ "curve25519-dalek",
  "ed25519-dalek",
  "enumflags2",
  "hex",

@@ -130,6 +130,48 @@ mod sig_verification {
         assert!(verify_and_decode_signed_msg(&forged, &other_pk, false).is_err());
     }
 
+    /// The all-zero key is a point of order four. `R = sB - kA` then verifies
+    /// under the cofactorless equation whenever the challenge is `k` modulo
+    /// four, so a forger needs about four tries and no private key.
+    #[test]
+    fn a_signature_forged_under_the_zero_key_is_refused() {
+        use curve25519_dalek::{
+            constants::ED25519_BASEPOINT_POINT, edwards::CompressedEdwardsY, scalar::Scalar,
+        };
+
+        let zero_key = [0u8; 32];
+        let zero_key_point = CompressedEdwardsY(zero_key).decompress().unwrap();
+        let hex_payload = hex::encode(non_delegate_payload(|_| {})).into_bytes();
+        let accepted_by_cofactorless_verify = |signature: &[u8; 64]| {
+            brine_ed25519::verify(
+                &brine_ed25519::Address::new_from_array(zero_key),
+                signature,
+                &[&hex_payload],
+            )
+            .is_ok()
+        };
+
+        let forged = (1..64u64)
+            .flat_map(|s| (0..4u64).map(move |k| (s, k)))
+            .map(|(s, k)| {
+                let s = Scalar::from(s);
+                let r = ED25519_BASEPOINT_POINT * s - zero_key_point * Scalar::from(k);
+                let mut signature = [0u8; 64];
+                signature[..32].copy_from_slice(r.compress().as_bytes());
+                signature[32..].copy_from_slice(s.as_bytes());
+                signature
+            })
+            .find(|signature| accepted_by_cofactorless_verify(signature))
+            .expect("a forgery under the zero key");
+
+        let message = pack_message(&forged, &zero_key, &hex_payload);
+        let err = verify_and_decode_signed_msg(&message, &zero_key, false).unwrap_err();
+        assert_eq!(
+            err,
+            anchor_lang::error::Error::from(crate::error::ErrorCode::SigVerificationFailed)
+        );
+    }
+
     #[test]
     fn test_deserialize_into_verified_message_non_delegate() {
         let signature = [1u8; 64];

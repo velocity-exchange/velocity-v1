@@ -384,7 +384,7 @@ function notionalWithin(lo: BN, hi: BN, quote: BN, slack: BN): boolean {
 /**
  * Whether an external quoter's executed `(base, quote)` fits inside its
  * quote, bounded by the best-price notional and the prefix's scaledQuote
- * with one rounding step of slack. `validate_executed_notional` is stricter
+ * with one rounding step of slack. `validate_allocated_notional` is stricter
  * and requires exact division, so this band can accept a fill the program rejects.
  */
 export function isExecutedNotionalInQuote(
@@ -464,6 +464,22 @@ export function makerPriceBreachesOracleBand(
 	}
 
 	return diff.mul(MARGIN_PRECISION).div(oracle).gten(band);
+}
+
+/**
+ * Whether a book rests a level outside `band` of `oraclePrice`. Mirrors
+ * `book_rests_outside_band`. A book fills best price first and cannot skip
+ * such a level, so the router takes nothing from that book.
+ */
+export function bookRestsOutsideOracleBand(
+	levels: RouterPriceLevel[],
+	makerDirection: PositionDirection,
+	oraclePrice: BN,
+	band: number
+): boolean {
+	return levels.some((level) =>
+		makerPriceBreachesOracleBand(level.price, makerDirection, oraclePrice, band)
+	);
 }
 
 /**

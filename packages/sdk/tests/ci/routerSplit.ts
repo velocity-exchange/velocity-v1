@@ -12,6 +12,7 @@ import {
 	isChangeNotionalInQuote,
 	quoterOracleBand,
 	makerPriceBreachesOracleBand,
+	bookRestsOutsideOracleBand,
 	isReportWithinReservation,
 	RouterQuoterBook,
 	VAMM_PRIORITY,
@@ -348,6 +349,47 @@ describe('external quoter bounds', () => {
 				PositionDirection.LONG,
 				ORACLE,
 				1000
+			)
+		);
+	});
+
+	it('skips a book that rests a level outside the band', () => {
+		// The cases of `book_band_tests` in `quoted_route.rs`: a 5% band at a
+		// 100 oracle.
+		const band = 500;
+		const book = (prices: number[]) =>
+			prices.map((price) => ({ price: PRICE.muln(price), size: ONE }));
+
+		assert(
+			bookRestsOutsideOracleBand(
+				book([90, 99, 100]),
+				PositionDirection.SHORT,
+				ORACLE,
+				band
+			)
+		);
+		assert(
+			bookRestsOutsideOracleBand(
+				book([110, 101, 100]),
+				PositionDirection.LONG,
+				ORACLE,
+				band
+			)
+		);
+		assert(
+			!bookRestsOutsideOracleBand(
+				book([96, 99, 120]),
+				PositionDirection.SHORT,
+				ORACLE,
+				band
+			)
+		);
+		assert(
+			!bookRestsOutsideOracleBand(
+				book([104, 101, 80]),
+				PositionDirection.LONG,
+				ORACLE,
+				band
 			)
 		);
 	});

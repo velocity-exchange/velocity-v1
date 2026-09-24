@@ -105,7 +105,7 @@ fn random_caps(rng: &mut Rng, users: usize) -> UserCapsV0 {
         }
     }
 
-    UserCapsV0::from_caps(caps)
+    UserCapsV0::from_caps(caps).expect("each index is named once")
 }
 
 /// Place a random order, letting taker-origin orders cross so that claims
@@ -179,7 +179,7 @@ struct Caller {
     size: u64,
     users: Vec<UserRefV0>,
     caps: UserCapsV0,
-    reference_price: i64,
+    reference_price: Option<u64>,
     taker: Option<UserRefV0>,
     include_reserved: bool,
 }
@@ -198,7 +198,7 @@ impl Caller {
             size: (1 + rng.below(40)) * UNIT,
             users,
             caps,
-            reference_price: rng.pick(&[95i64, 100, 105]),
+            reference_price: Some(rng.pick(&[95u64, 100, 105])),
             taker: rng.chance(40).then(|| rng.pick(pool)),
             include_reserved: rng.chance(15),
         }

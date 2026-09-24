@@ -1399,7 +1399,12 @@ program (feat/propamm). The registry accounts are in §5.3.
   on both legs. Five error variants appended at the end of the enum: `InvalidQuoterResponse`
   (6383 / `0x18EF`), `QuoterOverfilled` (6384 / `0x18F0`), `QuoterFillOffQuote` (6385 /
   `0x18F1`), `QuoterSubjectNotPermitted` (6386 / `0x18F2`) and `TooManyQuoterWireUsers` (6387 /
-  `0x18F3`). No account layout change.
+  `0x18F3`). No account layout change. `reference_price` is an `Option<u64>`. `None` means a
+  read that settles nothing, which is what `quote_router` and the cross-match resolvers send.
+  The CLOB refuses a call whose caps carry a quote budget but no reference price
+  (`ClobError::MissingReferencePrice`, 6031). The midpoint skips its band on a quote with no
+  reference price, refuses an execute with none (`MidpointError::MissingReferencePrice`, 6012),
+  and fails its band on a zero price.
 - Quote price bound (feat/propamm). `QuoteArgsV0` gained a trailing `limit_price: u64` which is
   the worst price the caller will fill at, in `PRICE_PRECISION`, with zero meaning no bound.
   The widest quote argument is therefore 8 bytes longer than the widest execute argument; a
@@ -2711,7 +2716,8 @@ and is cancelled with `ReduceOnlyOrderIncreasedPosition` when nothing is left to
 left to reduce. The quoter wire's `CompletedOrderV0` and `CancelledRemainderV0` carry the
 removed order's `L3_ROW_FLAG_REDUCE_ONLY` in a new `flags` byte, so the count also disarms when
 a fill consumes or culls a reduce-only order. `CompletedOrderV0.change_index` narrows to `u16`
-to keep that entry at 16 bytes. A new `ReduceOnly` bit on the CLOB's own `OrderBitFlag` (the
+to keep that entry at 16 bytes. `PartiallyFilledOrderV0.change_index` is a `u16` too, followed
+by two padding bytes, so that entry stays 24 bytes. A new `ReduceOnly` bit on the CLOB's own `OrderBitFlag` (the
 node flag, not velocity's `Order.bit_flags`) and an `L3_ROW_FLAG_REDUCE_ONLY` book-row flag
 carry the fact across the wire. SDK `triggerMarketOrderV1` / `getTriggerMarketOrderV1Ix` /
 `VelocityCore.buildTriggerMarketOrderV1Instruction`, and `PerpPosition.reduceOnlyClobOrders`.

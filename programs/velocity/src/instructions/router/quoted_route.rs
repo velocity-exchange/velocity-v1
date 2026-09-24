@@ -27,7 +27,10 @@ use {
     crate::{
         controller::position::PositionDirection,
         error::ErrorCode,
-        math::router::{QuoterBook, RouterLeg},
+        math::{
+            casting::Cast,
+            router::{QuoterBook, RouterLeg},
+        },
         state::{
             order_params::{RouteDigest, NO_ROUTE_DIGEST},
             prop_amm::{
@@ -469,7 +472,7 @@ impl<'info> QuotedRoute<'info> {
             inputs.market_index,
             QuoteArgsV0 {
                 caps: sized.caps,
-                reference_price: inputs.reference_price,
+                reference_price: Some(inputs.reference_price.cast()?),
                 direction: inputs.direction,
                 size: inputs.size,
                 users: inputs.users,

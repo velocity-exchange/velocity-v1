@@ -18,7 +18,8 @@ pub struct QuoteV0 {
 /// and ignores `caps`: it settles one standing-intent user and holds no
 /// orders, so there is no per-user budget to spend or book to skip mid-way.
 /// `reference_price` is velocity's oracle price, and the quoter refuses to
-/// quote when its mid is outside the configured band of that price.
+/// quote when its mid is outside the configured band of that price. A quote
+/// with no reference price is a read, and skips the band.
 pub use quoter_spec::QuoteArgsV0;
 
 /// Report whether this quoter has anything to say to this caller. The gate
@@ -36,7 +37,7 @@ pub fn is_open(
     users: &[UserRefV0],
     taker: Option<&UserRefV0>,
     taker_served_window: bool,
-    reference_price: i64,
+    reference_price: Option<u64>,
 ) -> Result<bool> {
     // The caps address a user by its index in this set, and the exclusion
     // bitmap holds one bit per slot up to the capacity. A longer set carries
@@ -57,7 +58,7 @@ pub fn is_open(
         return Ok(false);
     }
 
-    Ok(quoter.mid_within_deviation(reference_price))
+    Ok(reference_price.is_none_or(|price| quoter.mid_within_deviation(price)))
 }
 
 /// Quoter interface. Price the levels a taker of `direction` and `size` takes

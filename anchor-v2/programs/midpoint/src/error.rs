@@ -37,6 +37,8 @@ pub enum MidpointError {
     InvariantViolated,
     #[msg("User set holds more entries than USER_SET_CAPACITY")]
     OversizedUserSet,
+    #[msg("An execute needs a reference price to check the band against")]
+    MissingReferencePrice,
     // A new variant goes at the bottom. On-chain clients match error codes by
     // number.
 }
@@ -48,7 +50,8 @@ impl From<quoter_spec::SpecError> for MidpointError {
     /// widest response against the region.
     fn from(error: quoter_spec::SpecError) -> Self {
         match error {
-            quoter_spec::SpecError::DanglingCompletedOrder => MidpointError::InvariantViolated,
+            quoter_spec::SpecError::DanglingCompletedOrder
+            | quoter_spec::SpecError::ChangeIndexOutOfRange => MidpointError::InvariantViolated,
             _ => MidpointError::ResponseTooLarge,
         }
     }

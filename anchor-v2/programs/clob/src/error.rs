@@ -93,6 +93,10 @@ pub enum ClobError {
     MarketNotEmpty,
     #[msg("Order is expired or has not reached its activation slot")]
     OrderNotLive,
+    /// A walk carries a quote budget but no reference price to spend it
+    /// against.
+    #[msg("A quote budget needs a reference price")]
+    MissingReferencePrice,
 }
 
 impl From<quoter_spec::SpecError> for ClobError {
@@ -102,7 +106,8 @@ impl From<quoter_spec::SpecError> for ClobError {
     /// configured market. A dangling completed order is the same kind of bug.
     fn from(error: quoter_spec::SpecError) -> Self {
         match error {
-            quoter_spec::SpecError::DanglingCompletedOrder => ClobError::BookInvariantViolated,
+            quoter_spec::SpecError::DanglingCompletedOrder
+            | quoter_spec::SpecError::ChangeIndexOutOfRange => ClobError::BookInvariantViolated,
             _ => ClobError::ResponseTooLarge,
         }
     }

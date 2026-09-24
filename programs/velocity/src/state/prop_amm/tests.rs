@@ -263,7 +263,7 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
         quote_cap: 0,
         base_cap: u64::MAX,
     };
-    let caps = UserCapsV0::from_caps(vec![partial, excluded]);
+    let caps = UserCapsV0::from_caps(vec![partial, excluded]).unwrap();
     assert_eq!(caps.len, 1, "only the partial spends a slot");
     assert_eq!(caps.as_slice()[0], partial);
     assert!(caps.is_excluded(1));
@@ -279,7 +279,7 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
             base_cap: u64::MAX,
         })
         .collect();
-    let caps = UserCapsV0::from_caps(all);
+    let caps = UserCapsV0::from_caps(all).unwrap();
     assert_eq!(caps.len, 0);
     assert!((0..USER_SET_CAPACITY).all(|i| caps.is_excluded(i)));
     assert_eq!(encode(&caps).len(), USER_CAPS_BYTES);
@@ -293,7 +293,7 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
             base_cap: u64::MAX,
         })
         .collect();
-    let caps = UserCapsV0::from_caps(many);
+    let caps = UserCapsV0::from_caps(many).unwrap();
     assert_eq!(caps.len as usize, USER_CAPS_CAPACITY);
     assert_eq!(caps.as_slice()[0].quote_cap, 1_000, "the tightest is kept");
     assert!(
@@ -323,7 +323,7 @@ fn the_user_set_encodes_to_what_it_carries() {
         direction: DirectionV0::Long,
         size: 1,
         caps: UserCapsV0::EMPTY,
-        reference_price: 0,
+        reference_price: None,
         taker: None,
         limit_price: 0,
     };
@@ -475,7 +475,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         direction: DirectionV0::Long,
         size: u64::MAX,
         caps: UserCapsV0::EMPTY,
-        reference_price: i64::MAX,
+        reference_price: Some(u64::MAX),
         taker: Some(user_ref(0xFF, 0)),
         limit_price: u64::MAX,
     };
@@ -486,7 +486,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         direction: DirectionV0::Long,
         size: u64::MAX,
         caps: UserCapsV0::EMPTY,
-        reference_price: i64::MAX,
+        reference_price: Some(u64::MAX),
         taker: Some(user_ref(0xFF, 0)),
     };
 

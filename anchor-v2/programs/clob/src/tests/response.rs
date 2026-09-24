@@ -109,12 +109,13 @@ fn done(change_index: u16, order_id: u64) -> CompletedOrderV0 {
     }
 }
 
-fn part(change_index: u32, order_id: u64, base_filled: u64) -> PartiallyFilledOrderV0 {
+fn part(change_index: u16, order_id: u64, base_filled: u64) -> PartiallyFilledOrderV0 {
     PartiallyFilledOrderV0 {
         order_id,
         base_filled,
         client_order_id: client_id(order_id),
         change_index,
+        _pad: [0; 2],
     }
 }
 
@@ -140,7 +141,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
             100,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -169,7 +170,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
             6,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -191,7 +192,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
             10,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -221,7 +222,7 @@ fn quote_stops_at_the_level_cap() {
             u64::MAX,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -262,7 +263,7 @@ fn execute_streams_balance_changes_merged_by_user() {
             15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -321,7 +322,7 @@ fn execute_streams_a_sub_min_cull_alongside_the_fill() {
             15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -363,7 +364,7 @@ fn execute_streams_the_one_order_it_left_resting_smaller() {
             15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -404,7 +405,7 @@ fn a_fill_reports_at_most_one_partial() {
                 size,
                 &[],
                 &UserCapsV0::EMPTY,
-                0,
+                None,
                 None,
                 false,
                 0,
@@ -444,7 +445,7 @@ fn execute_stops_at_the_user_cap() {
             10 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -563,7 +564,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
             12 * TENTH,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -592,7 +593,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
             8 * TENTH,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -625,7 +626,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
         size: 12,
         users: &[],
         caps: UserCapsV0::EMPTY,
-        reference_price: 0,
+        reference_price: None,
         taker: Some(taker),
         limit_price: 0,
     };
@@ -677,7 +678,7 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
         direction: crate::state::Direction::Long,
         size: 7,
         caps: UserCapsV0::EMPTY,
-        reference_price: 0,
+        reference_price: None,
         taker: None,
         limit_price: 0,
     };
@@ -687,12 +688,12 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
     // offset — which is the alignment a `UserRefV0` reference needs.
     assert_eq!(bytes[..4], 2u32.to_le_bytes());
     assert_eq!(bytes[4..4 + USER_REF_BYTES], encode(&user(0xA))[..]);
-    // The trailing bytes: direction, size, caps, reference price, the absent
-    // taker's option tag, the price bound, the served-window flag and the
-    // consume-reservation flag.
+    // The trailing bytes: direction, size, caps, the absent reference price's
+    // option tag, the absent taker's option tag, the price bound, the
+    // served-window flag and the consume-reservation flag.
     assert_eq!(
         bytes.len(),
-        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 8 + 1 + 1
+        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 1 + 1 + 8 + 1 + 1
     );
 
     let decoded: QuoteArgsV0 =
@@ -766,7 +767,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
             fills as u64 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -831,7 +832,7 @@ fn a_corrupt_book_cannot_produce_a_response() {
                 10,
                 &[],
                 &UserCapsV0::EMPTY,
-                0,
+                None,
                 None,
                 0,
                 false,
@@ -849,7 +850,7 @@ fn a_corrupt_book_cannot_produce_a_response() {
                 10,
                 &[],
                 &UserCapsV0::EMPTY,
-                0,
+                None,
                 None,
                 false,
                 0,
@@ -877,7 +878,7 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
             15,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -901,7 +902,7 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
         15,
         &[],
         &UserCapsV0::EMPTY,
-        0,
+        None,
         None,
         false,
         0,
@@ -957,7 +958,7 @@ fn the_streamed_response_parses_back() {
             15,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -1022,7 +1023,7 @@ fn a_consumed_order_reports_its_reduce_only_flag() {
             10,
             &[reducer, maker],
             &caps,
-            0,
+            Some(0),
             None,
             false,
             0,
@@ -1066,7 +1067,7 @@ fn a_quote_promises_no_more_depth_than_execute_can_deliver() {
             100,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -1086,7 +1087,7 @@ fn a_quote_promises_no_more_depth_than_execute_can_deliver() {
             promised,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,

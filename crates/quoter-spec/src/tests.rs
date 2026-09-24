@@ -78,6 +78,7 @@ fn partial() -> [PartiallyFilledOrderV0; 1] {
         base_filled: 3,
         client_order_id: 110,
         change_index: 0,
+        _pad: [0; 2],
     }]
 }
 
@@ -208,7 +209,7 @@ fn the_execute_writer_writes_what_the_reader_reads() {
         .iter()
         .position(|change| change.user == c[0].user)
         .unwrap();
-    assert_eq!(found as u32, first);
+    assert_eq!(found, first as usize);
     let record = writer.change_mut(region.bytes(), first).unwrap();
     record.base_size += 3;
     record.quote_size += 4;
@@ -352,7 +353,7 @@ fn the_args_put_the_user_set_first_and_count_it_in_four_bytes() {
         direction: DirectionV0::Long,
         size: 12,
         caps: UserCapsV0::EMPTY,
-        reference_price: -5,
+        reference_price: Some(5),
         taker: Some(user(3, 1)),
         limit_price: 0,
         taker_served_window: true,
@@ -372,7 +373,7 @@ fn the_args_put_the_user_set_first_and_count_it_in_four_bytes() {
     assert_eq!(bytes.len(), args_size(&args).unwrap());
     assert_eq!(
         bytes.len(),
-        after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8 + 1 + 1
+        after_set + 1 + 8 + USER_CAPS_BYTES + 1 + 8 + 1 + UserRefV0::SIZE + 8 + 1 + 1
     );
 
     // And it reads back as a slice into those bytes, not a copy of them.
@@ -390,14 +391,14 @@ fn an_unrestricted_set_costs_four_bytes() {
         direction: DirectionV0::Short,
         size: 1,
         caps: UserCapsV0::EMPTY,
-        reference_price: 0,
+        reference_price: None,
         taker: None,
         taker_served_window: false,
         include_taker_origin_reservations: false,
     };
     let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
     assert_eq!(&bytes[..4], &0u32.to_le_bytes());
-    assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 1 + 1);
+    assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 1 + 1 + 1 + 1);
     assert_eq!(bytes.len(), args_size(&args).unwrap());
 
     let read: ExecuteArgsV0 = wincode::config::deserialize(&bytes, ARGS_CONFIG).unwrap();
@@ -540,7 +541,7 @@ fn a_budget_that_does_not_fit_becomes_an_exclusion() {
         quote_cap: 1_000 - index as u64,
         base_cap: u64::MAX,
     });
-    let set = UserCapsV0::from_caps(caps);
+    let set = UserCapsV0::from_caps(caps).unwrap();
 
     assert_eq!(set.len as usize, USER_CAPS_CAPACITY);
     // Index 0 has the loosest quote_cap of the nine, so it is the one evicted.
@@ -565,7 +566,8 @@ fn no_room_costs_no_slot() {
         index,
         quote_cap: 0,
         base_cap: u64::MAX,
-    }));
+    }))
+    .unwrap();
 
     assert_eq!(set.len, 0);
     for index in 0..20 {
@@ -581,7 +583,8 @@ fn an_unbounded_budget_is_not_carried() {
         index,
         quote_cap: u64::MAX,
         base_cap: u64::MAX,
-    }));
+    }))
+    .unwrap();
 
     assert_eq!(set.len, 0);
     assert!(!set.any_excluded());
@@ -603,4 +606,51 @@ fn layout_is_pinned() {
     assert_eq!(&bytes[16..48], &[0xABu8; 32]);
     assert_eq!(&bytes[48..50], &[0x01, 0x02]);
     assert_eq!(bytes.len(), CHANGE_BYTES);
+}
+
+/// A cap must name one user of the set. An index past the set or an index
+/// named twice would otherwise pass unbounded.
+#[test]
+fn a_cap_that_names_no_single_user_is_refused() {
+    let cap = |index| UserCapV0 {
+        index,
+        quote_cap: 10,
+        base_cap: u64::MAX,
+    };
+    assert_eq!(
+        UserCapsV0::from_caps([cap(USER_SET_CAPACITY as u8)]),
+        Err(SpecError::InvalidCapIndex)
+    );
+    assert_eq!(
+        UserCapsV0::from_caps([cap(3), cap(3)]),
+        Err(SpecError::InvalidCapIndex)
+    );
+}
+
+#[test]
+fn a_change_the_writer_has_not_written_is_out_of_range() {
+    let mut region = Region::new(256);
+    let mut writer = ExecuteWriter::new();
+    writer.push_change(region.bytes(), changes()[0]).unwrap();
+    assert!(writer.change_mut(region.bytes(), 0).is_ok());
+    assert_eq!(
+        writer.change_mut(region.bytes(), 1).map(|_| ()),
+        Err(SpecError::ChangeIndexOutOfRange)
+    );
+}
+
+#[test]
+fn a_pointer_past_u32_is_refused() {
+    assert_eq!(
+        ResponsePointerV0::at(8, 16),
+        Ok(ResponsePointerV0 { offset: 8, len: 16 })
+    );
+    assert_eq!(
+        ResponsePointerV0::at(u32::MAX as usize + 1, 0),
+        Err(SpecError::PointerOverflow)
+    );
+    assert_eq!(
+        ResponsePointerV0::at(0, u32::MAX as usize + 1),
+        Err(SpecError::PointerOverflow)
+    );
 }

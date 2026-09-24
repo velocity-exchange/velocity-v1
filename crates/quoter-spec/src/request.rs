@@ -117,12 +117,23 @@ impl UserCapsV0 {
     /// overflows. The rest take the slots, tightest first. A cap that does not
     /// fit becomes an exclusion, because a drop would offer the user's whole
     /// resting depth, which is the reading the cap exists to correct.
-    pub fn from_caps(caps: impl IntoIterator<Item = UserCapV0>) -> Self {
+    ///
+    /// Refuses an index past [`USER_SET_CAPACITY`] or an index named twice.
+    /// Neither names one user, so no bound can be applied to it.
+    pub fn from_caps(caps: impl IntoIterator<Item = UserCapV0>) -> Result<Self, SpecError> {
         let mut set = Self::EMPTY;
+        let mut named = [0u8; USER_EXCLUSION_BITMAP_BYTES];
         let mut partial: [UserCapV0; USER_CAPS_CAPACITY] =
             [UserCapV0::default(); USER_CAPS_CAPACITY];
         let mut partial_len = 0usize;
         for cap in caps {
+            let index = cap.index as usize;
+            if index >= USER_SET_CAPACITY || named[index / 8] & (1 << (index % 8)) != 0 {
+                return Err(SpecError::InvalidCapIndex);
+            }
+
+            named[index / 8] |= 1 << (index % 8);
+
             if cap.quote_cap == 0 {
                 set.exclude(cap.index as usize);
                 continue;
@@ -165,7 +176,7 @@ impl UserCapsV0 {
 
         set.caps = partial;
         set.len = partial_len as u8;
-        set
+        Ok(set)
     }
 }
 
@@ -217,9 +228,9 @@ pub struct QuoteArgsV0<'a> {
     pub size: u64,
     pub caps: UserCapsV0,
     /// The price the caller marks a filled position at, in PRICE_PRECISION.
-    /// Only [`UserCapV0`] budgets are spent against it. It does not bound what a
-    /// quoter may fill at.
-    pub reference_price: i64,
+    /// Budgets are spent and bands are checked against it. It does not bound
+    /// what a quoter may fill at. `None` is a read that settles nothing.
+    pub reference_price: Option<u64>,
     /// The taker's own user, whose resting liquidity is skipped
     /// unconditionally (self-trade prevention).
     pub taker: Option<UserRefV0>,
@@ -251,7 +262,8 @@ pub struct ExecuteArgsV0<'a> {
     pub caps: UserCapsV0,
     /// The mark the quote was taken against. A different price makes a quoter
     /// that spends budgets pass over a different set of orders than it quoted.
-    pub reference_price: i64,
+    /// A fill always has a mark, so a quoter may refuse `None` here.
+    pub reference_price: Option<u64>,
     pub taker: Option<UserRefV0>,
     pub taker_served_window: bool,
     pub include_taker_origin_reservations: bool,

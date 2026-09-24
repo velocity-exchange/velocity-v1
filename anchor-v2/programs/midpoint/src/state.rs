@@ -445,11 +445,10 @@ impl MidpointQuoterV0 {
     }
 
     /// Whether the current mid sits within the configured band of the caller's
-    /// reference price. The reference is velocity's oracle. A zero bound, a
-    /// zero mid, or a non-positive reference disables the check. A crank path
-    /// that passes no reference must not be blocked here.
-    pub fn mid_within_deviation(&self, reference_price: i64) -> bool {
-        if self.max_mid_deviation_ppm == 0 || self.mid_price == 0 || reference_price <= 0 {
+    /// reference price, which is velocity's oracle. A zero bound or a zero mid
+    /// disables the check. A zero reference fails it whenever a bound is set.
+    pub fn mid_within_deviation(&self, reference_price: u64) -> bool {
+        if self.max_mid_deviation_ppm == 0 || self.mid_price == 0 {
             return true;
         }
 
@@ -824,7 +823,7 @@ impl MidpointQuoterV0 {
         let len = writer
             .finish(&mut response[..], PriceLevelV0::default())
             .map_err(MidpointError::from)?;
-        Ok(response_pointer(len))
+        response_pointer(len)
     }
 
     /// Stream an `ExecuteResponseV0` into the response tail. It carries at
@@ -855,14 +854,14 @@ impl MidpointQuoterV0 {
         let len = writer
             .finish(&mut self.response[..], &[], &[], &[])
             .map_err(MidpointError::from)?;
-        Ok(response_pointer(len))
+        response_pointer(len)
     }
 }
 
 /// Point at the `len` bytes the writer just streamed. The response region
 /// always starts at [`RESPONSE_OFFSET`].
-fn response_pointer(len: usize) -> ResponsePointerV0 {
-    ResponsePointerV0::at(RESPONSE_OFFSET, len)
+fn response_pointer(len: usize) -> Result<ResponsePointerV0> {
+    Ok(ResponsePointerV0::at(RESPONSE_OFFSET, len).map_err(MidpointError::from)?)
 }
 
 #[cfg(test)]
@@ -909,21 +908,19 @@ mod tests {
     #[test]
     fn mid_deviation_bound_gates_an_off_market_mid() {
         let mut q = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
-        // The helper's band is as wide as it can be, so any mid passes and a
-        // zero reference never gates.
-        assert!(q.mid_within_deviation(MID as i64));
-        assert!(q.mid_within_deviation(0));
+        // The helper's band is as wide as it can be, so any real mid passes.
+        assert!(q.mid_within_deviation(MID));
+        assert!(q.mid_within_deviation(MID / 1_000));
 
         // A one percent band around the oracle reference.
         q.max_mid_deviation_ppm = 10_000;
-        assert!(q.mid_within_deviation(MID as i64)); // exact
-        assert!(q.mid_within_deviation((MID + MID / 200) as i64)); // ~0.5% off, inside
-        assert!(!q.mid_within_deviation((MID + MID / 50) as i64)); // ~2% off, outside
-        assert!(!q.mid_within_deviation((MID / 2) as i64)); // far below, outside
+        assert!(q.mid_within_deviation(MID)); // exact
+        assert!(q.mid_within_deviation(MID + MID / 200)); // ~0.5% off, inside
+        assert!(!q.mid_within_deviation(MID + MID / 50)); // ~2% off, outside
+        assert!(!q.mid_within_deviation(MID / 2)); // far below, outside
 
-        // A non-positive reference disables the check rather than gating.
-        assert!(q.mid_within_deviation(0));
-        assert!(q.mid_within_deviation(-5));
+        // A zero reference is a price, not an absent one, so the band fails.
+        assert!(!q.mid_within_deviation(0));
     }
 
     /// A `Vec`-building encoder, kept as the reference for the streaming

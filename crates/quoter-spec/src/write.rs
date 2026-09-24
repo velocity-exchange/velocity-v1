@@ -302,8 +302,8 @@ impl ExecuteWriter {
         &mut self,
         region: &mut [u8],
         change: UserBalanceChangeV0,
-    ) -> Result<u32, SpecError> {
-        let index = u32::try_from(self.changes).map_err(|_| SpecError::RegionTooSmall)?;
+    ) -> Result<u16, SpecError> {
+        let index = u16::try_from(self.changes).map_err(|_| SpecError::ChangeIndexOutOfRange)?;
         self.cursor.push(region, change)?;
         self.changes += 1;
         Ok(index)
@@ -322,12 +322,12 @@ impl ExecuteWriter {
     pub fn change_mut<'a>(
         &self,
         region: &'a mut [u8],
-        index: u32,
+        index: u16,
     ) -> Result<&'a mut UserBalanceChangeV0, SpecError> {
         self.cursor
             .section_mut(region, CHANGES_START, self.changes)?
             .get_mut(index as usize)
-            .ok_or(SpecError::DanglingCompletedOrder)
+            .ok_or(SpecError::ChangeIndexOutOfRange)
     }
 
     /// Close the response: backfill the change count, then write the remaining

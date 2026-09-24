@@ -133,7 +133,7 @@ pub trait ClobBook {
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
-        reference_price: i64,
+        reference_price: Option<u64>,
         taker: Option<&UserRefV0>,
         limit_price: u64,
         include_taker_origin_reservations: bool,
@@ -156,7 +156,7 @@ pub trait ClobBook {
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
-        reference_price: i64,
+        reference_price: Option<u64>,
         taker: Option<&UserRefV0>,
         include_taker_origin_reservations: bool,
         slot: u64,
@@ -1105,7 +1105,7 @@ impl ClobBook for ClobMarketV0 {
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
-        reference_price: i64,
+        reference_price: Option<u64>,
         taker: Option<&UserRefV0>,
         limit_price: u64,
         include_taker_origin_reservations: bool,
@@ -1133,7 +1133,7 @@ impl ClobBook for ClobMarketV0 {
 
         let mut reservation =
             CrossReservation::new(self, side, slot, now, include_taker_origin_reservations);
-        let mut budget = UserBudget::new(caps, side, reference_price);
+        let mut budget = UserBudget::new(caps, side, reference_price)?;
         let mut users_promised = DistinctUsers::new(if users.is_empty() {
             max_execute_users
         } else {
@@ -1265,7 +1265,7 @@ impl ClobBook for ClobMarketV0 {
         let len = writer
             .finish(&mut self.response, unsettleable_level.unwrap_or_default())
             .map_err(ClobError::from)?;
-        Ok(response_pointer(len))
+        response_pointer(len)
     }
 
     /// Describe the resting orders behind the ladder, best price first.
@@ -1340,7 +1340,7 @@ impl ClobBook for ClobMarketV0 {
         let len = writer
             .finish(&mut self.response, more)
             .map_err(ClobError::from)?;
-        Ok(response_pointer(len))
+        response_pointer(len)
     }
 
     /// Consume matchable orders best-first, removing filled orders and
@@ -1373,7 +1373,7 @@ impl ClobBook for ClobMarketV0 {
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
-        reference_price: i64,
+        reference_price: Option<u64>,
         taker: Option<&UserRefV0>,
         include_taker_origin_reservations: bool,
         slot: u64,
@@ -1405,7 +1405,7 @@ impl ClobBook for ClobMarketV0 {
 
         let mut reservation =
             CrossReservation::new(self, side, slot, now, include_taker_origin_reservations);
-        let mut budget = UserBudget::new(caps, side, reference_price);
+        let mut budget = UserBudget::new(caps, side, reference_price)?;
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -1501,7 +1501,7 @@ impl ClobBook for ClobMarketV0 {
 
             let change_index = match existing {
                 Some(index) => {
-                    let index = index as u32;
+                    let index = u16::try_from(index).map_err(|_| ClobError::MathError)?;
                     let record = writer
                         .change_mut(&mut book.response, index)
                         .map_err(ClobError::from)?;
@@ -1541,7 +1541,7 @@ impl ClobBook for ClobMarketV0 {
                 // every consumed order.
                 completed.push(CompletedOrderV0 {
                     order_id: node.order_id,
-                    change_index: u16::try_from(change_index).map_err(|_| ClobError::MathError)?,
+                    change_index,
                     flags: removed_order_flags(node),
                     _pad: [0; 1],
                     client_order_id: node.client_order_id,
@@ -1580,6 +1580,7 @@ impl ClobBook for ClobMarketV0 {
                         base_filled: take,
                         client_order_id: node.client_order_id,
                         change_index,
+                        _pad: [0; 2],
                     });
 
                     book.update_node(index, |n| n.base_asset_amount = remainder)?;
@@ -1605,7 +1606,7 @@ impl ClobBook for ClobMarketV0 {
                     partial.as_slice(),
                 )
                 .map_err(ClobError::from)?,
-        );
+        )?;
 
         // Every removal the walk made came off this side.
         let expected_count = count_before
@@ -2050,7 +2051,15 @@ struct UserBudget {
 }
 
 impl UserBudget {
-    fn new(caps: &UserCapsV0, side: Side, reference_price: i64) -> Self {
+    /// A quote budget is spent against the reference price, so a walk that
+    /// carries one needs the price. Without it the book refuses the call.
+    fn new(caps: &UserCapsV0, side: Side, reference_price: Option<u64>) -> Result<Self> {
+        let spends_quote = caps.as_slice().iter().any(|cap| cap.quote_cap != u64::MAX);
+        require!(
+            reference_price.is_some() || !spends_quote,
+            ClobError::MissingReferencePrice
+        );
+
         let mut budget = UserBudget {
             excluded: caps.excluded,
             any_excluded: caps.any_excluded(),
@@ -2062,7 +2071,7 @@ impl UserBudget {
 
             len: 0,
             side,
-            reference_price: reference_price.max(0) as u64,
+            reference_price: reference_price.unwrap_or(0),
         };
 
         for cap in caps.as_slice() {
@@ -2075,7 +2084,7 @@ impl UserBudget {
             budget.len += 1;
         }
 
-        budget
+        Ok(budget)
     }
 
     /// What one base of an order at `price` costs its owner. That is the

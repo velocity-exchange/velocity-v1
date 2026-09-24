@@ -8,6 +8,7 @@
 use {
     crate::{
         error::{ErrorCode, VelocityResult},
+        math::casting::Cast,
         msg,
         state::prop_amm::{
             find_account, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket,
@@ -188,7 +189,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                 self.market_index,
                 ExecuteArgsV0 {
                     caps: self.caps,
-                    reference_price: self.reference_price,
+                    reference_price: Some(self.reference_price.cast()?),
                     direction,
                     size,
                     users: self.users,

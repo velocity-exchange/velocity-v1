@@ -238,15 +238,15 @@ impl From<SideV0> for PositionDirection {
 }
 
 /// Bytes an execute CPI's instruction data takes: the discriminator, the user set, the
-/// direction, the size, the caps, the reference price, the taker behind its option tag,
-/// then `taker_served_window` and `include_taker_origin_reservations`. A size rather
-/// than a constant, because the user set is length-prefixed. One byte short and the
-/// `Vec` doubles onto a heap that never reclaims.
+/// direction, the size, the caps, the reference price and the taker behind their option
+/// tags, and two flags. It counts a reference price, which every execute carries. One
+/// byte short and the `Vec` doubles onto a heap that never reclaims.
 pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
     8 + 1
         + 8
         + user_set_bytes(users)
         + USER_CAPS_BYTES
+        + 1
         + 8
         + 1
         + if taker { UserRefV0::SIZE } else { 0 }

@@ -435,8 +435,8 @@ const_assert_eq!(
 pub const RESPONSE_OFFSET: usize = 8 + core::mem::size_of::<ClobHeaderV0>() - RESPONSE_BUFFER_BYTES;
 
 /// The pointer `quote_v0`/`execute_v0` return for a response of `len` bytes.
-pub fn response_pointer(len: usize) -> ResponsePointerV0 {
-    ResponsePointerV0::at(RESPONSE_OFFSET, len)
+pub fn response_pointer(len: usize) -> Result<ResponsePointerV0> {
+    Ok(ResponsePointerV0::at(RESPONSE_OFFSET, len).map_err(crate::error::ClobError::from)?)
 }
 
 /// Account-data offset of the order-node tail. It is `[disc][H][len: u32]`

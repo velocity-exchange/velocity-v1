@@ -256,8 +256,9 @@ fn quote_one_slot<'info>(
                 // The view settles nothing, so it constrains nothing. It
                 // reports the book as it stands.
                 caps: crate::state::prop_amm::UserCapsV0::EMPTY,
-                // No budgets to price, so nothing reads this.
-                reference_price: 0,
+                // The view settles nothing, so it carries no mark. A quoter
+                // then prices no budget and checks no band.
+                reference_price: None,
                 direction: args.direction,
                 size: args.size,
                 // A view has no settlement, so it applies no loaded-user

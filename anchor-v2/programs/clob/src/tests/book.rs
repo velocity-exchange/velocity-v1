@@ -491,7 +491,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
             u64::MAX,
             &users,
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             101,
             false,
@@ -508,7 +508,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
             u64::MAX,
             &users,
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -535,7 +535,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
             u64::MAX,
             &users,
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             102,
             false,
@@ -544,6 +544,45 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
         )
         .unwrap();
     assert_eq!(levels(&mut book, pointer), vec![(103, 2), (102, 2)]);
+}
+
+/// A quote budget is spent against the reference price, so a walk that
+/// carries one with no price is refused rather than spent against zero.
+#[test]
+fn a_quote_budget_without_a_reference_price_is_refused() {
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let tight = user(1);
+    place(&mut book, Side::Ask, 100, 5, tight);
+
+    let users = [tight];
+    let mut caps = UserCapsV0::EMPTY;
+    caps.len = 1;
+    caps.caps[0] = crate::state::UserCapV0 {
+        index: 0,
+        quote_cap: 4,
+        base_cap: u64::MAX,
+    };
+
+    assert_err(
+        book.quote(
+            Direction::Long,
+            5,
+            &users,
+            &caps,
+            None,
+            None,
+            0,
+            false,
+            0,
+            0,
+        ),
+        ClobError::MissingReferencePrice,
+    );
+    assert_err(
+        book.execute(Direction::Long, 5, &users, &caps, None, None, false, 0, 0),
+        ClobError::MissingReferencePrice,
+    );
 }
 
 /// A capped user is passed over where they rest, and the depth behind them
@@ -575,7 +614,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
             12,
             &users,
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -588,7 +627,18 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // Capped: the front order is gone and the one behind it survives — not
     // truncated away with it.
     let pointer = book
-        .quote(Direction::Long, 12, &users, &caps, 0, None, 0, false, 0, 0)
+        .quote(
+            Direction::Long,
+            12,
+            &users,
+            &caps,
+            Some(0),
+            None,
+            0,
+            false,
+            0,
+            0,
+        )
         .unwrap();
     assert_eq!(
         levels(&mut book, pointer),
@@ -598,7 +648,17 @@ fn a_user_with_no_room_is_skipped_mid_book() {
 
     // And execute spends the same budget, so the fill matches the ladder.
     let outcome = book
-        .execute(Direction::Long, 12, &users, &caps, 0, None, false, 0, 0)
+        .execute(
+            Direction::Long,
+            12,
+            &users,
+            &caps,
+            Some(0),
+            None,
+            false,
+            0,
+            0,
+        )
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 7);
@@ -640,7 +700,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
             12 * UNIT,
             &users,
             &caps,
-            102,
+            Some(102),
             None,
             0,
             false,
@@ -660,7 +720,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
             12 * UNIT,
             &users,
             &caps,
-            102,
+            Some(102),
             None,
             false,
             0,
@@ -706,7 +766,7 @@ fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
             12 * UNIT,
             &users,
             &caps,
-            100,
+            Some(100),
             None,
             false,
             0,
@@ -747,7 +807,7 @@ fn a_reduce_only_order_with_no_cover_does_not_fill() {
             12 * UNIT,
             &users,
             &caps,
-            100,
+            Some(100),
             None,
             false,
             0,
@@ -799,7 +859,7 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
             12 * UNIT,
             &users,
             &caps,
-            102,
+            Some(102),
             None,
             0,
             false,
@@ -819,7 +879,7 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
             12 * UNIT,
             &users,
             &caps,
-            102,
+            Some(102),
             None,
             false,
             0,
@@ -858,7 +918,7 @@ fn a_fill_that_pays_the_maker_spends_no_budget() {
             5 * UNIT,
             &users,
             &caps,
-            98,
+            Some(98),
             None,
             false,
             0,
@@ -904,7 +964,7 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
             15,
             &users,
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,
@@ -925,7 +985,7 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
             15,
             &users,
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             false,
             0,
@@ -962,7 +1022,7 @@ fn a_link_out_of_the_arena_fails_every_walk() {
                 10,
                 &[],
                 &UserCapsV0::EMPTY,
-                0,
+                None,
                 None,
                 0,
                 false,
@@ -977,7 +1037,7 @@ fn a_link_out_of_the_arena_fails_every_walk() {
                 10,
                 &[],
                 &UserCapsV0::EMPTY,
-                0,
+                None,
                 None,
                 false,
                 0,
@@ -1010,7 +1070,7 @@ fn a_cycled_link_cannot_spin_the_walk() {
             u64::MAX,
             &[],
             &UserCapsV0::EMPTY,
-            0,
+            None,
             None,
             0,
             false,

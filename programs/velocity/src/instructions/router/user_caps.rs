@@ -141,6 +141,7 @@
 use {
     crate::{
         controller::position::PositionDirection,
+        error::ErrorCode,
         instructions::{
             optional_accounts::AccountMaps,
             router::quoted_route::{route_slab, QuoteInputs},
@@ -296,7 +297,10 @@ pub fn build_user_caps<'info>(
         });
     }
 
-    Ok((UserCapsV0::from_caps(caps), rooms))
+    // Each index comes from one position of `inputs.users`, which the wire
+    // already bounds, so a refusal here is a bug in this walk.
+    let caps = UserCapsV0::from_caps(caps).map_err(|_| ErrorCode::TooManyQuoterWireUsers)?;
+    Ok((caps, rooms))
 }
 
 /// The base room of every custom quoter the route consults, by slab slot.

@@ -253,7 +253,7 @@ fn quote_args<'a>(direction: DirectionV0, size: u64) -> QuoteArgsV0<'a> {
         size,
         users: &[],
         caps: UserCapsV0::EMPTY,
-        reference_price: 0,
+        reference_price: None,
         taker: None,
         limit_price: 0,
     }
@@ -287,7 +287,7 @@ fn execute_ix_served(
             size,
             users: &[],
             caps: UserCapsV0::EMPTY,
-            reference_price: 0,
+            reference_price: Some(MID),
             taker: None,
         },
     }
@@ -723,7 +723,7 @@ fn quoted_user_gates_apply() {
             taker_served_window: true,
             include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
-            reference_price: 0,
+            reference_price: None,
             taker: Some(quoted),
             ..quote_args(DirectionV0::Long, UNIT)
         },
@@ -739,7 +739,7 @@ fn quoted_user_gates_apply() {
             include_taker_origin_reservations: false,
             users: &[stranger, quoted],
             caps: UserCapsV0::EMPTY,
-            reference_price: 0,
+            reference_price: None,
             taker: Some(stranger),
             ..quote_args(DirectionV0::Long, UNIT)
         },
@@ -1453,7 +1453,7 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
-            reference_price: MID as i64,
+            reference_price: Some(MID),
             ..quote_args(DirectionV0::Long, UNIT)
         },
     );
@@ -1461,11 +1461,11 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
     assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
 
     // A reference two percent away quotes nothing.
-    let off = (MID + MID / 50) as i64;
+    let off = MID + MID / 50;
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
-            reference_price: off,
+            reference_price: Some(off),
             ..quote_args(DirectionV0::Long, UNIT)
         },
     );
@@ -1481,7 +1481,7 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
             size: UNIT,
             users: &[],
             caps: UserCapsV0::EMPTY,
-            reference_price: off,
+            reference_price: Some(off),
             taker: None,
         },
     }
@@ -1492,4 +1492,35 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
 
     let meta = send(&mut ctx, ix).unwrap();
     assert!(parse_execute(&read_response(&ctx, &meta)).is_empty());
+}
+
+/// A quote with no reference price is a read, so it skips the band. A fill
+/// with none cannot be held to the band, so the midpoint refuses it.
+#[test]
+fn an_execute_without_a_reference_price_is_refused() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+
+    let ix = quote_ix(&ctx, DirectionV0::Long, UNIT);
+    let meta = send(&mut ctx, ix).unwrap();
+    assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
+
+    let ix = instruction::ExecuteV0 {
+        args: ExecuteArgsV0 {
+            taker_served_window: true,
+            include_taker_origin_reservations: false,
+            direction: DirectionV0::Long,
+            size: UNIT,
+            users: &[],
+            caps: UserCapsV0::EMPTY,
+            reference_price: None,
+            taker: None,
+        },
+    }
+    .to_instruction(accounts::ExecuteV0 {
+        quoter: addr(ctx.quoter),
+        execute_authority: addr(ctx.execute_auth.pubkey()),
+    });
+
+    assert!(send(&mut ctx, ix).is_err());
 }

@@ -81,6 +81,13 @@ pub enum SpecError {
     /// The args could not be measured or written. The caller logs the
     /// underlying `wincode` error, which does not survive as a copyable value.
     Write,
+    /// A writer was asked for a balance change it has not written, or for more
+    /// changes than a `change_index` can name.
+    ChangeIndexOutOfRange,
+    /// A response offset or length does not fit the `u32` a pointer carries.
+    PointerOverflow,
+    /// A cap names an index past the user set, or an index another cap names.
+    InvalidCapIndex,
 }
 
 /// A velocity user in derivable form: the wallet and sub-account index that both

@@ -1081,8 +1081,8 @@ fn quote_entry_sides<'info>(
                 // The crank's taker is the protocol `User` and the legs it
                 // matches are the book's own, so it constrains nobody.
                 caps: crate::state::prop_amm::UserCapsV0::EMPTY,
-                // No budgets to price, so nothing reads this.
-                reference_price: 0,
+                // A discovery read settles nothing, so it carries no mark.
+                reference_price: None,
                 direction,
                 size: u64::MAX / 2,
                 users: &[],

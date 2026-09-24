@@ -70,8 +70,8 @@ impl CancelledRemainderV0 {
 pub struct CompletedOrderV0 {
     pub order_id: u64,
     /// Which entry of [`ExecuteResponseV0::changes`] this order belongs to.
-    /// [`ExecuteResponseV0::parse`] refuses an index past the end, which would
-    /// unwind another user's live margin.
+    /// Changes merge by user, so a `u16` names every one. `parse` refuses an
+    /// index past the end, which would unwind another user's live margin.
     pub change_index: u16,
     /// [`L3_ROW_FLAG_REDUCE_ONLY`] when the order was reduce-only.
     pub flags: u8,
@@ -105,7 +105,8 @@ pub struct PartiallyFilledOrderV0 {
     pub client_order_id: u32,
     /// Which entry of [`ExecuteResponseV0::changes`] this fill is part of.
     /// Bounded like [`CompletedOrderV0::change_index`].
-    pub change_index: u32,
+    pub change_index: u16,
+    pub _pad: [u8; 2],
 }
 
 /// One rung of a quoted ladder: `size` available at `price`.
@@ -197,16 +198,15 @@ impl<'a> ExecuteResponseV0<'a> {
     /// one order when the fill consumed one and left none partial, or left one
     /// partial and consumed none.
     pub fn sole_client_order_id(&self, change_index: usize) -> Option<u32> {
-        let index = change_index as u32;
         let mut ids = self
             .completed
             .iter()
-            .filter(|entry| entry.change_index as u32 == index)
+            .filter(|entry| entry.change_index as usize == change_index)
             .map(|entry| entry.client_order_id)
             .chain(
                 self.partial
                     .iter()
-                    .filter(|entry| entry.change_index == index)
+                    .filter(|entry| entry.change_index as usize == change_index)
                     .map(|entry| entry.client_order_id),
             );
         let first = ids.next()?;
@@ -279,11 +279,11 @@ impl ResponsePointerV0 {
     /// Point at the `len` bytes a quoter streamed at `offset`. The offset is
     /// the quoter's own, because each account puts its response region
     /// somewhere different.
-    pub fn at(offset: usize, len: usize) -> Self {
-        Self {
-            offset: offset as u32,
-            len: len as u32,
-        }
+    pub fn at(offset: usize, len: usize) -> Result<Self, SpecError> {
+        Ok(Self {
+            offset: u32::try_from(offset).map_err(|_| SpecError::PointerOverflow)?,
+            len: u32::try_from(len).map_err(|_| SpecError::PointerOverflow)?,
+        })
     }
 }
 

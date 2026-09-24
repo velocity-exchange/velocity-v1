@@ -25,11 +25,17 @@ pub use quoter_spec::ExecuteArgsV0;
 /// one balance change, which is the quoted user. It cancels nothing, because
 /// standing intent holds no orders. Velocity clamps `size` to the quoted
 /// user's margin before the call, and it validates at-or-better on its own
-/// side.
+/// side. A fill always has a mark, so an execute with no reference price is
+/// refused rather than let past the band.
 pub fn handle_execute_v0(
     ctx: &mut Context<ExecuteV0>,
     args: ExecuteArgsV0<'_>,
 ) -> Result<ResponsePointerV0> {
+    require!(
+        args.reference_price.is_some(),
+        MidpointError::MissingReferencePrice
+    );
+
     let clock = Clock::get()?;
     let open = is_open(
         &ctx.accounts.quoter,

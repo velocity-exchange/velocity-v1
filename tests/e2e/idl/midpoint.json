@@ -492,6 +492,11 @@
       "code": 6011,
       "name": "OversizedUserSet",
       "msg": "User set holds more entries than USER_SET_CAPACITY"
+    },
+    {
+      "code": 6012,
+      "name": "MissingReferencePrice",
+      "msg": "An execute needs a reference price to check the band against"
     }
   ],
   "types": [
@@ -642,9 +647,12 @@
             "name": "reference_price",
             "docs": [
               "The mark the quote was taken against. A different price makes a quoter",
-              "that spends budgets pass over a different set of orders than it quoted."
+              "that spends budgets pass over a different set of orders than it quoted.",
+              "A fill always has a mark, so a quoter may refuse `None` here."
             ],
-            "type": "i64"
+            "type": {
+              "option": "u64"
+            }
           },
           {
             "name": "taker",
@@ -1112,10 +1120,12 @@
             "name": "reference_price",
             "docs": [
               "The price the caller marks a filled position at, in PRICE_PRECISION.",
-              "Only [`UserCapV0`] budgets are spent against it. It does not bound what a",
-              "quoter may fill at."
+              "Budgets are spent and bands are checked against it. It does not bound",
+              "what a quoter may fill at. `None` is a read that settles nothing."
             ],
-            "type": "i64"
+            "type": {
+              "option": "u64"
+            }
           },
           {
             "name": "taker",

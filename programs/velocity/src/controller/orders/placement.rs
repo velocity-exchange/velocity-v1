@@ -515,8 +515,14 @@ pub fn place_perp_trigger_order(
 
     // Both trigger executors fire onto the market's CLOB, so a trigger armed
     // on a market with none would stay armed with nothing to fire it.
+    let market_has_clob = maps
+        .perp_market_map
+        .get_ref(&params.market_index)?
+        .clob_market
+        != Pubkey::default();
+
     validate!(
-        maps.perp_market_map.get_ref(&params.market_index)?.clob_market != Pubkey::default(),
+        market_has_clob,
         ErrorCode::TriggerMarketHasNoClob,
         "market {} has no CLOB to fire a trigger onto",
         params.market_index

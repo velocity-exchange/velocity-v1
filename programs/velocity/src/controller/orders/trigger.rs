@@ -68,7 +68,14 @@ pub fn trigger_and_route_order(
     // A risk-increasing trigger on a failing account cancels instead of
     // firing. The gate runs before any reward.
     let armed = user.orders[order_index];
-    if fired_order_must_cancel(user, &armed, &fired, oracle_price, accounts.user_stats, maps)? {
+    if fired_order_must_cancel(
+        user,
+        &armed,
+        &fired,
+        oracle_price,
+        accounts.user_stats,
+        maps,
+    )? {
         cancel_trigger_order(user, order_index, accounts, maps, clock)?;
         return Ok(None);
     }
@@ -592,20 +599,28 @@ mod gate_tests {
     #[test]
     fn an_expired_armed_trigger_is_not_payable_work() {
         let user = user_with_armed_trigger(100);
-        assert!(find_triggerable_order(&user, 7, MARKET, 101).unwrap().is_none());
+        assert!(find_triggerable_order(&user, 7, MARKET, 101)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn a_live_armed_trigger_is_payable_work() {
         let user = user_with_armed_trigger(100);
-        assert_eq!(find_triggerable_order(&user, 7, MARKET, 99).unwrap(), Some(0));
+        assert_eq!(
+            find_triggerable_order(&user, 7, MARKET, 99).unwrap(),
+            Some(0)
+        );
     }
 
     /// Zero means the order never expires, which is the default for a stop.
     #[test]
     fn a_trigger_without_an_expiry_never_reads_as_expired() {
         let user = user_with_armed_trigger(0);
-        assert_eq!(find_triggerable_order(&user, 7, MARKET, i64::MAX).unwrap(), Some(0));
+        assert_eq!(
+            find_triggerable_order(&user, 7, MARKET, i64::MAX).unwrap(),
+            Some(0)
+        );
     }
 
     /// The rest places behind the crank's book, so an order on another market
@@ -614,7 +629,9 @@ mod gate_tests {
     fn an_order_on_another_market_is_refused() {
         let user = user_with_armed_trigger(0);
         assert_eq!(
-            find_triggerable_order(&user, 7, MARKET + 1, 0).err().unwrap(),
+            find_triggerable_order(&user, 7, MARKET + 1, 0)
+                .err()
+                .unwrap(),
             ErrorCode::InvalidOrderMarketType
         );
     }

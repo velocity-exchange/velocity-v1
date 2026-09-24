@@ -1149,7 +1149,11 @@ impl ClobBook for ClobMarketV0 {
         let mut reservation =
             CrossReservation::new(self, side, slot, now, include_taker_origin_reservations);
         let mut budget = UserBudget::new(caps, side, reference_price);
-        let mut users_promised = DistinctUsers::new();
+        let mut users_promised = DistinctUsers::new(if users.is_empty() {
+            max_execute_users
+        } else {
+            0
+        });
 
         walk_side(self, side, |book, _, node| {
             // Stop where `execute` stops, so the ladder ends where the fill would.
@@ -1227,7 +1231,7 @@ impl ClobBook for ClobMarketV0 {
                 *slot_used = true;
             }
 
-            if !users_promised.admit(owner, max_execute_users) {
+            if !users_promised.admit(owner, &user, max_execute_users) {
                 return Ok(Walk::Stop);
             }
 
@@ -1990,30 +1994,41 @@ struct UserRoom {
 }
 
 /// `execute` writes one balance-change record per user and stops when the next will
-/// not fit, so `quote` counts the same way and stops in the same place. Membership
-/// is a bitmap over set positions, because a table of 34-byte refs does not fit
-/// this frame.
+/// not fit, so `quote` counts the same way and stops in the same place. An owner in
+/// the caller's set is a bit over its set position, because a table of 34-byte refs
+/// does not fit this frame. With no set, owners are counted by ref in a heap table,
+/// which is how `execute` counts them too.
 struct DistinctUsers {
-    seen: [u8; USER_EXCLUSION_BITMAP_BYTES],
+    named_seen: [u8; USER_EXCLUSION_BITMAP_BYTES],
+    unnamed_seen: Vec<UserRefV0>,
     count: usize,
 }
 
 impl DistinctUsers {
-    fn new() -> Self {
+    /// `unnamed_capacity` is the most owners an empty set can count, and zero
+    /// when the caller names a set.
+    fn new(unnamed_capacity: usize) -> Self {
         DistinctUsers {
-            seen: [0u8; USER_EXCLUSION_BITMAP_BYTES],
+            named_seen: [0u8; USER_EXCLUSION_BITMAP_BYTES],
+            unnamed_seen: Vec::with_capacity(unnamed_capacity),
             count: 0,
         }
     }
 
-    /// Records the owner at `index` and reports whether the walk may go on. An
-    /// owner already counted is free. A new one past `max` refuses the walk.
-    fn admit(&mut self, index: Option<usize>, max: usize) -> bool {
-        let Some(index) = index.filter(|index| *index < USER_SET_CAPACITY) else {
-            return true;
+    /// Records the owner and reports whether the walk may go on. An owner
+    /// already counted is free. A new one past `max` refuses the walk. `index`
+    /// is the owner's set position, and `None` only when the set is empty.
+    fn admit(&mut self, index: Option<usize>, user: &UserRefV0, max: usize) -> bool {
+        let already_counted = match index {
+            Some(index) if index < USER_SET_CAPACITY => {
+                self.named_seen[index / 8] & (1u8 << (index % 8)) != 0
+            }
+            Some(_) => return true,
+            // The newest owner first, because consecutive orders often share one.
+            None => self.unnamed_seen.iter().rev().any(|seen| seen == user),
         };
-        let (byte, bit) = (index / 8, 1u8 << (index % 8));
-        if self.seen[byte] & bit != 0 {
+
+        if already_counted {
             return true;
         }
 
@@ -2021,7 +2036,11 @@ impl DistinctUsers {
             return false;
         }
 
-        self.seen[byte] |= bit;
+        match index {
+            Some(index) => self.named_seen[index / 8] |= 1u8 << (index % 8),
+            None => self.unnamed_seen.push(*user),
+        }
+
         self.count += 1;
         true
     }

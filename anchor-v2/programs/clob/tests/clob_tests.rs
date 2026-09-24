@@ -1988,14 +1988,24 @@ fn cu_benchmark_interleaved_makers() {
 
     advance_slot(&mut ctx, 1);
 
+    // With no user set, the quote counts the eight makers by ref.
+    let ix = instruction::QuoteV0 {
+        args: quote_args(Direction::Long, 64),
+    }
+    .to_instruction(accounts::ResponseMarketV0 {
+        market: addr(ctx.market),
+    });
+    let quote_meta = send(&mut ctx, ix).unwrap();
+
     let meta = execute_meta_users(&mut ctx, Direction::Long, 64, Some(makers.clone())).unwrap();
     let changes = parse_balance_changes(&read_response(&ctx, &meta));
     assert_eq!(changes.len(), 8);
     // Every maker's eight orders are fully consumed and reported.
     assert!(changes.iter().all(|change| change.3.len() == 8));
     println!(
-        "CU — execute(64 orders, 8 interleaved makers): {}",
-        meta.compute_units_consumed
+        "CU — quote(64 orders, 8 interleaved makers, no set): {}, \
+         execute(64 orders, 8 interleaved makers): {}",
+        quote_meta.compute_units_consumed, meta.compute_units_consumed
     );
 }
 

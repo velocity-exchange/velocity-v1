@@ -4320,7 +4320,8 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     // scenario: the ask rests immediately, the crossing bid activates three
     // slots out. Placement min-folds the activation slot into the AtSlot
     // wake, the resolver reports no work until the slot arrives, and the
-    // cross fires the moment it does.
+    // cross fires the moment it does. The bid is a second maker's, because
+    // the resolver stages no cross between two orders of one authority.
     fixture.svm.warp_to_slot(20);
     set_oracle(
         &mut fixture.svm,
@@ -4330,9 +4331,10 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     );
 
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let bidder = add_clob_maker(&mut fixture);
     let ix = place_clob_order_ix(
-        fixture.clob_maker_user,
-        &fixture.clob_maker_authority,
+        bidder.user,
+        &bidder.authority,
         fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
@@ -4347,7 +4349,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         },
     );
 
-    send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
+    send(&mut fixture.svm, &bidder.authority, ix, &[]).unwrap();
     assert_eq!(
         book_activation_wake(&fixture),
         23,
@@ -9825,9 +9827,10 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     // The bound is loose on purpose. `find_program_address`'s bump search
     // varies a few thousand units with the account keys, and the fixture
     // draws authorities at random, so a tight bound fails about one run in
-    // five. This asserts the ~190,000-unit gap to the maker path.
+    // five. This asserts the gap to the maker path. The pair runs the
+    // order-layer steps of a routed fill, which cost about 30,000 units.
     assert!(
-        meta.compute_units_consumed < 90_000,
+        meta.compute_units_consumed < 130_000,
         "crank cost {} CU",
         meta.compute_units_consumed
     );

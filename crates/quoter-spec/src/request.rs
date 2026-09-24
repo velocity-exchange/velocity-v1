@@ -230,6 +230,13 @@ pub struct QuoteArgsV0<'a> {
     pub include_taker_origin_reservations: bool,
 }
 
+impl<'a> QuoteArgsV0<'a> {
+    /// Read the args out of instruction data, borrowing `users` in place.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, SpecError> {
+        wincode::config::deserialize(bytes, ARGS_CONFIG).map_err(|_| SpecError::Read)
+    }
+}
+
 /// Arguments to `execute_v0`: commit a fill. [`QuoteArgsV0`] without the price
 /// bound, because `size` is depth the caller chose off the ladder. A quoter may
 /// fill less than `size`, and what it filled is the sum of its balance changes.
@@ -252,11 +259,19 @@ pub struct ExecuteArgsV0<'a> {
     pub include_taker_origin_reservations: bool,
 }
 
-/// The framing of the request half. It is borsh-compatible, which is what a v2
-/// program's instruction dispatch reads. The responses use wincode's own
-/// configuration, whose length prefix is eight bytes, not four.
+impl<'a> ExecuteArgsV0<'a> {
+    /// Read the args out of instruction data, borrowing `users` in place.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, SpecError> {
+        wincode::config::deserialize(bytes, ARGS_CONFIG).map_err(|_| SpecError::Read)
+    }
+}
+
+/// The framing of the request half: anchor v2's `BorshConfig`, which a v2
+/// program's instruction dispatch reads. The zero-copy alignment check stays on,
+/// so a `users` slice that starts on an odd address is a read error. The
+/// responses use wincode's own configuration, whose length prefix is eight bytes.
 pub type ArgsConfig = wincode::config::Configuration<
-    false,
+    true,
     { wincode::config::DEFAULT_PREALLOCATION_SIZE_LIMIT },
     wincode::len::FixIntLen<u32>,
     wincode::int_encoding::LittleEndian,
@@ -265,8 +280,7 @@ pub type ArgsConfig = wincode::config::Configuration<
 >;
 
 /// The one value of [`ArgsConfig`].
-pub const ARGS_CONFIG: ArgsConfig =
-    unsafe { wincode::config::Configuration::new().disable_zero_copy_align_check() };
+pub const ARGS_CONFIG: ArgsConfig = wincode::config::Configuration::new();
 
 /// Bytes `args` takes on the wire. A caller reserves this before it writes,
 /// because a `Vec` that doubles into place on a heap that never reclaims leaks

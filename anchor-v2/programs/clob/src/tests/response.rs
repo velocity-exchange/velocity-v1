@@ -611,6 +611,10 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     );
 }
 
+// Velocity writes the args with `ARGS_CONFIG`, and anchor's dispatch reads them
+// with `BORSH_CONFIG`. They must be one type, alignment check included.
+const _: anchor_lang::BorshConfig = quoter_spec::ARGS_CONFIG;
+
 /// The caps sit between the user set and the taker on the wire, so a
 /// disagreement between their write schema and their read schema would land
 /// on the taker — silently turning self-trade prevention off. Round-trip the

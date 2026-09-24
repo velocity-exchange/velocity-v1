@@ -705,3 +705,58 @@ fn the_unused_slots_match_the_empty_set() {
 
     assert_eq!(set.caps[1..], UserCapsV0::EMPTY.caps[1..]);
 }
+
+/// `users` is borrowed in place, and a `UserRefV0` needs a two-byte step. Args
+/// that put the set on an odd address are refused, not read as a misaligned
+/// reference.
+#[test]
+fn args_whose_user_set_is_misaligned_are_refused() {
+    let users = [user(1, 0), user(2, 7)];
+    let quote = QuoteArgsV0 {
+        users: &users,
+        direction: DirectionV0::Long,
+        size: 12,
+        caps: UserCapsV0::EMPTY,
+        reference_price: Some(5),
+        taker: None,
+        limit_price: 0,
+        taker_served_window: true,
+        include_taker_origin_reservations: false,
+    };
+    let execute = ExecuteArgsV0 {
+        users: &users,
+        direction: DirectionV0::Short,
+        size: 12,
+        caps: UserCapsV0::EMPTY,
+        reference_price: Some(5),
+        taker: None,
+        taker_served_window: true,
+        include_taker_origin_reservations: false,
+    };
+
+    let mut quote_bytes = Vec::new();
+    write_args(&mut quote_bytes, &quote).unwrap();
+    let mut execute_bytes = Vec::new();
+    write_args(&mut execute_bytes, &execute).unwrap();
+
+    let mut region = Region::new(quote_bytes.len() + 1);
+    let buffer = region.bytes();
+    buffer[..quote_bytes.len()].copy_from_slice(&quote_bytes);
+    assert_eq!(QuoteArgsV0::parse(&buffer[..quote_bytes.len()]), Ok(quote));
+    buffer[1..=quote_bytes.len()].copy_from_slice(&quote_bytes);
+    assert_eq!(
+        QuoteArgsV0::parse(&buffer[1..=quote_bytes.len()]),
+        Err(SpecError::Read)
+    );
+
+    buffer[..execute_bytes.len()].copy_from_slice(&execute_bytes);
+    assert_eq!(
+        ExecuteArgsV0::parse(&buffer[..execute_bytes.len()]),
+        Ok(execute)
+    );
+    buffer[1..=execute_bytes.len()].copy_from_slice(&execute_bytes);
+    assert_eq!(
+        ExecuteArgsV0::parse(&buffer[1..=execute_bytes.len()]),
+        Err(SpecError::Read)
+    );
+}

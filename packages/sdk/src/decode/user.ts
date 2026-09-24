@@ -31,7 +31,7 @@ function readSignedBigInt64LE(buffer: Buffer, offset: number): BN {
 
 /**
  * Hand-rolled, offset-based decoder for the `User` account, used as a fast path instead of
- * Anchor's generic Borsh decoder in hot paths (e.g. bulk DLOB/account-map refreshes). Byte offsets
+ * Anchor's generic Borsh decoder in hot paths (e.g. bulk account-map refreshes). Byte offsets
  * here are hardcoded to the current on-chain `User` layout and must be kept in sync with any
  * change to `programs/velocity/src/state/user.rs` — see the offset notes in `../memcmp.ts`
  * (`USER_IDLE_OFFSET` etc.), which mirror this same layout and will silently return zero matches
@@ -139,7 +139,8 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		const settledPnl = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
 		offset += 8; // isolated_position_scaled_balance (already pre-read above)
-		offset += 2; // skip padding[u8; 2]
+		const reduceOnlyClobOrders = buffer.readUInt16LE(offset);
+		offset += 2;
 		const maxMarginRatio = buffer.readUInt16LE(offset); // offset+74
 		offset += 2;
 		const marketIndex = buffer.readUInt16LE(offset); // offset+76
@@ -159,6 +160,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			maxMarginRatio,
 			positionFlag,
 			isolatedPositionScaledBalance,
+			reduceOnlyClobOrders,
 		});
 	}
 
@@ -182,9 +184,9 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		offset += 8;
 		const triggerPrice = readUnsignedBigInt64LE(buffer, offset);
 		offset += 8;
-		const auctionStartPrice = readSignedBigInt64LE(buffer, offset);
+		const clobNodeIndex = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
-		const auctionEndPrice = readSignedBigInt64LE(buffer, offset);
+		const clobOrderId = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
 		const maxTs = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
@@ -269,13 +271,17 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			);
 		}
 		offset += 1;
-		const auctionDuration = buffer.readUInt8(offset);
+		const unusedAuctionDuration = buffer.readUInt8(offset);
 		offset += 1;
 		const postedSlotTail = buffer.readUint8(offset);
 		offset += 1;
 		const bitFlags = buffer.readUint8(offset);
 		offset += 1;
-		offset += 5; // padding
+		// Five trailing free bytes. The route digest travels with the signed
+		// message rather than on the order, so nothing reads them. The width is
+		// the same either way.
+		const padding = Array.from(buffer.subarray(offset, offset + 5));
+		offset += 5;
 		orders.push({
 			slot,
 			price,
@@ -283,8 +289,8 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			baseAssetAmountFilled,
 			quoteAssetAmountFilled,
 			triggerPrice,
-			auctionStartPrice,
-			auctionEndPrice,
+			clobNodeIndex,
+			clobOrderId,
 			maxTs,
 			oraclePriceOffset,
 			orderId,
@@ -299,9 +305,10 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			postOnly,
 			immediateOrCancel,
 			triggerCondition,
-			auctionDuration,
+			unusedAuctionDuration,
 			bitFlags,
 			postedSlotTail,
+			padding,
 		});
 	}
 

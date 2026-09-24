@@ -1,14 +1,21 @@
 //! SDK utility functions
 
 use crate::{
-    constants::ED25519_PROGRAM_ID,
-    solana_sdk::{account::Account, instruction::Instruction, keypair::Keypair, pubkey::Pubkey},
+    constants::{derive_quoter_slab, ED25519_PROGRAM_ID},
+    solana_sdk::{
+        account::Account,
+        instruction::{AccountMeta, Instruction},
+        keypair::Keypair,
+        pubkey::Pubkey,
+    },
 };
 use anchor_lang::Discriminator;
 use base64::Engine;
 use bytemuck::{bytes_of, Pod, Zeroable};
+use program::state::prop_amm::{QuoterConfigV0, QuoterSlabV0, QuoterSlotV0};
 use serde_json::json;
 use solana_message::AddressLookupTableAccount;
+use std::collections::BTreeMap;
 
 use crate::{
     constants::PROGRAM_ID,
@@ -149,9 +156,9 @@ pub fn zero_account_to_bytes<T: bytemuck::Pod + anchor_lang::Discriminator>(acco
 
 /// zero-copy deserialize anchor account `data` as T
 ///
-/// Reads exactly `size_of::<T>()` bytes after the discriminator, so a buffer
-/// longer than the compiled-in struct (an account extended by a program
-/// upgrade) still decodes instead of panicking on the size mismatch.
+/// Reads exactly `size_of::<T>()` bytes after the discriminator. A program
+/// upgrade can leave the account longer than the compiled-in struct. Such a
+/// buffer still decodes instead of panicking on the size mismatch.
 ///
 /// ## Params
 /// - * `data` - Anchor borsh encoded buffer (including discriminator)
@@ -177,6 +184,70 @@ pub fn try_deser_zero_copy<T: Discriminator + Pod>(data: &[u8]) -> Option<T> {
     Some(bytemuck::pod_read_unaligned::<T>(
         &data[8..8 + std::mem::size_of::<T>()],
     ))
+}
+
+/// Decode a `QuoterSlabV0` account's slot region.
+///
+/// The slab account holds the fixed header plus `capacity` raw
+/// [`QuoterSlotV0`] values, so the anchor account type decodes only the
+/// header. Returns every slot, vacant ones included, so a slot index here is
+/// the on-chain slot index.
+pub fn decode_quoter_slab_slots(data: &[u8]) -> SdkResult<Vec<QuoterSlotV0>> {
+    let header = try_deser_zero_copy::<QuoterSlabV0>(data).ok_or(SdkError::Deserializing)?;
+    let slot_size = std::mem::size_of::<QuoterSlotV0>();
+    let region = data
+        .get(QuoterSlabV0::SLOT_REGION_OFFSET..)
+        .and_then(|tail| tail.get(..header.capacity as usize * slot_size))
+        .ok_or(SdkError::Deserializing)?;
+    Ok(region
+        .chunks_exact(slot_size)
+        .map(bytemuck::pod_read_unaligned::<QuoterSlotV0>)
+        .collect())
+}
+
+/// The market's book config from its slab slots. The book is slot 0 by
+/// convention, occupied and `Clob`, per the program's `clob_slot_index`
+/// rule. The lookup ignores `suspended` and `is_active`, so removal paths
+/// keep working on a killed or de-listed book.
+pub fn clob_slot_config(slots: &[QuoterSlotV0]) -> Option<QuoterConfigV0> {
+    program::state::prop_amm::clob_slot_index(slots).map(|index| slots[index].config)
+}
+
+/// The quoter section that a router fill carries. It holds the market's quoter
+/// slab, then the union of the consulted slots' CPI accounts.
+///
+/// A slot contributes its registered accounts, its response account as
+/// writable, and its program as read only. Writability is the OR across slots,
+/// and the map dedups a key that two slots register. Each leg resolves its
+/// accounts by index into this full list, so the whole list must ride.
+pub fn quoter_cpi_section(
+    market_index: u16,
+    slots: &[QuoterSlotV0],
+    consulted: impl Fn(&QuoterSlotV0) -> bool,
+) -> Vec<AccountMeta> {
+    let mut union: BTreeMap<Pubkey, bool> = BTreeMap::new();
+
+    for slot in slots.iter().filter(|slot| consulted(slot)) {
+        for meta in slot.config.registered_accounts() {
+            *union.entry(meta.pubkey).or_default() |= meta.is_writable;
+        }
+
+        *union.entry(slot.config.response_account).or_default() |= true;
+        union.entry(slot.config.program_id).or_default();
+    }
+
+    std::iter::once(AccountMeta::new_readonly(
+        derive_quoter_slab(market_index),
+        false,
+    ))
+    .chain(union.into_iter().map(|(key, writable)| {
+        if writable {
+            AccountMeta::new(key, false)
+        } else {
+            AccountMeta::new_readonly(key, false)
+        }
+    }))
+    .collect()
 }
 
 /// Derive pyth lazer oracle pubkey for Velocity program
@@ -286,8 +357,8 @@ pub mod test_utils {
     };
     // helpers from velocity-program test_utils.
     /// A pyth push price account, with the header the pyth program writes.
-    /// The velocity program refuses an account whose header does not say
-    /// "pyth price account", so a test feed has to carry one.
+    /// The velocity program refuses an account whose header does not mark it
+    /// as a pyth price account, so a test feed must carry one.
     pub fn get_pyth_price(price: i64, expo: i32) -> pyth_test::Price {
         let mut pyth_price = pyth_test::Price::default();
         let price = price * 10_i64.pow(expo as u32);
@@ -473,9 +544,9 @@ mod tests {
         use crate::PerpMarket;
         use bytemuck::Zeroable;
 
-        // buffer longer than the compiled-in struct (account extended by a
-        // program upgrade): decode reads exactly size_of::<T>() bytes and
-        // ignores the tail
+        // A program upgrade can leave the account longer than the compiled-in
+        // struct. Decode reads exactly size_of::<T>() bytes and ignores the
+        // tail.
         let mut market = PerpMarket::zeroed();
         market.market_index = 7;
         let mut bytes = zero_account_to_bytes(market);

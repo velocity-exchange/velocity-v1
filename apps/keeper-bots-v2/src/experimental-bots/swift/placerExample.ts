@@ -1,24 +1,14 @@
 import {
-	isBuilderReferral,
-	fetchUserStatsAccount,
 	BASE_PRECISION,
 	BlockhashSubscriber,
-	BN,
 	convertToNumber,
 	VelocityClient,
 	VelocityEnv,
 	getUserAccountPublicKey,
 	getUserStatsAccountPublicKey,
 	getVariant,
-	isVariant,
-	MakerInfo,
-	MarketType,
-	Order,
 	OrderParams,
-	OrderStatus,
-	OrderTriggerCondition,
 	PerpMarkets,
-	PositionDirection,
 	PRICE_PRECISION,
 	PriorityFeeSubscriberMap,
 	PublicKey,
@@ -26,8 +16,8 @@ import {
 	SignedMsgOrderParamsDelegateMessage,
 	SignedMsgOrderParamsMessage,
 	SlotSubscriber,
+	TopMakersClient,
 	UserMap,
-	ZERO,
 } from '@velocity-exchange/sdk';
 import { RuntimeSpec } from 'src/metrics';
 import WebSocket from 'ws';
@@ -46,8 +36,7 @@ import {
 	PACKET_DATA_SIZE,
 	TransactionInstruction,
 } from '@solana/web3.js';
-import { getPriorityFeeInstruction } from '../filler-common/utils';
-import axios from 'axios';
+import { getPriorityFeeInstruction } from '../../utils';
 import { logger } from '../../logger';
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -239,12 +228,26 @@ export class SwiftPlacer {
 						)
 					);
 
-					const ixs =
-						await this.velocityClient.getPlaceSignedMsgTakerPerpOrderIxs(
+					// The placement routes and fills in the same instruction, so a
+					// book maker it could reach has to ride this transaction. A
+					// placement that leaves one out is refused.
+					const makerInfos = await new TopMakersClient(
+						this.baseDlobUrl
+					).fetchMakerInfos(
+						this.velocityClient.program.programId,
+						this.userMap,
+						signedMsgOrderParams.marketIndex,
+						signedMsgOrderParams.direction,
+						2
+					);
+
+					const buildPlacement = () =>
+						this.velocityClient.getPlaceSignedMsgTakerPerpOrderIxs(
 							{
 								orderParams: signedMsgOrderParamsBufHex,
 								signature: Buffer.from(order['order_signature'], 'base64'),
 							},
+
 							signedMsgOrderParams.marketIndex,
 							{
 								taker: takerUserPubkey,
@@ -253,174 +256,53 @@ export class SwiftPlacer {
 									this.velocityClient.program.programId,
 									takerUserAccount.authority
 								),
+
 								signingAuthority,
 							},
-							computeBudgetIxs
+
+							computeBudgetIxs,
+							undefined,
+							undefined,
+							undefined,
+							undefined,
+							makerInfos
 						);
-
-					const isOrderLong = isVariant(signedMsgOrderParams.direction, 'long');
-					let topMakers: string[] = [];
-					try {
-						const response = await axios.get(
-							`${this.baseDlobUrl}/topMakers?marketType=perp&marketIndex=${
-								signedMsgOrderParams.marketIndex
-							}&side=${isOrderLong ? 'ask' : 'bid'}&limit=2`,
-							{
-								timeout: 2_000,
-								validateStatus: () => true,
-							}
-						);
-						if (response.status !== 200 || !Array.isArray(response.data)) {
-							logger.warn(
-								`Failed to get top makers; status=${response.status}`
-							);
-							return;
-						}
-						topMakers = response.data as string[];
-					} catch (e: any) {
-						logger.warn(`Error fetching top makers: ${e?.message ?? e}`);
-						return;
-					}
-
-					const orderSlot = Math.min(
-						signedMessage.slot.toNumber(),
-						this.slotSubscriber.getSlot()
-					);
-					const signedMsgOrder: Order = {
-						status: OrderStatus.OPEN,
-						orderType: signedMsgOrderParams.orderType,
-						orderId: 0,
-						slot: new BN(orderSlot),
-						marketIndex: signedMsgOrderParams.marketIndex,
-						marketType: MarketType.PERP,
-						baseAssetAmount: signedMsgOrderParams.baseAssetAmount,
-						auctionDuration: signedMsgOrderParams.auctionDuration!,
-						auctionStartPrice: signedMsgOrderParams.auctionStartPrice!,
-						auctionEndPrice: signedMsgOrderParams.auctionEndPrice!,
-						immediateOrCancel: false,
-						direction: signedMsgOrderParams.direction,
-						postOnly: false,
-						oraclePriceOffset: signedMsgOrderParams.oraclePriceOffset ?? ZERO,
-						maxTs: signedMsgOrderParams.maxTs ?? ZERO,
-						reduceOnly: signedMsgOrderParams.reduceOnly ?? false,
-						triggerCondition:
-							signedMsgOrderParams.triggerCondition ??
-							OrderTriggerCondition.ABOVE,
-						price: signedMsgOrderParams.price ?? ZERO,
-						userOrderId: signedMsgOrderParams.userOrderId ?? 0,
-						// Rest are not necessary and set for type conforming
-						existingPositionDirection: PositionDirection.LONG,
-						triggerPrice: ZERO,
-						baseAssetAmountFilled: ZERO,
-						quoteAssetAmountFilled: ZERO,
-						bitFlags: signedMsgOrderParams.bitFlags,
-						postedSlotTail: 0,
-					};
-
-					const makerInfos: MakerInfo[] = [];
-					for (const makerKey of topMakers) {
-						const makerUser = await this.userMap.mustGet(makerKey);
-						makerInfos.push({
-							maker: new PublicKey(makerKey),
-							makerStats: getUserStatsAccountPublicKey(
-								this.velocityClient.program.programId,
-								makerUser.getUserAccountOrThrow().authority
-							),
-							makerUserAccount: makerUser.getUserAccountOrThrow(),
-						});
-					}
-
-					// Resolve the taker's referral state once. The maker-pruning loop below
-					// rebuilds the fill ix repeatedly, and without these the SDK re-fetches
-					// the taker's UserStats on every rebuild.
-					const takerStatsAccount = await fetchUserStatsAccount(
-						this.velocityClient.connection,
-						this.velocityClient.program,
-						takerUserAccount.authority
-					);
-					const takerIsReferred = takerStatsAccount
-						? isBuilderReferral(takerStatsAccount)
-						: false;
-					const takerReferrer = takerStatsAccount?.referrer;
-
-					let fillIx = await this.velocityClient.getFillPerpOrderIx(
-						takerUserPubkey,
-						takerUserAccount,
-						signedMsgOrder,
-						makerInfos,
-						// referrer param removed; 5th arg is fillerSubAccountId, 6th is isSignedMsg.
-						undefined,
-						true,
-						undefined, // fillerAuthority
-						undefined, // hasBuilderFee (derived from the signed message)
-						undefined, // takerEscrow
-						takerIsReferred,
-						takerReferrer
-					);
 
 					const lookupTableAccounts =
 						await this.velocityClient.fetchAllLookupTableAccounts();
 
+					let ixs = await buildPlacement();
 					let txSize = getSizeOfTransaction(
-						[...computeBudgetIxs, ...ixs, fillIx],
+						[...computeBudgetIxs, ...ixs],
 						true,
 						lookupTableAccounts
 					);
-					while (
-						txSize.bytes > PACKET_DATA_SIZE - TX_SIZE_SAFETY_MARGIN ||
-						txSize.accounts > MAX_ACCOUNTS_PER_TX
-					) {
-						if (makerInfos.length === 0) {
-							logger.info(`${logPrefix}: No more makers to try`);
-							break;
-						}
-						makerInfos.pop();
-						fillIx = await this.velocityClient.getFillPerpOrderIx(
-							takerUserPubkey,
-							takerUserAccount,
-							signedMsgOrder,
-							makerInfos,
-							// referrer param removed; 5th arg is fillerSubAccountId, 6th is isSignedMsg.
-							undefined,
-							true,
-							undefined, // fillerAuthority
-							undefined, // hasBuilderFee (derived from the signed message)
-							undefined, // takerEscrow
-							takerIsReferred,
-							takerReferrer
-						);
-						txSize = getSizeOfTransaction(
-							[...computeBudgetIxs, ...ixs, fillIx],
-							true,
-							lookupTableAccounts
-						);
-					}
 
-					// After pruning makers, check if tx is still too large - if so, try without fillIx
-					let includeFillIx = true;
-					if (
-						txSize.bytes > PACKET_DATA_SIZE - TX_SIZE_SAFETY_MARGIN ||
-						txSize.accounts > MAX_ACCOUNTS_PER_TX
+					// Dropping a maker shrinks the transaction and costs the taker
+					// that maker's depth. The order's remainder rests on the book,
+					// so the depth is not lost, only deferred to a cross crank.
+					while (
+						(txSize.bytes > PACKET_DATA_SIZE - TX_SIZE_SAFETY_MARGIN ||
+							txSize.accounts > MAX_ACCOUNTS_PER_TX) &&
+						makerInfos.length > 0
 					) {
-						const sizeWithoutFill = getSizeOfTransaction(
+						makerInfos.pop();
+						ixs = await buildPlacement();
+						txSize = getSizeOfTransaction(
 							[...computeBudgetIxs, ...ixs],
 							true,
 							lookupTableAccounts
 						);
-						if (
-							sizeWithoutFill.bytes >
-								PACKET_DATA_SIZE - TX_SIZE_SAFETY_MARGIN ||
-							sizeWithoutFill.accounts > MAX_ACCOUNTS_PER_TX
-						) {
-							logger.error(
-								`${logPrefix}: tx too large even without fill ix (${sizeWithoutFill.bytes} bytes, ${sizeWithoutFill.accounts} accounts), skipping`
-							);
-							return;
-						}
-						logger.info(
-							`${logPrefix}: tx too large with fill ix, proceeding without fill`
+					}
+					if (
+						txSize.bytes > PACKET_DATA_SIZE - TX_SIZE_SAFETY_MARGIN ||
+						txSize.accounts > MAX_ACCOUNTS_PER_TX
+					) {
+						logger.error(
+							`${logPrefix}: tx too large with no makers (${txSize.bytes} bytes, ${txSize.accounts} accounts), skipping`
 						);
-						includeFillIx = false;
+
+						return;
 					}
 
 					const hasPreDeposit = preDepositTx.length > 0;
@@ -441,9 +323,7 @@ export class SwiftPlacer {
 					}
 
 					let resp: SimulateAndGetTxWithCUsResponse | undefined;
-					const simIxs = includeFillIx
-						? [...computeBudgetIxs, ...ixs, fillIx]
-						: [...computeBudgetIxs, ...ixs];
+					const simIxs = [...computeBudgetIxs, ...ixs];
 
 					const recentBlockhash =
 						this.blockhashSubscriber.getLatestBlockhash()?.blockhash;
@@ -463,55 +343,8 @@ export class SwiftPlacer {
 							recentBlockhash,
 						});
 					} catch (e) {
-						const errorStr = (e as Error)?.message || String(e);
-						// If tx too large error is thrown and we included fillIx, retry without it
-						if (errorStr.includes('too large') && includeFillIx) {
-							logger.info(
-								`${logPrefix}: sim threw too large error, retrying without fill ix`
-							);
-							try {
-								resp = await simulateAndGetTxWithCUs({
-									connection: this.velocityClient.connection,
-									payerPublicKey: this.velocityClient.wallet.payer!.publicKey,
-									ixs: [...computeBudgetIxs, ...ixs],
-									cuLimitMultiplier: 2,
-									lookupTableAccounts,
-									doSimulation: true,
-									recentBlockhash,
-								});
-								includeFillIx = false;
-							} catch (retryError) {
-								logger.error(
-									`${logPrefix}: sim order failed on retry: ${retryError}`
-								);
-								return;
-							}
-						} else {
-							logger.error(`${logPrefix}: sim order failed: ${e}`);
-							return;
-						}
-					}
-
-					// Also check simError response for too large errors (in case RPC returns it instead of throwing)
-					const simError = resp.simError?.toString();
-					if (simError?.includes('too large') && includeFillIx) {
-						logger.info(
-							`${logPrefix}: sim returned too large error, retrying without fill ix`
-						);
-						try {
-							resp = await simulateAndGetTxWithCUs({
-								connection: this.velocityClient.connection,
-								payerPublicKey: this.velocityClient.wallet.payer!.publicKey,
-								ixs: [...computeBudgetIxs, ...ixs],
-								cuLimitMultiplier: 2,
-								lookupTableAccounts,
-								doSimulation: true,
-								recentBlockhash,
-							});
-						} catch (e) {
-							logger.error(`${logPrefix}: sim order failed on retry: ${e}`);
-							return;
-						}
+						logger.error(`${logPrefix}: sim order failed: ${e}`);
+						return;
 					}
 
 					// allow orders with pre-deposit to be submitted avoid race conditions

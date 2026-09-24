@@ -32,9 +32,10 @@ pub struct NewUserRecord {
     pub referrer: Pubkey,
 }
 
-/// Consumers decode `action` by discriminant, so the order is ABI. `AutoEnrollment` is last
-/// because it is deleted with `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`; removing a trailing
-/// variant leaves the admin discriminants where they are.
+/// Consumers decode `action` by discriminant, so the variant order is ABI.
+/// `AutoEnrollment` is last because it goes away with
+/// `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`. Removal of a trailing variant
+/// leaves the admin discriminants where they are.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq)]
 pub enum AcceleratedReferralStatusChange {
     AdminGrant,
@@ -43,7 +44,7 @@ pub enum AcceleratedReferralStatusChange {
 }
 
 #[event]
-pub struct AcceleratedReferralStatusChangedRecord {
+pub struct AcceleratedReferralStatusChangedRecordV0 {
     /// unix_timestamp of action
     pub ts: i64,
     pub authority: Pubkey,
@@ -59,7 +60,7 @@ pub fn emit_accelerated_referral_status_changed(
     new_status: u8,
     action: AcceleratedReferralStatusChange,
 ) {
-    emit!(AcceleratedReferralStatusChangedRecord {
+    emit!(AcceleratedReferralStatusChangedRecordV0 {
         ts,
         authority,
         previous_status,
@@ -413,6 +414,7 @@ pub enum OrderActionExplanation {
     Liquidation,
     OrderFilledWithAMM,
     OrderFilledWithAMMJit,
+    /// @deprecated No fill produces this. It labelled a DLOB match.
     OrderFilledWithMatch,
     OrderFilledWithMatchJit,
     MarketExpired,
@@ -426,6 +428,16 @@ pub enum OrderActionExplanation {
     DeriskLp,
     OrderFilledWithOpenbookV2,
     TransferPerpPosition,
+    OrderFilledWithExternalQuoter,
+    /// A resting CLOB order that the eviction crank removed. The side reached
+    /// its threshold and the worst-priced order was removed. This is not a
+    /// cancel: no owner asked for it, and a placed trigger re-arms on it
+    /// rather than ending.
+    ClobOrderEvicted,
+    /// A resting CLOB order removed because a fill left it under the market's
+    /// minimum order size. The maker was filled in the same transaction, so a
+    /// fill record always accompanies this one.
+    ClobRemainderCulled,
 }
 
 #[event]
@@ -904,4 +916,117 @@ pub struct PerpMarketFeeSweepRecord {
     pub protocol_swept: u64,
     /// AMM fee provision tokenized into amm.fee_pool (booked at fill)
     pub amm_provision_tokenized: u64,
+}
+
+/// Emitted when `withdraw_protocol_user_deposit` draws accumulated crank
+/// rewards out of the protocol-owned `User`.
+///
+/// The name carries a version, unlike the records inherited from upstream. An
+/// `#[event]` derives its discriminator from its struct name. A field added to
+/// a `…Record` therefore changes the payload under a discriminator that
+/// consumers already decode. The old decoder then truncates or fails, and
+/// nothing on the wire says which shape it received. A field addition here
+/// ships as `ProtocolUserWithdrawRecordV1` with its own discriminator, so an
+/// old subscriber ignores it rather than misreading it. Every event velocity
+/// adds follows the same rule.
+#[event]
+pub struct ProtocolUserWithdrawRecordV0 {
+    /// unix_timestamp of action
+    pub ts: i64,
+    /// the spot market the tokens were drawn from
+    pub spot_market_index: u16,
+    pub amount: u64,
+    /// the protocol-owned `User` account debited
+    pub protocol_user: Pubkey,
+    pub recipient_token_account: Pubkey,
+}
+
+/// The first shape of the taker-origin resolution record, from when the crank
+/// resolved a cross against exactly one book counterparty.
+/// [`TakerOriginCrossRecordV1`] replaces it. The crank now routes the
+/// remainder, so a single `maker` no longer describes the match. Nothing emits
+/// this type. It stays so that a reader of historical logs still has it.
+#[event]
+pub struct TakerOriginCrossRecordV0 {
+    /// unix_timestamp of action
+    pub ts: i64,
+    pub slot: u64,
+    pub market_index: u16,
+    /// owner of the taker-origin order that took liquidity in this match. When
+    /// both sides were taker-origin, this is the later of the two to rest.
+    pub taker: Pubkey,
+    /// the counterparty, filled at its own price
+    pub maker: Pubkey,
+    /// the cranker's `User`, credited `crank_reward` in quote
+    pub filler: Pubkey,
+    pub base_asset_amount: u64,
+    pub quote_asset_amount: u64,
+    /// the price the taker-origin order was resting at
+    pub rest_price: u64,
+    /// the counterparty's price — what the match settled at
+    pub fill_price: u64,
+    /// gross quote the taker gained, |rest_price - fill_price| times base
+    pub improvement: u64,
+    /// quote paid to the cranker out of that improvement
+    pub crank_reward: u64,
+    /// true when the counterparty was itself a migrated taker remainder that
+    /// won the price by resting first. The match was then two remainders
+    /// clearing against each other rather than one against an ordinary maker.
+    pub maker_taker_origin: bool,
+    /// size the match was too small to consume, placed back on the book still
+    /// taker-origin. Zero when the cross consumed both orders, or when what
+    /// was left fell below the book's minimum and was dropped.
+    pub remainder_base_asset_amount: u64,
+    /// the re-placed remainder's new CLOB order id. Zero when nothing was
+    /// re-placed. The client's old handle is stale, and this is its new one.
+    pub remainder_order_id: u64,
+    /// whose remainder was re-placed, `taker` or `maker` above. The default
+    /// pubkey when nothing was. Only a match between two remainders can leave
+    /// it on the maker, because an ordinary counterparty is consumed to
+    /// exactly the size the cross was priced for.
+    pub remainder_owner: Pubkey,
+}
+
+/// Emitted when `crank_taker_origin_cross` resolves a resting taker remainder.
+/// It reports what the taker gained by being routed instead of left at its own
+/// price, and what the cranker took out of that gain.
+///
+/// The fill also emits the ordinary `OrderActionRecord`s for the match, one
+/// per source the router reached. Those records name the counterparties. This
+/// record carries three things they cannot. The price the order was resting
+/// at, because an `OrderActionRecord` only knows the price it filled at. The
+/// improvement between the two prices. The crank reward, which is charged to
+/// the taker out of the improvement rather than taken from the taker fee, so
+/// it never appears as that record's `filler_reward`.
+#[event]
+pub struct TakerOriginCrossRecordV1 {
+    /// unix_timestamp of action
+    pub ts: i64,
+    pub slot: u64,
+    pub market_index: u16,
+    /// owner of the remainder this crank resolved. When two remainders
+    /// crossed, this is the later of the two to rest, the one that demanded
+    /// liquidity.
+    pub taker: Pubkey,
+    /// the cranker's `User`, credited `crank_reward` in quote
+    pub filler: Pubkey,
+    pub base_asset_amount: u64,
+    pub quote_asset_amount: u64,
+    /// the price the remainder was resting at, and the bound the fill was held
+    /// to
+    pub rest_price: u64,
+    /// what the fill averaged across every source it reached
+    pub fill_price: u64,
+    /// gross quote the taker gained, |rest_price - fill_price| times base
+    pub improvement: u64,
+    /// quote paid to the cranker out of that improvement
+    pub crank_reward: u64,
+    /// size still resting after the fill. Zero when the fill took the whole
+    /// remainder, or when what was left fell under the book's minimum and was
+    /// culled.
+    pub remainder_base_asset_amount: u64,
+    /// the CLOB order this resolved. It keeps its id and its queue position,
+    /// because the fill shrinks it in place rather than re-placing it. A
+    /// client's existing handle stays good.
+    pub clob_order_id: u64,
 }

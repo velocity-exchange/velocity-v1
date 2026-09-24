@@ -1,0 +1,28 @@
+[package]
+name = "velocity-quoter-health"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Deliberately no chain access. This crate is a leaf: routers hand it the
+# outcome of a simulation they already ran, so it never needs a `ChainSource`
+# and never pulls the simulation layer into a caller that does not want it.
+solana-sdk = "3"
+dashmap = "6"
+anyhow = "1"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prometheus = { version = "0.13", default-features = false }
+
+[features]
+default = []
+# Pools observations and pins across processes. Off by default so a single
+# router runs with no external state.
+redis-store = ["dep:redis"]
+
+[dependencies.redis]
+version = "0.29.1"
+features = ["tokio-comp", "tokio-native-tls-comp"]
+optional = true

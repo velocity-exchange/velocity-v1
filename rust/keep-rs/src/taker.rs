@@ -18,9 +18,9 @@
 //!     side and getting stuck,
 //!   - when a market is stuck one-sided (`|position|` ≥ threshold) it is logged
 //!     at INFO so an operator can see the bot is actively unwinding it,
-//!   - place one market order of `taker_size_base` with auction params left to
-//!     the program to derive (so it routes through the normal
-//!     fill/auction path and a filler — local or deployed — matches it).
+//!   - place one market order of `taker_size_base` with no named price, so the
+//!     program bounds it at the oracle's default slippage and routes it through
+//!     the normal fill path.
 //!
 //! The **rebalance threshold** is `rebalance_base_per_market` when set,
 //! otherwise `taker_max_base_per_market`. Set both to 0 to disable the
@@ -35,6 +35,7 @@ use {
     crate::{Config, UseMarkets},
     std::time::{Duration, SystemTime, UNIX_EPOCH},
     velocity_rs::{
+        market_book,
         types::{
             accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
             PositionDirection,
@@ -145,11 +146,10 @@ impl TakerBot {
 
         let direction = self.choose_direction(market_index, base_position);
 
-        // Market order, auction params left to the program to derive
-        // (direction-correct sanitization). A filler — local or the deployed
-        // devnet one — matches it against resting quotes or the AMM. When stuck
-        // one-sided the forced order is `reduce_only` so a chunk larger than the
-        // remaining position can't overshoot flat and re-open the other side.
+        // A market order with no named price takes the program's default worst
+        // price, and routes against the book, quoters, and AMM in one
+        // instruction. A stuck one-sided order goes `reduce_only`, so a
+        // chunk larger than the remaining position can't flip it to the other side.
         let order = OrderParams {
             order_type: OrderType::Market,
             market_type: MarketType::Perp,
@@ -158,6 +158,15 @@ impl TakerBot {
             base_asset_amount: size,
             reduce_only: stuck,
             ..Default::default()
+        };
+
+        let Some(book) = market_book(&self.velocity, market_index).await else {
+            log::warn!(
+                target: TARGET,
+                "market {market_index}: no approved book on the quoter slab, skipping take",
+            );
+
+            return Ok(());
         };
 
         let mut tx = TransactionBuilder::new(
@@ -170,7 +179,7 @@ impl TakerBot {
         // The order touches a market we may hold no position in; force-include it
         // so the place ix sees the perp market account (same reason as the quoter).
         tx.force_include_markets(&[MarketId::perp(market_index)], &[]);
-        tx = tx.place_orders(vec![order]);
+        tx = tx.place_and_take(order, book.accounts, None);
         let msg = tx.build();
 
         if self.config.dry {

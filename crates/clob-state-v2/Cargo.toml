@@ -1,0 +1,16 @@
+[package]
+name = "clob-state-v2"
+description = "clob-state compiled against anchor v2 for the CLOB IDL. Shared source via include!."
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+quoter-spec = { package = "quoter-spec-v2", path = "../quoter-spec-v2" }
+bytemuck.workspace = true
+solana-address.workspace = true
+anchor-lang-v2 = { package = "anchor-lang", git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28", optional = true }
+[features]
+default = []
+idl-build = []
+idl-build-v2 = ["dep:anchor-lang-v2", "idl-build", "quoter-spec/idl-build-v2"]
+[lints.rust.unexpected_cfgs]
+level = "allow"

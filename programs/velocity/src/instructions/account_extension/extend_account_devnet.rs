@@ -1,6 +1,6 @@
-//! Devnet/test-only grow of a zero-copy account to an arbitrary larger size, so the
-//! extension flow (and client tolerance of extended accounts) can be exercised
-//! end to end before a real struct extension exists.
+//! Grow a zero-copy account to an arbitrary larger size. Devnet and test
+//! builds only. It exercises the extension flow, and a client's tolerance of
+//! an extended account, before a real struct extension exists.
 
 use {
     crate::{
@@ -23,17 +23,19 @@ pub struct ExtendAccountDevnet<'info> {
     pub payer: Signer<'info>,
     #[account(constraint = check_hot(&authority.key(), &state, HotRole::AccountExtension)?)]
     pub authority: Signer<'info>,
-    /// CHECK: must be velocity-owned; the handler requires a supported
-    /// zero-copy discriminator
+    /// CHECK: must be velocity-owned. The handler requires a supported
+    /// zero-copy discriminator.
     #[account(mut, owner = crate::ID)]
     pub account: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
-/// Grow `account` to `new_len` bytes (grow-only, rent topped up by the payer,
-/// tail zero-filled). Unlike `extend_account`, the target size is caller-chosen
-/// rather than derived from the compiled-in struct, which lets tests and devnet
-/// simulate the state right after a struct-growing upgrade.
+/// Grow `account` to `new_len` bytes. The handler only grows an account. The
+/// payer tops up the rent and the runtime zero-fills the tail.
+///
+/// The caller chooses the target size, where `extend_account` derives it from
+/// the compiled-in struct. A test or a devnet run can therefore reproduce the
+/// state right after a struct-growing upgrade.
 pub fn handle_extend_account_devnet(ctx: Context<ExtendAccountDevnet>, new_len: u64) -> Result<()> {
     let account = &ctx.accounts.account;
     let new_len = new_len as usize;

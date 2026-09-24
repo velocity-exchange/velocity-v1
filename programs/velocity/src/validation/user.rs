@@ -84,8 +84,8 @@ pub fn validate_user_is_idle(
     accelerated: bool,
     slot_clock: SlotClock,
 ) -> VelocityResult {
-    // thresholds are wall-clock; convert the measured slot delta to ms so the
-    // windows hold at any slot duration
+    // The thresholds are wall-clock. The slot delta converts to milliseconds, so
+    // the windows hold at any slot duration.
     let time_since_last_active = slot_clock.elapsed(user.last_active_slot, slot);
 
     let idle_after = if accelerated {

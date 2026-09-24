@@ -1,61 +1,38 @@
-//! AMM adapters that satisfy the generic `Quoter` / `QuoterCommit` / `AmmContract`
-//! traits defined in `state::maker`.
+//! AMM adapters that satisfy the generic `RouterQuoter` / `AmmContract`
+//! traits defined in `state::quoter`.
 //!
 //! Hosts:
 //! - [`AmmQuoter`]: wraps `&mut AMM` so the matcher can quote / fill the vAMM as
-//!   a uniform [`crate::state::quoter::Quoter`] alongside CLOB and JIT makers.
-//! - [`AmmJitQuoter`]: vAMM participation inside a JIT auction.
+//!   a uniform [`crate::state::quoter::RouterQuoter`] alongside CLOB and
+//!   external quoter books.
 //! - `impl AmmContract for AMM`: the AMM-side mutation surface used by
 //!   non-matching subsystems (insurance, revenue-pool transfers, settlement)
 //!   so they don't reach into AMM fields directly.
 
 #[cfg(test)]
 use crate::state::perp_market::MarketStats;
-use {
-    crate::{
-        controller::position::PositionDirection,
-        error::{ErrorCode, VelocityResult},
-        math::{casting::Cast, safe_math::SafeMath},
-        state::{
-            oracle::OraclePriceData,
-            quoter::{FillFeePolicy, MarketEvent, QuoteContext, Quoter, QuoterCommit, QuoterFill},
-        },
-        vlp::amm::{
-            controller as amm_controller, controller::SwapDirection, math::amm as amm_math, AMM,
-        },
-    },
+use crate::{
     anchor_lang::prelude::*,
+    controller::position::PositionDirection,
+    error::{ErrorCode, VelocityResult},
+    math::{casting::Cast, safe_math::SafeMath},
+    state::{
+        oracle::OraclePriceData,
+        quoter::{FillFeePolicy, MarketEvent, QuoteContext, QuoterFill},
+    },
+    vlp::amm::{
+        controller as amm_controller, controller::SwapDirection, math::amm as amm_math, AMM,
+    },
 };
 
-/// The contract boundary between Velocity's general logic and the AMM module.
+/// Module boundary between general logic and the AMM: general logic mutates AMM state only through
+/// these methods, never by direct field writes. Not a CPI boundary; both sides live in this program,
+/// and an audit grep enforces it.
 ///
-/// In the target architecture, the vAMM is one of several quoter modules
-/// that share a perp-market account's bytes — sitting alongside other
-/// quoter-state regions (DLOB maker state, future propAMM-style
-/// participants, etc.) within the same program. Each module owns its own
-/// state slice and exposes a contract trait; Velocity's general logic mutates
-/// the AMM's state slice *only* through `AmmContract` methods, never by
-/// direct field writes. It's not a CPI boundary — both sides live in this
-/// program — it's a module boundary enforced by the type system and an
-/// audit grep ("does any non-`amm/` code write AMM fields directly?").
-///
-/// **Scope.** This trait covers exactly the operations that are *special*
-/// to the vAMM — the things no other quoter can do:
-///
-/// 1. **Moving P&L around** between the AMM's books and other protocol
-///    accounts: insurance-fund credits ([`record_credit`]), the AMM's
-///    per-fill earnings ([`apply_fill_fees`]), protocol funding flowing
-///    through the AMM ([`record_amm_pnl`]).
-/// 2. **Taking over positions** the AMM was not actively making against:
-///    settlement of expired user positions where the AMM becomes
-///    counterparty ([`apply_settlement_counterparty`]).
-///
-/// Anything generic to a Maker (fills, periodic oracle refresh, funding
-/// reactions) lives on `Quoter` / `QuoterCommit` instead. Only the vAMM
-/// implements `QuoterCommit::on_market_event` for `Refresh` / `FundingApplied`
-/// because only the AMM has the curve/peg/k state those events update — but
-/// the event channel itself is the generic Maker interface, not an
-/// AMM-specific surface.
+/// Covers only what is special to the vAMM: moving PnL (insurance credits, per-fill earnings, protocol
+/// funding) and taking over positions it was not actively quoting. Generic quoter behavior lives on
+/// `AmmQuoter`; only the vAMM implements `on_market_event` for `Refresh` and `FundingApplied`, since
+/// only it holds the curve, peg and k state those events update.
 pub trait AmmContract {
     /// Credit the AMM's books with an external deposit (insurance fund
     /// covering a PnL deficit, etc.). The token movement itself happens at
@@ -239,6 +216,67 @@ pub struct AmmQuoter<'a> {
 }
 
 impl<'a> AmmQuoter<'a> {
+    pub fn refresh(&mut self, ctx: &QuoteContext) -> VelocityResult<()> {
+        let mm_oracle = ctx.mm_oracle.ok_or_else(|| {
+            crate::msg!("AmmQuoter::refresh requires ctx.mm_oracle");
+            ErrorCode::AmmQuoterMissingMmOracle
+        })?;
+
+        // The curve projection is slot-idempotent. A `last_update_slot` at this
+        // slot means an earlier refresh or the keeper crank already projected
+        // the AMM against this slot's oracle. `project_post_refresh_scalar` is
+        // the expensive part, so it is skipped. Later fills in the same slot
+        // move reserves along the curve without another oracle-driven refresh.
+        let projection_current = self.amm.last_update_slot >= ctx.slot;
+        if !projection_current {
+            // Read the PerpMarket-level scalars the projection needs from the
+            // context. The orchestrator fills them once when it builds the
+            // context. The AMM never reads PerpMarket itself.
+            let projection_inputs = crate::vlp::amm::math::repeg::ProjectionInputs {
+                market_status: ctx.market_status,
+                market_config: ctx.market_config,
+                min_order_size: ctx.stats.min_order_size,
+            };
+            let projection = crate::vlp::amm::math::repeg::project_post_refresh_scalar(
+                self.amm,
+                &projection_inputs,
+                mm_oracle,
+                ctx.oracle_validity,
+            )?;
+
+            projection.apply_to(self.amm)?;
+            // Same gates as `snap_to_oracle`: set `last_update_slot` when the oracle is fresh enough for
+            // low-risk fills and the affordability floor accepts the update. The gate reads
+            // `rejected_due_to_affordability`, not `cost > 0`: a rejected refresh returns `cost == 0`
+            // with peg and reserves unchanged, which `cost > 0` misses, wrongly marking the curve fresh.
+            if let Some(validity) = ctx.oracle_validity {
+                if crate::math::oracle::is_oracle_valid_for_action(
+                    validity,
+                    Some(crate::math::oracle::VelocityAction::FillOrderAmmLowRisk),
+                )? && !projection.rejected_due_to_affordability
+                {
+                    self.amm.last_update_slot = ctx.slot;
+                }
+            }
+        }
+
+        // Refresh the cached spread state against the projected AMM. It runs
+        // after the block above so the cached ask and bid reserves match the
+        // projected curve. Every quote and fill read in this match then sees
+        // the one cached value.
+        let reserve_price = self.amm.reserve_price()?;
+        crate::vlp::amm::math::spread::update_amm_quote_state(
+            self.amm,
+            ctx.stats,
+            mm_oracle,
+            reserve_price,
+            ctx.slot,
+            ctx.slot_clock,
+        )?;
+
+        Ok(())
+    }
+
     /// Construct an AMM quoter wrapping `&mut amm`. Quote methods read the
     /// spread / reference-offset / spread-reserve state cached on the AMM.
     /// `Quoter::setup` refreshes that cache once per slot; callers that
@@ -249,10 +287,9 @@ impl<'a> AmmQuoter<'a> {
         AmmQuoter { amm }
     }
 
-    /// Pre-fill `validate_for_fill` on the underlying AMM. Orchestrator
-    /// calls this before `match_take` when the AMM will participate. Kept
-    /// as a separate entrypoint so quoter construction stays side-effect-
-    /// free.
+    /// Pre-fill `validate_for_fill` on the underlying AMM. The orchestrator
+    /// calls it before the router quotes when the AMM will participate. It is a
+    /// separate entrypoint so quoter construction stays free of side effects.
     pub fn validate_for_fill(&self, side: PositionDirection) -> VelocityResult {
         self.amm.validate_for_fill(side)
     }
@@ -277,12 +314,12 @@ impl<'a> AmmQuoter<'a> {
         self.amm.base_spread
     }
 
-    /// Base the AMM can fill before its marginal price reaches `price` (the
-    /// analytical inverse of its constant-product curve), clamped to reserve
-    /// bounds and standardised to `ctx.step_size`. Used by
-    /// [`crate::controller::matching::fill_amm_only`] to cap a take at the
-    /// taker's limit price. Inherent to the AMM — continuous-curve depth is
-    /// not part of the generic discrete `Quoter` interface.
+    /// Base the AMM can fill before its marginal price reaches `price`. It is
+    /// the analytical inverse of the constant-product curve, clamped to the
+    /// reserve bounds and standardised to `ctx.step_size`. The sole-vAMM fill
+    /// path uses it to cap a take at the taker's limit price. It stays inherent
+    /// to the AMM, because continuous-curve depth is not part of the generic
+    /// discrete router-quoter interface.
     pub fn cumulative_size(
         &self,
         ctx: &QuoteContext,
@@ -355,7 +392,7 @@ impl<'a> AmmQuoter<'a> {
     /// Swap direction the AMM uses to fill a take on the given side.
     /// Taker Long (buying)  → AMM removes base from reserves (sells base).
     /// Taker Short (selling) → AMM adds base to reserves (buys base).
-    fn swap_direction(side: PositionDirection) -> SwapDirection {
+    pub fn swap_direction(side: PositionDirection) -> SwapDirection {
         match side {
             PositionDirection::Long => SwapDirection::Remove,
             PositionDirection::Short => SwapDirection::Add,
@@ -368,7 +405,7 @@ impl<'a> AmmQuoter<'a> {
     /// fixtures and "unbounded" market configs) doesn't overflow i128 — we
     /// just clamp to `u64::MAX` which is effectively unbounded for fill
     /// purposes.
-    fn max_fillable(&self, side: PositionDirection) -> VelocityResult<u64> {
+    pub fn max_fillable(&self, side: PositionDirection) -> VelocityResult<u64> {
         let base = self.amm.base_asset_reserve;
         let raw_u128 = match side {
             // Taker Long → AMM sells base → base falls toward min → max = current_base - min_base.
@@ -380,63 +417,8 @@ impl<'a> AmmQuoter<'a> {
     }
 }
 
-impl<'a> Quoter for AmmQuoter<'a> {
-    /// Apply the AMM's post-refresh projection to `self.amm` and compute
-    /// the spread snapshot against the refreshed state. This is the
-    /// AMM-side analogue of the legacy `update_amm` keeper-style refresh:
-    /// "repeg + k-update + apply cost", inlined into the quote-prep phase
-    /// so subsequent quote calls read the refreshed `self.amm` directly.
-    ///
-    /// Reads `ctx.mm_oracle`, `ctx.oracle_validity`, `ctx.stats`, `ctx.slot`
-    /// plus `self.projection_inputs`. Mutates `self.amm` (peg, reserves,
-    /// sqrt_k, terminal, bounds, `total_fee_minus_distributions`,
-    /// `net_revenue_since_last_funding`, `last_update_slot`) and refreshes
-    /// the AMM's cached spread state via `update_amm_quote_state` (long/short
-    /// spread, reference offset, oracle-reserve spread pct, ask/bid reserves,
-    /// `last_spread_update_slot`).
-    ///
-    /// Returns an error if `ctx.mm_oracle` is not provided.
-    fn setup(&mut self, ctx: &QuoteContext) -> VelocityResult<()> {
-        let mm_oracle = ctx.mm_oracle.ok_or_else(|| {
-            crate::msg!("AmmQuoter::setup requires ctx.mm_oracle");
-            ErrorCode::DefaultError
-        })?;
-        // Project the curve toward oracle and apply it in place. Slot-idempotent
-        // inside `project_and_apply`: a prior `setup`, keeper crank, or the
-        // routing phase of `fulfill_perp_order` that already bumped
-        // `last_update_slot` to this slot makes this a no-op, so the projection
-        // (peg / reserves / k-budget math, the expensive part) runs at most once
-        // per market per slot. Subsequent fills in the same slot move reserves
-        // along the curve but don't trigger another oracle-driven refresh.
-        let projection_inputs = crate::vlp::amm::math::repeg::ProjectionInputs {
-            market_status: ctx.market_status,
-            market_config: ctx.market_config,
-            min_order_size: ctx.stats.min_order_size,
-        };
-        crate::vlp::amm::refresh::project_and_apply(
-            self.amm,
-            &projection_inputs,
-            mm_oracle,
-            ctx.oracle_validity,
-            ctx.slot,
-        )?;
-        // Refresh the cached spread state against the just-projected AMM.
-        // Runs after the (projection-idempotent) block above so the cached
-        // ask/bid reserves stay consistent with the post-projection curve.
-        // All quote/fill reads in this match then see the one cached value.
-        let reserve_price = self.amm.reserve_price()?;
-        crate::vlp::amm::math::spread::update_amm_quote_state(
-            self.amm,
-            ctx.stats,
-            mm_oracle,
-            reserve_price,
-            ctx.slot,
-            ctx.slot_clock,
-        )?;
-        Ok(())
-    }
-
-    fn best_price(&self, _ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64> {
+impl<'a> AmmQuoter<'a> {
+    pub fn best_price(&self, _ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64> {
         let reserve_price = self.amm.reserve_price()?;
         match side {
             PositionDirection::Long => self.amm.ask_price(
@@ -452,26 +434,30 @@ impl<'a> Quoter for AmmQuoter<'a> {
         }
     }
 
-    /// The AMM is the sole *continuous* maker and fills via the dedicated
-    /// `fill_amm_only` path, never the discrete level walk — so this is only
-    /// here to satisfy the trait. Reports the reserve-bounded max fillable.
-    fn level_capacity(&self, _ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64> {
+    /// The AMM is the sole continuous maker and fills through the dedicated
+    /// sole-vAMM path, never the discrete level walk. This method exists to
+    /// satisfy the trait. It reports the reserve-bounded maximum fillable.
+    pub fn level_capacity(
+        &self,
+        _ctx: &QuoteContext,
+        side: PositionDirection,
+    ) -> VelocityResult<u64> {
         self.max_fillable(side)
     }
 
-    fn is_prio(&self) -> bool {
+    pub fn is_prio(&self) -> bool {
         true
     }
 
-    fn is_fee_exempt(&self) -> bool {
+    pub fn is_fee_exempt(&self) -> bool {
         true
     }
 
-    fn fee_policy(&self) -> FillFeePolicy {
+    pub fn fee_policy(&self) -> FillFeePolicy {
         FillFeePolicy::AmmHouse
     }
 
-    fn try_fill_solo(
+    pub fn try_fill_solo(
         &self,
         _ctx: &QuoteContext,
         side: PositionDirection,
@@ -509,8 +495,8 @@ impl<'a> Quoter for AmmQuoter<'a> {
     }
 }
 
-impl<'a> QuoterCommit for AmmQuoter<'a> {
-    fn commit_fill(&mut self, _ctx: &QuoteContext, fill: &QuoterFill) -> VelocityResult<()> {
+impl<'a> AmmQuoter<'a> {
+    pub fn commit_fill(&mut self, _ctx: &QuoteContext, fill: &QuoterFill) -> VelocityResult<()> {
         // Projection has already been applied by `Quoter::setup` — quotes
         // and fills both read post-refresh `self.amm`. Commit just runs
         // the swap.
@@ -545,7 +531,11 @@ impl<'a> QuoterCommit for AmmQuoter<'a> {
         Ok(())
     }
 
-    fn on_market_event(&mut self, _ctx: &QuoteContext, event: &MarketEvent) -> VelocityResult<()> {
+    pub fn on_market_event(
+        &mut self,
+        _ctx: &QuoteContext,
+        event: &MarketEvent,
+    ) -> VelocityResult<()> {
         match event {
             MarketEvent::FundingUpdated {
                 market_index,
@@ -722,7 +712,7 @@ impl<'a> AmmQuoter<'a> {
     /// negative (caller should treat this as "k-update not affordable,
     /// skip"). Mirrors the AMM-side of the legacy
     /// `crate::vlp::amm::refresh::apply_cost_to_market`.
-    fn apply_cost_to_amm(&mut self, cost: i128) -> VelocityResult<bool> {
+    pub fn apply_cost_to_amm(&mut self, cost: i128) -> VelocityResult<bool> {
         if cost > 0 {
             let new_tfmd = self.amm.total_fee_minus_distributions.safe_sub(cost)?;
             if new_tfmd < 0 {
@@ -740,283 +730,6 @@ impl<'a> AmmQuoter<'a> {
             .net_revenue_since_last_funding
             .safe_sub(cost.cast::<i64>()?)?;
         Ok(true)
-    }
-}
-
-// ============================================================================
-// AMM JIT-maker impl
-// ============================================================================
-//
-// `AmmJitQuoter` expresses the AMM in JIT-making mode: it fills alongside a
-// resting DLOB maker at the DLOB's price, sacrificing some of its natural
-// curve spread in exchange for rebalancing inventory. This is the matcher
-// embodiment of what `math::amm_jit::calculate_amm_jit_liquidity` +
-// `controller::orders::fulfill_perp_order_with_amm(jit_amount, maker_price)`
-// did pairwise in legacy code.
-//
-// **Construction is the policy.** The caller computes the JIT-throttled cap
-// (`max_jit_base`) via the existing JIT math (oracle proximity, inventory
-// imbalance, intensity, etc.) and passes both `jit_price` and `max_jit_base`
-// to `AmmJitQuoter::new`. Looking at the call site shows the prioritisation.
-//
-// **Differences vs. `AmmQuoter`:**
-// - `best_price` returns `jit_price` (the DLOB maker price), NOT the AMM's
-//   natural ask/bid.
-// - `cumulative_size(p)` returns `min(max_jit_base, curve_max)` if `p`
-//   crosses `jit_price`, else 0.
-// - `is_prio = true`. At the clearing tick the vAMM takes its full
-//   `max_jit_base` allocation first; the DLOB maker fills the residual.
-// - `is_fee_exempt = true` (same as `AmmQuoter`).
-// - `try_fill_solo`/`commit_fill` apply AMM swap math to mutate reserves,
-//   but `QuoterFill.quote_filled = jit_price × base`. The gap between
-//   `jit_price × base` and the AMM's curve quote is captured in
-//   `QuoterFill.quote_asset_amount_surplus` — typically negative when JIT
-//   subsidises the fill (AMM curve would have priced worse for the taker).
-
-pub struct AmmJitQuoter<'a> {
-    pub amm: &'a mut AMM,
-    /// The DLOB maker price (or auction price) at which the AMM is willing
-    /// to JIT-make. The taker pays this price; the AMM's reserves move per
-    /// curve math, and the gap is recorded as `quote_asset_amount_surplus`.
-    pub jit_price: u64,
-    /// Throttled cap on JIT participation. Computed by the caller via the
-    /// JIT throttling math (oracle proximity, intensity, inventory bound).
-    /// Looking at the construction site shows the policy.
-    pub max_jit_base: u64,
-}
-
-impl<'a> AmmJitQuoter<'a> {
-    pub fn new(amm: &'a mut AMM, jit_price: u64, max_jit_base: u64) -> Self {
-        AmmJitQuoter {
-            amm,
-            jit_price,
-            max_jit_base,
-        }
-    }
-
-    /// Construct an AMM JIT quoter for a DLOB Match step. Owns every
-    /// AMM-internal decision the orchestrator otherwise would: run the JIT
-    /// throttle (`calculate_amm_jit_liquidity` — oracle proximity, intensity,
-    /// inventory bias, "AMM fills next round anyway" short-circuit, reading
-    /// the AMM's cached spreads) and `validate_for_fill` if the AMM will
-    /// participate.
-    ///
-    /// If the throttled cap is zero the quoter still constructs cleanly;
-    /// its `cumulative_size` will report zero on every query and the
-    /// matcher will pass it over. Callers always include the JIT quoter
-    /// unconditionally in the maker `Vec`.
-    ///
-    /// Mark-TWAP updates happen at the orchestrator (market-stats
-    /// mutation), reading AMM inputs through [`AmmJitQuoter::amm_bid_ask`]
-    /// / [`AmmJitQuoter::amm_base_spread`].
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_match_context(
-        market: &'a mut crate::state::perp_market::PerpMarket,
-        jit_price: u64,
-        taker_direction: PositionDirection,
-        valid_oracle_price: Option<i64>,
-        taker_unfilled: u64,
-        maker_unfilled: u64,
-        taker_has_limit_price: bool,
-    ) -> VelocityResult<Self> {
-        // calculate_amm_jit_liquidity needs the result of
-        // calculate_fill_for_matched_orders as `base_asset_amount` — that's
-        // just `min(maker, taker)`.
-        let initial_base = core::cmp::min(taker_unfilled, maker_unfilled);
-        let max_jit_base = crate::vlp::amm::math::jit::calculate_amm_jit_liquidity(
-            market,
-            taker_direction,
-            jit_price,
-            valid_oracle_price,
-            initial_base,
-            taker_unfilled,
-            maker_unfilled,
-            taker_has_limit_price,
-        )?;
-        // Apply the per-fill reserve-movement throttle. The JIT sizing math
-        // above bounds participation by oracle proximity, intensity and
-        // inventory, but — unlike the AMM-only fill path, which caps its take
-        // at `calculate_amm_available_liquidity` — it does NOT cap how far a
-        // single fill may push the reserves. A DLOB match is permissionless,
-        // so without this clamp a matcher could drive an unbounded JIT slice
-        // that moves reserves past `max_fill_reserve_fraction` in one fill.
-        // Clamp to the same available-liquidity bound the AMM-only path uses.
-        let amm_available = amm_math::calculate_amm_available_liquidity(
-            &market.amm,
-            &taker_direction,
-            market.order_step_size,
-        )?;
-        let max_jit_base = max_jit_base.min(amm_available);
-        if max_jit_base > 0 {
-            market.amm.validate_for_fill(taker_direction)?;
-        }
-        Ok(AmmJitQuoter {
-            amm: &mut market.amm,
-            jit_price,
-            max_jit_base,
-        })
-    }
-
-    /// AMM's natural bid/ask (spread-adjusted). See [`AmmQuoter::amm_bid_ask`].
-    pub fn amm_bid_ask(&self, reserve_price: u64) -> VelocityResult<(u64, u64)> {
-        self.amm.bid_ask_price(
-            reserve_price,
-            self.amm.long_spread,
-            self.amm.short_spread,
-            self.amm.reference_price_offset,
-        )
-    }
-
-    /// AMM's base spread. See [`AmmQuoter::amm_base_spread`].
-    pub fn amm_base_spread(&self) -> u32 {
-        self.amm.base_spread
-    }
-
-    /// Test/dev convenience: seed the AMM's cached spread state to zero-spread
-    /// (ask/bid reserves matched to the underlying reserves) and wrap it.
-    #[cfg(test)]
-    pub fn new_no_spread(amm: &'a mut AMM, jit_price: u64, max_jit_base: u64) -> Self {
-        amm.seed_no_spread_quote_state();
-        AmmJitQuoter {
-            amm,
-            jit_price,
-            max_jit_base,
-        }
-    }
-
-    fn swap_direction(side: PositionDirection) -> SwapDirection {
-        match side {
-            PositionDirection::Long => SwapDirection::Remove,
-            PositionDirection::Short => SwapDirection::Add,
-        }
-    }
-
-    fn max_fillable(&self, side: PositionDirection) -> VelocityResult<u64> {
-        let base = self.amm.base_asset_reserve;
-        let raw_u128 = match side {
-            // Taker Long → AMM sells base → base falls toward min → max = current_base - min_base.
-            PositionDirection::Long => base.saturating_sub(self.amm.min_base_asset_reserve),
-            // Taker Short → AMM buys base → base rises toward max → max = max_base - current_base.
-            PositionDirection::Short => self.amm.max_base_asset_reserve.saturating_sub(base),
-        };
-        Ok(raw_u128.min(u64::MAX as u128) as u64)
-    }
-}
-
-impl<'a> Quoter for AmmJitQuoter<'a> {
-    fn best_price(&self, _ctx: &QuoteContext, _side: PositionDirection) -> VelocityResult<u64> {
-        Ok(self.jit_price)
-    }
-
-    /// The JIT level's size: the throttled cap clamped to the reserve-bounded
-    /// max fillable. Analytic — does not run the swap (unlike `try_fill_solo`,
-    /// which would diverge at the reserve boundary).
-    fn level_capacity(&self, _ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64> {
-        if self.max_jit_base == 0 {
-            return Ok(0);
-        }
-        Ok(self.max_jit_base.min(self.max_fillable(side)?))
-    }
-
-    /// AMM JIT participation is priority at the clearing tick: the vAMM
-    /// takes its full `max_jit_base` allocation before non-priority makers
-    /// (DLOB orders) pro-rata the residual. Matches the legacy
-    /// `fulfill_perp_order_with_match` ordering, which filled the JIT slice
-    /// against the AMM first and then routed the remainder through the DLOB
-    /// maker.
-    fn is_prio(&self) -> bool {
-        true
-    }
-
-    fn is_fee_exempt(&self) -> bool {
-        true
-    }
-
-    fn fee_policy(&self) -> FillFeePolicy {
-        FillFeePolicy::AmmHouse
-    }
-
-    fn try_fill_solo(
-        &self,
-        _ctx: &QuoteContext,
-        side: PositionDirection,
-        target_size: u64,
-    ) -> VelocityResult<Option<QuoterFill>> {
-        let max = self.max_fillable(side)?.min(self.max_jit_base);
-        let base = target_size.min(max);
-        if base == 0 {
-            return Ok(None);
-        }
-        let direction = Self::swap_direction(side);
-        // AMM reserves move per natural curve. The taker pays jit_price.
-        let swap = amm_controller::calculate_base_swap_output(self.amm, base, direction)?;
-
-        let base_precision = crate::math::constants::BASE_PRECISION;
-        let jit_quote_u128 = (base as u128)
-            .safe_mul(self.jit_price as u128)?
-            .safe_div(base_precision)?;
-        if jit_quote_u128 > u64::MAX as u128 {
-            return Err(ErrorCode::MathError);
-        }
-        let jit_quote: u64 = jit_quote_u128 as u64;
-
-        // Sign convention follows
-        // `controller::position::calculate_quote_asset_amount_surplus`:
-        // positive when the AMM benefits from the gap between curve quote
-        // and execution price; negative when the AMM is subsidising.
-        // - Long (AMM sells base): AMM benefits when taker pays more than
-        //   curve would have charged → surplus = jit_quote − swap_quote.
-        // - Short (AMM buys base): AMM benefits when it pays less than
-        //   curve would have paid → surplus = swap_quote − jit_quote.
-        let surplus: i64 = match side {
-            PositionDirection::Long => {
-                (jit_quote as i64).safe_sub(swap.quote_asset_amount as i64)?
-            }
-            PositionDirection::Short => {
-                (swap.quote_asset_amount as i64).safe_sub(jit_quote as i64)?
-            }
-        };
-
-        Ok(Some(QuoterFill {
-            side,
-            base_filled: base,
-            quote_filled: jit_quote,
-            clearing_price: self.jit_price,
-            refresh_cost: 0,
-            is_fee_exempt: true,
-            fee_policy: FillFeePolicy::AmmHouse,
-            quote_asset_amount_surplus: surplus,
-        }))
-    }
-}
-
-impl<'a> QuoterCommit for AmmJitQuoter<'a> {
-    fn commit_fill(&mut self, _ctx: &QuoteContext, fill: &QuoterFill) -> VelocityResult<()> {
-        if fill.base_filled == 0 {
-            return Ok(());
-        }
-        let direction = Self::swap_direction(fill.side);
-        let swap =
-            amm_controller::calculate_base_swap_output(self.amm, fill.base_filled, direction)?;
-        self.amm.base_asset_reserve = swap.new_base_asset_reserve;
-        self.amm.quote_asset_reserve = swap.new_quote_asset_reserve;
-
-        // Same as AmmQuoter: with_amm tracks USERS' net position with AMM as
-        // counterparty. Taker Long → users' net long grows → += base.
-        let signed_base = fill.base_filled as i128;
-        let delta = match fill.side {
-            PositionDirection::Long => signed_base,
-            PositionDirection::Short => -signed_base,
-        };
-        self.amm.base_asset_amount_with_amm =
-            self.amm.base_asset_amount_with_amm.safe_add(delta)?;
-
-        // The fill moved the curve reserves; re-derive the cached ask/bid
-        // spread reserves off the (unchanged) cached spreads so the cache
-        // dashboards read stays consistent — mirrors master's post-swap
-        // `update_spread_reserves`.
-        crate::vlp::amm::math::spread::refresh_cached_spread_reserves(self.amm)?;
-        Ok(())
     }
 }
 
@@ -1380,134 +1093,5 @@ mod amm_jit_maker_tests {
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,
         }
-    }
-
-    #[test]
-    fn best_price_returns_jit_price_regardless_of_curve() {
-        let mut amm = make_amm();
-        let jit_price: u64 = 99_500_000; // arbitrary, below natural ask
-        let jit_maker =
-            AmmJitQuoter::new_no_spread(&mut amm, jit_price, 5 * AMM_RESERVE_PRECISION as u64);
-        let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
-        assert_eq!(
-            jit_maker.best_price(&ctx, PositionDirection::Long).unwrap(),
-            jit_price
-        );
-        assert_eq!(
-            jit_maker
-                .best_price(&ctx, PositionDirection::Short)
-                .unwrap(),
-            jit_price
-        );
-    }
-
-    #[test]
-    fn jit_level_price_and_capacity() {
-        let mut amm = make_amm();
-        let jit_price: u64 = 99_500_000;
-        let max_jit_base = 5 * AMM_RESERVE_PRECISION as u64;
-        let jit_maker = AmmJitQuoter::new_no_spread(&mut amm, jit_price, max_jit_base);
-        let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
-        // The JIT maker presents a single discrete level: price = jit_price,
-        // level_capacity = max_jit_base (curve allows it).
-        assert_eq!(
-            jit_maker.best_price(&ctx, PositionDirection::Long).unwrap(),
-            jit_price
-        );
-        let capacity = jit_maker
-            .level_capacity(&ctx, PositionDirection::Long)
-            .unwrap();
-        assert_eq!(capacity, max_jit_base);
-    }
-
-    #[test]
-    fn jit_capacity_clamped_by_curve_bounds() {
-        let mut amm = make_amm();
-        // Taker Long → AMM sells base → base falls toward min, so the curve
-        // bound is base - min_base = 100 - 50 = 50 BASE. max_jit_base larger.
-        let jit_price: u64 = 99_500_000;
-        let max_jit_base = 1_000 * AMM_RESERVE_PRECISION as u64;
-        let jit_maker = AmmJitQuoter::new_no_spread(&mut amm, jit_price, max_jit_base);
-        let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
-        let capacity = jit_maker
-            .level_capacity(&ctx, PositionDirection::Long)
-            .unwrap();
-        // Curve bound (50 BASE) is smaller than max_jit_base (1000 BASE).
-        assert_eq!(capacity, 50 * AMM_RESERVE_PRECISION as u64);
-    }
-
-    #[test]
-    fn jit_maker_is_prio_and_is_fee_exempt() {
-        // AMM JIT participation is priority at the clearing tick so the
-        // vAMM takes its full `max_jit_base` allocation before non-priority
-        // DLOB makers pro-rata the residual (matches the legacy ordering
-        // in `fulfill_perp_order_with_match`).
-        let mut amm = make_amm();
-        let jit_maker = AmmJitQuoter::new_no_spread(&mut amm, 100, 100);
-        assert!(jit_maker.is_prio());
-        assert!(jit_maker.is_fee_exempt());
-    }
-
-    #[test]
-    fn try_fill_solo_uses_jit_price_for_quote() {
-        let mut amm = make_amm();
-        let jit_price: u64 = 99_500_000; // below AMM natural ask
-        let max_jit_base = 5 * AMM_RESERVE_PRECISION as u64;
-        let target = 2 * AMM_RESERVE_PRECISION as u64;
-        let jit_maker = AmmJitQuoter::new_no_spread(&mut amm, jit_price, max_jit_base);
-        let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
-
-        let fill = jit_maker
-            .try_fill_solo(&ctx, PositionDirection::Long, target)
-            .unwrap()
-            .expect("should fill");
-
-        assert_eq!(fill.base_filled, target);
-        // quote_filled = base × jit_price / base_precision.
-        let expected_jit_quote = (target as u128) * (jit_price as u128) / BASE_PRECISION;
-        assert_eq!(fill.quote_filled as u128, expected_jit_quote);
-        assert_eq!(fill.clearing_price, jit_price);
-        assert!(fill.is_fee_exempt);
-        // Surplus is the gap: jit_quote (what taker paid) - curve_quote (what
-        // AMM curve says). For Long with jit_price < natural ask, taker paid
-        // less than curve would charge → AMM subsidised → surplus negative.
-        assert!(fill.quote_asset_amount_surplus <= 0);
-    }
-
-    #[test]
-    fn commit_fill_mutates_reserves_and_with_amm() {
-        let mut amm = make_amm();
-        let starting_base = amm.base_asset_reserve;
-        let starting_with_amm = amm.base_asset_amount_with_amm;
-        let jit_price: u64 = 99_500_000;
-        let max_jit_base = 5 * AMM_RESERVE_PRECISION as u64;
-        let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
-
-        let target = 2 * AMM_RESERVE_PRECISION as u64;
-        let fill = {
-            let jit_maker = AmmJitQuoter::new_no_spread(&mut amm, jit_price, max_jit_base);
-            jit_maker
-                .try_fill_solo(&ctx, PositionDirection::Long, target)
-                .unwrap()
-                .unwrap()
-        };
-
-        let mut jit_maker = AmmJitQuoter::new_no_spread(&mut amm, jit_price, max_jit_base);
-        jit_maker.commit_fill(&ctx, &fill).unwrap();
-
-        // Taker Long → AMM sold base → base_asset_reserve decreased.
-        assert!(amm.base_asset_reserve < starting_base);
-        // Users' net long grew → with_amm increased.
-        assert!(amm.base_asset_amount_with_amm > starting_with_amm);
     }
 }

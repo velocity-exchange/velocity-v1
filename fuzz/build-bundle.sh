@@ -7,6 +7,7 @@
 #   manifest.fc.json                 v3 manifest, one lineage per discovery target
 #   bin/<crate>/<feature>            the compiled crucible harness binary
 #   target/deploy/velocity.so        the devnet program .so (SVM-tier harnesses only)
+#   target/deploy/clob.so            the CLOB book program every perp fill routes through
 #
 # The crucible driver runs each binary directly, selecting its mode from FUZZ_*
 # env vars (see AR fuzzing worker/drivers/crucible). SVM-tier harnesses open
@@ -450,6 +451,24 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
     echo "   built target/deploy/velocity.so (+ velocity.debug.so, DWARF symbols)"
   fi
 
+  # Every perp fill routes through the market's CLOB book, so the SVM harnesses
+  # load clob.so too. It is not a coverage target, so it needs no DWARF and a
+  # host build is fine to reuse.
+  clob_so="$repo_root/anchor-v2/target/deploy/clob.so"
+  [ "$fresh" -eq 1 ] && rm -f "$clob_so"
+  if [ "$has_svm_bundle" -eq 1 ] && [ ! -f "$clob_so" ]; then
+    echo ">> building clob.so in $runtime ($sbf_img)"
+    "$runtime" run --rm --platform linux/amd64 \
+      -v "$repo_root":/src \
+      -v "velocity-sbf-cargo-${sbf_img##*:}":/root/.cargo \
+      -w /src/anchor-v2 \
+      "$sbf_img" bash -c "set -e
+        cargo-build-sbf --arch v3 --tools-version v1.57 --manifest-path programs/clob/Cargo.toml
+        chown -R $(id -u):$(id -g) /src/anchor-v2/target" >&2
+    [ -f "$clob_so" ] || { echo "ERROR: clob.so build failed" >&2; exit 1; }
+    echo "   built anchor-v2/target/deploy/clob.so"
+  fi
+
   # (2) Harness binaries + staging in the rust toolchain image.
   toolchain="$(sed -nE 's/^channel = "([^"]+)".*/\1/p' "$here/rust-toolchain.toml" 2>/dev/null | head -1)"
   img="${image:-rust:${toolchain:-1.91.1}-bookworm}"
@@ -609,6 +628,14 @@ if [ "$need_so" -eq 1 ]; then
   mkdir -p "$out_dir/target/deploy"
   cp "$so_src" "$out_dir/target/deploy/velocity.so"
   echo "   staged target/deploy/velocity.so"
+  # The harness looks for clob.so beside velocity.so first.
+  clob_src="$repo_root/anchor-v2/target/deploy/clob.so"
+  if [ ! -f "$clob_src" ]; then
+    echo "ERROR: SVM targets require $clob_src — run \`bun run program:build:clob\`." >&2
+    exit 1
+  fi
+  cp "$clob_src" "$out_dir/target/deploy/clob.so"
+  echo "   staged target/deploy/clob.so"
   if [ -f "$dbg_src" ]; then
     # Stage under symbols/ (NOT target/) — crucible splits FUZZ_SYMBOLS at "/target/" to
     # infer a source root; a target/ path corrupts DWARF resolution → 0 source files → FCOV fails.

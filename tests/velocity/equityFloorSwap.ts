@@ -45,12 +45,14 @@ const INVALID_SWAP_HEX = '0x1868';
 // InvalidOracle
 const INVALID_ORACLE_HEX = '0x1793';
 
-// Net-equity floor metric and the strictly-reducing swap exemption:
-// a taker holds 200 USDC and owes 1 SOL (tokens spent externally). The
-// breaker must trip on net equity (100 < floor 150) even though the margin
-// numerator (200) sits above the floor, and while tripped the taker must
-// still be able to swap existing USDC into repaying the SOL debt, but not
-// at a value-leaking price.
+// The net-equity floor metric and the strictly-reducing swap exemption.
+//
+// A taker holds 200 USDC and owes 1 SOL, and the borrowed tokens left the
+// protocol. The breaker must trip on net equity, which is 100 against a floor
+// of 150, even though the margin numerator of 200 sits above the floor. While
+// the breaker is tripped, the taker must still be able to swap existing USDC
+// into repaying the SOL debt. The taker must not be able to do so at a price
+// that leaks value.
 describe('equity floor swap', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -169,7 +171,10 @@ describe('equity floor swap', () => {
 				bulkAccountLoader
 			);
 
-		await svmContextWrapper.fundKeypair(takerKeypair, 10 * LAMPORTS_PER_SOL);
+		await svmContextWrapper.fundKeypair(
+			takerKeypair,
+			10 * LAMPORTS_PER_SOL
+		);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
 		takerUserPublicKey = await takerVelocityClient.getUserAccountPublicKey();
 
@@ -192,7 +197,7 @@ describe('equity floor swap', () => {
 	});
 
 	it('taker borrows sol and the warm admin sets a floor', async () => {
-		// borrow 1 SOL against the 200 USDC deposit; tokens leave the protocol
+		// Borrow 1 SOL against the 200 USDC deposit. The tokens leave the protocol.
 		await takerVelocityClient.withdraw(
 			new BN(LAMPORTS_PER_SOL),
 			1,
@@ -212,8 +217,8 @@ describe('equity floor swap', () => {
 		);
 		await takerUser.fetchAccounts();
 
-		// margin numerator never subtracts the borrow's value, so it stays
-		// above the floor; net equity (200 - 100) is below it
+		// The margin numerator never subtracts the borrow's value, so it stays above
+		// the floor. Net equity is 200 minus 100, which is below the floor.
 		assert(takerUser.getTotalCollateral('Initial').gt(floor));
 		assert(takerUser.getNetUsdValue().lt(floor));
 		assert(takerUser.isBelowEquityFloor());
@@ -222,7 +227,7 @@ describe('equity floor swap', () => {
 	it('breaker trips on net equity despite healthy margin numerator', async () => {
 		await takerVelocityClient.fetchAccounts();
 
-		// permissionless: the admin wallet is "anyone" here
+		// The trip is permissionless. The admin wallet stands in for any caller.
 		await adminVelocityClient.tripEquityFloorBreaker(
 			takerUserPublicKey,
 			takerVelocityClient.getUserAccount()
@@ -244,13 +249,16 @@ describe('equity floor swap', () => {
 	});
 
 	it('risk-increasing swap stays frozen while tripped', async () => {
-		// margin trading must be on or the swap dies earlier with
-		// MarginTradingDisabled; this test pins the breaker gate
+		// The swap below opens a borrow, and the margin-trading gate rejects it
+		// before the program reads the equity floor. Enabling margin trading lets
+		// the swap reach the floor, so this test asserts the floor rather than an
+		// unrelated gate that rejects the same transaction.
 		await takerVelocityClient.updateUserMarginTradingEnabled([
 			{ marginTradingEnabled: true, subAccountId: 0 },
 		]);
+		await takerVelocityClient.fetchAccounts();
 
-		// sol -> usdc would open a new sol borrow: not a strict reducer
+		// A sol to usdc swap opens a new sol borrow, so it is not a strict reducer.
 		const amountIn = new BN(LAMPORTS_PER_SOL).div(new BN(10));
 		const { beginSwapIx, endSwapIx } = await takerVelocityClient.getSwapIx({
 			amountIn,
@@ -293,7 +301,7 @@ describe('equity floor swap', () => {
 	});
 
 	it('reducing swap at a value-leaking price is rejected', async () => {
-		// consumes the deposit and repays debt, but returns half the value
+		// The swap consumes the deposit and repays debt, and returns half the value.
 		const amountIn = new BN(100).mul(QUOTE_PRECISION);
 		const { beginSwapIx, endSwapIx } = await takerVelocityClient.getSwapIx({
 			amountIn,
@@ -336,9 +344,9 @@ describe('equity floor swap', () => {
 	});
 
 	it('reducing swap with a stale oracle is rejected', async () => {
-		// stale the sol oracle past the margin guard rails; the exemption's
-		// value bound cannot price against it, so the swap is refused even at
-		// a fair rate
+		// Make the sol oracle stale past the margin guard rails. The exemption's
+		// value bound cannot price against it, so the program refuses the swap even
+		// at a fair rate.
 		await svmContextWrapper.moveTimeForward(400);
 
 		const amountIn = new BN(100).mul(QUOTE_PRECISION);
@@ -381,7 +389,7 @@ describe('equity floor swap', () => {
 		assert(err, 'stale-oracle reducing swap should have been rejected');
 		assert(err.message.includes(INVALID_ORACLE_HEX));
 
-		// refresh the oracle so the exemption works again below
+		// Refresh the oracle so the exemption works again below.
 		await setFeedPriceNoProgram(svmContextWrapper, 100, solOracle);
 	});
 
@@ -418,26 +426,27 @@ describe('equity floor swap', () => {
 			// @ts-ignore
 			adminVelocityClient.wallet.payer,
 		]);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		await takerVelocityClient.fetchAccounts();
 		await takerUser.fetchAccounts();
 
-		// usdc consumed, sol debt cleared to interest dust
+		// The swap consumed the usdc and cleared the sol debt to interest dust.
 		const usdcPosition = takerUser.getTokenAmount(0);
 		assert(usdcPosition.lte(new BN(101).mul(QUOTE_PRECISION)));
 		const solPosition = takerUser.getTokenAmount(1);
 		assert(solPosition.abs().lt(new BN(LAMPORTS_PER_SOL).div(new BN(100))));
 
-		// breaker stays tripped: the swap is an exemption, not a reset
+		// The breaker stays tripped. The swap is an exemption and not a reset.
 		assert((await fetchBreakerTripped()) !== 0);
 	});
 
 	it('warm admin resets the breaker and withdrawals resume', async () => {
-		// the reset verifies every subaccount clears its floor + buffer, so
-		// the floor the taker cannot back comes down first; also clears the
-		// withdraw gate below. LiteSVM lacks getProgramAccounts, so the
-		// subaccounts are passed by hand.
+		// The reset verifies that every subaccount clears its floor plus buffer, so
+		// the floor the taker cannot back comes down first. That also clears the
+		// withdraw gate below. LiteSVM has no getProgramAccounts, so this test
+		// passes the subaccounts by hand.
 		await adminVelocityClient.updateUserEquityFloor(
 			takerUserPublicKey,
 			ZERO,

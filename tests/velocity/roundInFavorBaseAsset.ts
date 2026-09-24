@@ -175,7 +175,7 @@ describe('round in favor', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-35344)),
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-35408)),
 			`actual quoteAssetAmount: ${velocityClient
 				.getUserAccount()
 				.perpPositions[0].quoteAssetAmount.toString()}`

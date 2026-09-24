@@ -185,9 +185,9 @@ pub fn get_pyth_price_mantissa(price: i64, expo: i32) -> PythLazerOracle {
     pyth_price
 }
 
-/// A pyth push price account, with the header the pyth program writes. The
-/// program refuses an account whose header does not say "pyth price account",
-/// so a test feed has to carry one.
+/// A pyth push price account, with the header the pyth program writes. Velocity
+/// rejects an account whose magic, version or account type does not match, so a
+/// test feed must carry all three.
 pub fn get_hardcoded_pyth_price(price: i64, expo: i32) -> Price {
     let mut pyth_price = Price::default();
     pyth_price.magic = PYTH_PUSH_MAGIC;

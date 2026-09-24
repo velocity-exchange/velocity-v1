@@ -5,16 +5,14 @@ use {
         VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        instructions::optional_accounts::AccountMaps, program::Velocity, state::user::User,
-    },
+    velocity::{program::Velocity, state::user::User},
 };
 
 pub fn apply_rebase<'info>(ctx: Context<'info, ApplyRebase<'info>>) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -30,11 +28,7 @@ pub fn apply_rebase<'info>(ctx: Context<'info, ApplyRebase<'info>>) -> Result<()
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(spot_market_index),
         vp.is_some(),
@@ -42,8 +36,7 @@ pub fn apply_rebase<'info>(ctx: Context<'info, ApplyRebase<'info>>) -> Result<()
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
     vault_depositor.apply_rebase_public(&mut vault, &mut vp, vault_equity)?;
 

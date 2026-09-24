@@ -11,17 +11,8 @@
 import pc from 'picocolors';
 
 /**
- * Render a string that came off the chain: program logs, decoded instruction
- * arguments, decoded account fields. Every control character becomes U+FFFD,
- * so an escape sequence embedded in a `msg!` or a borsh string cannot move the
- * cursor, erase lines, or repaint the screen with forged output.
- *
- * This matters because a proposal's inner instructions are simulated during
- * review, before approval, so a proposer can put any program they like in a
- * proposal and have its logs reach the reviewer's terminal. Substituting
- * rather than dropping keeps tampering visible instead of silent.
- *
- * Apply it to the untrusted text, then wrap the result in our own colour.
+ * Renders a string that came off the chain. Every control character becomes
+ * U+FFFD, so a proposal's simulated logs cannot forge terminal output.
  */
 export function safe(text: string): string {
 	// eslint-disable-next-line no-control-regex
@@ -40,8 +31,8 @@ function terminalWidth(): number {
 }
 
 /**
- * Section marker. `verdict` is pushed to the right edge, which is where a
- * reader's eye goes for pass/fail.
+ * Section marker. `verdict` is pushed to the right edge, where a reader looks
+ * for a pass or a fail.
  */
 export function header(title: string, verdict?: string): void {
 	const left = `${pc.cyan('▌')} ${pc.bold(title)}`;

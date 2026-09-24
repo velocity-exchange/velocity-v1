@@ -10,11 +10,21 @@ use {
 #[derive(Clone)]
 pub struct MetricsServerParams {
     pub registry: Arc<Registry>,
+    /// Quoter health behind `/route`. The gauges describe the current state,
+    /// so the handler refreshes them from a snapshot at scrape time. The
+    /// counters beside them are written as observations arrive.
+    pub quoter_health: Option<Arc<velocity_quoter_health::Health>>,
 }
 
 pub async fn metrics_handler(
     State(state): State<MetricsServerParams>,
 ) -> impl axum::response::IntoResponse {
+    if let Some(health) = &state.quoter_health {
+        if let Some(quoter) = health.metrics() {
+            quoter.sync(health, velocity_quoter_health::store::now_ms());
+        }
+    }
+
     let metric_families = state.registry.gather();
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();
@@ -36,10 +46,9 @@ pub struct SwiftServerMetrics {
     pub taker_orders_counter: Counter,
     pub order_type_counter: CounterVec,
     pub order_notional_usd: CounterVec,
-    /// Accepted orders whose notional could NOT be computed, by market and reason
-    /// (`no_oracle`, `max_leverage`). The denominator that makes
-    /// `swift_order_notional_usd` honest — without it an undercount from a dead
-    /// oracle subscription looks like a drop in demand.
+    /// Accepted orders whose notional is not computed, by market and reason
+    /// (`no_oracle`, `max_leverage`). Without this count, an undercount from a
+    /// dead oracle subscription reads as a drop in demand.
     pub order_notional_skipped: CounterVec,
     pub redis_publish_fail_counter: CounterVec,
     pub redis_publish_success_counter: CounterVec,
@@ -53,10 +62,10 @@ pub struct SwiftServerMetrics {
     /// `skip_oracle_missing`). Alert on `reject` rate for fat-fingers, and on
     /// any `skip_*` rate rising — a skip means the guard failed open because the
     /// server couldn't trust its own oracle freshness.
-    pub auction_band_guard: CounterVec,
+    pub oracle_band_guard: CounterVec,
     /// Live oracle staleness (`current_slot - oracle_slot`) observed by the
     /// guard, by market. Build health checks / alerts directly on this.
-    pub auction_oracle_staleness_slots: GaugeVec,
+    pub oracle_band_staleness_slots: GaugeVec,
 }
 
 impl SwiftServerMetrics {
@@ -71,7 +80,7 @@ impl SwiftServerMetrics {
                 "swift_order_types_count",
                 "Number of orders by market index and type",
             ),
-            &["market_type", "market_index", "sanitized"],
+            &["market_type", "market_index"],
         )
         .unwrap();
         let order_notional_usd = CounterVec::new(
@@ -136,18 +145,18 @@ impl SwiftServerMetrics {
             &["status"],
         )
         .unwrap();
-        let auction_band_guard = CounterVec::new(
+        let oracle_band_guard = CounterVec::new(
             Opts::new(
-                "swift_auction_band_guard_count",
+                "swift_oracle_band_guard_count",
                 "Oracle-band stale/fat-finger guard outcomes (reject, or skip = failed open) by market",
             ),
             &["market_index", "outcome"],
         )
         .unwrap();
-        let auction_oracle_staleness_slots = GaugeVec::new(
+        let oracle_band_staleness_slots = GaugeVec::new(
             Opts::new(
-                "swift_auction_oracle_staleness_slots",
-                "Oracle slot staleness (current_slot - oracle_slot) seen by the auction band guard, by market",
+                "swift_oracle_band_staleness_slots",
+                "Oracle slot staleness (current_slot - oracle_slot) seen by the oracle band guard, by market",
             ),
             &["market_index"],
         )
@@ -165,8 +174,8 @@ impl SwiftServerMetrics {
             current_slot_gauge,
             rpc_simulation_status,
             response_time_histogram,
-            auction_band_guard,
-            auction_oracle_staleness_slots,
+            oracle_band_guard,
+            oracle_band_staleness_slots,
         }
     }
 
@@ -205,10 +214,10 @@ impl SwiftServerMetrics {
             .register(Box::new(self.rpc_simulation_status.clone()))
             .unwrap();
         registry
-            .register(Box::new(self.auction_band_guard.clone()))
+            .register(Box::new(self.oracle_band_guard.clone()))
             .unwrap();
         registry
-            .register(Box::new(self.auction_oracle_staleness_slots.clone()))
+            .register(Box::new(self.oracle_band_staleness_slots.clone()))
             .unwrap();
     }
 }

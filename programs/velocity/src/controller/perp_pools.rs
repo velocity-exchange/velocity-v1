@@ -43,36 +43,19 @@ use {
     std::cmp::min,
 };
 
-/// Materialize accrued pending fees out of the pnl pool — the streaming
-/// sweep. The pnl pool is where fee value lands (fees debit the payer's
-/// position; tokens arrive as fills settle), so the sweep drains only the
-/// pool's surplus over live user claims. Waterfall order (seniority under
-/// scarcity):
-///   1. `pending_protocol_fee` -> `protocol_fee_pool` (withdrawable)
-///   2. `pending_if_fee`       -> quote `SpotMarket.revenue_pool` (insurance),
-///      leaving `get_pending_if_fee_floor()` behind — the first-loss tranche
-///      `resolve_perp_bankruptcy` can always reach, so a permissionless sweep
-///      can't drain it ahead of a bankruptcy resolution. A latched bankruptcy
-///      holds the whole counter; otherwise a pct of OI notional stands
-///   3. `pending_amm_provision`-> `amm.fee_pool` (tokenizing the provision the
-///      AMM already booked at fill — NO ledger change here)
-/// The protocol drain is EXEMPT from the `fee_pool_buffer_target` retention
-/// margin and runs first: it sweeps every settle, so each drain is small, and
-/// unlike the other two its value is not recoverable in bankruptcy anyway. It
-/// is exempt only from the buffer, NOT from the hard claim reservation — every
-/// drain (protocol included) leaves `max(net_user_pnl, 0)` + the floored IF
-/// bankruptcy tranche backing + `pending_revenue_share` behind, so a
-/// permissionless protocol-fee sweep can't unback the standing bankruptcy
-/// tranche (a claim on the pnl pool that `resolve_perp_bankruptcy` cancels
-/// counter-only) or already-owed builder/referrer revenue share. The IF and
-/// provision drains then leave the buffer behind on top of those claims — the
-/// buffer throttles the outflows whose value the bankruptcy waterfall can
-/// still reach.
-/// The AMM's ledger and token pool are never touched by steps 1-2: no non-AMM
-/// money transits the AMM. Un-drained remainders simply wait for the next
-/// sweep. This is the ONLY fee routing out of a perp market. Runs inline on
-/// every `update_pool_balances` (pnl settles, after the user's settle) and on
-/// demand via the `sweep_perp_market_fees` keeper instruction.
+/// Materializes accrued pending fees out of the pnl pool. This is the
+/// streaming sweep. The sweep drains only the pool's surplus over live user
+/// claims. The drains run in seniority order, so the senior claim is paid
+/// first when the pool is short:
+///   1. `pending_protocol_fee` to `protocol_fee_pool`, which is withdrawable.
+///   2. `pending_if_fee` to the quote `SpotMarket.revenue_pool` for insurance.
+///      This drain leaves `get_pending_if_fee_floor()` behind. The floor is
+///      the first-loss tranche `resolve_perp_bankruptcy` can always reach, so
+///      a permissionless sweep cannot drain it ahead of a bankruptcy
+///      resolution. A latched bankruptcy holds the whole counter. Before any
+///      latch, a percentage of open-interest notional stands.
+///   3. `pending_amm_provision` to `amm.fee_pool`. This tokenizes a provision
+///      the AMM already booked at fill, so the ledger does not change.
 ///
 /// `force` bypasses the `SettleRevPool` operation pause. It exists for the
 /// final sweep on market delisting: that is the last chance to route the
@@ -110,24 +93,10 @@ pub fn sweep_market_fees(
         market.pnl_pool.balance_type(),
     )?;
 
-    // Every drain — INCLUDING the buffer-exempt protocol cut — must leave
-    // these live claims on the pnl pool fully backed:
-    //   * `max(net_user_pnl, 0)`: users' positive unsettled PnL.
-    //   * the floored IF bankruptcy tranche (`min(pending_if_fee,
-    //     get_pending_if_fee_floor())`): `resolve_perp_bankruptcy` consumes
-    //     `pending_if_fee` counter-only, so the tokens backing the tranche
-    //     must stay in the pnl pool — the protocol drain moves value to
-    //     `protocol_fee_pool` (outside the insurance backstop) without
-    //     touching the counter, so without this reservation it could unback
-    //     the tranche the floor and the latch freeze promise.
-    //   * `pending_revenue_share`: builder/referrer fees already accrued and
-    //     owed out of this pnl pool by `sweep_completed_revenue_share_for_market`
-    //     — draining protocol fees ahead of them would leave those claims
-    //     temporarily unpayable.
-    // The buffer is an ADDITIONAL retention margin on top that only the IF and
-    // AMM-provision drains respect — the protocol drain is exempt and goes
-    // first (its per-settle cadence keeps each drain small, and unlike the
-    // other two its value is not recoverable later anyway).
+    // Every drain leaves `max(net_user_pnl, 0)`, the floored IF bankruptcy
+    // tranche (`min(pending_if_fee, get_pending_if_fee_floor())`), and
+    // `pending_revenue_share` backed in the pnl pool. Unbacking any of them
+    // strands a bankruptcy promise or temporarily leaves a payable unpaid.
     let reserved_claims: u128 = net_user_pnl
         .max(0)
         .cast::<u128>()?
@@ -135,8 +104,7 @@ pub fn sweep_market_fees(
         .safe_add(market.pending_revenue_share.cast::<u128>()?)?;
     let mut available_unbuffered: u128 = pnl_pool_tokens.saturating_sub(reserved_claims);
 
-    // 1. protocol's withdrawable cut (buffer-exempt: only user claims reserved)
-    let protocol_drain = market
+    let protocol_drain = market // Unlike the drains below, this one ignores the buffer.
         .fee_ledger
         .pending_protocol_fee
         .min(available_unbuffered);
@@ -151,24 +119,14 @@ pub fn sweep_market_fees(
         available_unbuffered = available_unbuffered.safe_sub(protocol_drain)?;
     }
 
-    // the remaining drains also leave the retention buffer behind
-    let mut available: u128 =
+    let mut available: u128 = // The remaining drains also leave the retention buffer behind.
         available_unbuffered.saturating_sub(market.fee_pool_buffer_target.cast()?);
 
-    // 2. insurance cut to the revenue pool (buffered), leaving the
-    //    bankruptcy floor behind: `pending_if_fee` is the first-loss tranche
-    //    `resolve_perp_bankruptcy` consumes, and since this sweep (and the
-    //    pnl settles that run it inline) is permissionless, draining the
-    //    tranche completely would let anyone front-run a pending bankruptcy
-    //    resolution and push the loss onto the shared IF or into
-    //    socialization. Two floors apply. A latched bankruptcy holds the
-    //    whole counter until it resolves, which covers the loss whatever the
-    //    market's open interest is. Before any latch, a pct of OI notional at
-    //    the oracle TWAP keeps a standing tranche sized to the market's risk.
-    //    The final delisting sweep (`force`) bypasses both: positions are
-    //    settled and bankruptcies resolved before wind-down, and the
-    //    remaining pnl pool is about to be drained to the revenue pool anyway
-    //    — withholding would only strand a stale counter on a dead market.
+    // Insurance cut to the revenue pool, buffered and floored. The sweep is
+    // permissionless, so a complete drain would let anyone front-run a
+    // bankruptcy resolution and push the loss onto the fund. A latched
+    // bankruptcy holds the counter. Before latch, a floor sized to
+    // open-interest notional at the oracle TWAP applies. `force` drops it.
     let if_drain = market
         .fee_ledger
         .pending_if_fee
@@ -180,8 +138,8 @@ pub fn sweep_market_fees(
         available = available.safe_sub(if_drain)?;
     }
 
-    // 3. tokenize the AMM's fee provision (buffered; already booked into
-    //    `total_fee_minus_distributions` at fill — token transfer only)
+    // Tokenizes the AMM's fee provision, buffered. Already booked into
+    // `total_fee_minus_distributions` at fill, so this only moves tokens.
     let provision_drain = market.fee_ledger.pending_amm_provision.min(available);
     if provision_drain > 0 {
         transfer_spot_balances(
@@ -350,7 +308,7 @@ pub fn update_pnl_pool_and_user_balance(
 /// price below `expiry_price` on a net-long market would make the reserve too small, and the
 /// expiry claims would later fail with `InsufficientPerpPnlPool`.
 ///
-/// Outside Settlement this returns the live oracle price, and applies the same validity checks that
+/// Outside Settlement this returns the live oracle price. It applies the same validity checks that
 /// `settle_pnl` applies. A stale or divergent price must not size the reserve.
 pub fn get_pnl_pool_drain_reserve_price(
     perp_market: &PerpMarket,
@@ -413,9 +371,10 @@ pub fn get_pnl_pool_drain_reserve_price(
         perp_market.market_stats.last_oracle_valid
     )?;
 
-    // Both cached attestations hold. `healthy_oracle` is therefore false because a write changed
-    // the oracle account after the AMM update in the same slot. The cached verdict does not cover
-    // the sample that this call reads, so reject it on its current validity.
+    // Both cached attestations hold, so `is_recent_oracle_valid` can only be false because the
+    // samples do not match. A write changed the oracle account after the AMM update in this slot.
+    // The cached verdict does not cover the sample this call reads, so the current validity
+    // decides.
     msg!(
         "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
         market_index,

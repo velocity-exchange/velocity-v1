@@ -124,9 +124,8 @@ describe('token faucet', () => {
 		} catch (e) {
 			console.error(e);
 		}
-		userTokenAccountInfoRaw = await svmContextWrapper.connection.getAccountInfo(
-			ata
-		);
+		userTokenAccountInfoRaw =
+			await svmContextWrapper.connection.getAccountInfo(ata);
 		userTokenAccountInfo = unpackAccount(ata, userTokenAccountInfoRaw);
 		assert.ok(new BN(userTokenAccountInfo.amount.toString()).eq(amount));
 	});
@@ -155,7 +154,9 @@ describe('token faucet', () => {
 		);
 		const mintInfo = unpackMint(tokenFaucet.mint, mintInfoRaw);
 		assert.ok(
-			svmContextWrapper.provider.wallet.publicKey.equals(mintInfo.mintAuthority)
+			svmContextWrapper.provider.wallet.publicKey.equals(
+				mintInfo.mintAuthority
+			)
 		);
 	});
 });

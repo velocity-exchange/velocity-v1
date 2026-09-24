@@ -17,12 +17,12 @@
 //! other side:   max(w_0/2, v) + r/2
 //! ```
 //!
-//! The loaded side is the one whose fills grow the pool's net position
-//! ([`inventory_increasing_side`]); d lands on whichever side faces the
-//! divergence; w_max comes from [`calculate_max_target_spread`]. The
-//! pipeline in [`calculate_spread`] is a line-by-line transcription of this
-//! composition, and each term's arithmetic lives in its component function,
-//! documented with its formula, units, and saturation behavior.
+//! The loaded side is the one whose fills grow the pool's net position, named
+//! by [`inventory_increasing_side`]. d lands on whichever side faces the
+//! divergence. w_max comes from [`calculate_max_target_spread`]. The pipeline
+//! in [`calculate_spread`] is a line-by-line transcription of this composition.
+//! Each term's arithmetic lives in its component function, documented with its
+//! formula, units, and saturation behavior.
 
 use {
     crate::{
@@ -62,27 +62,15 @@ use {
 #[cfg(test)]
 mod tests;
 
-/// Refresh the AMM's cached quote-time state (spreads, reference-price
-/// offset, oracle-reserve spread pct, and spread-adjusted ask/bid reserves)
-/// in place from durable inputs, stamping `last_spread_update_slot = slot`.
-///
-/// Restores the legacy `update_spreads` + `update_spread_reserves` mutators
-/// that the AMM-decoupling refactor had briefly turned into a returns-only
-/// `compute_amm_quote_state`. The cache lives back on `AMM`: it's refreshed
-/// here on each AMM crank (`update_oracle_derived_stats`) and each fill
-/// `setup`, then read directly by every quote/fill path, so two quotes in
-/// the same refresh window see byte-identical spread state, and dashboards
-/// can read the values straight off the account.
-///
-/// `reserve_price` is taken as an input (rather than re-derived from the
-/// AMM) so callers can refresh against a just-projected AMM without
-/// re-computing the price.
-///
-/// Internally split shell/body like the batch native handlers: the pure
-/// [`compute_quote_state`] derives a [`QuoteState`] snapshot, then
-/// [`commit_quote_state`] writes it to the account and re-derives the
-/// cached spread reserves, and [`validate_amm_quote_state`] self-checks
-/// the result.
+/// Refresh the AMM's cached quote-time state (spreads, reference-price offset, oracle-reserve
+/// spread pct, spread-adjusted bid/ask reserves) in place, stamping `last_spread_update_slot`.
+/// The cache lives on `AMM`; each crank (`update_oracle_derived_stats`) and fill refresh
+/// (`AmmQuoter::refresh`) rewrites it, and quote and fill paths read it directly, so two quotes
+/// in one refresh window see identical state, and a dashboard reads it straight off the account.
+/// `reserve_price` is a separate input, so a caller can refresh a just-projected AMM without
+/// recomputing price. The function is a shell: [`compute_quote_state`] derives a snapshot,
+/// [`commit_quote_state`] writes it and re-derives the cached reserves, and
+/// [`validate_amm_quote_state`] checks the result.
 pub fn update_amm_quote_state(
     amm: &mut AMM,
     market_stats: &MarketStats,
@@ -103,9 +91,9 @@ pub fn update_amm_quote_state(
     validate_amm_quote_state(amm)
 }
 
-/// Pure snapshot of the quote-time fields a refresh writes onto the AMM.
-/// Same idea as `ProjectedAmmState` for the curve projection: compute the
-/// full result first, commit it to the account in one place.
+/// Pure snapshot of the quote-time fields a refresh writes onto the AMM. It
+/// follows `ProjectedAmmState` for the curve projection. The full result is
+/// computed first, then committed to the account in one place.
 struct QuoteState {
     long_spread: u32,
     short_spread: u32,
@@ -113,18 +101,18 @@ struct QuoteState {
     last_oracle_reserve_price_spread_pct: i64,
 }
 
-/// Body of [`update_amm_quote_state`]: derive the fresh [`QuoteState`] from
+/// Body of [`update_amm_quote_state`]. It derives the fresh [`QuoteState`] from
 /// the AMM, the market stats, and this slot's oracle, without touching the
 /// account.
 ///
 /// # Reference-price-offset smoothing
 ///
-/// When the freshly computed `reference_price_offset` has the opposite sign
-/// of `market_stats.last_reference_price_offset` AND
-/// `amm.curve_update_intensity > 100`, the transition is smoothed across
-/// slots rather than snapping. `market_stats.last_reference_price_offset`
-/// is written by the crank after every refresh (from `amm.reference_price_offset`)
-/// and seeds the smoothing for the next refresh.
+/// The transition is smoothed across slots rather than snapped when the fresh
+/// `reference_price_offset` has the opposite sign of
+/// `market_stats.last_reference_price_offset` and
+/// `amm.curve_update_intensity > 100`. The crank writes
+/// `market_stats.last_reference_price_offset` from `amm.reference_price_offset`
+/// after every refresh, and that value seeds the smoothing for the next one.
 fn compute_quote_state(
     amm: &AMM,
     market_stats: &MarketStats,
@@ -133,7 +121,6 @@ fn compute_quote_state(
     slot: u64,
     slot_clock: SlotClock,
 ) -> VelocityResult<QuoteState> {
-    // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
         crate::vlp::amm::math::amm::calculate_oracle_reserve_price_spread_pct(
             amm,
@@ -141,7 +128,6 @@ fn compute_quote_state(
             Some(reserve_price),
         )?;
 
-    // reference_price_offset
     let max_ref_offset = amm.get_max_reference_price_offset()?;
 
     let reference_price_offset = if max_ref_offset > 0 {
@@ -184,8 +170,7 @@ fn compute_quote_state(
         0
     };
 
-    // long/short spread
-    // Steps 1-8 of the pipeline map on `calculate_spread`, behind the
+    // Steps 1 to 8 of the pipeline live in `calculate_spread`, behind the
     // curve_update_intensity gate.
     let (mut long_spread, mut short_spread) = if amm.curve_update_intensity > 0 {
         let inputs = SpreadInputs::from_stats(market_stats);
@@ -200,12 +185,14 @@ fn compute_quote_state(
         (half_base_spread, half_base_spread)
     };
 
-    // 9: x bot knob: the crank-set `amm_spread_adjustment`, post-cap.
-    // The admin-set `amm_spread_adjustment` applies to the finished u32
-    // spreads. Deliberately NOT shared with SpreadPair::apply_percent_adjustment:
-    // this block runs in u32 (so `saturating_mul` saturates at u32::MAX) and
-    // has no vol floor, while the in-pipeline adjustment runs in u64 with the
-    // base/vol floor. Unifying them would change saturation behavior.
+    // 9: the `amm_spread_adjustment` percentage, applied to the finished u32
+    // spreads after the cap. The admin handler and the native hot-key crank
+    // both write that field.
+    //
+    // This block does not share `SpreadPair::apply_percent_adjustment`. It runs
+    // in u32, so `saturating_mul` saturates at `u32::MAX`, and it applies no vol
+    // floor. The in-pipeline adjustment runs in u64 with the base and vol floor.
+    // One shared helper would change the saturation behavior.
     if amm.amm_spread_adjustment < 0 {
         let adjustment = amm.amm_spread_adjustment.unsigned_abs().cast()?;
         long_spread = long_spread
@@ -224,12 +211,9 @@ fn compute_quote_state(
             .max(1);
     }
 
-    // 10: offset: the reference price offset shifts BOTH quotes; on a sign
-    // transition it is smoothed here rather than snapped.
-    // Mirrors the legacy `update_spreads` smoothing branch (deleted from
-    // `controller::amm`). Reads the previous offset from `MarketStats` so
-    // there's per-crank continuity even though spread state is no longer
-    // cached on `AMM`.
+    // 10: the reference price offset shifts both quotes. On a sign transition
+    // it is smoothed here rather than snapped. The previous offset comes from
+    // `MarketStats`, which the crank mirrors after each refresh.
     let last_reference_price_offset = market_stats.last_reference_price_offset;
     let do_reference_price_smooth = last_reference_price_offset.signum()
         != reference_price_offset.signum()
@@ -238,11 +222,11 @@ fn compute_quote_state(
     let final_reference_price_offset = if do_reference_price_smooth {
         // The budget is calibrated per 400ms but accrues in proportion to the
         // elapsed milliseconds, so the smoothing completes over the same wall
-        // clock at any slot duration. Counting whole 400ms periods instead would
-        // floor to zero for every gap under 400ms, which is what a
-        // consecutive-slot crank becomes once slots are faster than that; the
-        // step would then pin to the minimum and converge slower the more often
-        // the market is cranked.
+        // clock at any slot duration. A count of whole 400ms periods would floor
+        // to zero for every gap under 400ms, which is what a consecutive-slot
+        // crank becomes once slots are faster than that. The step would then pin
+        // to the minimum and converge slower the more often the market is
+        // cranked.
         let elapsed_ms = slot_clock.elapsed(amm.last_spread_update_slot, slot);
         let reference_price_delta = {
             let full_offset_delta = reference_price_offset
@@ -292,8 +276,8 @@ fn compute_quote_state(
 }
 
 /// Write a computed [`QuoteState`] onto the AMM, stamp the refresh slot, and
-/// re-derive the cached ask/bid spread reserves from the just-written
-/// spreads + current curve reserves. The only place refresh results touch
+/// re-derive the cached ask/bid spread reserves from the written spreads and
+/// the current curve reserves. This is the only place a refresh result touches
 /// the account.
 fn commit_quote_state(amm: &mut AMM, quote_state: &QuoteState, slot: u64) -> VelocityResult<()> {
     amm.long_spread = quote_state.long_spread;
@@ -305,13 +289,12 @@ fn commit_quote_state(amm: &mut AMM, quote_state: &QuoteState, slot: u64) -> Vel
     refresh_cached_spread_reserves(amm)
 }
 
-/// Recompute the cached ask/bid spread reserves from the AMM's currently-cached
-/// `long_spread` / `short_spread` / `reference_price_offset` and its live
-/// `base`/`quote` reserves + `sqrt_k`. Restores the legacy `update_spread_reserves`
-/// mutator: [`update_amm_quote_state`] runs it after recomputing the spreads, and
-/// `QuoterCommit::commit_fill` runs it after a fill moves the reserves so the
-/// cached projections (which dashboards read) stay consistent with the curve.
-/// Leaves the spreads themselves untouched.
+/// Recompute the cached ask/bid spread reserves from the AMM's cached
+/// `long_spread`, `short_spread` and `reference_price_offset`, and from its
+/// live base and quote reserves and `sqrt_k`. [`update_amm_quote_state`] runs
+/// it after it recomputes the spreads. `AmmQuoter::commit_fill` runs it after a
+/// fill moves the reserves, so the cached projections a dashboard reads stay
+/// consistent with the curve. The spreads themselves are untouched.
 pub(crate) fn refresh_cached_spread_reserves(amm: &mut AMM) -> VelocityResult<()> {
     let (ask_base_asset_reserve, ask_quote_asset_reserve) = compute_spread_reserves_for_direction(
         amm,
@@ -342,10 +325,9 @@ pub(crate) fn refresh_cached_spread_reserves(amm: &mut AMM) -> VelocityResult<()
     Ok(())
 }
 
-/// Self-check the cached spread/reserve invariants master enforced inside
-/// `validate_perp_market`. Run at the tail of [`update_amm_quote_state`] so a
-/// corrupted refresh result is caught at the source: the only way bad spread
-/// state can reach a fill is through that refresh.
+/// Check the cached spread and reserve invariants. It runs at the tail of
+/// [`update_amm_quote_state`], so a corrupted refresh result is caught at the
+/// source. That refresh is the only way bad spread state reaches a fill.
 fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
     // long+short never exceeds the precision ceiling (== 100%).
     validate!(
@@ -372,9 +354,9 @@ fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
         )?;
     }
 
-    // Spread-reserve bounds, used by `swap_base_asset` to price a fill.
-    // `reference_price_offset` direction picks which side's bound is
-    // checked (the bound on the side that fills first).
+    // Spread-reserve bounds, which `swap_base_asset` uses to price a fill. The
+    // sign of `reference_price_offset` picks the side whose bound is checked,
+    // the side that fills first.
     if amm.reference_price_offset <= 0 {
         validate!(
             amm.bid_base_asset_reserve >= amm.base_asset_reserve
@@ -403,8 +385,8 @@ fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
     Ok(())
 }
 
-/// The quote side whose fills grow the pool's net position: Long when
-/// q > 0, Short when q < 0, None when q == 0 (no side to defend).
+/// The quote side whose fills grow the pool's net position. Long when q > 0,
+/// Short when q < 0, and None when q == 0, where no side needs defending.
 fn inventory_increasing_side(base_asset_amount_with_amm: i128) -> Option<PositionDirection> {
     match base_asset_amount_with_amm.cmp(&0) {
         Ordering::Greater => Some(PositionDirection::Long),
@@ -463,10 +445,10 @@ impl SpreadPair {
         }
     }
 
-    /// Oracle retreat d: when the reserve price sits below the oracle
-    /// (negative divergence pct) the long side widens to at least
-    /// `|divergence| + v_long`; above, the short side to
-    /// `|divergence| + v_short`. The side facing the divergence never
+    /// Oracle retreat d. When the reserve price sits below the oracle, which is
+    /// a negative divergence pct, the long side widens to at least
+    /// `|divergence| + v_long`. When it sits above, the short side widens to at
+    /// least `|divergence| + v_short`. The side facing the divergence never
     /// quotes through the oracle.
     #[allow(clippy::comparison_chain)]
     fn apply_oracle_retreat(
@@ -492,8 +474,8 @@ impl SpreadPair {
         Ok(())
     }
 
-    /// Multiply one side by `factor / BID_ASK_SPREAD_PRECISION` (checked
-    /// mul, errors on overflow). No-op when `side` is None.
+    /// Multiply one side by `factor / BID_ASK_SPREAD_PRECISION`. The multiply
+    /// is checked and errors on overflow. A `None` side changes nothing.
     fn scale(&mut self, side: Option<PositionDirection>, factor: u64) -> VelocityResult<()> {
         match side {
             Some(PositionDirection::Long) => {
@@ -514,8 +496,8 @@ impl SpreadPair {
     }
 
     /// Multiply both sides by `factor / BID_ASK_SPREAD_PRECISION` with a
-    /// saturating mul: the empty-fee-cushion branch, which must widen
-    /// rather than error at any spread level.
+    /// saturating multiply. The empty-fee-cushion branch uses it, because that
+    /// branch must widen rather than error at any spread level.
     fn scale_both_saturating(&mut self, factor: u64) -> VelocityResult<()> {
         self.long = self
             .long
@@ -553,11 +535,12 @@ impl SpreadPair {
         Ok(())
     }
 
-    /// The signed percentage adjustment shared by both sides
-    /// (`amm_inventory_spread_adjustment`): shrink by `|adj|`% (floor
-    /// division) or grow by `adj`% (ceiling division), each side floored at
-    /// 1 and then at its `floor` counterpart (the base/vol floor), so the
-    /// adjustment can never quote tighter than the volatility padding.
+    /// The signed percentage adjustment `amm_inventory_spread_adjustment`,
+    /// shared by both sides. A negative value shrinks by `|adj|` percent with a
+    /// floor division. A positive value grows by `adj` percent with a ceiling
+    /// division. Each side is floored at 1 and then at its `floor` counterpart,
+    /// the base and vol floor, so the adjustment can never quote tighter than
+    /// the volatility padding.
     #[allow(clippy::comparison_chain)]
     fn apply_percent_adjustment(
         &mut self,
@@ -592,19 +575,19 @@ impl SpreadPair {
         Ok(())
     }
 
-    /// Cap the combined total at `max_total` via [`cap_to_max_spread`]:
-    /// when over, the larger side is scaled to `max_total / total`
-    /// (ceiling) and the smaller side takes the remainder.
+    /// Cap the combined total at `max_total` through [`cap_to_max_spread`].
+    /// Over the cap, the larger side is scaled to `max_total / total` with a
+    /// ceiling division, and the smaller side takes the remainder.
     fn cap_total(self, max_total: u64) -> VelocityResult<SpreadPair> {
         let (long, short) = cap_to_max_spread(self.long, self.short, max_total)?;
         Ok(SpreadPair { long, short })
     }
 }
 
-/// The final raw spread split by safety priority. Components sum exactly to
-/// `raw`: the known oracle gap has first claim on the ceiling, the minimum
-/// base/vol floor has second claim, directional inventory steering has third
-/// claim, and the residual common padding yields first when the quote is over
+/// The final raw spread split by safety priority. The components sum exactly to
+/// `raw`. The known oracle gap has first claim on the ceiling, the minimum
+/// base/vol floor has second claim, and directional inventory steering has
+/// third claim. The residual common padding yields first when the quote is over
 /// budget.
 #[derive(Clone, Copy)]
 struct SpreadComponents {
@@ -628,9 +611,9 @@ struct SpreadComponents {
 
 impl SpreadComponents {
     /// Reconcile the recorded mechanism requirements against the final raw
-    /// spread. This keeps every uncapped quote byte-identical even when a
-    /// negative admin adjustment has already reduced the raw pair: divergence
-    /// claims what remains first, the minimum base/vol floor next, steering
+    /// spread. Every uncapped quote stays byte-identical even when a negative
+    /// admin adjustment already reduced the raw pair. Divergence claims what
+    /// remains first, the minimum base/vol floor claims next, steering claims
     /// after that, and padding is the residual.
     fn from_raw(
         raw: SpreadPair,
@@ -662,8 +645,8 @@ impl SpreadComponents {
     }
 
     /// Cap without mixing safety classes. A layer that only partly fits is
-    /// compressed proportionally within that one class; lower-priority layers
-    /// receive no room. The dynamic ceiling itself is deliberately unchanged.
+    /// compressed proportionally within that one class, and lower-priority
+    /// layers receive no room. The dynamic ceiling itself does not change.
     fn cap_total_ordered(self, max_total: u64) -> VelocityResult<SpreadPair> {
         let raw = self.raw()?;
         if raw.total()? <= max_total {
@@ -673,13 +656,10 @@ impl SpreadComponents {
         let mut result = SpreadPair::default();
         let mut remaining = max_total;
 
-        // Safety order is intentional:
-        //   1. Divergence protection keeps its room first.
-        //   2. The per-side base/vol floor keeps quotes away from mid.
-        //   3. Inventory steering keeps the remaining room next.
-        //   4. Common padding above the floor receives only leftover room.
-        // If a tier only partly fits, it is compressed within that tier and
-        // every lower-priority tier receives zero.
+        // Safety order: divergence protection keeps its room first, then the per-side base/vol floor
+        // keeps quotes away from mid, then inventory steering takes the remaining room, then common
+        // padding above the floor gets only what is left. A tier that only partly fits is compressed
+        // within itself, and every lower-priority tier after it receives zero.
         for layer in [self.divergence, self.floor, self.steering, self.padding] {
             if remaining == 0 {
                 break;
@@ -702,9 +682,9 @@ impl SpreadComponents {
     }
 }
 
-/// Pure known-mispricing requirement, excluding statistical padding. The
-/// latter stays in the lowest-priority bucket so stress cannot let volatility
-/// crowd directional steering out of the quote.
+/// Pure known-mispricing requirement, without the statistical padding. The
+/// padding stays in the lowest-priority bucket, so stress cannot let volatility
+/// displace directional steering from the quote.
 fn divergence_requirement(last_oracle_reserve_price_spread_pct: i64) -> SpreadPair {
     if last_oracle_reserve_price_spread_pct < 0 {
         SpreadPair {
@@ -722,9 +702,9 @@ fn divergence_requirement(last_oracle_reserve_price_spread_pct: i64) -> SpreadPa
 }
 
 /// `MarketStats` scalars the spread math reads, copied out once per refresh.
-/// Same shape as `ProjectionInputs` in `repeg.rs`: in the future CPI
-/// architecture these are what Velocity sends into the AMM-program call, so
-/// the spread math never holds a `&MarketStats`.
+/// It has the same shape as `ProjectionInputs` in `repeg.rs`. A future CPI
+/// architecture sends these values into the AMM-program call, so the spread
+/// math never holds a `&MarketStats`.
 #[derive(Debug, Clone, Copy, Default)]
 struct SpreadInputs {
     pub last_oracle_conf_pct: u64,
@@ -752,9 +732,9 @@ impl SpreadInputs {
     }
 }
 
-/// Build the two-sided spread for one refresh. The map, where "loaded side"
-/// is the side whose fills grow the pool's net position
-/// ([`inventory_increasing_side`]):
+/// Build the two-sided spread for one refresh. In the map below, the loaded
+/// side is the side whose fills grow the pool's net position, named by
+/// [`inventory_increasing_side`].
 ///
 /// ```text
 /// gate: curve_update_intensity > 0, else flat base/2 per side (caller)
@@ -769,11 +749,11 @@ impl SpreadInputs {
 /// 8  CAP              total <= dynamic ceiling; divergence, base/vol floor,
 ///                     steering, then common padding
 /// -- caller (compute_quote_state), post-cap --
-/// 9  x bot knob       amm_spread_adjustment (crank's actuator)
-/// 10 offset           reference_price_offset shifts BOTH quotes
+/// 9  x spread adjust  amm_spread_adjustment (admin handler or crank)
+/// 10 offset           reference_price_offset shifts both quotes
 /// ```
 ///
-/// Each step's arithmetic lives in its component function; every component
+/// Each step's arithmetic lives in its component function. Every component
 /// survives to the cap as a named value.
 fn calculate_spread(
     amm: &AMM,
@@ -787,7 +767,7 @@ fn calculate_spread(
     let quote_oracle_reserve_price_spread_pct = last_oracle_reserve_price_spread_pct
         .clamp(-BID_ASK_SPREAD_PRECISION_I64, BID_ASK_SPREAD_PRECISION_I64);
 
-    // 1: vol floor: per-side statistical padding v.
+    // 1: vol floor, the per-side statistical padding v.
     let vol = calculate_long_short_vol_spread(
         inputs.last_oracle_conf_pct,
         reserve_price,
@@ -804,7 +784,7 @@ fn calculate_spread(
     let mut spread = floors;
     let mut steering_added = SpreadPair::default();
 
-    // w_max for step 8: dynamic ceiling; divergence and vol can raise it
+    // w_max for step 8, the dynamic ceiling. Divergence and vol can raise it
     // above the admin max_spread.
     let max_target_spread = calculate_max_target_spread(
         quote_oracle_reserve_price_spread_pct,
@@ -815,11 +795,10 @@ fn calculate_spread(
         amm.max_spread,
     )?;
 
-    // 2: oracle retreat: the side facing the divergence floors at
-    // |gap| + v.
+    // 2: oracle retreat. The side facing the divergence floors at |gap| + v.
     spread.apply_oracle_retreat(quote_oracle_reserve_price_spread_pct, vol)?;
 
-    // 3: x sigma(q): inventory scale, loaded side only.
+    // 3: x sigma(q), the inventory scale, on the loaded side only.
     let side = inventory_increasing_side(amm.base_asset_amount_with_amm);
     let directional_spread = match side {
         Some(PositionDirection::Long) => spread.long,
@@ -1037,9 +1016,9 @@ fn calculate_spread_conf_component(confidence_pct: u64) -> VelocityResult<u64> {
     let divisor = SPREAD_CONF_DISCOUNT_DIVISOR;
     let ramp_weight = threshold.safe_add(divisor.safe_sub(1)?.safe_mul(confidence_pct)?)?;
 
-    Ok(confidence_pct
+    confidence_pct
         .safe_mul(ramp_weight)?
-        .safe_div(divisor.safe_mul(threshold)?)?)
+        .safe_div(divisor.safe_mul(threshold)?)
 }
 
 /// Which side of the AMM's open liquidity the inventory ratio is measured

@@ -2,7 +2,7 @@ use {
     crate::{
         controller::position::{PositionDelta, PositionDirection},
         error::{ErrorCode, VelocityResult},
-        load,
+        instructions::optional_accounts::AccountMaps,
         math::{
             casting::Cast,
             constants::{
@@ -18,23 +18,18 @@ use {
             safe_math::SafeMath,
             spot_balance::get_strict_token_value,
             spot_withdraw::get_max_withdraw_for_market_with_token_amount,
-            time::{Millis, SlotClock},
         },
         math_error, msg, print_error,
         state::{
             margin_calculation::{MarginCalculation, MarginContext},
-            oracle::{OraclePriceData, StrictOraclePrice},
-            oracle_map::OracleMap,
+            oracle::StrictOraclePrice,
             order_params::PostOnlyParam,
             perp_market::{PerpMarket, AMM},
-            perp_market_map::PerpMarketMap,
             spot_market::SpotMarket,
-            spot_market_map::SpotMarketMap,
             user::{
-                MarketType, Order, OrderBitFlag, OrderFillSimulation, OrderStatus,
-                OrderTriggerCondition, PerpPosition, User,
+                Order, OrderBitFlag, OrderFillSimulation, OrderStatus, OrderTriggerCondition,
+                PerpPosition, User,
             },
-            user_map::UserMap,
         },
         validate,
         vlp::amm::math::amm::calculate_amm_available_liquidity,
@@ -93,7 +88,7 @@ pub fn calculate_base_asset_amount_for_amm_to_fulfill(
 
 /// Apply the post-only maker-rebate buffer and the one-tick walk-inside-
 /// limit to a taker's order limit, then intersect with any `override` price
-/// (used by the AMM-after-DLOB chained fill where the AMM is capped at the
+/// (used by the AMM-after-maker chained fill where the AMM is capped at the
 /// crossing maker price). Returns the effective price ceiling to hand the
 /// matcher as `taker_limit_price`. `None` for unbounded market orders with
 /// no override.
@@ -365,8 +360,7 @@ pub fn get_position_delta_for_fill(
 }
 
 #[inline(always)]
-pub fn should_expire_order(user: &User, user_order_index: usize, now: i64) -> VelocityResult<bool> {
-    let order = &user.orders[user_order_index];
+pub fn should_expire_order(order: &Order, now: i64) -> VelocityResult<bool> {
     if order.status != OrderStatus::Open || order.max_ts == 0 || order.must_be_triggered() {
         return Ok(false);
     }
@@ -389,13 +383,10 @@ pub fn should_cancel_reduce_only_order(
 pub fn order_breaches_maker_oracle_price_bands(
     order: &Order,
     oracle_price: i64,
-    slot: u64,
     tick_size: u64,
     margin_ratio_initial: u32,
-    slot_clock: SlotClock,
 ) -> VelocityResult<bool> {
-    let order_limit_price =
-        order.force_get_limit_price(Some(oracle_price), None, slot, tick_size, slot_clock)?;
+    let order_limit_price = order.force_get_limit_price(Some(oracle_price), None, tick_size)?;
     limit_price_breaches_maker_oracle_price_bands(
         order_limit_price,
         order.direction,
@@ -595,6 +586,20 @@ pub fn is_new_order_risk_increasing(
     }
 }
 
+/// The base a reduce-only order may fill. A short fill reduces a long and a long fill reduces a
+/// short, so a position held the same way as the fill covers nothing and the order may not fill at
+/// all. Every path that settles a reduce-only fill binds the fill to this. The router ships it to a
+/// book as a cap, and the cranks that settle a match re-derive it rather than trust the book.
+pub fn reduce_only_cover(
+    position_base_asset_amount: i64,
+    fill_direction: PositionDirection,
+) -> u64 {
+    match fill_direction {
+        PositionDirection::Long => position_base_asset_amount.min(0).unsigned_abs(),
+        PositionDirection::Short => position_base_asset_amount.max(0).unsigned_abs(),
+    }
+}
+
 pub fn is_order_position_reducing(
     order_direction: &PositionDirection,
     order_base_asset_amount: u64,
@@ -636,29 +641,27 @@ pub fn validate_fill_price(
         base_precision,
     )?;
 
-    if order_direction == PositionDirection::Long && fill_price > order_limit_price {
-        msg!(
-            "long order fill price ({} = {}/{} * 1000) > limit price ({}) is_taker={}",
-            fill_price,
-            quote_asset_amount,
-            base_asset_amount,
-            order_limit_price,
-            is_taker
-        );
-        return Err(ErrorCode::InvalidOrderFillPrice);
-    }
+    validate!(
+        !(order_direction == PositionDirection::Long && fill_price > order_limit_price),
+        ErrorCode::InvalidOrderFillPrice,
+        "long order fill price ({} = {}/{} * 1000) > limit price ({}) is_taker={}",
+        fill_price,
+        quote_asset_amount,
+        base_asset_amount,
+        order_limit_price,
+        is_taker
+    )?;
 
-    if order_direction == PositionDirection::Short && fill_price < order_limit_price {
-        msg!(
-            "short order fill price ({} = {}/{} * 1000) < limit price ({}) is_taker={}",
-            fill_price,
-            quote_asset_amount,
-            base_asset_amount,
-            order_limit_price,
-            is_taker
-        );
-        return Err(ErrorCode::InvalidOrderFillPrice);
-    }
+    validate!(
+        !(order_direction == PositionDirection::Short && fill_price < order_limit_price),
+        ErrorCode::InvalidOrderFillPrice,
+        "short order fill price ({} = {}/{} * 1000) < limit price ({}) is_taker={}",
+        fill_price,
+        quote_asset_amount,
+        base_asset_amount,
+        order_limit_price,
+        is_taker
+    )?;
 
     Ok(())
 }
@@ -711,68 +714,100 @@ fn get_max_fill_amounts_for_market(
     get_max_withdraw_for_market_with_token_amount(market, token_amount, is_leaving_velocity)
 }
 
-pub fn find_maker_orders(
-    user: &User,
-    direction: &PositionDirection,
-    market_type: &MarketType,
-    market_index: u16,
-    valid_oracle_price: Option<i64>,
-    slot: u64,
-    tick_size: u64,
-    slot_clock: SlotClock,
-) -> VelocityResult<Vec<(usize, u64)>> {
-    let mut orders: Vec<(usize, u64)> = Vec::with_capacity(32);
-
-    for (order_index, order) in user.orders.iter().enumerate() {
-        if order.status != OrderStatus::Open {
-            continue;
-        }
-
-        // if order direction is not same or market type is not same or market index is the same, skip
-        if order.direction != *direction
-            || order.market_type != *market_type
-            || order.market_index != market_index
-        {
-            continue;
-        }
-
-        // if order is not limit order or must be triggered and not triggered, skip
-        if !order.is_limit_order() || (order.must_be_triggered() && !order.triggered()) {
-            continue;
-        }
-
-        let limit_price =
-            order.force_get_limit_price(valid_oracle_price, None, slot, tick_size, slot_clock)?;
-
-        orders.push((order_index, limit_price));
-    }
-
-    Ok(orders)
-}
-
 pub fn calculate_max_perp_order_size(
     user: &User,
     position_index: usize,
     market_index: u16,
     direction: PositionDirection,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
+) -> VelocityResult<u64> {
+    calculate_max_perp_order_size_for_position(
+        user,
+        &user.perp_positions[position_index],
+        market_index,
+        direction,
+        maps,
+    )
+}
+
+/// The same sizing against the account's own slot for `market_index`, or
+/// against the position a fill would open when it holds none.
+///
+/// Returns zero when every slot is taken, because a fill could not open one
+/// either. Nothing is written, so a caller asking what a third party could
+/// fill never spends that party's position slot.
+pub fn max_perp_order_size_for_prospective_position(
+    user: &User,
+    market_index: u16,
+    direction: PositionDirection,
+    maps: &mut AccountMaps,
+) -> VelocityResult<u64> {
+    let held = crate::controller::position::get_position_index(&user.perp_positions, market_index);
+
+    // Holds the synthesized position so the borrow outlives the match.
+    let prospective;
+    let position = match held {
+        Ok(index) => &user.perp_positions[index],
+        Err(_) => {
+            let Some(vacant) = user
+                .perp_positions
+                .iter()
+                .position(|position| position.is_available())
+            else {
+                return Ok(0);
+            };
+
+            // `add_new_position` carries the margin ratio over only when the
+            // vacant slot already names this market, which is a position its
+            // owner closed and may reopen.
+            let vacant = &user.perp_positions[vacant];
+            let max_margin_ratio = if vacant.market_index == market_index {
+                vacant.max_margin_ratio
+            } else {
+                0
+            };
+
+            prospective = PerpPosition {
+                market_index,
+                max_margin_ratio,
+                ..PerpPosition::default()
+            };
+
+            &prospective
+        }
+    };
+
+    calculate_max_perp_order_size_for_position(user, position, market_index, direction, maps)
+}
+
+/// The same sizing, against a position the caller supplies rather than one of
+/// the account's own slots.
+///
+/// A caller that is sizing an order for a market the account has never traded
+/// has no slot to name. It passes the position a fill would open instead, and
+/// nothing has to be written to the account to ask the question. The margin
+/// walk reads the account's other positions as it always does, and a vacant
+/// slot contributes nothing to it, which is exactly what a freshly opened
+/// position contributes.
+pub fn calculate_max_perp_order_size_for_position(
+    user: &User,
+    position: &PerpPosition,
+    market_index: u16,
+    direction: PositionDirection,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<u64> {
     let margin_context = MarginContext::standard(MarginRequirementType::Initial).strict(true);
     // calculate initial margin requirement
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         margin_context,
     )?;
 
     let user_custom_margin_ratio = user.max_margin_ratio;
-    let perp_position_margin_ratio = user.perp_positions[position_index].max_margin_ratio as u32;
+    let perp_position_margin_ratio = position.max_margin_ratio as u32;
 
-    let is_isolated_position = user.perp_positions[position_index].is_isolated();
+    let is_isolated_position = position.is_isolated();
     let free_collateral_before = if is_isolated_position {
         margin_calculation
             .get_isolated_free_collateral(market_index)?
@@ -783,12 +818,18 @@ pub fn calculate_max_perp_order_size(
             .cast::<i128>()?
     };
 
-    let perp_market = perp_market_map.get_ref(&market_index)?;
+    let perp_market = maps.perp_market_map.get_ref(&market_index)?;
 
-    let oracle_price_data_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+    let oracle_price_data_price = maps
+        .oracle_map
+        .get_price_data(&perp_market.oracle_id())?
+        .price;
 
-    let quote_spot_market = spot_market_map.get_ref(&perp_market.quote_spot_market_index)?;
-    let quote_oracle_price = oracle_map
+    let quote_spot_market = maps
+        .spot_market_map
+        .get_ref(&perp_market.quote_spot_market_index)?;
+    let quote_oracle_price = maps
+        .oracle_map
         .get_price_data(&quote_spot_market.oracle_id())?
         .price
         .max(
@@ -798,7 +839,7 @@ pub fn calculate_max_perp_order_size(
         );
     drop(quote_spot_market);
 
-    let perp_position: &PerpPosition = &user.perp_positions[position_index];
+    let perp_position: &PerpPosition = position;
     let (worst_case_base_asset_amount, worst_case_liability_value) =
         perp_position.worst_case_liability_value(oracle_price_data_price)?;
 
@@ -914,9 +955,7 @@ pub fn calculate_max_spot_order_size(
     user: &User,
     market_index: u16,
     direction: PositionDirection,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<u64> {
     // calculate initial margin requirement
     let MarginCalculation {
@@ -925,9 +964,7 @@ pub fn calculate_max_spot_order_size(
         ..
     } = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Initial).strict(true),
     )?;
 
@@ -938,9 +975,9 @@ pub fn calculate_max_spot_order_size(
     let mut order_size_to_flip = 0_u64;
     let free_collateral = total_collateral.safe_sub(margin_requirement.cast()?)?;
 
-    let spot_market = spot_market_map.get_ref(&market_index)?;
+    let spot_market = maps.spot_market_map.get_ref(&market_index)?;
 
-    let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
     let twap = spot_market
         .historical_oracle_data
         .last_oracle_price_twap_5min;
@@ -1183,127 +1220,12 @@ pub struct Level {
     pub base_asset_amount: u64,
 }
 
-/// Slots elapsed since an order was posted, from `Order::posted_slot_tail`.
-///
-/// `posted_slot_tail` holds the low 8 bits of the clock slot at post time
-/// (`get_posted_slot_from_clock_slot`), so this is exact only modulo 256. That error is safe for a
-/// minimum-age check. For a fresh order, where elapsed < 256, the result is exact, so a fresh quote can
-/// never look old. An order older than 256 slots can understate its age and count as fresh.
-///
-/// `Order::slot` is not used here. Signed-message orders back-date it to
-/// `min(clock_slot, signed_msg_taker_order_slot)`, so it does not show when the order became visible
-/// on-chain.
-pub fn slots_since_order_posted(slot: u64, posted_slot_tail: u8) -> u64 {
-    (slot as u8).wrapping_sub(posted_slot_tail) as u64
-}
-
-/// Collect the resting bid/ask levels for `perp_market` from the supplied `users`.
-///
-/// `min_quote_rest` drops any quote that has rested for less wall clock time than that
-/// (integrated per slot duration regime). Pass `BID_ASK_TWAP_MIN_QUOTE_REST` when the result
-/// feeds the mark TWAP, and `Millis::ZERO` when the caller needs the true current book.
-/// Arbitrage needs the latter, because a fresh quote is still takeable.
-pub fn find_bids_and_asks_from_users(
-    perp_market: &PerpMarket,
-    oracle_price_date: &OraclePriceData,
-    users: &UserMap,
-    slot: u64,
-    now: i64,
-    min_quote_rest: Millis,
-    slot_clock: SlotClock,
-) -> VelocityResult<(Vec<Level>, Vec<Level>)> {
-    let mut bids: Vec<Level> = Vec::with_capacity(32);
-    let mut asks: Vec<Level> = Vec::with_capacity(32);
-
-    let market_index = perp_market.market_index;
-    let tick_size = perp_market.order_tick_size;
-    let oracle_price = Some(oracle_price_date.price);
-
-    let mut insert_order = |base_asset_amount: u64, price: u64, direction: PositionDirection| {
-        let orders = match direction {
-            PositionDirection::Long => &mut bids,
-            PositionDirection::Short => &mut asks,
-        };
-        let index = match orders.binary_search_by(|level| match direction {
-            PositionDirection::Long => price.cmp(&level.price),
-            PositionDirection::Short => level.price.cmp(&price),
-        }) {
-            Ok(index) => index,
-            Err(index) => index,
-        };
-
-        if index < orders.capacity() {
-            if orders.len() == orders.capacity() {
-                orders.pop();
-            }
-
-            orders.insert(
-                index,
-                Level {
-                    price,
-                    base_asset_amount,
-                },
-            );
-        }
-    };
-
-    for account_loader in users.0.values() {
-        let user = load!(account_loader)?;
-
-        for order in user.orders.iter() {
-            if order.status != OrderStatus::Open {
-                continue;
-            }
-
-            if order.market_type != MarketType::Perp || order.market_index != market_index {
-                continue;
-            }
-
-            // if order is not limit order or must be triggered and not triggered, skip
-            if !order.is_limit_order() || (order.must_be_triggered() && !order.triggered()) {
-                continue;
-            }
-
-            if !order.is_resting_limit_order(slot, slot_clock)? {
-                continue;
-            }
-
-            // OtterSec #146: a quote must rest long enough that a third party could have taken it,
-            // before it can move the mark TWAP. `is_resting_limit_order` admits a post-only order in
-            // its own post slot, so without this the crank's caller can quote, crank and cancel in one
-            // transaction at no risk.
-            if min_quote_rest > Millis::ZERO
-                && slot_clock.elapsed_slot_delta(
-                    slots_since_order_posted(slot, order.posted_slot_tail),
-                    slot,
-                ) < min_quote_rest
-            {
-                continue;
-            }
-
-            if now > order.max_ts && order.max_ts != 0 {
-                continue;
-            }
-
-            let existing_position = user.get_perp_position(market_index)?.base_asset_amount;
-            let base_amount = order.get_base_asset_amount_unfilled(Some(existing_position))?;
-            let limit_price =
-                order.force_get_limit_price(oracle_price, None, slot, tick_size, slot_clock)?;
-
-            insert_order(base_amount, limit_price, order.direction);
-        }
-    }
-
-    Ok((bids, asks))
-}
-
 /// Filter out bids and asks whose price diverges from the oracle by more than
 /// `max_divergence_percent` in either direction. A level is kept only when its
 /// price lies within `[oracle * (100 - d) / 100, oracle * (100 + d) / 100]`.
 /// The band is symmetric on both sides for both books: a bid above the upper
-/// bound and an ask below the lower bound are excluded too, so caller-supplied
-/// DLOB depth cannot drive the mark TWAP past the oracle band in either
-/// direction.
+/// bound and an ask below the lower bound are excluded too, so book depth
+/// cannot drive the mark TWAP past the oracle band in either direction.
 pub fn filter_bids_asks_by_oracle_divergence(
     bids: Vec<Level>,
     asks: Vec<Level>,
@@ -1360,6 +1282,41 @@ pub fn estimate_price_from_side(side: &Vec<Level>, depth: u64) -> VelocityResult
     Ok(price)
 }
 
+/// The margin tier a maker fill answers to, and whether it adds risk.
+pub struct MakerFillTier {
+    pub requirement: MarginRequirementType,
+    pub risk_increasing: bool,
+}
+
+/// Judge a maker fill from the position it starts at and the base it moves.
+///
+/// A fill that flattens the position, or shrinks it without crossing zero,
+/// only reduces. It answers to maintenance margin and is exempt from the
+/// gates that bar risk-increasing activity. The router asks this before the
+/// fill and the fill asks it after, so both must read one rule.
+pub fn maker_fill_tier(
+    position_before: i64,
+    base_asset_amount_filled: i64,
+) -> VelocityResult<MakerFillTier> {
+    let position_after = position_before.safe_add(base_asset_amount_filled)?;
+
+    let reducing = position_after == 0
+        || (position_after.signum() == position_before.signum()
+            && position_after.abs() < position_before.abs());
+
+    if reducing {
+        return Ok(MakerFillTier {
+            requirement: MarginRequirementType::Maintenance,
+            risk_increasing: false,
+        });
+    }
+
+    Ok(MakerFillTier {
+        requirement: MarginRequirementType::Fill,
+        risk_increasing: true,
+    })
+}
+
 pub fn select_margin_type_for_perp_maker(
     maker: &User,
     base_asset_amount_filled: i64,
@@ -1369,18 +1326,9 @@ pub fn select_margin_type_for_perp_maker(
         .get_perp_position(market_index)
         .map_or(0, |p| p.base_asset_amount);
     let position_before = position_after_fill.safe_sub(base_asset_amount_filled)?;
+    let tier = maker_fill_tier(position_before, base_asset_amount_filled)?;
 
-    if position_after_fill == 0 {
-        return Ok((MarginRequirementType::Maintenance, false));
-    }
-
-    if position_after_fill.signum() == position_before.signum()
-        && position_after_fill.abs() < position_before.abs()
-    {
-        return Ok((MarginRequirementType::Maintenance, false));
-    }
-
-    Ok((MarginRequirementType::Fill, true))
+    Ok((tier.requirement, tier.risk_increasing))
 }
 
 pub fn get_posted_slot_from_clock_slot(slot: u64) -> u8 {

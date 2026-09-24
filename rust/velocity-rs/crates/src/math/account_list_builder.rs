@@ -116,9 +116,9 @@ impl AccountsListBuilder {
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
-        // Carry the full transition archive, not one resolved duration: the
-        // margin math integrates oracle ages and cooldowns per slot duration
-        // regime, exactly like the program.
+        // The margin math integrates oracle ages and cooldowns per slot
+        // duration regime, like the program. It needs the full transition
+        // archive rather than one resolved duration.
         self.accounts.slot_clock = SlotClock::from_state_fields(
             velocity_state_account.slot_duration_transition_slots,
             velocity_state_account.slot_duration_ms,
@@ -208,9 +208,9 @@ impl AccountsListBuilder {
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
-        // Carry the full transition archive, not one resolved duration: the
-        // margin math integrates oracle ages and cooldowns per slot duration
-        // regime, exactly like the program.
+        // The margin math integrates oracle ages and cooldowns per slot
+        // duration regime, like the program. It needs the full transition
+        // archive rather than one resolved duration.
         self.accounts.slot_clock = SlotClock::from_state_fields(
             velocity_state_account.slot_duration_transition_slots,
             velocity_state_account.slot_duration_ms,

@@ -34,15 +34,6 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 
-// Regression for the pending-IF-fee sweep front-run: a permissionless
-// sweepPerpMarketFees fired between a bankruptcy and its resolution must
-// not clear the pending IF fee that resolvePerpBankruptcy consumes as its
-// first-loss tranche. The latch books the debt in the market's
-// `pendingBankruptcyClaims`, and the sweep's IF drain then withholds the
-// whole counter until the debt resolves. The tranche survives the front-run
-// with the standing `bankruptcyIfFloorPct` turned off — and revenue
-// settlement being "not due" (the quote market's revenue_settle_period is 0
-// here) can no longer turn the sweep into extra socialized loss.
 describe('bankruptcy IF-fee floor', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -221,10 +212,10 @@ describe('bankruptcy IF-fee floor', () => {
 			'new market should default to a 10 bps floor'
 		);
 
-		// Turn the standing floor OFF. The latched bankruptcy alone must hold
-		// the tranche, because the floor cannot be relied on: it is sized on
-		// open-interest notional, which can be zero exactly when a bankruptcy
-		// is pending, and an operator can turn it off.
+		// Turn the standing floor off. The latched bankruptcy alone must hold the
+		// tranche, because the floor is not dependable. The floor is sized on
+		// open-interest notional, which can be zero while a bankruptcy is pending,
+		// and an operator can turn it off.
 		await velocityClient.updatePerpMarketBankruptcyIfFloorPct(
 			MARKET_INDEX,
 			BANKRUPTCY_IF_FLOOR_DISABLED
@@ -309,10 +300,10 @@ describe('bankruptcy IF-fee floor', () => {
 			velocityClient.getSpotMarketAccount(0).revenuePool
 		);
 
-		// the front-run: a permissionless sweep while the bankruptcy is
-		// unresolved (and revenue settlement to the IF vault is not due —
-		// revenue_settle_period is 0). The booked claim withholds the whole
-		// pending IF fee, so nothing may leave for the revenue pool.
+		// The front-run. A permissionless sweep runs while the bankruptcy is
+		// unresolved, and revenue settlement to the IF vault is not due because
+		// revenue_settle_period is 0. The booked claim withholds the whole pending
+		// IF fee, so nothing may leave for the revenue pool.
 		await velocityClient.sweepPerpMarketFees(MARKET_INDEX);
 		await velocityClient.fetchAccounts();
 

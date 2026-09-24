@@ -7,13 +7,17 @@
 //! `#[derive(Accounts)]` structs are shared with non-AMM perp-market admin
 //! instructions and continue to live in `admin.rs`.
 
+// Edition 2018 does not carry `TryInto` in the prelude. Only the hot-key check
+// uses it, and `anchor-test` builds compile that check out.
+#[cfg(not(feature = "anchor-test"))]
+use std::convert::TryInto;
 use {
     crate::{
         auth::{check_hot, check_warm},
         controller::{self, spot_balance::execute_transfer_between_pools},
         error::ErrorCode,
         instructions::{
-            optional_accounts::{get_token_mint, load_maps, AccountMaps},
+            optional_accounts::{get_token_mint, load_maps},
             *,
         },
         load, load_mut,
@@ -44,11 +48,11 @@ use {
     },
     anchor_lang::{prelude::*, Discriminator},
     anchor_spl::token_interface::{TokenAccount, TokenInterface},
-    std::{convert::TryInto, fmt::Display},
+    std::fmt::Display,
 };
 
-// Protocol wide limits for calls made only by the VammQuoteManagement hot role.
-// Warm and cold governance retain the setters' full semantic ranges.
+// Protocol-wide limits that apply when the `VammQuoteManagement` hot role
+// signs. Warm and cold governance keep the full range of each setter.
 pub const VAMM_QUOTE_MIN_CURVE_UPDATE_INTENSITY: u8 = 100;
 pub const VAMM_QUOTE_MAX_CURVE_UPDATE_INTENSITY: u8 = 150;
 pub const VAMM_QUOTE_MIN_REFERENCE_PRICE_OFFSET_DEADBAND_PCT: u8 = 0;
@@ -140,11 +144,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
     let slot = Clock::get()?.slot;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map: _,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -154,9 +154,9 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
     )?;
 
     let validity = ctx.accounts.state.load()?.oracle_guard_rails.validity;
-    for (_, perp_market_loader) in perp_market_map.0 {
+    for (_, perp_market_loader) in maps.perp_market_map.0 {
         let perp_market = perp_market_loader.load()?;
-        let oracle_data = oracle_map.get_price_data(&perp_market.oracle_id())?;
+        let oracle_data = maps.oracle_map.get_price_data(&perp_market.oracle_id())?;
         let mm_oracle_data = perp_market.get_mm_oracle_price_data(
             *oracle_data,
             slot,
@@ -220,10 +220,11 @@ pub fn handle_override_amm_cache_info<'c: 'info, 'info>(
     }
 
     if let Some(amm_inventory_limit) = override_params.amm_inventory_limit {
-        if amm_inventory_limit < 0 {
-            msg!("amm_inventory_limit must be non-negative");
-            return Err(ErrorCode::DefaultError.into());
-        }
+        validate!(
+            amm_inventory_limit >= 0,
+            ErrorCode::DefaultError,
+            "amm_inventory_limit must be non-negative"
+        )?;
         cache_entry.amm_inventory_limit = amm_inventory_limit;
     }
 
@@ -888,15 +889,14 @@ pub fn handle_update_k(ctx: Context<AdminUpdateK>, sqrt_k: u128) -> Result<()> {
         .unsigned_abs()
         .gt(&MAX_UPDATE_K_PRICE_CHANGE);
 
-    if price_change_too_large {
-        msg!(
-            "{:?} -> {:?} (> {:?})",
-            price_before,
-            price_after,
-            MAX_UPDATE_K_PRICE_CHANGE
-        );
-        return Err(ErrorCode::InvalidUpdateK.into());
-    }
+    validate!(
+        !(price_change_too_large),
+        ErrorCode::InvalidUpdateK,
+        "{:?} -> {:?} (> {:?})",
+        price_before,
+        price_after,
+        MAX_UPDATE_K_PRICE_CHANGE
+    )?;
 
     let k_sqrt_check = bn::U192::from(amm.base_asset_reserve)
         .safe_mul(bn::U192::from(amm.quote_asset_reserve))?
@@ -907,10 +907,14 @@ pub fn handle_update_k(ctx: Context<AdminUpdateK>, sqrt_k: u128) -> Result<()> {
         .cast::<i128>()?
         .safe_sub(amm.sqrt_k.cast::<i128>()?)?;
 
-    if k_err.unsigned_abs() > 100 {
-        msg!("k_err={:?}, {:?} != {:?}", k_err, k_sqrt_check, amm.sqrt_k);
-        return Err(ErrorCode::InvalidUpdateK.into());
-    }
+    validate!(
+        k_err.unsigned_abs() <= 100,
+        ErrorCode::InvalidUpdateK,
+        "k_err={:?}, {:?} != {:?}",
+        k_err,
+        k_sqrt_check,
+        amm.sqrt_k
+    )?;
 
     let peg_multiplier_after = amm.peg_multiplier;
     let base_asset_reserve_after = amm.base_asset_reserve;
@@ -1326,10 +1330,11 @@ pub fn handle_update_perp_market_funding_bias_sensitivity(
     Ok(())
 }
 
-/// Byte offset of `State::hot_amm_spread_adjust` (32 bytes) from the start of
-/// the account data (including the 8-byte Anchor discriminator). Guarded by
-/// `state/traits/tests.rs::native_instruction_offsets`. Only read outside
-/// `anchor-test`, which compiles the signer check out.
+/// Byte offset of the 32-byte `State::hot_amm_spread_adjust` from the start of
+/// the account data, which includes the 8-byte Anchor discriminator.
+/// `state/traits/tests.rs::native_instruction_offsets` guards the value. Only
+/// builds without `anchor-test` read it, because `anchor-test` compiles the
+/// signer check out.
 #[cfg_attr(feature = "anchor-test", allow(dead_code))]
 const STATE_HOT_AMM_SPREAD_ADJUST_OFFSET: usize = 392;
 
@@ -1337,16 +1342,15 @@ pub fn handle_update_amm_spread_adjustment_native(
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> Result<()> {
-    // Pre-Anchor native dispatch: re-establish the ownership + discriminator
-    // guarantees Anchor would provide (see `crate::auth::require_native_account`)
-    // before trusting any byte. Accounts: [0] perp_market (mut), [1] signer,
-    // [2] state. Payload: i8 spread adjustment (1 byte).
-    //
-    // Every index below is bounds-checked before use: this runs before Anchor,
-    // so a malformed instruction arrives verbatim, and a short account list or
-    // an empty payload used to panic — before the hot-key check, so any caller
-    // could reach it — aborting with no identifiable error after burning the
-    // whole compute budget.
+    // allow-verbose: pre-Anchor native dispatch. Re-establishes the ownership
+    // and discriminator guarantees Anchor would give (see
+    // `crate::auth::require_native_account`) before trusting any byte.
+    // Accounts: [0] perp_market (mut), [1] signer, [2] state. Payload is
+    // one byte, the i8 spread adjustment. Every index below is
+    // bounds-checked first, since the handler runs before Anchor and a
+    // malformed instruction arrives verbatim. Without the checks, a short
+    // account list or empty payload panics on indexing with no
+    // identifiable error, ahead of the hot-key check, so any caller reaches it.
     require!(accounts.len() >= 3, ErrorCode::InvalidNativeInstructionData);
     require!(!data.is_empty(), ErrorCode::InvalidNativeInstructionData);
 
@@ -1569,7 +1573,7 @@ pub struct UpdateInitialAmmCacheInfo<'info> {
 
 /// Both handlers on this struct price the perp market from the oracle account
 /// the caller passes. `has_one` binds that account to the market, so a caller
-/// cannot substitute another feed and set the peg from it.
+/// cannot substitute another feed and price the market from it.
 #[derive(Accounts)]
 pub struct AdminUpdatePerpMarketAmmSummaryStats<'info> {
     #[account(constraint = check_hot(&admin.key(), &state, HotRole::AmmCrank)?)]
@@ -1809,9 +1813,9 @@ mod native_auth_tests {
     }
 
     /// The handler runs before Anchor, so a malformed instruction reaches it
-    /// verbatim. A short account list or an empty payload used to panic on the
-    /// indexing — before the hot-key check, so any caller could reach it —
-    /// which aborts the transaction with no identifiable error.
+    /// verbatim. A short account list or an empty payload must return an error
+    /// rather than panic on the indexing. That indexing sits ahead of the
+    /// hot-key check, so any caller reaches it.
     #[test]
     fn spread_native_rejects_malformed_shape_without_panicking() {
         let hot_key = Pubkey::new_unique();
@@ -1829,20 +1833,20 @@ mod native_auth_tests {
 
         let accounts = [perp_market_info, signer, state_info];
 
-        // Too few accounts: none at all, then two where three are required.
+        // Too few accounts. First none at all, then two where three are needed.
         let err = handle_update_amm_spread_adjustment_native(&[], &[7i8 as u8]).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
         let err =
             handle_update_amm_spread_adjustment_native(&accounts[..2], &[7i8 as u8]).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
 
-        // Empty payload: `data[0]` used to panic here.
+        // Empty payload. An unchecked `data[0]` panics here.
         let err = handle_update_amm_spread_adjustment_native(&accounts, &[]).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
     }
 
-    /// Program-owned and correctly discriminated, but too short to hold a
-    /// PerpMarket: the unchecked slice used to panic in the bytemuck cast.
+    /// The account is program-owned and correctly discriminated, but too short
+    /// to hold a `PerpMarket`. An unchecked slice panics in the bytemuck cast.
     #[test]
     fn spread_native_rejects_truncated_market_account() {
         let hot_key = Pubkey::new_unique();

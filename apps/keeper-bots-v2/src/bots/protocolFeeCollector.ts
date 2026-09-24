@@ -5,7 +5,6 @@ import {
 	getTokenAmount,
 	SpotBalanceType,
 	PriorityFeeSubscriberMap,
-	VelocityMarketInfo,
 } from '@velocity-exchange/sdk';
 import { Mutex } from 'async-mutex';
 
@@ -13,11 +12,12 @@ import { getErrorCode } from '../error';
 import { logger } from '../logger';
 import { Bot } from '../types';
 import { webhookMessage } from '../webhook';
-import { BaseBotConfig } from '../config';
+import { BaseBotConfig, GlobalConfig } from '../config';
 import {
-	getVelocityPriorityFeeEndpoint,
+	priorityFeeMarkets,
 	simulateAndGetTxWithCUs,
 	sleepS,
+	subscribePriorityFeeMap,
 } from '../utils';
 import {
 	AddressLookupTableAccount,
@@ -59,13 +59,19 @@ export class ProtocolFeeCollectorBot implements Bot {
 	private priorityFeeSubscriberMap?: PriorityFeeSubscriberMap;
 
 	private adminClient: AdminClient;
+	private globalConfig: GlobalConfig;
 	private intervalIds: Array<NodeJS.Timer> = [];
 
 	private watchdogTimerMutex = new Mutex();
 	private watchdogTimerLastPatTime = Date.now();
 	private lookupTableAccounts?: AddressLookupTableAccount[];
 
-	constructor(adminClient: AdminClient, config: BaseBotConfig) {
+	constructor(
+		adminClient: AdminClient,
+		config: BaseBotConfig,
+		globalConfig: GlobalConfig
+	) {
+		this.globalConfig = globalConfig;
 		this.name = config.botId;
 		this.dryRun = config.dryRun;
 		this.runOnce = config.runOnce || false;
@@ -77,30 +83,10 @@ export class ProtocolFeeCollectorBot implements Bot {
 
 		await this.adminClient.subscribe();
 
-		const velocityMarkets: VelocityMarketInfo[] = [];
-		for (const perpMarket of this.adminClient.getPerpMarketAccounts()) {
-			velocityMarkets.push({
-				marketType: 'perp',
-				marketIndex: perpMarket.marketIndex,
-			});
-		}
-		for (const spotMarket of this.adminClient.getSpotMarketAccounts()) {
-			velocityMarkets.push({
-				marketType: 'spot',
-				marketIndex: spotMarket.marketIndex,
-			});
-		}
-
-		this.priorityFeeSubscriberMap = new PriorityFeeSubscriberMap({
-			// Prefer the configured endpoint (PRIORITY_FEE_ENDPOINT, e.g. the
-			// in-cluster dlob-server) over the hardcoded public dlob fallback.
-			velocityPriorityFeeEndpoint:
-				process.env.PRIORITY_FEE_ENDPOINT ??
-				getVelocityPriorityFeeEndpoint('mainnet-beta'),
-			velocityMarkets,
-			frequencyMs: 10_000,
-		});
-		await this.priorityFeeSubscriberMap!.subscribe();
+		this.priorityFeeSubscriberMap = await subscribePriorityFeeMap(
+			priorityFeeMarkets(this.adminClient, { perp: true, spot: true }),
+			this.globalConfig
+		);
 
 		// no getUser().exists() check: the fee-withdraw hot key signs the
 		// sweep/withdraw ixs directly and needs no velocity user account
@@ -155,9 +141,11 @@ export class ProtocolFeeCollectorBot implements Bot {
 				marketType,
 				marketIndex
 			);
-			// Guard NaN: /batchPriorityFees returns level-less entries for markets
-			// with no published fees (see fundingRateUpdater.ts) — pfs.medium is
-			// then undefined and Math.floor(NaN) throws at BigInt conversion.
+
+			// Guard against NaN. /batchPriorityFees returns an entry with no
+			// levels for a market with no published fees, as fundingRateUpdater.ts
+			// describes. pfs.medium is then undefined and Math.floor(NaN) throws at
+			// the BigInt conversion.
 			let microLamports = 10_000;
 			if (pfs && Number.isFinite(pfs.medium)) {
 				microLamports = Math.floor(pfs.medium);

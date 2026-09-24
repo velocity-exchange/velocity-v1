@@ -45,9 +45,9 @@ import {
 	startLiteSVM,
 } from '../../packages/sdk/src/litesvm/litesvmConnection';
 
-// `calculate_taker_fee` ceils the tier fee (safe_div_ceil), then each referral
-// proportion floors. Mirror both or the expectation drifts by one for quotes that do
-// not divide evenly.
+// `calculate_taker_fee` ceils the tier fee with `safe_div_ceil`, and each referral
+// proportion then floors. This helper mirrors both. Without that, the expectation
+// drifts by one for a quote that does not divide evenly.
 const takerFeeFor = (
 	quoteAssetAmountFilled: BN | number | string,
 	feeTier: { feeNumerator: number; feeDenominator: number }
@@ -226,8 +226,8 @@ describe('referrer', () => {
 	});
 
 	it('automatically accelerates new user creation', async () => {
-		// ACCELERATED_REFERRAL_ENROLLMENT_ENABLED is a beta-scoped constant, so every new
-		// account is enrolled. There is no runtime switch to toggle.
+		// ACCELERATED_REFERRAL_ENROLLMENT_ENABLED is a compile-time constant, so the
+		// program enrolls every new account. There is no runtime switch.
 		const [acceleratedClient] = await createUserWithUSDCAccount(
 			svmContextWrapper,
 			usdcMint,
@@ -293,13 +293,17 @@ describe('referrer', () => {
 
 		const newUserRecord = eventSubscriber.getEventsArray('NewUserRecord')[0];
 		assert(
-			newUserRecord.referrer.equals(svmContextWrapper.provider.wallet.publicKey)
+			newUserRecord.referrer.equals(
+				svmContextWrapper.provider.wallet.publicKey
+			)
 		);
 
 		await refereeVelocityClient.fetchAccounts();
 		const refereeStats = refereeVelocityClient.getUserStats().getAccount();
 		assert(
-			refereeStats.referrer.equals(svmContextWrapper.provider.wallet.publicKey)
+			refereeStats.referrer.equals(
+				svmContextWrapper.provider.wallet.publicKey
+			)
 		);
 		assert((refereeStats.referrerStatus & ReferrerStatus.IsReferred) > 0);
 
@@ -333,12 +337,12 @@ describe('referrer', () => {
 	});
 
 	it('cannot initialize a RevenueShareEscrow before the authority has a user', async () => {
-		// escrow.referrer is snapshotted once at init and never rewritten, and
-		// UserStats.referrer is only ever set when the first sub-account is created.
-		// An escrow created in between would therefore freeze a defaulted referrer
-		// forever, suppressing that authority's referral rewards with no way to
-		// repair the field. Anyone can pay for anyone's escrow — the authority does
-		// not sign — so the window has to be closed on chain.
+		// The program writes escrow.referrer once at init and never rewrites it. It
+		// sets UserStats.referrer only when the first sub-account is created. An
+		// escrow created between those two points freezes a defaulted referrer
+		// forever. That authority then earns no referral reward, and no instruction
+		// repairs the field. Anyone can pay for anyone's escrow, because the
+		// authority does not sign, so the program must close the window itself.
 		const strandedKeyPair = await createFundedKeyPair(svmContextWrapper);
 		const strandedClient = new TestClient({
 			connection: svmContextWrapper.connection.toConnection(),
@@ -365,14 +369,15 @@ describe('referrer', () => {
 		});
 		await strandedClient.subscribe();
 
-		// UserStats exists, no sub-account yet: exactly the state the escrow refuses.
+		// UserStats exists and no sub-account does. The escrow refuses this state.
 		const statsTx = await strandedClient.buildTransaction([
 			await strandedClient.getInitializeUserStatsIx(),
 		]);
 		await strandedClient.sendTransaction(statsTx);
 
 		try {
-			// A third party paying for the escrow is what made this griefable.
+			// A third party pays for the escrow here, which is how an attacker
+			// reaches this state.
 			await referrerVelocityClient.initializeRevenueShareEscrow(
 				strandedKeyPair.publicKey,
 				3
@@ -414,9 +419,10 @@ describe('referrer', () => {
 
 	it('fill order accrues a referral reward to the escrow and settles it', async () => {
 		const marketIndex = 0;
-		// Enrollment is a const during the beta, so the referrer was auto-accelerated when
-		// their account was created. An admin revoke is the only way back to the Standard
-		// rate, and it blocks reenrollment so the revoke survives their next fill.
+		// Enrollment is a compile-time constant, so the program accelerated the
+		// referrer when it created their account. An admin revoke is the only way
+		// back to the Standard rate. The revoke also blocks re-enrollment, so it
+		// survives the referrer's next fill.
 		await referrerVelocityClient.updateUserAcceleratedReferralStatus(
 			referrerVelocityClient.authority,
 			false
@@ -532,12 +538,13 @@ describe('referrer', () => {
 		);
 
 		// Referrer's RevenueShare.totalReferrerRewards increased by the reward.
-		const revShareAfterInfo = await svmContextWrapper.connection.getAccountInfo(
-			getRevenueShareAccountPublicKey(
-				referrerVelocityClient.program.programId,
-				referrerVelocityClient.wallet.publicKey
-			)
-		);
+		const revShareAfterInfo =
+			await svmContextWrapper.connection.getAccountInfo(
+				getRevenueShareAccountPublicKey(
+					referrerVelocityClient.program.programId,
+					referrerVelocityClient.wallet.publicKey
+				)
+			);
 		const revShareAfter: RevenueShareAccount =
 			referrerVelocityClient.program.account.revenueShare.coder.accounts.decodeUnchecked(
 				'revenueShare',

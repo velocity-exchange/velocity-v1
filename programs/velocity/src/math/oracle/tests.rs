@@ -353,11 +353,10 @@ fn immediate_staleness_threshold_by_override() {
 
 #[test]
 fn fill_order_match_admits_the_same_set_as_margin_calc() {
-    // A DLOB match must not execute at a price the program cannot do margin
-    // with. `FillOrderMatch` used to admit `StaleForMargin`, which let both
-    // sides exactly close (reducing, so the equity-floor gate is skipped)
-    // while the lazy breaker stayed blind for want of `MarginCalc` validity,
-    // crystallizing a temporary mark loss at an unusable price (OtterSec
+    // A maker match must not execute at a price the program cannot do margin with.
+    // `FillOrderMatch` used to admit `StaleForMargin`, which let both sides exactly close
+    // (reducing, so the equity-floor gate is skipped) while the lazy breaker stayed blind for want
+    // of `MarginCalc` validity, crystallizing a temporary mark loss at an unusable price (OtterSec
     // #142). The two actions therefore admit the same set.
     let states = [
         OracleValidity::NonPositive,

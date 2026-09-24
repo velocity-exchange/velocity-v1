@@ -514,8 +514,8 @@ three repair instructions fail with `FailedUnwrap` until the cold admin writes 0
 unknown bits (`admin.rs:4659-4664,4694-4699`). This one does not.
 
 Per-user throttles (`admin_update_user_stats_paused_operations`). Three bits on a single
-user's `UserStats`. They force the user's market orders through the full auction instead of atomic
-vAMM fills (`state/user.rs:817-836`), restrict atomic fills to reduce-only, or stop the user's
+user's `UserStats`. They block immediate (JIT) vAMM fills for the user's orders, so the vAMM fills
+them only on its low-risk path (`state/user.rs:817-836`), restrict atomic fills to reduce-only, or stop the user's
 fills moving the bid/ask TWAP (`state/user.rs:2153-2159`).
 
 Feature kill switches. All follow one pattern. Any holder of the `FeatureFlag` hot key (or
@@ -539,7 +539,7 @@ revenue tracking and quote-owed settlement for a market when 0. The loops skip r
 so there is no error. Its setter is feature-gated out of mainnet builds while the field and readers
 ship, so on mainnet the value is frozen at whatever it holds.
 
-## Order sizing, auctions, and pools
+## Order sizing and pools
 
 The perp order-parameter setters carry partial bounds. Every spot-side sibling is inert today
 because spot DLOB trading is hard-disabled by an unconditional rejection
@@ -551,7 +551,7 @@ because spot DLOB trading is hard-disabled by an unconditional rejection
 | `PerpMarket.order_tick_size` | same handler | warm | `PRICE_PRECISION` (1e6) | > 0 only (`admin.rs:3038`); no upper bound |
 | `PerpMarket.market_stats.min_order_size` | `update_perp_market_min_order_size` (`admin.rs:3061`) | warm | `BASE_PRECISION` | > 0 only (`admin.rs:3068`); no upper bound, no tie to step size |
 | `PerpMarket.max_open_interest` | `update_perp_market_max_open_interest` (`admin.rs:3141`) | warm | `BASE_PRECISION` (u128); 0 = uncapped | must be a multiple of the current step size and fit u64 (`admin.rs:3148-3155`) |
-| `State.min_perp_auction_duration` | `update_perp_auction_duration` (`admin.rs:3462`) | warm | 400ms units (u8) | **unchecked** (0-255) |
+| `State.min_perp_auction_duration` | `update_perp_auction_duration` (`admin.rs:3462`) | warm | 400ms units (u8) | **unchecked** (0-255), and no onchain reader exists |
 | `State.default_spot_auction_duration` | `update_spot_auction_duration` (`admin.rs:3477`) | warm | 400ms units (u8) | **unchecked**, and no onchain reader exists |
 | `SpotMarket.order_step_size` / `order_tick_size` | `update_spot_market_step_size_and_tick_size` (`admin.rs:3083`) | warm | token precision / `PRICE_PRECISION` | > 0 required, except **market 0 is fully exempt** (`admin.rs:3091-3094`); effectively inert (spot DLOB disabled) |
 | `SpotMarket.min_order_size` | `update_spot_market_min_order_size` (`admin.rs:3116`) | warm | token precision | > 0 except market 0 exempt (`admin.rs:3123-3126`); no onchain reader |
@@ -573,7 +573,7 @@ Nothing at write time re-checks divisibility of existing positions, aggregates, 
 `max_open_interest` (whose own multiple-of-step check runs only when *it* is written,
 `admin.rs:3148-3155`).
 
-Perp tick size is read live by resting orders. An auction or oracle-offset order's effective
+Perp tick size is read live by resting orders. An oracle-offset order's effective
 limit price is recomputed from the *current* tick size on every fill attempt
 (`state/user.rs:1521-1550`, `state/fill_mode.rs:24-47`), and the bid/ask TWAP crank reprices
 resting makers with it (`math/orders.rs:1213`), so a tick change reprices the resting book and
@@ -595,14 +595,8 @@ Max open interest gates risk-increasing placement when nonzero
 open interest therefore reverts every fill in the market, position-reducing fills included,
 until raised or zeroed. Existing positions are never force-reduced.
 
-Perp auction duration (`min_perp_auction_duration`, **unchecked**). Floors the auction
-length of every market and oracle order, and of limit orders that request an auction
-(`controller/orders.rs:498-561`). The duration also stretches the order's `max_ts`. It is
-latched onto the order at placement, so a change affects newly placed orders only. Triggered
-stop orders are unaffected, because their path hardcodes a floor of 20 units of 400ms (8s)
-(`controller/orders.rs:3819-3825`), which the TWAP-manipulation defense at `constants.rs:318-338`
-relies on. At 255 units (~102s) every market order's auction stretches accordingly, and nothing
-bounds it.
+Perp auction duration (`min_perp_auction_duration`, **unchecked**). Order auctions are removed,
+so nothing reads this field. The setter still writes it.
 
 Pool partition tags. `SpotMarket.pool_id` is the one that can strand users. Users can only deposit,
 withdraw, transfer, be margined, and be liquidated against spot markets whose `pool_id` matches
@@ -693,7 +687,7 @@ diverts) the IF's cut. The dollar floor moves with the latched oracle TWAP, not 
 Bankruptcy resolution itself consumes the `pending_if_fee` counter, not this field.
 
 vAMM maker rebate bit shifts part of the taker-fee remainder into the AMM's fee pool on
-AMM-path fills only (`math/fees.rs:190-199`). DLOB match fills never see it. The rebate is
+AMM-path fills only (`math/fees.rs:190-199`). Maker match fills never see it. The rebate is
 sized from tier 0 of the fee schedule, not the taker's tier (`math/fees.rs:308-318`), and
 clamped to the available remainder, so editing `fee_tiers[0]`'s maker-rebate numerators also
 moves the vAMM's own rebate while the bit is on. The authority is asymmetric like the other

@@ -21,7 +21,7 @@ use {
     velocity::{
         math::{
             constants::{
-                PERCENTAGE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                BPS_PRECISION, PERCENTAGE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
                 SPOT_UTILIZATION_PRECISION,
             },
             spot_balance::{
@@ -31,7 +31,7 @@ use {
             spot_swap::calculate_swap_price,
             spot_withdraw::{
                 calculate_max_borrow_token_amount, calculate_min_deposit_token_amount,
-                check_withdraw_limits,
+                check_withdraw_limits, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS,
             },
         },
         state::spot_market::{SpotBalanceType, SpotMarket},
@@ -284,9 +284,9 @@ fn prop_swap_and_withdraw_limits(
     let twap = deposit_twap as u128;
     let g = guard as u128;
 
-    // Min deposit after withdraw: never requires more than the TWAP, and the
-    // pre-#185 breaker always reserves at least 25% (subtract >= twap/4).
-    if let Ok(min_deposit) = calculate_min_deposit_token_amount(twap, g) {
+    // Min deposit after withdraw: never requires more than the TWAP, and an
+    // unconfigured breaker (0 bps) reserves the 25% default (subtract >= twap/4).
+    if let Ok(min_deposit) = calculate_min_deposit_token_amount(twap, g, 0) {
         fuzz_assert_le!(min_deposit, twap);
         fuzz_assert_le!(min_deposit, twap - twap / 4);
     }
@@ -340,46 +340,38 @@ fn prop_swap_and_withdraw_limits(
 // its master-branch reproduction status and its un-gate plan.
 // ---------------------------------------------------------------------------
 
-/// PENDING PR #185: withdrawal bounded by `withdraw_circuit_breaker_pct` × 24h
-/// deposit TWAP, with `0 ⇒ 25%` fallback.
+/// The withdraw circuit breaker honors the market's configured size: the
+/// minimum deposit a withdrawal must leave behind is
+/// `twap - max(twap * bps / 10_000, min(guard, twap))`, with `0 bps` meaning
+/// the 25% default that markets written before the field existed read out of
+/// former padding.
 ///
-/// Master hardcodes `deposit_token_twap / 4` (25%) inside
-/// `calculate_min_deposit_token_amount` and has no `withdraw_circuit_breaker_pct`
-/// field. This harness reimplements the FIXED configurable formula and asserts
-/// the pre-#185 fn honors it: they agree only at the 25% fallback point, so for
-/// any other `breaker_pct` the two DIVERGE and a violation is reported — i.e.
-/// the harness reproduces the "breaker is not configurable" bug on master.
-///
-/// Layout dependency: un-gate to feed the pct through the real
-/// `calculate_withdraw_limit(withdraw_circuit_breaker_pct)` once #185 lands
-/// (SpotMarket::SIZE 808 → 824).
+/// The formula is restated here rather than called twice, so a change to the
+/// program's rounding or to the zero-means-default rule shows up as a
+/// divergence instead of agreeing with itself.
 #[cfg(feature = "regr_185_withdraw_circuit_breaker")]
 #[crucible_fuzz]
 fn regr_185_withdraw_circuit_breaker(
     fixture: &mut SpotFixture,
     #[range(0..1_000_000_000_000_000u64)] deposit_twap: u64,
     #[range(0..1_000_000_000_000_000u64)] guard: u64,
-    // PERCENTAGE_PRECISION-scaled breaker; 0 => 25% fallback.
-    #[range(0..1_000_001u64)] breaker_pct: u64,
+    // Basis points; 0 means the 25% default.
+    #[range(0..10_001u64)] breaker_bps: u64,
 ) {
     let _ = &fixture.ctx;
     let twap = deposit_twap as u128;
     let g = guard as u128;
 
-    // FIXED (#185) reference: min deposit after withdraw
-    //   = twap - max(twap * pct / PERCENTAGE_PRECISION, min(guard, twap))
-    let pct = if breaker_pct == 0 {
-        PERCENTAGE_PRECISION / 4
+    let bps = if breaker_bps == 0 {
+        u128::from(DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS)
     } else {
-        breaker_pct as u128
+        breaker_bps as u128
     };
-    let breaker_amount = twap.saturating_mul(pct) / PERCENTAGE_PRECISION;
-    let fixed_min_deposit = twap.saturating_sub(breaker_amount.max(g.min(twap)));
+    let breaker_amount = twap.saturating_mul(bps) / u128::from(BPS_PRECISION);
+    let expected_min_deposit = twap.saturating_sub(breaker_amount.max(g.min(twap)));
 
-    if let Ok(master_min_deposit) = calculate_min_deposit_token_amount(twap, g) {
-        // Master ignores `pct` (always 25%); the fix honors it. Equal only when
-        // the effective breaker is 25% — otherwise this fires, reproducing #185.
-        fuzz_assert_eq!(master_min_deposit, fixed_min_deposit);
+    if let Ok(min_deposit) = calculate_min_deposit_token_amount(twap, g, breaker_bps as u16) {
+        fuzz_assert_eq!(min_deposit, expected_min_deposit);
     }
 }
 

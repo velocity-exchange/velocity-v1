@@ -1,14 +1,17 @@
-//! Tests for `User::meets_transfer_isolated_position_deposit_margin_requirement`.
-//! Covers transfer-to-isolated and transfer-from-isolated flows with pass/fail scenarios.
+//! Tests for `User::meets_transfer_isolated_position_deposit_margin_requirement`
+//! and the transfer that runs it. Covers transfer-to-isolated and
+//! transfer-from-isolated flows with pass/fail scenarios.
 
 use {
     crate::{
+        controller::isolated_position::transfer_isolated_perp_position_deposit,
         create_anchor_account_info,
         error::ErrorCode,
+        instructions::optional_accounts::AccountMaps,
         math::{
             constants::{
                 AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
-                PEG_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
+                PEG_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION,
                 SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
                 SPOT_WEIGHT_PRECISION,
             },
@@ -102,6 +105,7 @@ fn can_transfer_to_isolated_when_cross_still_meets_after_withdraw() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
     // User state AFTER transfer: cross has 400 USDC, isolated perp has received 100.
     // No cross perp positions, so cross margin requirement = 0. Cross still meets.
@@ -131,9 +135,7 @@ fn can_transfer_to_isolated_when_cross_still_meets_after_withdraw() {
     let _user_stats = UserStats::default();
 
     let result = user.meets_transfer_isolated_position_deposit_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginTypeConfig::CrossMarginOverride {
             margin_requirement_type: MarginRequirementType::Initial,
             default_margin_requirement_type: MarginRequirementType::Maintenance,
@@ -220,6 +222,7 @@ fn cannot_transfer_to_isolated_when_cross_would_fail_after_withdraw() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
     // User state AFTER transfer: cross has only 30 USDC (we transferred 50), and has a cross
     // perp position on market 1: 10 long @ $100 = $1000 notional, initial margin 10% = $100.
@@ -259,9 +262,7 @@ fn cannot_transfer_to_isolated_when_cross_would_fail_after_withdraw() {
     let _user_stats = UserStats::default();
 
     let result = user.meets_transfer_isolated_position_deposit_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginTypeConfig::CrossMarginOverride {
             margin_requirement_type: MarginRequirementType::Initial,
             default_margin_requirement_type: MarginRequirementType::Maintenance,
@@ -341,6 +342,7 @@ fn can_transfer_from_isolated_when_isolated_still_meets_after_withdraw() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
     // Isolated position: 1 SOL long @ $100 = $100 notional, initial margin 10% = $10.
     // Isolated collateral $200 -> easily meets. Controller passes (0, 0) for withdraw when
@@ -365,9 +367,7 @@ fn can_transfer_from_isolated_when_isolated_still_meets_after_withdraw() {
     let _user_stats = UserStats::default();
 
     let result = user.meets_transfer_isolated_position_deposit_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginTypeConfig::IsolatedPositionOverride {
             margin_requirement_type: MarginRequirementType::Initial,
             default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
@@ -450,6 +450,7 @@ fn cannot_transfer_from_isolated_when_isolated_would_fail() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
     // Isolated position: 10 SOL long @ $100 = $1000 notional, initial margin 10% = $100.
     // Isolated collateral only $30 (e.g. after moving most to cross) -> fails Initial.
@@ -473,9 +474,7 @@ fn cannot_transfer_from_isolated_when_isolated_would_fail() {
     let _user_stats = UserStats::default();
 
     let result = user.meets_transfer_isolated_position_deposit_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginTypeConfig::IsolatedPositionOverride {
             market_index: 0,
             margin_requirement_type: MarginRequirementType::Initial,
@@ -484,6 +483,124 @@ fn cannot_transfer_from_isolated_when_isolated_would_fail() {
         },
         false,
         0,
+    );
+
+    assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
+}
+
+/// A resting CLOB order keeps its collateral pool funded.
+///
+/// The order rests on the book, so nothing about it lives on this account
+/// except `open_orders` and `open_bids`. The isolated margin gate counts that
+/// resting size at the worst case it can fill at, even at zero base, so the
+/// isolated collateral cannot be drained out from under the order. That is
+/// what makes the position's isolated flag a safe thing for a fill to read
+/// back: the flag is still there, and so is the collateral it names.
+#[test]
+fn cannot_transfer_from_isolated_while_clob_order_rests() {
+    let now = 0_i64;
+    let slot = 0_u64;
+
+    let mut oracle_price = get_pyth_price(100, 6);
+    let oracle_price_key =
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+    create_anchor_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        PythLazerOracle,
+        oracle_account_info
+    );
+
+    let oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+
+    let oracle_price_val = oracle_price.price;
+    let mut market = PerpMarket {
+        market_index: 0,
+        amm: AMM {
+            base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            sqrt_k: 100 * AMM_RESERVE_PRECISION,
+            peg_multiplier: 100 * PEG_PRECISION,
+            max_slippage_ratio: 50,
+            max_fill_reserve_fraction: 100,
+            base_asset_amount_with_amm: AMM_RESERVE_PRECISION as i128,
+            ..AMM::default()
+        },
+
+        margin_ratio_initial: 1000,
+        margin_ratio_maintenance: 500,
+        number_of_users_with_base: 1,
+        status: MarketStatus::Active,
+        liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+        if_liquidation_fee: LIQUIDATION_FEE_PRECISION / 100,
+        order_step_size: 10000000,
+        quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+        oracle: oracle_price_key,
+        oracle_source: OracleSource::PythLazer,
+        market_stats: MarketStats {
+            historical_oracle_data: HistoricalOracleData::default_price(oracle_price_val),
+            ..MarketStats::default()
+        },
+        ..PerpMarket::default()
+    };
+
+    create_anchor_account_info!(market, PerpMarket, market_account_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+    let mut spot_market = SpotMarket {
+        status: MarketStatus::Active,
+        market_index: 0,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+        initial_liability_weight: SPOT_WEIGHT_PRECISION,
+        maintenance_liability_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 10 * SPOT_BALANCE_PRECISION,
+        historical_oracle_data: HistoricalOracleData {
+            last_oracle_price_twap: PRICE_PRECISION_I64,
+            last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+            ..HistoricalOracleData::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
+
+    // One bid for 1 base rests on the book at $100 of notional. Initial margin
+    // is 10% of it, and the isolated collateral is exactly that. The position
+    // holds no base: the order alone is what the collateral answers for.
+    let mut user = User {
+        spot_positions: [SpotPosition::default(); 8],
+        perp_positions: get_positions(PerpPosition {
+            market_index: 0,
+            base_asset_amount: 0,
+            open_bids: BASE_PRECISION_I64,
+            open_orders: 1,
+            position_flag: PositionFlag::IsolatedPosition as u8,
+            isolated_position_scaled_balance: 10 * SPOT_BALANCE_PRECISION_U64,
+            ..PerpPosition::default()
+        }),
+        ..User::default()
+    };
+    let mut user_stats = UserStats::default();
+
+    // i64::MIN asks for the whole isolated deposit.
+    let result = transfer_isolated_perp_position_deposit(
+        &mut user,
+        Some(&mut user_stats),
+        &mut maps,
+        slot,
+        now,
+        0,
+        0,
+        i64::MIN,
+        false,
     );
 
     assert_eq!(result, Err(ErrorCode::InsufficientCollateral));

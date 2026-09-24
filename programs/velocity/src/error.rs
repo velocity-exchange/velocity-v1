@@ -214,19 +214,26 @@ pub enum ErrorCode {
     #[msg("AMMNotUpdatedInSameSlot")]
     AMMNotUpdatedInSameSlot,
     #[msg("AuctionNotComplete")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     AuctionNotComplete,
     #[msg("MakerNotFound")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     MakerNotFound,
     #[msg("MakerNotFound")]
     MakerStatsNotFound,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     // --- index 100 (error 0x1834 / 6100) ---
     #[msg("MakerMustBeWritable")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     MakerMustBeWritable,
     #[msg("MakerMustBeWritable")]
     MakerStatsMustBeWritable,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     #[msg("MakerOrderNotFound")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     MakerOrderNotFound,
     #[msg("CouldNotDeserializeMaker")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     CouldNotDeserializeMaker,
     #[msg("CouldNotDeserializeMaker")]
     CouldNotDeserializeMakerStats,
@@ -234,8 +241,10 @@ pub enum ErrorCode {
     AuctionPriceDoesNotSatisfyMaker,
     #[msg("MakerCantFulfillOwnOrder")]
     MakerCantFulfillOwnOrder,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     #[msg("MakerOrderMustBePostOnly")]
     MakerOrderMustBePostOnly,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     #[msg("CantMatchTwoPostOnlys")]
     CantMatchTwoPostOnlys,
     #[msg("OrderBreachesOraclePriceLimits")]
@@ -513,6 +522,7 @@ pub enum ErrorCode {
     UnableToLoadUserStatsAccount,
     #[msg("User Not Inactive")]
     UserNotInactive,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     #[msg("RevertFill")]
     RevertFill,
     #[msg("Invalid MarketAccount for Deletion")]
@@ -803,6 +813,183 @@ pub enum ErrorCode {
     RevenueShareOrderNotForfeitable,
     #[msg("vAMM quote management value is outside the hot role bounds")]
     VammQuoteManagementValueOutOfBounds,
+    #[msg("Quoter registry entry config is invalid")]
+    InvalidQuoterConfig,
+    #[msg("Signer does not control this quoter registry entry")]
+    InvalidQuoterAuthority,
+    #[msg("CLOB crank condition account cannot cover the keeper payment")]
+    InsufficientCrankReservoir,
+    #[msg("Order is placed on the CLOB; cancel it there (cancel_order_v1)")]
+    OrderPlacedOnClob,
+    #[msg("Trigger is awaiting a price recross after eviction")]
+    OrderAwaitingTriggerRecross,
+    #[msg("Cross match legs are imbalanced")]
+    CrossMatchImbalanced,
+    #[msg("Cross match is not profitable after fees")]
+    CrossMatchUnprofitable,
+    #[msg("Faster-than-default activation requires the flow-authority attestation")]
+    UnattestedFastActivation,
+    #[msg("Quoter returned a malformed quote/execute response")]
+    InvalidQuoterResponse,
+    #[msg("Quoter filled more base than the router allocated to it")]
+    QuoterOverfilled,
+    #[msg("Quoter filled at a price its quote does not support")]
+    QuoterFillOffQuote,
+    #[msg("Quoter returned a balance change for a user it may not act against")]
+    QuoterSubjectNotPermitted,
+    #[msg("More loaded users than the quoter wire can carry")]
+    TooManyQuoterWireUsers,
+    #[msg("Claimed route does not match the one the order was signed with")]
+    SignedRouteMismatch,
+    #[msg("A quoter the order's signed route names is absent from the fill")]
+    SignedRouteEntryMissing,
+    /// @deprecated The cross crank no longer refuses a book by predicate. A
+    /// crossing remainder claims its cover, and claimed depth is outside the
+    /// matchable set of every caller that does not consume reservations.
+    #[msg("A crossed taker remainder must be resolved by crank_taker_origin_cross")]
+    CrossedTakerRemainderPending,
+    #[msg("No resolvable taker-origin cross on this book")]
+    NoTakerOriginCross,
+    #[msg("Crossing would leave the taker worse off than its resting price")]
+    TakerOriginCrossWorseForTaker,
+    #[msg("Crank treasury has too few lamports for this payout")]
+    InsufficientCrankTreasury,
+    #[msg("Crank reservoir is above its refill watermark")]
+    CrankReservoirNotLow,
+    #[msg("User conditions sync does not cover every market the user is exposed in")]
+    InvalidUserConditionsSync,
+    #[msg("A book withheld depth and the transaction had room to carry its owner")]
+    FillerOmittedReachableMaker,
+    #[msg("A book withheld depth and the transaction carries a loaded user that filled nothing")]
+    FillerPaddedTheUserSet,
+    #[msg("A book withheld depth and the fill cannot count the transaction's accounts")]
+    FillerObligationUncountable,
+    #[msg("A quoter filled less base than the allocation it won from its own quote")]
+    QuoterFilledShort,
+    #[msg("A book withheld depth and the transaction carries a quoter outside the signed route")]
+    FillerCarriedUnroutedQuoter,
+    #[msg("A reduce-only order cannot rest on the CLOB; the book cannot clamp its fill to the position")]
+    ReduceOnlyOrderCannotRestOnClob,
+    #[msg(
+        "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
+    )]
+    LiquidationConflictsWithClobOrders,
+    #[msg(
+        "A quoter reported more base or more retired orders than velocity reserved for that user"
+    )]
+    QuoterReportExceedsReservation,
+    #[msg(
+        "The book runs an activation speed bump; an unattested taker rests on the book instead of filling synchronously"
+    )]
+    UnattestedSynchronousTake,
+    #[msg("The market's quoter slab has no vacant slot")]
+    QuoterSlabFull,
+    #[msg("The market's quoter slab holds no approved copy of this entry")]
+    QuoterNotOnSlab,
+    #[msg("Cross match sold below the price its buy leg paid")]
+    CrossMatchLegsDoNotCross,
+    #[msg("Only the protocol user may skip the taker checks of a fill")]
+    TakerExposureNotProtocolOwned,
+    #[msg("The market's book cannot rest a fired trigger, so the trigger stays armed")]
+    ClobRestUnavailable,
+    #[msg("A user order slot holds only a trigger order")]
+    OrderTypeNotConditional,
+    #[msg("A quoter CPI's arguments could not be sized or serialized")]
+    PropAmmArgsEncodeFailed,
+    #[msg("An account the quoter entry names is absent from the fill's accounts")]
+    QuoterCpiAccountMissing,
+    #[msg("A quoter CPI's arguments exceed the byte cap the wire allows")]
+    QuoterCpiArgsTooLarge,
+    #[msg("The quoter's response account is already borrowed")]
+    PropAmmResponseAccountBorrowConflict,
+    #[msg("A fill consults more quoters than the route allows")]
+    TooManyQuotersConsulted,
+    #[msg("A relay condition block failed its layout, version or bounds check")]
+    InvalidConditionBlock,
+    #[msg("A resolver list exceeds the condition block's region")]
+    ConditionResolverListTooLarge,
+    #[msg("The router quote buffer holds no more sources")]
+    RouterQuoteSourcesFull,
+    #[msg("A source's book holds no more levels")]
+    RouterQuoteLevelsFull,
+    #[msg("A router quote row names no source")]
+    RouterQuoteRowWithoutSource,
+    #[msg("A resolved crank does not fit the relay scratch region")]
+    RelayScratchStageFailed,
+    #[msg("A program-keeper crank requires the market's conditions account")]
+    CrankConditionsAccountRequired,
+    #[msg("The conditions account is for a different market than the fired order")]
+    CrankConditionsMarketMismatch,
+    #[msg("The perp market account is for a different market than the caller names")]
+    PerpMarketAccountMismatch,
+    #[msg("Force cancel received more order references than it allows")]
+    TooManyForceCancelRefs,
+    #[msg("The order rested on a different side than the caller declared")]
+    ForceCancelSideMismatch,
+    #[msg("A cross names the same account as more than one participant")]
+    CrossParticipantOverlap,
+    #[msg("The market's CLOB quoter is not active and approved")]
+    ClobQuoterNotActive,
+    #[msg("The fired condition is not a crank velocity serves")]
+    UnrecognizedCrankCondition,
+    #[msg("The router executor holds no quoter slab")]
+    QuoterExecutorMissingSlab,
+    #[msg("The router executor has no quoter at the index the route names")]
+    QuoterExecutorIndexOutOfRange,
+    #[msg("A CPI to a quoter program failed")]
+    FailedQuoterCpi,
+    #[msg("The fill omits the market's mandatory public book")]
+    RequiredBaselineQuoterOmitted,
+    #[msg("A router split needs at least one book")]
+    QuoterRouteHasNoBooks,
+    #[msg("The AMM quoter refresh requires the market maker oracle")]
+    AmmQuoterMissingMmOracle,
+    #[msg("The crank conditions account is too small for the reservoir mirror")]
+    ClobCrankAccountTooSmall,
+    #[msg("The escrow order belongs to a different market")]
+    RevenueShareOrderMarketMismatch,
+    #[msg("The escrow order accrued no fees to forfeit")]
+    RevenueShareOrderHasNoFeesAccrued,
+    #[msg("The caller passed more markets than the instruction allows")]
+    TooManyMarketsPassed,
+    #[msg("The spot market is not active")]
+    SpotMarketNotActive,
+    #[msg("A delegate cannot transfer a deposit")]
+    DelegateTransferNotAllowed,
+    #[msg("The builder codes feature is disabled")]
+    BuilderCodesDisabled,
+    #[msg("The perp market is not quoted in the given quote spot market")]
+    PerpMarketQuoteSpotMismatch,
+    #[msg("A revenue share escrow needs at least one order slot")]
+    RevenueShareEscrowNeedsOrderSlot,
+    #[msg("The staged relay executor is malformed")]
+    RelayExecutorInvalid,
+    #[msg("The self-sync price is above the cost ceiling")]
+    SelfSyncCostAboveCeiling,
+    #[msg("The self-sync interval is above the slot ceiling")]
+    SelfSyncIntervalAboveCeiling,
+    #[msg("The resolver needs the stored margin map accounts")]
+    ResolverMarginMapMissing,
+    #[msg("The crank treasury watermark or refill target is out of range")]
+    CrankTreasuryWatermarkInvalid,
+    #[msg("A resolver account must be read only")]
+    ResolverAccountMustBeReadOnly,
+    #[msg("The feature gate account has the wrong data length")]
+    InvalidFeatureGateAccount,
+    #[msg("The feature gate is not activated yet")]
+    FeatureGateNotActive,
+    #[msg("A slot duration sync cannot regress the active duration")]
+    SlotDurationSyncRegresses,
+    #[msg("The slot duration transition is already recorded or not effective")]
+    SlotDurationTransitionInvalid,
+    #[msg("An oracle staleness window is out of range")]
+    InvalidOracleStalenessWindow,
+    #[msg("The authority is not a whitelisted external depositor")]
+    ExternalDepositorNotWhitelisted,
+    #[msg("The spot market vault invariant is intact, so there is nothing to settle")]
+    SpotMarketVaultInvariantNotViolated,
+    #[msg("The self-sync interval is too short for the payment it carries")]
+    SelfSyncIntervalTooShort,
 }
 
 #[macro_export]

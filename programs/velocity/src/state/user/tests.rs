@@ -1671,32 +1671,22 @@ mod get_base_asset_amount_unfilled {
 mod open_orders {
     use crate::state::user::User;
 
+    /// The auction counters stay at zero. Nothing auctions, and `User` is a
+    /// fixed layout, so the two fields remain.
     #[test]
-    fn test() {
+    fn the_counter_tracks_orders_and_the_auction_fields_stay_zero() {
         let mut user = User::default();
 
-        user.increment_open_orders(false);
+        user.increment_open_orders();
+        user.increment_open_orders();
 
-        assert_eq!(user.open_orders, 1);
+        assert_eq!(user.open_orders, 2);
         assert!(user.has_open_order);
         assert_eq!(user.open_auctions, 0);
         assert!(!user.has_open_auction);
 
-        user.increment_open_orders(true);
-
-        assert_eq!(user.open_orders, 2);
-        assert!(user.has_open_order);
-        assert_eq!(user.open_auctions, 1);
-        assert!(user.has_open_auction);
-
-        user.decrement_open_orders(false);
-
-        assert_eq!(user.open_orders, 1);
-        assert!(user.has_open_order);
-        assert_eq!(user.open_auctions, 1);
-        assert!(user.has_open_auction);
-
-        user.decrement_open_orders(true);
+        user.decrement_open_orders();
+        user.decrement_open_orders();
 
         assert_eq!(user.open_orders, 0);
         assert!(!user.has_open_order);
@@ -1744,153 +1734,6 @@ mod update_user_status {
         assert!(!user.is_cross_margin_being_liquidated());
         assert!(!user.is_cross_margin_bankrupt());
         assert!(user.status & UserStatus::ReduceOnly as u8 > 0);
-    }
-}
-
-mod resting_limit_order {
-    use crate::{
-        math::time::SlotClock,
-        state::user::{Order, OrderType},
-        PositionDirection,
-    };
-
-    #[test]
-    fn test() {
-        let order = Order {
-            order_type: OrderType::Market,
-            ..Order::default()
-        };
-        let slot = 0;
-
-        assert!(!order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        let order = Order {
-            order_type: OrderType::TriggerMarket,
-            ..Order::default()
-        };
-
-        assert!(!order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        let order = Order {
-            order_type: OrderType::Oracle,
-            ..Order::default()
-        };
-
-        assert!(!order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        // limit order before end of auction
-        let order = Order {
-            order_type: OrderType::Limit,
-            post_only: false,
-            auction_duration: 10,
-            slot: 1,
-            ..Order::default()
-        };
-        let slot = 2;
-
-        assert!(!order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        // limit order after end of auction
-        let order = Order {
-            order_type: OrderType::Limit,
-            post_only: false,
-            auction_duration: 10,
-            slot: 1,
-            ..Order::default()
-        };
-        let slot = 12;
-
-        assert!(order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        // limit order post only
-        let order = Order {
-            order_type: OrderType::Limit,
-            post_only: true,
-            ..Order::default()
-        };
-        let slot = 1;
-
-        assert!(order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        // trigger order long crosses trigger, auction complete
-        let order = Order {
-            order_type: OrderType::TriggerLimit,
-            direction: PositionDirection::Long,
-            trigger_price: 100,
-            price: 110,
-            slot: 1,
-            auction_duration: 10,
-            ..Order::default()
-        };
-
-        let slot = 12;
-
-        assert!(order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        // trigger order long doesnt cross trigger, auction complete
-        let order = Order {
-            order_type: OrderType::TriggerLimit,
-            direction: PositionDirection::Long,
-            trigger_price: 100,
-            price: 90,
-            slot: 1,
-            auction_duration: 10,
-            ..Order::default()
-        };
-
-        let slot = 12;
-
-        assert!(order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        // trigger order short crosses trigger, auction complete
-        let order = Order {
-            order_type: OrderType::TriggerLimit,
-            direction: PositionDirection::Short,
-            trigger_price: 100,
-            price: 90,
-            slot: 1,
-            auction_duration: 10,
-            ..Order::default()
-        };
-
-        let slot = 12;
-
-        assert!(order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
-
-        // trigger order long doesnt cross trigger, auction complete
-        let order = Order {
-            order_type: OrderType::TriggerLimit,
-            direction: PositionDirection::Short,
-            trigger_price: 100,
-            price: 110,
-            slot: 1,
-            auction_duration: 10,
-            ..Order::default()
-        };
-
-        let slot = 12;
-
-        assert!(order
-            .is_resting_limit_order(slot, SlotClock::baseline())
-            .unwrap());
     }
 }
 
@@ -2182,6 +2025,7 @@ pub mod meets_withdraw_margin_requirement {
             controller::position::PositionDirection,
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64,
@@ -2298,6 +2142,7 @@ pub mod meets_withdraw_margin_requirement {
             &mut spot_market_account_infos.iter().peekable(),
         )
         .unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User {
             orders: get_orders(Order {
@@ -2346,19 +2191,13 @@ pub mod meets_withdraw_margin_requirement {
             ..PerpPosition::default()
         };
 
-        let result = user.meets_withdraw_margin_requirement(
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            MarginRequirementType::Initial,
-        );
+        let result =
+            user.meets_withdraw_margin_requirement(&mut maps, MarginRequirementType::Initial);
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
 
         let result: Result<bool, ErrorCode> = user.meets_withdraw_margin_requirement_swap(
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginRequirementType::Initial,
             false,
         );
@@ -2669,6 +2508,45 @@ mod accelerated_referral_status {
             stats.accelerated_referral_status
                 & AcceleratedReferralStatus::AutoEnrollmentBlocked as u8,
             0
+        );
+    }
+}
+
+mod isolated_position_slot_lifetime {
+    use crate::{
+        controller::position::{add_new_position, get_position_index},
+        math::constants::BASE_PRECISION_I64,
+        state::user::{PerpPosition, PositionFlag, User},
+    };
+
+    /// A CLOB order reads its margin regime back off the owner's position, so
+    /// the slot must stay that order's for as long as the order rests.
+    ///
+    /// The position here holds no base and no isolated collateral. The
+    /// resting order alone keeps the slot claimed, which is what stops
+    /// `add_new_position` from handing it to another market and clearing the
+    /// isolated flag under the order.
+    #[test]
+    fn isolated_slot_is_not_recycled_while_clob_order_rests() {
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: 1,
+            open_orders: 1,
+            open_bids: BASE_PRECISION_I64,
+            position_flag: PositionFlag::IsolatedPosition as u8,
+            isolated_position_scaled_balance: 0,
+            ..PerpPosition::default()
+        };
+
+        assert!(!user.perp_positions[0].is_available());
+        assert_eq!(get_position_index(&user.perp_positions, 1), Ok(0));
+
+        let new_index = add_new_position(&mut user.perp_positions, 2).unwrap();
+        assert_ne!(new_index, 0);
+        assert_eq!(user.perp_positions[0].market_index, 1);
+        assert_eq!(
+            user.perp_positions[0].position_flag,
+            PositionFlag::IsolatedPosition as u8
         );
     }
 }

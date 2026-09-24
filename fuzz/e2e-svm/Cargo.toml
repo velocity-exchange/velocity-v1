@@ -21,7 +21,10 @@ velocity = { path = "../../programs/velocity", default-features = false, feature
   "vlp-hedge",
   "fuzz-fixtures",
 ] }
-velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+velocity-fuzz-common = { path = "../velocity-fuzz-common", features = ["clob"] }
+# The CLOB market account's node layout, so the reservation invariant reads the
+# book's own orders rather than the harness's record of them.
+clob-state = { path = "../../crates/clob-state" }
 
 # Same crate velocity itself verifies Lazer messages with. Used to BUILD the
 # signed price update (`SolanaMessage` envelope + LE payload) so the harness
@@ -41,6 +44,7 @@ pyth_lazer = { path = "../../programs/pyth-lazer", features = ["no-entrypoint"] 
 litesvm = { version = "=0.15.2", features = ["precompiles"] }
 
 anchor-lang = "1.0"
+anyhow = "1"
 arbitrary = { version = "1", features = ["derive"] }
 libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
 libafl_bolts = { version = "0.15.1", features = ["std"] }

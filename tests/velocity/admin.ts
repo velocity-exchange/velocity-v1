@@ -303,8 +303,8 @@ describe('admin', () => {
 				velocityClient.getPerpMarketAccount(0).amm.ammInventorySpreadAdjustment
 			).to.equal(12);
 
-			// Warm/cold governance is intentionally not trapped by the hot role
-			// bounds and can still apply the setter's wider semantic range.
+			// The hot role bounds do not apply to warm and cold governance, which
+			// can still write the setter's wider range.
 			await velocityClient.updatePerpMarketCurveUpdateIntensity(0, 100);
 			await velocityClient.fetchAccounts();
 			expect(
@@ -629,8 +629,8 @@ describe('admin', () => {
 		);
 		assert(perpMarket.marketStats.mmOraclePrice.eq(oraclePrice));
 
-		// The builder rejects a zero price before it reaches the chain (the
-		// program hard-errors on any non-positive price).
+		// The builder rejects a zero price before it reaches the chain. The program
+		// errors on any non-positive price.
 		try {
 			await velocityClient.updateMmOracleNative(
 				0,
@@ -644,8 +644,8 @@ describe('admin', () => {
 			assert(e.message.includes('non-positive price'));
 		}
 
-		// So does a negative price, which BN's little-endian serialization
-		// would otherwise silently send as its magnitude.
+		// The builder also rejects a negative price. BN's little-endian
+		// serialization would otherwise send that price as its magnitude.
 		try {
 			await velocityClient.updateMmOracleNative(
 				0,
@@ -658,8 +658,9 @@ describe('admin', () => {
 			assert(e.message.includes('non-positive price'));
 		}
 
-		// Skipped (not an error) when the source slot is too old: the update
-		// landed later than MM_ORACLE_MAX_SOURCE_AGE_SLOTS after observation.
+		// The program skips the write, and does not error, when the source slot is
+		// too old. The update landed more than MM_ORACLE_MAX_SOURCE_AGE_SLOTS after
+		// the observation.
 		await svmContextWrapper.connection.updateSlotAndClock();
 		await svmContextWrapper.connection.updateSlotAndClock();
 		const staleSource = (await sourceSlot()).subn(3);
@@ -688,7 +689,8 @@ describe('admin', () => {
 			assert.fail('Should have thrown');
 		} catch (e) {
 			console.log(e.message);
-			// Typed error (MmOracleUpdateDisabled) rather than the old panic.
+			// The program returns the typed MmOracleUpdateDisabled error, and does
+			// not panic.
 			assert(e.message.includes('custom program error'));
 		}
 
@@ -707,9 +709,9 @@ describe('admin', () => {
 	});
 
 	it('mm oracle step cap clamps a too-large jump and converges', async () => {
-		// Each send advances the LiteSVM slot by one; a second advance clears the
-		// program's MM_ORACLE_MIN_SLOT_GAP of 2 so the write reaches the step cap
-		// instead of being skipped by the rate limit.
+		// Each send advances the LiteSVM slot by one. A second advance clears the
+		// program's MM_ORACLE_MIN_SLOT_GAP of 2, so the write reaches the step cap
+		// and the rate limit does not skip it.
 		const advancePastRateLimit = () =>
 			svmContextWrapper.connection.updateSlotAndClock();
 
@@ -718,10 +720,10 @@ describe('admin', () => {
 		const baselinePrice = before.marketStats.mmOraclePrice;
 		const baselineSeqId = before.marketStats.mmOracleSequenceId;
 
-		// 5% jump from the last accepted price exceeds the 1% step cap. The
-		// write is clamped to the cap rather than rejected: rejecting left the
-		// stored price where it was, so every subsequent update was still beyond
-		// the cap against the same stale value and the oracle froze permanently.
+		// A 5% jump from the last accepted price exceeds the 1% step cap. The
+		// program clamps the write to the cap and does not reject it. A rejection
+		// left the stored price where it was. Every later update then stayed beyond
+		// the cap against that same stale value, and the oracle never moved again.
 		const tooLargePrice = baselinePrice.muln(105).divn(100);
 		const freshSeqId = baselineSeqId.addn(1000);
 		const expectedFirstStep = baselinePrice.muln(101).divn(100);
@@ -747,8 +749,8 @@ describe('admin', () => {
 			'sequence id should advance: the update was consumed, not dropped'
 		);
 
-		// And it keeps closing the gap. Resending the same target walks another
-		// cap-width, where the old behaviour would have stalled forever.
+		// The write keeps closing the gap. Sending the same target again moves the
+		// stored price another cap width. The old behavior never moved it.
 		let current = after.marketStats.mmOraclePrice;
 		let seqId = freshSeqId;
 		for (let i = 0; i < 5 && !current.eq(tooLargePrice); i++) {

@@ -23,7 +23,6 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
     ctx: Context<'info, UpdatePythLazerOracle>,
     pyth_message: Vec<u8>,
 ) -> Result<()> {
-    // Verify the Pyth lazer message
     let ix_idx = load_current_index_checked(&ctx.accounts.ix_sysvar.to_account_info())?;
     validate!(
         ix_idx > 0,
@@ -31,7 +30,6 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
         "instruction index must be greater than 0 to include the sig verify ix"
     )?;
 
-    // Load oracle accounts from remaining accounts
     let remaining_accounts = ctx.remaining_accounts;
     let storage_account_data = ctx.accounts.pyth_lazer_storage.try_borrow_data()?;
     let pyth_storage = Storage::try_deserialize(&mut &storage_account_data[..])?;
@@ -66,7 +64,6 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
 
         let feed_id = payload_data.feed_id.0;
 
-        // Verify the pda
         let pda = Pubkey::find_program_address(
             &[PYTH_LAZER_ORACLE_SEED, &feed_id.to_le_bytes()],
             &crate::ID,
@@ -109,10 +106,10 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
             continue;
         }
 
-        // The gate rejects an equal timestamp as well as an older one. A message that repeats the
-        // stored timestamp carries the same signed content, so it adds no price information, but
-        // posting it stamps `posted_slot` to the current slot. A keeper could otherwise re-post one
-        // message every slot and hold the feed at slot-fresh while the price never moves.
+        // The gate rejects an equal timestamp as well as an older one. A repeated
+        // timestamp carries the same signed content and adds no price information,
+        // but posting it would still stamp `posted_slot` fresh, letting a keeper hold
+        // the feed slot-fresh every slot while the price never moves.
         if next_timestamp.unwrap() <= current_timestamp {
             msg!(
                 "Skipping lazer price update. next_timestamp {} <= current_timestamp {}",
@@ -122,16 +119,12 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
             continue;
         }
 
-        // Bound the feed timestamp against the wall clock in both directions. The monotonic check
-        // above only guarantees the feed timestamp is above the cached value, not that it is near
-        // the present.
-        //
-        // Below: `posted_slot` (set to the current slot further down) is the sole input to
-        // downstream staleness, so an authentic-but-old message would read as slot-fresh.
-        //
-        // Above: the monotonic check skips every message at or below the stored `publish_time`, so
-        // a message stamped ahead of the wall clock stops all later messages until real time
-        // reaches that stamp. The bound holds that freeze to `PYTH_LAZER_MAX_FUTURE_SECONDS`.
+        // Bound the feed timestamp against the wall clock in both directions; the
+        // monotonic check above only guarantees it is above the cached value, not
+        // near the present. The lower bound matters because `posted_slot`, set to
+        // the current slot below, is the sole input to downstream staleness, so an
+        // old but authentic message would read as slot-fresh. The upper bound caps
+        // how long a message stamped ahead of the clock can freeze later messages.
         let now = Clock::get()?.unix_timestamp;
         let next_timestamp_secs = next_timestamp.unwrap().safe_div(1_000_000)?.cast::<i64>()?;
         let age = now.safe_sub(next_timestamp_secs)?;
@@ -155,10 +148,11 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
         }
 
         let price = price.mantissa_i64();
-        if price == 0 {
-            msg!("Pyth lazer price is zero, not enough publishers");
-            return Err(ErrorCode::InvalidPythLazerMessage.into());
-        }
+        validate!(
+            price != 0,
+            ErrorCode::InvalidPythLazerMessage,
+            "Pyth lazer price is zero, not enough publishers"
+        )?;
 
         let exponent = exponent.ok_or(ErrorCode::InvalidPythLazerMessage)?;
 
@@ -188,16 +182,14 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
 
 /// The confidence to persist for a Lazer price update.
 ///
-/// Confidence shares the price feed's exponent, so its mantissa compares directly to `price`.
-/// The result is the widest of three signals: a 20bps floor on the price, the distance between
-/// the best bid and the best ask, and the signed `Confidence` property in the message. The
-/// widest signal wins, so the stored confidence never understates what the message reports.
-///
-/// The distance between the two quotes is a magnitude. A crossed book states a disagreement of
-/// that size, and it is the state with the most uncertainty. A signed difference drops it and
-/// leaves only the floor. The subtraction runs in i128 and saturates, because two extreme
-/// mantissas overflow an i64 subtraction. One feed's overflow aborts every other feed in the
-/// same message.
+/// Confidence shares the price feed's exponent, so its mantissa compares
+/// directly to `price`. The result is the widest of three signals: a 20bps
+/// floor on the price, the bid-ask distance, and the signed `Confidence`
+/// property, so the stored confidence never understates the message.
+/// The bid-ask distance is a magnitude, since a crossed book holds the most
+/// uncertainty and a signed difference would go negative there. The i128
+/// subtraction saturates because two extreme mantissas overflow i64, and one
+/// feed's overflow would abort every other feed in the message.
 fn calculate_lazer_conf(
     price: i64,
     best_bid_price: Option<i64>,
@@ -281,8 +273,8 @@ mod tests {
 
     #[test]
     fn crossed_quotes_widen_the_confidence() {
-        // The bid sits 500_000 above the ask. The book disagrees with itself by that amount, so
-        // the confidence is 500_000 and not the narrower floor.
+        // The bid sits 500_000 above the ask. The book disagrees with itself by
+        // that amount, so the confidence is 500_000, which is wider than the floor.
         let conf = calculate_lazer_conf(PRICE, Some(PRICE + 250_000), Some(PRICE - 250_000), None)
             .unwrap();
 
@@ -292,8 +284,8 @@ mod tests {
 
     #[test]
     fn extreme_quotes_saturate_and_do_not_error() {
-        // An i64 subtraction overflows here. The error would abort every other feed in the same
-        // message, so the distance saturates instead.
+        // An i64 subtraction overflows here. The error would abort every other
+        // feed in the same message, so the distance saturates instead.
         let conf = calculate_lazer_conf(PRICE, Some(i64::MIN), Some(i64::MAX), None).unwrap();
 
         assert_eq!(conf, i64::MAX);

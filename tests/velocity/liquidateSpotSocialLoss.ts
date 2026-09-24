@@ -70,6 +70,7 @@ describe('liquidate spot w/ social loss', () => {
 			'processed',
 			1
 		);
+
 		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,

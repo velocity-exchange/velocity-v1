@@ -1365,7 +1365,9 @@ export async function overWriteTokenAccountBalance(
 	tokenAccount: PublicKey,
 	newBalance: bigint
 ) {
-	const info = await svmContextWrapper.connection.getAccountInfo(tokenAccount);
+	const info = await svmContextWrapper.connection.getAccountInfo(
+		tokenAccount
+	);
 	const account = unpackAccount(tokenAccount, info, info.owner);
 	account.amount = newBalance;
 	const data = Buffer.alloc(AccountLayout.span);
@@ -1397,7 +1399,9 @@ export async function overWriteMintAccount(
 	mintAccount: PublicKey,
 	newSupply: bigint
 ) {
-	const info = await svmContextWrapper.connection.getAccountInfo(mintAccount);
+	const info = await svmContextWrapper.connection.getAccountInfo(
+		mintAccount
+	);
 	const mint = unpackMint(mintAccount, info, info.owner);
 	mint.supply = newSupply;
 	const data = Buffer.alloc(MintLayout.span);
@@ -1513,6 +1517,7 @@ export async function overwriteConstituentAccount(
 	for (const [key, value] of overwriteFields) {
 		acc[key] = value;
 	}
+
 	svmContextWrapper.context.setAccount(constituentPublicKey, {
 		executable: false,
 		owner: program.programId,

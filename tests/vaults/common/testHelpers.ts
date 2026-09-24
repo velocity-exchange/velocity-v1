@@ -48,7 +48,10 @@ import {
 	getTokenizedVaultAddressSync,
 	getTokenizedVaultMintAddressSync,
 } from '@velocity-exchange/vaults-sdk';
-import { LiteSVMContextWrapper, LiteSVMProvider } from './litesvmConnection';
+import {
+	LiteSVMContextWrapper,
+	LiteSVMProvider,
+} from './litesvmConnection';
 import {
 	mockUserUSDCAccount,
 	createWSolTokenAccountForUser,
@@ -91,11 +94,7 @@ export async function printTxLogs(
 		maxSupportedTransactionVersion: 1,
 	});
 	const events = [];
-	// On LiteSVM a tx is only retrievable from the LiteSVMConnection it was sent
-	// through. Raw `program.methods.*().rpc()` calls route through a different
-	// provider connection than the one passed here, so the tx may be null. The
-	// callers that assert on events send through the same connection; the rest
-	// only log, so tolerate a missing tx instead of throwing.
+	// On LiteSVM a tx is only retrievable from the LiteSVMConnection it was sent through.
 	if (tx?.meta?.logMessages) {
 		for (const e of parseLogs(
 			program!,

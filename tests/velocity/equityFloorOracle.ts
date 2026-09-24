@@ -38,20 +38,8 @@ import {
 // InvalidOracle
 const INVALID_ORACLE_HEX = '0x1793';
 
-// Equity-floor gates against an invalid oracle (OtterSec #131/#139/#142).
-//
-// `calculate_user_equity` prices every position at the raw live oracle price
-// and reports the oracle-validity verdict separately. Every floor gate used to
-// discard that verdict. These tests pin the fixes:
-//
-//  - Gates that authorize an action fail closed on the verdict: any invalid
-//    oracle rejects with `InvalidOracle`, so a stale-high price can no longer
-//    buy a withdrawal down through the floor.
-//  - The floor-shed defusal guard rejects an invalid oracle outright, so it
-//    agrees with `trip_equity_floor_breaker`, which already did.
-//  - The trip uses a user-favorable upper bound: invalid-oracle liabilities
-//    and shorts count at zero, while any invalid-oracle asset or long keeps
-//    the breach unprovable (`InvalidOracle`).
+// Equity-floor gates against invalid oracle (OtterSec #131/#139/#142).
+// Authorization gates fail closed. Trip uses user-favorable upper bound.
 describe('equity floor oracle validity', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -177,7 +165,10 @@ describe('equity floor oracle validity', () => {
 				bulkAccountLoader
 			);
 
-		await svmContextWrapper.fundKeypair(takerKeypair, 10 * LAMPORTS_PER_SOL);
+		await svmContextWrapper.fundKeypair(
+			takerKeypair,
+			10 * LAMPORTS_PER_SOL
+		);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
 		await takerVelocityClient.deposit(
 			new BN(2).mul(new BN(LAMPORTS_PER_SOL)),
@@ -281,7 +272,9 @@ describe('equity floor oracle validity', () => {
 			takerUSDC
 		);
 
-		const after = await svmContextWrapper.connection.getTokenAccount(takerUSDC);
+		const after = await svmContextWrapper.connection.getTokenAccount(
+			takerUSDC
+		);
 		assert(
 			after.amount - before.amount === BigInt(40 * 10 ** 6),
 			'the fair-price withdrawal should have paid out 40 usdc'
@@ -315,7 +308,9 @@ describe('equity floor oracle validity', () => {
 			`expected InvalidOracle, got: ${err.message}`
 		);
 
-		const after = await svmContextWrapper.connection.getTokenAccount(takerUSDC);
+		const after = await svmContextWrapper.connection.getTokenAccount(
+			takerUSDC
+		);
 		assert(
 			after.amount === before.amount,
 			'no usdc should have left the protocol'

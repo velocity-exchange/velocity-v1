@@ -284,16 +284,16 @@ describe('market order', () => {
 		const expectedGrossFee = new BN(401);
 		assert(market.feeLedger.totalExchangeFee.eq(expectedGrossFee));
 		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedGrossFee));
-		assert(market.amm.totalFee.eq(new BN(0)));
+		assert(market.amm.totalFee.eq(new BN(7)));
 
 		assert(order.baseAssetAmount.eq(order.baseAssetAmountFilled));
 
 		const firstPosition = velocityClientUser.getUserAccount().perpPositions[0];
 		assert(firstPosition.baseAssetAmount.eq(baseAssetAmount));
 
-		const expectedQuoteAssetAmount = new BN(-1000001);
+		const expectedQuoteAssetAmount = new BN(-1000008);
 		assert(firstPosition.quoteEntryAmount.eq(expectedQuoteAssetAmount));
-		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1000402)));
+		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1000409)));
 
 		const orderActionRecord =
 			eventSubscriber.getEventsArray('OrderActionRecord')[0];

@@ -27,13 +27,14 @@ pub fn is_settled_positive_claim(position: &PerpPosition) -> bool {
 /// Whether the user qualifies as cross-margin bankrupt: it has spot liabilities, no realizable spot
 /// assets, and no realizable perp exposure.
 ///
-/// OtterSec #151. A deposit row is measured in tokens, not in `scaled_balance`. A full spot-market
-/// socialization floors `cumulative_deposit_interest` at 1. Each wiped depositor keeps a positive
-/// scaled row that is worth zero tokens. Such a row used to block bankruptcy admission and PnL
-/// liquidation, and stalled the next bad-debt repair. A deposit worth 1 token or more still vetoes.
+/// A deposit row is measured in tokens, not in `scaled_balance` (OtterSec #151). A full
+/// spot-market socialization floors `cumulative_deposit_interest` at 1. Each wiped depositor then
+/// keeps a positive scaled row that is worth zero tokens. Such a row used to block bankruptcy
+/// admission and PnL liquidation, and it stalled the next bad-debt repair. A deposit worth 1 token
+/// or more still vetoes.
 ///
-/// OtterSec #145. A positive perp `quote_asset_amount` does not veto on its own, and neither does
-/// the state of its market's PnL pool. The resolvers recover what the pool can pay and forfeit the
+/// A positive perp `quote_asset_amount` does not veto on its own, and neither does the state of its
+/// market's PnL pool (OtterSec #145). The resolvers recover what the pool can pay and forfeit the
 /// rest, so a claim cannot strand a resolvable loss in another market whatever the pool holds. Only
 /// the net-solvency gate below still speaks to claims.
 pub fn is_cross_margin_bankrupt(
@@ -51,7 +52,7 @@ pub fn is_cross_margin_bankrupt(
 
         match spot_position.balance_type {
             SpotBalanceType::Deposit => {
-                // #151: measure the row in tokens, not scaled balance.
+                // Measure the row in tokens, not in scaled balance (OtterSec #151).
                 let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
                 let token_amount = get_token_amount(
                     spot_position.scaled_balance.cast()?,
@@ -87,7 +88,10 @@ pub fn is_cross_margin_bankrupt(
         net_perp_quote = net_perp_quote.safe_add(quote.cast()?)?;
     }
 
-    // #145: admit only a NET insolvent estate.
+    // allow-verbose: the forfeit-bound cross-reference below is not reconstructable
+    // from the code alone, and this is bankruptcy math the caller must not misread.
+    //
+    // Admit only a net insolvent estate (OtterSec #145).
     //
     // Without this gate, +5000 in market A against -1000 in market B is admitted, and the account
     // enters a bankruptcy it does not need.
@@ -107,21 +111,15 @@ pub fn is_cross_margin_bankrupt(
 
 /// Whether the user still holds a spot deposit that can pay part of its bad debt.
 ///
-/// OtterSec #130. The bankruptcy latch records that nothing was left to seize when liquidation set
-/// it. Assets can arrive after that. The revenue-share sweep is permissionless, and keeper filler
-/// rewards credit the filler with no bankruptcy check. Once the latch is set, `settle_pnl` and
-/// `liquidate_spot` both reject the user, and the resolvers read only the liability row. The asset
-/// therefore pays nothing, insurance covers the whole debt, and the asset becomes withdrawable when
-/// the resolver clears the latch.
-///
-/// This is much narrower than [`is_cross_margin_bankrupt`]. That predicate also vetoes on an open
-/// order or on base exposure. Those conditions mean "not resolvable yet", not "holds an asset". The
-/// resolvers are reached with orders open, so the full predicate would block valid resolutions.
-///
-/// Scope is spot deposits only, and it stays that way. A perp claim is the other place value can sit
-/// on a cross-margin estate, but a resolver does not have to hand one back to ordinary liquidation:
-/// it recovers the fundable part into this deposit itself, and forfeits the rest. Value that arrives
-/// as a perp credit is therefore already handled when this runs.
+/// The bankruptcy latch records that nothing was left to seize when liquidation set it (OtterSec
+/// #130). Assets can still arrive after that. The revenue-share sweep is permissionless, and
+/// keeper filler rewards credit the filler with no bankruptcy check. Once the latch is set,
+/// `settle_pnl` and `liquidate_spot` reject the user, so the asset pays nothing. Insurance covers
+/// the debt until a resolver clears the latch.
+/// This predicate is narrower than [`is_cross_margin_bankrupt`], which also vetoes on an open
+/// order or base exposure. Resolvers run with orders open, so the wider predicate would block
+/// valid resolutions. The scope stays spot deposits only. A resolver recovers a perp claim's
+/// fundable part into this deposit itself and forfeits the rest.
 pub fn has_realizable_spot_assets_for_setoff(
     user: &User,
     spot_market_map: &SpotMarketMap,
@@ -133,8 +131,8 @@ pub fn has_realizable_spot_assets_for_setoff(
             continue;
         }
 
-        // Measured in tokens, not scaled balance, for the same reason as #151: a fully socialized
-        // market leaves a positive scaled row whose token value is zero, and that worthless residue
+        // Measured in tokens, not in scaled balance (OtterSec #151). A fully socialized market
+        // leaves a positive scaled row whose token value is zero, and that worthless residue
         // must not gate a bad-debt repair.
         let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
         if get_token_amount(
@@ -166,6 +164,9 @@ pub fn has_realizable_isolated_assets(user: &User, market_index: u16) -> Velocit
         > 0)
 }
 
+/// allow-verbose: the payability cross-reference below is the invariant that keeps the
+/// resolver's declared writable set from drifting off its actual writes.
+///
 /// Perp markets a bankruptcy resolver may write to beyond the market being resolved, so a handler
 /// can declare them writable before loading its market map (OtterSec #145).
 ///
@@ -174,8 +175,8 @@ pub fn has_realizable_isolated_assets(user: &User, market_index: u16) -> Velocit
 /// `pending_if_fee`. A market passed read-only fails `load_mut` deep inside the resolver, so both
 /// resolve handlers derive their writable perp-market set from here.
 ///
-/// Payability is deliberately NOT filtered on: a claim that the pool can pay when the transaction is
-/// built may be unfundable by the time it lands, and the reverse. The shared
+/// The list does not filter on payability. A claim that the pool can pay when the transaction is
+/// built may be unfundable by the time it lands, and the reverse also happens. The shared
 /// [`is_settled_positive_claim`] filter is what stops the handler's declared set and the resolver's
 /// actual writes from drifting apart.
 pub fn perp_markets_with_forfeitable_claims(user: &User) -> Vec<u16> {

@@ -1,0 +1,29 @@
+/// Declared in `quoter-spec`: velocity writes these bytes and this program
+/// reads them, so the shape lives in the crate both compile against.
+pub use quoter_spec::L3ArgsV0;
+use {
+    crate::{book::ClobBook, instructions::ResponseMarketV0, state::ResponsePointerV0},
+    anchor_lang::prelude::*,
+};
+
+/// Quoter interface, optional leg. Reports the resting orders behind the
+/// ladder `quote_v0` would return, one row per order, streamed into the
+/// market's response tail.
+///
+/// A book is the only quoter type whose ladder stands on orders belonging to
+/// somebody else. A caller that must carry those users' accounts, or draw
+/// the book, reads them here instead of decoding this account from outside.
+pub fn handle_quote_l3_v0(
+    ctx: &mut Context<ResponseMarketV0>,
+    args: L3ArgsV0,
+) -> Result<ResponsePointerV0> {
+    let clock = Clock::get()?;
+    ctx.accounts.market.quote_l3(
+        args.direction,
+        args.size,
+        args.max_rows,
+        args.include_taker_origin_reservations,
+        clock.slot,
+        clock.unix_timestamp,
+    )
+}

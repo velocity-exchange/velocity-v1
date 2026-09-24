@@ -10,17 +10,17 @@ const ASSOCIATED_TOKEN_PROGRAM_ID =
 const ATA_IX_MINT_KEY_INDEX = 3;
 
 /**
- * Strips the setup and teardown a provider wraps around its route, leaving the
- * instructions that go between `beginSwap` and `endSwap`.
+ * Strip the setup and teardown a provider wraps around its route, leaving the
+ * instructions between `beginSwap` and `endSwap`.
  *
  * Velocity supplies its own compute budget, funds the input token account from
- * the spot market vault, and sweeps the output back, so the provider's versions
- * of all three are redundant. Its ATA creation for the input or output mint is
- * dropped too, since velocity creates those itself; ATAs for any other mint
- * (intermediate hops, fee accounts) are kept because nothing else creates them.
+ * the spot market vault, and sweeps the output back, so the provider's version
+ * of all three is redundant. The provider's ATA creation for the input or
+ * output mint goes too, since velocity creates those itself; an ATA for any
+ * other mint (an intermediate hop, a fee account) stays, since nothing else creates it.
  *
- * Shared by both providers on purpose — when this lived in each client the two
- * copies drifted, and the difference only showed up as a malformed transaction.
+ * Both providers call this one function. Two copies drifted when each client
+ * held its own, and the difference showed up only as a malformed transaction.
  */
 export function filterRouteInstructions({
 	instructions,
@@ -43,8 +43,8 @@ export function filterRouteInstructions({
 		}
 
 		if (programId === ASSOCIATED_TOKEN_PROGRAM_ID) {
-			// Guarded: a malformed ATA instruction with a short key list would
-			// otherwise throw here rather than simply being kept.
+			// The index is guarded because a malformed ATA instruction with a short
+			// key list would throw here instead of being kept.
 			const mint = instruction.keys[ATA_IX_MINT_KEY_INDEX]?.pubkey;
 
 			if (mint && (mint.equals(inputMint) || mint.equals(outputMint))) {

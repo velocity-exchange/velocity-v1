@@ -105,39 +105,35 @@ pub struct InterestSplit {
     /// Withheld for the protocol, before conversion to tokens.
     /// precision: SPOT_CUMULATIVE_INTEREST_PRECISION
     pub for_protocol: u128,
-    /// New `revenue_pool.pending_interest_split_dust`
+    /// The new `revenue_pool.pending_interest_split_dust`.
     pub carveout_dust: u32,
-    /// New `protocol_fee_pool.pending_interest_split_dust`
+    /// The new `protocol_fee_pool.pending_interest_split_dust`.
     pub insurance_fund_dust: u32,
 }
 
-/// Divide an interval's deposit interest between lenders, the insurance fund and
-/// the protocol. Carry the amounts that do not reach a whole index unit.
+/// Divide an interval's deposit interest between lenders, the insurance fund and the protocol.
+/// Carry the amounts that do not reach a whole index unit.
 ///
-/// A one-second interval produces only a few index units of `deposit_interest`. A
-/// factor below one percent then rounds the carveout to zero. The size of the
-/// market does not help, because the factor multiply happens in index space,
-/// after the market size divides out. Frequent cranks of this permissionless
-/// accrual therefore held every cut under that floor. The insurance fund and the
-/// protocol lost their whole share of lending yield. Finding #127 describes this.
-/// This function carries each remainder and adds it back on the next interval.
+/// A one-second interval produces only a few index units of `deposit_interest`. A factor below one
+/// percent then rounds the carveout to zero. The size of the market does not help, because the
+/// factor multiply happens in index space, after the market size divides out. Frequent cranks of
+/// this permissionless accrual therefore held every cut under that floor. The insurance fund and
+/// the protocol lost their whole share of lending yield (OtterSec #127).
 ///
-/// The function splits twice, in order. The first split separates lenders from
-/// the combined carveout. The second split separates the insurance fund from the
-/// protocol, inside the amount that the first split withheld.
+/// The function splits twice, in order. The first split separates lenders from the combined
+/// carveout. The second split separates the insurance fund from the protocol, inside the amount
+/// that the first split withheld.
 ///
-/// That order makes `for_insurance_fund + for_protocol <= deposit_interest` a
-/// property of the arithmetic. A clamp does not have to enforce it. Two
-/// independent cuts can instead each round up by one unit, take the whole
-/// interval, and leave lenders at zero. A zero lender share once stopped the
-/// interval from committing, which billed the span against later balances.
-/// Findings #115 and #117 describe that result.
+/// That order makes `for_insurance_fund + for_protocol <= deposit_interest` a property of the
+/// arithmetic. A clamp does not have to enforce it. Two independent cuts can instead each round up
+/// by one unit, take the whole interval, and leave lenders at zero. A zero lender share once
+/// stopped the interval from committing, which billed the span against later balances (OtterSec
+/// #115, #117).
 ///
-/// `update_spot_market_if_factor` holds `if_fee_factor + protocol_fee_factor`
-/// below `IF_FACTOR_PRECISION`. That bound limits the first split's numerator.
-/// The same instruction can lower the pair at any time, so the second split's
-/// divisor is not a constant. The carry it stored under a larger divisor is
-/// reduced below the divisor in force before it is used.
+/// `update_spot_market_if_factor` holds `if_fee_factor + protocol_fee_factor` below
+/// `IF_FACTOR_PRECISION`. That bound limits the first split's numerator. The same instruction can
+/// lower the pair at any time, so the second split's divisor is not a constant. The carry it stored
+/// under a larger divisor is reduced below the divisor in force before it is used.
 pub fn split_deposit_interest(
     spot_market: &SpotMarket,
     deposit_interest: u128,
@@ -167,8 +163,8 @@ pub fn split_deposit_interest(
     // needs no reduction, because its divisor is the constant `IF_FACTOR_PRECISION`.
     let carried_if = carried_if.min(combined_factor.saturating_sub(1));
 
-    // Nothing configured and nothing in flight: lenders take the whole interval.
-    // Most markets run this way and this runs on nearly every spot instruction.
+    // With nothing configured and nothing in flight, lenders take the whole interval.
+    // Most markets run this way, and this code runs on nearly every spot instruction.
     if combined_factor == 0 && carried_carveout == 0 && carried_if == 0 {
         return Ok(InterestSplit {
             for_lenders: deposit_interest,

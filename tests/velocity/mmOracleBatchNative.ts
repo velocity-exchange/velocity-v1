@@ -14,20 +14,7 @@ import {
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { VelocityCore } from '../../packages/sdk/src/core/VelocityCore';
 
-/**
- * On-chain behaviour of `update_mm_oracle_batch_native` (native dispatch opcode 2).
- *
- * The Rust unit tests in `instructions::admin::native_batch_tests` cover every
- * branch of the handler against synthetic `AccountInfo`s. What they cannot cover
- * is the wire contract: that the bytes and account order the SDK builder emits
- * are the ones the handler expects. These tests run the real builder against the
- * real program, so a transposed field or a stride mistake shows up as a write
- * that did not land rather than as a green unit test.
- *
- * Lives in its own file (rather than `admin.ts`) because it needs four perp
- * markets, and adding markets to `admin.ts` would move the market counts its
- * other tests assert on.
- */
+// Test wire contract for mm oracle batch native. In separate file to use four markets.
 describe('mm oracle batch native', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -38,8 +25,10 @@ describe('mm oracle batch native', () => {
 	const BASE_PRICE = new BN(100_000_000);
 	let sequenceId = new BN(1_000_000);
 
-	/** Advance one slot; combined with the slot each send consumes this clears
-	 * the program's `MM_ORACLE_MIN_SLOT_GAP` of 2. */
+	/**
+	 * Advance one slot. Together with the slot each send consumes, this clears the
+	 * program's `MM_ORACLE_MIN_SLOT_GAP` of 2.
+	 */
 	async function advancePastRateLimit(): Promise<void> {
 		await svmContextWrapper.connection.updateSlotAndClock();
 	}
@@ -48,10 +37,14 @@ describe('mm oracle batch native', () => {
 		return velocityClient.getPerpMarketAccountOrThrow(marketIndex).marketStats;
 	}
 
-	/** Current LiteSVM slot as the source-observation slot, so the program's
-	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate never skips a write. */
+	/**
+	 * The current LiteSVM slot, used as the source-observation slot. The program's
+	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate then skips no write.
+	 */
 	async function sourceSlot(): Promise<BN> {
-		return new BN((await svmContextWrapper.connection.getSlot()).toString());
+		return new BN(
+			(await svmContextWrapper.connection.getSlot()).toString()
+		);
 	}
 
 	before(async () => {
@@ -194,10 +187,10 @@ describe('mm oracle batch native', () => {
 	});
 
 	it('rejects the whole instruction when an entry names the wrong market', async () => {
-		// Build a legitimate two-market batch, then point the first market slot at
-		// market 2's account while the payload still says market 0. Without the
-		// market-index field in the payload this would silently write market 0's
-		// price onto market 2 and succeed.
+		// Build a valid two-market batch, then point the first market slot at market
+		// 2's account while the payload still names market 0. Without the
+		// market-index field in the payload, this write lands market 0's price on
+		// market 2 and reports success.
 		await advancePastRateLimit();
 		sequenceId = sequenceId.addn(1);
 

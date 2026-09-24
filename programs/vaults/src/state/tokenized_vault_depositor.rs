@@ -177,30 +177,14 @@ impl TokenizedVaultDepositor {
         }
     }
 
-    /// Permissionless lazy rebase for the signerless
-    /// `apply_rebase_tokenized_depositor` instruction.
+    /// Permissionless lazy rebase guard for the signerless
+    /// `apply_rebase_tokenized_depositor` instruction (OtterSec #122).
     ///
-    /// #122 — the tokenized analogue of #106. These `vault_shares` are the *shared*
-    /// backing for the entire tokenized SPL supply, and the base rebase floors them
-    /// by integer division. `ApplyRebaseTokenizedDepositor` carries no signer at all,
-    /// so any caller could commit the lazy rebase at a moment when the divisor floors
-    /// that backing to zero while the mint's supply is still live. Every holder then
-    /// computes zero redeemable shares and `redeem_tokens` aborts *before* burning,
-    /// so the tokens are permanently unredeemable — and unlike a paper loss this does
-    /// not heal when the portfolio recovers, because the backing shares are gone.
-    ///
-    /// So refuse to let a third party destroy that backing. As with #106 the owner
-    /// side is unaffected: the signed lifecycle actions still rebase through the
-    /// unguarded path, which makes a refusal recoverable where a floored backing is
-    /// not.
-    ///
-    /// Deliberately calls `VaultDepositorBase::apply_rebase` rather than the inherent
-    /// `apply_rebase` above, to keep this path byte-for-byte what it was before the
-    /// guard. Method resolution already sent the instruction to the trait method (the
-    /// inherent one is private to this module), so the signerless path has never
-    /// refreshed the `last_vault_shares` checkpoint that the signed paths maintain.
-    /// That asymmetry looks wrong, but it is a separate concern from #122 and is not
-    /// silently changed here.
+    /// A rebase that floors `vault_shares` to zero while token supply is
+    /// still live leaves every holder with zero redeemable shares, and
+    /// `redeem_tokens` aborts before it burns. That loss never heals, unlike
+    /// a paper loss. The guard blocks a third party from causing it. The
+    /// owner side is unaffected (OtterSec #106).
     pub fn apply_rebase_public(
         &mut self,
         vault: &mut Vault,
@@ -234,9 +218,9 @@ impl TokenizedVaultDepositor {
         now: i64,
         deposit_oracle_price: i64,
     ) -> Result<u64> {
-        // #107: apply the fee before the rebase check so a fee-induced vault rebase is caught by
-        // the same guard (tokenization is disallowed once a rebase occurs) rather than aborting
-        // the later base-checked ops with InvalidVaultRebase.
+        // Apply the fee before the rebase check, so the same guard catches a fee-induced vault
+        // rebase (OtterSec #107). A rebase refuses the tokenization here, instead of aborting the
+        // later base-checked calls with InvalidVaultRebase.
         let VaultFee {
             management_fee_payment,
             management_fee_shares,
@@ -250,28 +234,12 @@ impl TokenizedVaultDepositor {
         let (manager_profit_share, protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol)?;
 
-        // #140: this account holds ONE cost basis for every holder of `mint`. The profit-share fee
-        // comes out of the pool's own shares, so it dilutes every token equally, whoever accrued the
-        // loss.
-        //
-        // Both `transfer_shares` legs move basis by the CURRENT VALUE of the shares moved. The pooled
-        // loss shelter (basis - value) is therefore invariant to supply, while each token consumes a
-        // pro-rata part of it. Minting into an under-water pool hands the newcomer part of the
-        // incumbents' shelter.
-        //
-        // A single pooled basis can be fair only when basis == value at the supply change.
-        // `apply_profit_share` above already forces that whenever value > basis. So rejecting the
-        // value < basis case is sufficient, and is the tightest condition available without per-holder
-        // state. Per-holder state cannot work here anyway: the fee comes out of shared pool shares, and
-        // this is a classic SPL mint whose transfers the program never sees.
-        //
-        // The test runs POST-transfer on purpose. `tokenize_shares` has already moved the newcomer's
-        // shares and basis in, but a mint raises basis and value by the same amount. So
-        // `value + v >= basis + v` is the same test as `value >= basis`, and `withdraw_value` needs no
-        // plumbing out of `transfer_shares`.
-        //
-        // Use `>=`, not `==`. #104 can defer a sub-share fee and leave value > basis, and
-        // `WithdrawUnit::Token` can introduce a difference of 1.
+        // A pooled cost basis is fair only when basis equals value at the supply change,
+        // or a mint hands the newcomer part of the loss shelter existing holders paid for.
+        // `apply_profit_share` above already forces that above value, so rejecting
+        // below-value is enough (OtterSec #140). Checked after the transfer, since minting
+        // raises both equally. Uses `>=`, not `==`: a deferred sub-share fee can leave
+        // value above basis (OtterSec #104), and `WithdrawUnit::Token` can differ by 1.
         let pool_value = depositor_shares_to_vault_amount(
             self.get_vault_shares().cast()?,
             vault.total_shares.cast()?,
@@ -395,8 +363,9 @@ impl TokenizedVaultDepositor {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
-        // #107: re-sync in case apply_fee induced a vault rebase, so the base-checked
-        // apply_profit_share below does not abort with InvalidVaultRebase.
+
+        // Re-sync in case apply_fee caused a vault rebase, so the base-checked
+        // apply_profit_share below does not abort with InvalidVaultRebase (OtterSec #107).
         self.apply_rebase(vault, vault_protocol, vault_equity)?;
         let (manager_profit_share, protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol)?;
@@ -477,35 +446,18 @@ impl TokenizedVaultDepositor {
         Ok((shares_to_redeem, vault_protocol.take()))
     }
 
-    /// #105: re-checkpoint `last_vault_shares` to the current `vault_shares`. The redeem
-    /// instruction moves shares out of this tokenized depositor via `transfer_shares` *after*
-    /// [`TokenizedVaultDepositor::redeem_tokens`] returns; without lowering the checkpoint to the
-    /// post-transfer balance, the stale (pre-transfer) checkpoint permanently breaks future
-    /// `tokenize_shares` (the `last_vault_shares + shares_transferred == vault_shares` invariant
-    /// can no longer hold). Callers must invoke this after the redeem share transfer completes.
+    /// A checkpoint left at the pre-transfer balance breaks every later `tokenize_shares`,
+    /// because `last_vault_shares + shares_transferred == vault_shares` can no longer hold.
+    /// Callers must call this after `redeem_tokens` moves shares out via `transfer_shares`
+    /// (OtterSec #105).
     pub fn checkpoint_vault_shares(&mut self) {
         self.last_vault_shares = self.vault_shares;
     }
 
-    /// Clear the pooled cost basis once the pool holds no shares and no tokens (#140).
-    ///
-    /// Both `transfer_shares` legs move basis by the current value of the shares moved. A full
-    /// redemption therefore leaves `net_deposits + cumulative_profit_share_amount` behind with no
-    /// holders behind it. The next tokenizer inherits it, and it cuts both ways:
-    ///
-    /// - orphaned ABOVE value, when the pool was under water as it drained, is a free loss shelter.
-    ///   The next tokenizer pays no profit share on a recovery whose drawdown it never suffered. No
-    ///   holder is harmed, so the manager's fee revenue takes the whole loss.
-    /// - orphaned BELOW value is the mirror. It is reachable when `hurdle_rate > 0` leaves a
-    ///   sub-hurdle profit without advancing the mark, or when #104 defers a sub-share fee and rolls
-    ///   it back. The next honest tokenizer then owes profit share on gains it never made.
-    ///
-    /// A pool with no shares and no tokens has no holders, so the reset is invisible to everyone.
-    /// `profit_share_fee_paid`, `total_deposits` and `total_withdraws` are lifetime analytics and stay.
-    ///
-    /// The under-water gate in [`Self::tokenize_shares`] already covers the security case, because an
-    /// empty pool with a positive basis fails it. This is kept because it is free, and because it is
-    /// the only fix for the below-value direction, which is an honest-user bug.
+    /// Clears the pooled cost basis once the pool holds no shares and no tokens, since a
+    /// drained pool leaves `net_deposits + cumulative_profit_share_amount` behind with no
+    /// holder to charge it to. The under-water gate in [`Self::tokenize_shares`] already
+    /// blocks a leftover basis above value; this reset fixes it below (OtterSec #140, #104).
     pub fn reset_orphaned_cost_basis(&mut self) {
         self.net_deposits = 0;
         self.cumulative_profit_share_amount = 0;
@@ -732,9 +684,9 @@ mod tests {
         );
     }
 
-    // OtterSec #105: after a redeem moves shares out, checkpoint_vault_shares must lower the
-    // last_vault_shares checkpoint so a later tokenize still satisfies
-    // last_vault_shares + shares_transferred == vault_shares.
+    // After a redeem moves shares out, checkpoint_vault_shares must lower the last_vault_shares
+    // checkpoint, so a later tokenize still satisfies
+    // last_vault_shares + shares_transferred == vault_shares (OtterSec #105).
     #[test]
     fn test_redeem_then_tokenize_after_checkpoint() {
         let now = 1337;
@@ -750,11 +702,10 @@ mod tests {
         let vault_equity = 500_000;
         vault.total_shares = shares_transferred;
 
-        // The pool's cost basis is maintained by `transfer_shares` at the instruction layer, which
-        // this unit test bypasses along with the share movement itself. It has to be emulated too:
-        // left at zero, the first `apply_profit_share` books the whole pool as phantom profit and
-        // parks the high-water mark at full value, so any later outflow reads as under water and the
-        // #140 gate (correctly) refuses. Start at basis == value.
+        // `transfer_shares` maintains the pool's cost basis at the instruction layer; this
+        // test skips that layer, so it sets the basis itself. A basis left at zero would
+        // make the first `apply_profit_share` book the whole pool as profit, so any later
+        // outflow reads as under water and the gate refuses it (OtterSec #140).
         tvd.net_deposits = vault_equity as i64;
 
         // redeem 50%
@@ -772,13 +723,14 @@ mod tests {
             )
             .expect("redeem_tokens");
 
-        // simulate the instruction moving the shares out and re-checkpointing (#105)
+        // Model the instruction moving the shares out and setting the checkpoint again
+        // (OtterSec #105).
         tvd.vault_shares -= shares_to_redeem as u128;
         tvd.net_deposits -= shares_to_redeem as i64;
         tvd.checkpoint_vault_shares();
         assert_eq!(tvd.last_vault_shares, tvd.vault_shares);
 
-        // a new tokenization into the same tokenized depositor must now succeed
+        // A new tokenization into the same tokenized depositor must now succeed.
         let new_shares = 100_000u128;
         tvd.vault_shares += new_shares;
         tvd.net_deposits += new_shares as i64;
@@ -800,9 +752,9 @@ mod tests {
         assert_eq!(tvd.last_vault_shares, tvd.vault_shares);
     }
 
-    // OtterSec #100 (contract): redeem_tokens returns the VaultProtocol provider (via take()) so
-    // the instruction can keep it alive across the before/after conservation snapshots instead of
-    // discarding it and having get_manager_shares switch to counting protocol shares as manager.
+    // redeem_tokens returns the VaultProtocol provider through take(), so the instruction can keep
+    // it alive across the conservation reads taken before and after (OtterSec #100). Without it,
+    // get_manager_shares counts the protocol shares as manager shares.
     #[test]
     fn test_redeem_tokens_returns_provider() {
         use {crate::VaultProtocol, std::cell::RefCell};
@@ -836,15 +788,15 @@ mod tests {
         );
     }
 
-    /// #140: tokenizing into an under-water pool is refused.
+    /// Tokenizing into an under-water pool is refused (OtterSec #140).
     ///
-    /// The pool holds one cost basis for all holders and the profit-share fee comes out of pool
-    /// shares, so it dilutes every token equally. A newcomer minting while basis > value buys a slice
-    /// of the incumbents' loss shelter: on recovery the fee is computed against the *pooled* basis,
-    /// so the incumbents pay profit share on a gain that is partly the newcomer's, and the newcomer
-    /// pays less than they would standing alone. It is a pure holder-to-holder transfer — the manager
-    /// collects the same either way — which is why no basis-rewriting rule can fix it and the mint
-    /// itself has to be refused.
+    /// The pool holds one cost basis for all holders, and the profit-share fee comes out of pool
+    /// shares, so it dilutes every token equally. A newcomer who mints while the basis is above the
+    /// value buys a part of the existing holders' loss shelter. On a recovery the fee is computed
+    /// against the pooled basis, so the existing holders pay profit share on a gain that is partly
+    /// the newcomer's, and the newcomer pays less than it would alone. The manager collects the
+    /// same amount either way, so the transfer runs from holder to holder. No basis-rewriting rule
+    /// can fix that, and the mint itself has to be refused.
     #[test]
     fn under_water_pool_refuses_tokenization() {
         let now = 1337;
@@ -852,18 +804,18 @@ mod tests {
         let mut tvd =
             TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
 
-        // 1000 shares tokenized when the share price was 1.
+        // 1000 shares were tokenized when the share price was 1.
         let existing_shares = 1_000u128;
         tvd.vault_shares = existing_shares;
         tvd.last_vault_shares = existing_shares;
         tvd.net_deposits = 1_000;
         vault.total_shares = existing_shares;
 
-        // The vault then falls 40%: the pool is worth 600 against a basis of 1000.
+        // The vault then falls 40%, so the pool is worth 600 against a basis of 1000.
         let vault_equity_after_drawdown = 600u64;
 
-        // A newcomer's shares have already been moved in by `transfer_shares` when the state fn
-        // runs, so model that: +1000 shares carrying +600 of basis at today's price.
+        // `transfer_shares` has already moved a newcomer's shares in when the state function runs.
+        // Model that with 1000 more shares carrying 600 more basis at today's price.
         let new_shares = 1_000u128;
         tvd.vault_shares += new_shares;
         tvd.net_deposits += 600;
@@ -887,11 +839,11 @@ mod tests {
         );
     }
 
-    /// #140: a pool at or above its basis still accepts tokenizations.
+    /// A pool at or above its basis still accepts tokenizations (OtterSec #140).
     ///
-    /// The companion to the test above — the gate must not be a blanket ban. `apply_profit_share`
-    /// already forces basis == value whenever value > basis, so the healthy case has to keep working
-    /// or tokenization would be dead entirely.
+    /// The gate must not refuse every mint. `apply_profit_share` already forces the basis to equal
+    /// the value whenever the value is higher, so the healthy case must keep working. Otherwise no
+    /// tokenization succeeds at all.
     #[test]
     fn healthy_pool_still_accepts_tokenization() {
         let now = 1337;
@@ -905,7 +857,7 @@ mod tests {
         tvd.net_deposits = 1_000;
         vault.total_shares = existing_shares;
 
-        // Share price of exactly 1: value == basis, the boundary the `>=` admits.
+        // A share price of exactly 1 makes value equal basis, which is the boundary `>=` admits.
         let new_shares = 1_000u128;
         tvd.vault_shares += new_shares;
         tvd.net_deposits += 1_000;
@@ -929,16 +881,13 @@ mod tests {
         );
     }
 
-    /// #140: draining a pool must not leave its cost basis behind for the next tokenizer.
+    /// Draining a pool must not leave its cost basis behind for the next tokenizer
+    /// (OtterSec #140).
     ///
-    /// This is the sharpest form of the finding: it needs no victim, no timing race and no
-    /// coordination. Redeem every token, and `transfer_shares` has reduced `net_deposits` by only the
-    /// *current value* of the shares that left — so a pool drained while under water keeps the whole
-    /// shelter with nobody behind it. Whoever tokenizes next inherits it and pays zero profit share
-    /// on the recovery. The loss falls entirely on the manager's fee revenue.
-    ///
-    /// It cuts the other way too: orphaned *below* value, the next honest tokenizer immediately owes
-    /// profit share on gains they never made.
+    /// Redeeming every token reduces `net_deposits` by only the value of the shares that
+    /// left, so a pool drained under water keeps the whole loss shelter with no holder
+    /// behind it. The next tokenizer inherits it and pays no profit share on the recovery.
+    /// The mirror case, a basis left below value, owes profit share on gains never made.
     #[test]
     fn emptied_pool_drops_its_orphaned_cost_basis() {
         let now = 1337;
@@ -946,8 +895,8 @@ mod tests {
         let mut tvd =
             TokenizedVaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
 
-        // A pool drained at 50% down: the departing holder correctly ate the loss in their own
-        // VaultDepositor, and `transfer_shares` left basis 500 against value 0.
+        // A pool drained while 50% down. The departing holder took the loss in its own
+        // VaultDepositor, and `transfer_shares` left a basis of 500 against a value of 0.
         tvd.vault_shares = 0;
         tvd.last_vault_shares = 0;
         tvd.net_deposits = 500;
@@ -959,16 +908,16 @@ mod tests {
         assert_eq!(tvd.get_cumulative_profit_share_amount(), 0);
     }
 
-    /// OtterSec #122: the signerless `apply_rebase_tokenized_depositor` must not floor
-    /// the shared backing for a live token supply to zero. Mirrors the #106 guard on
-    /// `VaultDepositor::apply_rebase_public`.
+    /// The signerless `apply_rebase_tokenized_depositor` must not floor the shared backing
+    /// for a live token supply to zero (OtterSec #122). This mirrors the guard on
+    /// `VaultDepositor::apply_rebase_public` (OtterSec #106).
     #[test]
     fn test_tokenized_apply_rebase_public_rejects_flooring_backing_to_zero() {
         let now = 1000;
 
-        // Tiny backing: the divisor floors it to zero, which would leave every token
-        // holder computing zero redeemable shares with `redeem_tokens` aborting before
-        // it burns. Must be rejected.
+        // A small backing floors to zero under the divisor. Every token holder would then
+        // compute zero redeemable shares, and `redeem_tokens` would abort before it burns.
+        // The rebase must be rejected.
         {
             let mut vault = Vault::default();
             let mut vp = None;
@@ -989,8 +938,9 @@ mod tests {
                 res.is_err(),
                 "public rebase must reject flooring live token backing to zero"
             );
-            // Confirmed the unguarded path really does floor it, i.e. the guard is
-            // what prevents this rather than the arithmetic being harmless.
+
+            // Check that the unguarded path really does floor the backing, so the guard is
+            // what prevents this and not the arithmetic.
             let mut vault2 = Vault::default();
             let mut vp2 = None;
             vault2.total_shares = 200_000_000;
@@ -1012,7 +962,7 @@ mod tests {
             );
         }
 
-        // Backing large enough to survive the divisor: unaffected.
+        // A backing large enough to survive the divisor is unaffected.
         {
             let mut vault = Vault::default();
             let mut vp = None;

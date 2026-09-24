@@ -595,8 +595,8 @@ mod tests {
         bad[0] ^= 0xff;
         assert!(AccountRef::<User>::try_new(&bad).is_none());
 
-        // Longer than a `User` (account extended by a program upgrade) =>
-        // accepted; deref reads exactly `size_of::<User>()` bytes.
+        // A program upgrade can leave the account longer than a `User`. The
+        // extra bytes are accepted, and deref reads only `size_of::<User>()`.
         let mut extended = bytes.clone();
         extended.extend_from_slice(&[0xaa; 128]);
         let r = AccountRef::<User>::try_new(&extended).expect("extended User bytes");

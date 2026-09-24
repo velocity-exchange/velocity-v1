@@ -18,7 +18,6 @@ use {
             oracle::PrelaunchOracleParams,
             order_params::{ModifyOrderParams, OrderParams},
             perp_market::ContractTier,
-            scale_order_params::ScaleOrderParams,
             settle_pnl_mode::SettlePnlMode,
             spot_market::AssetTier,
             state::{FeeStructure, *},
@@ -43,7 +42,14 @@ pub mod state;
 #[cfg(any(test, feature = "fuzz-fixtures"))]
 pub mod test_utils;
 mod validation;
+pub use validation::sig_verification::{
+    verify_flow_attestation, FlowAttestationV0, FLOW_ATTESTATION_DOMAIN,
+};
 pub mod vlp;
+
+// Re-exported so consumers such as tests and keepers parse relay condition
+// blocks and staged crank payloads at the exact revision this program writes.
+pub use relay_spec;
 
 // main program entrypoint
 // anchor `#[program]` entrypoint is compiled out by `no-entrypoint`
@@ -238,11 +244,15 @@ pub mod velocity {
         )
     }
 
-    pub fn place_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceOrder>,
-        params: OrderParams,
+    /// Arm trigger orders in the user's own order slots. A slot holds one
+    /// unfired conditional, and every other order type rests on the market's
+    /// book instead. One margin check covers the whole batch, so a stop loss
+    /// and a take profit can arrive together.
+    pub fn place_trigger_orders_v1<'c: 'info, 'info>(
+        ctx: Context<'info, PlaceTriggerOrdersV1>,
+        args: PlaceTriggerOrdersV1Args,
     ) -> Result<()> {
-        handle_place_perp_order(ctx, params)
+        handle_place_trigger_orders_v1(ctx, args)
     }
 
     pub fn cancel_order<'c: 'info, 'info>(
@@ -291,54 +301,45 @@ pub mod velocity {
         handle_modify_order_by_user_order_id(ctx, user_order_id, modify_order_params)
     }
 
-    pub fn place_and_take_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceAndTake<'info>>,
-        params: OrderParams,
-        success_condition: Option<u32>,
+    /// Place a taker order and fill it in one instruction. Whatever the route
+    /// leaves unfilled rests on the market's book when the order can rest.
+    pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, PlaceAndTakeV1<'info>>,
+        args: PlaceAndTakePerpOrderV1Args,
     ) -> Result<()> {
-        handle_place_and_take_perp_order(ctx, params, success_condition)
+        handle_place_and_take_perp_order_v1(ctx, args)
     }
 
-    pub fn place_and_make_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceAndMake<'info>>,
-        params: OrderParams,
-        taker_order_id: u32,
+    /// Rest a maker limit order on the market's CLOB. The order goes straight
+    /// to the book as a maker quote and never occupies a `User.orders` slot.
+    /// `params.activation_delay_slots` sets the book speed bump, or `None` for
+    /// the default. A value below the default needs the flow-authority
+    /// attestation.
+    pub fn place_and_make_perp_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, PlaceAndMakeV1<'info>>,
+        args: PlaceAndMakePerpOrderV1Args,
     ) -> Result<()> {
-        handle_place_and_make_perp_order(ctx, params, taker_order_id)
+        handle_place_and_make_perp_order_v1(ctx, args)
     }
 
-    pub fn place_and_make_signed_msg_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceAndMakeSignedMsg<'info>>,
-        params: OrderParams,
-        signed_msg_order_uuid: [u8; 8],
-    ) -> Result<()> {
-        handle_place_and_make_signed_msg_perp_order(ctx, params, signed_msg_order_uuid)
-    }
-
+    /// Place, route and rest one signed-message taker order in one call. It verifies the signature. It
+    /// routes through the market's quoters and books at or better than the order's worst price. It
+    /// rests any remainder as a taker-origin remainder. The order never occupies a slot.
+    /// `flow_attestation` is swift's detached signature over the order and an expiry. It stands in for
+    /// the flow authority's signature on this keeper-built transaction. An absent attestation reads as
+    /// unattested. A book with a speed bump then rests the order whole instead of filling it.
     pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
         signed_msg_order_params_message_bytes: Vec<u8>,
         is_delegate_signer: bool,
+        flow_attestation: Option<crate::validation::sig_verification::FlowAttestationV0>,
     ) -> Result<()> {
         handle_place_signed_msg_taker_order(
             ctx,
             signed_msg_order_params_message_bytes,
             is_delegate_signer,
+            flow_attestation,
         )
-    }
-
-    pub fn place_orders<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceOrder>,
-        params: Vec<OrderParams>,
-    ) -> Result<()> {
-        handle_place_orders(ctx, params)
-    }
-
-    pub fn place_scale_orders<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceOrder>,
-        params: ScaleOrderParams,
-    ) -> Result<()> {
-        handle_place_scale_orders(ctx, params)
     }
 
     pub fn begin_swap<'c: 'info, 'info>(
@@ -435,11 +436,10 @@ pub mod velocity {
         handle_update_user_reduce_only(ctx, _sub_account_id, reduce_only)
     }
 
-    /// Mark a User as vault-owned (its authority is a vault PDA and its equity
-    /// prices vault depositor shares). Set-only and authority-gated: only the
-    /// User's authority may call it, and it is CPI'd by the vaults program at
-    /// vault init. A vault-owned User is skipped by the revenue-share sweep so a
-    /// builder/referral reward can never enter vault NAV (OtterSec #91/#92/#93).
+    /// Mark a User as vault-owned. Its authority is a vault PDA, and its equity prices vault depositor
+    /// shares. The instruction sets the flag once and never clears it. Only the authority may call it,
+    /// and the vaults program CPIs it at vault init. The revenue-share sweep skips a vault-owned User,
+    /// so a builder or referral reward can never enter vault NAV (OtterSec #91/#92/#93).
     pub fn update_user_vault_owned(ctx: Context<UpdateUser>, _sub_account_id: u16) -> Result<()> {
         handle_update_user_vault_owned(ctx, _sub_account_id)
     }
@@ -474,23 +474,14 @@ pub mod velocity {
 
     // Keeper Instructions
 
-    pub fn fill_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, FillOrder<'info>>,
-        order_id: Option<u32>,
-        _maker_order_id: Option<u32>,
+    /// Fire an armed trigger order straight to the book. It fills the fired
+    /// order in the same instruction and rests only the remainder as a
+    /// taker-origin order, so nothing stays live in `User.orders`.
+    pub fn trigger_market_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, TriggerMarketOrderV1<'info>>,
+        args: TriggerMarketOrderV1Args,
     ) -> Result<()> {
-        handle_fill_perp_order(ctx, order_id)
-    }
-
-    pub fn revert_fill(ctx: Context<RevertFill>) -> Result<()> {
-        handle_revert_fill(ctx)
-    }
-
-    pub fn trigger_order<'c: 'info, 'info>(
-        ctx: Context<'info, TriggerOrder<'info>>,
-        order_id: u32,
-    ) -> Result<()> {
-        handle_trigger_order(ctx, order_id)
+        handle_trigger_market_order_v1(ctx, args)
     }
 
     pub fn force_cancel_orders<'c: 'info, 'info>(
@@ -718,9 +709,9 @@ pub mod velocity {
 
     pub fn refresh_spot_market_interest<'c: 'info, 'info>(
         ctx: Context<'info, RefreshSpotMarketInterest<'info>>,
-        market_indexes: Vec<u16>,
+        args: RefreshSpotMarketInterestArgs,
     ) -> Result<()> {
-        handle_refresh_spot_market_interest(ctx, market_indexes)
+        handle_refresh_spot_market_interest(ctx, args)
     }
 
     pub fn update_amms<'c: 'info, 'info>(
@@ -1331,6 +1322,13 @@ pub mod velocity {
         handle_update_perp_market_paused_operations(ctx, paused_operations)
     }
 
+    pub fn update_perp_market_clob_quoter(
+        ctx: Context<AdminUpdatePerpMarketClobQuoter>,
+        args: UpdatePerpMarketClobQuoterArgs,
+    ) -> Result<()> {
+        handle_update_perp_market_clob_quoter(ctx, args)
+    }
+
     pub fn update_perp_market_contract_tier(
         ctx: Context<AdminUpdatePerpMarket>,
         contract_tier: ContractTier,
@@ -1380,6 +1378,22 @@ pub mod velocity {
             ctx,
             reference_price_offset_deadband_pct,
         )
+    }
+
+    pub fn update_transaction_fee_rails(
+        ctx: Context<AdminUpdateState>,
+        rails: crate::state::state::TransactionFeeRails,
+    ) -> Result<()> {
+        handle_update_transaction_fee_rails(ctx, rails)
+    }
+
+    /// Set what the protocol spends getting a liquidation cranked, and the
+    /// spot market whose oracle prices it in SOL.
+    pub fn update_liquidation_crank_reimbursement(
+        ctx: Context<AdminUpdateState>,
+        args: UpdateLiquidationCrankReimbursementArgs,
+    ) -> Result<()> {
+        handle_update_liquidation_crank_reimbursement(ctx, args)
     }
 
     pub fn update_perp_fee_structure(
@@ -1668,21 +1682,71 @@ pub mod velocity {
         handle_withdraw_protocol_fees_perp(ctx, market_index, amount)
     }
 
-    /// Grow a zero-copy account to the size this program build compiles in
-    /// for its type (resolved from the account discriminator). The migration
-    /// crank after an upgrade that appends fields to an account struct; no-op
-    /// when already at size. Payer covers the rent-exempt shortfall (auth:
-    /// `AccountExtension` hot key, or warm/cold admin). See
-    /// `docs/ACCOUNT-EXTENSION.md`.
+    /// Derive a user's whole relay condition block, the liquidation thresholds and the trigger
+    /// watches, in one pass. `sync_liq_conditions` and `sync_trigger_conditions` remain for a caller
+    /// that wants only one half. Both write the same account, so calling them in sequence classifies
+    /// the same `remaining_accounts` twice.
+    pub fn sync_user_conditions<'c: 'info, 'info>(
+        ctx: Context<'info, SyncUserConditions<'info>>,
+        args: SyncLiqConditionsArgs,
+    ) -> Result<()> {
+        validate_sync_args(&args)?;
+        handle_sync_user_conditions(ctx, args)
+    }
+
+    /// Create the protocol's relay crank treasury, the one account that funds
+    /// every market's crank reservoir. It starts unpriced.
+    /// `update_crank_treasury` sets what it spends.
+    pub fn initialize_crank_treasury(ctx: Context<InitializeCrankTreasury>) -> Result<()> {
+        instructions::handle_initialize_crank_treasury(ctx)
+    }
+
+    /// Set the two levels a market's crank reservoir is held between, counted
+    /// in that market's most expensive crank so one setting fits every market.
+    /// Markets take a new watermark on their next attach.
+    pub fn update_crank_treasury(
+        ctx: Context<UpdateCrankTreasury>,
+        args: UpdateCrankTreasuryArgs,
+    ) -> Result<()> {
+        instructions::handle_update_crank_treasury(ctx, args)
+    }
+
+    /// Move lamports from a market's crank reservoir back to the treasury, so
+    /// an over-provisioned or retired market does not hold them forever.
+    pub fn sweep_crank_reservoir(
+        ctx: Context<SweepCrankReservoir>,
+        args: SweepCrankReservoirArgs,
+    ) -> Result<()> {
+        instructions::handle_sweep_crank_reservoir(ctx, args)
+    }
+
+    /// Recover lamports from the crank treasury, never below its own rent.
+    pub fn withdraw_crank_treasury(
+        ctx: Context<WithdrawCrankTreasury>,
+        args: WithdrawCrankTreasuryArgs,
+    ) -> Result<()> {
+        instructions::handle_withdraw_crank_treasury(ctx, args)
+    }
+
+    /// Create the program's shared resolver staging account. There is one for
+    /// the whole program. The call is permissionless, and the caller pays its
+    /// rent once.
+    pub fn initialize_relay_scratch(ctx: Context<InitializeRelayScratch>) -> Result<()> {
+        handle_initialize_relay_scratch(ctx)
+    }
+
+    /// Grow a zero-copy account to the size this program build compiles in for its type. This is the
+    /// migration crank after an upgrade that appends fields to an account struct. It does nothing when
+    /// the account is already at size. The authority is the `AccountExtension` hot key, or the warm or
+    /// cold admin. See `docs/ACCOUNT-EXTENSION.md`.
     pub fn extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
         handle_extend_account(ctx)
     }
 
-    /// Devnet/test-only: grow a zero-copy account to an arbitrary larger size
-    /// to exercise the extension flow before a real struct extension exists.
-    /// Stripped from production mainnet builds; `anchor-test` keeps it so the
-    /// integration suite (which builds with default features + `anchor-test`)
-    /// can exercise extension end to end.
+    /// Devnet and test builds only. Grows a zero-copy account to an arbitrary larger size, so the
+    /// extension flow can be exercised before a real struct extension exists. Production mainnet
+    /// builds compile it out. `anchor-test` keeps it, so the integration suite can exercise extension
+    /// end to end.
     #[cfg(any(feature = "anchor-test", not(feature = "mainnet-beta")))]
     pub fn extend_account_devnet(ctx: Context<ExtendAccountDevnet>, new_len: u64) -> Result<()> {
         handle_extend_account_devnet(ctx, new_len)
@@ -1854,18 +1918,16 @@ pub mod velocity {
 
     pub fn settle_revenue_share<'c: 'info, 'info>(
         ctx: Context<'info, SettleRevenueShare<'info>>,
-        market_index: u16,
-        num_owner_sub_accounts: u8,
+        args: SettleRevenueShareArgs,
     ) -> Result<()> {
-        handle_settle_revenue_share(ctx, market_index, num_owner_sub_accounts)
+        handle_settle_revenue_share(ctx, args)
     }
 
     pub fn forfeit_revenue_share_order(
         ctx: Context<ForfeitRevenueShareOrder>,
-        market_index: u16,
-        order_index: u32,
+        args: ForfeitRevenueShareOrderArgs,
     ) -> Result<()> {
-        handle_forfeit_revenue_share_order(ctx, market_index, order_index)
+        handle_forfeit_revenue_share_order(ctx, args)
     }
 
     #[cfg(feature = "vlp-hedge")]
@@ -2209,6 +2271,272 @@ pub mod velocity {
         amount: Option<i64>,
     ) -> Result<()> {
         handle_special_transfer_perp_position_to_vamm(ctx, market_index, amount)
+    }
+
+    pub fn initialize_quoter(
+        ctx: Context<InitializeQuoter>,
+        args: InitializeQuoterArgs,
+    ) -> Result<()> {
+        handle_initialize_quoter(ctx, args)
+    }
+
+    pub fn initialize_quoter_slab(
+        ctx: Context<InitializeQuoterSlab>,
+        args: InitializeQuoterSlabArgs,
+    ) -> Result<()> {
+        handle_initialize_quoter_slab(ctx, args)
+    }
+
+    pub fn update_quoter_accounts(
+        ctx: Context<UpdateQuoterAccounts>,
+        args: UpdateQuoterAccountsArgs,
+    ) -> Result<()> {
+        handle_update_quoter_accounts(ctx, args)
+    }
+
+    pub fn update_quoter_config(
+        ctx: Context<UpdateQuoterConfig>,
+        args: UpdateQuoterConfigArgs,
+    ) -> Result<()> {
+        handle_update_quoter_config(ctx, args)
+    }
+
+    pub fn update_quoter_active(
+        ctx: Context<UpdateQuoterActive>,
+        args: UpdateQuoterActiveArgs,
+    ) -> Result<()> {
+        handle_update_quoter_active(ctx, args)
+    }
+
+    pub fn update_quoter_approved(
+        ctx: Context<UpdateQuoterApproved>,
+        args: UpdateQuoterApprovedArgs,
+    ) -> Result<()> {
+        handle_update_quoter_approved(ctx, args)
+    }
+
+    pub fn update_quoter_priority(
+        ctx: Context<UpdateQuoterPriority>,
+        args: UpdateQuoterPriorityArgs,
+    ) -> Result<()> {
+        handle_update_quoter_priority(ctx, args)
+    }
+
+    pub fn update_quoter_watch(
+        ctx: Context<UpdateQuoterWatch>,
+        args: UpdateQuoterWatchArgs,
+    ) -> Result<()> {
+        handle_update_quoter_watch(ctx, args)
+    }
+
+    pub fn update_quoter_max_oracle_deviation(
+        ctx: Context<UpdateQuoterMaxOracleDeviation>,
+        args: UpdateQuoterMaxOracleDeviationArgs,
+    ) -> Result<()> {
+        handle_update_quoter_max_oracle_deviation(ctx, args)
+    }
+
+    pub fn cancel_order_v1(ctx: Context<CancelOrderV1>, params: CancelOrderV1Params) -> Result<()> {
+        handle_cancel_order_v1(ctx, params)
+    }
+
+    /// Cancel every resting CLOB order this `User` holds on one side, or on
+    /// both, in a single CPI. It unwinds the aggregates from per-side totals.
+    /// The book caps one sweep. The log says when the sweep stopped early, and
+    /// the call is safe to repeat.
+    pub fn cancel_orders_v1(
+        ctx: Context<CancelOrdersV1>,
+        params: CancelOrdersV1Params,
+    ) -> Result<()> {
+        handle_cancel_orders_v1(ctx, params)
+    }
+
+    /// Reprice or resize a resting CLOB order. It cancels and replaces the
+    /// order in one instruction, with a single margin gate over the net
+    /// change. A `None` field keeps the resting order's value.
+    pub fn modify_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, ModifyOrderV1<'info>>,
+        params: ModifyOrderV1Params,
+    ) -> Result<()> {
+        handle_modify_order_v1(ctx, params)
+    }
+
+    pub fn initialize_router_quote_buffer(
+        ctx: Context<InitializeRouterQuoteBuffer>,
+        args: InitializeRouterQuoteBufferArgs,
+    ) -> Result<()> {
+        handle_initialize_router_quote_buffer(ctx, args)
+    }
+
+    /// Read-only router quote. It writes per-source verified books into the
+    /// caller's quote buffer. Simulate it rather than landing it.
+    pub fn quote_router<'c: 'info, 'info>(
+        ctx: Context<'info, QuoteRouter<'info>>,
+        args: QuoteRouterArgs,
+    ) -> Result<()> {
+        handle_quote_router(ctx, args)
+    }
+
+    pub fn crank_clob_evict(
+        ctx: Context<CrankClobOrderRemoval>,
+        args: CrankClobEvictArgs,
+    ) -> Result<()> {
+        handle_crank_clob_evict(ctx, args)
+    }
+
+    pub fn crank_clob_remove_expired(
+        ctx: Context<CrankClobOrderRemoval>,
+        args: CrankClobRemoveExpiredArgs,
+    ) -> Result<()> {
+        handle_crank_clob_remove_expired(ctx, args)
+    }
+
+    /// Crank an armed trigger-limit order onto the market's CLOB once its
+    /// trigger condition is met. The call is permissionless, and the keeper
+    /// earns the flat reward from the user. A stop-market goes through
+    /// `trigger_market_order_v1`.
+    pub fn trigger_limit_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, TriggerLimitOrderV1<'info>>,
+        args: TriggerLimitOrderV1Args,
+    ) -> Result<()> {
+        handle_trigger_limit_order_v1(ctx, args)
+    }
+
+    /// Fill two crossed resting sources against each other. The call is
+    /// permissionless. The protocol User takes both legs and keeps the spread,
+    /// and the caller is paid reservoir lamports. It reverts unless the match
+    /// is profitable after fees.
+    pub fn crank_cross_match<'c: 'info, 'info>(
+        ctx: Context<'info, CrankCrossMatch<'info>>,
+        args: CrankCrossMatchArgs,
+    ) -> Result<()> {
+        handle_crank_cross_match(ctx, args)
+    }
+
+    /// Resolve one taker-origin cross on a market's CLOB. The call is permissionless. It settles the
+    /// crossing counterparty and the migrated remainder at the counterparty's price, so the taker
+    /// captures the improvement. The cranker earns a filler reward from that improvement, capped so
+    /// the taker's net price beats its resting price. A cross that cannot clear the cap is left resting.
+    pub fn crank_taker_origin_cross<'c: 'info, 'info>(
+        ctx: Context<'info, CrankTakerOriginCross<'info>>,
+        args: CrankTakerOriginCrossArgs,
+    ) -> Result<()> {
+        handle_crank_taker_origin_cross(ctx, args)
+    }
+
+    /// Force-cancel a failing account's CLOB orders. The keeper passes the
+    /// `OrderRef`s. The gates and the flat fee match `force_cancel_orders`.
+    pub fn force_cancel_clob_orders<'c: 'info, 'info>(
+        ctx: Context<'info, ForceCancelClobOrders<'info>>,
+        args: ForceCancelClobOrdersArgs,
+    ) -> Result<()> {
+        handle_force_cancel_clob_orders(ctx, args)
+    }
+
+    /// Resolver for every condition a market's CLOB cranks wake on. Those are an expired order, a
+    /// side at its eviction threshold, and the book crossing itself. Another is the poll that catches
+    /// a cross a PropAMM created. Relay reports which condition fired, so one resolver stages the
+    /// executor that fits and returns a response pointer. Simulate it rather than landing it.
+    pub fn resolve_clob_crank(
+        ctx: Context<ResolveClobCrank>,
+        fired: FiredConditionArgV0,
+    ) -> Result<()> {
+        instructions::handle_resolve_clob_crank(ctx, fired)
+    }
+
+    /// Refill a market's crank reservoir from the protocol treasury. The call
+    /// is permissionless, and relay cranks it like the work it funds. It
+    /// reverts while the reservoir is above its watermark, so it cannot be
+    /// repeated for the payment.
+    pub fn refill_crank_reservoir(
+        ctx: Context<RefillCrankReservoir>,
+        args: RefillCrankReservoirArgs,
+    ) -> Result<()> {
+        instructions::handle_refill_crank_reservoir(ctx, args)
+    }
+
+    /// Create or re-price a Custom quoter's relay cross-discovery conditions.
+    /// The call is permissionless, and the caller pays the rent.
+    pub fn initialize_quoter_cross_conditions(
+        ctx: Context<InitializeQuoterCrossConditions>,
+        args: InitializeQuoterCrossConditionsArgs,
+    ) -> Result<()> {
+        handle_initialize_quoter_cross_conditions(ctx, args)
+    }
+
+    /// Relay resolver for a Custom quoter's cross conditions. It prices the
+    /// quoter through its registered `quote_v0` surface and stages
+    /// `crank_cross_match`. Simulate it rather than landing it.
+    pub fn resolve_crank_cross_match_quoter<'info>(
+        ctx: Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
+    ) -> Result<()> {
+        handle_resolve_crank_cross_match_quoter(ctx)
+    }
+
+    /// Rewrite only the trigger half of a user's condition block. Prefer
+    /// `sync_user_conditions` unless the liquidation half is known current.
+    pub fn sync_trigger_conditions<'c: 'info, 'info>(
+        ctx: Context<'info, SyncTriggerConditions<'info>>,
+    ) -> Result<()> {
+        handle_sync_trigger_conditions(ctx)
+    }
+
+    /// Relay resolver for `trigger_limit_order_v1`. Simulate it rather than
+    /// landing it.
+    pub fn resolve_trigger_limit_order_v1(ctx: Context<ResolveTriggerLimitOrderV1>) -> Result<()> {
+        handle_resolve_trigger_limit_order_v1(ctx)
+    }
+
+    /// Relay resolver for `trigger_market_order_v1`. Simulate it rather than
+    /// landing it.
+    pub fn resolve_trigger_market_order_v1(
+        ctx: Context<ResolveTriggerMarketOrderV1>,
+    ) -> Result<()> {
+        handle_resolve_trigger_market_order_v1(ctx)
+    }
+
+    /// Rewrite only the liquidation half of a user's condition block. Prefer
+    /// `sync_user_conditions` unless the trigger half is known current. The
+    /// block's own self-sync watch on position changes stages this half, which
+    /// is why this half has a relay path and the other does not.
+    pub fn sync_liq_conditions<'c: 'info, 'info>(
+        ctx: Context<'info, SyncLiqConditions<'info>>,
+        args: SyncLiqConditionsArgs,
+    ) -> Result<()> {
+        validate_sync_args(&args)?;
+        handle_sync_liq_conditions(ctx, args)
+    }
+
+    /// Relay's unsigned self-maintenance path. It rewrites an existing block
+    /// and pays the keeper from the block's own lamports. It names no signer,
+    /// because a staged executor is submitted unsigned.
+    pub fn resync_liq_conditions<'c: 'info, 'info>(
+        ctx: Context<'info, ResyncLiqConditions<'info>>,
+    ) -> Result<()> {
+        handle_resync_liq_conditions(ctx)
+    }
+
+    /// Relay resolver for the self-sync conditions. Simulate it rather than
+    /// landing it.
+    pub fn resolve_resync_liq_conditions(ctx: Context<ResolveResyncLiqConditions>) -> Result<()> {
+        handle_resolve_resync_liq_conditions(ctx)
+    }
+
+    /// Relay resolver for a liquidation threshold. It runs the real margin
+    /// calculation and stages `liquidate_perp_with_fill` with the protocol
+    /// `User` as the liquidator. That `User` holds no inventory. Simulate it
+    /// rather than landing it.
+    pub fn resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
+        ctx: Context<'info, ResolveLiquidatePerpWithFill<'info>>,
+    ) -> Result<()> {
+        handle_resolve_liquidate_perp_with_fill(ctx)
+    }
+
+    pub fn withdraw_protocol_user_deposit<'c: 'info, 'info>(
+        ctx: Context<'info, WithdrawProtocolUserDeposit<'info>>,
+        args: WithdrawProtocolUserDepositArgs,
+    ) -> Result<()> {
+        handle_withdraw_protocol_user_deposit(ctx, args)
     }
 }
 

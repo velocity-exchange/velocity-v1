@@ -63,10 +63,8 @@ function syncNativeIx(ata: PublicKey): TransactionInstruction {
 const JUPITER_API = 'https://lite-api.jup.ag/swap/v1';
 
 /**
- * Programs a Jupiter swap response is allowed to invoke. Instructions
- * targeting anything else are rejected before signing/proposing: the swap
- * endpoint returns opaque instruction bytes, and a compromised API must not
- * be able to smuggle an arbitrary instruction under a "swap" label.
+ * The programs a Jupiter swap response may invoke. The command rejects any other program before it
+ * signs, since a compromised swap endpoint could otherwise return an unrelated instruction.
  */
 const SWAP_PROGRAM_ALLOWLIST = new Set([
 	'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6
@@ -77,9 +75,9 @@ const SWAP_PROGRAM_ALLOWLIST = new Set([
 ]);
 
 /**
- * Reject any instruction outside the swap program allowlist, and any
- * instruction that requires a signature from an account other than the owner
- * (a rogue signer would let the vault/wallet co-sign an arbitrary transfer).
+ * Rejects an instruction outside the swap program allowlist. Also rejects an
+ * instruction that needs a signature from an account other than the owner. Such
+ * a signer would let the vault or the wallet co-sign an arbitrary transfer.
  */
 function validateSwapInstructions(
 	ixs: TransactionInstruction[],
@@ -158,10 +156,10 @@ export function registerWallet(parent: Command): void {
 		wallet
 			.command('wrap-sol <lamports>')
 			.description(
-				'Wrap native SOL from the owner wallet into its wSOL ATA (created idempotently; ' +
-					'the syncNative rides in the same transaction). <lamports> is raw lamports. ' +
-					'With --multisig the owner defaults to the vault PDA at --vault-index and the ' +
-					'wrap is proposed as a vault transaction.'
+				'Wrap native SOL from the owner wallet into its wSOL ATA. The command creates ' +
+					'the ATA if it is missing, and sends the syncNative in the same transaction. ' +
+					'<lamports> is raw lamports. With --multisig the owner defaults to the vault ' +
+					'PDA at --vault-index, and the command proposes the wrap as a vault transaction.'
 			)
 			.option(
 				'--authority <pubkey>',
@@ -255,11 +253,12 @@ export function registerWallet(parent: Command): void {
 		wallet
 			.command('swap <inputMint> <outputMint> <amount>')
 			.description(
-				'Swap tokens in the owner wallet via Jupiter. <amount> is raw input-token units. ' +
-					'With --multisig the owner defaults to the vault PDA at --vault-index and the swap ' +
-					'is proposed as a vault transaction — the route is quoted NOW but executes after ' +
-					'approval, so a stale route can fail at execution and needs re-proposing. ' +
-					'Approve and execute promptly; on a timelocked multisig prefer --only-direct-routes.'
+				'Swap tokens in the owner wallet through Jupiter. <amount> is raw input-token ' +
+					'units. With --multisig the owner defaults to the vault PDA at --vault-index, ' +
+					'and the command proposes the swap as a vault transaction. The route is quoted ' +
+					'when the command runs and executes after approval, so a stale route can fail ' +
+					'at execution and must be proposed again. Approve and execute without delay. ' +
+					'On a timelocked multisig, prefer --only-direct-routes.'
 			)
 			.option(
 				'--authority <pubkey>',
@@ -328,9 +327,11 @@ export function registerWallet(parent: Command): void {
 				quoteResponse: quote,
 				userPublicKey: owner.toBase58(),
 			});
-			// Compute-budget instructions cannot ride in the inner message: the
-			// vault executes it via CPI and the ComputeBudget program is not
-			// CPI-able. The executor sets the budget on the outer transaction.
+
+			// The inner message carries no compute-budget instruction. The vault
+			// executes that message through a CPI, and the ComputeBudget program
+			// does not accept a CPI. The executor sets the budget on the outer
+			// transaction.
 			const ixs: TransactionInstruction[] = [
 				...(swap.setupInstructions ?? []).map(deserializeJupiterIx),
 				deserializeJupiterIx(swap.swapInstruction),
@@ -343,7 +344,9 @@ export function registerWallet(parent: Command): void {
 				provider.connection,
 				swap.addressLookupTableAddresses ?? []
 			);
-			// Show reviewers what is actually being signed, not just the memo.
+
+			// Show a reviewer every program the transaction invokes, and not only
+			// the memo.
 			console.log('instruction programs:');
 			for (const ix of ixs) {
 				console.log(`  ${ix.programId.toBase58()}`);
@@ -528,9 +531,10 @@ export function registerWallet(parent: Command): void {
 		wallet
 			.command('balances')
 			.description(
-				'Read-only: native SOL and token balances of the owner wallet, plus its Velocity ' +
-					'holdings — spot deposits/borrows per sub-account and insurance-fund stakes. ' +
-					'Token balances for spot-market mints are labeled with the market name. ' +
+				'Read the native SOL and token balances of the owner wallet, plus its Velocity ' +
+					'holdings. Velocity holdings are the spot deposits and borrows per ' +
+					'sub-account, and the insurance-fund stakes. This command sends no ' +
+					'transaction. A token balance for a spot-market mint carries the market name. ' +
 					'With --multisig the owner defaults to the vault PDA at --vault-index.'
 			)
 			.option(

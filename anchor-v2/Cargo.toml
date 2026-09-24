@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["programs/clob", "programs/midpoint", "programs/quoter-test-support"]
+
+# SEPARATE workspace from the program workspace at the repo root (which is
+# `exclude = ["anchor-v2"]`). Hosts Anchor v2-line programs (CLOB, Midpoint,
+# future quoters) so their anchor-lang/solana dependency tree never unifies
+# with velocity's Anchor 1.0 SBF build. Own Cargo.lock, own target dir (see
+# .cargo/config.toml). Velocity-workspace integration tests consume these
+# programs as prebuilt .so fixtures from target/deploy/.
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+
+# Anchor v2 comes from a velocity fork, one commit ahead of otter-sec's
+# `4fbe613`. That commit's `#[program]` macro writes lifetime arguments into
+# the CPI wrapper's instruction literal, and Rust cannot parse a struct
+# expression that carries them — so no handler could take an argument that
+# borrows its instruction data. The quoter interface needs exactly that: the
+# CLOB and the midpoint read the caller's user set in place rather than
+# copying it out of the wire. Return to upstream once it carries the fix.

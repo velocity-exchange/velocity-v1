@@ -1,0 +1,45 @@
+/// Declared in `quoter-spec`: velocity writes these bytes and this program
+/// reads them, so the shape lives in the crate both compile against.
+pub use quoter_spec::ExecuteArgsV0;
+use {
+    crate::{
+        book::ClobBook, emit::emit_execute_record, instructions::GatedMarketV0,
+        state::ResponsePointerV0,
+    },
+    anchor_lang::prelude::*,
+};
+
+/// Quoter interface. Commits a fill. The book streams balance changes, merged
+/// by user, into the market's response tail as it consumes the book. The
+/// returned pointer locates them. Velocity clamps `size` to margin before it
+/// calls, and checks the changes on its own side.
+pub fn handle_execute_v0(
+    ctx: &mut Context<GatedMarketV0>,
+    args: ExecuteArgsV0<'_>,
+) -> Result<ResponsePointerV0> {
+    let clock = Clock::get()?;
+    let market = &mut ctx.accounts.market;
+    let market_index = market.market_index;
+    let outcome = market.execute(
+        args.direction,
+        args.size,
+        args.users,
+        &args.caps,
+        args.reference_price,
+        args.taker.as_ref(),
+        args.include_taker_origin_reservations,
+        clock.slot,
+        clock.unix_timestamp,
+    )?;
+
+    emit_execute_record(
+        clock.unix_timestamp,
+        clock.slot,
+        market_index,
+        args.direction.tag(),
+        &outcome.fills,
+        outcome.cancelled_client_order_id.as_slice(),
+    )?;
+
+    Ok(outcome.response)
+}

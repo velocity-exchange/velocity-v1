@@ -83,7 +83,7 @@ export function registerPerpMarket(parent: Command): void {
 		pm
 			.command('set-bankruptcy-if-floor <market> <pct>')
 			.description(
-				'Fraction of OI notional (at the oracle TWAP) the fee sweep leaves in pending_if_fee as a standing bankruptcy first-loss tranche (u32, PERCENTAGE_PRECISION: 1000000 = 100%, 1000 = 10 bps). 0 selects the 10 bps default; pass "disabled" to turn the floor off. A latched bankruptcy freezes the sweep either way.'
+				'Set the fraction of open-interest notional, priced at the oracle TWAP, that the fee sweep leaves in pending_if_fee as a standing bankruptcy first-loss tranche. The value is a u32 in PERCENTAGE_PRECISION, where 1000000 is 100% and 1000 is 10 bps. 0 selects the 10 bps default. Pass "disabled" to turn the floor off. A latched bankruptcy freezes the sweep either way.'
 			)
 	).action(async (market: string, pct: string, _flags, cmd: Command) => {
 		const marketIndex = parseMarketIndex(market);
@@ -120,7 +120,7 @@ export function registerPerpMarket(parent: Command): void {
 				'set-spread-adjustment <market> <spreadAdjustment> <inventorySpreadAdjustment>'
 			)
 			.description(
-				'Set the vAMM final-spread and inventory-spread percentage adjustments. Both values must be integers in [-100, 100]; -100 removes the component, 0 leaves it unchanged, and 100 doubles it. Negative values must follow a `--` separator so they are not parsed as flags. Requires VammQuoteManagement, warm, or cold.'
+				'Set the vAMM final-spread and inventory-spread percentage adjustments. Both values must be integers in [-100, 100]. -100 removes the component, 0 leaves it unchanged, and 100 doubles it. A negative value must follow a `--` separator so the parser does not read it as a flag. Requires VammQuoteManagement, warm, or cold.'
 			)
 	).action(
 		async (
@@ -294,7 +294,7 @@ export function registerPerpMarket(parent: Command): void {
 		pm
 			.command('deposit-fee-pool <market> <amount>')
 			.description(
-				'Top up the vAMM fee pool: transfers <amount> (raw quote base units, QUOTE_PRECISION) from the signer into the quote spot vault and credits amm.fee_pool and amm.total_fee_minus_distributions by the same amount. Use it to bring a market whose total_fee_minus_distributions has gone negative back above water. Requires the VaultDeposit hot key, or warm/cold.'
+				'Top up the vAMM fee pool. It transfers <amount> from the signer into the quote spot vault and credits amm.fee_pool and amm.total_fee_minus_distributions by the same amount. <amount> is in raw quote base units, at QUOTE_PRECISION. Use it to return a market whose total_fee_minus_distributions went negative to a positive balance. Requires the VaultDeposit hot key, or warm or cold.'
 			)
 			.option(
 				'--source-vault <pubkey>',
@@ -345,7 +345,7 @@ export function registerPerpMarket(parent: Command): void {
 		pm
 			.command('sync-amm-summary-stats <market>')
 			.description(
-				'Recompute amm.total_fee_minus_distributions from live pool balances, net user pnl and pending fees, and apply the delta to total_fee / total_mm_fee. This reconciles drifted fee accounting against reality; it does not inject capital, so a market that genuinely lost money stays negative. Requires the AmmCrank hot key, or warm/cold.'
+				'Recompute amm.total_fee_minus_distributions from live pool balances, net user pnl and pending fees, then apply the delta to total_fee and total_mm_fee. This corrects fee accounting that drifted from the pool balances. It adds no capital, so a market that lost money stays negative. Requires the AmmCrank hot key, or warm or cold.'
 			)
 			.option(
 				'--net-unsettled-funding-pnl <amount>',

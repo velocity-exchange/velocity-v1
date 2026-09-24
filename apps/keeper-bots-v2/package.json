@@ -6,7 +6,6 @@
 	"license": "Apache-2.0",
 	"dependencies": {
 		"@velocity-exchange/common": "0.10.1",
-		"@velocity-exchange/jit-proxy": "workspace:*",
 		"@opentelemetry/api": "1.7.0",
 		"@opentelemetry/auto-instrumentations-node": "0.62.2",
 		"@opentelemetry/exporter-prometheus": "0.31.0",
@@ -68,9 +67,6 @@
 		"start": "node lib/index.js",
 		"dev": "NODE_OPTIONS=--max-old-space-size=8192 ts-node src/index.ts",
 		"dev:inspect": "node --inspect --require ts-node/register src/index.ts",
-		"dev:filler": "ts-node src/index.ts --filler",
-		"dev:trigger": "ts-node src/index.ts --trigger",
-		"dev:jitmaker": "ts-node src/index.ts --jit-maker",
 		"dev:liquidator": "ts-node src/index.ts --liquidator",
 		"dev:pnlsettler": "ts-node src/index.ts --user-pnl-settler",
 		"dev:protocolFeeCollector": "ts-node src/index.ts --protocol-fee-collector",
@@ -81,7 +77,6 @@
 		"lint": "eslint . --ext ts --quiet --format=compact",
 		"lint:fix": "eslint . --ext ts --fix --format=compact",
 		"example:restingLimitMaker": "ts-node market_making_examples/restingLimitMaker/index.ts",
-		"example:jitMaker": "ts-node market_making_examples/jitMaker/index.ts",
 		"test": "mocha -r ts-node/register './src/**/*.test.ts'",
 		"typecheck": "tsc --noEmit"
 	},

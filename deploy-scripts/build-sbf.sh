@@ -53,11 +53,10 @@ if [ ${#PROGRAMS[@]} -eq 0 ]; then
   case "$FLAVOR" in
     mainnet) PROGRAMS=(velocity) ;;
     devnet)  PROGRAMS=(velocity token_faucet) ;;
-    # The integration suites load all four Anchor.toml localnet programs, plus
-    # jit-proxy for tests/velocity/jitProxy.ts. Each needs its own feature flags:
-    # applying velocity's --no-default-features to the others strips their
-    # entrypoints and produces 896-byte stubs.
-    test)    PROGRAMS=(velocity vaults jit-proxy pyth token_faucet) ;;
+    # The integration suites load the four Anchor.toml localnet programs. Each
+    # needs its own feature flags: applying velocity's --no-default-features to
+    # the others strips their entrypoints and produces 896-byte stubs.
+    test)    PROGRAMS=(velocity vaults pyth token_faucet) ;;
   esac
 fi
 
@@ -66,15 +65,12 @@ for p in "${PROGRAMS[@]}"; do
   case "$p" in
     velocity)     build_one velocity "${VELOCITY_ARGS[@]}" ;;
     vaults)       build_one vaults --features anchor-test ;;
-    jit-proxy)    build_one jit-proxy ;;
     pyth)         build_one pyth ;;
     token_faucet) build_one token_faucet ;;
     *)            build_one "$p" ;;
   esac
 done
 
-# jit-proxy's crate is `jit-proxy` but the .so Anchor.toml and the tests expect
-# is jit_proxy.so; cargo already emits the underscored name, so nothing to do.
 echo "SBF artifacts in $OUT_DIR:"
 ls -la "$OUT_DIR"/*.so
 

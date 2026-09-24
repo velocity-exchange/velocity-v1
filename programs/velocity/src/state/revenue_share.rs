@@ -213,11 +213,10 @@ impl RevenueShareEscrow {
         num_builders * std::mem::size_of::<BuilderInfo>() // builders data
     }
 
-    /// Upper bound only. The message used to claim a lower bound of 1 that was never enforced,
-    /// which is the invariant finding #114 exploited; that minimum is now checked where it can be
-    /// applied safely, in `handle_initialize_revenue_share_escrow`. It deliberately is not checked
-    /// here, because `resize` and `change_approved_builder` also call this and an escrow already
-    /// at zero capacity on chain has to stay able to resize its way out.
+    /// Upper bound only. `handle_initialize_revenue_share_escrow` enforces the
+    /// lower bound of 1 at init, the invariant OtterSec #114 exploited when
+    /// unenforced. This skips it because `resize` and `change_approved_builder`
+    /// also call it, and a zero-capacity escrow must stay able to resize out.
     pub fn validate(&self) -> VelocityResult<()> {
         validate!(
             self.orders.len() <= 128 && self.approved_builders.len() <= 128,
@@ -507,15 +506,13 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
         Err(ErrorCode::RevenueShareEscrowOrdersAccountFull)
     }
 
-    /// True when any **builder** row for `sub_account_id` is still outstanding, i.e.
-    /// `open && !completed`. Only a `Completed` row is payable by the sweep, so an
-    /// outstanding one would be stranded if the subaccount id were retired
-    /// (OtterSec #128). Referral rows are keyed by market rather than order id and are
-    /// not tied to a subaccount, so they are not counted here.
-    ///
-    /// A row that cannot be read propagates its error rather than being skipped: this
-    /// guards a one-way state change (retiring a subaccount id), so an unreadable row
-    /// must abort the deletion, not read as "nothing outstanding".
+    /// True when any builder row for `sub_account_id` is still outstanding
+    /// (`open && !completed`). Only a `Completed` row is payable by the sweep,
+    /// so an outstanding one would be stranded if the subaccount id were
+    /// retired (OtterSec #128). Referral rows are keyed by market, not
+    /// subaccount, so they do not count. A row that cannot be read propagates
+    /// its error instead of being skipped, since this guards the one-way
+    /// retirement of a subaccount id and must abort rather than read as nothing outstanding.
     pub fn has_outstanding_orders_for_sub_account(
         &self,
         sub_account_id: u16,
@@ -545,18 +542,22 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
                     continue;
                 }
                 if rev_share_order.is_open() && !rev_share_order.is_completed() {
-                    // Match by (sub_account_id, order_id) across the whole order
-                    // list, not the row's stored `user_order_index`. That index
-                    // is captured at placement and can go stale (the order moves
-                    // to a different slot, or a later order occupies that slot),
-                    // which made this incorrectly mark a still-open fee-bearing
-                    // row Completed and clear it early (OtterSec #82). Order ids
-                    // are unique among a user's open orders, so the scan is exact.
-                    let still_open = user.orders.iter().any(|user_order| {
+                    // Match by (sub_account_id, order_id) across the whole list,
+                    // not the row's stale-prone `user_order_index`, which once
+                    // let this mark a still-open fee-bearing row Completed early
+                    // (OtterSec #82). Order ids are unique among open orders.
+                    let listed_open = user.orders.iter().any(|user_order| {
                         user_order.status == OrderStatus::Open
                             && user_order.order_id == rev_share_order.order_id
                     });
-                    if !still_open {
+
+                    // A book-resident order carries no `orders` row, only the
+                    // position's open-order count, so the scan above misreads it
+                    // as gone, the same premature-completion bug as OtterSec #82.
+                    // This reconciler fails closed: the row stays Open until the book clears.
+                    let book_resident = rev_share_order.market_type == MarketType::Perp
+                        && user.clob_resident_open_orders(rev_share_order.market_index) > 0;
+                    if !listed_open && !book_resident {
                         if rev_share_order.fees_accrued > 0 {
                             rev_share_order.add_bit_flag(RevenueShareOrderBitFlag::Completed);
                         } else {
@@ -635,7 +636,7 @@ impl<'a> RevenueShareEscrowLoader<'a> for AccountInfo<'a> {
 mod revoke_completed_orders_tests {
     use {
         super::*,
-        crate::state::user::{Order, OrderStatus, User},
+        crate::state::user::{Order, OrderStatus, PerpPosition, User},
         std::cell::RefCell,
     };
 
@@ -675,12 +676,12 @@ mod revoke_completed_orders_tests {
         backing
     }
 
-    /// OtterSec #82: `revoke_completed_orders` must decide whether an order is
-    /// still open by its `order_id`, not the row's stored `user_order_index`.
-    /// Here the builder row for order 7 carries a STALE index (5), but order 7
-    /// is actually still open at a different slot (3). The old index-based check
-    /// read `user.orders[5]` (an unrelated/empty slot), concluded the order was
-    /// gone, and marked the still-live fee-bearing row Completed early.
+    /// `revoke_completed_orders` must decide whether an order is still open by
+    /// its `order_id`, not by the row's stored `user_order_index` (OtterSec
+    /// #82). Here the builder row for order 7 carries a stale index of 5, and
+    /// order 7 is still open at slot 3. The index-based check read
+    /// `user.orders[5]`, an empty slot, concluded the order was gone, and
+    /// marked the still-live fee-bearing row Completed early.
     #[test]
     fn revoke_keeps_open_order_row_despite_stale_index() {
         let n = RevenueShareEscrow::space(1, 0);
@@ -728,6 +729,90 @@ mod revoke_completed_orders_tests {
         assert!(
             escrow.get_order(0).unwrap().is_completed(),
             "a closed order's fee-bearing row should be marked Completed"
+        );
+    }
+
+    /// A plain CLOB order lives on the book, not in `user.orders`. Placement
+    /// reserves the perp position's `open_orders` and writes no `Order` row,
+    /// and the `place_and_take` remainder that migrates onto the book does the
+    /// same. A scan of `user.orders` alone therefore reads a still-resting
+    /// order as gone and clears its builder row. That is premature completion,
+    /// the OtterSec #82 symptom by another route. `revoke_completed_orders`
+    /// must consult the book-resident count too.
+    #[test]
+    fn revoke_keeps_row_while_the_order_rests_on_a_clob() {
+        // fees_accrued == 0 takes the destructive branch. The row is zeroed and
+        // the escrow slot goes to the next placement.
+        let n = RevenueShareEscrow::space(1, 0);
+        let mut backing = escrow_backing(&[open_builder_row(7, 0, 0)]);
+        let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
+        let cell = RefCell::new(&mut full[..n]);
+        let data = RefMut::map(cell.borrow_mut(), |d| &mut **d);
+        let (_disc, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
+        let (fixed, data) = RefMut::map_split(data, |d| {
+            d.split_at_mut(std::mem::size_of::<RevenueShareEscrowFixed>())
+        });
+        let mut escrow = RevenueShareEscrowZeroCopyMut {
+            fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
+            data,
+        };
+
+        // The order rests on market 0's CLOB. The position reserved a slot and
+        // `orders` is empty.
+        let mut perp_positions = [PerpPosition::default(); 8];
+        perp_positions[0] = PerpPosition {
+            market_index: 0,
+            open_orders: 1,
+            ..PerpPosition::default()
+        };
+
+        let user = User {
+            sub_account_id: 0,
+            orders: [Order::default(); 32],
+            perp_positions,
+            ..User::default()
+        };
+
+        escrow.revoke_completed_orders(&user).unwrap();
+        let row = escrow.get_order(0).unwrap();
+        assert!(
+            row.is_open() && !row.is_completed() && row.order_id == 7,
+            "a builder row must survive while its order still rests on the CLOB"
+        );
+
+        // Market 0's book order does not protect a row for another market. The
+        // count is per market, so the check stays exact.
+        {
+            let other_market = escrow.get_order_mut(0).unwrap();
+            other_market.market_index = 3;
+        }
+
+        escrow.revoke_completed_orders(&user).unwrap();
+        assert!(
+            escrow.get_order(0).unwrap().is_available(),
+            "a market-3 row is not kept alive by a market-0 book order"
+        );
+
+        // Negative control: once the book order clears, the position's count
+        // drops and the row is revoked as before.
+        let mut backing = escrow_backing(&[open_builder_row(7, 0, 0)]);
+        let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
+        let cell = RefCell::new(&mut full[..n]);
+        let data = RefMut::map(cell.borrow_mut(), |d| &mut **d);
+        let (_disc, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
+        let (fixed, data) = RefMut::map_split(data, |d| {
+            d.split_at_mut(std::mem::size_of::<RevenueShareEscrowFixed>())
+        });
+        let mut escrow = RevenueShareEscrowZeroCopyMut {
+            fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
+            data,
+        };
+        let mut cleared = user;
+        cleared.perp_positions[0].open_orders = 0;
+        escrow.revoke_completed_orders(&cleared).unwrap();
+        assert!(
+            escrow.get_order(0).unwrap().is_available(),
+            "a zero-fee row for a gone order is still cleared"
         );
     }
 }
@@ -878,14 +963,16 @@ mod delete_user_orphan_tests {
         }
     }
 
-    /// OtterSec #128 — `delete_user` retires a `sub_account_id` permanently (the
-    /// allocation counter never decrements), so a builder row still `open &&
-    /// !completed` for that id becomes unreachable: `revoke_completed_orders` matches
-    /// on the id, so no future `User` can ever transition it, the builder's fee is
-    /// stranded, and the market's `pending_revenue_share` stays inflated for life.
+    /// `delete_user` retires a `sub_account_id` permanently, because the
+    /// allocation counter never decrements (OtterSec #128). A builder row that
+    /// is still `open && !completed` for that id then becomes unreachable.
+    /// `revoke_completed_orders` matches on the id, so no future `User` can
+    /// transition the row. The builder's fee is stranded and the market's
+    /// `pending_revenue_share` stays inflated for good.
     #[test]
     fn outstanding_builder_rows_are_detected_per_sub_account() {
-        // An open, fee-bearing row for subaccount 3 is outstanding for 3 — and only 3.
+        // An open, fee-bearing row for subaccount 3 is outstanding for 3, and
+        // for no other subaccount.
         {
             let data = RefCell::new(buf(&[open_builder_row(3, 1_000)]));
             let fixed = RefCell::new(RevenueShareEscrowFixed::default());
@@ -904,8 +991,8 @@ mod delete_user_orphan_tests {
             );
         }
 
-        // A Completed row is payable by the sweep even after the user is gone, so it
-        // must NOT block deletion — that is the whole point of resolving over blocking.
+        // The sweep can pay a Completed row even after the user is gone, so such
+        // a row must not block deletion.
         {
             let mut row = open_builder_row(3, 1_000);
             row.bit_flags =

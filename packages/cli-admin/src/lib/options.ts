@@ -12,10 +12,10 @@ import { setDryRun } from './squads';
  * root must be redeclared on each leaf to surface in `--help` output and in
  * `cmd.opts()`. This helper keeps that consistent.
  *
- * Connection options are declared without defaults: `readGlobalOpts` layers
- * explicit flag > selected profile > legacy default, and a declared default
- * would be indistinguishable from an explicit flag, letting it shadow the
- * profile.
+ * A connection option is declared without a default. `readGlobalOpts` takes
+ * the explicit flag first, then the selected profile, then the fallback
+ * default. A declared default would look the same as an explicit flag, so it
+ * would shadow the profile.
  */
 export function withGlobalOptions(cmd: Command): Command {
 	return cmd
@@ -62,8 +62,8 @@ export function readGlobalOpts(cmd: Command): GlobalOpts {
 	const selected = resolveProfile(opts.profile as string | undefined);
 	const profile = selected?.profile;
 
-	// commander turns --no-multisig into `multisig: false`: an explicit
-	// "send directly", overriding a profile's multisig.
+	// commander turns --no-multisig into `multisig: false`. That is an explicit
+	// request to send directly, and it overrides a profile's multisig.
 	const multisig =
 		opts.multisig === false
 			? undefined

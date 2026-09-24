@@ -215,6 +215,7 @@ describe('spot deposit and withdraw', () => {
 			2,
 			await getMaxWithdrawGuardThreshold(admin, 2)
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(2);
@@ -305,6 +306,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientWSOLAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 	});
 
@@ -316,6 +318,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 	});
 

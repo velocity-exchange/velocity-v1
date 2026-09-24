@@ -4,6 +4,7 @@ import { withGlobalOptions } from './lib/options';
 import { registerAccountExtension } from './commands/accountExtension';
 import { registerAuth } from './commands/auth';
 import { registerCall } from './commands/call';
+import { registerClobMarket } from './commands/clobMarket';
 import { registerConfig } from './commands/config';
 import { registerWhoami } from './commands/whoami';
 import { registerExchange } from './commands/exchange';
@@ -13,6 +14,7 @@ import { registerInsuranceFund } from './commands/insuranceFund';
 import { registerMultisig } from './commands/multisig';
 import { registerPerpMarket } from './commands/perpMarket';
 import { registerProgram } from './commands/program';
+import { registerQuoter } from './commands/quoter';
 import { registerShow } from './commands/show';
 import { registerSpotMarket } from './commands/spotMarket';
 import { registerUser } from './commands/user';
@@ -44,9 +46,10 @@ program
 	.showHelpAfterError()
 	.showSuggestionAfterError();
 
-// Global connection options are declared on every leaf (see options.ts), but
-// also on the root so `velocity-admin -p <profile> <command...>` works;
-// users reasonably put the profile first. `optsWithGlobals` merges both.
+// The global connection options are declared on every leaf command, as
+// options.ts shows, and also on the root, so that
+// `velocity-admin -p <profile> <command...>` works. Users often put the profile
+// first. `optsWithGlobals` merges both sets.
 withGlobalOptions(program);
 
 registerConfig(program);
@@ -60,6 +63,8 @@ registerFeatureFlags(program);
 registerFees(program);
 registerMultisig(program);
 registerUser(program);
+registerQuoter(program);
+registerClobMarket(program);
 registerLut(program);
 registerWallet(program);
 registerInsuranceFund(program);

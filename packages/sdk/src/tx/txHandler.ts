@@ -37,7 +37,10 @@ import {
 	SignedTxData,
 	TxParams,
 } from '../types';
-import { containsComputeUnitIxs } from '../util/computeUnits';
+import {
+	containsComputeUnitIxs,
+	setLoadedAccountsDataSizeLimitIx,
+} from '../util/computeUnits';
 import { CachedBlockhashFetcher } from './blockhashFetcher/cachedBlockhashFetcher';
 import { BaseBlockhashFetcher } from './blockhashFetcher/baseBlockhashFetcher';
 import { BlockhashFetcher } from './blockhashFetcher/types';
@@ -58,6 +61,18 @@ const DEV_TRY_FORCE_TX_TIMEOUTS =
 	process.env.DEV_TRY_FORCE_TX_TIMEOUTS === 'true' || false;
 
 export const COMPUTE_UNITS_DEFAULT = 200_000;
+
+/**
+ * allow-verbose: derives a non-obvious byte figure from Solana's loaded-account-data
+ * accounting, which nothing else in the codebase restates.
+ *
+ * Default ceiling on the account data a transaction may load, in bytes. A transaction is
+ * charged for the full limit it requests, not for what it loads, and the unset default is
+ * 64 MiB. 12 MiB is about twice the velocity program plus a full account list, leaving room
+ * to grow. A transaction over the limit is refused before it runs, so a caller assembling an
+ * unusually wide transaction must raise the limit first.
+ */
+export const LOADED_ACCOUNTS_DATA_SIZE_DEFAULT = 12 * 1024 * 1024;
 
 const BLOCKHASH_FETCH_RETRY_COUNT = 3;
 const BLOCKHASH_FETCH_RETRY_SLEEP = 200;
@@ -635,6 +650,7 @@ export class TxHandler {
 		let baseTxParams: BaseTxParams = {
 			computeUnits: txParams?.computeUnits,
 			computeUnitsPrice: txParams?.computeUnitsPrice,
+			loadedAccountsDataSize: txParams?.loadedAccountsDataSize,
 		};
 
 		const instructionsArray = Array.isArray(instructions)
@@ -674,8 +690,11 @@ export class TxHandler {
 			};
 		}
 
-		const { hasSetComputeUnitLimitIx, hasSetComputeUnitPriceIx } =
-			containsComputeUnitIxs(instructionsToUse);
+		const {
+			hasSetComputeUnitLimitIx,
+			hasSetComputeUnitPriceIx,
+			hasSetLoadedAccountsDataSizeIx,
+		} = containsComputeUnitIxs(instructionsToUse);
 
 		// # Create Tx Instructions
 		const allIx = [];
@@ -714,6 +733,19 @@ export class TxHandler {
 
 		allIx.push(...instructionsToUse);
 
+		// Appended, not prepended. The runtime finds a compute-budget instruction by
+		// program id wherever it sits, but the Pyth Lazer ed25519 verify instruction
+		// encodes an absolute index to the instruction holding its message, in
+		// `createMinimalEd25519VerifyIx`. Only the tail stays free for the caller to add to.
+		const loadedAccountsDataSize = baseTxParams?.loadedAccountsDataSize;
+		if (
+			loadedAccountsDataSize !== undefined &&
+			loadedAccountsDataSize > 0 &&
+			!hasSetLoadedAccountsDataSizeIx
+		) {
+			allIx.push(setLoadedAccountsDataSizeLimitIx(loadedAccountsDataSize));
+		}
+
 		const recentBlockhash = await this.resolveRecentBlockhash(
 			props?.recentBlockhash
 		);
@@ -743,12 +775,16 @@ export class TxHandler {
 	 * note the 600,000 default therefore *does* add one.
 	 * @param computeUnitsPrice - Compute unit price in micro-lamports; defaults to 0, in which case
 	 * no `setComputeUnitPrice` instruction is added.
+	 * @param loadedAccountsDataSize - Loaded-accounts data size limit in bytes; defaults to
+	 * `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`. 0 adds no instruction and takes the network's 64 MiB
+	 * default, which is charged for in full.
 	 * @returns The unsigned `Transaction`.
 	 */
 	public wrapInTx(
 		instruction: TransactionInstruction,
 		computeUnits = 600_000,
-		computeUnitsPrice = 0
+		computeUnitsPrice = 0,
+		loadedAccountsDataSize = LOADED_ACCOUNTS_DATA_SIZE_DEFAULT
 	): Transaction {
 		const tx = new Transaction();
 		if (computeUnits != COMPUTE_UNITS_DEFAULT) {
@@ -773,7 +809,15 @@ export class TxHandler {
 			);
 		}
 
-		return tx.add(instruction);
+		tx.add(instruction);
+		// Appended for the reason `buildTransaction` appends it: an instruction
+		// at the front shifts every index behind it, and the signed-message
+		// flows encode absolute instruction indices.
+		if (loadedAccountsDataSize > 0) {
+			tx.add(setLoadedAccountsDataSizeLimitIx(loadedAccountsDataSize));
+		}
+
+		return tx;
 	}
 
 	/**

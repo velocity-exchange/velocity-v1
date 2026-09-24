@@ -24,7 +24,12 @@ dotenv = "0.15.0"
 velocity-rs = { path = "../velocity-rs" }
 # Program internals are reached via `velocity_rs::program::…`; no direct path-dep on
 # the velocity program. velocity-rs pulls it with `cpi`.
-solana-account-info = "3"
+# `/route`: the same quote-view simulation the book-publisher runs, exposed
+# as an HTTP endpoint.
+velocity-router-sim = { path = "../router-sim" }
+velocity-quoter-health = { path = "../quoter-health" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "a6c958b" }
+solana-account-info = "3.1"
 solana-clock = "3"
 ed25519-dalek = "1.0.1"
 env_logger = "0.11"
@@ -50,6 +55,7 @@ solana-signature = { version = "3", features = ["rand"] }
 solana-keypair = "3"
 solana-signer = "3"
 solana-hash = "4.4"
+solana-instruction = "3"
 solana-message = "4.2.3"
 solana-transaction = { version = "4.1.4", features = ["verify"] }
 solana-native-token = "3"

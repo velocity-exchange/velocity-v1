@@ -1,0 +1,41 @@
+[package]
+name = "quoter-spec"
+description = "Wire format for velocity's quoter interface: the contract between the router and any program registered as a quoter"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spec/"
+
+[dependencies]
+# See the root `[workspace.dependencies]` for why the pin is 2.6.
+solana-address.workspace = true
+
+# Serialization is per-consumer, because the two halves of the wire do not agree
+# on a framework: both ends read the responses with wincode, but velocity also
+# needs anchor's derives on every type that reaches its own instruction
+# arguments and its IDL, while the v2 programs write the bytes themselves and
+# must not be handed a borsh dependency (the CLOB's binary size and CU budget
+# are why it has none). `Address` already
+# carries both derives behind its own features, and both are already enabled in
+# their respective trees, so neither feature below adds anything to either
+# dependency graph.
+# Optional, and only for velocity: anchor's derives are borsh's plus the
+# `IdlBuild` plumbing `anchor idl build` needs on every type reachable from an
+# instruction. A consumer that never runs the IDL build still wants the
+# serialization, so the derive and the IDL support are separate features — and
+# the v2 programs enable neither, so no anchor code reaches them.
+anchor-lang = { version = "1.0.2", optional = true }
+wincode.workspace = true
+
+# The records are cast onto the response region at both ends of the wire, so
+# every one of them is `Pod`. `solana-address/bytemuck` is what makes `Address`
+# usable in a `Pod` record.
+bytemuck.workspace = true
+
+[features]
+default = []
+anchor-derive = ["dep:anchor-lang", "solana-address/borsh"]
+idl-build = ["anchor-derive", "anchor-lang/idl-build"]
+
+[lints.rust.unexpected_cfgs]
+level = "allow"

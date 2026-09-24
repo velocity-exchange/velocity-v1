@@ -7,48 +7,21 @@ use {
         },
     },
     anchor_lang::prelude::*,
-    bytemuck::{try_cast_slice, Pod, Zeroable},
     byteorder::{ByteOrder, LE},
-    solana_program::{
-        ed25519_program::ID as ED25519_ID, instruction::Instruction, program_memory::sol_memcmp,
-        sysvar,
-    },
+    solana_program::program_memory::sol_memcmp,
     std::convert::TryInto,
 };
 
 #[cfg(test)]
 mod tests;
 
-const ED25519_PROGRAM_INPUT_HEADER_LEN: usize = 2;
+const SIGNATURE_LEN: usize = 64;
+const PUBKEY_LEN: usize = 32;
+const MESSAGE_SIZE_LEN: usize = 2;
 
-const SIGNATURE_LEN: u16 = 64;
-const PUBKEY_LEN: u16 = 32;
-const MESSAGE_SIZE_LEN: u16 = 2;
-
-/// Part of the inputs to the built-in `ed25519_program` on Solana that represents a single
-/// signature verification request.
-///
-/// `ed25519_program` does not receive the signature data directly. Instead, it receives
-/// these fields that indicate the location of the signature data within data of other
-/// instructions within the same transaction.
-#[derive(Debug, Clone, Copy, Zeroable, Pod)]
-#[repr(C)]
-pub struct Ed25519SignatureOffsets {
-    /// Offset to the ed25519 signature within the instruction data.
-    pub signature_offset: u16,
-    /// Index of the instruction that contains the signature.
-    pub signature_instruction_index: u16,
-    /// Offset to the public key within the instruction data.
-    pub public_key_offset: u16,
-    /// Index of the instruction that contains the public key.
-    pub public_key_instruction_index: u16,
-    /// Offset to the signed payload within the instruction data.
-    pub message_data_offset: u16,
-    // Size of the signed payload.
-    pub message_data_size: u16,
-    /// Index of the instruction that contains the signed payload.
-    pub message_instruction_index: u16,
-}
+/// Start of the hex payload in the message envelope: signature, public key,
+/// then the payload size.
+const PAYLOAD_OFFSET: usize = SIGNATURE_LEN + PUBKEY_LEN + MESSAGE_SIZE_LEN;
 
 #[derive(Debug)]
 pub struct VerifiedMessage {
@@ -63,6 +36,9 @@ pub struct VerifiedMessage {
     pub builder_idx: Option<u8>,
     pub builder_fee_tenth_bps: Option<u16>,
     pub isolated_position_deposit: Option<u64>,
+    /// Custom quoters (PropAMMs) the taker's route names. The CLOB and vAMM
+    /// baseline is implicit.
+    pub route: Option<Vec<Pubkey>>,
     pub signature: [u8; 64],
 }
 
@@ -92,6 +68,7 @@ pub fn deserialize_into_verified_message(
             SignatureVerificationError::InvalidMessageDataSize
         })?;
 
+        validate_signed_msg_network(deserialized.network)?;
         Ok(VerifiedMessage {
             signed_msg_order_params: deserialized.signed_msg_order_params,
             sub_account_id: None,
@@ -104,6 +81,7 @@ pub fn deserialize_into_verified_message(
             builder_idx: deserialized.builder_idx,
             builder_fee_tenth_bps: deserialized.builder_fee_tenth_bps,
             isolated_position_deposit: deserialized.isolated_position_deposit,
+            route: validate_signed_msg_route(deserialized.route)?,
             signature: *signature,
         })
     } else {
@@ -122,6 +100,8 @@ pub fn deserialize_into_verified_message(
             msg!("Invalid delegate message encoding for with is_delegate_signer = false");
             SignatureVerificationError::InvalidMessageDataSize
         })?;
+
+        validate_signed_msg_network(deserialized.network)?;
         Ok(VerifiedMessage {
             signed_msg_order_params: deserialized.signed_msg_order_params,
             sub_account_id: Some(deserialized.sub_account_id),
@@ -134,184 +114,190 @@ pub fn deserialize_into_verified_message(
             builder_idx: deserialized.builder_idx,
             builder_fee_tenth_bps: deserialized.builder_fee_tenth_bps,
             isolated_position_deposit: deserialized.isolated_position_deposit,
+            route: validate_signed_msg_route(deserialized.route)?,
             signature: *signature,
         })
     }
 }
 
-/// Check Ed25519Program instruction data verifies the given msg
+/// Refuse an over-long route rather than truncating it. A taker's signed route
+/// states where their order may fill. Dropping entries would fill the order
+/// somewhere the taker did not sign for.
+fn validate_signed_msg_route(
+    route: Option<Vec<Pubkey>>,
+) -> std::result::Result<Option<Vec<Pubkey>>, anchor_lang::error::Error> {
+    if let Some(entries) = &route {
+        if entries.len() > crate::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN {
+            msg!(
+                "signed route names {} quoters, max {}",
+                entries.len(),
+                crate::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN
+            );
+
+            return Err(SignatureVerificationError::InvalidMessageDataSize.into());
+        }
+    }
+
+    Ok(route)
+}
+
+/// Reject a message that does not name this cluster.
 ///
-/// `ix` an Ed25519Program instruction [see](https://github.com/solana-labs/solana/blob/master/sdk/src/ed25519_instruction.rs))
+/// The signature covers the order and not the chain. A message without the tag
+/// therefore replays from devnet against mainnet. The tag is required, because
+/// an absent tag is the same replay as a wrong one. A producer that does not
+/// emit it is refused. The verifier's zero-padding of short payloads no longer
+/// admits it either.
+fn validate_signed_msg_network(
+    network: Option<u8>,
+) -> std::result::Result<(), anchor_lang::error::Error> {
+    let expected = crate::state::order_params::expected_signed_msg_network();
+    match network {
+        Some(tag) if tag == expected => Ok(()),
+        Some(tag) => {
+            msg!(
+                "signed message is for network {} but this program is {}",
+                tag as char,
+                expected as char
+            );
+
+            Err(SignatureVerificationError::InvalidMessageDataSize.into())
+        }
+        None => {
+            msg!(
+                "signed message names no network; this program is {}",
+                expected as char
+            );
+
+            Err(SignatureVerificationError::InvalidMessageDataSize.into())
+        }
+    }
+}
+
+/// The flow authority's detached signature over one order's own signature and
+/// an expiry. It marks the order's flow as having served the swift hold,
+/// without the flow authority signing the transaction. A transaction signer
+/// authorizes the whole transaction. The fill transaction is keeper-built, so a
+/// co-signature on it needed an allowlist, a shape proof, and a drain-vector
+/// analysis. A detached signature over one order's signature authorizes one
+/// thing. It also costs no signature fee, because the program verifies it, like
+/// the taker signature it binds to.
+#[derive(
+    anchor_lang::prelude::AnchorSerialize,
+    anchor_lang::prelude::AnchorDeserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+)]
+pub struct FlowAttestationV0 {
+    pub signature: [u8; 64],
+    /// Unix seconds this attestation is good until. Bounds how long a
+    /// keeper can sit on a released attestation before filling.
+    pub expiry_ts: i64,
+}
+
+/// Domain separator for [`FlowAttestationV0`] messages, so a flow-authority
+/// signature made for this purpose verifies for no other.
+pub const FLOW_ATTESTATION_DOMAIN: &[u8] = b"velocity.flow.attestation.v0";
+
+/// Verify a flow attestation against the current flow authority, the order
+/// signature it must bind to, and the clock. An attestation that is invalid,
+/// expired, or impossible because no flow authority is configured raises an
+/// error. It does not fall back to an unattested fill, because the caller
+/// claimed protection it does not have.
+pub fn verify_flow_attestation(
+    attestation: &FlowAttestationV0,
+    flow_authority: &anchor_lang::prelude::Pubkey,
+    order_signature: &[u8; 64],
+    now: i64,
+) -> Result<()> {
+    crate::validate!(
+        *flow_authority != anchor_lang::prelude::Pubkey::default(),
+        ErrorCode::SigVerificationFailed,
+        "no flow authority is configured; attestation impossible"
+    )?;
+    crate::validate!(
+        now <= attestation.expiry_ts,
+        ErrorCode::SigVerificationFailed,
+        "flow attestation expired at {}, now {}",
+        attestation.expiry_ts,
+        now
+    )?;
+
+    brine_ed25519::verify(
+        &brine_ed25519::Address::new_from_array(flow_authority.to_bytes()),
+        &attestation.signature,
+        &[
+            FLOW_ATTESTATION_DOMAIN,
+            order_signature,
+            &attestation.expiry_ts.to_le_bytes(),
+        ],
+    )
+    .map_err(|_| {
+        msg!("flow attestation signature does not verify");
+        ErrorCode::SigVerificationFailed.into()
+    })
+}
+
+/// Verify a swift order message in-program and decode it.
 ///
-/// `msg` expected msg signed by the offchain client e.g 'sha256(appMessage.serialize())' for a digest
+/// `message_bytes` is the `place_signed_msg_taker_order` argument, packed as
+/// `[signature: 64][public key: 32][payload size: 2 LE][payload]`. The payload
+/// is the hex text the taker signed. `signer` is the taker's on-chain
+/// authority (or delegate) the public key must equal.
 ///
-/// `pubkey` expected pubkey of the signer
-///
-pub fn verify_and_decode_ed25519_msg(
-    ed25519_ix: &Instruction,
-    instructions_sysvar: &AccountInfo,
-    current_ix_index: u16,
+/// The signature is checked over the payload with `brine_ed25519::verify`,
+/// which uses the curve25519 syscalls and rejects the eight small-order
+/// points. That matches the native ed25519 precompile this replaced, so no
+/// sibling instruction and no instructions sysvar are needed.
+pub fn verify_and_decode_signed_msg(
+    message_bytes: &[u8],
     signer: &[u8; 32],
-    msg: &[u8],
     is_delegate_signer: bool,
 ) -> Result<VerifiedMessage> {
-    if ed25519_ix.program_id != ED25519_ID || !ed25519_ix.accounts.is_empty() {
-        msg!("Invalid Ix: program ID: {:?}", ed25519_ix.program_id);
-        msg!("Invalid Ix: accounts: {:?}", ed25519_ix.accounts.len());
-        return Err(ErrorCode::SigVerificationFailed.into());
-    }
-
-    let ed25519_ix_data = &ed25519_ix.data;
-    // According to this layout used by the Ed25519Program]
-    if ed25519_ix_data.len() < 2 {
-        msg!(
-            "Invalid Ix, should be header len = 2. data: {:?}",
-            ed25519_ix.data.len(),
-        );
-        return Err(SignatureVerificationError::InvalidEd25519InstructionDataLength.into());
-    }
-
-    // Parse the ix data into the offsets
-    let num_signatures = ed25519_ix_data[0];
-    let signature_index = 0;
-    if signature_index >= num_signatures {
-        return Err(SignatureVerificationError::InvalidSignatureIndex.into());
-    }
-    let args: &[Ed25519SignatureOffsets] =
-        try_cast_slice(&ed25519_ix_data[ED25519_PROGRAM_INPUT_HEADER_LEN..]).map_err(|_| {
-            msg!("Invalid Ix: failed to cast slice");
-            ErrorCode::SigVerificationFailed
-        })?;
-
-    let args_len = args
-        .len()
-        .try_into()
-        .map_err(|_| SignatureVerificationError::InvalidEd25519InstructionDataLength)?;
-    if signature_index >= args_len {
-        return Err(SignatureVerificationError::InvalidSignatureIndex.into());
-    }
-
-    let offsets = &args[0];
-    let message_offset = offsets.signature_offset;
-    if offsets.signature_offset != message_offset {
-        msg!(
-            "Invalid Ix: signature offset: {:?}",
-            offsets.signature_offset
-        );
-        return Err(ErrorCode::SigVerificationFailed.into());
-    }
-
-    let self_instruction = sysvar::instructions::load_instruction_at_checked(
-        current_ix_index.into(),
-        instructions_sysvar,
-    )
-    .map_err(|_| SignatureVerificationError::LoadInstructionAtFailed)?;
-
-    let message_end_offset = offsets
-        .message_data_offset
-        .checked_add(offsets.message_data_size)
-        .ok_or(SignatureVerificationError::MessageOffsetOverflow)?;
-    let expected_message_data = self_instruction
-        .data
-        .get(usize::from(message_offset)..usize::from(message_end_offset))
-        .ok_or(SignatureVerificationError::InvalidMessageOffset)?;
-    if !slice_eq(expected_message_data, msg) {
-        return Err(SignatureVerificationError::InvalidMessageData.into());
-    }
-
-    let expected_public_key_offset = offsets
-        .signature_offset
-        .checked_add(SIGNATURE_LEN)
-        .ok_or(SignatureVerificationError::MessageOffsetOverflow)?;
-    if offsets.public_key_offset != expected_public_key_offset {
-        msg!(
-            "Invalid Ix: public key offset: {:?}, expected: {:?}",
-            offsets.public_key_offset,
-            expected_public_key_offset
-        );
-        return Err(ErrorCode::SigVerificationFailed.into());
-    }
-
-    let expected_message_size_offset = expected_public_key_offset
-        .checked_add(PUBKEY_LEN)
-        .ok_or(ErrorCode::SigVerificationFailed)?;
-
-    let expected_message_data_offset = expected_message_size_offset
-        .checked_add(MESSAGE_SIZE_LEN)
-        .ok_or(SignatureVerificationError::MessageOffsetOverflow)?;
-    if offsets.message_data_offset != expected_message_data_offset {
-        return Err(SignatureVerificationError::InvalidMessageOffset.into());
-    }
-
-    let expected_message_size: u16 = {
-        let start = usize::from(
-            expected_message_size_offset
-                .checked_sub(message_offset)
-                .unwrap(),
-        );
-        let end = usize::from(
-            expected_message_data_offset
-                .checked_sub(message_offset)
-                .unwrap(),
-        );
-        LE::read_u16(&msg[start..end])
-    };
-    if offsets.message_data_size != expected_message_size {
+    if message_bytes.len() < PAYLOAD_OFFSET {
         return Err(SignatureVerificationError::InvalidMessageDataSize.into());
     }
-    if offsets.signature_instruction_index != current_ix_index
-        || offsets.public_key_instruction_index != current_ix_index
-        || offsets.message_instruction_index != current_ix_index
-    {
-        return Err(SignatureVerificationError::InvalidInstructionIndex.into());
-    }
 
-    let public_key = {
-        let start = usize::from(
-            expected_public_key_offset
-                .checked_sub(message_offset)
-                .unwrap(),
-        );
-        let end = start
-            .checked_add(anchor_lang::solana_program::pubkey::PUBKEY_BYTES)
-            .ok_or(SignatureVerificationError::MessageOffsetOverflow)?;
-        &msg[start..end]
-    };
-    let payload = {
-        let start = usize::from(
-            expected_message_data_offset
-                .checked_sub(message_offset)
-                .unwrap(),
-        );
-        let end = start
-            .checked_add(expected_message_size.into())
-            .ok_or(SignatureVerificationError::MessageOffsetOverflow)?;
-        &msg[start..end]
-    };
+    let signature: [u8; 64] = message_bytes[..SIGNATURE_LEN].try_into().unwrap();
+    let public_key: [u8; 32] = message_bytes[SIGNATURE_LEN..SIGNATURE_LEN + PUBKEY_LEN]
+        .try_into()
+        .unwrap();
+    let payload_size = usize::from(LE::read_u16(
+        &message_bytes[SIGNATURE_LEN + PUBKEY_LEN..PAYLOAD_OFFSET],
+    ));
+    let payload_end = PAYLOAD_OFFSET
+        .checked_add(payload_size)
+        .ok_or(SignatureVerificationError::MessageOffsetOverflow)?;
+    let payload = message_bytes
+        .get(PAYLOAD_OFFSET..payload_end)
+        .ok_or(SignatureVerificationError::InvalidMessageDataSize)?;
 
-    if public_key != signer {
-        msg!("Invalid Ix: message signed by: {:?}", public_key);
-        msg!("Invalid Ix: expected pubkey: {:?}", signer);
+    // Bind the key to the taker before the crypto. A valid signature under a key
+    // that is not the taker's authority is still refused.
+    if !slice_eq(&public_key, signer) {
+        msg!(
+            "signed message key {:?} is not the expected signer {:?}",
+            public_key,
+            signer
+        );
+
         return Err(ErrorCode::SigVerificationFailed.into());
     }
 
-    let signature = {
-        let start = usize::from(
-            offsets
-                .signature_offset
-                .checked_sub(message_offset)
-                .unwrap(),
-        );
-        let end = start
-            .checked_add(SIGNATURE_LEN.into())
-            .ok_or(SignatureVerificationError::InvalidSignatureOffset)?;
-        &msg[start..end].try_into().unwrap()
-    };
+    brine_ed25519::verify(
+        &brine_ed25519::Address::new_from_array(public_key),
+        &signature,
+        &[payload],
+    )
+    .map_err(|_| ErrorCode::SigVerificationFailed)?;
 
     let payload =
         hex::decode(payload).map_err(|_| SignatureVerificationError::InvalidMessageHex)?;
 
-    deserialize_into_verified_message(payload, signature, is_delegate_signer)
+    deserialize_into_verified_message(payload, &signature, is_delegate_signer)
 }
 
 // NOTE: Not `#[error_code]`. Anchor 1.0 only allows one `#[error_code]` enum
@@ -320,52 +306,25 @@ pub fn verify_and_decode_ed25519_msg(
 // preserving the same error_code_number offset (ERROR_CODE_OFFSET = 6000).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SignatureVerificationError {
-    InvalidEd25519InstructionProgramId,
-    InvalidEd25519InstructionDataLength,
-    InvalidSignatureIndex,
-    InvalidSignatureOffset,
-    InvalidPublicKeyOffset,
-    InvalidMessageOffset,
     InvalidMessageDataSize,
-    InvalidInstructionIndex,
     MessageOffsetOverflow,
     InvalidMessageHex,
-    InvalidMessageData,
-    LoadInstructionAtFailed,
 }
 
 impl SignatureVerificationError {
     pub fn name(&self) -> &'static str {
         match self {
-            Self::InvalidEd25519InstructionProgramId => "InvalidEd25519InstructionProgramId",
-            Self::InvalidEd25519InstructionDataLength => "InvalidEd25519InstructionDataLength",
-            Self::InvalidSignatureIndex => "InvalidSignatureIndex",
-            Self::InvalidSignatureOffset => "InvalidSignatureOffset",
-            Self::InvalidPublicKeyOffset => "InvalidPublicKeyOffset",
-            Self::InvalidMessageOffset => "InvalidMessageOffset",
             Self::InvalidMessageDataSize => "InvalidMessageDataSize",
-            Self::InvalidInstructionIndex => "InvalidInstructionIndex",
             Self::MessageOffsetOverflow => "MessageOffsetOverflow",
             Self::InvalidMessageHex => "InvalidMessageHex",
-            Self::InvalidMessageData => "InvalidMessageData",
-            Self::LoadInstructionAtFailed => "LoadInstructionAtFailed",
         }
     }
 
     pub fn msg(&self) -> &'static str {
         match self {
-            Self::InvalidEd25519InstructionProgramId => "invalid ed25519 instruction program",
-            Self::InvalidEd25519InstructionDataLength => "invalid ed25519 instruction data length",
-            Self::InvalidSignatureIndex => "invalid signature index",
-            Self::InvalidSignatureOffset => "invalid signature offset",
-            Self::InvalidPublicKeyOffset => "invalid public key offset",
-            Self::InvalidMessageOffset => "invalid message offset",
             Self::InvalidMessageDataSize => "invalid message data size",
-            Self::InvalidInstructionIndex => "invalid instruction index",
             Self::MessageOffsetOverflow => "message offset overflow",
             Self::InvalidMessageHex => "invalid message hex",
-            Self::InvalidMessageData => "invalid message data",
-            Self::LoadInstructionAtFailed => "loading custom ix at index failed",
         }
     }
 }

@@ -4,9 +4,11 @@ members = [
 	"velocity-rs",
 	"velocity-rs/crates/velocity-idl-gen",
 	"velocity-rs/crates/pubsub-client",
-	"velocity-rs/examples/dlob-builder",
 	"keep-rs",
 	"swift",
+	"router-sim",
+	"book-publisher",
+	"quoter-health",
 ]
 
 # This is a SEPARATE workspace from the program workspace at the repo root
@@ -35,3 +37,11 @@ solana-program = { opt-level = 0 }
 # Hoisted from keep-rs/Cargo.toml — patches only apply at the workspace root.
 [patch.crates-io]
 pyth-lazer-protocol = { path = "keep-rs/vendor/pyth-lazer-protocol" }
+
+# `router-sim` depends on `relay-chain-source` (relay's extracted chain-access
+# + in-process simulation layer) as a git dep pinned by rev — see
+# router-sim/Cargo.toml. To develop the two together, add a path override
+# here rather than editing the dep:
+#   [patch."https://github.com/velocity-exchange/relay"]
+#   relay-chain-source = { path = "../../relay/chain-source" }
+# then drop it (and bump the rev) before committing.

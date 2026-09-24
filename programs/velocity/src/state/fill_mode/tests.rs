@@ -1,5 +1,4 @@
 use crate::{
-    math::time::SlotClock,
     state::{
         fill_mode::FillMode,
         user::{Order, OrderType},
@@ -7,68 +6,60 @@ use crate::{
     PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
 };
 
+/// Every mode reads the order's own worst price. The modes differed only while
+/// an order auctioned, where place-and-take priced at a fraction of the ramp.
 #[test]
-fn test() {
+fn every_mode_reads_the_orders_own_worst_price() {
     let market_order = Order {
         order_type: OrderType::Market,
         direction: PositionDirection::Long,
-        auction_start_price: 100 * PRICE_PRECISION_I64,
-        auction_end_price: 110 * PRICE_PRECISION_I64,
         price: 120 * PRICE_PRECISION_U64,
-        slot: 0,
-        auction_duration: 10,
         ..Order::default()
     };
 
-    let fill_mode = FillMode::Fill;
-
-    let slot = 0;
     let oracle_price = Some(100 * PRICE_PRECISION_I64);
     let tick_size = 1;
 
-    let limit_price = fill_mode
-        .get_limit_price(
-            &market_order,
-            oracle_price,
-            slot,
-            tick_size,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+    for mode in [
+        FillMode::Fill,
+        FillMode::PlaceAndTake,
+        FillMode::Liquidation,
+    ] {
+        let limit_price = mode
+            .get_limit_price(&market_order, oracle_price, tick_size)
+            .unwrap();
 
-    assert_eq!(limit_price, Some(100 * PRICE_PRECISION_U64));
+        assert_eq!(limit_price, Some(120 * PRICE_PRECISION_U64));
+    }
+}
 
-    let place_and_take_mode = FillMode::PlaceAndTake(false, 100);
-
-    let limit_price = place_and_take_mode
-        .get_limit_price(
-            &market_order,
-            oracle_price,
-            slot,
-            tick_size,
-            SlotClock::baseline(),
-        )
-        .unwrap();
-
-    assert_eq!(limit_price, Some(110 * PRICE_PRECISION_U64));
-
-    let limit_order = Order {
-        order_type: OrderType::Limit,
+/// An oracle-relative order resolves its offset against the oracle.
+#[test]
+fn an_oracle_relative_order_resolves_against_the_oracle() {
+    let order = Order {
+        order_type: OrderType::Oracle,
         direction: PositionDirection::Long,
-        price: 120 * PRICE_PRECISION_U64,
-        slot: 0,
+        oracle_price_offset: PRICE_PRECISION_I64,
         ..Order::default()
     };
 
-    let limit_price = place_and_take_mode
-        .get_limit_price(
-            &limit_order,
-            oracle_price,
-            slot,
-            tick_size,
-            SlotClock::baseline(),
-        )
+    let limit_price = FillMode::Fill
+        .get_limit_price(&order, Some(100 * PRICE_PRECISION_I64), 1)
         .unwrap();
 
-    assert_eq!(limit_price, Some(120 * PRICE_PRECISION_U64));
+    assert_eq!(limit_price, Some(101 * PRICE_PRECISION_U64));
+}
+
+/// `quote_limit_price` resolves without an oracle, so an oracle-relative order
+/// reports no bound rather than guessing one.
+#[test]
+fn an_oracle_relative_order_quotes_no_bound() {
+    let order = Order {
+        order_type: OrderType::Oracle,
+        direction: PositionDirection::Long,
+        oracle_price_offset: PRICE_PRECISION_I64,
+        ..Order::default()
+    };
+
+    assert_eq!(FillMode::Fill.quote_limit_price(&order, 1), 0);
 }

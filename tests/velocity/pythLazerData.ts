@@ -1,6 +1,6 @@
 // Wall-clock timestamps (unix seconds) embedded in the signed fixtures below — the message
 // `timestamp_us` / per-feed `FeedUpdateTimestamp`, floored to seconds. The fixtures are frozen
-// (Pyth-signed, not regenerable in-test), so the LiteSVM tests pin the clock to these before posting
+// (Pyth-signed, not regenerable in-test), so LiteSVM tests pin the clock to these before posting
 // so the on-chain `PYTH_LAZER_MAX_STALENESS_SECONDS` check accepts them. Regenerate if the
 // fixtures are ever re-signed.
 export const PYTH_LAZER_TS_BTC = 1772404550; // 2026-03-01T22:35:50Z

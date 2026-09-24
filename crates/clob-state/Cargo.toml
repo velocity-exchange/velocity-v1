@@ -1,0 +1,24 @@
+[package]
+name = "clob-state"
+description = "The CLOB market account's order-node layout, for the book and for an off-chain reader of the same bytes"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/velocity-exchange/velocity-v1/crates/clob-state/"
+
+[dependencies]
+# `UserRefV0` and `SideV0` — a node's identity and its side are the quoter
+# interface's types, not this crate's to restate.
+quoter-spec = { path = "../quoter-spec" }
+bytemuck.workspace = true
+# Spelled `Address` here and `Pubkey` in velocity; one type either way. See
+# `quoter-spec`'s note on the two names.
+solana-address.workspace = true
+
+[features]
+default = []
+# Neutral flag the fork's `IdlType` derive checks; this crate has no upstream anchor.
+idl-build = []
+
+[lints.rust.unexpected_cfgs]
+level = "allow"

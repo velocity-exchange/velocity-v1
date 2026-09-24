@@ -1,19 +1,14 @@
 import {
 	VelocityClient,
 	getLimitOrderParams,
-	getUserAccountPublicKey,
-	getUserStatsAccountPublicKey,
 	isVariant,
 	MarketType,
-	OrderParamsBitFlag,
 	PositionDirection,
 	PostOnlyParams,
 	PriorityFeeSubscriberMap,
-	PublicKey,
 	SignedMsgOrderParamsDelegateMessage,
 	SignedMsgOrderParamsMessage,
 	UserMap,
-	ZERO,
 } from '@velocity-exchange/sdk';
 import { RuntimeSpec } from 'src/metrics';
 import WebSocket from 'ws';
@@ -25,7 +20,7 @@ import {
 	Keypair,
 	TransactionInstruction,
 } from '@solana/web3.js';
-import { getPriorityFeeInstruction } from '../filler-common/utils';
+import { getPriorityFeeInstruction } from '../../utils';
 import { sha256 } from '@noble/hashes/sha256';
 
 export class SwiftMaker {
@@ -161,9 +156,6 @@ export class SwiftMaker {
 					const order = message['order'];
 					console.info(`uuid: ${order['uuid']} at ${Date.now()}`);
 
-					const signedMsgOrderParamsBufHex = Buffer.from(
-						order['order_message']
-					);
 					const signedMsgOrderParamsBuf = Buffer.from(
 						order['order_message'],
 						'hex'
@@ -188,19 +180,6 @@ export class SwiftMaker {
 						);
 
 					const signedMsgOrderParams = signedMessage.signedMsgOrderParams;
-
-					const signingAuthority = new PublicKey(order['signing_authority']);
-					const takerAuthority = new PublicKey(order['taker_authority']);
-					const takerUserPubkey = isDelegateSigner
-						? (signedMessage as SignedMsgOrderParamsDelegateMessage).takerPubkey
-						: await getUserAccountPublicKey(
-								this.velocityClient.program.programId,
-								takerAuthority,
-								(signedMessage as SignedMsgOrderParamsMessage).subAccountId
-						  );
-					const takerUserAccount = (
-						await this.userMap.mustGet(takerUserPubkey.toString())
-					).getUserAccountOrThrow();
 
 					const isOrderLong = isVariant(signedMsgOrderParams.direction, 'long');
 					if (!signedMsgOrderParams.price) {
@@ -230,10 +209,7 @@ export class SwiftMaker {
 
 					if (timeUntilAuction > 0) {
 						setTimeout(async () => {
-							// Determine whether taker used oraclePriceOffset and compute target price at pct into auction
-							const isOracleOffset =
-								signedMsgOrderParams.oraclePriceOffset !== null ||
-								!signedMsgOrderParams.price.eq(ZERO);
+							// Compute the target price at pct into the auction.
 							let price = this.velocityClient.getOracleDataForPerpMarket(
 								signedMsgOrderParams.marketIndex
 							).price;
@@ -244,22 +220,9 @@ export class SwiftMaker {
 									.divn(10000);
 								price = signedMsgOrderParams.auctionStartPrice!.add(offset);
 							}
-							const ixs =
-								await this.velocityClient.getPlaceAndMakeSignedMsgPerpOrderIxs(
-									{
-										orderParams: signedMsgOrderParamsBufHex,
-										signature: Buffer.from(order['order_signature'], 'base64'),
-									},
-									decodeUTF8(order['uuid']),
-									{
-										taker: takerUserPubkey,
-										takerUserAccount,
-										takerStats: getUserStatsAccountPublicKey(
-											this.velocityClient.program.programId,
-											takerUserAccount.authority
-										),
-										signingAuthority,
-									},
+
+							const ixs = [
+								await this.velocityClient.getPlaceAndMakePerpOrderIx(
 									getLimitOrderParams({
 										marketType: MarketType.PERP,
 										marketIndex: signedMsgOrderParams.marketIndex,
@@ -268,14 +231,11 @@ export class SwiftMaker {
 											: PositionDirection.LONG,
 										baseAssetAmount:
 											signedMsgOrderParams.baseAssetAmount.divn(2),
-										oraclePriceOffset: isOracleOffset ? price : null,
-										price: isOracleOffset ? ZERO : price,
+										price,
 										postOnly: PostOnlyParams.MUST_POST_ONLY,
-										bitFlags: OrderParamsBitFlag.ImmediateOrCancel,
-									}),
-									undefined,
-									computeBudgetIxs
-								);
+									})
+								),
+							];
 
 							if (this.dryRun) {
 								console.log(Date.now() - order['ts']);

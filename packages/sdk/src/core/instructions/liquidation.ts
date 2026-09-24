@@ -1,3 +1,4 @@
+import { SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js';
 import type {
 	AccountMeta,
 	PublicKey,
@@ -35,6 +36,10 @@ export async function buildLiquidatePerpInstruction(args: {
 	liquidator: PublicKey;
 	liquidatorStats: PublicKey;
 	remainingAccounts: AccountMeta[];
+	/** the market's crank-conditions PDA, which holds the reservoir, for the
+	 * unsigned program-keeper path. Omit it to pass the program id as a
+	 * placeholder. */
+	crankConditions?: PublicKey;
 }): Promise<TransactionInstruction> {
 	return await (args.program.instruction as any).liquidatePerp(
 		args.marketIndex,
@@ -48,6 +53,11 @@ export async function buildLiquidatePerpInstruction(args: {
 				userStats: args.userStats,
 				liquidator: args.liquidator,
 				liquidatorStats: args.liquidatorStats,
+				crankConditions: args.crankConditions ?? args.program.programId,
+				// The liquidation reads its own transaction. The priority fee
+				// it repays a keeper is priced from the compute-budget
+				// instructions, and only this sysvar carries them.
+				instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

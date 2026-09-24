@@ -29,7 +29,7 @@ import {
 } from '../../packages/sdk/src/decode/customCoder';
 dotenv.config();
 
-describe('Overwrite Accounts', () => {
+describe('LiteSVM Overwrite Accounts', () => {
 	const program = anchor.workspace.Velocity as Program;
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);

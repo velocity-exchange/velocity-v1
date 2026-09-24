@@ -58,6 +58,10 @@ or reworked.
 | Legacy referrer-reward fee path                           | #67        | Removes the legacy epoch-capped referrer-reward path routed through `UserStats`. Deleted: `UserStats.fees.total_referrer_reward`, `UserStats.fees.current_epoch_referrer_reward`, `UserStats.next_epoch_ts`, the `FeatureBitFlags::BuilderReferral` bit, `State.builder_referral_enabled()`, and the `MAX_REFERRER_REWARD_EPOCH_UPPER_BOUND` constant. `FeeStructure.referrer_reward_epoch_upper_bound` became `padding`, preserving offset and size while changing the IDL field name. `RevenueShareEscrowAccount` lost four fields (`referrerBoostExpireTs`, `referrerRewardOffset`, `refereeFeeNumeratorOffset`, `referrerBoostNumerator`), and its `reservedFixed` grew from 17 to 24 bytes. In the SDK, `referrerInfo?: ReferrerInfo` is gone from `placeAndMakePerpOrder`, `placeAndMakeSignedMsgPerpOrders`, `fillPerpOrder` and related ix-builders. Referrer rewards now flow only through the escrow-based path (#73). |
 | Gov-token (DRIFT) stake fee discount                      | #80        | Staking the governance token in the spot-market-15 insurance fund no longer grants a fee discount. 30-day volume alone determines perp fee tiers. Instructions `update_user_gov_token_insurance_stake` and `update_delegate_user_gov_token_insurance_stake` are deleted, and padding replaces `UserStats.if_staked_gov_token_amount`. Spot market 15 has no special treatment. The gov-specific IF revenue-settle APR cap is removed, and the general cap applies. |
 | Protocol-owned insurance fund shares and IF rebalance     | #75        | The IF is 100% staker-owned. Deleted: `admin_withdraw_from_insurance_fund_vault`, `transfer_protocol_if_shares_to_revenue_pool`, `begin_insurance_fund_swap`, `end_insurance_fund_swap`, `initialize_if_rebalance_config`, `update_if_rebalance_config`, `initialize_protocol_if_shares_transfer_config`, `update_protocol_if_shares_transfer_config`, `deposit_into_insurance_fund_stake`, the `IfRebalanceConfig` and `ProtocolIfSharesTransferConfig` accounts, and `HotRole::IfRebalance` with its `State.hot_if_rebalance` key. A single `if_fee_factor` replaces `InsuranceFund.total_factor` and `user_factor`, and is the lending-yield carveout to stakers. Protocol revenue no longer flows through IF shares at all. |
+| jit-proxy (JIT-auction helper program + client)            | feat/propamm | The jit-proxy program (`J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ`) and its `@velocity-exchange/jit-proxy` npm package are deleted, along with the velocity-rs `jit_client` module (`JitProxyClient`, `JitIxParams`, `JitTakerParams`, `JitSwiftParams`, `constants::JIT_PROXY_ID`, `SdkError::JitOrderNotFound`) and the keeper-bots-v2 `jitMaker` bot. The program id is retired. Nothing upgrades it and no client references it. The CLOB's `activation_slot` speed bump is the taker protection that replaced the JIT auction (§3), so a JIT maker's role is now a CLOB maker's: rest orders on the book and let the router match them. On-chain, `place_and_make_perp_order` (v0) is removed and `place_and_make_perp_order_v1` no longer names a taker: it builds a post-only maker limit order that rests straight on the market's CLOB (the `taker` / `taker_stats` accounts and the `taker_order_id` arg are gone; the order never occupies a `User.orders` slot). The `jit_maker_order_id` fill parameter and the `FillMode::PlaceAndMake` variant are deleted, and the `OrderFilledWithMatchJit` record label is retired (a match always records `OrderFilledWithMatch`). SDK: `placeAndMakePerpOrder` / `getPlaceAndMakePerpOrderIx` take `clobAccounts` in place of `takerInfo`. |
+| AMM JIT (just-in-time auction participation)               | feat/propamm | The vAMM no longer front-runs inside a DLOB match. It is quoted as one level ladder among all sources and the router splits the take across them by priority tier, so a fill never has the AMM JIT-ing at a resting maker's price. Deleted: `AmmJitQuoter`, `vlp::amm::math::jit`, `amm_jit_intensity` gating on the last-look path, and the two legacy engines the JIT ran inside (`fill_amm_only`, `match_take`). `PerpMarket.amm_jit_intensity` stays in the layout but no longer gates anything. Off-chain fill models must drop JIT sizing (the #182 / #269(4) behaviours) entirely |
+| Oracle-offset limit orders                                 | feat/propamm | `validate_limit_order` refuses any `OrderType::Limit` order whose `oracle_price_offset` is nonzero with `InvalidOrderOracleOffset` (6055, an existing error). An oracle-floating limit price cannot rest on a CLOB, so such an order could only strand in `User.orders` on the legacy DLOB. An oracle-relative maker quote is a PropAMM quoter's job. The `Order.oracle_price_offset` field, the `OrderParams` field and the IDL are unchanged. Only the placement semantics are refused. `OrderType::Oracle` orders keep the offset, which holds their worst-price bound, and trigger orders never accepted an offset. |
+| Order auctions (the price ramp) | feat/propamm | An order no longer ramps its price from a start to an end over a duration. The ramp existed because an order rested in the DLOB and competing fillers watched it cross their price. An order routes to the book now, so the ramp only made the fill price depend on how long the sender took to land the transaction. `Order.auction_start_price` / `auction_end_price` are renamed `clob_node_index` / `clob_order_id` (the placed-trigger shadow's CLOB handle, which already used them) and `auction_duration` becomes `unused_auction_duration`. `Order` stays 104 bytes and `User` is unchanged. `Order.price` is the worst price the order accepts, for every order type. A market order's `price` is its cap, and the sender chooses how far from the oracle it sits. A market order that names no price takes `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` (oracle / 200, which is 0.5 percent) as its cap. An oracle-relative order holds the bound in `oracle_price_offset`. `OrderParams` and `ModifyOrderParams` lose the three auction fields. `OrderParams` gains `activation_delay_slots: Option<u32>`, which sets how long a rested remainder waits before the book will take it. That is the duration knob the ramp used to serve. A taker-origin remainder is crossed at the counterparty's price, so a longer wait can only improve the taker's fill. It is the one delay knob: `place_and_take_perp_order_v1`, `place_signed_msg_taker_order` and `place_and_make_perp_order_v1` all read it, and `PlaceAndMakePerpOrderV1Args` no longer carries a separate `activation_delay_slots`. A value below the book's default needs the flow-authority attestation, on the take path as on the make path. A trigger order stores no delay, so `place_trigger_orders_v1` refuses one that names it (`InvalidOrder`). `max_ts` keeps its meaning: it ends the order and has nothing to do with the delay. A market or oracle order that names no `max_ts` lives `DEFAULT_MARKET_ORDER_LIFETIME_SECONDS` (30 seconds). SDK: `placeAndMakePerpOrder`, `getPlaceAndMakePerpOrderIx` and `buildPlaceAndMakePerpOrderInstruction` drop their `activationDelaySlots` argument in favor of `orderParams.activationDelaySlots`, and `modifyOrder` / `modifyOrderByUserOrderId` drop theirs. dlob-server's `/auctionParams` is replaced by `/marketOrderParams`, which quotes a market order's worst price as `price` (or `oraclePriceOffset`) plus an optional `activationDelaySlots`. `docs/clob-client-integration.md` maps the old fields. `User.has_open_auction` is never set, so the SDK drops `getUserWithAuctionFilter` and velocity-rs drops `AuctionSubscriber` and `get_user_with_auction_filter`. swift's worst-price guard is renamed end to end: the env vars `AUCTION_ORACLE_BAND_BPS` and `AUCTION_ORACLE_MAX_STALENESS_SLOTS` become `WORST_PRICE_ORACLE_BAND_BPS` and `ORACLE_BAND_MAX_STALENESS_SLOTS`, the metrics `swift_auction_band_guard_count` and `swift_auction_oracle_staleness_slots` become `swift_oracle_band_guard_count` and `swift_oracle_band_staleness_slots`, and the rejection message is now `Worst price outside oracle band`. keep-rs drops the `auction_fill` transaction intent, which nothing built. Deleted: `math::auction` (`calculate_auction_price*`, `is_auction_complete`, `auction_progress*`, `calculate_auction_prices`, `calculate_auction_params_for_trigger_order`), `OrderParams::update_perp_auction_params*`, `derive_*_auction_params`, `has_valid_auction_params`, `get_perp_baseline_*`, and the `validate_auction_params` / `validate_oracle_auction_params` / `validate_limit_order_auction_params` checks. `FillMode::PlaceAndTake(bool, u8)` becomes the unit variant `FillMode::PlaceAndTake`. `PlaceAndTakePerpOrderV1Args.success_condition` changes from a packed `Option<u32>`, which carried the condition in its low byte and an auction fraction in the next byte, to `Option<PlaceAndTakeOrderSuccessCondition>`. The enum is borsh-encoded, so `PartialFill` is `0` and `FullFill` is `1`. `parse_optional_params` is removed. The SDK's `PlaceAndTakeOrderSuccessCondition` becomes a variant class (`PARTIAL_FILL`, `FULL_FILL`). `placeAndTakePerpOrder`, `getPlaceAndTakePerpOrderIx` and `preparePlaceAndTakePerpOrderWithAdditionalOrders` drop their `auctionDurationPercentage` argument, so every later positional argument moves one place left. `buildPlaceAndTakePerpOrderInstruction` takes `successCondition` in place of `optionalParams`. `Order::get_limit_price` and `force_get_limit_price` drop their `slot` and `slot_clock` arguments. `User.open_auctions` and `has_open_auction` stay in the layout and are always zero. A trigger order is stamped with its worst price when it fires, not when it is armed. A signed message's `max_slot` is its landing deadline, `signed_msg_max_slot`: a resting limit's message slot itself, and any other order's message slot plus `SIGNED_MSG_FILL_WINDOW` (30 seconds), where the auction length used to be. SDK: `math/auction` is deleted and replaced by `math/worstPrice` (`deriveWorstPrice`). `isFallbackAvailableLiquiditySource` moves to `math/orders`. `getLimitPrice`, `hasLimitPrice`, `isRestingLimitOrder` and `isRestingSignedMsgLimitOrder` lose their auction and slot arguments, and `signedMsgOrderMaxSlot` trades its auction duration for `isRestingLimit`. `hasAuctionPrice` is removed. `SIGNED_MSG_FILL_WINDOW_MS` and `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` are added. velocity-rs loses `math::auction`, `math::order` and its `dlob` module. Nothing re-prices a signed order at placement, so the swift feed drops `will_sanitize` from every order message, `SwiftOrderSubscriber.subscribe` drops its `acceptSanitized` argument, `VelocityClient::subscribe_swift_orders` drops `accept_sanitized`, and the `swift_order_types_count` metric drops its `sanitized` label. |
 
 ## 3. Feature additions
 
@@ -89,8 +93,10 @@ or reworked.
 | Fee schedule rework (3 tiers, add-on, promo)     | #388 fee-schedule | Perp fee tiers cut from 6 to 3 (Regular, VIP 1, VIP 2) with new hardcoded 30d-volume thresholds of $5M and $80M, replacing $2M, $10M, $20M, $80M and $200M, and new default tier values of 4, 3 and 2 bps taker with a flat -0.25 bp maker rebate, replacing 10 down to 3.5 bps taker with a 2 bp rebate. Tier determination projects the rolling volume decay to the current timestamp at read time through `UserStats::get_total_30d_volume_at`, so demotion tracks the live trailing-30d window at every fill. Promotion was already instant. Two new admin knobs. `PerpMarket.taker_fee_addon_tenth_bps` (u16, carved from `_padding_buffer`) is an unsigned additive taker-fee surcharge applied before `fee_adjustment` scales the sum, on the taker leg only. It is a surcharge only, because a discount could push the taker fee below the maker rebate it funds. It is set by the new warm-admin instruction `update_perp_market_taker_fee_addon`, capped at 100 tenth-bps. `State.promo_fee_tier` (u8, carved from padding) is a promotional tier floor for every account, so the effective tier is `max(volume tier, promo tier)` and 0 disables it. It is set by the new warm-admin instruction `update_promo_fee_tier`. SDK: `PerpMarketAccount.takerFeeAddonTenthBps`, `StateAccount.promoFeeTier`, `getUserFeeTier` mirrors the new thresholds, projection and promo, `getMarketFees` applies the add-on, `AdminClient.updatePerpMarketTakerFeeAddon` and `updatePromoFeeTier`. Admin CLI: `fees set-taker-addon`, `fees set-promo-tier`. Account sizes are unchanged, since both fields occupy former padding. Integrators pinning fee-tier thresholds or the 6-tier layout must update. |
 | Fee tier VIP 3                                   | fee-tier-vip3 | A fourth perp fee tier at $200M trailing-30d volume, so the tiers are Regular, VIP 1, VIP 2 and VIP 3 at indices 0 through 3 and `PERP_FEE_TIER_MAX_INDEX` goes from 2 to 3. `fee_tiers[3]` was already a populated-by-default spare slot, since `set-schedule` mirrored tier 2 into it, so there is no layout or IDL change. `update_promo_fee_tier` now accepts 3, and a promo at 3 puts every account on the top tier. The default seed adds a 1.5 bps tier 3, and live rates stay admin params. SDK: `VIP_FEE_TIER_THREE_VOLUME_QUOTE`, plus a third entry in `PERP_FEE_TIER_VOLUME_THRESHOLDS`. Admin CLI: `fees set-schedule` takes four tier fees, and `show fees` prints the VIP 3 row. |
 | vAMM maker rebate (feature-flagged)              | #387 vamm-maker-rebate | New `FeatureBitFlags::VammMakerRebate` bit (8) on `State.feature_bit_flags`, off by default. When enabled, the vAMM earns the maker rebate on fills it makes against a taker. The rebate uses the same `maker_rebate_numerator` schedule and `fee_adjustment` scaling as a user maker's, clamped to the remainder. It is carved off the taker-fee remainder before the protocol, IF and AMM split and folded into the AMM's fee provision (`amm_fee`), so it travels the existing fee-ledger and `pending_amm_provision` sweep path. The taker's fee is unchanged, and only the distribution shifts, since the protocol and IF cuts shrink by the rebate share. `OrderActionRecord.makerRebate` stays 0 on these fills, because the rebate is the AMM's rather than a user maker's. New admin instruction `update_feature_bit_flags_vamm_maker_rebate`, cold admin to enable. SDK: `FeatureBitFlags.VAMM_MAKER_REBATE`, `AdminClient.updateFeatureBitFlagsVammMakerRebate`, `getUpdateFeatureBitFlagsVammMakerRebateIx`. Admin CLI: `velocity-admin feature-flags vamm-maker-rebate <true\|false>`. No account-layout or error-code change. |
+| Quoter registry (PropAMM order flow)         | feat/propamm   | Two-account registry: a zero-copy `QuoterV0` staging entry per (perp market, quoter program, quoted user), and one `QuoterSlabV0` per market holding every approved config. `initialize_quoter` creates the staging entry (for Custom-type entries the quoted user's authority must be the creating authority, because creation is consent); `update_quoter_accounts` sets one unified CPI account list (max 12) plus per-leg index lists into it in a single call; `update_quoter_config` / `update_quoter_watch` edit staging. Nothing fills from staging: `update_quoter_approved` (warm/cold-admin) copies the staged config into a slab slot, and fills read only that copy. A later staging edit stays inert until the admin copies again, while the vetted copy keeps serving. Slot 0 is reserved for the market's book; Custom quoters occupy slots 1+; response accounts are unique per slab (a route names the quoters it consults by carrying their response accounts). Revoking a Custom slot clears it; revoking the book suspends it so removal paths keep working. Three fields write through to the live slot without re-vetting: `update_quoter_active` (the maker's kill switch), `update_quoter_priority` (admin; at a price, lower tiers fill first, pro rata within; defaults vAMM 0, CLOB 10, Custom 20), and `update_quoter_max_oracle_deviation` (tighten-only band). `initialize_quoter_slab(args)` is permissionless and creates a one-slot slab; approval right-sizes the account from then on (growth paid by the admin, trailing vacancy refunded on revocation), so there is no separate extend instruction. New errors `InvalidQuoterConfig` (6375) / `InvalidQuoterAuthority` (6376) / `QuoterSlabFull` (6405) / `QuoterNotOnSlab` (6406). SDK: `QuoterConfigV0`, `QuoterV0Account`, `QuoterSlotV0`, `QuoterSlabV0Account` type mirrors, `getQuoterSlabPublicKey`, `decodeQuoterSlab`, `VelocityClient.getQuoterSlabAccount`. Admin CLI: `velocity-admin quoter …` command group. |
+| Cancel-all (CLOB + midpoint)                 | feat/cancel-all | A maker can withdraw a whole side (or both) in one instruction on either quoter type. Velocity: `cancel_orders_v1` (`CancelOrdersV1Params { market_index: u16, sides: ClobCancelSides }`, accounts `state`, `user` (w), `authority`, `quoter`, `clob_market` (w), `clob_program`, `quoter_signer`, `crank_conditions` (w, optional)) CPIs the CLOB's new `cancel_all_v0` and unwinds `open_bids`/`open_asks` from per-side base totals plus one order count, so sweeping twenty orders costs the same bookkeeping as sweeping one. Placed-trigger shadows are freed by re-checking each shadow's node against the post-sweep book rather than by matching returned ids, so a shadow is released exactly when its order is gone by any route. Not gated on the quoter entry's active/approved flags or on `exchange_not_paused`: a maker must always be able to pull quotes off a killed, de-listed or halted book. The CLOB caps one sweep at `CANCEL_ALL_ORDERS_CEILING` (128) removals and reports `exhaustive`; velocity unwinds what was actually removed, logs when the cap stopped it early, and the call is safe to repeat. New CLOB event `OrdersCancelRecordV0` carries the removed order ids (reference-by-id, like `ExecuteRecordV0`) so an indexer can reconcile the book from one record. Midpoint's `cancel_all_v0` (`CancelAllArgsV0 { sides: CancelSidesV0, clear_mid: bool }`) zeros the live rungs of the named sides and optionally the mid, signed by either maker key (hot or config). The spline has no orders, so this is the equivalent operation, and it reserves nothing on velocity's side. |
 | Slot-duration scaling                            | slot-duration-scaling | Solana slot time is dropping from 400ms to 350, 300, 250 and 200ms via feature gates. `State.slot_duration_transition_slots: [u64; 4]` records the first slot of each post-baseline regime, carved out of padding with no layout break. The legacy `slot_duration_ms`, `pending_slot_duration_ms` and `slot_duration_effective_slot` staging trio remains as fallback, where 0 means unset and resolves to the 400ms baseline. The permissionless `sync_state_slot_duration` records each transition from its IBRL feature-gate account, deriving the effective slot from the `EpochSchedule` sysvar as the first slot of the epoch after activation, mirroring Agave. It replaced the warm-admin `update_state_slot_duration_ms`. Wall-clock durations are typed (`math::time::Millis`), and measured intervals integrate per regime through `math::time::SlotClock`. Oracle staleness windows, liquidation ramps, auction durations, idle windows, MM-oracle write gates and per-period rates therefore keep constant wall-clock behavior across gates, including intervals that span a transition. Legacy stored fields keep their compact 400ms-unit encoding behind typed getters. SDK mirror in `math/time.ts`, and `SLOT_TIME_ESTIMATE_MS` is deprecated. |
-| Accelerated referrals                            | #429 accelerated-referrals | Referrer rewards split into two rates. The Standard rate stays per-fee-tier (`FeeTier.referrer_reward_numerator`, with the fresh default cut from 15% to 10%). Accelerated is a fixed constant (`ACCELERATED_REFERRER_REWARD_PERCENT`), independent of the fee tier. The referee discount keeps using the fee tier. New `UserStats.accelerated_referral_status`, carved out of padding with no layout break, plus `AcceleratedReferralStatus` flags. While the beta-scoped `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` constant is true, account initialization and eligible interactions grant the status permanently. Those interactions are perp fills for both taker and maker, and completed swaps. Liquidation fills do not enroll the liquidatee. Ending enrollment is a program upgrade rather than a config change. New warm and cold admin instruction `update_user_accelerated_referral_status`, where a revoke also blocks automatic reenrollment until a later grant clears it. New `AcceleratedReferralStatusChangedRecord` event. Fill paths that carry a referred taker's `RevenueShareEscrow` may append the referrer's readonly `UserStats` after the escrow. It is optional, and omitting it applies the Standard rate. |
+| Accelerated referrals                            | #429 accelerated-referrals | Referrer rewards split into two rates. The Standard rate stays per-fee-tier (`FeeTier.referrer_reward_numerator`, with the fresh default cut from 15% to 10%). Accelerated is a fixed constant (`ACCELERATED_REFERRER_REWARD_NUMERATOR`, 20%), independent of the fee tier. The referee discount keeps using the fee tier. New `UserStats.accelerated_referral_status`, carved out of padding with no layout break, plus `AcceleratedReferralStatus` flags. While the beta-scoped `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` constant is true, account initialization and eligible interactions grant the status permanently. Those interactions are perp fills for both taker and maker, and completed swaps. Liquidation fills do not enroll the liquidatee. Ending enrollment is a program upgrade rather than a config change. New warm and cold admin instruction `update_user_accelerated_referral_status`, where a revoke also blocks automatic reenrollment until a later grant clears it. New `AcceleratedReferralStatusChangedRecord` event. Fill paths that carry a referred taker's `RevenueShareEscrow` may append the referrer's readonly `UserStats` after the escrow. It is optional, and omitting it applies the Standard rate. |
 
 ### 3.1 Per-user equity floor
 
@@ -286,17 +292,9 @@ npm install @velocity-exchange/sdk
   camelCase. `'PerpMarket'` becomes `'perpMarket'`, `'SpotMarket'` becomes `'spotMarket'`,
   `'User'` becomes `'user'`, and so on.
 - Repo tooling moved from yarn to bun, which only matters if you build from source.
-- jit-proxy. The package `@drift-labs/jit-proxy` is replaced by
-  `@velocity-exchange/jit-proxy`. The client is vendored in-repo, ported to Anchor 1.0, and
-  built against `@velocity-exchange/sdk`. The upstream package was built against
-  `@drift-labs/sdk` and assumed Drift account layouts. It read
-  `perpMarketAccount.amm.minOrderSize`, which Velocity removed from perp markets, and that
-  crashed the JIT maker on perp taker updates. The `JitProxyClient`, `JitterSniper` and
-  `JitterShotgun` API is unchanged, and the `driftClient` constructor fields now take a
-  `VelocityClient`. The program is Velocity's own deployment at
-  `J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ` on devnet and mainnet, replacing Drift's
-  `J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP`. The SDK config presets'
-  `JIT_PROXY_PROGRAM_ID` point at the new id.
+- jit-proxy is gone. There is no `@velocity-exchange/jit-proxy` package and no jit-proxy
+  program (§2). Drift's `@drift-labs/jit-proxy` has no Velocity equivalent. Port jitters and JIT
+  makers onto the CLOB's activation-slot auction.
 - Anchor imports inside the SDK go through an isomorphic layer (`sdk/src/isomorphic/anchor`)
   with separate node and browser builds.
 
@@ -334,8 +332,9 @@ plus types `LPRecord`, `LPAction`, `FuelSeasonRecord`, `FuelSweepRecord`,
 `ProtectedMakerModeConfig`,
 `SpotFulfillmentType`, `SpotFulfillmentStatus`, `SpotFulfillmentConfigStatus`.
 
-Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE` and
-`PYTH_PULL_ORACLE_LOOKUP_TABLE` were dropped from the env config object.
+Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
+`PYTH_PULL_ORACLE_LOOKUP_TABLE` and `JIT_PROXY_PROGRAM_ID` were dropped from the env config
+object.
 
 Mainnet `MARKET_LOOKUP_TABLE` and `MARKET_LOOKUP_TABLES` now point at the relaunch lookup
 table `4E971nER9Jn4JjT8mKEX1nvkfg8Qycp7zNEcCq2nT8ZY`, which covers state, signer, spot
@@ -408,6 +407,22 @@ Jupiter Swap API v2 opt-in (jupiter-swap-api-v2) removed the former v1-only
 `JupiterClient.getSwap` (`POST /swap`). Callers use `getSwapTransaction`, which still posts
 to `/swap` under `apiVersion: 'v1'`, or `getRouteInstructions`.
 
+DLOB removal (feat/propamm) removed the off-chain order book and its subscribers with the venue
+they served. Gone: `DLOB`, `DLOBNode`, `NodeList`, `DLOBSubscriber`, the `dlob/types` module
+(`DLOBSource`, `DLOBSubscriptionConfig`, `DLOBSubscriberEvents`), `OrderSubscriber` and its
+subscription modules, `AuctionSubscriber`, and `UserMap.getDLOB`. `SlotSource` survives and
+moves to `slot/SlotSubscriber`. The vAMM ladder generators that fed the book are gone too:
+`getVammL2Generator`, `createL2Levels`, `mergeL2LevelGenerators`, `getL2GeneratorFromDLOBNodes`,
+`L2OrderBookGenerator`, `DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS` and
+`MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS`. A client that priced the vAMM through them uses
+`math/vammLadder`'s `vammQuoteLevels`, which mirrors the program's own ladder.
+
+The book shapes stay. `L2Level`, `L2OrderBook`, `L3Level`, `L3OrderBook`, `groupL2` and
+`uncrossL2` move from `dlob/orderBookLevels` to `orderBookLevels`. The package barrel exports
+them under the same names, so only a deep import moves. `L2Level['sources']` now reports
+`'vamm'`, `'clob'` and `'propamm'`. `'dlob'` and `'indicative'` are removed, because the book
+publisher labels a level by the router source that quoted it.
+
 ### 4.4 Type-level breaking changes
 
 - `oraclePriceOffset` is now `BN` rather than `number` on `Order` and `OrderParams`, having
@@ -430,6 +445,24 @@ to `/swap` under `apiVersion: 'v1'`, or `getRouteInstructions`.
   `delegatePermissions: number` field (#45), set and cleared by
   `update_user_allow_delegate_transfer`, which gates whether a delegate may call
   `transfer_deposit_by_delegate`.
+- The SDK sizes the compute limit by simulating, and caps loaded-accounts data size.
+  `VelocityClient`'s default `txParams` sets `useSimulatedComputeUnits: true`, so every
+  transaction it builds asks for what the simulation burned rather than a flat 600,000.
+  `txParams.computeUnits` (still 600,000) is the ceiling that clamps the simulated figure and
+  the fallback when simulation fails. This costs one extra RPC round trip per transaction.
+  Pass `useSimulatedComputeUnits: false` to opt out. `BaseTxParams` also gained
+  `loadedAccountsDataSize`, defaulted to `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT` (12 MiB) and
+  emitted as a `SetLoadedAccountsDataSizeLimit` instruction. `0` omits it and takes the
+  network's 64 MiB default. Both limits are billed on the figure a transaction requests, so a
+  transaction that genuinely loads more than the default must raise it. The velocity program
+  and its program data count toward the limit. `velocity-rs` applies the same default:
+  `TransactionBuilder::build` adds the limit when the caller set none
+  (`constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`, override with
+  `with_loaded_accounts_data_size`). The instruction is appended, not prepended, and a client
+  that adds its own must do the same. The signed-message flows encode absolute instruction
+  indices, because an ed25519 verify instruction points at the instruction that holds the
+  message it verifies (`createMinimalEd25519VerifyIx` / `new_ed25519_ix_ptr`). An instruction
+  added at the front shifts every index behind it.
 - `SwapInfo.feeAmount` and `SwapInfo.feeMint` are now optional (`jupiter/jupiterClient`).
   Jupiter's v2 API omits per-hop fees from `routePlan[].swapInfo`. The v1 path and
   `TitanClient` still populate both, so this only widens what a consumer must handle when
@@ -525,16 +558,32 @@ These public exports were added, or restored, relative to the fork point:
   `getUpdateSpecialUserStatusIx`, `VelocityClient.specialTransferPerpPositionToVamm` and
   `getSpecialTransferPerpPositionToVammIx` (#17).
 - `VelocityClient.updateUserAllowDelegateTransfer` and `transferDepositByDelegate` (#45).
+- CLOB order surface (feat/propamm): `VelocityClient.cancelOrderV1`, `modifyOrderV1` and
+  `cancelOrdersV1` and their `get*Ix` builders, with `CancelOrderV1Params`,
+  `ModifyOrderV1Params`, `CancelOrdersV1Params`, `ClobOrderRefV0` and `CancelSidesV0`.
+  Placement is `placeAndMakePerpOrder` (§2, jit-proxy row). A caller names a market and
+  nothing else. The book's program and account resolve from the market's quoter slab (slot 0),
+  and the rest are PDAs.
+- `UserClobOrdersClient` and `UserClobOrder` (feat/propamm) read a user's resting book orders
+  over the dlob-server's `GET /userOrders` and its `user_orders` websocket channel. This
+  replaces `user.getOpenOrders()` for orders that rest on a book, which have no `User.orders`
+  slot. Every row carries the handle a cancel or a modify takes.
+- `liquiditySource`, and so `L2Level['sources']`, gains `'clob'` and `'propamm'`
+  (feat/propamm).
 - `EquityFloorManager` and its plan types (`equityFloorManager`),
   `calculateEquityFloorAutoDelta`, `getEquityFloorLevel`, `EquityFloorLevel` (`math/margin`),
   and `User.isBelowBufferedEquityFloor`, `getBufferedEquityFloor`,
   `getEquityAboveBufferedFloor` (equity-floor-buffer).
 - `AdminClient.updatePerpMarketFundingDeadZone` and `getUpdatePerpMarketFundingDeadZoneIx`
   (#94).
+- `areQuotedLevelsValid`, `quotedPrefix`, `isExecutedNotionalInQuote`,
+  `isChangeNotionalInQuote` and `RouterQuotedPrefix` (`math/router`, feat/propamm), the
+  TypeScript mirror of the bounds velocity holds an external quoter's `execute_v0` response
+  to, so a client can predict whether a router fill lands.
 - `VelocityClient.updateMmOracleBatchNative` and `getUpdateMmOracleBatchNativeIx`, plus the
   `MmOracleBatchUpdate` entry type and the `MM_ORACLE_BATCH_MAX_MARKETS`,
-  `MM_ORACLE_MIN_SLOT_GAP` and `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` constants
-  (mm-oracle-batch-native, mm-oracle-freshness-fixes). The batch writes the MM oracle for
+  `MM_ORACLE_MIN_WRITE_GAP` and `MM_ORACLE_MAX_SOURCE_AGE` constants, the last two as `Millis`
+  durations rather than slot counts (mm-oracle-batch-native, mm-oracle-freshness-fixes). The batch writes the MM oracle for
   many perp markets in one native instruction, so a cranker pays one signature fee for the
   whole set, and a per-market rate-limit rejection skips only that market. Each entry carries
   an `oracleSourceSlot`, the slot the price was observed at, and `updateMmOracleNative` /
@@ -628,9 +677,6 @@ These public exports were added, or restored, relative to the fork point:
   lookup table now throws by name rather than being dropped. The default is still `'v1'`, and
   `RECOMMENDED_JUPITER_API_VERSION` (`'/v1'`) is unchanged. There is no program change, since
   every v2 route executes through the already-whitelisted Jupiter v6 program.
-- `getAuctionEndMinMaxDivisors` and `getPerpBaselineMaxPriceOffset` (`math/auction`),
-  mirroring `PerpMarket::get_auction_end_min_max_divisors` and the tier band the program
-  clamps a baseline auction start offset to (bid-ask-twap-quote-rest-age).
 - `settleRevenueShare`, `getSettleRevenueShareIx` and `fetchRevenueShareEscrowAccount`
   (`velocityClient`), wrapping the new permissionless `settle_revenue_share` instruction (§3)
   and assembling its two-region remaining-account list from a decoded escrow. Also
@@ -657,8 +703,35 @@ These public exports were added, or restored, relative to the fork point:
   helpers do not model, so they name a superset. The Rust SDK gains the equivalent pair,
   `VelocityClient::stale_spot_interest_markets` and
   `TransactionBuilder::update_spot_market_cumulative_interest`.
+- The market's quoter slab is the external-CPI signer (`getQuoterSlabPublicKey(programId,
+  marketIndex)`). It is the PDA velocity signs every CPI into an external quoter program
+  with, and a CLOB book's `place_authority` and a midpoint instance's `execute_authority` must
+  be set to it. A quoter's registered CPI account list names it where the signer goes. It is
+  not `getVelocitySignerPublicKey` / `getSignerPublicKey`, which is the token authority on the
+  spot and insurance-fund vaults. `getClobAuthorityPublicKey` and `getQuoterSignerPublicKey`
+  (and the `VelocityClient` accessors) are removed. See §6 (feat/propamm).
+- `AdminClient.updateTransactionFeeRails(rails)` and `getUpdateTransactionFeeRailsIx(rails)`,
+  and the `TransactionFeeRails` type (§5). Admin CLI:
+  `velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports>
+  <resourceFeeNum> <resourceFeeDenom>`.
+- `CrankPaymentsV0` and `CrankCostUnitsV0` types, and `math/crankFee`:
+  `requestedCostUnits`, `transactionCost`, `deriveCrankPayments`, plus the runtime's
+  cost-model constants (`SIGNATURE_COST_UNITS`, `WRITE_LOCK_COST_UNITS`,
+  `INSTRUCTION_DATA_BYTES_PER_COST_UNIT`, `LOADED_ACCOUNTS_PAGE_BYTES`,
+  `LOADED_ACCOUNTS_PAGE_COST_UNITS`). It mirrors `CrankPaymentsV0::derive`, so it predicts
+  the payments an attach will write.
+- `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT` and `setLoadedAccountsDataSizeLimitIx(bytes)` /
+  `isSetLoadedAccountsDataSizeIx(ix)` (`util/computeUnits`). See §4.4.
+- `getRouteDigest(route)` (`math/orders`) returns the eight bytes a signed-message order's
+  record holds. It mirrors the program's `state::order_params::route_digest`: the route
+  sorted, deduped and hashed, with an empty route digesting to zero and a real one never
+  doing so. A filler needs it, because a fill claims a route and the program rejects it
+  unless the claim digests to what the order carries. The digest moved off `Order` onto
+  `SignedMsgUserOrders` and widened from five bytes to eight. `Order.route_digest` is retired
+  to padding, so `Order` stays 104 bytes and the move is ABI-safe for anything decoding an
+  order.
 - The `AcceleratedReferralStatus` enum, the `AcceleratedReferralStatusChange` enum-class and
-  the `AcceleratedReferralStatusChangedRecord` event type;
+  the `AcceleratedReferralStatusChangedRecordV0` event type;
   `UserStatsAccount.acceleratedReferralStatus`;
   `AdminClient.updateUserAcceleratedReferralStatus` and
   `getUpdateUserAcceleratedReferralStatusIx`; the `ACCELERATED_REFERRER_REWARD_PERCENT`
@@ -675,30 +748,29 @@ These public exports were added, or restored, relative to the fork point:
   wall-clock should use these rather than `SLOT_TIME_ESTIMATE_MS`, which stays exported and
   deprecated.
 - `SLOT_DURATION_SCHEDULE_MS` and `SLOT_DURATION_FLOOR` (`math/time`, off-chain-slot-clock),
-  the mirror of the program's `SLOT_DURATION_SCHEDULE_MS` (`[400, 350, 300, 250, 200]`) and
-  its last entry. `SLOT_DURATION_FLOOR` is what a user-protection window (a countdown, a
+  the mirror of the program's schedule. `SLOT_DURATION_SCHEDULE_MS` is `[400, 350, 300, 250,
+  200]`, the 400ms baseline followed by the program's `SLOT_DURATION_TRANSITION_MS`.
+  `SLOT_DURATION_FLOOR` is its last entry. `SLOT_DURATION_FLOOR` is what a user-protection window (a countdown, a
   signing budget, a cache TTL) substitutes when `currentSlotClock` reports `isLive: false`,
   since the 400ms baseline would promise up to twice the wall clock actually available.
 - `signedMsgOrderMaxSlot` and `signedMsgOrderSlotReached` (`math/orders`, #470
   swift-slot-gate plus follow-up; the "placed yet" half is superseded by
   `signedMsgOrderPlaceable`, next bullet). These are the off-chain mirrors of
   `place_signed_msg_taker_order`'s placement window.
-  `signedMsgOrderMaxSlot(state, orderSlot, auctionDuration)` is the last slot the order may
-  still be placed, which is the message slot plus the auction duration, integrated across
-  slot duration transitions. `signedMsgOrderSlotReached(orderSlot, currentSlot)` is whether
+  `signedMsgOrderMaxSlot(state, orderSlot, isRestingLimit)` is the last slot the order may
+  still be placed. For a resting limit that is the message slot itself. For any other order
+  it is the message slot plus `SIGNED_MSG_FILL_WINDOW_MS`, integrated across slot duration
+  transitions. `signedMsgOrderSlotReached(orderSlot, currentSlot)` is whether
   it may be placed yet, since the program rejects `order_slot > clock.slot` with
   `InvalidSignedMsgOrderParam` and takers stamp the message a few slots ahead as a signing
-  buffer. `DLOB.insertSignedMsgOrder` does no slot gating of its own, so consumers acting on
-  inserted signed-msg orders should hold an order back until `signedMsgOrderSlotReached` is
-  true.
+  buffer.
 - `signedMsgOrderPlaceable`, `isRestingSignedMsgLimitOrder` and
   `SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS` (`math/orders`, swift-resting-limit-placement).
   `signedMsgOrderPlaceable(state, order, currentSlot)` supersedes
-  `signedMsgOrderSlotReached` as the "may be placed yet" predicate. An auction order still
-  waits for its message slot, but a resting limit, meaning a limit order with no auction as
-  identified by `isRestingSignedMsgLimitOrder`, may be placed ahead of it as long as the
-  stamp is within `SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS` (30s) of the current slot. Consumers
-  building on `DLOB.insertSignedMsgOrder` should gate on `signedMsgOrderPlaceable`.
+  `signedMsgOrderSlotReached` as the "may be placed yet" predicate. Any other order still
+  waits for its message slot, but a resting limit, as identified by
+  `isRestingSignedMsgLimitOrder`, may be placed ahead of it as long as the
+  stamp is within `SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS` (30s) of the current slot.
 - `getPerpFeeTierIndex`, `PERP_FEE_TIER_VOLUME_THRESHOLDS` and `PERP_FEE_TIER_MAX_INDEX`
   (`math/fees`, promo-fee-tier), the mirror of the program's `determine_perp_fee_tier`,
   factored out so the tier rule has one definition. It applies the trailing-30d volume
@@ -773,9 +845,13 @@ Rust struct offset, so add 8 for the offset into account data.
 | ------------ | ---- | ---- |
 | `User`       | 4496 | `size_of::<User>()` is 4488. |
 | `UserStats`  | 240  | |
-| `PerpMarket` | 1560 | `size_of::<PerpMarket>()` is 1552, of which the trailing `_padding_future: [u8; 256]` starts at struct offset 1296. |
+| `PerpMarket` | 1560 | `size_of::<PerpMarket>()` is 1552. `clob_market` sits at struct offset 1296 and `quoter_slab` at 1328, and the trailing `_padding_future: [u8; 192]` starts at 1360. |
 | `SpotMarket` | 1064 | `size_of::<SpotMarket>()` is 1056, of which the trailing `_padding_future: [u8; 256]` starts at struct offset 800. |
 | `State`      | 1752 | `size_of::<State>()` is 1744. |
+| `QuoterV0`   | 792  | The staging entry of the quoter registry. |
+| `QuoterSlabV0` | 168 + 776 per slot | Capacity is the account's size, not a layout constant. |
+| `ClobCrankConditionsV0` | 808 | |
+| `UserConditionsV0` | 6040 | |
 
 `PerpMarket` and `SpotMarket` each grew by 256 reserved bytes in `market-account-padding`,
 from 1304 and 808 respectively. Accounts created before that change must be grown with the
@@ -883,7 +959,8 @@ the current ones.
   normal. Integrators who read this field to predict a settle amount must apply the same
   `min`, not the live balance alone. This is the field's only consumer. The unstake-cancel
   share forfeiture is protected against donations independently (see below) and does not read
-  it.
+  it. There is no new instruction. `settle_revenue_to_insurance_fund` writes the snapshot, and
+  the unstake, bankruptcy and deficit paths lower it.
 - `PoolBalance` gained two fields from its own padding. `pending_interest_split_dust: u32` is
   at struct offset 20 and `pending_interest_dust: u64` at struct offset 24, taken from the
   14-byte `padding`, which shrank to 2 bytes and kept its name. The struct size (32) and
@@ -926,6 +1003,68 @@ the current ones.
   against Drift's `ReduceOnly` (6), `Settlement` (7) and `Delisted` (8). `MarketStatus` is
   stored directly in `PerpMarket.status` and `SpotMarket.status`, so any custom decoder built
   against the old Drift discriminants will misread these states without reporting an error.
+- `SignedMsgUserOrders` layout (feat/propamm). `SignedMsgOrderId` grows from 24 to 40 bytes. It
+  gains `clob_order_id: u64` and an 8-byte `route_digest`, because a signed-message order now
+  rests on the book rather than in `User.orders` and its record is what names the resting order
+  and the route it signed for. The account's size derives from `size_of` rather than a
+  hardcoded constant, so `space()` and any client allocation must be recomputed. The previous
+  816-byte figure is wrong. Entry lifetime changes with it: an entry holding a live
+  `clob_order_id` survives past the `max_slot` prune until that order leaves the book, and is
+  cleared on fill, cancel, eviction and expiry. A missed clear leaks an entry against the
+  128-entry cap.
+- `QuoterV0` (new account, feat/propamm). Zero-copy, 792 bytes including the 8-byte
+  discriminator; PDA seeds `["quoter", market_index as u16 LE, quoter_program, user]`. The
+  staging half of the registry: `{ config: QuoterConfigV0 (736 bytes), padding: [u8; 48] }`.
+  `QuoterConfigV0` holds one unified 12-slot CPI account list plus per-leg index lists
+  (`quote_account_indexes` / `execute_account_indexes`), the three raw CPI discriminators
+  (`quote_v0` / `execute_v0` / the optional `quote_l3_v0`, all-zero when unimplemented), the
+  response account, the watch declaration, the oracle band, and the book-rule mirrors. There is
+  no `is_approved` flag. Approval is presence in the market's slab. Two new error variants
+  appended at the end of the enum: `InvalidQuoterConfig` (6375 / `0x18E7`) and
+  `InvalidQuoterAuthority` (6376 / `0x18E8`).
+- `QuoterSlabV0` (new account, feat/propamm). PDA seeds `["quoter_slab", market_index as u16
+  LE]`, one per perp market. A 160-byte fixed header (`market: u16`, `capacity: u16`, `bump:
+  u8`, `clob_market: Pubkey` at account offset 16, reserved padding) after the 8-byte
+  discriminator, then `capacity` back-to-back 776-byte `QuoterSlotV0 { entry: Pubkey,
+  suspended: bool, padding: [u8; 7], config: QuoterConfigV0 }` starting at byte 168. Capacity
+  is the account's size, not a layout constant, and the approval flow keeps it right-sized: a
+  slab is born with one slot, `update_quoter_approved` grows the account by exactly the slot it
+  needs (the admin pays the rent) and gives trailing vacancy back on revocation (ceiling 128
+  slots); occupied slots never move. The stored `bump` is the slab's own PDA bump, because the
+  slab is the identity velocity signs every external quoter CPI as. Slot 0 is the market's
+  book; a vacant slot's `entry` is the default pubkey. Router fills, `quote_router` and every
+  CLOB order instruction carry this account where they carried `QuoterV0` entries; a slot is
+  consulted when its `response_account` rides the transaction. New error variants appended at
+  the end of the enum: `QuoterSlabFull` (6405 / `0x1905`) and `QuoterNotOnSlab` (6406 /
+  `0x1906`).
+- Transaction fee rails (feat/propamm). `State` gained `transaction_fee_rails:
+  TransactionFeeRails`, which is `{ inclusion_lamports: u32, signature_lamports: u32,
+  resource_fee_numerator: u32, resource_fee_denominator: u32,
+  max_priority_micro_lamports_per_cu: u32 }`, 20 bytes, alongside `hot_flow_authority: Pubkey`
+  (32), `liquidation_crank_reimbursement_bps: u16`, `sol_spot_market_index: u16` and 2 bytes of
+  trailing filler. All of it comes out of tail `padding`, which shrinks to 110 bytes; `State`
+  stays 1752 bytes and no existing field moved. `initialize` writes a flat 5,000 lamports per
+  signature and nothing else, which is what the network charges today; a zero denominator
+  prices cost units at nothing. New warm/cold-admin instruction
+  `update_transaction_fee_rails(rails)` over `AdminUpdateState`. Every relay crank payment is
+  derived from it, so a change to the network's fee model is one write here rather than a
+  re-price of every market.
+- Per-crank keeper payments (feat/propamm). `ClobCrankConditionsV0.keeper_payment_lamports`
+  (`u64`) became `crank_payments: CrankPaymentsV0`, seven `u32` lamport figures, one per crank
+  (`removal`, `cross`, `taker_origin_cross`, `trigger`, `liquidation`, `force_cancel`,
+  `refill`), plus a `u32` of padding. The account stays 808 bytes, so no conditions PDA needs a
+  resize. A book removal and a two-legged cross differ by an order of magnitude in what they
+  request and the network charges a transaction for what it requests, so one figure for the
+  market either underpays the cross or overpays every removal. The figures are derived at
+  attach time from the rails above and the cost units an admin measured; they are stored rather
+  than recomputed so a crank costs no compute to price itself and a staged executor cannot
+  re-price its own work. `update_perp_market_clob_quoter`'s first argument changed from
+  `keeper_payment_lamports: u64` to `crank_cost_units: CrankCostUnitsV0` (the same seven
+  fields). `SyncLiqConditionsArgs.sync_payment_lamports: u64` became `sync_cost_units: u32` for
+  the same reason, and `sync_liq_conditions` / `sync_user_conditions` gained a read-only
+  `state` account (position 2, after `payer`) to price it. `UserConditionsV0` is unchanged. It
+  still stores the derived lamport figure, which is what keeps a staged resync from re-pricing
+  itself.
 
 ### 5.4 Instruction account-list changes
 
@@ -1050,6 +1189,10 @@ the current ones.
   `manager_update_fees` additionally gained a `velocity_user` account plus the spot market
   and its oracle in `remaining_accounts` (vaults-fee-policy-grandfathering). SDK
   `getManagerUpdateFeesIx` passes them, and protocol vaults still append `VaultProtocol`.
+- `place_and_make_signed_msg_perp_order` is removed (feat/propamm). It existed only to match a
+  signed-message order already resting in `User.orders`, and no signed-message order rests
+  there any more. There is no v0/v1 pair and no frozen second path; velocity controls the
+  fillers. The taker-facing signed message and its broadcast to swift are unchanged.
 
 ### 5.5 New instructions with layout or account implications
 
@@ -1108,6 +1251,48 @@ enum is:
 | 6372 | `UnsettledRevenueShareOnDelist` |
 | 6373 | `RevenueShareOrderNotForfeitable` |
 | 6374 | `VammQuoteManagementValueOutOfBounds` |
+| 6375 | `InvalidQuoterConfig` |
+| 6376 | `InvalidQuoterAuthority` |
+| 6377 | `InsufficientCrankReservoir` |
+| 6378 | `OrderPlacedOnClob` |
+| 6379 | `OrderAwaitingTriggerRecross` |
+| 6380 | `CrossMatchImbalanced` |
+| 6381 | `CrossMatchUnprofitable` |
+| 6382 | `UnattestedFastActivation` |
+| 6383 | `InvalidQuoterResponse` |
+| 6384 | `QuoterOverfilled` |
+| 6385 | `QuoterFillOffQuote` |
+| 6386 | `QuoterSubjectNotPermitted` |
+| 6387 | `TooManyQuoterWireUsers` |
+| 6388 | `SignedRouteMismatch` |
+| 6389 | `SignedRouteEntryMissing` |
+| 6390 | `CrossedTakerRemainderPending` (deprecated, no longer emitted) |
+| 6391 | `NoTakerOriginCross` |
+| 6392 | `TakerOriginCrossWorseForTaker` |
+| 6393 | `InsufficientCrankTreasury` |
+| 6394 | `CrankReservoirNotLow` |
+| 6395 | `InvalidUserConditionsSync` |
+| 6396 | `FillerOmittedReachableMaker` |
+| 6397 | `FillerPaddedTheUserSet` |
+| 6398 | `FillerObligationUncountable` |
+| 6399 | `QuoterFilledShort` |
+| 6400 | `FillerCarriedUnroutedQuoter` |
+| 6401 | `ReduceOnlyOrderCannotRestOnClob` |
+| 6402 | `LiquidationConflictsWithClobOrders` |
+| 6403 | `QuoterReportExceedsReservation` |
+| 6404 | `UnattestedSynchronousTake` |
+| 6405 | `QuoterSlabFull` |
+| 6406 | `QuoterNotOnSlab` |
+| 6407 | `CrossMatchLegsDoNotCross` |
+| 6408 | `TakerExposureNotProtocolOwned` |
+| 6409 | `ClobRestUnavailable` |
+| 6410 | `OrderTypeNotConditional` |
+
+Codes 6411 to 6458 replace `DefaultError` at the sites feat/propamm added, so a router, CLOB,
+quoter or crank failure decodes to a name that states the cause. They cover quoter CPI
+encoding and account wiring, relay condition blocks, crank conditions, cross participants,
+router quote buffers, feature gates and slot duration sync. `DefaultError` keeps every site
+Drift already used it for, so its meaning is unchanged on inherited instructions.
 
 Decode errors by code as before, but expect `Deprecated*` names for retired features.
 
@@ -1151,6 +1336,117 @@ Decode errors by code as before, but expect `Deprecated*` names for retired feat
   whose Borsh keys are `deprecatedSwitchboard` and `deprecatedSwitchboardOnDemand`. Any code
   still matching on the old `switchboard` or `switchboardOnDemand` keys will fail to decode
   these oracle sources.
+
+### 5.8 PropAMM quoter interface
+
+These notes cover the wire and signer contract between velocity and an external quoter
+program (feat/propamm). The registry accounts are in §5.3.
+
+- Quoter CPI signer (feat/propamm). The market's `QuoterSlabV0` PDA (seeds `["quoter_slab",
+  market_index as u16 LE]`) is the one identity velocity signs every external quoter CPI as,
+  across the book's place, cancel, and crank surface and the registry `quote_v0`,
+  `quote_l3_v0`, and `execute_v0` legs alike. A CLOB book's `place_authority` and a midpoint
+  instance's `execute_authority` are set to it, and a quoter's registered account list names it
+  where the signer goes. Sharing one per-market key is safe because approval refuses a
+  registered list that names any other approved quoter's response account, and every
+  authority-trusting instruction on a callee requires its response account, so a forwarded
+  signature has no instruction it can complete. Per-market seeds keep it inert on every other
+  market. Distinct from `State.signer` (seeds `["velocity_signer"]`), which stays the SPL token
+  authority on every `spot_market_vault` / `insurance_fund_vault` and the protocol account's
+  `User` authority.
+- `QuoterReportExceedsReservation` (6403 / `0x1903`). Appended at the end of the `Error` enum.
+  It is thrown when a quoter's response claims more filled or removed base, or more retired
+  open-order slots, than velocity reserved for the user it names. The reservation is written at
+  placement under the owner's signature, so this is the bound that keeps a book to orders its
+  users really placed.
+- Quoter interface, optional third leg (feat/propamm). `quote_l3_v0` answers *who* a ladder
+  stands on. `L3ArgsV0 { direction, size, max_rows }` in, an `L3ResponseV0` of `L3RowV0 {
+  price, size, order_id, node_index, user, flags, placed_slot }` (72 bytes each) out, written
+  into the quoter's response account like every other response and located by the same
+  `ResponsePointerV0`. A quoter implements it when its ladder stands on other people's orders.
+  Of the quoter types only a book does. Everyone else leaves
+  `QuoterV0::quote_l3_v0_discriminator` zero, and a reader attributes the whole ladder to the
+  one `user` the entry names. The CLOB's implementation is capped at `L3_ROWS_CEILING` rows,
+  which is what its existing response region holds and is 114 at the current region size. The
+  market account rides every CPI and the runtime charges compute per byte of it, so describing
+  a deeper book never widens it. `L3_ROW_FLAG_TAKER_ORIGIN` marks a migrated taker remainder,
+  which is depth a cross cannot count on.
+- Quoter CPI wire (feat/propamm). `QuoteArgsV0` / `ExecuteArgsV0` are borrowed
+  (`QuoteArgsV0<'_>`), and `users` is a sequence a quoter reads in place: a `u32` count
+  followed by that many 34-byte `ClobUserRefV0`s, at most `USER_SET_CAPACITY` (48) of them, and
+  an empty set means unrestricted. The encoded argument is 4 bytes when no user is named and at
+  most 1636 when 48 are. It was a fixed-width `QuoterUserSetV0` (a `u8` count plus
+  `[ClobUserRefV0; 48]`, 1633 bytes on every call, copied into the quoter's stack frame), and
+  before that an `Option<Vec<ClobUserRefV0>>`. The set leads the struct so its refs land on an
+  even offset, which is the alignment a `ClobUserRefV0` reference needs; a field added ahead of
+  it must keep that true. Velocity writes the bytes with wincode (`quoter_spec::write_args`,
+  framed by `quoter_spec::ARGS_CONFIG`, which is `anchor_lang_v2::BORSH_CONFIG`), so one
+  declaration defines both halves. Both legs also take the perp market index and reject an
+  entry registered for a different market. A quoter program that implements this interface must
+  update its arg decoding, and must refuse a set longer than 48: the caps address a user by its
+  index in the set, and the exclusion bitmap holds one bit per slot up to that capacity, so a
+  longer set would present an excluded user as settleable.
+  `quoter_spec::user_set_within_capacity` is that check; the CLOB
+  (`ClobError::OversizedUserSet`) and the midpoint (`MidpointError::OversizedUserSet`) apply it
+  on both legs. Five error variants appended at the end of the enum: `InvalidQuoterResponse`
+  (6383 / `0x18EF`), `QuoterOverfilled` (6384 / `0x18F0`), `QuoterFillOffQuote` (6385 /
+  `0x18F1`), `QuoterSubjectNotPermitted` (6386 / `0x18F2`) and `TooManyQuoterWireUsers` (6387 /
+  `0x18F3`). No account layout change.
+- Quote price bound (feat/propamm). `QuoteArgsV0` gained a trailing `limit_price: u64` which is
+  the worst price the caller will fill at, in `PRICE_PRECISION`, with zero meaning no bound.
+  The widest quote argument is therefore 8 bytes longer than the widest execute argument; a
+  quoter that decodes `QuoteArgsV0` positionally must read the field or it will read the next
+  call's bytes at the wrong offset. `ExecuteArgsV0` is unchanged: execute is handed a size
+  already cut off the ladder, so its walk visits no level a bound would remove. Honouring the
+  bound is advisory, like the per-user caps: a ladder is walked best price first, so a quoter
+  may stop as soon as a level is worse than the limit, and the caller discards those levels
+  either way. What it saves is compute. A transaction is billed for the limit it requests, so a
+  level the fill would never take is paid for twice. Velocity passes the taker's own limit
+  price, resolved without the oracle: an order priced by `oracle_price_offset`
+  passes zero rather than a guess, so the bound is either exactly the
+  fill's own or absent. Discovery callers (`quote_router`, the cross-match resolvers) pass
+  zero. No account layout change.
+- Per-quoter base room (feat/propamm). `QuoteArgsV0` and `ExecuteArgsV0` both gained a trailing
+  `self_base_room: u64`, the most base the quoter's own settlement user may take on, bounded by
+  that user's own margin, with `u64::MAX` meaning unbounded. Both argument types are therefore
+  8 bytes longer, and a quoter that decodes them positionally must read the field. A book
+  ignores it: its makers rest depth that was margin-reserved at placement, and each is sized
+  separately in `UserCapsV0`. It exists because `UserCapV0::budget` cannot express this bound.
+  A budget prices the gap between a reserved order's limit and the mark, and it is unbounded at
+  a price in the owner's favour, while a quoter filling from one account reserves nothing and
+  pays initial margin on the base it takes. Honouring it is advisory, like the caps: velocity
+  trims the returned ladder to the same number, so a quoter that ignores it publishes depth the
+  caller then cuts. A quoter quoting for the taker itself is sent zero. Discovery callers
+  (`quote_router`, the cross-match resolvers) send `u64::MAX`. The execute leg must carry the
+  value its quote carried. No account layout change.
+- Who a quoter may settle for (feat/propamm). A `Custom` entry is still held to the one account
+  its registration consented for. A `Clob` entry may now name any user the transaction already
+  carries, except the taker. Velocity used to read the book's arena and hold the response to
+  the makers resting there; that check was the program against itself, since the arena is the
+  book program's own state, so a book that wanted to name a stranger would write the stranger
+  into a node first. What bounds a book instead: the type is a warm-admin decision at
+  registration (a maker registering its own entry can only type it `Custom`). A market's
+  `clob_market` is set once and never changed: `initialize_quoter` designates the book account,
+  approval refuses a `Clob` entry naming any other, and `has_one` holds the attach to it. The
+  response may only name loaded users, every balance change is held to the quoted prices, and
+  every user touched is margin-checked after the fill. Approving a *third party's* book program
+  is what would turn this into an exposure, the same way it already would for the removal
+  reports velocity takes on faith. `initialize_quoter` gained a `state` account for the admin
+  check.
+- Protected flow and the cross crank (feat/propamm). `QuoteArgsV0.taker_served_window` says the
+  taker's flow served a protection window. Two things read it: a `Clob` entry with a non-zero
+  `book_default_activation_delay_slots` quotes an unprotected taker no depth, and a quoter may
+  gate on it itself (the midpoint's `require_attested_flow`). Swift attestation sets it, and so
+  does a crank that measured how long the book orders it sweeps have rested
+  (`SERVED_WINDOW_MIN_SLOTS`, two slots). `crank_cross_match` reports `false` whenever the
+  route consults a `Custom` entry that quotes. A `Custom` quoter prices during the call and
+  keeps no resting order, so the crank has no rest to measure and the crossing side may be a
+  quoter that repriced in the same slot. The consequence for an integrator running a `Custom`
+  quoter: a cross between that quoter and the market's book settles through this crank only
+  when the book runs no speed bump and the quoter does not require attested flow. Otherwise the
+  cross rests until ordinary flow clears it, and reaching a protected source still means going
+  through swift. `crank_taker_origin_cross` is unaffected, because it vouches for one named
+  order whose rest it measured, and so is a liquidation.
 
 ---
 
@@ -1280,7 +1576,7 @@ long carry a one-line summary here and a link into §6.2.
 | bankruptcy-recover-then-forfeit | Close three gaps left by `bankruptcy-unfundable-claim-setoff` and `bankruptcy-estate-setoff` (OtterSec #130, #145). Includes an account-set change on `resolve_spot_bankruptcy`. [Details](#bankruptcy-recover-then-forfeit) |
 | bankruptcy-unfundable-claim-setoff | Fix a High audit finding (OtterSec #145) where a positive perp `quote_asset_amount` vetoed bankruptcy admission unconditionally, stranding a resolvable loss in another market. [Details](#bankruptcy-unfundable-claim-setoff) |
 | bid-ask-twap-quote-rest-age | Fix a High audit finding (OtterSec #146) in `update_perp_bid_ask_twap`, where a caller could move the mark TWAP with quotes it placed and cancelled in one transaction. Adds a minimum quote rest age and clamps the baseline auction start offset. [Details](#bid-ask-twap-quote-rest-age) |
-| breaker-liquidation-followups | Close the last liquidator route the authority-wide equity breaker did not reach (audit #68 follow-up). `liquidate_spot_with_swap_begin` and `_end` had no `liquidator_stats` in their account context, so a tripped authority could keep collecting liquidation fees through swap-backed spot liquidations while the four direct routes were barred. The shared `LiquidateSpotWithSwap` context gains `liquidator_stats`, validated with `is_stats_for_user` against the liquidator, and `begin` rejects with `EquityBelowFloor` when `equity_breaker_tripped` is set, before any flash-loan state opens. `end` runs in the same transaction, so gating `begin` covers the pair. Integrator-visible instruction-accounts change: both instructions require the liquidator's `UserStats` account, so keepers building them by hand must pass it. The SDK's `getLiquidateSpotWithSwapIx` and `getJupiterLiquidateSpotWithSwapIxV6`, and velocity-rs' `liquidate_spot_with_swap_begin` and `_end` builders, resolve it automatically. Also adds the breaker-freeze regression suite the audit issues asked for, covering trigger activation, order placement, every liquidation route and `transfer_perp_position` driven from a tripped authority. No account-layout or error-code change, and the IDL is updated for the new instruction accounts (§3.1, §5) |
+| breaker-liquidation-followups | Close the last liquidator route the authority-wide equity breaker did not reach (OtterSec #68 follow-up). `liquidate_spot_with_swap_begin` and `_end` had no `liquidator_stats` in their account context, so a tripped authority could keep collecting liquidation fees through swap-backed spot liquidations while the four direct routes were barred. The shared `LiquidateSpotWithSwap` context gains `liquidator_stats`, validated with `is_stats_for_user` against the liquidator, and `begin` rejects with `EquityBelowFloor` when `equity_breaker_tripped` is set, before any flash-loan state opens. `end` runs in the same transaction, so gating `begin` covers the pair. Integrator-visible instruction-accounts change: both instructions require the liquidator's `UserStats` account, so keepers building them by hand must pass it. The SDK's `getLiquidateSpotWithSwapIx` and `getJupiterLiquidateSpotWithSwapIxV6`, and velocity-rs' `liquidate_spot_with_swap_begin` and `_end` builders, resolve it automatically. Also adds the breaker-freeze regression suite the audit issues asked for, covering trigger activation, order placement, every liquidation route and `transfer_perp_position` driven from a tripped authority. No account-layout or error-code change, and the IDL is updated for the new instruction accounts (§3.1, §5) |
 | builder-fee-margin-gate | Close the remainder of a Medium audit finding (OtterSec #83). PR #309 capped the builder fee at 1% of notional, which rate-limits the transfer but does not stop it, because a taker below initial margin can reduce the position in slices, and each slice both routes up to 1% of its notional to a builder the taker approves and lowers the maintenance requirement that gates the next slice. `fulfill_perp_order` now charges the builder fee only while the taker meets initial margin, the same gate a withdrawal clears. The gate applies the withdraw gate's oracle rules too, meaning strict TWAP-bounded prices, no collateral for a deposit with an invalid oracle, and every liability oracle valid, so one oracle push, or one stale oracle on an unrelated position, cannot open it for the instant the fill needs. The fee is waived rather than the fill, so the taker still closes the position and the builder is paid nothing for that fill. Waiving is what this gate does on its own. A spot borrow oracle the calculation cannot value fails the fill outright on the separate `all_spot_liability_oracles_valid` gate in the same handler (see [fill-stale-margin-bad-debt](#fill-stale-margin-bad-debt)), so the waiver is the observable outcome for an invalid perp or deposit oracle. It is perp only, and the referrer reward is carved out of the taker fee rather than added to it, so it is unaffected. SDK: new `User.isBuilderFeeCharged()`, consulted by `User.calculatePerpTakerFee` and `VelocityClient.getMarketFees`. No account-layout, IDL or error-code change |
 | ci-cargo-deny-offline-db | CI only, with no program or SDK surface change. The `Cargo deny` job's cargo-deny 0.20.x fetches the RustSec advisory DB by shelling out to the git CLI, and GitHub rejects that unauthenticated clone from the CI runner, since no `GITHUB_TOKEN` is given to this job. `cargo-audit` fetches the same DB successfully via the `rustsec` crate's gix-library path, so the job runs `cargo audit --db <tmp>` purely to populate a clone, symlinks it under cargo-deny's own hashed DB directory name, and runs both `cargo deny --offline` checks against it. `test-scripts/ci-local.sh` mirrors the same handoff in a `mktemp` scratch dir. `cargo-deny` and `cargo-audit` are pinned to exact versions, 0.20.2 and 0.22.2, since the handoff depends on both tools' on-disk layout, and both now gate the required `ci-gate` check. `deny.toml`'s policy for sources, licenses, bans and advisory ignores, and `.cargo/audit.toml`, are unchanged |
 | delete-user-orphan-builder-rows | Fix a Medium audit finding (OtterSec #128) where `delete_user` permanently orphaned fee-bearing builder rows. `RevenueShareEscrow::revoke_completed_orders` only transitions rows whose `sub_account_id` matches the `User` it is handed, and `delete_user` retires that id for good, since `number_of_sub_accounts_created` has no decrement site, so the id is never reissued and no future `User` can match those rows again. A row left `open && !completed` therefore became unreachable, the builder's accrued fee was stranded, and the market's `pending_revenue_share` stayed inflated for the life of the market. The window is not the open-order case, since `validate_user_deletion` already requires every order closed. It is the filled-but-not-yet-revoked row, which is the state `revoke_completed_orders` exists to resolve. `delete_user` now resolves rather than blocks. It runs `revoke_completed_orders`, so each row for the subaccount becomes `Completed`, or is cleared when it carries no fees, which is the state the permissionless sweep pays out of, and the sweep needs no `User` so it still pays after the account is gone. Blocking instead would hold a user's rent hostage until a keeper cranked. A defensive `has_outstanding_orders_for_sub_account` check then refuses the deletion if anything for that id somehow remains outstanding, with `UserCantBeDeleted`. `force_delete_user` retires the id the same way and so orphaned rows identically, and it gets the same settlement, placed after its `cancel_orders` sweep so every row for the subaccount is already closed and therefore revocable. ABI change (§5): `DeleteUser` gains a required fifth account and `ForceDeleteUser` a required seventh, in both cases the authority's `RevenueShareEscrow` PDA. It is required rather than optional so a caller cannot skip the settlement by omitting it, and it is safe for the majority who have no escrow because the address is `seeds`-pinned, making absence provable via `data_is_empty()`. The TS SDK derives both automatically so SDK callers are unaffected, and manual ix builders must add it. `getForceDeleteUserIx` drops the escrow it used to append to `remaining_accounts`, which the program never read. No account-layout or error-code change, since it reuses `UserCantBeDeleted` |
@@ -1295,6 +1591,7 @@ long carry a one-line summary here and a link into §6.2.
 | equity-floor-oracle-validity | Fix three OtterSec findings (#131, #139, #142) where an equity-floor decision was taken off an oracle price the program had already judged invalid. Introduced a two-sided equity bound, later replaced by `equity-floor-fail-closed`. [Details](#equity-floor-oracle-validity) |
 | expiry-price-conservation | Fix three Medium audit findings (OtterSec #116, #125, #147) on opposite sides of the same expiry-settlement conservation equation, where aggregate user claims must fit the value that backs them. [Details](#expiry-price-conservation) |
 | expiry-settlement-guards | Fix two High audit findings (OtterSec #149, #133). #149: a time-expired perp position could still be liquidated at the live oracle before its fixed settlement price existed. Every ordinary user path already refuses past `expiry_ts` via `is_in_settlement(now)`, so placing, filling, triggering, transferring and settling all gate on it, but `liquidate_perp` and `liquidate_perp_with_fill` did not. For the whole window between `expiry_ts` and a warm admin flipping the status to `Settlement`, a liquidator could take the position at a live price the committed `expiry_price` then supersedes, while the owner had no way to act. Both now reject with `InvalidLiquidation` when the market has expired but is not yet `Settlement` or `Delisted`. They are deliberately not gated on `is_in_settlement` itself, because that is also true once the status is `Settlement` or `Delisted`, by which point `expiry_price` is committed and liquidating during the wind-down is a legitimate way to resolve bad debt. An existing delisting test caught the over-broad first attempt. `resolve_perp_bankruptcy` is likewise untouched, so bad debt on an expired market can always still be cleared. Integrator-visible: liquidating a perp market between `expiry_ts` and its `Settlement` flip now reverts, so run `settle_expired_market` first, then close positions via `settle_expired_position`. #133: a negative committed `expiry_price` was clipped out of margin and equity. `calculate_base_asset_value_and_pnl_with_oracle_price` clamps a non-positive price to zero, which is correct for a live oracle where a negative print is nonsense, but margin reused it for the `Settlement` valuation, so a long's signed base loss was clipped to zero and the position read as merely worthless instead of underwater, letting the owner withdraw collateral. `settle_expired_position` values the same position through `calculate_base_asset_value_with_expiry_price`, which never clamped, and later booked the real negative value as an unsecured quote borrow, and that divergence was the bug. The new `calculate_base_asset_value_and_pnl_with_expiry_price` keeps the sign, and both `Settlement` branches in `math/margin.rs` use it. The live-oracle clamp is deliberately left intact, since it is a real guard against a bogus oracle print and only the expiry-price path is legitimately allowed to be negative. No account-layout, IDL, error-code or SDK-API change, since it reuses `InvalidLiquidation` |
+| feat/propamm | PropAMM order flow. Perps fill through one router across the vAMM, an on-chain CLOB book and external quoter programs. The DLOB, order auctions, AMM JIT and jit-proxy are removed, and every live order is ephemeral: only its unfilled remainder rests, on the book. New accounts `QuoterV0`, `QuoterSlabV0`, `ClobCrankConditionsV0`, `UserConditionsV0` and `CrankTreasuryV0`, new error codes 6375 to 6458, and relay cranks for expiry, eviction, crosses, triggers and liquidations. §2, §3, §4 and §5 carry the surface. [Details](#propamm-order-flow) |
 | fee-tier-vip3 | Adds a fourth perp fee tier, VIP 3, at $200M trailing-30d volume (§3). `PERP_FEE_TIER_MAX_INDEX` goes from 2 to 3, `VOLUME_THRESHOLDS` gains `TWO_HUNDRED_MILLION_QUOTE`, `FeeStructure::perps_default` seeds `fee_tiers[3]`, and `update_promo_fee_tier` accepts 3. No ix, layout, IDL or error-code change, since the slot already existed in the 10-wide array. SDK mirror: `VIP_FEE_TIER_THREE_VOLUME_QUOTE` in `PERP_FEE_TIER_VOLUME_THRESHOLDS`, so `getPerpFeeTierIndex`, `getUserFeeTier` and `getMarketFees` pick tier 3 above $200M. Admin CLI `fees set-schedule` takes four tier fees |
 | fill-stale-margin-bad-debt | Fix four High audit findings (OtterSec #143, #144 on oracle validity, and #135, #148 on unaccrued interest) in the perp-fill path's post-fill margin checks. Adds the new error `SpotMarketInterestStaleForMargin` (6371). [Details](#fill-stale-margin-bad-debt) |
 | if-add-exact-share-pricing | Follow-up to #253 on the same High finding. Rejecting only the zero-share case still let a deposit be partly captured. Shares are indivisible, so a request worth 1.5 shares minted 1 and donated the remaining half to existing shareholders, and with a donation-inflated share price the forfeited fraction approaches 100%, so the zero-share guard bounded the loss rather than removing it. `add_insurance_fund_stake` now transfers only the portion of the requested amount that prices to whole shares, via `deposit_amount_and_shares_for_if_stake`, which floors the shares and ceils their cost so the fund never sells a share below price, and leaves the remainder, always less than one share price, in the depositor's token account. `IFDepositMintsZeroShares` (6360) now means the request is below the price of one share. `InsuranceFundStakeRecord.amount`, `InsuranceFundStake.cost_basis`, `UserStats.if_staked_quote_asset_amount` and `SpotMarket.if_last_settle_vault_amount` all track the accepted amount rather than the request. Integrators must treat the `amount` argument as an upper bound and read the staked amount from `InsuranceFundStakeRecord`, since the SDK's `fromSubaccount` path leaves any remainder in the wallet's token account. The `vaults` program's `add_insurance_fund_stake` stakes the whole balance of `vault_if_token_account` rather than the requested `amount`, so a remainder left by an earlier add folds into the next one. That account holds nothing else and no instruction sweeps it, so the amount staked can exceed the manager's transfer. No layout, IDL or error-code change |
@@ -2202,6 +2499,561 @@ spot oracle TWAPs stopped advancing on the swap paths. The `swap-twap-write-afte
 restores that, after the check. No account-layout, IDL, error-code or SDK-API change, since
 the SDK's `isOracleTooDivergent` already measured against the stored pre-refresh TWAP.
 
+#### propamm-order-flow
+
+This is the largest ABI change since the fork. §2, §3 and §5 carry the feature and layout
+detail, and §4 the SDK surface.
+
+##### Fills
+
+Every perp fill goes through one router pass. Each source publishes discrete price levels and
+the split walks priority tiers ascending (vAMM, then a book, then customs), pro rata within a
+tier. AMM JIT is gone along with `PerpFulfillmentMethod`, so off-chain fill prediction must
+model the vAMM as a level ladder rather than a curve swap (`splitAcrossQuoters` /
+`vammQuoteLevels` mirror the program).
+
+The DLOB is gone. `place_perp_order`, `place_orders`, `place_scale_orders`,
+`place_and_take_perp_order` (v0), `place_and_make_perp_order` (v0), `fill_perp_order`,
+`fill_legacy_dlob_order`, `revert_fill`, `trigger_order` and `resolve_trigger_order` are
+deleted, and a transaction that names one fails as an unknown instruction.
+`place_and_take_perp_order_v1` and `place_and_make_perp_order_v1` are the taker and maker
+routes, `place_trigger_orders_v1` arms a trigger, and `trigger_market_order_v1` /
+`trigger_limit_order_v1` fire one. `User.orders` holds unfired conditionals only: armed
+triggers, the SL/TP sidecars a signed-message order writes, and the shadow a triggered
+trigger-limit keeps. The cancel and modify endpoints are unchanged, so an order left over from
+the old venue is inert but still cancellable and its `open_bids`/`open_asks` unwind correctly;
+nothing strands, but each one reserves margin until its owner pulls it. The SDK's off-chain
+book goes with the venue: `DLOB`, `DLOBNode`, `NodeList`, `DLOBSubscriber`, `OrderSubscriber`,
+`AuctionSubscriber`, `UserMap.getDLOB` and the vAMM ladder generators that fed them are
+removed, `L2Level`/`L2OrderBook`/`L3Level`/`L3OrderBook`/`groupL2`/`uncrossL2` move from
+`dlob/orderBookLevels` to `orderBookLevels` (same barrel exports), a level's `sources` reports
+`'vamm'`/`'clob'`/`'propamm'` only, and `calculateEstimatedPerpEntryPrice` takes an
+`L2OrderBook` in place of a `DLOB`. Read a market's book from the dlob-server's `/l2`, `/l3`
+and `/topMakers`, a user's own orders from `UserClobOrdersClient`, and what a taker of a given
+size would get from `quoteRouter`.
+
+Signed-message orders no longer rest in a slot. `place_signed_msg_taker_order` routes the order
+at placement and rests what it cannot fill on the market's book as a taker-origin remainder, so
+the highest-volume order type in the protocol gets the activation-slot auction instead of
+resting where a landing race decides who fills it. `place_and_make_signed_msg_perp_order` is
+deleted. It existed only to match a signed-message order already resting in `User.orders`. The
+taker-facing signed message and its broadcast to swift are unchanged; the ABI break is on the
+keeper side, which velocity controls. Signed-msg orders carry a `network` tag and an optional
+signed route that binds the filler; that route now rides `SignedMsgUserOrders` next to the CLOB
+order id it rests under, rather than five spare bytes on `Order`, and is eight bytes wide. A
+quoter reports depth it could not reach and the router reserves it, so a worse price cannot
+take what a book was standing on. IOC is exempt.
+
+##### The book
+
+A standalone CLOB program holds plain limit orders, reached only through velocity adapters that
+gate margin and unwind aggregates; trigger orders migrate onto it and leave a shadow in
+`User.orders`, and a fired trigger rests taker-origin. It came to trade, so a cross settles at
+the counterparty's price rather than picking it off at its own, and its owner cannot cancel it
+inside the activation window; an activation-slot speed bump replaces JIT, and `jit-proxy` is
+deleted. The book gained `fill_v0`: velocity reports base it settled against a resting order
+and the order shrinks in place, keeping its id and its queue position, so a cross no longer
+costs a taker the place in line it waited for. Cancel takes a `force` flag, which is how
+liquidation force-cancel reaches an order bound inside its window while an ordinary cancel
+cannot. Order identity is stored derivable (`authority`, `sub_account_id`), so a reader reaches
+every user-derived account from a node. Velocity never reads the book's arena: what to remove
+and what a set of refs still names come back from the book's own read-only `next_removal_v0`
+and `orders_v0` (both describing an order in one shape, `OrderViewV0`), and depth comes from
+`quote_v0` / `quote_l3_v0`, the same interface every other source answers on, so the CLOB gets
+no special reader. The book's rules an order has to satisfy come from `order_rules_v0`, and
+where a relay watch on its top of book registers is reported by `set_crank_conditions_v0`.
+Velocity therefore knows the CLOB's instruction wire and nothing about its account layout: the
+`clob-spec` crate is deleted, and the market's layout is the book's own. The book also hosts
+the relay conditions for its own state (an expired order, a side at its eviction threshold, a
+crossed book, an order reaching its activation slot) and keeps their wakes current as it places
+and removes; `set_crank_conditions_v0` is where velocity registers which of its resolvers
+answers each. One resolver, `resolve_clob_crank`, for all of them: relay hands a resolver the
+condition that fired, so `resolve_crank_clob_evict`, `resolve_crank_clob_remove_expired` and
+`resolve_crank_cross_match` collapse into it and each condition keeps its own payment floor.
+Placement, modify, cancel and every taker route therefore take no conditions account:
+`place_and_take_perp_order_v1`, `place_and_make_perp_order_v1`, `cancel_orders_v1` and
+`place_signed_msg_taker_order` carry no optional `crank_conditions`.
+
+##### Quoters
+
+`QuoterV0` registers an external quoter per (market, program, user) with its CPI surface, its
+admin-assigned tier and a reprice watch; entries are born unapproved, the maker keeps a kill
+switch, and velocity signs every external quoter CPI as the market's quoter-slab PDA rather
+than the vault authority (see the slab paragraphs below). The wire is `quote_v0`, `execute_v0`
+and the optional `quote_l3_v0`; responses are validated rather than trusted, and a `Custom`
+entry may only move the account its registration consented for.
+
+##### Cranking
+
+Expiry, eviction, crossed books, crossed taker remainders, trigger arming and liquidations land
+with nobody submitting them, out of relay conditions with a keeper-payment reservoir. A
+condition's wake lives on the account whose state it describes and its resolver is registered
+by the program that owns the flow, so the book's four sit on the book and velocity's per-market
+and per-user accounts hold the rest. Each crank's payment is derived, not set:
+`State.transaction_fee_rails` says what a transaction costs to land and a market's attach
+prices every crank from it and the cost units the admin measured, so a two-legged cross and a
+book removal are not paid the same. Two cranks then price themselves above that base, because a
+flat figure covers a quiet market and nothing more. A keeper paying any priority fee is out of
+pocket, and declines exactly when congestion is what stopped the crank. An expiry's offer
+climbs linearly with how long it went unclaimed, to 5,000 lamports over five minutes. A
+liquidation repays the priority fee its keeper paid. It is read back from the transaction's own
+compute-budget instructions, and priced on the lesser of the limit the transaction asked for
+and the crank's measured cost units, so a keeper is made whole without profiting either by
+inflating its limit or by requesting less than it is repaid for. It is capped at
+`State.liquidation_crank_reimbursement_bps` of what the liquidation recovered, converted
+through the SOL market named by `State.sol_spot_market_index`. Reimbursing a keeper-chosen cost
+is safe because the keeper does not keep it: a priority fee goes to the validator. A
+liquidation that fills nothing pays nothing, so an account that cannot be liquidated cannot be
+cranked for its reservoir. New `update_liquidation_crank_reimbursement` sets both fields; both
+default to zero, which leaves the flat payment. Every reservoir is funded from one account:
+`CrankTreasuryV0` (`["crank_treasury"]`) is the protocol's single crank pool, and a market
+refills itself from it through the permissionless `refill_crank_reservoir` crank rather than
+being topped up by hand. A reservoir mirrors its spendable lamports into
+`ClobCrankConditionsV0.spendable_mirror`, because a relay watch reads account data and a
+lamport balance is metadata, and a condition on that value wakes the refill; the mirror sits on
+the same account as the block, so no second watch is registered. A user's
+liquidation-conditions resync is paid from the treasury too, because a stale threshold is a
+protocol problem before it is a user's, so an underfunded user account can no longer stop its
+own liquidation from firing. Cranks are still paid by the market reservoir they crank rather
+than from the treasury directly, because a crank writes whatever pays it and a writable account
+has a fixed compute budget per block. What a refill pays is priced from the rails like every
+other crank and stored on the market it fills (`CrankPaymentsV0.refill`), because a relay
+turner drops any condition advertising less than its own configured floor. The treasury holds
+the lamports and both levels a reservoir is held between, counted in cranks so one setting fits
+every market: the target is read at refill time, and the watermark is resolved to lamports at
+attach and stored on the market because it is the threshold that market's wake condition
+carries. `sweep_crank_reservoir` moves lamports back out of a reservoir, so a retired market
+does not hold them for good. The self-sync fee a user states for its own liquidation-conditions
+resync is capped and drawn at most once per fallback interval, because the treasury pays it and
+opting in is permissionless. New `initialize_crank_treasury`, `update_crank_treasury` and
+`withdraw_crank_treasury`; funding it needs no instruction. `initialize_user` now requires the
+`user_conditions` account rather than accepting `None`, so every user carries relay liquidation
+coverage and pays its rent with the account. The moment coverage matters is the moment another
+party's transaction gave the user a position, where the user signs nothing and no rent can be
+charged to them. `initialize_vault` and `initialize_vault_with_protocol` gain
+`velocity_user_conditions` for the same reason. `UserConditionsV0` no longer stores
+per-exposure liquidation thresholds (`LiqSlotMetaV0` and its `slots` array are removed, 6,040
+bytes rather than 7,864): a precomputed threshold is a second, approximate implementation of
+the margin engine, and a `LIQ_LIVENESS_POLL` condition plus a resolver that runs the real
+maintenance-margin calculation covers the same ground exactly. Spot-only distress remains a
+keeper-bot path, because `liquidate_spot` hands the liquidator the borrow and its collateral
+and a protocol keeper has no venue to unwind that inventory. `ClobCrankConditionsV0` gains a
+second condition, the mirror field and a seventh crank price, so it is 808 bytes rather than
+616, and `CrankCostUnitsV0` / `CrankPaymentsV0` gain a `refill` field.
+
+##### Books off-chain
+
+`quote_router` answers what a taker of a direction and size can get, per source, in fill order,
+by simulating the real fill (including the orders behind each ladder and the users a fill has
+to carry) into `RouterQuoteBufferV0`, read out of post-simulation state.
+
+##### Client surface
+
+A book order has no `User.orders` slot, so two things replace what `user.getOpenOrders()` used
+to answer. Its id is minted from `User.next_order_id`, the same counter an armed trigger draws
+from, and carried through the book on every answer that names the order (`client_order_id` on
+the placement args, the node, `RemovedOrderV0`, `CompletedOrderV0`, the new
+`PartiallyFilledOrderV0`, and every CLOB event), so a client names an order the same way
+wherever it rests and holds no map between two id spaces. Its lifecycle is on the records the
+order-history pipeline already reads: velocity emits `OrderRecord` when an order starts resting
+(placement, modify, a trigger firing, a taker remainder migrating) and `OrderActionRecord` with
+`OrderAction::Cancel` when it stops, with two appended `OrderActionExplanation` variants,
+`ClobOrderEvicted` and `ClobRemainderCulled`. Both records carry `OrderBitFlag::PlacedOnClob`,
+and `OrderBitFlag::IsIsolatedPosition` when the order belongs to an isolated position, so a
+reader learns a book order's margin regime from the record that opens it. A fill's
+`maker_order_id` is set when the balance change names exactly one order; the order's size
+fields stay absent, because velocity holds no per-order state for a book order and a wrong size
+is worse than none. `cancel_orders_v1` is the exception (128 removals against a 10 KB log
+budget), and its per-order detail rides the book's own `OrdersCancelRecordV0`, now listing
+velocity's ids. `cancel_order_v1` carries a read-only `perp_market`, for the cached oracle
+price its record is stamped with. Post-only ships as `reject_if_crossed` on
+`place_and_make_perp_order_v1`/`modify_order_v1`: it refuses a placement that would rest
+crossed. It is not what makes the order a maker. A resting CLOB order settles at its own price
+on the maker fee schedule either way, including in a cross, where the protocol `User` is the
+taker on both legs. A modify keeps the order's id and loses its queue position. Off-chain, the
+book publisher indexes the market account into a per-user resting-order feed (`GET
+/userOrders`, websocket channel `user_orders`), republishing a user only when that user's own
+rows change; every row carries the `ClobOrderRefV0` a cancel or a modify takes.
+
+##### Nothing live transits `User.orders`
+
+Every v1 live order is ephemeral: swift (`place_signed_msg_taker_order`), `place_and_take_v1`
+and `place_and_make_v1` build a stack `Order`, margin-check it, route it, and place only the
+restable remainder on the book. No `User.orders` slot is taken and cancelled. `jit-proxy` is
+deleted. A fired stop-market fills straight to the book too: new `trigger_market_order_v1`
+fires the trigger and fills the now-live market order in one instruction, resting only the
+remainder as a taker-origin order, where the removed `trigger_order` left a live
+`TriggeredAbove` slot for a later fill crank. Relay drives this without a keeper bot:
+`sync_trigger_conditions` routes a stop-market on a book market to the new
+`resolve_trigger_market_order_v1` resolver and a trigger-limit to
+`resolve_trigger_limit_order_v1`. The relay resolver stages no quoter tail, so
+`trigger_market_order_v1` does not fill: it rests the whole fired order taker-origin and the
+cross crank fills it across every source. A resolver sees only the book, not the propAMMs, so a
+fill it staged would take a worse price. A keeper that read the book may still stage a tail and
+fill in the same instruction. `User.orders` now holds only unfired conditionals. A reduce-only
+order may rest on the book: the router carries an authoritative per-user `base_cover` cap in
+the caps wire (`quoter-spec` `UserCapV0.base_cover`) and a per-order `ReduceOnly` flag on the
+CLOB order, and the book clamps every reduce-only fill to the position it may reduce. It fails
+closed, so an uncovered reduce-only order never fills. `PerpPosition` gains
+`reduce_only_clob_orders`, a `u16` reusing the two padding bytes so the account size is
+unchanged, which is the count that tells the router which makers to cap. A reduce-only order
+rests at most the position it reduces: a fired reduce-only trigger-limit rests only that much
+and is cancelled with `ReduceOnlyOrderIncreasedPosition` when nothing is left to reduce, and
+`modify_order_v1` clamps a reduce-only replacement the same way and refuses one with nothing
+left to reduce. The quoter wire's `CompletedOrderV0` and `CancelledRemainderV0` carry the
+removed order's `L3_ROW_FLAG_REDUCE_ONLY` in a new `flags` byte, so the count also disarms when
+a fill consumes or culls a reduce-only order. `CompletedOrderV0.change_index` narrows to `u16`
+to keep that entry at 16 bytes. A new `ReduceOnly` bit on the CLOB's own `OrderBitFlag` (the
+node flag, not velocity's `Order.bit_flags`) and an `L3_ROW_FLAG_REDUCE_ONLY` book-row flag
+carry the fact across the wire. SDK `triggerMarketOrderV1` / `getTriggerMarketOrderV1Ix` /
+`VelocityCore.buildTriggerMarketOrderV1Instruction`, and `PerpPosition.reduceOnlyClobOrders`.
+Limit orders no longer accept `oracle_price_offset` (§2).
+
+##### Maker priority
+
+On a book with a nonzero `default_activation_delay_slots`, only attested flow (a transaction
+co-signed by `State.hot_flow_authority`) fills against the book in the same transaction. An
+unattested taker (`place_and_take_perp_order_v1`, `place_signed_msg_taker_order`, a keeper tail
+on `trigger_market_order_v1`) rests its whole order taker-origin through the default window and
+the cross cranks fill it; an unattested shape that demands a synchronous outcome (an IOC, a
+success condition) is refused with `UnattestedSynchronousTake` (6404). Cancels are never
+delayed, so a maker can always reprice ahead of unattested aggression. A book with a zero
+default delay opts out entirely. Attestation has two transports, and the flow authority never
+signs a keeper-built transaction: `place_and_take_perp_order_v1`,
+`place_and_make_perp_order_v1` and `modify_order_v1` carry an optional `flow_authority` signer
+account (swift signs the transactions it builds itself), and `place_signed_msg_taker_order`
+gains a `flow_attestation: Option<FlowAttestationV0>` argument: swift's detached signature over
+the order's own signature plus an expiry, verified in-program next to the taker signature (no
+second signature fee, no `/attest` transaction custody). Swift's `/attest` returns the
+attestation blob for a held order instead of co-signing a posted transaction. Velocity reads
+the co-signature once and forwards the verdict on the quoter wire:
+`QuoteArgsV0`/`ExecuteArgsV0` gain `taker_served_window` (true for attested flow, and for the
+protocol cranks only when the orders they settle measurably rested (`SERVED_WINDOW_MIN_SLOTS`,
+two slots), so a zero-delay book cannot launder fresh flow into the flag). The midpoint's
+`require_attested_flow` now checks that flag instead of introspecting the instructions sysvar,
+so its `quote_v0`/`execute_v0` account lists drop the sysvar and velocity `State` accounts.
+Re-register midpoint entries accordingly. A rested unattested order therefore reaches protected
+liquidity through the cross cranks. The off-chain router view takes the same fact as an
+argument (`QuoteRouterArgs.taker_served_window`): a view for unprotected flow shows no depth
+from a bumped book or a protected quoter, exactly as the fill's route would. `QuoterV0` carries
+the book's placement rules: the attach mirrors them onto the entry (`book_tick_size`,
+`book_min_order_size`, `book_default_activation_delay_slots`), so the take gate, the route's
+maker-priority skip, and the remainder rest read a loaded field instead of CPI'ing
+`order_rules_v0`. Re-run `update_perp_market_clob_quoter` after changing a book's rules, and
+the attach's `quoter` account is now writable.
+
+The registry moves into a per-market slab. The quoter registry's approved set moves into one
+`QuoterSlabV0` per market (§2 quoter registry, §5 ABI). A router fill carries the slab instead
+of one `QuoterV0` entry per quoter, so a quoter costs two unshared account locks instead of
+three; a slot is consulted when its response account rides the transaction. `QuoterV0` shrinks
+to a staging entry (792 bytes) with one unified 12-slot CPI account list plus per-leg index
+lists; `update_quoter_accounts` takes the whole list in one call and `QuoterCpiLeg` is removed;
+approval copies staging into the slab and staging edits no longer clear a live config. Every
+CLOB order instruction renames its `quoter` account to `quoterSlab`; `quoteRouter` drops
+`quoterCount`; `crank_cross_match` legs become slab slot indexes. New `initializeQuoterSlab`
+instruction, `getQuoterSlabPublicKey`, `decodeQuoterSlab`,
+`QuoterConfigV0`/`QuoterSlotV0`/`QuoterSlabV0Account` mirrors. Errors `QuoterSlabFull` (6405),
+`QuoterNotOnSlab` (6406).
+
+The slab signs everything.
+
+The market's quoter slab signs every external quoter CPI (ABI, §5). The `["clob_authority"]`
+and per-entry `["quoter_signer", entry]` PDAs are removed; a book's `place_authority`, a
+midpoint instance's `execute_authority`, and the signer slot in every registered CPI account
+list are the market's `QuoterSlabV0` PDA. Every CLOB instruction drops its `clob_authority`
+account, and fills stop carrying per-quoter signer accounts, so a route frees one account lock
+per quoter plus one per CLOB instruction. Sharing one per-market key is safe because approval
+refuses a registered list that names another approved quoter's response account and every
+authority-trusting callee instruction requires its response account (the same first-look
+exclusion that already existed), and per-market seeds keep the signature inert elsewhere;
+approving a third-party quoter program now carries the matching check.
+
+The slab right-sizes itself (ABI, §5). `initialize_quoter_slab` takes `{ market_index }` and
+creates one slot; `update_quoter_approved` grows the account by exactly the slot it needs
+(admin pays; its context gains `system_program` and a writable `admin`) and returns trailing
+vacancy on revocation; `extend_quoter_slab` is deleted. The slab header stores its own bump.
+`crank_cross_match` names `perp_market` and `quoter_slab` in its accounts (ABI); its maps
+section shrinks to the oracle and the quote spot market. Every endpoint feat/propamm added
+takes a single args struct (`PlaceAndTakePerpOrderV1Args`, `TriggerMarketOrderV1Args`,
+`CrankCrossMatchArgs`, `UpdateQuoterApprovedArgs`, …; the full list is in the IDL). Borsh
+encoding is unchanged where the fields kept their order. SDK: `getClobAuthorityPublicKey` /
+`getQuoterSignerPublicKey` and the `VelocityClient` accessors are removed. Derive
+`getQuoterSlabPublicKey(programId, marketIndex)` instead; `clobAccounts` bundles lose their
+`clobAuthority` field; `QuoterSlabV0Account.bump`. Admin CLI: `quoter init-slab <market>` loses
+its capacity argument and `quoter extend-slab` is removed.
+
+The bindings are stored and constraint-checked (ABI, §5). `PerpMarket.clob_quoter` is replaced
+by `clob_market` (same offset, 1296): the market stores its book account directly instead of
+the registry entry, written once at `initialize_quoter` (the entry stays the quoter's identity
+in signed routes and relay conditions). `PerpMarket` also gains `quoter_slab` at offset 1328
+(the reserved tail shrinks to 192 bytes and the account did not grow), written at `initialize_perp_market`. The
+slab header gains the book's account (`clob_market` at account offset 16, inside reserved
+padding), written at approval and kept through a suspension so removal paths still reach a
+killed book. Every accounts struct that names the market, the slab, or the book binds them with
+`has_one`, so a wrong account now fails at the accounts layer instead of in a handler.
+`update_quoter_approved` gains a read-only `perp_market` account (after `quoter`): a `Clob`
+approval is refused unless the staged response account is the market's designated book, since
+the staging entry is maker-editable between registration and approval. `crank_cross_match` and
+`crank_taker_origin_cross` gain the `fill_not_paused` exchange-status guard the fill endpoints
+carry. `QuoterCrossConditionsV0` drops its unread `clob_quoter` field (later fields shift −32;
+size unchanged). SDK: `PerpMarketAccount.clobQuoter` becomes `clobMarket` plus `quoterSlab`;
+`QuoterSlabV0Account.clobMarket`.
+
+Audit fixes across the PropAMM order flow.
+
+Approval records the deploy slot (§5). `update_quoter_approved` takes the entry's program and
+an optional `quoter_program_data`, and records the slot the program was last deployed at in the
+new `QuoterV0.approved_program_slot` field (carved from that struct's reserved padding, so its
+size and alignment are unchanged). Approval does not require or impose a frozen program: a
+maker may upgrade, because a `Custom` entry can move only its own registered user, at a price
+held to its own quote and the taker's limit price, sized inside its own margin, so an upgrade
+can lose the maker's money and cannot take anyone else's. The recorded slot moves on an
+upgrade, which is how a router or an admin learns the code changed rather than inferring it
+from behaviour; no fill reads it, because that would cost an account lock per quoter on the
+budget that decides how many quoters a route can hold. SDK:
+`QuoterV0Account.approvedProgramSlot`.
+
+Reservoir and treasury. `force_cancel_clob_orders` paid its reservoir whenever it was reached,
+and the only work gate was `open_bids`/`open_asks`, which count a user's slot orders too, so an
+account holding only those swept a book that held nothing of theirs, `cancel_all_v0` removed
+zero without erroring, and the payment landed anyway; it now requires a removal.
+`force_cancel_clob_orders` also drops the liquidatee's `user_stats` account. Its grounds are
+the two `force_cancel_orders` answers to: the account fails initial margin, or it is provably
+below its equity floor. The authority-wide equity breaker authorises neither surface, so both
+force-cancel routes answer one rule. The liquidation priority-fee reimbursement was charged per
+instruction against a whole-transaction cost and is now divided between the claimants in the
+transaction. `min_cross_surplus` must be above zero when attaching a CLOB.
+
+Liveness. `execute_v0` and `cancel_all_v0` failed with `BookInvariantViolated` when two makers
+were budget-truncated in one sweep (the response has one slot per remainder and `UserCapsV0`
+carries eight budgets). Both walks now end where the response runs out of room, and `quote`
+ends in the same place; the expiry-hint repair walked the whole arena per removal and now
+follows the side lists once per call. `split_across_quoters` spun until the compute budget ran
+out when the taker size was not a step multiple, which a reduce-only order reaches through an
+unstandardised position magnitude. The stored liquidation-conditions account list fits an
+account with more than five markets, and `digest_positions` no longer skips positions holding
+only open orders, an isolated balance or a liquidation flag.
+
+Fill accounting. No quoter may name the protocol `User` as a fill subject; a culled remainder
+is held below the market's minimum (the attach requires the book's minimum to sit at or under
+it), since the release saturates and an oversized figure collapsed a maker's whole reservation;
+the router's binding band is quantized at the step the split used. New tail error
+`InvalidUserConditionsSync`. SDK: `RouterAllocation.scaledQuote` mirrors the scalar the program
+binds a fill to; a fill's quoter-CPI buffers are reused rather than allocated per leg, which is
+what let a route reach the eight entries its account-lock budget allows.
+
+Withheld depth becomes a filler obligation. A book stops its walk at an order whose owner the
+transaction omits, and reports the depth behind it as withheld. That report used to reserve
+taker size, which was then discarded, so a taker underfilled while liquidity it could have
+reached went untraded. The size now goes to the sources that can fill it, and
+`split_across_quoters` loses its `reserve` argument (SDK: `splitAcrossQuoters` loses the
+parameter, `RouterReserve` is removed). What the report drives instead is an obligation on
+whoever assembled the transaction, applied only when the taker did not sign it. A taker that
+signs chose its own account list. The fill then requires that the transaction held more than
+`TX_WRITABLE_LOCK_BUDGET - MAKER_ACCOUNT_COST` writable account locks (40 less the two a maker
+costs), and that every loaded user either received a balance change or holds a role in the
+fill: the taker, the filler, the taker's referrer, or a registered quoter's user. A loaded user
+that filled nothing spent locks the missing maker needed, which is how a filler forces a
+withhold and takes the flow on a worse-priced source of its own.
+
+ABI note (§5). Every path a keeper assembles (`place_signed_msg_taker_order`, the trigger
+cranks, `liquidate_perp_with_fill`) takes an optional `instructions_sysvar` account, read for
+the account count and for whether the order's owner signed; a keeper that omits it is refused
+whenever a book withholds. `place_and_take_perp_order_v1` is exempt, because its taker signs
+and chose the account list. New tail errors `FillerOmittedReachableMaker` (6396 / `0x18FC`),
+`FillerPaddedTheUserSet` (6397 / `0x18FD`), `FillerObligationUncountable` (6398 / `0x18FE`).
+The grace window is unchanged: an order younger than the market's `unknown_user_grace_slots` is
+passed over rather than withheld, because no filler can know of it yet.
+
+A quoter must deliver what it won. A quoter that returned no base for an allocation it won was
+skipped (`if ext_base == 0 { continue }`). The allocation had already been cut from that
+quoter's own quoted ladder, and for a custom entry already reduced to what its own margin
+supports, so returning nothing is the same contradiction as returning part, but only the
+partial case failed. The skip therefore let a quoter quote tight, win base away from a source
+that would have filled it, deliver nothing, and leave the taker short by exactly that size. An
+allocation of zero is skipped earlier, so a zero fill can only mean the quoter was given real
+size. Both directions now fail: `QuoterOverfilled` (unchanged) for more than the allocation,
+new tail error `QuoterFilledShort` (6399 / `0x18FF`) for less. No account-layout or
+instruction-signature change.
+
+Blast-radius bounds. Two bounds on what an external quoter can do with a response velocity did
+not author.
+
+##### Blast-radius bound: a book's report is held to the reservation
+
+Every CLOB order reserves `open_bids`/`open_asks` and an open-order slot on its owner's
+`PerpPosition` at placement, under that owner's signature; nothing outside velocity can write
+those. Every externally-reported unwind (the fill leg in `settle_external_match_fill`, the
+sub-min culls, the completed-order counts, the evict/expire/cancel removal cranks, and both
+cross cranks) now fails when the report exceeds it (`QuoterReportExceedsReservation`, 6403)
+instead of saturating at zero. The ceiling on what a compromised book can open for a loaded
+user drops from that user's free collateral to the size they actually posted, on the side they
+posted it. The owner-signed exits (`cancel_order_v1`, `cancel_orders_v1`,
+`force_cancel_clob_orders`) still clamp and log rather than fail, so a maker can always leave a
+book that reports garbage. `User::re_arm_placed_trigger_slot` also refuses an evict report
+larger than the shadow row it re-arms.
+
+##### Blast-radius bound: a maker can tighten its own oracle band
+
+New `QuoterV0.max_oracle_deviation_bps: u32` + `padding: [u8; 12]` (carved from the entry's
+reserved padding, §5) and `update_quoter_max_oracle_deviation` (entry authority, Custom entries
+only, `u32` in MARGIN_PRECISION units where 1 = 1 bp; 0 = no declaration). It applies as
+`min(declared, market.margin_ratio_initial)`, so it can only tighten a bound the admin already
+vetted, and it writes through to the live slab slot without re-vetting. A declared band also
+trims the entry's quoted ladder before the split, so an over-wide quote costs that maker
+allocation instead of failing a fill that carries other makers. `settle_taker_origin_cross`'s
+pair path gained the per-change oracle band the router fill and the cross crank already
+applied. SDK: `QuoterV0Account.maxOracleDeviationBps` + `padding`; new `math/router` exports
+`quoterOracleBand`, `makerPriceBreachesOracleBand`, `isReportWithinReservation`. Admin CLI:
+`velocity-admin quoter set-oracle-band <quoter> <bps>`.
+
+##### The crossing reservation
+
+A taker-origin remainder now claims the depth it crosses, and claimed depth leaves the
+matchable set of `quote_v0`, `quote_l3_v0`, `execute_v0` and `next_cross_v0` for every caller
+except the crank that owes the taker its improvement. `OrderNodeV0` grows 96 -> 104 bytes
+(`taker_origin_prev` / `taker_origin_next`, threading each side's taker-origin orders onto
+their own rest-ordered list) and `ORDERS_OFFSET` moves 9624 -> 9648; any off-chain reader that
+decodes the arena by stride or offset must move with it. `ClobHeaderV0` gains
+`taker_origin_head`/`tail`/`count` and `reservation_grace_slots` (default 32, settable through
+`update_market_v0` up to a 150-slot ceiling, the blockhash validity window, past which a crank
+cannot land anyway). `QuoteArgsV0`, `ExecuteArgsV0` and `L3ArgsV0` gain
+`include_taker_origin_reservations`, which only `crank_taker_origin_cross` sets; `L3RowV0`
+gains `L3_ROW_FLAG_RESERVED` within its existing width. Two rules an integrator has to price
+in: a claim outranks price, so a better-priced ordinary order on the claimant's own side takes
+nothing from claimed depth while the claim stands, and with a maker in front of a remainder
+both cross cranks go quiet until the claim lapses; and attested flow reaches unclaimed depth
+only, so a synchronous take can fill nothing and rest as a remainder itself.
+
+##### Cross-match
+
+`crank_cross_match` takes `{ market_index, size }` (`buy_quoter_index` and `sell_quoter_index`
+are gone) and runs as two ordinary router fills of the protocol `User`, so the vAMM's last
+look, PropAMM crossing and the pre-execute margin clamp all apply. It carries the quoter slab
+on the tail and an `instructions_sysvar`. Its cost rose from ~75k to ~328k CU, past one
+instruction's 200,000 default, so a caller must request a budget. New errors
+`CrossMatchLegsDoNotCross` (6407) and `TakerExposureNotProtocolOwned` (6408);
+`CrossedTakerRemainderPending` (6390) is deprecated in place and no longer emitted. CLOB place
+records now carry `IsIsolatedPosition`, matching the cancel and fill records.
+
+##### Liquidation and the funding mark read the book
+
+`liquidate_perp_with_fill` fills its forced order through the router, so a liquidation reaches
+the market's CLOB and its PropAMM quoters instead of matching only the makers the caller
+loaded. The named account list does not change: the quoter section rides `remaining_accounts`
+after the maker pairs, and a market that names a book refuses the call without it. The
+liquidator is still only the filler and acquires no position. A liquidation carries no
+attestation, so the route vouches for protected flow the way the cross cranks do. It measures
+that the depth it can reach has rested for `SERVED_WINDOW_MIN_SLOTS`, rather than asserting a
+window it did not serve. Without that a book with a speed bump quotes a liquidation nothing and
+the position reaches the vAMM alone. The relay resolver stages the book and the owners resting
+on the side the liquidation sweeps, read through the book's own `quote_l3_v0` leg;
+`sync_liq_conditions` stores the book and its program beside the slab so the resolver can reach
+them. `update_perp_bid_ask_twap` gains three optional accounts (`quoter_slab`, `clob_market`,
+`clob_program`) and estimates each side from the book alone; a market that names a book refuses
+the crank without them. It reads no `remaining_accounts`, so `updatePerpBidAskTwap` and
+`getUpdatePerpBidAskTwapIx` no longer take a `makers` argument. A quote that has not rested for
+`BID_ASK_TWAP_MIN_QUOTE_REST` is dropped, and a suspended book moves no mark. SDK:
+`getUpdatePerpBidAskTwapIx` resolves the book accounts from the market, and
+`getLiquidatePerpWithFillIx` appends the quoter section and takes an `extraQuoterAccounts`
+argument.
+
+##### Hardening of the quoter registry, the book and the signed-message envelope
+
+Several instructions gained accounts and one envelope field became mandatory.
+
+Registry. `initialize_quoter` takes `quoter_slab` (required for a `Clob` entry), so a market's
+slab must exist before its book is registered; `update_quoter_approved` takes `clob_market`,
+required for a `Clob` entry, bound to the book the market designated and asked for its own
+`order_rules_v0` so an approval cannot name an account that is not that book.
+`update_quoter_active`, `update_quoter_config`, `update_quoter_accounts` and
+`update_quoter_watch` take `state`: a non-`Custom` entry is now gated on the State's warm admin
+rather than on the individual key that registered it, so rotating the admin also rotates
+control of a book slot. A `Custom` entry is unchanged and still answers only to the key that
+created it, because `is_active` is the maker's own kill switch. A registered account list may
+no longer name the market's designated book, whether or not that book has been approved yet.
+
+Signed messages. The `network` tag is now required. A message that names no cluster is refused
+exactly as one naming the wrong cluster is, because both replay the same way. In the SDK
+`network` becomes a required field on both message types, `signedMsgNetworkForEnv` is exported,
+and the client stamps the tag from its configured `env`, so a caller that signs through the
+client states nothing. Two input aliases, `SignedMsgOrderParamsMessageInput` and
+`SignedMsgOrderParamsDelegateMessageInput`, keep the field optional at the client's edge.
+`VelocityClient.env` defaults to `mainnet-beta`, so a devnet integrator that never set `env`
+now signs a mainnet tag that devnet refuses; the program names both clusters in its log.
+
+Events. `AcceleratedReferralStatusChangedRecord` becomes
+`AcceleratedReferralStatusChangedRecordV0` and carries a new discriminator.
+
+Errors. New velocity variant `ClobRestUnavailable`. The CLOB adds `MaxTsBeforeActivation` and
+`MarketNotEmpty`; the midpoint keeps `InvalidInstructionsSysvar` and `InvalidVelocityState` as
+deprecated in place, since a variant's number is its on-chain identity.
+
+CLOB program. `initialize_market_v0` now requires the market account to sign, which closes a
+window where a pre-created account could be initialized by somebody else and its rent stranded;
+`close_market_v0` returns the rent of an empty book to its authority. `base_precision` must
+equal `1_000_000_000`, and `evict_threshold_per_side` must sit between zero and half the arena,
+so a market cannot be created in a shape that fails every fill or that can never be evicted.
+`OrderRulesV0` gains three trailing fields, `side_order_counts`, `arena_capacity` and
+`evict_threshold_per_side`, so a caller predicts a full side instead of discovering it as a
+failed CPI. Existing fields keep their order and the discriminator is unchanged.
+
+Midpoint. `QuoterConfigV0` gains `max_mid_deviation_ppm`, which must be nonzero at creation, so
+a fresh instance already bounds how far its mid may sit from the oracle; `UpdateQuoterArgsV0`
+gains `mid_sequence` so a runaway sequence is recoverable; a zero mid is exempt from the
+sequence guard, so the withdrawal that stops an instance quoting can never lose a race;
+`MidpointExecuteRecordV0.market_index` becomes `configured_market_index`, which names the
+market the instance was created for rather than the market the fill settled.
+
+Behaviour an integrator can observe. A liquidation refuses while the account holds orders on a
+book, and that refusal now covers `set_user_status_to_being_liquidated` and the four spot and
+pnl liquidation entries as well as the perp ones, so `force_cancel_clob_orders` runs first; a
+fired trigger order counts as book-resident for that rule. `modify_order_v1` applies the same
+placement preconditions a placement does. An eviction charges the evicted maker the flat
+removal reward, as an expiry already did. A fired stop that cannot rest emits a cancel record
+rather than disappearing, and a reducing remainder is no longer held to a margin gate the old
+matching path never applied. A reduce-only order is sized against the position as each leg
+leaves it, so several of one maker's orders in one fill cannot flip that maker's position. The
+vAMM's last look shades only the depth a rival actually offers. A fill that withholds book
+depth is excused only by locks velocity can attribute to accounts it verified. A signed-message
+order id is reclaimed from a full account only once it is past `SIGNED_MSG_EVICTION_BUFFER`;
+the entry carries the uuid the replay guard matches on, and an entry still inside its own
+`max_slot` guards a message placement would still accept. Both trigger endpoints refuse a
+fill-paused market, because firing commits the order and pays the keeper, and `MarketStatus`
+carries no fill-paused variant. A crossed pair of taker-origin remainders settles outside the
+router, so it runs the router's own market gates and re-derives `reduce_only` from the market:
+a row that rested while the market was `Active` must not grow a position after a flip to
+`ReduceOnly`. `modify_order_v1` gates its replacement on the risk test every other placement
+uses, which counts the reservations the account already holds rather than the bare position, so
+a replacement behind other resting orders takes initial margin and the buffered equity floor.
+`calculateAmmAvailableLiquidity` is the SDK mirror of the per-fill reserve throttle, and
+`vammQuoteLevels` caps its ladder at it; the room to the hard reserve bound is far wider and
+quoting that over-allocates the vAMM. The protocol-owned `User` is exempt from the
+external-payer allowlist, because its authority is `State::signer` and a program address can
+neither sign nor pay. An armed trigger past its `max_ts` is no longer payable work on either
+trigger endpoint, and relay's discovery skips it, so a dead stop neither pays a keeper nor
+starves the triggers behind it. `crank_taker_origin_cross` accepts the taker's
+`RevenueShareEscrow`: without it a referred taker's cross failed outright, and with it the
+referee discount and referrer reward bind. A builder fee does not bind on that path, because
+the book row carries its own handle rather than the velocity order id.
+`force_cancel_clob_orders` cancels during a full exchange halt but pays no keeper fee.
+`initialize_quoter_cross_conditions` bounds `expire_fallback_slots` at 9,000 slots, because the
+endpoint is permissionless. Every resolver refuses a call that marks an account writable beyond
+its staging region, so landing one is inert by construction rather than by review; the region
+is the relay scratch account, `quote_buffer` for `quote_router`, plus the book's own account
+where `quote_l3_v0` streams its answer. `quote_router` takes the perp market read-only and no
+longer writes to the makers it sizes.
+
+##### Auctions are gone
+
+An order carries one worst price instead of a ramp, and `Order.price` holds it for every type.
+A market order's bound is clamped to 0.5 percent of the oracle at placement. An oracle-relative
+order uses `oracle_price_offset`. `auction_start_price`, `auction_end_price` and
+`auction_duration` are renamed on `Order`, removed from `OrderParams` and `ModifyOrderParams`,
+and replaced there by `activation_delay_slots`. Off-chain fill prediction must stop
+interpolating a price against elapsed slots and read the order's own bound. The §2 row has the
+full surface.
+
 #### protective-price-pre-refresh-twap
 
 Fixes a Medium audit finding (OtterSec #14) that is the same defect as #109 through #112 and
@@ -2785,10 +3637,13 @@ the withdraw bundle records both revert codes.
 5. **Replace the IDL** if you load it yourself. Use `sdk/src/idl/velocity.json`, which is
    Anchor 1.0 format, with an Anchor 1.0 client. Update any string-keyed coder calls to the new
    camelCase account names (§4.1).
-6. **Wrap `oraclePriceOffset` values in `BN`.**
+6. **Wrap `oraclePriceOffset` values in `BN`.** Limit orders no longer accept an offset at all
+   (§2), so move oracle-floating maker quotes to a PropAMM quoter or a repriced fixed limit.
 7. **Delete integrations with removed features** (§2): spot DLOB orders, Serum, Phoenix and
    OpenBook fulfillment, fuel, LP shares, protected maker, high leverage mode, prediction
-   markets, Switchboard and Pyth-pull oracles, and the gov-token stake fee discount.
+   markets, Switchboard and Pyth-pull oracles, the gov-token stake fee discount, the perp DLOB
+   and order auctions, and jit-proxy. Drop the `@velocity-exchange/jit-proxy` dependency. There
+   is no successor package, so rest orders on the CLOB instead.
 8. **Update account decoders and indexers** to the new `User`, `PerpMarket`, `SpotMarket`,
    `State` and `UserStats` layouts and the shifted `MarketStatus` discriminants (§5).
    Discriminators match Drift's, so guard by program ID rather than by discriminator.
@@ -2796,7 +3651,7 @@ the withdraw bundle records both revert codes.
    reserved bytes, and `extend_account` can grow any zero-copy account after a program upgrade.
    Drop `dataSize` filters and exact-size decodes (§3, §5.1).
 10. **Re-test error handling.** Codes are stable, but retired codes now decode to `Deprecated*`
-    names and new codes exist past the old end of the enum, through 6374 (§5.6).
+    names and new codes exist past the old end of the enum, through 6458 (§5.6).
 11. **Adopt builder codes** (optional). Approve builders via `changeApprovedBuilder(...)` and
     set `builderIdx` and `builderFeeTenthBps` on `OrderParams`. No action is needed if you do
     not use builders. If you are a filler, attach the taker's `RevenueShareEscrow` in remaining

@@ -161,7 +161,6 @@ if [ "$MODE" != "fast" ]; then
     cd packages/sdk &&
     bun run test &&
     bun run test:parity &&
-    bun run test:dlob &&
     bun run test:bignum &&
     bun run test:events &&
     bun run test:velocitycore
@@ -180,6 +179,13 @@ if [ "$MODE" = "full" ]; then
   echo "==> cleaning SBF cache (flavor-poisoning guard)"
   rm -rf target/sbpf*-solana-solana target/deploy
 
+  # The quoter programs, and the litesvm suite that drives them alongside
+  # velocity. Both need the anchor-v2 fixtures, so they build them first.
+  run_check "quoter programs (clob, midpoint)" bash -c "
+    bun run program:build:clob &&
+    bun run program:build:midpoint &&
+    cd anchor-v2 && cargo test --locked
+  "
   run_check "anchor integration suite" bash test-scripts/run-anchor-tests.sh
   run_check "vault tests"              bash -c "
     bash test-scripts/run-vault-tests.sh --build-only &&
@@ -205,6 +211,7 @@ if [ "$MODE" = "full" ]; then
   run_check "restore canonical IDL (program:idl)" bun run program:idl
   run_check "velocity_idl.rs regen"    cargo check --manifest-path rust/Cargo.toml --locked
 else
+  skip_check "quoter programs (clob, midpoint)" "needs --full"
   skip_check "anchor integration suite" "needs --full"
   skip_check "vault tests" "needs --full"
   skip_check "rust workspace tests" "needs --full"

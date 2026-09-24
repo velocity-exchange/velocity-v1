@@ -11,8 +11,8 @@ import {
 	SwapRouteInstructions,
 } from './types';
 
-// Re-exported so deep imports of this module keep resolving; `./types` is the
-// definition site and what the package index exports.
+// These re-exports keep a deep import of this module resolving. `./types` is
+// the definition site and the module the package index exports.
 export type {
 	GetRouteInstructionsParams,
 	SwapProviderRoute,
@@ -26,8 +26,8 @@ export type {
 } from './types';
 
 /**
- * Bytes reserved for the velocity begin/end swap instructions that wrap the
- * route, so the provider only gets the budget actually left for the route.
+ * Bytes reserved for the velocity `beginSwap` and `endSwap` instructions that
+ * wrap the route. The provider gets only the budget left for the route.
  */
 const VELOCITY_SWAP_IX_SIZE_BUFFER = 375;
 
@@ -38,11 +38,10 @@ export const DEFAULT_ROUTE_SIZE_CONSTRAINT =
 /**
  * Routes swap calls to the configured provider.
  *
- * Intentionally thin: it picks a provider and forwards. Anything that varies
+ * The class stays thin. It picks a provider and forwards. Behaviour that varies
  * between Jupiter and Titan belongs in the provider, behind
- * {@link SwapProvider} — branching on the provider here is how the two paths
- * drifted apart previously, since nothing forced them to keep the same
- * semantics.
+ * {@link SwapProvider}. A branch on the provider here lets the two paths drift,
+ * because nothing then holds them to the same semantics.
  */
 export class UnifiedSwapClient implements SwapProvider {
 	private client: JupiterClient | TitanClient;
@@ -97,22 +96,16 @@ export class UnifiedSwapClient implements SwapProvider {
 	}
 
 	/**
-	 * The configured client, seen only as {@link SwapProvider}.
-	 *
-	 * Forwarding through the interface rather than the concrete union is what
-	 * makes goal of this class enforceable: a provider added to the union that
-	 * implements only part of the contract fails to compile here, instead of
-	 * resolving against whichever call signatures the union happens to share.
+	 * The configured client, seen only as {@link SwapProvider}, so a partial
+	 * provider fails to compile here instead of matching the union loosely.
 	 */
 	private get provider(): SwapProvider {
 		return this.client;
 	}
 
 	/**
-	 * Get a swap quote from the configured provider.
-	 *
-	 * Provider-specific fields on {@link SwapQuoteParams} are mapped by the
-	 * provider, so the ones it doesn't recognise are simply ignored.
+	 * Gets a swap quote from the configured provider, which maps the
+	 * provider-specific fields on {@link SwapQuoteParams} and ignores the rest.
 	 */
 	public async getQuote(params: SwapQuoteParams): Promise<SwapQuote> {
 		return this.provider.getQuote({
@@ -122,8 +115,7 @@ export class UnifiedSwapClient implements SwapProvider {
 	}
 
 	/**
-	 * Builds the route instructions for a quote from {@link getQuote}, at the
-	 * slippage that quote was priced at.
+	 * Builds the route instructions for a quote from {@link getQuote}, at the slippage that quote was priced at.
 	 * @throws If the quote came from a different provider or a different wallet.
 	 */
 	public async getRouteInstructions(
@@ -133,10 +125,7 @@ export class UnifiedSwapClient implements SwapProvider {
 	}
 
 	/**
-	 * Builds a standalone swap transaction for a quote from {@link getQuote},
-	 * keeping the provider's own compute budget, token account creation and SOL
-	 * wrapping. Use {@link getRouteInstructions} for a swap that runs inside
-	 * velocity's `beginSwap`/`endSwap` bracket.
+	 * Builds a standalone swap transaction for a quote from {@link getQuote}. Use {@link getRouteInstructions} instead inside velocity's `beginSwap`/`endSwap` bracket.
 	 * @throws If the quote came from a different provider or a different wallet.
 	 */
 	public async getSwapTransaction(

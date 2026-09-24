@@ -1,0 +1,56 @@
+[package]
+name = "clob"
+version = "0.1.0"
+description = "Velocity CLOB quoter program"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "clob"
+
+[features]
+default = []
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+no-log-ix-name = []
+idl-build = ["quoter-spec/idl-build-v2", "clob-wire/idl-build-v2", "clob-state/idl-build-v2", "relay-spec/idl-build-v2"]
+profile = ["anchor-v2-testing/profile"]
+
+[dependencies]
+# Anchor v2 alpha (anchor-next). Pinned to an exact rev — the alpha branch moves.
+anchor-lang = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+# The stack-buffer emit path both quoters use.
+quoter-emit = { package = "quoter-emit-v2", path = "../../../crates/quoter-emit-v2" }
+static_assertions = "1.1.0"
+wincode = { version = "0.6", features = ["derive"] }
+# Declares the quoter wire types this program writes. `wincode-derive` gives
+# them the same derives the rest of this program's wire structs use. No borsh
+# crate reaches this binary: the spec's anchor derives are behind a feature only
+# velocity turns on. Where a comment on this wire says borsh, it names the byte
+# framing that wincode's `BORSH_CONFIG` produces, never a dependency.
+quoter-spec = { package = "quoter-spec-v2", path = "../../../crates/quoter-spec-v2" }
+clob-wire = { package = "clob-wire-v2", path = "../../../crates/clob-wire-v2" }
+clob-state = { package = "clob-state-v2", path = "../../../crates/clob-state-v2" }
+# The relay condition block this market hosts. Expiry, activation, capacity and
+# a crossed book are facts about this account, so the wakes that watch for them
+# live on it. bytemuck-only, so no framework reaches this binary; the resolver
+# each condition names is registered by the program that owns the book's flow.
+relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "a6c958b" }
+
+[dev-dependencies]
+# `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests
+# build a real ClobMarketV0 over. Dev-only: with resolver 2 the feature is
+# not enabled for the SBF build of the program itself.
+anchor-lang = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28", features = [
+    "testing",
+] }
+anchor-v2-testing = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
+litesvm = "0.13.1"
+quoter-test-support = { path = "../quoter-test-support" }
+solana-account = "3.2.0"
+solana-clock = "3"
+solana-pubkey = "3.0"
+
+[lints.rust.unexpected_cfgs]
+level = "allow"

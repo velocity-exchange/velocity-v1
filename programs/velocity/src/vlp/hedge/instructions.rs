@@ -12,7 +12,7 @@ use {
         get_then_update_id,
         instructions::{
             constraints::*,
-            optional_accounts::{get_whitelist_token, load_maps, AccountMaps},
+            optional_accounts::{get_whitelist_token, load_maps},
         },
         math::{
             self,
@@ -163,11 +163,7 @@ pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -204,8 +200,8 @@ pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
     let (aum, crypto_delta, derivative_groups) = lp_pool.update_aum(
         slot,
         &constituent_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &maps.spot_market_map,
+        &mut maps.oracle_map,
         &constituent_target_base,
         &amm_cache,
     )?;
@@ -230,8 +226,8 @@ pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
         aum,
         &derivative_groups,
         &constituent_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &maps.spot_market_map,
+        &mut maps.oracle_map,
         &mut constituent_target_base,
     )?;
 
@@ -267,14 +263,13 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
     let lp_pool = &ctx.accounts.lp_pool.load()?;
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
 
-    if slot.saturating_sub(lp_pool.last_aum_slot) > LP_POOL_SWAP_AUM_UPDATE_DELAY {
-        msg!(
-            "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
-            lp_pool.last_aum_slot,
-            slot
-        );
-        return Err(ErrorCode::LpPoolAumDelayed.into());
-    }
+    validate!(
+        slot.saturating_sub(lp_pool.last_aum_slot) == LP_POOL_SWAP_AUM_UPDATE_DELAY,
+        ErrorCode::LpPoolAumDelayed,
+        "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
+        lp_pool.last_aum_slot,
+        slot
+    )?;
 
     let mut in_constituent = ctx.accounts.in_constituent.load_mut()?;
     let mut out_constituent = ctx.accounts.out_constituent.load_mut()?;
@@ -302,11 +297,7 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
         "Constituent correlations lp pool pubkey does not match lp pool pubkey",
     )?;
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -315,8 +306,8 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let in_spot_market = spot_market_map.get_ref(&in_market_index)?;
-    let out_spot_market = spot_market_map.get_ref(&out_market_index)?;
+    let in_spot_market = maps.spot_market_map.get_ref(&in_market_index)?;
+    let out_spot_market = maps.spot_market_map.get_ref(&out_market_index)?;
 
     if in_constituent.is_reduce_only()?
         && !in_constituent.is_operation_reducing(&in_spot_market, true)?
@@ -335,7 +326,7 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
     let in_oracle_id = in_spot_market.oracle_id();
     let out_oracle_id = out_spot_market.oracle_id();
 
-    let (in_oracle, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (in_oracle, in_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_oracle_id,
@@ -347,7 +338,7 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
     )?;
     let in_oracle = *in_oracle;
 
-    let (out_oracle, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (out_oracle, out_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_oracle_id,
@@ -360,21 +351,19 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
         None,
     )?;
 
-    if !is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::LpPoolSwap))? {
-        msg!(
-            "In oracle data for spot market {} is invalid for lp pool swap.",
-            in_spot_market.market_index,
-        );
-        return Err(ErrorCode::InvalidOracle.into());
-    }
+    validate!(
+        is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::LpPoolSwap))?,
+        ErrorCode::InvalidOracle,
+        "In oracle data for spot market {} is invalid for lp pool swap.",
+        in_spot_market.market_index,
+    )?;
 
-    if !is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::LpPoolSwap))? {
-        msg!(
-            "Out oracle data for spot market {} is invalid for lp pool swap.",
-            out_spot_market.market_index,
-        );
-        return Err(ErrorCode::InvalidOracle.into());
-    }
+    validate!(
+        is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::LpPoolSwap))?,
+        ErrorCode::InvalidOracle,
+        "Out oracle data for spot market {} is invalid for lp pool swap.",
+        out_spot_market.market_index,
+    )?;
 
     let in_target_weight = constituent_target_base.get_target_weight(
         in_constituent.constituent_index,
@@ -544,11 +533,7 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
     let constituent_target_base: AccountZeroCopy<'_, TargetsDatum, ConstituentTargetBaseFixed> =
         ctx.accounts.constituent_target_base.load_zc()?;
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -557,13 +542,13 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let in_spot_market = spot_market_map.get_ref(&in_market_index)?;
-    let out_spot_market = spot_market_map.get_ref(&out_market_index)?;
+    let in_spot_market = maps.spot_market_map.get_ref(&in_market_index)?;
+    let out_spot_market = maps.spot_market_map.get_ref(&out_market_index)?;
 
     let in_oracle_id = in_spot_market.oracle_id();
     let out_oracle_id = out_spot_market.oracle_id();
 
-    let (in_oracle, _) = oracle_map.get_price_data_and_validity(
+    let (in_oracle, _) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_oracle_id,
@@ -575,7 +560,7 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
     )?;
     let in_oracle = *in_oracle;
 
-    let (out_oracle, _) = oracle_map.get_price_data_and_validity(
+    let (out_oracle, _) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_oracle_id,
@@ -654,14 +639,13 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
     lp_pool.sync_token_supply(ctx.accounts.lp_mint.supply);
     let lp_price_before = lp_pool.get_price(lp_pool.token_supply)?;
 
-    if slot.saturating_sub(lp_pool.last_aum_slot) > LP_POOL_SWAP_AUM_UPDATE_DELAY {
-        msg!(
-            "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
-            lp_pool.last_aum_slot,
-            slot
-        );
-        return Err(ErrorCode::LpPoolAumDelayed.into());
-    }
+    validate!(
+        slot.saturating_sub(lp_pool.last_aum_slot) == LP_POOL_SWAP_AUM_UPDATE_DELAY,
+        ErrorCode::LpPoolAumDelayed,
+        "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
+        lp_pool.last_aum_slot,
+        slot
+    )?;
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
 
@@ -675,11 +659,7 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
         "Constituent target base lp pool pubkey does not match lp pool pubkey",
     )?;
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index]),
@@ -697,7 +677,7 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
         )?;
     }
 
-    let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
+    let mut in_spot_market = maps.spot_market_map.get_ref_mut(&in_market_index)?;
 
     if in_constituent.is_reduce_only()?
         && !in_constituent.is_operation_reducing(&in_spot_market, true)?
@@ -708,7 +688,7 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
 
     let in_oracle_id = in_spot_market.oracle_id();
 
-    let (in_oracle, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (in_oracle, in_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_oracle_id,
@@ -720,13 +700,12 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
     )?;
     let in_oracle = *in_oracle;
 
-    if !is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::LpPoolSwap))? {
-        msg!(
-            "In oracle data for spot market {} is invalid for lp pool swap.",
-            in_spot_market.market_index,
-        );
-        return Err(ErrorCode::InvalidOracle.into());
-    }
+    validate!(
+        is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::LpPoolSwap))?,
+        ErrorCode::InvalidOracle,
+        "In oracle data for spot market {} is invalid for lp pool swap.",
+        in_spot_market.market_index,
+    )?;
 
     // TODO: check self.aum validity
 
@@ -905,25 +884,20 @@ pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
     let lp_pool = ctx.accounts.lp_pool.load()?;
 
-    if slot.saturating_sub(lp_pool.last_aum_slot) > LP_POOL_SWAP_AUM_UPDATE_DELAY {
-        msg!(
-            "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
-            lp_pool.last_aum_slot,
-            slot
-        );
-        return Err(ErrorCode::LpPoolAumDelayed.into());
-    }
+    validate!(
+        slot.saturating_sub(lp_pool.last_aum_slot) == LP_POOL_SWAP_AUM_UPDATE_DELAY,
+        ErrorCode::LpPoolAumDelayed,
+        "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
+        lp_pool.last_aum_slot,
+        slot
+    )?;
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
     let in_constituent = ctx.accounts.in_constituent.load()?;
 
     let constituent_target_base = ctx.accounts.constituent_target_base.load_zc()?;
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -932,11 +906,11 @@ pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let in_spot_market = spot_market_map.get_ref(&in_market_index)?;
+    let in_spot_market = maps.spot_market_map.get_ref(&in_market_index)?;
 
     let in_oracle_id = in_spot_market.oracle_id();
 
-    let (in_oracle, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (in_oracle, in_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_oracle_id,
@@ -948,13 +922,12 @@ pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
     )?;
     let in_oracle = *in_oracle;
 
-    if !is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::LpPoolSwap))? {
-        msg!(
-            "In oracle data for spot market {} is invalid for lp pool swap.",
-            in_spot_market.market_index,
-        );
-        return Err(ErrorCode::InvalidOracle.into());
-    }
+    validate!(
+        is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::LpPoolSwap))?,
+        ErrorCode::InvalidOracle,
+        "In oracle data for spot market {} is invalid for lp pool swap.",
+        in_spot_market.market_index,
+    )?;
 
     msg!("aum: {}", lp_pool.last_aum);
     let in_target_weight = if lp_pool.last_aum == 0 {
@@ -1030,24 +1003,22 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
     let amm_cache: AccountZeroCopy<'_, CacheInfo, _> = ctx.accounts.amm_cache.load_zc()?;
     for (i, _) in amm_cache.iter().enumerate() {
         let cache_info = amm_cache.get(i as u32);
-        if cache_info.last_fee_pool_token_amount != 0 && cache_info.last_settle_slot != slot {
-            msg!(
-                "Market {} has not been settled in current slot. Last slot: {}",
-                cache_info.market_index,
-                cache_info.last_settle_slot
-            );
-            return Err(ErrorCode::AMMCacheStale.into());
-        }
+        validate!(
+            !(cache_info.last_fee_pool_token_amount != 0 && cache_info.last_settle_slot != slot),
+            ErrorCode::AMMCacheStale,
+            "Market {} has not been settled in current slot. Last slot: {}",
+            cache_info.market_index,
+            cache_info.last_settle_slot
+        )?;
     }
 
-    if slot.saturating_sub(lp_pool.last_aum_slot) > LP_POOL_SWAP_AUM_UPDATE_DELAY {
-        msg!(
-            "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
-            lp_pool.last_aum_slot,
-            slot
-        );
-        return Err(ErrorCode::LpPoolAumDelayed.into());
-    }
+    validate!(
+        slot.saturating_sub(lp_pool.last_aum_slot) == LP_POOL_SWAP_AUM_UPDATE_DELAY,
+        ErrorCode::LpPoolAumDelayed,
+        "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
+        lp_pool.last_aum_slot,
+        slot
+    )?;
 
     let constituent_target_base_key = &ctx.accounts.constituent_target_base.key();
     let constituent_target_base: AccountZeroCopy<'_, TargetsDatum, ConstituentTargetBaseFixed> =
@@ -1061,11 +1032,7 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![out_market_index]),
@@ -1074,7 +1041,7 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let mut out_spot_market = maps.spot_market_map.get_ref_mut(&out_market_index)?;
 
     if out_constituent.is_reduce_only()?
         && !out_constituent.is_operation_reducing(&out_spot_market, false)?
@@ -1085,7 +1052,7 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
 
     let out_oracle_id = out_spot_market.oracle_id();
 
-    let (out_oracle, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (out_oracle, out_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_oracle_id,
@@ -1101,13 +1068,12 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
 
     // TODO: check self.aum validity
 
-    if !is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::LpPoolSwap))? {
-        msg!(
-            "Out oracle data for spot market {} is invalid for lp pool swap.",
-            out_spot_market.market_index,
-        );
-        return Err(ErrorCode::InvalidOracle.into());
-    }
+    validate!(
+        is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::LpPoolSwap))?,
+        ErrorCode::InvalidOracle,
+        "Out oracle data for spot market {} is invalid for lp pool swap.",
+        out_spot_market.market_index,
+    )?;
 
     update_spot_market_cumulative_interest(
         &mut out_spot_market,
@@ -1317,14 +1283,13 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
     let lp_pool = ctx.accounts.lp_pool.load()?;
 
-    if slot.saturating_sub(lp_pool.last_aum_slot) > LP_POOL_SWAP_AUM_UPDATE_DELAY {
-        msg!(
-            "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
-            lp_pool.last_aum_slot,
-            slot
-        );
-        return Err(ErrorCode::LpPoolAumDelayed.into());
-    }
+    validate!(
+        slot.saturating_sub(lp_pool.last_aum_slot) == LP_POOL_SWAP_AUM_UPDATE_DELAY,
+        ErrorCode::LpPoolAumDelayed,
+        "Must update LP pool AUM before swap, last_aum_slot: {}, current slot: {}",
+        lp_pool.last_aum_slot,
+        slot
+    )?;
 
     let out_constituent = ctx.accounts.out_constituent.load_mut()?;
 
@@ -1332,11 +1297,7 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![out_market_index]),
@@ -1345,11 +1306,11 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let out_spot_market = maps.spot_market_map.get_ref_mut(&out_market_index)?;
 
     let out_oracle_id = out_spot_market.oracle_id();
 
-    let (out_oracle, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (out_oracle, out_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_oracle_id,
@@ -1363,13 +1324,12 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
     )?;
     let out_oracle = *out_oracle;
 
-    if !is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::LpPoolSwap))? {
-        msg!(
-            "Out oracle data for spot market {} is invalid for lp pool swap.",
-            out_spot_market.market_index,
-        );
-        return Err(ErrorCode::InvalidOracle.into());
-    }
+    validate!(
+        is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::LpPoolSwap))?,
+        ErrorCode::InvalidOracle,
+        "Out oracle data for spot market {} is invalid for lp pool swap.",
+        out_spot_market.market_index,
+    )?;
 
     let out_target_weight = constituent_target_base.get_target_weight(
         out_constituent.constituent_index,

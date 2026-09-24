@@ -1,5 +1,6 @@
 use crate::{
     error::{ErrorCode, VelocityResult},
+    instructions::optional_accounts::AccountMaps,
     math::{
         casting::Cast,
         constants::{
@@ -19,17 +20,14 @@ use crate::{
     state::{
         margin_calculation::MarginContext,
         oracle::OraclePriceData,
-        oracle_map::OracleMap,
         perp_market::PerpMarket,
-        perp_market_map::PerpMarketMap,
         spot_market::{SpotBalanceType, SpotMarket},
-        spot_market_map::SpotMarketMap,
         user::{OrderType, User},
     },
     validate, MarketType, OrderParams, PositionDirection,
 };
 
-/// Grace before the liquidation fee starts ramping (~10 minutes).
+/// Grace before the liquidation fee starts ramping.
 pub const LIQUIDATION_FEE_ADJUST_GRACE_PERIOD: Millis = Millis::from_secs(600);
 
 #[cfg(test)]
@@ -187,11 +185,10 @@ pub fn calculate_liability_transfer_implied_by_asset_amount(
         .safe_div_ceil(denominator_scale)
 }
 
-/// The asset amount that pays for `liability_amount` at the liquidation exchange
-/// rate, with no rounding to the user's whole deposit. Use this where the result
-/// is a bound on how much collateral may be taken, or where the caller must know
-/// that every unit seized is paid for.
-/// `calculate_asset_transfer_for_liability_transfer` wraps this with the
+/// The asset amount that pays for `liability_amount` at the liquidation exchange rate,
+/// with no rounding to the user's whole deposit. Use this where the result bounds how
+/// much collateral may be taken, or where the caller must know that every unit seized is
+/// paid for. `calculate_asset_transfer_for_liability_transfer` wraps this with the
 /// round-to-whole-deposit step.
 pub fn calculate_asset_transfer_for_liability_transfer_exact(
     asset_liquidation_multiplier: u32,
@@ -270,16 +267,12 @@ pub fn calculate_asset_transfer_for_liability_transfer(
 
 pub fn is_cross_margin_being_liquidated(
     user: &User,
-    market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     liquidation_margin_buffer_ratio: u32,
 ) -> VelocityResult<bool> {
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
@@ -290,9 +283,7 @@ pub fn is_cross_margin_being_liquidated(
 
 pub fn validate_user_not_being_liquidated(
     user: &mut User,
-    market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     liquidation_margin_buffer_ratio: u32,
 ) -> VelocityResult {
     if !user.is_being_liquidated() {
@@ -301,9 +292,7 @@ pub fn validate_user_not_being_liquidated(
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
@@ -339,17 +328,13 @@ pub fn validate_user_not_being_liquidated(
 
 pub fn is_isolated_margin_being_liquidated(
     user: &User,
-    market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     perp_market_index: u16,
     liquidation_margin_buffer_ratio: u32,
 ) -> VelocityResult<bool> {
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
@@ -463,10 +448,10 @@ pub fn calculate_max_pct_to_liquidate(
         return Ok(LIQUIDATION_PCT_PRECISION);
     }
 
-    // The ramp is the ratio of elapsed wall clock time to the configured
-    // liquidation window. Elapsed time is integrated per slot duration regime,
-    // so an interval spanning an IBRL transition ramps at the same wall clock
-    // rate on both sides. Identity with the historical slot ratio at 400ms.
+    // The ramp is the ratio of elapsed wall-clock time to the configured liquidation
+    // window. Elapsed time is integrated per slot-duration regime, so an interval that
+    // spans a slot-duration change ramps at the same wall-clock rate on both sides. At
+    // 400ms slots the ratio equals the earlier slot-count ratio.
     let elapsed_ms = slot_clock.elapsed(user.last_active_slot, slot).as_ms();
     let duration_ms = liquidation_duration.as_ms();
 
@@ -629,10 +614,10 @@ pub fn get_liquidation_fee(
     current_slot: u64,
     slot_clock: SlotClock,
 ) -> VelocityResult<u32> {
-    // The fee ramps per whole 400ms period of elapsed time past the grace
-    // window (the rate's historical calibration). Floor on the period count:
-    // the fee escalates marginally later, favoring the user. Elapsed time is
-    // integrated per slot duration regime.
+    // The fee ramps per whole 400ms period of elapsed time, which is the rate's historical
+    // calibration. The grace window gates the ramp, and the period count still measures from
+    // `last_active_user_slot`. The count floors, so the fee escalates marginally later, which
+    // favors the user. Elapsed time is integrated per slot-duration regime.
     let elapsed = slot_clock.elapsed(last_active_user_slot, current_slot);
     if elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD {
         return Ok(base_liquidation_fee);

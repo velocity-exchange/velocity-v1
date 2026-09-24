@@ -20,7 +20,7 @@ import {
 	MMOraclePriceData,
 } from '../../src';
 
-import { MockUserMap, mockPerpPosition } from '../dlob/helpers';
+import { MockUserMap, mockPerpPosition } from '../fixtures/mockAccounts';
 
 export const mockOrder: Order = {
 	status: OrderStatus.INIT,
@@ -48,6 +48,7 @@ export const mockOrder: Order = {
 	maxTs: ZERO,
 	bitFlags: 0,
 	postedSlotTail: 0,
+	padding: [0, 0, 0, 0],
 };
 
 export const mockSpotPosition: SpotPosition = {

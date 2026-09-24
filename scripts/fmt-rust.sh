@@ -16,9 +16,12 @@ export PATH="$HOME/.cargo/bin:$PATH"
 tc="${RUSTFMT_TOOLCHAIN:-nightly}"
 check="${1:-}"
 
-# Program workspace (programs/*, crates/*), then the rust/ workspace.
+# Program workspace (programs/*, crates/*), then the rust/, anchor-v2/, and
+# integration-tests/ workspaces.
 cargo "+$tc" fmt --all -- $check
 cargo "+$tc" fmt --manifest-path rust/Cargo.toml --all -- $check
+cargo "+$tc" fmt --manifest-path anchor-v2/Cargo.toml --all -- $check
+cargo "+$tc" fmt --manifest-path integration-tests/Cargo.toml --all -- $check
 
 # Each fuzz/<crate>/ is its own standalone workspace.
 for m in fuzz/*/Cargo.toml; do

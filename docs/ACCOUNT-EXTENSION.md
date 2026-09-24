@@ -51,7 +51,9 @@ runtime zero-fills the new tail. Guard rails:
 - The account must be velocity-owned and carry the discriminator of a supported zero-copy type
   (`User`, `UserStats`, `ReferrerName`, `PerpMarket`, `SpotMarket`, `State`,
   `InsuranceFundStake`, `PrelaunchOracle`, `PythLazerOracle`, `RevenueShare`, `LPPool`,
-  `Constituent`). Anything else fails with `InvalidAccountExtension`.
+  `Constituent`, `QuoterV0`, `ClobCrankConditionsV0`, `QuoterCrossConditionsV0`,
+  `UserConditionsV0`). Anything else fails with `InvalidAccountExtension`. A quoter slab is not in
+  the list. Its size is set by its capacity, not by its layout.
 - Grow-only, and the target is compiled in, so the instruction cannot shrink an account, inflate
   one to an arbitrary size, or touch borsh accounts.
 - An account already at (or beyond) target size is a success no-op, so the crank is idempotent,

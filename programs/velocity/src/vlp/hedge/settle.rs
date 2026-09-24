@@ -10,7 +10,7 @@ use {
         controller::{self, orders::validate_market_within_price_band},
         error::ErrorCode,
         get_then_update_id,
-        instructions::optional_accounts::{load_maps, AccountMaps},
+        instructions::optional_accounts::load_maps,
         math::{
             self, casting::Cast, constants::QUOTE_SPOT_MARKET_INDEX, safe_math::SafeMath,
             spot_balance::get_token_amount,
@@ -46,10 +46,11 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
     let now = Clock::get()?.unix_timestamp;
 
-    if !state.allow_settle_lp_pool() {
-        msg!("settle lp pool disabled");
-        return Err(ErrorCode::SettleLpPoolDisabled.into());
-    }
+    validate!(
+        state.allow_settle_lp_pool(),
+        ErrorCode::SettleLpPoolDisabled,
+        "settle lp pool disabled"
+    )?;
 
     let mut amm_cache: AccountZeroCopyMut<'_, CacheInfo, _> =
         ctx.accounts.amm_cache.load_zc_mut()?;
@@ -70,11 +71,7 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         .safe_add(quote_constituent.vault_token_balance as u128)?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map: _,
-        oracle_map: _,
-    } = load_maps(
+    let maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -83,17 +80,12 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         None,
     )?;
 
-    for (_, perp_market_loader) in perp_market_map.0.iter() {
+    for (_, perp_market_loader) in maps.perp_market_map.0.iter() {
         let mut perp_market = perp_market_loader.load_mut()?;
-        if lp_pool.lp_pool_id != perp_market.hedge_config.pool_id {
-            msg!(
-                "Perp market {} does not have the same lp pool id as the lp pool being settled to: {} != {}",
+        validate!(lp_pool.lp_pool_id == perp_market.hedge_config.pool_id, ErrorCode::InvalidLpPoolId, "Perp market {} does not have the same lp pool id as the lp pool being settled to: {} != {}",
                 perp_market.market_index,
                 perp_market.hedge_config.pool_id,
-                lp_pool.lp_pool_id
-            );
-            return Err(ErrorCode::InvalidLpPoolId.into());
-        }
+                lp_pool.lp_pool_id)?;
 
         if perp_market.hedge_config.status == 0
             || PerpLpOperation::is_operation_paused(
@@ -125,11 +117,8 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
             continue;
         }
 
-        if cached_info.slot != slot {
-            msg!("Skipping settling perp market {} to lp pool because amm cache was not updated in the same slot",
-                perp_market.market_index);
-            return Err(ErrorCode::AMMCacheStale.into());
-        }
+        validate!(cached_info.slot == slot, ErrorCode::AMMCacheStale, "Skipping settling perp market {} to lp pool because amm cache was not updated in the same slot",
+                perp_market.market_index)?;
 
         quote_constituent.sync_token_balance(ctx.accounts.constituent_quote_token_account.amount);
 

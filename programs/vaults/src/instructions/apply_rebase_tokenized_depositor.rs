@@ -1,23 +1,20 @@
 use {
     crate::{
         constraints::{is_tokenized_depositor_for_vault, is_user_for_vault},
-        refresh_velocity_spot_market,
-        state::traits::VaultDepositorBase,
-        AccountMapProvider, TokenizedVaultDepositor, Vault, VaultProtocolProvider,
+        refresh_velocity_spot_market, AccountMapProvider, TokenizedVaultDepositor, Vault,
+        VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        instructions::optional_accounts::AccountMaps, program::Velocity, state::user::User,
-    },
+    velocity::{program::Velocity, state::user::User},
 };
 
 pub fn apply_rebase_tokenized_depositor<'info>(
     ctx: Context<'info, ApplyRebaseTokenizedDepositor<'info>>,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -32,11 +29,7 @@ pub fn apply_rebase_tokenized_depositor<'info>(
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(spot_market_index),
         vp.is_some(),
@@ -44,11 +37,11 @@ pub fn apply_rebase_tokenized_depositor<'info>(
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
-    // #122: the guarded variant. This instruction carries no signer, so it must not
-    // be able to floor the shared backing for a live token supply to zero.
+    // This instruction carries no signer, so it calls the guarded rebase.
+    // A permissionless caller must not floor the backing shares of a live
+    // token supply to zero (OtterSec #122).
     ctx.accounts
         .tokenized_vault_depositor
         .load_mut()?

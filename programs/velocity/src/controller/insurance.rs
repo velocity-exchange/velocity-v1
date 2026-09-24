@@ -47,18 +47,10 @@ use {
 #[cfg(test)]
 mod tests;
 
-/// Lower the revenue-settle cap base to the insurance-fund vault balance that an
-/// outflow leaves behind.
-///
-/// `if_last_settle_vault_amount` is the lowest balance the vault held since the last
-/// revenue settle. Every path that moves tokens out of the vault must call this.
-/// Without it, a dip inside a period is invisible at the next settle: a draw takes the
-/// vault to 100, a donation puts it back to 1000, and `min(live, snapshot)` reads 1000
-/// again. The donation then lifts the cap without staying in the fund for a period.
-///
-/// `insurance_vault_amount` is the balance before the outflow. The subtraction
-/// saturates rather than errors. A cap base of `0` only settles less revenue for the
-/// rest of the period. An error would revert a bankruptcy or deficit resolution.
+/// Lowers the revenue-settle cap base to the vault balance an outflow leaves
+/// behind. Every path that moves tokens out must call this, or a dip inside a
+/// period stays invisible at the next settle. The subtraction saturates rather
+/// than errors, since erroring would revert a bankruptcy or deficit resolution.
 pub fn record_insurance_fund_outflow(
     spot_market: &mut SpotMarket,
     insurance_vault_amount: u64,
@@ -99,10 +91,11 @@ pub fn update_user_stats_if_stake_amount(
     Ok(())
 }
 
-/// Stake into the insurance fund, returning the amount actually staked — the caller
-/// transfers that, not `requested_amount`. See `deposit_amount_and_shares_for_if_stake`:
-/// only the portion of the request that prices to whole shares is taken, so a deposit
-/// can never be partly forfeited to existing shareholders as rounding.
+/// Stakes into the insurance fund and returns the amount actually staked. The caller
+/// transfers that amount, not `requested_amount`.
+/// `deposit_amount_and_shares_for_if_stake` takes only the portion of the request that
+/// prices to whole shares, so no part of a deposit is forfeited to existing
+/// shareholders as rounding.
 pub fn add_insurance_fund_stake(
     requested_amount: u64,
     insurance_vault_amount: u64,
@@ -134,20 +127,19 @@ pub fn add_insurance_fund_stake(
     let total_if_shares_before = spot_market.insurance_fund.total_shares;
     let user_if_shares_before = spot_market.insurance_fund.user_shares;
 
-    // `amount` is the share-aligned portion of the request; the remainder is left in the
-    // depositor's token account rather than transferred, so no part of a deposit accrues
-    // to existing shareholders as rounding. Shares are priced off the pre-transfer vault
-    // balance, which an attacker can inflate by donating into the vault — pricing the
-    // deposit exactly is what makes that inflation unprofitable.
+    // `amount` is the share-aligned portion of the request; the remainder stays
+    // in the depositor's account, so no deposit accrues to shareholders as
+    // rounding. Shares price off the pre-transfer vault balance, which pricing
+    // exactly makes unprofitable to inflate by donation.
     let (amount, n_shares) = deposit_amount_and_shares_for_if_stake(
         requested_amount,
         spot_market.insurance_fund.total_shares,
         insurance_vault_amount,
     )?;
 
-    // A request below the price of a single share buys nothing at all; reject it rather
-    // than accept a deposit of zero. Mirrors the `n_shares > 0` guard the request-remove
-    // path already enforces.
+    // A request below the price of one share buys nothing, so reject it rather than
+    // accept a deposit of zero. The request-remove path enforces the same
+    // `n_shares > 0` guard.
     validate!(
         n_shares > 0,
         ErrorCode::IFDepositMintsZeroShares,
@@ -649,20 +641,12 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     if spot_market.insurance_fund.user_shares > 0 {
-        // Size the APR cap off the balance the fund held for the whole period, not off
-        // the live vault alone. `insurance_vault_amount` is the raw token-account
-        // balance, which anyone can inflate with a direct SPL transfer right before a
-        // settle to lift the cap toward the 1/10-of-revenue-pool bound.
-        // `if_last_settle_vault_amount` is the lowest balance the vault held since the
-        // last settle, so it predates any such transfer and it already carries every
-        // dip in between. The `min` of the two counts only capital that was present
-        // throughout, which a pre-settle donation is not. Capital that does span a full
-        // period already belongs to the stakers pro rata, so counting it is correct. A
-        // `0` snapshot (never settled, or settled on an empty vault) gives a `0` cap for
-        // one period; the snapshot written below then heals it.
+        // Caps off the balance held the whole period, since the live vault is
+        // donation-inflatable right before a settle; `if_last_settle_vault_amount`,
+        // the period's lowest balance, predates any such donation. A `0` snapshot
+        // (never settled) yields one `0`-cap period; the write below repairs it.
         let cap_vault_amount = insurance_vault_amount.min(spot_market.if_last_settle_vault_amount);
 
-        // only allow MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT or 1/10th of revenue pool to be settled
         let capped_apr_amount = cap_vault_amount
             .cast::<u128>()?
             .safe_mul(MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT)?
@@ -696,7 +680,7 @@ pub fn settle_revenue_to_insurance_fund(
         insurance_vault_amount.safe_add(insurance_fund_token_amount)?;
 
     // `NoRevenueToSettleToIF` tells the keeper that the settle was pointless. The settle
-    // that seeds the snapshot is expected to move nothing, so let it through — an error
+    // that seeds the snapshot is expected to move nothing, so let it through. An error
     // reverts the whole instruction, so the market would never get a snapshot and would
     // stay capped at zero forever.
     if check_invariants && !cap_base_was_unset {

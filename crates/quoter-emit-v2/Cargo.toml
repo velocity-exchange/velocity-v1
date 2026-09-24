@@ -1,0 +1,17 @@
+[package]
+name = "quoter-emit-v2"
+description = "Stack-buffer event emission for the anchor v2 quoter programs: the bytes anchor's Event::data() returns, without the allocation"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-emit-v2/"
+
+[dependencies]
+# Anchor v2 alpha (anchor-next), the same exact rev the programs pin. The
+# macros here name event types the programs derive `Discriminator` on, so both
+# sides must see one anchor crate.
+anchor-lang = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+
+[lints.rust.unexpected_cfgs]
+level = "allow"

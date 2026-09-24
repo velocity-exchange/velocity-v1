@@ -37,6 +37,11 @@ Nothing here ships on-chain. The only program-side hook is the off-by-default
   ```bash
   bun run program:build:devnet     # from the repo root
   ```
+  `e2e-svm` and `e2e-svm-revshare` also load the CLOB book program, because
+  every perp fill routes through the market's book:
+  ```bash
+  bun run program:build:clob       # writes anchor-v2/target/deploy/clob.so
+  ```
 
 ## Running
 

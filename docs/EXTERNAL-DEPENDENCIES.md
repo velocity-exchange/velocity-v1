@@ -10,7 +10,7 @@ Two questions this doc is meant to answer directly:
 
 ## Scope
 
-**Covered:** the three programs deployed from this repo (`velocity`, `vaults`, and `jit-proxy`),
+**Covered:** the two programs deployed from this repo (`velocity` and `vaults`),
 including every program they call, every account owner they deserialize, and their full resolved
 crate graph.
 
@@ -27,8 +27,9 @@ see §7 for how to re-verify.
 
 ## 1. Programs Velocity calls (CPI out)
 
-These are the only programs the deployed code invokes. There are five, and four of them are
-Solana or SPL infrastructure.
+These are the only programs the deployed code invokes. Four of them are Solana or SPL
+infrastructure. The last two are quoter programs the PropAMM order flow calls to price and settle
+a perp fill.
 
 | Program | ID | Caller | Used for | Trust assumption | Failure mode |
 |---|---|---|---|---|---|
@@ -37,10 +38,26 @@ Solana or SPL infrastructure.
 | SPL Token-2022 | `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | `velocity`, `vaults` | Same operations, through `anchor_spl::token_interface` | Upgradeable by the SPL authority; extension semantics behave as documented | See "Token-2022 extensions" below; this is the largest CPI-side risk |
 | Associated Token Account | `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` | `velocity` | Protocol-fee withdrawal accounts; also whitelisted inside swap flows | Standard derivation | Withdrawal instructions fail; no fund risk |
 | Metaplex Token Metadata | `metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s` | `vaults` only | `create_metadata_accounts_v3` in `initialize_tokenized_vault_depositor` | Metaplex upgrade authority | Tokenized vault depositors cannot be created. Existing vault funds and the entire perps program are unaffected |
+| CLOB | `BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU` | `velocity` | The order book behind every perp market: place, modify, cancel, quote, execute, and the removal cranks (`instructions/clob/`, `state/prop_amm/`) | Velocity wrote and deploys this program. `initialize_quoter` pins a `Clob` entry to this ID, so an admin can give a market a book but cannot choose the code the book runs | Fills that need the book revert. The vAMM and the remaining quoters still price |
+| Approved `Custom` quoters | Per market, registered in `QuoterSlabV0` | `velocity` | `quote_v0`, `execute_v0`, and the optional `quote_l3_v0` legs of a router fill | A `Custom` entry is a warm-admin approval of a third-party program. Its responses are validated rather than trusted, and it may move only the one user its registration consented for | A bad response fails the fill, not the market. See [Approved quoter programs](#approved-quoter-programs) |
 
-`velocity` is a CPI *target* of `vaults` and `jit-proxy` (`J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ`),
-both of which depend on it with the `cpi` feature. That direction is inbound and adds no external
-trust.
+#### Approved quoter programs
+
+The CLOB row is a pinned ID. The `Custom` row is not: it is whatever program an admin approves
+into a market's `QuoterSlabV0`, which makes it the one CPI target in this table that grows by
+configuration rather than by a program upgrade.
+
+Velocity signs each of these CPIs as the market's `QuoterSlabV0` PDA, never as `State.signer`, so
+a quoter's signature reaches no token vault. The response is bounded on the way back. No quoter
+may name the taker or the protocol `User` as a fill subject. A `Custom` entry may move only the
+one user its registration consented for. Every reported balance change is held to the price the
+quoter quoted, every touched user is margin-checked after the fill, and a report larger than the
+reservation velocity wrote at placement fails with `QuoterReportExceedsReservation`. Approving a
+third-party quoter program is therefore a listing decision of the same kind as listing a mint with
+a transfer hook.
+
+`velocity` is a CPI *target* of `vaults`, which depends on it with the `cpi` feature. That
+direction is inbound and adds no external trust.
 
 ### Token-2022 extensions
 
@@ -99,7 +116,7 @@ keeper to land the update transaction.
 (devnet).
 
 The **only** external program allowed to own an oracle account: `EXTERNAL_ORACLE_PROGRAM_IDS` in
-`state/oracle_map.rs:48` is a one-element list. Read by direct deserialization.
+`state/oracle_map.rs:52` is a one-element list. Read by direct deserialization.
 
 **Trust assumption:** Pyth's on-chain program and its publisher set.
 **Failure modes:** stale price, wide confidence, or a divergent aggregate. All three are handled by
@@ -527,7 +544,7 @@ unicode-ident 1.0.24
 unicode-segmentation 1.13.2
 universal-hash 0.5.1
 uriparse 0.6.4
-velocity 2.165.0 (local: programs/velocity)
+velocity 2.168.0 (local: programs/velocity)
 winnow 0.7.15
 winnow 1.0.1
 zerocopy 0.8.48

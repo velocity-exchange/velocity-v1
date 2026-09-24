@@ -185,11 +185,6 @@ expression = "Apache-2.0"
 license-files = []
 
 [[licenses.clarify]]
-name = "jit-proxy"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
 name = "pyth"
 expression = "Apache-2.0"
 license-files = []

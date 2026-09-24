@@ -152,9 +152,10 @@ describe('velocity client', () => {
 		assert(depositTokenAmount.eq(usdcAmount));
 
 		// Check that velocity collateral account has proper collateral
-		const quoteSpotVault = await svmContextWrapper.connection.getTokenAccount(
-			velocityClient.getQuoteSpotMarketAccount().vault
-		);
+		const quoteSpotVault =
+			await svmContextWrapper.connection.getTokenAccount(
+				velocityClient.getQuoteSpotMarketAccount().vault
+			);
 
 		assert.ok(new BN(Number(quoteSpotVault.amount)).eq(usdcAmount));
 
@@ -220,15 +221,17 @@ describe('velocity client', () => {
 		assert(velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(ZERO));
 
 		// Check that velocity collateral account has proper collateral]
-		const quoteSpotVault = await svmContextWrapper.connection.getTokenAccount(
-			velocityClient.getQuoteSpotMarketAccount().vault
-		);
+		const quoteSpotVault =
+			await svmContextWrapper.connection.getTokenAccount(
+				velocityClient.getQuoteSpotMarketAccount().vault
+			);
 
 		assert.ok(new BN(Number(quoteSpotVault.amount)).eq(ZERO));
 
-		const userUSDCtoken = await svmContextWrapper.connection.getTokenAccount(
-			userUSDCAccount.publicKey
-		);
+		const userUSDCtoken =
+			await svmContextWrapper.connection.getTokenAccount(
+				userUSDCAccount.publicKey
+			);
 		assert.ok(new BN(Number(userUSDCtoken.amount)).eq(usdcAmount));
 
 		const depositRecord = eventSubscriber.getEventsArray('DepositRecord')[0];
@@ -266,14 +269,16 @@ describe('velocity client', () => {
 		await velocityClient.fetchAccounts();
 		assert(velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(ZERO));
 
-		const quoteSpotVault = await svmContextWrapper.connection.getTokenAccount(
-			velocityClient.getQuoteSpotMarketAccount().vault
-		);
+		const quoteSpotVault =
+			await svmContextWrapper.connection.getTokenAccount(
+				velocityClient.getQuoteSpotMarketAccount().vault
+			);
 		assert.ok(new BN(Number(quoteSpotVault.amount)).eq(ZERO));
 
-		const userUSDCtoken = await svmContextWrapper.connection.getTokenAccount(
-			userUSDCAccount.publicKey
-		);
+		const userUSDCtoken =
+			await svmContextWrapper.connection.getTokenAccount(
+				userUSDCAccount.publicKey
+			);
 		assert.ok(new BN(Number(userUSDCtoken.amount)).eq(usdcAmount));
 	});
 
@@ -311,6 +316,7 @@ describe('velocity client', () => {
 			baseAssetAmount,
 			marketIndex
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const marketData = velocityClient.getPerpMarketAccount(0);
@@ -343,8 +349,8 @@ describe('velocity client', () => {
 				.data.fees.totalFeePaid.eq(new BN(19201))
 		);
 
-		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(-48000001)));
-		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-48019202)));
+		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(-48000048)));
+		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-48019249)));
 		assert.ok(user.perpPositions[0].baseAssetAmount.eq(new BN(48000000000)));
 		assert.ok(user.perpPositions[0].positionFlag === 1);
 
@@ -366,7 +372,7 @@ describe('velocity client', () => {
 		assert.ok(orderActionRecord.taker.equals(userAccountPublicKey));
 		assert.ok(orderActionRecord.fillRecordId.eq(new BN(1)));
 		assert.ok(orderActionRecord.baseAssetAmountFilled.eq(new BN(48000000000)));
-		assert.ok(orderActionRecord.quoteAssetAmountFilled.eq(new BN(48000001)));
+		assert.ok(orderActionRecord.quoteAssetAmountFilled.eq(new BN(48000048)));
 		assert.ok(orderActionRecord.marketIndex === marketIndex);
 
 		assert.ok(orderActionRecord.takerExistingQuoteEntryAmount === null);
@@ -424,9 +430,9 @@ describe('velocity client', () => {
 			user.perpPositions[0].quoteBreakEvenAmount.toNumber()
 		);
 
-		assert.ok(user.perpPositions[0].quoteAssetAmount.eq(new BN(-24028802)));
-		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(-24000001)));
-		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-24019201)));
+		assert.ok(user.perpPositions[0].quoteAssetAmount.eq(new BN(-24028849)));
+		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(-24000024)));
+		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-24019225)));
 
 		assert.ok(user.perpPositions[0].baseAssetAmount.eq(new BN(24000000000)));
 		console.log(
@@ -464,7 +470,7 @@ describe('velocity client', () => {
 		assert.ok(orderActionRecord.quoteAssetAmountFilled.eq(new BN(24000000)));
 		assert.ok(orderActionRecord.marketIndex === 0);
 		assert.ok(
-			orderActionRecord.takerExistingQuoteEntryAmount.eq(new BN(24000000))
+			orderActionRecord.takerExistingQuoteEntryAmount.eq(new BN(24000024))
 		);
 		assert.ok(orderActionRecord.takerExistingBaseAssetAmount === null);
 	});
@@ -512,7 +518,7 @@ describe('velocity client', () => {
 				.data.fees.totalFeePaid.toString()
 		);
 		assert.ok(
-			velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(new BN(9951998))
+			velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(new BN(9951951))
 		);
 		assert(
 			velocityClient
@@ -546,7 +552,7 @@ describe('velocity client', () => {
 		assert.ok(orderActionRecord.quoteAssetAmountFilled.eq(new BN(48000000)));
 
 		assert.ok(
-			orderActionRecord.takerExistingQuoteEntryAmount.eq(new BN(24000001))
+			orderActionRecord.takerExistingQuoteEntryAmount.eq(new BN(24000024))
 		);
 		assert.ok(
 			orderActionRecord.takerExistingBaseAssetAmount.eq(new BN(24000000000))
@@ -576,7 +582,7 @@ describe('velocity client', () => {
 		assert.ok(
 			velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(new BN(0))
 		);
-		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9942398)));
+		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9942351)));
 		console.log(
 			velocityClient
 				.getUserStats()
@@ -616,7 +622,7 @@ describe('velocity client', () => {
 	it('Open short position', async () => {
 		// Re-Deposit USDC, assuming we have 0 balance here
 		await velocityClient.transferIsolatedPerpPositionDeposit(
-			new BN(9942398),
+			new BN(9942351),
 			0,
 			undefined,
 			undefined,
@@ -642,8 +648,8 @@ describe('velocity client', () => {
 		);
 		assert.ok(user.perpPositions[0].positionFlag === 1);
 		console.log(user.perpPositions[0].quoteBreakEvenAmount.toString());
-		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(47999999)));
-		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(47980799)));
+		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(47999952)));
+		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(47980752)));
 		assert.ok(user.perpPositions[0].baseAssetAmount.eq(new BN(-48000000000)));
 
 		const market = velocityClient.getPerpMarketAccount(0);
@@ -655,7 +661,7 @@ describe('velocity client', () => {
 		assert.ok(orderActionRecord.taker.equals(userAccountPublicKey));
 		assert.ok(orderActionRecord.fillRecordId.eq(new BN(5)));
 		assert.ok(orderActionRecord.baseAssetAmountFilled.eq(new BN(48000000000)));
-		assert.ok(orderActionRecord.quoteAssetAmountFilled.eq(new BN(47999999)));
+		assert.ok(orderActionRecord.quoteAssetAmountFilled.eq(new BN(47999952)));
 		assert.ok(orderActionRecord.marketIndex === 0);
 	});
 });

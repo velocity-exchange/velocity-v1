@@ -51,11 +51,12 @@ const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
 // liquidator_stats is the last fixed account of LiquidateSpotWithSwap
 const LIQUIDATOR_STATS_IX_INDEX = 11;
 
-// The authority-wide equity breaker as a freeze over every route the audit
-// issues flagged (#54 trigger, #57 perp transfer, #68 liquidator routes).
-// One authority trips the breaker on subaccount 0 and every test drives the
-// frozen action from its HEALTHY subaccount 1; the shared-freeze semantics
-// are the whole point.
+// The authority-wide equity breaker as a freeze over the trigger route, the
+// perp-transfer route and the liquidator routes (OtterSec #54, #57, #68).
+//
+// One authority trips the breaker on subaccount 0. Every test then drives the
+// frozen action from its healthy subaccount 1, because the freeze is what the
+// tests pin, and the freeze covers the whole authority.
 describe('equity breaker freeze', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -252,8 +253,9 @@ describe('equity breaker freeze', () => {
 	});
 
 	it('placement stays allowed on a healthy subaccount while tripped', async () => {
-		// pins the #54 policy: the freeze blocks execution (fills, triggers,
-		// liquidations, transfers out), not resting intent. plain placement:
+		// The freeze blocks execution and leaves resting intent alone (OtterSec #54).
+		// Fills, triggers, liquidations and transfers out are execution. Plain
+		// placement is not.
 		await trippedClient.switchActiveUser(1);
 		await trippedClient.placePerpOrder(
 			getLimitOrderParams({
@@ -414,8 +416,8 @@ describe('equity breaker freeze', () => {
 			)
 		);
 
-		// swap-backed: the route this PR closes. the tokens flow through the
-		// authority's wallet, but the gate at `begin` bars it the same way.
+		// The swap-backed route. The tokens flow through the authority's wallet,
+		// and the gate at `begin` bars it the same way.
 		const { beginSwapIx, endSwapIx } =
 			await trippedClient.getLiquidateSpotWithSwapIx({
 				liabilityMarketIndex: 0,
@@ -442,10 +444,9 @@ describe('equity breaker freeze', () => {
 			)
 		);
 
-		// the obvious bypass of the gate above: pass some OTHER authority's
-		// untripped UserStats in the liquidator_stats slot. `is_stats_for_user`
-		// is the only thing standing between the new check and being
-		// cosmetic, so pin it rather than trusting the constraint by eye.
+		// The obvious bypass of the gate above passes another authority's untripped
+		// UserStats in the liquidator_stats slot. `is_stats_for_user` is the only
+		// check that stops it, so pin that check rather than read the constraint.
 		const foreignStats = victimClient.getUserStatsAccountPublicKey();
 		const swapWithForeignStats = (ix: TransactionInstruction) => {
 			const keys = ix.keys.map((meta, i) =>
@@ -484,9 +485,9 @@ describe('equity breaker freeze', () => {
 	});
 
 	it('perp transfer cannot land exposure on a recipient below its floor', async () => {
-		// #57: recipient passes initial margin but sits below its configured
-		// floor, so the transfer must reject on the recipient's floor, not just
-		// the sender's. fresh, untripped authority.
+		// The recipient passes initial margin and still sits below its configured
+		// floor. The transfer must reject on the recipient's floor as well as the
+		// sender's (OtterSec #57). This uses a fresh, untripped authority.
 		const [transferClient, transferUSDC] = await createUserWithUSDCAccount(
 			svmContextWrapper,
 			usdcMint,
@@ -499,8 +500,8 @@ describe('equity breaker freeze', () => {
 		);
 		await transferClient.deposit(usdcAmount.div(new BN(2)), 0, transferUSDC);
 
-		// re-stamp the perp oracle: enough slots have passed for it to read
-		// stale-for-amm, which would silently withhold the AMM fill below
+		// Re-stamp the perp oracle. Enough slots have passed for it to read
+		// stale-for-amm, which withholds the AMM fill below.
 		await setFeedPriceNoProgram(svmContextWrapper, 100, perpOracle);
 
 		// sub 0 opens the position to transfer (fills against the AMM)

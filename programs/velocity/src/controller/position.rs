@@ -3,19 +3,14 @@ use {
         error::{ErrorCode, VelocityResult},
         math::{
             casting::Cast,
-            constants::{BASE_PRECISION_U64, MAX_BASE_ASSET_AMOUNT_WITH_AMM, PERP_DECIMALS},
-            orders::{
-                calculate_quote_asset_amount_for_maker_order, get_position_delta_for_fill,
-                is_multiple_of_step_size,
-            },
+            constants::PERP_DECIMALS,
+            orders::{calculate_quote_asset_amount_for_maker_order, is_multiple_of_step_size},
             position::{get_new_position_amounts, get_position_update_type, PositionUpdateType},
             safe_math::SafeMath,
-            time::SlotClock,
         },
         math_error, msg, safe_increment,
         state::{
             perp_market::PerpMarket,
-            quoter::QuoteContext,
             user::{PerpPosition, PerpPositions, User},
         },
         validate,
@@ -367,98 +362,11 @@ pub fn update_position_and_market(
     position.quote_break_even_amount = new_quote_break_even_amount;
 
     // This path writes the quote directly, so it releases a booked claim too.
-    // It is reachable on a booked position: the stale-latch path un-latches an
-    // estate that still owes the market, and the account can trade again.
+    // A booked position can reach it. The stale-latch path clears the latch on
+    // an estate that still owes the market, and the account can trade again.
     release_bankruptcy_claim_if_settled(position, market);
 
     Ok(pnl)
-}
-
-pub fn update_position_with_base_asset_amount(
-    base_asset_amount: u64,
-    direction: PositionDirection,
-    market: &mut PerpMarket,
-    user: &mut User,
-    position_index: usize,
-    fill_price: Option<u64>,
-) -> VelocityResult<(u64, i64, i64)> {
-    // Fill against the AMM via the matcher's sole-maker fast path:
-    // `AmmQuoter::try_fill_solo` (byte-exact swap math, parity-tested) then
-    // `AmmQuoter::commit_fill` (mutates reserves + AMM's net counterparty
-    // position).
-    //
-    // Quote / fill prices read the AMM's cached spread state (refreshed by the
-    // keeper crank / fill setup); the caller is responsible for ensuring it's
-    // current for this slot.
-    //
-    // `AmmQuoter::try_fill_solo` only reads the AMM's own state and
-    // `ctx.base_precision`, so the oracle/slot/fee_budget fields are stubs
-    // here. Thread real values from the surrounding fill-path code if a
-    // future AmmQuoter method needs them.
-    let stats_snapshot = market.market_stats;
-    let oracle_stub = crate::state::oracle::OraclePriceData::default();
-    let ctx = QuoteContext {
-        stats: &stats_snapshot,
-        oracle: &oracle_stub,
-        mm_oracle: None,
-        oracle_validity: None,
-        fee_budget: 0,
-        tick: market.order_tick_size,
-        step_size: market.order_step_size,
-        slot: 0,
-        slot_clock: SlotClock::baseline(),
-        base_precision: BASE_PRECISION_U64,
-        market_status: crate::state::market_status::MarketStatus::default(),
-        market_config: 0,
-    };
-
-    let match_result = crate::controller::matching::fill_perp_market_against_amm(
-        market,
-        &ctx,
-        direction,
-        base_asset_amount,
-    )?;
-
-    // Sole-AMM fast path: the Match contains exactly one QuoterFill from AmmQuoter.
-    let (quote_asset_swapped, surplus_from_amm) = match match_result.fills.first() {
-        Some((_, fill)) => (fill.quote_filled, fill.quote_asset_amount_surplus as u64),
-        None => (0, 0),
-    };
-
-    let (quote_asset_amount, quote_asset_amount_surplus) = match fill_price {
-        Some(fill_price) => calculate_quote_asset_amount_surplus(
-            direction,
-            quote_asset_swapped,
-            base_asset_amount,
-            fill_price,
-        )?,
-        None => (quote_asset_swapped, surplus_from_amm as i64),
-    };
-
-    let position_delta =
-        get_position_delta_for_fill(base_asset_amount, quote_asset_amount, direction)?;
-
-    let pnl = update_position_and_market(
-        &mut user.perp_positions[position_index],
-        market,
-        &position_delta,
-    )?;
-
-    // base_asset_amount_with_amm was already updated by AmmQuoter::commit_fill
-    // (inside fill_perp_market_against_amm). Validate the invariant.
-    let amm_net_counterparty_position = market.amm.net_counterparty_position();
-    validate!(
-        amm_net_counterparty_position.unsigned_abs() <= MAX_BASE_ASSET_AMOUNT_WITH_AMM,
-        ErrorCode::InvalidAmmDetected,
-        "market.amm.base_asset_amount_with_amm={} cannot exceed MAX_BASE_ASSET_AMOUNT_WITH_AMM",
-        amm_net_counterparty_position
-    )?;
-
-    // The cached ask/bid spread reserves were re-derived inside
-    // `AmmQuoter::commit_fill` (via `refresh_cached_spread_reserves`) right
-    // after the curve reserves moved.
-
-    Ok((quote_asset_amount, quote_asset_amount_surplus, pnl))
 }
 
 pub fn calculate_quote_asset_amount_surplus(
@@ -521,28 +429,29 @@ pub fn update_quote_asset_amount(
     Ok(())
 }
 
-/// Release a booked bankruptcy claim once the position's quote debt is gone.
+/// Releases a booked bankruptcy claim once the position's quote debt is gone.
+///
+/// allow-verbose: this is the one release point for a market-wide freeze, and
+/// each invariant below is a distinct way that freeze can go stuck for good.
 ///
 /// A latched bankrupt debt is booked against the market in
 /// `pending_bankruptcy_claims`, which freezes the fee sweep's IF drain. The
-/// booking must be released whoever cleared the debt: the bankruptcy resolver,
-/// a quote-deposit setoff, or a settle or fill after the latch is lifted. The
-/// position flag makes the release happen exactly once.
+/// booking is released by whoever clears the debt: the bankruptcy resolver, a
+/// quote-deposit setoff, or a settle or fill after the latch lifts. The
+/// position flag makes the release happen once.
 ///
-/// EVERY writer of `PerpPosition::quote_asset_amount` must call this. There
-/// are two — `update_quote_asset_amount` and `update_position_and_market` —
-/// and missing either one strands the counter: `add_new_position` recycles any
-/// slot that reports `is_available()` by overwriting the whole position,
-/// `position_flag` included, so a claim left on a zeroed position is destroyed
-/// without ever decrementing the market. The market's IF-fee sweep would then
-/// stay frozen for good.
+/// Every writer of `PerpPosition::quote_asset_amount` must call this. Both
+/// `update_quote_asset_amount` and `update_position_and_market` do. A missed
+/// call strands the counter. `add_new_position` recycles a slot reporting
+/// `is_available()` by overwriting the whole position, `position_flag`
+/// included, so a claim left on a zeroed position is destroyed without
+/// decrementing the market, freezing its IF sweep for good.
 ///
-/// A non-negative quote means there is no bankrupt debt left for the tranche
-/// to absorb: `resolve_perp_bankruptcy` takes a negative quote and refuses
-/// anything else. This does NOT assume a non-negative quote proves solvency.
-/// It cannot, because a position holding base can carry either sign.
-/// `flag_perp_bankruptcy_claim` books only a settled claim (zero base), and a
-/// later loss on a re-traded account is a new admission and a new booking.
+/// A non-negative quote means no bankrupt debt remains for the tranche to
+/// absorb. It does not prove solvency, since a position holding base can
+/// carry either sign; `resolve_perp_bankruptcy` takes only a negative quote.
+/// `flag_perp_bankruptcy_claim` books only a settled claim with zero base, so
+/// a later loss on a re-traded account is a new admission and a new booking.
 fn release_bankruptcy_claim_if_settled(position: &mut PerpPosition, market: &mut PerpMarket) {
     if position.has_bankruptcy_claim() && position.quote_asset_amount >= 0 {
         position.clear_bankruptcy_claim();
@@ -620,6 +529,79 @@ pub fn increase_open_bids_and_asks(
         }
     }
 
+    Ok(())
+}
+
+/// Releases exactly `base_asset_amount` of the reservation this position holds
+/// on `direction`, or fails.
+///
+/// [`decrease_open_bids_and_asks`] clamps at zero, which is right when
+/// velocity authored the number itself, since the reservation and the order
+/// it backs move together and the clamp only absorbs rounding. It is wrong
+/// for an external quoter's report, since a report above the reservation
+/// would silently collapse the whole side and free margin behind resting orders. Use this function for every quoter-reported number instead.
+pub fn release_reserved_open_base(
+    position: &mut PerpPosition,
+    direction: &PositionDirection,
+    base_asset_amount: u64,
+) -> VelocityResult {
+    let reserved = position.reserved_open_base(*direction);
+    validate!(
+        base_asset_amount <= reserved,
+        ErrorCode::QuoterReportExceedsReservation,
+        "quoter reported {} base on the {:?} side of market {}, above the {} reserved",
+        base_asset_amount,
+        direction,
+        position.market_index,
+        reserved
+    )?;
+
+    decrease_open_bids_and_asks(position, direction, base_asset_amount, true)
+}
+
+/// Releases what the report names, or the whole reservation when the report
+/// names more.
+///
+/// This is the lenient form of [`release_reserved_open_base`]. Use it only on
+/// an exit, which the owner chose or a keeper forced. An exit may run against
+/// a book that is dead or de-listed, so a failure would trap the orders the
+/// owner needs to remove. The log line keeps the clamp from being silent.
+pub fn release_reserved_open_base_for_exit(
+    position: &mut PerpPosition,
+    direction: &PositionDirection,
+    base_asset_amount: u64,
+) -> VelocityResult {
+    let reserved = position.reserved_open_base(*direction);
+    if base_asset_amount > reserved {
+        msg!(
+            "exit released {} base on the {:?} side of market {}, above the {} reserved; \
+             releasing the reservation and letting the exit through",
+            base_asset_amount,
+            direction,
+            position.market_index,
+            reserved
+        );
+    }
+
+    decrease_open_bids_and_asks(position, direction, base_asset_amount, true)
+}
+
+/// Removes `count` open-order slots from this position, or fails.
+///
+/// The counterpart to [`release_reserved_open_base`] for the order count a
+/// quoter reports it retired. A saturating subtraction would let one report
+/// collapse the count that backs orders which still rest.
+pub fn release_reserved_open_orders(position: &mut PerpPosition, count: u8) -> VelocityResult {
+    validate!(
+        count <= position.open_orders,
+        ErrorCode::QuoterReportExceedsReservation,
+        "quoter reported {} retired orders on market {}, above the {} open",
+        count,
+        position.market_index,
+        position.open_orders
+    )?;
+
+    position.open_orders -= count;
     Ok(())
 }
 

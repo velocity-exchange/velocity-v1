@@ -12,7 +12,6 @@ import {
 	MarketType,
 	PerpMarkets,
 } from '@velocity-exchange/sdk';
-import { JitMakerConfig } from './bots/jitMaker';
 import { EquityFloorGuardConfig } from './bots/equityFloorGuard';
 import { PriceFeedProperty } from '@pythnetwork/pyth-lazer-sdk';
 
@@ -24,10 +23,6 @@ export type BaseBotConfig = {
 	runOnce?: boolean;
 };
 
-export type TriggerConfig = BaseBotConfig & {
-	triggerPriorityFeeMultiplier?: number;
-};
-
 export type UserPnlSettlerConfig = BaseBotConfig & {
 	/// perp market indexes to filter for settling pnl
 	perpMarketIndicies?: Array<number>;
@@ -36,39 +31,6 @@ export type UserPnlSettlerConfig = BaseBotConfig & {
 	settlePnlThresholdUsdc?: number;
 	/// max number of users to consider for settling pnl on each iteration
 	maxUsersToConsider?: number;
-};
-
-export type FillerMultiThreadedConfig = BaseBotConfig & {
-	marketType: string;
-	marketIndexes: Array<number[]>;
-	simulateTxForCUEstimate?: boolean;
-	revertOnFailure?: boolean;
-	subaccount?: number;
-
-	rebalanceFiller?: boolean;
-	rebalanceSettledPnlThreshold?: number;
-	minGasBalanceToFill?: number;
-	bidToFillerReward?: boolean;
-	pythLazerChunkSize?: number;
-
-	triggerPriorityFeeMultiplier?: number;
-
-	/// wall-clock ms between fill attempts per order (paces re-attempts against
-	/// the DLOB builder's ~200ms re-emit; expressed in actual slots at the current
-	/// slot duration). Defaults to 2000.
-	fillAttemptIntervalMs?: number;
-};
-
-export type FillerConfig = BaseBotConfig & {
-	fillerPollingInterval?: number;
-	revertOnFailure?: boolean;
-	simulateTxForCUEstimate?: boolean;
-
-	rebalanceFiller?: boolean;
-	rebalanceSettledPnlThreshold?: number;
-	minGasBalanceToFill?: number;
-
-	triggerPriorityFeeMultiplier?: number;
 };
 
 export type MakerBidAskTwapCrankConfig = BaseBotConfig & {
@@ -95,6 +57,11 @@ export type SubaccountConfig = {
 };
 
 export type LiquidatorConfig = BaseBotConfig & {
+	/// dlob-server base URL. The liquidator reads a liquidatee's resting CLOB
+	/// orders from it and force-cancels them before a perp liquidation, because
+	/// a perp liquidation reverts while the account holds CLOB orders. When this
+	/// is unset, the liquidator skips the force-cancel and relies on that revert.
+	dlobServerHttpUrl?: string;
 	disableAutoDerisking: boolean;
 	/// Skip the startup sweep that deposits idle wallet token balances into
 	/// liquidation subaccounts that have no free collateral.
@@ -110,7 +77,8 @@ export type LiquidatorConfig = BaseBotConfig & {
 	maxSlippagePct?: number;
 	maxSlippageBps?: number;
 
-	/// wall-clock ms for derisk order auctions (expressed in actual slots at the current slot duration)
+	/// Wall-clock ms for a derisk order auction. The bot converts it to slots at
+	/// the current slot duration.
 	deriskAuctionDurationMs?: number;
 	twapDurationSec?: number;
 	minDepositToLiq?: Map<number, number>;
@@ -147,7 +115,8 @@ export type PythLazerCrankerBotConfig = BaseBotConfig & {
 	/// acts as the condition poll rate rather than the post rate. Unset
 	/// preserves the legacy post-every-tick behavior.
 	crankDivergenceBps?: number;
-	/// Max time between posts per chunk in adaptive mode (default 4 x the live slot duration)
+	/// Max time between posts for one chunk in adaptive mode. It defaults to four
+	/// times the live slot duration.
 	maxCrankIntervalMs?: number;
 };
 
@@ -157,14 +126,7 @@ export type LpPoolTargetBaseCrankerConfig = BaseBotConfig & {
 };
 
 export type BotConfigMap = {
-	fillerMultithreaded?: FillerMultiThreadedConfig;
-	spotFillerMultithreaded?: FillerMultiThreadedConfig;
-	filler?: FillerConfig;
-	fillerLite?: FillerConfig;
-	spotFiller?: FillerConfig;
-	trigger?: TriggerConfig;
 	liquidator?: LiquidatorConfig;
-	floatingMaker?: BaseBotConfig;
 	ifRevenueSettler?: BaseBotConfig;
 	protocolFeeCollector?: BaseBotConfig;
 	fundingRateUpdater?: BaseBotConfig;
@@ -176,7 +138,6 @@ export type BotConfigMap = {
 	swiftTaker?: BaseBotConfig;
 	swiftMaker?: BaseBotConfig;
 	swiftPlacer?: BaseBotConfig;
-	jitMaker?: JitMakerConfig;
 	lpTargetBaseCranker?: LpPoolTargetBaseCrankerConfig;
 };
 
@@ -250,8 +211,6 @@ export interface GlobalConfig {
 	trackTxLandRate?: boolean;
 	jetTxEndpoints?: string[];
 
-	rebalanceFiller?: boolean;
-
 	lutPubkey?: string;
 }
 
@@ -315,8 +274,6 @@ const defaultConfig: Partial<Config> = {
 
 		metricsPort: 9464,
 		disableMetrics: false,
-
-		rebalanceFiller: false,
 	},
 	enabledBots: [],
 	botConfigs: {},
@@ -361,25 +318,16 @@ function mergeDefaults<T>(defaults: T, data: Partial<T>): T {
 }
 
 /**
- * Back-compat for the *Slots -> *Ms config renames. Slot time is no longer a
- * fixed 400ms, so these intervals are denominated in wall-clock ms now. If a
- * deprecated slot-denominated key is present, warn and, when the new ms key is
- * unset, carry the old value forward converted at the 400ms baseline (its
- * original wall-clock meaning) so behavior does not silently change.
+ * Accepts the old `*Slots` config keys after the rename to `*Ms`. Slot time is
+ * no longer a fixed 400ms, so these intervals now carry wall-clock ms. When a
+ * deprecated slot-denominated key is present, this function warns. When the new
+ * ms key is also unset, it converts the old value at the 400ms baseline, which
+ * is the wall-clock time that value originally meant, so behavior stays the
+ * same.
  */
 function migrateDeprecatedSlotConfigs(config: Partial<Config>): void {
 	const BASELINE_MS = 400;
 	const renames = [
-		{
-			bot: 'fillerMultithreaded',
-			oldKey: 'fillAttemptSlotInterval',
-			newKey: 'fillAttemptIntervalMs',
-		},
-		{
-			bot: 'spotFillerMultithreaded',
-			oldKey: 'fillAttemptSlotInterval',
-			newKey: 'fillAttemptIntervalMs',
-		},
 		{
 			bot: 'liquidator',
 			oldKey: 'deriskAuctionDurationSlots',
@@ -492,52 +440,11 @@ export function loadConfigFromOpts(opts: any): Config {
 
 			metricsPort: opts.metricsPort ?? 9464,
 			disableMetrics: opts.disableMetrics ?? false,
-
-			rebalanceFiller: opts.rebalanceFiller ?? false,
 		},
 		enabledBots: [],
 		botConfigs: {},
 	};
 
-	if (opts.filler) {
-		config.enabledBots.push('filler');
-		config.botConfigs!.filler = {
-			dryRun: opts.dryRun ?? false,
-			botId: process.env.BOT_ID ?? 'filler',
-			fillerPollingInterval: 5000,
-			metricsPort: 9464,
-			runOnce: opts.runOnce ?? false,
-			simulateTxForCUEstimate: opts.simulateTxForCUEstimate ?? true,
-			rebalanceFiller: opts.rebalanceFiller ?? false,
-			triggerPriorityFeeMultiplier: opts.triggerPriorityFeeMultiplier ?? 1.5,
-		};
-	}
-	if (opts.fillerLite) {
-		config.enabledBots.push('fillerLite');
-		config.botConfigs!.fillerLite = {
-			dryRun: opts.dryRun ?? false,
-			botId: process.env.BOT_ID ?? 'fillerLite',
-			fillerPollingInterval: 5000,
-			metricsPort: 9464,
-			runOnce: opts.runOnce ?? false,
-			simulateTxForCUEstimate: opts.simulateTxForCUEstimate ?? true,
-			rebalanceFiller: opts.rebalanceFiller ?? false,
-			triggerPriorityFeeMultiplier: opts.triggerPriorityFeeMultiplier ?? 1.5,
-		};
-	}
-	if (opts.spotFiller) {
-		config.enabledBots.push('spotFiller');
-		config.botConfigs!.spotFiller = {
-			dryRun: opts.dryRun ?? false,
-			botId: process.env.BOT_ID ?? 'filler',
-			fillerPollingInterval: 5000,
-			metricsPort: 9464,
-			runOnce: opts.runOnce ?? false,
-			simulateTxForCUEstimate: opts.simulateTxForCUEstimate ?? true,
-			rebalanceFiller: opts.rebalanceFiller ?? false,
-			triggerPriorityFeeMultiplier: opts.triggerPriorityFeeMultiplier ?? 1.5,
-		};
-	}
 	if (opts.liquidator) {
 		config.enabledBots.push('liquidator');
 		config.botConfigs!.liquidator = {
@@ -569,16 +476,6 @@ export function loadConfigFromOpts(opts: any): Config {
 			})(),
 			twapDurationSec: parseInt(opts.twapDurationSec ?? '300'),
 			notifyOnLiquidation: opts.notifyOnLiquidation ?? false,
-		};
-	}
-	if (opts.trigger) {
-		config.enabledBots.push('trigger');
-		config.botConfigs!.trigger = {
-			dryRun: opts.dryRun ?? false,
-			botId: process.env.BOT_ID ?? 'trigger',
-			metricsPort: 9464,
-			runOnce: opts.runOnce ?? false,
-			triggerPriorityFeeMultiplier: opts.triggerPriorityFeeMultiplier ?? 1.5,
 		};
 	}
 	if (opts.ifRevenueSettler) {

@@ -11,6 +11,7 @@ use {
         },
         error::{ErrorCode, VelocityResult},
         get_then_update_id,
+        instructions::optional_accounts::AccountMaps,
         math::{
             casting::Cast,
             fees::split_fee_remainder,
@@ -31,12 +32,9 @@ use {
                 SettlePnlExplanation, SettlePnlRecord,
             },
             market_status::MarketStatus,
-            oracle_map::OracleMap,
             paused_operations::PerpOperation,
-            perp_market_map::PerpMarketMap,
             settle_pnl_mode::SettlePnlMode,
             spot_market::{SpotBalance, SpotBalanceType},
-            spot_market_map::SpotMarketMap,
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User},
         },
@@ -73,9 +71,7 @@ pub fn settle_pnl(
     user: &mut User,
     authority: &Pubkey,
     user_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
     state: &State,
     meets_margin_requirement: Option<bool>,
@@ -87,7 +83,7 @@ pub fn settle_pnl(
     let deposits_balance_before;
     let borrows_balance_before;
     {
-        let spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
+        let spot_market = &mut maps.spot_market_map.get_quote_spot_market_mut()?;
         update_spot_market_cumulative_interest(spot_market, None, now, state.funding_paused()?)?;
 
         tvl_before = spot_market.get_tvl()?;
@@ -95,9 +91,9 @@ pub fn settle_pnl(
         borrows_balance_before = spot_market.borrow_balance;
     }
 
-    let mut market = perp_market_map.get_ref_mut(&market_index)?;
+    let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
-    let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
+    let oracle_price_data = *maps.oracle_map.get_price_data(&market.oracle_id())?;
     let oracle_price = oracle_price_data.price;
 
     validate_market_within_price_band(&market, state, oracle_price)?;
@@ -120,15 +116,9 @@ pub fn settle_pnl(
 
     // cannot settle negative pnl this way on a user who is in liquidation territory
     if unrealized_pnl < 0 {
-        // may already be cached
         let meets_margin_requirement = match meets_margin_requirement {
             Some(meets_margin_requirement) => meets_margin_requirement,
-            None => meets_settle_pnl_maintenance_margin_requirement(
-                user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )?,
+            None => meets_settle_pnl_maintenance_margin_requirement(user, maps)?,
         };
 
         // cannot settle pnl this way on a user who is in liquidation territory
@@ -145,15 +135,15 @@ pub fn settle_pnl(
         }
     }
 
-    let mut spot_market = spot_market_map.get_quote_spot_market_mut()?;
-    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+    let mut spot_market = maps.spot_market_map.get_quote_spot_market_mut()?;
+    let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
     if perp_market.amm.is_curve_update_enabled() {
         let healthy_oracle =
-            perp_market.is_recent_oracle_valid(oracle_map.slot, &oracle_price_data)?;
+            perp_market.is_recent_oracle_valid(maps.oracle_map.slot, &oracle_price_data)?;
 
         if !healthy_oracle {
-            let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
+            let (_, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
                 MarketType::Perp,
                 perp_market.market_index,
                 &perp_market.oracle_id(),
@@ -179,22 +169,21 @@ pub fn settle_pnl(
                     return mode.result(oracle_validity.get_error_code(), market_index, &msg);
                 }
 
-                if !perp_market.amm.is_fresh_at(oracle_map.slot) {
+                if !perp_market.amm.is_fresh_at(maps.oracle_map.slot) {
                     let msg = format!(
                         "Market={} AMM must be updated in a prior instruction within same slot (current={} != amm={}, last_oracle_valid={})",
                         market_index,
-                        oracle_map.slot,
+                        maps.oracle_map.slot,
                         perp_market.amm.last_update_slot(),
                         perp_market.market_stats.last_oracle_valid
                     );
                     return mode.result(ErrorCode::AMMNotUpdatedInSameSlot, market_index, &msg);
                 }
 
-                // Both cached attestations hold, so the only reason
-                // `healthy_oracle` is false is a sample mismatch: the oracle
-                // account was rewritten after the AMM update within this
-                // slot. The cached verdict does not cover the sample being
-                // consumed; reject on its current validity.
+                // Both cached attestations hold, so `healthy_oracle` is false
+                // only because the samples do not match: the oracle account
+                // was rewritten after the AMM update this slot, and the
+                // cached verdict does not cover the sample now being consumed.
                 let msg = format!(
                     "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
                     market_index, oracle_validity
@@ -202,14 +191,13 @@ pub fn settle_pnl(
                 return mode.result(oracle_validity.get_error_code(), market_index, &msg);
             }
 
-            // #70: SettlePnl deliberately admits StaleForMargin / InsufficientDataPoints — a
-            // user settling their own pnl through a slightly stale oracle is acceptable, and
-            // the layered last_oracle_valid + is_fresh_at checks above backstop the AMM. But a
-            // *third party* (anyone who is not the user's authority or delegate) must not be
-            // able to push another user's *negative* pnl (a loss debited from that user's
-            // collateral) through such a margin-invalid oracle. Gate that specific combination
-            // on the stricter margin validity, mirroring the existing positive-pnl guard that
-            // forces a user to settle their own positive pnl.
+            // SettlePnl admits StaleForMargin and InsufficientDataPoints: a
+            // user settling their own pnl through a slightly stale oracle is
+            // acceptable, and the layered checks above still guard the AMM. A
+            // third party (anyone but the user's authority or delegate) must
+            // not push another user's negative pnl, which debits their
+            // collateral, through such a margin-invalid oracle. That mirrors
+            // the guard forcing a user to settle their own positive pnl (OtterSec #70).
             let settler_can_sign_for_user =
                 user.authority.eq(authority) || user.delegate.eq(authority);
             if unrealized_pnl < 0
@@ -414,8 +402,8 @@ pub fn settle_pnl(
     drop(perp_market);
     drop(spot_market);
 
-    let perp_market = perp_market_map.get_ref(&market_index)?;
-    let spot_market = spot_market_map.get_quote_spot_market()?;
+    let perp_market = maps.perp_market_map.get_ref(&market_index)?;
+    let spot_market = maps.spot_market_map.get_quote_spot_market()?;
 
     crate::validation::perp_market::validate_perp_market(&perp_market)?;
     crate::validation::position::validate_perp_position_with_perp_market(
@@ -448,25 +436,26 @@ pub fn settle_pnl(
     Ok(true)
 }
 
-/// Close a user's position in an expired (Settlement-status) market against the
-/// market's expiry price and settle the result with the pnl pool.
+/// Close a user's position in an expired market against the market's expiry
+/// price and settle the result with the pnl pool. An expired market has
+/// `MarketStatus::Settlement`.
 ///
-/// Returns `Ok(true)` when settlement actually occurred. Returns `Ok(false)`
-/// when the user holds no position in the market, which makes the call a no-op.
-/// Every other rejection is an `Err`. The no-op returns before the market-scoped
-/// SettlePnl pause checks below. Callers must therefore treat `false` exactly as
-/// they treat a soft-skipped [`settle_pnl`] and skip any follow-on side effect
-/// that assumes settlement happened. The one that matters is
-/// `sweep_completed_revenue_share_for_market`. It moves builder/referrer fees
-/// out of the market's pnl pool. A paused market must not lose those fees to a
-/// call that settled nothing.
+/// Returns `Ok(true)` when settlement happened. Returns `Ok(false)` when the
+/// user holds no position in the market, which makes the call a no-op. Every
+/// other rejection is an `Err`.
+///
+/// The no-op returns before the market-scoped SettlePnl pause checks below. A
+/// caller must therefore treat `false` the same way it treats a soft-skipped
+/// [`settle_pnl`]. It must skip any follow-on side effect that assumes
+/// settlement happened. `sweep_completed_revenue_share_for_market` is the one
+/// that matters. It moves builder and referrer fees out of the market's pnl
+/// pool. A paused market must not lose those fees to a call that settled
+/// nothing.
 pub fn settle_expired_position(
     perp_market_index: u16,
     user: &mut User,
     user_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
     state: &State,
 ) -> VelocityResult<bool> {
@@ -484,9 +473,7 @@ pub fn settle_expired_position(
         && user.perp_positions[position_index].quote_asset_amount > 0;
 
     // cannot settle pnl this way on a user who is in liquidation territory
-    if !meets_maintenance_margin_requirement(user, perp_market_map, spot_market_map, oracle_map)?
-        && !can_skip_margin_calc
-    {
+    if !meets_maintenance_margin_requirement(user, maps)? && !can_skip_margin_calc {
         return Err(ErrorCode::InsufficientCollateralForSettlingPNL);
     }
 
@@ -495,7 +482,7 @@ pub fn settle_expired_position(
     let slot = clock.slot;
 
     {
-        let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
+        let quote_spot_market = &mut maps.spot_market_map.get_quote_spot_market_mut()?;
         update_spot_market_cumulative_interest(
             quote_spot_market,
             None,
@@ -507,7 +494,9 @@ pub fn settle_expired_position(
     settle_funding_payment(
         user,
         user_key,
-        perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
+        maps.perp_market_map
+            .get_ref_mut(&perp_market_index)?
+            .deref_mut(),
         now,
     )?;
 
@@ -515,9 +504,7 @@ pub fn settle_expired_position(
         user,
         user_key,
         None,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         now,
         slot,
         OrderActionExplanation::MarketExpired,
@@ -527,8 +514,8 @@ pub fn settle_expired_position(
         true,
     )?;
 
-    let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
-    let perp_market = &mut perp_market_map.get_ref_mut(&perp_market_index)?;
+    let quote_spot_market = &mut maps.spot_market_map.get_quote_spot_market_mut()?;
+    let perp_market = &mut maps.perp_market_map.get_ref_mut(&perp_market_index)?;
     validate!(
         perp_market.status == MarketStatus::Settlement,
         ErrorCode::PerpMarketNotInSettlement,
@@ -597,14 +584,18 @@ pub fn settle_expired_position(
         &position_delta,
     )?;
 
-    let fee = base_asset_value
-        .safe_mul(fee_structure.fee_tiers[0].fee_numerator as i64)?
-        .safe_div(fee_structure.fee_tiers[0].fee_denominator as i64)?;
+    // The closeout is a taker fill against the expiry price, so it is priced
+    // the way any other taker fill is.
+    let fee = crate::math::fees::conservative_taker_fee(
+        base_asset_value.unsigned_abs(),
+        perp_market,
+        fee_structure,
+    )?;
 
     update_quote_asset_and_break_even_amount(
         &mut user.perp_positions[position_index],
         perp_market,
-        -fee.abs(),
+        -fee.cast::<i64>()?,
     )?;
 
     // Route the closeout taker fee through the market fee ledger with the
@@ -616,14 +607,12 @@ pub fn settle_expired_position(
     // below, not an AMM fill), so ZERO the AMM provision and fold its share
     // into the protocol residual — keeping the full fee accounted as
     // protocol + IF.
-    let gross_closeout_fee = fee.unsigned_abs();
-    if gross_closeout_fee > 0 {
-        let (_amm_fee, if_fee, _protocol_residual) =
-            split_fee_remainder(gross_closeout_fee, fee_structure)?;
-        let protocol_fee = gross_closeout_fee.safe_sub(if_fee)?;
+    if fee > 0 {
+        let (_amm_fee, if_fee, _protocol_residual) = split_fee_remainder(fee, fee_structure)?;
+        let protocol_fee = fee.safe_sub(if_fee)?;
         perp_market
             .fee_ledger
-            .accrue_fill_fees(gross_closeout_fee, protocol_fee, if_fee, 0)?;
+            .accrue_fill_fees(fee, protocol_fee, if_fee, 0)?;
     }
 
     let pnl = user.perp_positions[position_index].quote_asset_amount;
@@ -681,7 +670,7 @@ pub fn settle_expired_position(
             fill_record_id: Some(fill_record_id),
             base_asset_amount_filled: Some(base_asset_amount.unsigned_abs()),
             quote_asset_amount_filled: Some(base_asset_value.unsigned_abs()),
-            taker_fee: Some(fee.unsigned_abs()),
+            taker_fee: Some(fee),
             maker_fee: None,
             referrer_reward: None,
             quote_asset_amount_surplus: None,

@@ -24,3 +24,11 @@ crucible-test-context = { git = "https://github.com/asymmetric-research/crucible
 anchor-lang = "1.0"
 bytemuck = "1.14"
 solana-pubkey = "3.0"
+solana-instruction = { version = "3.0", optional = true }
+solana-keypair = { version = "3.0", optional = true }
+solana-signer = { version = "3.0", optional = true }
+sha2 = { version = "0.10", optional = true }
+
+[features]
+# The market's CLOB book for the SVM harnesses that route perp orders.
+clob = ["dep:solana-instruction", "dep:solana-keypair", "dep:solana-signer", "dep:sha2"]

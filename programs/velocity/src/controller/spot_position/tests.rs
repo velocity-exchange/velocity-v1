@@ -144,7 +144,7 @@ mod update_spot_position_balance {
     }
 }
 
-/// finding #118: the daily deposit cap must throttle deposit *growth*, not lock a market that is
+/// OtterSec #118: the daily deposit cap must throttle deposit *growth*, not lock a market that is
 /// already over its cap. `check_deposit_limits` is a market-wide level predicate, so validating it
 /// on every trip through the shared credit path made an over-cap market reject withdrawals and
 /// repayments too — the very actions that bring the level back down — while liquidation, which does
@@ -161,7 +161,7 @@ mod deposit_cap_does_not_lock_exits {
             market_status::MarketStatus,
             oracle::OracleSource,
             spot_market::{SpotBalanceType, SpotMarket},
-            user::{SpotPosition, User},
+            user::User,
         },
     };
 

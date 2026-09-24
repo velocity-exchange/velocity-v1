@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Keypair } from '@solana/web3.js';
 import { VelocityCore } from '../../src/core/VelocityCore';
+import { PlaceAndTakeOrderSuccessCondition } from '../../src/types';
 
 describe('VelocityCore perp order instruction builders', () => {
 	const pk = () => Keypair.generate().publicKey;
@@ -10,77 +11,84 @@ describe('VelocityCore perp order instruction builders', () => {
 		data: Buffer.alloc(0),
 	};
 
-	test('buildPlacePerpOrderInstruction', async () => {
+	test('buildPlaceAndTakePerpOrderInstruction', async () => {
 		const called: any[] = [];
+		const programId = pk();
 		const program = {
+			programId,
 			instruction: {
-				placePerpOrder: async (...args: any[]) => {
+				placeAndTakePerpOrderV1: async (...args: any[]) => {
 					called.push(args);
 					return fakeIx;
 				},
 			},
 		};
-		const ix = await VelocityCore.buildPlacePerpOrderInstruction({
-			program,
-			orderParams: { x: 1 },
-			state: pk(),
-			user: pk(),
-			userStats: pk(),
-			authority: pk(),
-			remainingAccounts: [],
-		});
-		expect(ix).toBe(fakeIx as any);
-		expect(called[0][0]).toEqual({ x: 1 });
-	});
-
-	test('buildPlaceAndTakePerpOrderInstruction', async () => {
-		const called: any[] = [];
-		const program = {
-			instruction: {
-				placeAndTakePerpOrder: async (...args: any[]) => {
-					called.push(args);
-					return fakeIx;
-				},
-			},
+		const clobAccounts = {
+			quoterSlab: pk(),
+			clobMarket: pk(),
+			clobProgram: pk(),
 		};
 		const ix = await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
 			program,
 			orderParams: { m: 0 },
-			optionalParams: 256,
+			successCondition: PlaceAndTakeOrderSuccessCondition.FULL_FILL,
 			state: pk(),
 			user: pk(),
 			userStats: pk(),
 			authority: pk(),
 			remainingAccounts: [],
+			clobAccounts,
 		});
 		expect(ix).toBe(fakeIx as any);
-		expect(called[0][1]).toBe(256);
+		// The args ride one struct.
+		expect(called[0][0]).toEqual({
+			params: { m: 0 },
+			successCondition: PlaceAndTakeOrderSuccessCondition.FULL_FILL,
+		});
+
+		const accounts = called[0][1].accounts;
+		expect(accounts.quoterSlab).toBe(clobAccounts.quoterSlab);
+		expect(accounts.clobMarket).toBe(clobAccounts.clobMarket);
+		expect(accounts.clobProgram).toBe(clobAccounts.clobProgram);
+		// An omitted flow authority encodes as the program id (anchor's `None`).
+		expect(accounts.flowAuthority).toBe(programId);
 	});
 
 	test('buildPlaceAndMakePerpOrderInstruction', async () => {
 		const called: any[] = [];
+		const programId = pk();
 		const program = {
+			programId,
 			instruction: {
-				placeAndMakePerpOrder: async (...args: any[]) => {
+				placeAndMakePerpOrderV1: async (...args: any[]) => {
 					called.push(args);
 					return fakeIx;
 				},
 			},
 		};
+		const clobAccounts = {
+			quoterSlab: pk(),
+			clobMarket: pk(),
+			clobProgram: pk(),
+		};
 		const ix = await VelocityCore.buildPlaceAndMakePerpOrderInstruction({
 			program,
 			orderParams: {},
-			takerOrderId: 7,
 			state: pk(),
 			user: pk(),
 			userStats: pk(),
-			taker: pk(),
-			takerStats: pk(),
 			authority: pk(),
 			remainingAccounts: [],
+			clobAccounts,
 		});
 		expect(ix).toBe(fakeIx as any);
-		expect(called[0][1]).toBe(7);
+		// v1 takes one args struct, then the accounts object — no taker.
+		expect(called[0][0]).toEqual({
+			params: {},
+		});
+		expect(called[0][1].accounts.quoterSlab).toBe(clobAccounts.quoterSlab);
+		// An omitted flow authority encodes as the program id (anchor's `None`).
+		expect(called[0][1].accounts.flowAuthority).toBe(programId);
 	});
 
 	test('buildCancelOrderInstruction', async () => {

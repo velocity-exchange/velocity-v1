@@ -1,79 +1,83 @@
 /**
  * Mainnet base initialization runbook for the velocity program.
  *
- * Modeled on init-devnet.ts with the devnet-only machinery removed: no token
- * faucet, no mint creation, no admin pre-mint, no keeper token funding. The
- * quote asset is mainnet USDT (Es9vMFrz...), overridable via QUOTE_MINT.
+ * allow-verbose: this is the operator runbook read before a real mainnet
+ * init, not narration of the code below. The phase list, the state-init-
+ * authority footgun, and the env var reference are what an operator needs
+ * before touching a production key, and a comment sized to the code ratio
+ * would cut exactly that content.
  *
- * Run AFTER the mainnet .so is deployed (bun run program:build:mainnet + the
- * buffer flow in deploy-scripts/README.md). Executes phases:
+ * Modeled on init-devnet.ts with devnet-only machinery removed (no faucet,
+ * no mint creation, no keeper funding). Quote asset is mainnet USDT
+ * (Es9vMFrz...), overridable via QUOTE_MINT. Run AFTER the mainnet .so is
+ * deployed (bun run program:build:mainnet + the buffer flow in
+ * deploy-scripts/README.md). Phases:
  *
- *   0)  pre-flight: program executable, admin key gate, quote mint sanity
- *   A)  global State + hot-role authorities + mm-oracle feature bit + AmmCache
- *   B)  quote spot market at index 0 (oracle source forced to QuoteAsset)
- *   C)  Pyth Lazer oracle PDA for the quote feed + initial signed price post
- *   E)  switch quote spot market oracle to PythLazerStableCoin
+ *   0) pre-flight: program executable, admin key gate, quote mint sanity
+ *   A) global State + hot-role authorities + mm-oracle feature bit +
+ *      AmmCache + the protocol User every permissionless crank settles through
+ *   B) quote spot market at index 0 (oracle source forced to QuoteAsset)
+ *   C) Pyth Lazer oracle PDA for the quote feed + initial signed price post
+ *   E) switch quote spot market oracle to PythLazerStableCoin
  *
- * Perp markets are NOT initialized here; run init-markets.sh afterwards
- * (params file drives the markets).
+ * Perp markets are NOT initialized here; run init-markets.sh afterwards.
  *
- * IMPORTANT, state init authority: a real mainnet build (`mainnet-beta` on,
- * `anchor-test` off) locks `initialize` to ids.rs::state_init_authority so the
- * one-time State init cannot be front-run. ADMIN_KEYPAIR must therefore be
- * that key when State does not exist yet. The signer also becomes
- * State.cold_admin, which every subsequent admin ix (and active-status market
- * init) asserts against.
+ * IMPORTANT, state init authority: a real mainnet build locks `initialize`
+ * to ids.rs::state_init_authority, so ADMIN_KEYPAIR must be that key when
+ * State does not exist yet. The signer also becomes State.cold_admin, which
+ * every later admin ix (and active-status market init) asserts against.
  *
- * Idempotent: every phase checks whether its destination already exists on
- * chain and skips if so. Safe to re-run after partial failure.
+ * Idempotent: each phase skips if its destination already exists on chain.
  *
- * Required env:
- *   ADMIN_KEYPAIR         path to admin keypair file (must be the state init
- *                         authority on first run, see above)
- *   RPC_URL               private mainnet RPC
- *   QUOTE_LAZER_FEED_ID   Pyth Lazer u32 feed id for the quote asset
- *   PYTH_LAZER_TOKEN      auth token for the Pyth Lazer relay
- * Optional env:
- *   QUOTE_MINT            quote SPL mint (default: mainnet USDT)
- *   QUOTE_SYMBOL          spot market 0 name (default USDT)
- *   HOT_MM_ORACLE_CRANK, HOT_VAMM_QUOTE_MANAGEMENT, HOT_LP_SWAP, HOT_LP_CACHE,
- *   HOT_LP_SETTLE, HOT_AMM_CRANK, HOT_FEATURE_FLAG, HOT_FUEL, HOT_USER_FLAG,
- *   HOT_VAULT_DEPOSIT, HOT_FEE_WITHDRAW
- *                         hot-role authorities (default: admin pubkey; set
- *                         the real keeper keys before the bots go live)
- *   PYTH_LAZER_ENDPOINTS  comma-separated WSS endpoints
- *   PYTH_LAZER_WAIT_MS    ms to wait for first price message (default 30000)
- *   RECEIPT_PATH          default deploy-scripts/out/mainnet-deployment.json
- *   NON_INTERACTIVE=1     skip confirmation prompts
- *   DRY_RUN=1 (or --dry-run)  no transactions sent; performs every read
- *                         (pre-flight, mint checks, Lazer relay fetch) and
- *                         prints each ix as "[DRY RUN] would ...". When State
- *                         does not exist yet the dependent diffs (hot roles,
- *                         oracle switch) cannot be read and are logged
- *                         generically. Receipt untouched.
+ * Required env: ADMIN_KEYPAIR (must be the state init authority on first
+ * run, see above), RPC_URL (private mainnet RPC), QUOTE_LAZER_FEED_ID (Pyth
+ * Lazer u32 feed id), PYTH_LAZER_TOKEN (Pyth Lazer relay auth token).
+ *
+ * Optional env: QUOTE_MINT (default mainnet USDT), QUOTE_SYMBOL (default
+ * USDT), the HOT_* role keys (HOT_MM_ORACLE_CRANK, HOT_VAMM_QUOTE_MANAGEMENT,
+ * HOT_LP_SWAP, HOT_LP_CACHE, HOT_LP_SETTLE, HOT_AMM_CRANK, HOT_FEATURE_FLAG,
+ * HOT_FUEL, HOT_USER_FLAG, HOT_VAULT_DEPOSIT, HOT_FEE_WITHDRAW; default the
+ * admin pubkey, set real keeper keys before the bots go live),
+ * PYTH_LAZER_ENDPOINTS (comma-separated WSS endpoints), PYTH_LAZER_WAIT_MS
+ * (default 30000), RECEIPT_PATH (default
+ * deploy-scripts/out/mainnet-deployment.json), NON_INTERACTIVE=1 (skip
+ * confirmation prompts), DRY_RUN=1 / --dry-run (no transactions sent; runs
+ * every read and prints each ix as "[DRY RUN] would ..."; when State does
+ * not exist yet the dependent diffs are logged generically; receipt
+ * untouched).
  */
 
 import { BN } from '@coral-xyz/anchor';
-import { Connection, PublicKey } from '@solana/web3.js';
+import {
+	Connection,
+	PublicKey,
+	SystemProgram,
+	SYSVAR_RENT_PUBKEY,
+} from '@solana/web3.js';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import {
-  AdminClient,
-  AssetTier,
-  configs,
-  getAmmCachePublicKey,
-  getPythLazerOraclePublicKey,
-  getSpotMarketPublicKey,
-  getVelocityStateAccountPublicKey,
-  HotRole,
-  loadKeypair,
-  OracleSource,
-  PythLazerSubscriber,
-  SPOT_MARKET_RATE_PRECISION,
-  SPOT_MARKET_WEIGHT_PRECISION,
-  Wallet,
-  ZERO,
+	AdminClient,
+	AssetTier,
+	configs,
+	encodeName,
+	getAmmCachePublicKey,
+	getPythLazerOraclePublicKey,
+	getSpotMarketPublicKey,
+	getUserAccountPublicKeySync,
+	getUserConditionsPublicKey,
+	getUserStatsAccountPublicKey,
+	getVelocitySignerPublicKey,
+	getVelocityStateAccountPublicKey,
+	HotRole,
+	loadKeypair,
+	OracleSource,
+	PythLazerSubscriber,
+	SPOT_MARKET_RATE_PRECISION,
+	SPOT_MARKET_WEIGHT_PRECISION,
+	Wallet,
+	ZERO,
 } from '../packages/sdk/src';
 
 // Mirrors programs/velocity/src/ids.rs::state_init_authority. On a real
@@ -89,6 +93,7 @@ type Receipt = {
 	quoteMint: string;
 	state?: { pubkey: string; txSig?: string };
 	ammCache?: { pubkey: string; txSig?: string };
+	protocolUser?: { user: string; userStats: string; txSig?: string };
 	spotMarkets: Record<number, { pubkey: string; txSig?: string }>;
 	pythLazerOracles: Record<number, { pubkey: string; txSig?: string }>;
 	startedAt: string;
@@ -153,7 +158,8 @@ async function assertMint(
 	label: string
 ) {
 	const info = await connection.getAccountInfo(mint, 'confirmed');
-	if (!info) throw new Error(`${label} ${mint.toBase58()} not found on cluster`);
+	if (!info)
+		throw new Error(`${label} ${mint.toBase58()} not found on cluster`);
 	const owner = info.owner.toBase58();
 	const tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 	const token2022 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -252,8 +258,7 @@ async function main() {
 		'orc67EJyobz6pZuMUqgumoV6GgHkiWh42Wy5V9jpH8i';
 	// rust-vamm-cranker-bot (vamm-crank): signs the native amm_spread_adjust
 	// crank.
-	const VAMM_CRANKER_BOT_WALLET =
-		'RAmQrKiGsUhHeGubPmEC165fRKpL5J5jmbF85iCPk4w';
+	const VAMM_CRANKER_BOT_WALLET = 'RAmQrKiGsUhHeGubPmEC165fRKpL5J5jmbF85iCPk4w';
 	// dlp-taker-bot / dlp-watcher-bot shared wallet: on mainnet the taker
 	// signs LPTakerSwap / DepositProgramVault / LP Jupiter swaps with its own
 	// keeper key (the external "lucy" signer is devnet-only).
@@ -265,18 +270,101 @@ async function main() {
 		field: string;
 		pubkey: PublicKey;
 	}> = [
-		{ role: HotRole.MmOracleCrank, field: 'hotMmOracleCrank', pubkey: new PublicKey(process.env.HOT_MM_ORACLE_CRANK ?? MM_ORACLE_CRANKER_BOT_WALLET) },
-		{ role: HotRole.AmmSpreadAdjust, field: 'hotAmmSpreadAdjust', pubkey: new PublicKey(process.env.HOT_AMM_SPREAD_ADJUST ?? VAMM_CRANKER_BOT_WALLET) },
-		{ role: HotRole.VammQuoteManagement, field: 'hotVammQuoteManagement', pubkey: process.env.HOT_VAMM_QUOTE_MANAGEMENT ? new PublicKey(process.env.HOT_VAMM_QUOTE_MANAGEMENT) : PublicKey.default },
-		{ role: HotRole.LpSwap, field: 'hotLpSwap', pubkey: new PublicKey(process.env.HOT_LP_SWAP ?? DLP_TAKER_WATCHER_BOT_WALLET) },
-		{ role: HotRole.LpCache, field: 'hotLpCache', pubkey: process.env.HOT_LP_CACHE ? new PublicKey(process.env.HOT_LP_CACHE) : hotDefault },
-		{ role: HotRole.LpSettle, field: 'hotLpSettle', pubkey: process.env.HOT_LP_SETTLE ? new PublicKey(process.env.HOT_LP_SETTLE) : hotDefault },
-		{ role: HotRole.AmmCrank, field: 'hotAmmCrank', pubkey: process.env.HOT_AMM_CRANK ? new PublicKey(process.env.HOT_AMM_CRANK) : hotDefault },
-		{ role: HotRole.FeatureFlag, field: 'hotFeatureFlag', pubkey: process.env.HOT_FEATURE_FLAG ? new PublicKey(process.env.HOT_FEATURE_FLAG) : hotDefault },
-		{ role: HotRole.Fuel, field: 'hotFuel', pubkey: process.env.HOT_FUEL ? new PublicKey(process.env.HOT_FUEL) : hotDefault },
-		{ role: HotRole.UserFlag, field: 'hotUserFlag', pubkey: process.env.HOT_USER_FLAG ? new PublicKey(process.env.HOT_USER_FLAG) : hotDefault },
-		{ role: HotRole.VaultDeposit, field: 'hotVaultDeposit', pubkey: process.env.HOT_VAULT_DEPOSIT ? new PublicKey(process.env.HOT_VAULT_DEPOSIT) : hotDefault },
-		{ role: HotRole.FeeWithdraw, field: 'hotFeeWithdraw', pubkey: process.env.HOT_FEE_WITHDRAW ? new PublicKey(process.env.HOT_FEE_WITHDRAW) : hotDefault },
+		{
+			role: HotRole.MmOracleCrank,
+			field: 'hotMmOracleCrank',
+			pubkey: new PublicKey(
+				process.env.HOT_MM_ORACLE_CRANK ?? MM_ORACLE_CRANKER_BOT_WALLET
+			),
+		},
+
+		{
+			role: HotRole.AmmSpreadAdjust,
+			field: 'hotAmmSpreadAdjust',
+			pubkey: new PublicKey(
+				process.env.HOT_AMM_SPREAD_ADJUST ?? VAMM_CRANKER_BOT_WALLET
+			),
+		},
+
+		{
+			role: HotRole.VammQuoteManagement,
+			field: 'hotVammQuoteManagement',
+			pubkey: process.env.HOT_VAMM_QUOTE_MANAGEMENT
+				? new PublicKey(process.env.HOT_VAMM_QUOTE_MANAGEMENT)
+				: PublicKey.default,
+		},
+
+		{
+			role: HotRole.LpSwap,
+			field: 'hotLpSwap',
+			pubkey: new PublicKey(
+				process.env.HOT_LP_SWAP ?? DLP_TAKER_WATCHER_BOT_WALLET
+			),
+		},
+
+		{
+			role: HotRole.LpCache,
+			field: 'hotLpCache',
+			pubkey: process.env.HOT_LP_CACHE
+				? new PublicKey(process.env.HOT_LP_CACHE)
+				: hotDefault,
+		},
+
+		{
+			role: HotRole.LpSettle,
+			field: 'hotLpSettle',
+			pubkey: process.env.HOT_LP_SETTLE
+				? new PublicKey(process.env.HOT_LP_SETTLE)
+				: hotDefault,
+		},
+
+		{
+			role: HotRole.AmmCrank,
+			field: 'hotAmmCrank',
+			pubkey: process.env.HOT_AMM_CRANK
+				? new PublicKey(process.env.HOT_AMM_CRANK)
+				: hotDefault,
+		},
+
+		{
+			role: HotRole.FeatureFlag,
+			field: 'hotFeatureFlag',
+			pubkey: process.env.HOT_FEATURE_FLAG
+				? new PublicKey(process.env.HOT_FEATURE_FLAG)
+				: hotDefault,
+		},
+
+		{
+			role: HotRole.Fuel,
+			field: 'hotFuel',
+			pubkey: process.env.HOT_FUEL
+				? new PublicKey(process.env.HOT_FUEL)
+				: hotDefault,
+		},
+
+		{
+			role: HotRole.UserFlag,
+			field: 'hotUserFlag',
+			pubkey: process.env.HOT_USER_FLAG
+				? new PublicKey(process.env.HOT_USER_FLAG)
+				: hotDefault,
+		},
+
+		{
+			role: HotRole.VaultDeposit,
+			field: 'hotVaultDeposit',
+			pubkey: process.env.HOT_VAULT_DEPOSIT
+				? new PublicKey(process.env.HOT_VAULT_DEPOSIT)
+				: hotDefault,
+		},
+
+		{
+			role: HotRole.FeeWithdraw,
+			field: 'hotFeeWithdraw',
+			pubkey: process.env.HOT_FEE_WITHDRAW
+				? new PublicKey(process.env.HOT_FEE_WITHDRAW)
+				: hotDefault,
+		},
 	];
 
 	// Phase 0: pre-flight
@@ -290,10 +378,7 @@ async function main() {
 	await assertMint(connection, quoteMint, 'quote mint');
 	const statePk = await getVelocityStateAccountPublicKey(programId);
 	const stateExists = await pdaExists(connection, statePk);
-	if (
-		!stateExists &&
-		keypair.publicKey.toBase58() !== STATE_INIT_AUTHORITY
-	) {
+	if (!stateExists && keypair.publicKey.toBase58() !== STATE_INIT_AUTHORITY) {
 		throw new Error(
 			`State does not exist and ADMIN_KEYPAIR is ${keypair.publicKey.toBase58()}; ` +
 				`a mainnet build locks initialize to the state init authority ${STATE_INIT_AUTHORITY} (ids.rs). ` +
@@ -310,10 +395,16 @@ async function main() {
 		...(DRY_RUN ? ['*** DRY RUN: no transactions will be sent ***', ''] : []),
 		`cluster:      ${rpcUrl}`,
 		`program:      ${programId.toBase58()} (executable ✓)`,
-		`admin:        ${keypair.publicKey.toBase58()} (${adminSol.toFixed(4)} SOL)`,
+		`admin:        ${keypair.publicKey.toBase58()} (${adminSol.toFixed(
+			4
+		)} SOL)`,
+
 		`quote mint:   ${quoteMint.toBase58()} (${quoteSymbol})`,
 		`quote feed:   ${quoteLazerFeedId} (Pyth Lazer)`,
-		`state:        ${stateExists ? 'exists (skipping init)' : 'will be created'}`,
+		`state:        ${
+			stateExists ? 'exists (skipping init)' : 'will be created'
+		}`,
+
 		`receipt:      ${receiptPath}`,
 		'',
 		...HOT_ROLE_CONFIG.map(
@@ -425,6 +516,74 @@ async function main() {
 	}
 	writeReceipt();
 
+	// Phase A.3: the protocol User
+	// A permissionless crank names this account as the filler or the taker, and
+	// `initialize_user` does not require the authority to sign. Any key can
+	// therefore create the account first and choose its name and its referrer.
+	// Create it with the rest of the protocol, before the program serves anyone.
+	const velocitySigner = getVelocitySignerPublicKey(programId);
+	const protocolUser = getUserAccountPublicKeySync(
+		programId,
+		velocitySigner,
+		0
+	);
+	const protocolUserStats = getUserStatsAccountPublicKey(
+		programId,
+		velocitySigner
+	);
+
+	if (await pdaExists(connection, protocolUser)) {
+		logStep('protocol User already initialized', protocolUser.toBase58());
+		receipt.protocolUser = {
+			user: protocolUser.toBase58(),
+			userStats: protocolUserStats.toBase58(),
+		};
+	} else if (DRY_RUN) {
+		dryStep(
+			'initializeUserStats + initializeUser (protocol)',
+			protocolUser.toBase58()
+		);
+	} else {
+		logStep(
+			'initializeUserStats + initializeUser (protocol)',
+			protocolUser.toBase58()
+		);
+
+		// The instructions are built here rather than through the client
+		// helpers. A helper acts for the wallet's own authority, and this
+		// account's authority is a program address that no wallet holds.
+		const sharedAccounts = {
+			state: statePk,
+			authority: velocitySigner,
+			payer: keypair.publicKey,
+			rent: SYSVAR_RENT_PUBKEY,
+			systemProgram: SystemProgram.programId,
+		};
+		const ixs = [
+			client.program.instruction.initializeUserStats({
+				accounts: { userStats: protocolUserStats, ...sharedAccounts },
+			}),
+
+			client.program.instruction.initializeUser(0, encodeName('Protocol'), {
+				accounts: {
+					user: protocolUser,
+					userStats: protocolUserStats,
+					...sharedAccounts,
+					userConditions: getUserConditionsPublicKey(programId, protocolUser),
+				},
+			}),
+		];
+		const tx = await client.buildTransaction(ixs);
+		const { txSig } = await client.sendTransaction(tx, [], client.opts);
+		receipt.protocolUser = {
+			user: protocolUser.toBase58(),
+			userStats: protocolUserStats.toBase58(),
+			txSig,
+		};
+	}
+
+	writeReceipt();
+
 	// Phase B: quote spot market at index 0
 	// Program forces OracleSource::QuoteAsset for spot[0] at init; Phase E
 	// switches it to PythLazerStableCoin afterwards. Collateral weights are the
@@ -438,7 +597,11 @@ async function main() {
 	const spot0Pk = await getSpotMarketPublicKey(programId, 0);
 	const spot0Exists = await pdaExists(connection, spot0Pk);
 	if (spot0Exists) {
-		logStep(`Spot market 0 (${quoteSymbol}) already initialized`, spot0Pk.toBase58());
+		logStep(
+			`Spot market 0 (${quoteSymbol}) already initialized`,
+			spot0Pk.toBase58()
+		);
+
 		receipt.spotMarkets[0] = { pubkey: spot0Pk.toBase58() };
 	} else if (DRY_RUN) {
 		dryStep(
@@ -480,7 +643,10 @@ async function main() {
 	// Phase E's update_spot_market_oracle rejects an oracle that can't be read,
 	// so the PDA needs a published price first.
 	const quoteLazerPk = getPythLazerOraclePublicKey(programId, quoteLazerFeedId);
-	await confirm(`Begin Phase C: quote Pyth Lazer oracle (feed ${quoteLazerFeedId})?`);
+	await confirm(
+		`Begin Phase C: quote Pyth Lazer oracle (feed ${quoteLazerFeedId})?`
+	);
+
 	if (await pdaExists(connection, quoteLazerPk)) {
 		logStep(
 			`Pyth Lazer oracle (feed ${quoteLazerFeedId}) already initialized`,

@@ -1,19 +1,24 @@
-//! Off-chain replay of `velocity_rs::program::controller::orders::place_perp_order`.
+//! Off-chain replay of
+//! `velocity_rs::program::controller::orders::create_detached_perp_order`.
 //!
 //! Mirrors the simulation that the on-chain `place_signed_msg_taker_order`
 //! ix runs for its main perp leg. The signature verification, slot freshness
 //! check, signed-msg dedup, and SL/TP/isolated-deposit side-effects are
 //! handled by the swift caller before we get here.
 //!
-//! Replaces the deleted `velocity_rs::ffi::simulate_place_perp_order`.
+//! The entry order is detached: it never enters `user.orders`. Replaying the
+//! slot path instead would reject an order the chain accepts, because a full
+//! order list fails `next_order_slot`, and it would measure margin against a
+//! committed reservation rather than a modelled one.
 
 use {
     anchor_lang::AccountDeserialize,
     solana_clock::Clock,
     std::time::{SystemTime, UNIX_EPOCH},
     velocity_rs::program::{
-        controller::orders::place_perp_order,
+        controller::orders::{create_detached_perp_order, expire_orders},
         error::{ErrorCode, VelocityResult},
+        instructions::optional_accounts::AccountMaps,
         sdk::{build_infos, AlignedAccountData, VelocityAccounts},
         state::{
             oracle_map::OracleMap,
@@ -26,7 +31,11 @@ use {
     },
 };
 
-/// Off-chain replay of `place_perp_order`.
+/// Off-chain replay of `create_detached_perp_order`.
+///
+/// `signing_slot` is the slot the taker signed at. The chain backdates the
+/// order to it. A caller that holds only the
+/// current slot passes that, which is what the chain resolves to anyway.
 ///
 /// `user` is cloned before the call so the caller's value is not mutated,
 /// matching the pre-FFI-removal behavior. `state_bytes` is the raw cached
@@ -41,14 +50,15 @@ use {
 /// Copy once into an [`AlignedAccountData`] buffer (body at `base + 16`) so the
 /// cast lands on a 16-byte boundary — the same treatment the market/oracle
 /// accounts get in `AccountsListBuilder`. The copy is trimmed to
-/// `8 + size_of::<NativeState>()` first: `from_bytes` also panics on a size
-/// mismatch, so an account extended past the compiled-in struct by a program
-/// upgrade would otherwise take down the sim.
-pub fn simulate_place_perp_order(
+/// `8 + size_of::<NativeState>()` first. `bytemuck::from_bytes` also panics on
+/// a size mismatch. A program upgrade can extend the account past the
+/// compiled-in struct, and the untrimmed copy would then panic here.
+pub fn simulate_detached_perp_order(
     user: &User,
     accounts: &mut VelocityAccounts,
     state_bytes: &[u8],
     order_params: OrderParams,
+    signing_slot: u64,
     max_margin_ratio: Option<u16>,
 ) -> VelocityResult<()> {
     let state_len = 8 + std::mem::size_of::<NativeState>();
@@ -78,7 +88,7 @@ pub fn simulate_place_perp_order(
         accounts.oracle_guard_rails,
     )?;
 
-    // No epoch info — `place_perp_order` only reads `slot` and `unix_timestamp`.
+    // No epoch info — the placement only reads `slot` and `unix_timestamp`.
     let unix_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ErrorCode::UnableToCastUnixTime)?
@@ -93,18 +103,34 @@ pub fn simulate_place_perp_order(
 
     let user_key = user.authority;
     let mut rev_share_order = None;
-    // The simulation only cares whether placement succeeds; the
-    // `PlaceOrderResult` (batch risk accounting) is irrelevant here.
-    place_perp_order(
+    let mut maps = AccountMaps::new(perp_map, spot_map, oracle_map);
+
+    // `create_detached_perp_order` never touches `user.orders`, so the caller
+    // owns the sweep, on chain and here. An expired order still holds its
+    // reservation, and releasing it can be what lets this order pass margin.
+    expire_orders(
+        &mut user,
+        &user_key,
+        &mut maps,
+        local_clock.unix_timestamp,
+        local_clock.slot,
+    )?;
+
+    // A soft skip is not a rejection. An expired `max_ts` or a `TryPostOnly`
+    // that would cross returns `None` and the chain's transaction still
+    // succeeds, so the gate admits it.
+    create_detached_perp_order(
         &state,
         &mut user,
         user_key,
-        &perp_map,
-        &spot_map,
-        &mut oracle_map,
+        &mut maps,
         &local_clock,
         order_params,
-        PlaceOrderOptions::default(),
+        PlaceOrderOptions {
+            enforce_margin_check: true,
+            signed_msg_taker_order_slot: Some(signing_slot),
+            ..PlaceOrderOptions::default()
+        },
         &mut rev_share_order,
     )?;
     Ok(())

@@ -116,18 +116,22 @@ impl<'a> PerpMarketMap<'a> {
             let market_index =
                 u16::from_le_bytes(*array_ref![data, PerpMarket::MARKET_INDEX_OFFSET, 2]);
 
-            if perp_market_map.0.contains_key(&market_index) {
-                msg!("Can not include same market index twice {}", market_index);
-                return Err(ErrorCode::InvalidMarketAccount);
-            }
+            crate::validate!(
+                !(perp_market_map.0.contains_key(&market_index)),
+                ErrorCode::InvalidMarketAccount,
+                "Can not include same market index twice {}",
+                market_index
+            )?;
 
             let account_info = account_info_iter.next().safe_unwrap()?;
 
             let is_writable = account_info.is_writable;
-            if writable_markets.contains(&market_index) && !is_writable {
-                msg!("Market {} is not writable", market_index);
-                return Err(ErrorCode::MarketWrongMutability);
-            }
+            crate::validate!(
+                !(writable_markets.contains(&market_index) && !is_writable),
+                ErrorCode::MarketWrongMutability,
+                "Market {} is not writable",
+                market_index
+            )?;
 
             let account_loader: AccountLoader<PerpMarket> =
                 AccountLoader::try_from(account_info).or(Err(ErrorCode::InvalidMarketAccount))?;
@@ -139,8 +143,10 @@ impl<'a> PerpMarketMap<'a> {
     }
 }
 
-#[cfg(test)]
 impl<'a> PerpMarketMap<'a> {
+    /// A map that holds one market, built from a named account rather than
+    /// the positional maps section. It serves an instruction whose accounts
+    /// struct names the perp market.
     pub fn load_one<'c: 'a>(
         account_info: &'c AccountInfo<'a>,
         must_be_writable: bool,
@@ -171,10 +177,12 @@ impl<'a> PerpMarketMap<'a> {
         let account_loader: AccountLoader<PerpMarket> =
             AccountLoader::try_from(account_info).or(Err(ErrorCode::InvalidMarketAccount))?;
 
-        if must_be_writable && !is_writable {
-            msg!("Market {} is not writable", market_index);
-            return Err(ErrorCode::MarketWrongMutability);
-        }
+        crate::validate!(
+            !(must_be_writable && !is_writable),
+            ErrorCode::MarketWrongMutability,
+            "Market {} is not writable",
+            market_index
+        )?;
 
         perp_market_map.0.insert(market_index, account_loader);
 
@@ -215,10 +223,12 @@ impl<'a> PerpMarketMap<'a> {
             let account_loader: AccountLoader<PerpMarket> =
                 AccountLoader::try_from(account_info).or(Err(ErrorCode::InvalidMarketAccount))?;
 
-            if must_be_writable && !is_writable {
-                msg!("Market {} is not writable", market_index);
-                return Err(ErrorCode::MarketWrongMutability);
-            }
+            crate::validate!(
+                !(must_be_writable && !is_writable),
+                ErrorCode::MarketWrongMutability,
+                "Market {} is not writable",
+                market_index
+            )?;
 
             perp_market_map.0.insert(market_index, account_loader);
         }

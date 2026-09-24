@@ -1,55 +1,34 @@
-import { base64, bs58 } from '@project-serum/anchor/dist/cjs/utils/bytes';
-import fs from 'fs';
+import { base64 } from '@project-serum/anchor/dist/cjs/utils/bytes';
 import { logger } from './logger';
 import {
-	BASE_PRECISION,
 	BN,
-	DLOB,
-	DLOBNode,
-	DataAndSlot,
 	VelocityClient,
-	HeliusPriorityLevel,
-	JupiterClient,
 	VelocityEnv,
-	MakerInfo,
+	VelocityMarketInfo,
 	MarketType,
-	NodeToFill,
-	NodeToTrigger,
 	OraclePriceData,
 	PERCENTAGE_PRECISION,
 	PRICE_PRECISION,
 	PerpMarketAccount,
-	PriorityFeeSubscriber,
 	QUOTE_PRECISION,
 	SpotMarketAccount,
 	User,
 	Wallet,
 	convertToNumber,
-	getOrderSignature,
 	getVariant,
-	WhileValidTxSender,
-	PriorityFeeSubscriberMap,
 	isOneOfVariant,
-	isVariant,
 	SpotMarketConfig,
 	PerpMarketConfig,
-	VELOCITY_ORACLE_RECEIVER_ID,
 	OracleInfo,
-	PYTH_LAZER_STORAGE_ACCOUNT_KEY,
-	Order,
-	isFallbackAvailableLiquiditySource,
-	calculateBaseAssetAmountForAmmToFulfill,
-	isOrderExpired,
-	MMOraclePriceData,
-	StateAccount,
 	PythLazerSubscriber,
+	PriorityFeeSubscriberMap,
+	decodeName,
+	loadKeypair,
+	getSizeOfTransaction as getTransactionByteSize,
 } from '@velocity-exchange/sdk';
 import {
-	NATIVE_MINT,
 	createAssociatedTokenAccountInstruction,
-	createCloseAccountInstruction,
 	getAssociatedTokenAddress,
-	getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import { PythLazerSubscriber as PythLazerSubscriberDeprecated } from './pythLazerSubscriber';
 import {
@@ -65,18 +44,14 @@ import {
 	VersionedTransaction,
 } from '@solana/web3.js';
 import { webhookMessage } from './webhook';
-import { FallbackLiquiditySource } from './experimental-bots/filler-common/types';
+
+export { decodeName, loadKeypair };
 
 // devnet only
 export const TOKEN_FAUCET_PROGRAM_ID = new PublicKey(
 	'V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB'
 );
 
-export const MEMO_PROGRAM_ID = new PublicKey(
-	'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'
-);
-
-const JUPITER_SLIPPAGE_BPS = 100;
 export const PRIORITY_FEE_SERVER_RATE_LIMIT_PER_MIN = 300;
 
 export async function getOrCreateAssociatedTokenAccount(
@@ -168,31 +143,6 @@ export function convertToMarketType(input: string): MarketType {
 	}
 }
 
-export function loadKeypair(privateKey: string): Keypair {
-	// try to load privateKey as a filepath
-	let loadedKey: Uint8Array;
-	if (fs.existsSync(privateKey)) {
-		logger.info(`loading private key from ${privateKey}`);
-		privateKey = fs.readFileSync(privateKey).toString();
-	}
-
-	if (privateKey.includes('[') && privateKey.includes(']')) {
-		logger.info(`Trying to load private key as numbers array`);
-		loadedKey = Uint8Array.from(JSON.parse(privateKey));
-	} else if (privateKey.includes(',')) {
-		logger.info(`Trying to load private key as comma separated numbers`);
-		loadedKey = Uint8Array.from(
-			privateKey.split(',').map((val) => Number(val))
-		);
-	} else {
-		logger.info(`Trying to load private key as base58 string`);
-		privateKey = privateKey.replace(/\s/g, '');
-		loadedKey = new Uint8Array(bs58.decode(privateKey));
-	}
-
-	return Keypair.fromSecretKey(Uint8Array.from(loadedKey));
-}
-
 export function getWallet(privateKeyOrFilepath: string): [Keypair, Wallet] {
 	const keypair = loadKeypair(privateKeyOrFilepath);
 	return [keypair, new Wallet(keypair)];
@@ -204,29 +154,6 @@ export function sleepMs(ms: number) {
 
 export function sleepS(s: number) {
 	return sleepMs(s * 1000);
-}
-
-export function decodeName(bytes: number[]): string {
-	const buffer = Buffer.from(bytes);
-	return buffer.toString('utf8').trim();
-}
-
-export function getNodeToFillSignature(node: NodeToFill): string {
-	if (!node.node.userAccount) {
-		return '~';
-	}
-	return `${node.node.userAccount}-${node.node.order?.orderId.toString()}`;
-}
-
-export function getFillSignatureFromUserAccountAndOrderId(
-	userAccount: string,
-	orderId: string
-): string {
-	return `${userAccount}-${orderId}`;
-}
-
-export function getNodeToTriggerSignature(node: NodeToTrigger): string {
-	return getOrderSignature(node.node.order.orderId, node.node.userAccount);
 }
 
 export async function waitForAllSubscribesToFinish(
@@ -243,80 +170,6 @@ export async function waitForAllSubscribesToFinish(
 	} else {
 		return true;
 	}
-}
-
-export function getBestLimitBidExcludePubKey<T extends MarketType>(
-	dlob: DLOB,
-	marketIndex: number,
-	marketType: T,
-	slot: number,
-	oraclePriceData: T extends { spot: unknown }
-		? OraclePriceData
-		: MMOraclePriceData,
-	excludedPubKey: string,
-	excludedUserAccountsAndOrder?: [string, number][]
-): DLOBNode | undefined {
-	const bids = dlob.getRestingLimitBids(
-		marketIndex,
-		slot,
-		marketType,
-		oraclePriceData
-	);
-
-	for (const bid of bids) {
-		if (bid.userAccount === excludedPubKey) {
-			continue;
-		}
-		if (
-			excludedUserAccountsAndOrder?.some(
-				(entry) =>
-					entry[0] === (bid.userAccount ?? '') &&
-					entry[1] === (bid.order?.orderId ?? -1)
-			)
-		) {
-			continue;
-		}
-		return bid;
-	}
-
-	return undefined;
-}
-
-export function getBestLimitAskExcludePubKey<T extends MarketType>(
-	dlob: DLOB,
-	marketIndex: number,
-	marketType: T,
-	slot: number,
-	oraclePriceData: T extends { spot: unknown }
-		? OraclePriceData
-		: MMOraclePriceData,
-	excludedPubKey: string,
-	excludedUserAccountsAndOrder?: [string, number][]
-): DLOBNode | undefined {
-	const asks = dlob.getRestingLimitAsks(
-		marketIndex,
-		slot,
-		marketType,
-		oraclePriceData
-	);
-	for (const ask of asks) {
-		if (ask.userAccount === excludedPubKey) {
-			continue;
-		}
-		if (
-			excludedUserAccountsAndOrder?.some(
-				(entry) =>
-					entry[0] === (ask.userAccount ?? '') &&
-					entry[1] === (ask.order?.orderId || -1)
-			)
-		) {
-			continue;
-		}
-
-		return ask;
-	}
-
-	return undefined;
 }
 
 export function calculateAccountValueUsd(user: User): number {
@@ -625,6 +478,65 @@ export async function simulateAndGetTxWithCUs(
 	};
 }
 
+/**
+ * Simulates `ixs` and returns a versioned transaction carrying the measured compute
+ * unit limit. On a simulation failure it returns a `-1` estimate, which tells the
+ * caller to fall back to the maximum limit.
+ */
+export async function buildVersionedTransactionWithSimulatedCus(
+	velocityClient: VelocityClient,
+	ixs: Array<TransactionInstruction>,
+	luts: Array<AddressLookupTableAccount>,
+	cuPriceMicroLamports?: number
+): Promise<SimulateAndGetTxWithCUsResponse> {
+	const fullIxs = [
+		ComputeBudgetProgram.setComputeUnitLimit({
+			units: 1_400_000, // the simulation overwrites this
+		}),
+	];
+
+	if (cuPriceMicroLamports !== undefined) {
+		fullIxs.push(
+			ComputeBudgetProgram.setComputeUnitPrice({
+				microLamports: cuPriceMicroLamports,
+			})
+		);
+	}
+
+	fullIxs.push(...ixs);
+
+	try {
+		const recentBlockhash = await velocityClient.connection.getLatestBlockhash(
+			'confirmed'
+		);
+
+		return await simulateAndGetTxWithCUs({
+			ixs: fullIxs,
+			connection: velocityClient.connection,
+			payerPublicKey: velocityClient.wallet.publicKey,
+			lookupTableAccounts: luts,
+			cuLimitMultiplier: 1.2,
+			doSimulation: true,
+			dumpTx: false,
+			recentBlockhash: recentBlockhash.blockhash,
+		});
+	} catch (e) {
+		const err = e as Error;
+		logger.error(
+			`error in buildVersionedTransactionWithSimulatedCus, using max CUs: ${err.message}\n${err.stack}`
+		);
+
+		return {
+			cuEstimate: -1,
+			simTxLogs: null,
+			simError: err,
+			simTxDuration: -1,
+			// @ts-ignore
+			tx: undefined,
+		};
+	}
+}
+
 export function handleSimResultError(
 	simResult: SimulateAndGetTxWithCUsResponse,
 	errorCodesToSuppress: number[],
@@ -710,173 +622,15 @@ export interface CustomError {
 	Custom?: number;
 }
 
-export function logMessageForNodeToFill(
-	node: NodeToFill,
-	takerUser: string,
-	takerUserSlot: number,
-	makerInfos: Array<DataAndSlot<MakerInfo>>,
-	currSlot: number,
-	fillId: number,
-	fillType: string,
-	revertOnFailure: boolean,
-	removeLastIxPreSim: boolean,
-	fallbackSource?: FallbackLiquiditySource,
-	basePrecision: BN = BASE_PRECISION
-) {
-	const takerNode = node.node;
-	const takerOrder = takerNode.order;
-	if (!takerOrder) {
-		return 'no taker order';
-	}
-
-	if (node.makerNodes.length !== makerInfos.length) {
-		logger.error(
-			`makerNodes and makerInfos length mismatch, makerNodes: ${node.makerNodes.length}, makerInfos: ${makerInfos.length}`
-		);
-	}
-
-	// json log might be inefficient, but makes log parsing easier
-	logger.info(
-		'fill attempt: ' +
-			JSON.stringify({
-				marketIndex: takerOrder.marketIndex,
-				marketType: getVariant(takerOrder.marketType),
-				taker: takerUser,
-				takerOrderId: takerOrder.orderId,
-				takerOrderDirection: getVariant(takerOrder.direction),
-				takerSlot: takerUserSlot,
-				currSlot,
-				takerBaseAssetAmountFilled: convertToNumber(
-					takerOrder.baseAssetAmountFilled,
-					basePrecision
-				),
-				takerBaseAssetAmount: convertToNumber(
-					takerOrder.baseAssetAmount,
-					basePrecision
-				),
-				takerPrice: convertToNumber(takerOrder.price, PRICE_PRECISION),
-				takerOrderPrice: getVariant(takerOrder.orderType),
-				takerOrderPriceOffset:
-					takerOrder.oraclePriceOffset.toNumber() / PRICE_PRECISION.toNumber(),
-				makers: makerInfos.length,
-				fillType,
-				fillId,
-				revertOnFailure,
-				removeLastIxPreSim,
-				isSignedMsg: node.node.isSignedMsg,
-				fallbackSource,
-			})
-	);
-
-	if (makerInfos.length > 0) {
-		for (let i = 0; i < makerInfos.length; i++) {
-			const maker = makerInfos[i].data;
-			const makerSlot = makerInfos[i].slot;
-			const makerOrder = maker.order!;
-			logger.info(
-				'fill attempt maker: ' +
-					JSON.stringify({
-						marketIndex: makerOrder.marketIndex,
-						marketType: getVariant(makerOrder.marketType),
-						makerIdx: i,
-						maker: maker.maker.toBase58(),
-						makerSlot: makerSlot,
-						makerOrderId: makerOrder.orderId,
-						makerOrderType: getVariant(makerOrder.orderType),
-						makerOrderMarketIndex: makerOrder.marketIndex,
-						makerOrderDirection: getVariant(makerOrder.direction),
-						makerOrderBaseAssetAmountFilled: convertToNumber(
-							makerOrder.baseAssetAmountFilled,
-							basePrecision
-						),
-						makerOrderBaseAssetAmount: convertToNumber(
-							makerOrder.baseAssetAmount,
-							basePrecision
-						),
-						makerOrderPrice: convertToNumber(makerOrder.price, PRICE_PRECISION),
-						makerOrderPriceOffset:
-							makerOrder.oraclePriceOffset.toNumber() /
-							PRICE_PRECISION.toNumber(),
-						fillType,
-						fillId,
-						revertOnFailure,
-						removeLastIxPreSim,
-					})
-			);
-		}
-	}
-}
-
-export interface FillTakerRef {
-	taker: string;
-	takerOrderId: number;
-}
-
 /**
- * Extracts the (taker subaccount PDA, takerOrderId) pairs a fill tx is
- * attempting or landing, taken straight from the nodes the tx was built from.
- *
- * A single fill tx can bundle more than one taker node, so this returns *every*
- * pair rather than assuming 1:1 — the nodes themselves are the fillId → taker(s)
- * mapping, so there is no side-map to keep in sync. `taker` is the on-chain User
- * subaccount PDA (matching the `taker` field on the `fill attempt:` line), NOT
- * the wallet authority.
- */
-export function getFillTakerRefs(
-	nodes: Array<NodeToFill>
-): Array<FillTakerRef> {
-	const refs: Array<FillTakerRef> = [];
-	for (const node of nodes) {
-		const order = node.node.order;
-		if (node.node.userAccount && order) {
-			refs.push({
-				taker: node.node.userAccount.toString(),
-				takerOrderId: order.orderId,
-			});
-		}
-	}
-	return refs;
-}
-
-/**
- * Renders a compact, greppable correlation suffix to append to fill-path log
- * lines (`estimated CUs`, `simError`, `sent tx`, `Tx landed`, …) that otherwise
- * carry only `fillTxId`. Stamping the taker(s) + takerOrderId(s) onto every
- * lifecycle line lets a single Loki query — a line filter on the taker
- * subaccount, or a `taker` field extraction — trace one order across its whole
- * fill lifecycle, instead of only the single `fill attempt:` line.
- *
- * Because a bundled tx carries all of its taker refs here, a filter on one taker
- * still matches a tx that fills several takers at once. Returns '' when there are
- * no taker refs (e.g. settlePnl txs) so non-fill lines are left untouched.
- */
-export function fillCorrelationSuffix(nodes: Array<NodeToFill>): string {
-	const takers = getFillTakerRefs(nodes);
-	if (takers.length === 0) {
-		return '';
-	}
-	return ' takers: ' + JSON.stringify(takers);
-}
-
-/**
- * Emits one "wide event": a single log line whose whole message is one JSON
- * object, `{"event":"<name>", ...}`, with snake_case keys.
- *
- * This is the TypeScript counterpart of keep-rs's `tx_event` wide events
- * (`emit_tx_event` / `emit_cross_decision_event` in `rust/keep-rs/src/filler.rs`).
- * Both bots' payloads are read by the Order Trace Grafana dashboard
- * (infrastructure-v3 `grafana/src/authored/order-history.ts`), which line-filters
- * on `"event":"<name>"`, extracts the JSON with `| regexp "(?P<payload>\{.*\})"`
- * and parses it into table columns. That extraction spans the FIRST `{` to the
- * LAST `}` on the line, so the message must be the JSON and nothing else — the
- * winston prefix (`[<ts>] <level>: `) contributes no braces.
- *
- * Keys are serialized alphabetically to match serde_json's BTreeMap ordering on
- * the rust side, and `undefined` values are dropped so an unknown dimension is
- * an absent column rather than a `null` one.
- *
- * Never throws. Callers include the tx confirmation loop, where an exception
- * escaping into the surrounding `try` would abort the whole confirmation batch.
+ * Emits one wide event: the whole log message is one JSON object,
+ * `{"event":"<name>", ...}`, snake_case keys serialized alphabetically to
+ * match serde_json's BTreeMap ordering in keep-rs's `tx_event`
+ * (`rust/keep-rs/src/filler.rs`). The Order Trace Grafana dashboard extracts
+ * the JSON from the first `{` to the last `}` on the line, so the message
+ * must be nothing but the JSON, and an `undefined` field is dropped rather
+ * than serialized as `null`. Never throws: the confirmation loop calls this
+ * inside a `try` that would abort the whole batch on an escaping exception.
  */
 export function logWideEvent(
 	event: string,
@@ -901,245 +655,6 @@ export function logWideEvent(
 	}
 }
 
-export function getTransactionAccountMetas(
-	tx: VersionedTransaction,
-	lutAccounts: Array<AddressLookupTableAccount>
-): {
-	estTxSize: number;
-	accountMetas: any[];
-	writeAccs: number;
-	txAccounts: number;
-} {
-	let writeAccs = 0;
-	const accountMetas: any[] = [];
-	const estTxSize = tx.message.serialize().length;
-	const acc = tx.message.getAccountKeys({
-		addressLookupTableAccounts: lutAccounts,
-	});
-	const txAccounts = acc.length;
-	for (let i = 0; i < txAccounts; i++) {
-		const meta: any = {};
-		if (tx.message.isAccountWritable(i)) {
-			writeAccs++;
-			meta['writeable'] = true;
-		}
-		if (tx.message.isAccountSigner(i)) {
-			meta['signer'] = true;
-		}
-		meta['address'] = acc.get(i)!.toBase58();
-		accountMetas.push(meta);
-	}
-
-	return {
-		estTxSize,
-		accountMetas,
-		writeAccs,
-		txAccounts,
-	};
-}
-
-export async function swapFillerHardEarnedUSDCForSOL(
-	priorityFeeSubscriber: PriorityFeeSubscriber | PriorityFeeSubscriberMap,
-	velocityClient: VelocityClient,
-	jupiterClient: JupiterClient,
-	blockhash: string,
-	subaccount?: number
-) {
-	try {
-		const usdc = velocityClient.getUser(subaccount).getTokenAmount(0);
-		const sol = velocityClient.getUser(subaccount).getTokenAmount(1);
-
-		console.log(
-			`${velocityClient.authority.toBase58()} has ${convertToNumber(
-				usdc,
-				QUOTE_PRECISION
-			)} usdc, ${convertToNumber(sol, BASE_PRECISION)} sol`
-		);
-
-		const usdcMarket = velocityClient.getSpotMarketAccount(0);
-		const solMarket = velocityClient.getSpotMarketAccount(1);
-
-		if (!usdcMarket || !solMarket) {
-			console.log('Market not found, skipping...');
-			return;
-		}
-
-		const inPrecision = new BN(10).pow(new BN(usdcMarket.decimals));
-		const outPrecision = new BN(10).pow(new BN(solMarket.decimals));
-
-		if (usdc.lt(new BN(1).mul(QUOTE_PRECISION))) {
-			console.log(
-				`${velocityClient.authority.toBase58()} not enough USDC to swap (${convertToNumber(
-					usdc,
-					QUOTE_PRECISION
-				)}), skipping...`
-			);
-			return;
-		}
-
-		const start = performance.now();
-		const quote = await jupiterClient.getQuote({
-			inputMint: usdcMarket.mint,
-			outputMint: solMarket.mint,
-			amount: usdc.sub(new BN(1)),
-			maxAccounts: 10,
-			slippageBps: JUPITER_SLIPPAGE_BPS,
-			swapMode: 'ExactIn',
-		});
-
-		const quoteInNum = convertToNumber(new BN(quote.inAmount), inPrecision);
-		const quoteOutNum = convertToNumber(new BN(quote.outAmount), outPrecision);
-		const swapPrice = quoteInNum / quoteOutNum;
-		const oracleData = velocityClient.getOracleDataForSpotMarket(1);
-		if (!oracleData) {
-			console.log('Oracle data not found, skipping...');
-			return;
-		}
-		const oraclePrice = convertToNumber(oracleData.price, PRICE_PRECISION);
-
-		if (swapPrice / oraclePrice - 1 > 0.01) {
-			console.log(`Swap price is 1% higher than oracle price, skipping...`);
-			return;
-		}
-
-		console.log(
-			`Quoted ${quoteInNum} USDC for ${quoteOutNum} SOL, swapPrice: ${swapPrice}, oraclePrice: ${oraclePrice}`
-		);
-
-		const velocityLuts = await velocityClient.fetchAllLookupTableAccounts();
-
-		const { instructions: jupiterInstructions, lookupTables } =
-			await jupiterClient.getRouteInstructions({
-				quote,
-				userPublicKey: velocityClient.provider.wallet.publicKey,
-			});
-
-		const preInstructions = [];
-
-		const withdrawerWrappedSolAta = getAssociatedTokenAddressSync(
-			NATIVE_MINT,
-			velocityClient.authority
-		);
-
-		const solAccountInfo = await velocityClient.connection.getAccountInfo(
-			withdrawerWrappedSolAta
-		);
-
-		if (!solAccountInfo) {
-			preInstructions.push(
-				velocityClient.createAssociatedTokenAccountIdempotentInstruction(
-					withdrawerWrappedSolAta,
-					velocityClient.provider.wallet.publicKey,
-					velocityClient.provider.wallet.publicKey,
-					solMarket.mint
-				)
-			);
-		}
-
-		const withdrawerUsdcAta = await velocityClient.getAssociatedTokenAccount(0);
-
-		const usdcAccountInfo = await velocityClient.connection.getAccountInfo(
-			withdrawerUsdcAta
-		);
-
-		if (!usdcAccountInfo) {
-			preInstructions.push(
-				velocityClient.createAssociatedTokenAccountIdempotentInstruction(
-					withdrawerUsdcAta,
-					velocityClient.provider.wallet.publicKey,
-					velocityClient.provider.wallet.publicKey,
-					usdcMarket.mint
-				)
-			);
-		}
-
-		const withdrawIx = await velocityClient.getWithdrawIx(
-			usdc.muln(10), // gross overestimate just to get everything out of the account
-			0,
-			withdrawerUsdcAta,
-			true,
-			subaccount
-		);
-
-		const closeAccountInstruction = createCloseAccountInstruction(
-			withdrawerWrappedSolAta,
-			velocityClient.authority,
-			velocityClient.authority
-		);
-
-		const ixs = [
-			...preInstructions,
-			withdrawIx,
-			...jupiterInstructions,
-			closeAccountInstruction,
-		];
-
-		const buildTx = (cu: number): VersionedTransaction => {
-			return getVersionedTransaction(
-				velocityClient.txSender.wallet.publicKey,
-				[
-					ComputeBudgetProgram.setComputeUnitLimit({
-						units: cu,
-					}),
-					ComputeBudgetProgram.setComputeUnitPrice({
-						microLamports:
-							priorityFeeSubscriber instanceof PriorityFeeSubscriberMap
-								? Math.floor(
-										priorityFeeSubscriber.getPriorityFees('spot', 0)!.low * 1.1
-								  )
-								: Math.floor(
-										priorityFeeSubscriber.getHeliusPriorityFeeLevel(
-											HeliusPriorityLevel.LOW
-										) * 1.1
-								  ),
-					}),
-					...ixs,
-				],
-				[...lookupTables, ...velocityLuts],
-				blockhash
-			);
-		};
-
-		const simTxResult = await velocityClient.connection.simulateTransaction(
-			buildTx(1_400_000),
-			{
-				replaceRecentBlockhash: true,
-				commitment: 'confirmed',
-			}
-		);
-
-		if (simTxResult.value.err) {
-			console.log('Sim error:');
-			console.error(simTxResult.value.err);
-			console.log('Sim logs:');
-			console.log(simTxResult.value.logs);
-			console.log(`Units consumed: ${simTxResult.value.unitsConsumed}`);
-			return;
-		}
-
-		console.log(
-			`${velocityClient.authority.toBase58()} sending swap tx... ${
-				performance.now() - start
-			}`
-		);
-
-		const txSender = new WhileValidTxSender({
-			connection: velocityClient.connection,
-			wallet: velocityClient.wallet,
-			retrySleep: 1000,
-		});
-
-		const txSigAndSlot = await txSender.sendVersionedTransaction(
-			// @ts-ignore
-			buildTx(Math.floor(simTxResult.value.unitsConsumed * 1.2)),
-			[],
-			velocityClient.opts
-		);
-		console.log(`Swap tx: https://solana.fm/tx/${txSigAndSlot.txSig}`);
-	} catch (e) {
-		console.error(e);
-	}
-}
 export function getVelocityPriorityFeeEndpoint(
 	velocityEnv: VelocityEnv
 ): string {
@@ -1151,62 +666,63 @@ export function getVelocityPriorityFeeEndpoint(
 	}
 }
 
-export function validMinimumGasAmount(amount: number | undefined): boolean {
-	if (amount === undefined || amount < 0) {
-		return false;
-	}
-	return true;
-}
-
-export function validRebalanceSettledPnlThreshold(
-	amount: number | undefined
-): boolean {
-	if (amount === undefined || amount < 1 || !Number.isInteger(amount)) {
-		return false;
-	}
-	return true;
-}
-
-export const getStaleOracleMarketIndexes = (
-	velocityClient: VelocityClient,
-	markets: (PerpMarketConfig | SpotMarketConfig)[],
-	marketType: MarketType,
-	numFeeds = 2
-) => {
-	let oracleInfos: { oracleInfo: OraclePriceData; marketIndex: number }[] =
-		markets
-			.map((market) => {
-				if (isVariant(marketType, 'perp')) {
-					const oracleInfo = velocityClient.getOracleDataForPerpMarket(
-						market.marketIndex
-					);
-					if (!oracleInfo) return null;
-					return {
-						oracleInfo,
-						marketIndex: market.marketIndex,
-					};
-				} else {
-					const oracleInfo = velocityClient.getOracleDataForSpotMarket(
-						market.marketIndex
-					);
-					if (!oracleInfo) return null;
-					return {
-						oracleInfo,
-						marketIndex: market.marketIndex,
-					};
-				}
-			})
-			.filter(
-				(item): item is { oracleInfo: OraclePriceData; marketIndex: number } =>
-					item !== null
-			);
-	oracleInfos = oracleInfos.sort(
-		(a, b) => a.oracleInfo.slot.toNumber() - b.oracleInfo.slot.toNumber()
-	);
-	return oracleInfos
-		.slice(0, numFeeds)
-		.map((oracleInfo) => oracleInfo.marketIndex);
+/** The endpoint fields a bot reads to reach a priority fee source. */
+export type PriorityFeeEndpointConfig = {
+	priorityFeeEndpoint?: string;
+	velocityEnv: VelocityEnv;
 };
+
+/**
+ * Lists the markets a bot tracks priority fees for.
+ * @param include which market types to list; both default to false.
+ */
+export function priorityFeeMarkets(
+	velocityClient: VelocityClient,
+	include: { perp?: boolean; spot?: boolean }
+): VelocityMarketInfo[] {
+	const markets: VelocityMarketInfo[] = [];
+
+	if (include.perp) {
+		for (const perpMarket of velocityClient.getPerpMarketAccounts()) {
+			markets.push({
+				marketType: 'perp',
+				marketIndex: perpMarket.marketIndex,
+			});
+		}
+	}
+
+	if (include.spot) {
+		for (const spotMarket of velocityClient.getSpotMarketAccounts()) {
+			markets.push({
+				marketType: 'spot',
+				marketIndex: spotMarket.marketIndex,
+			});
+		}
+	}
+
+	return markets;
+}
+
+/**
+ * Subscribes a priority fee map for `velocityMarkets`. The endpoint comes from the
+ * configured value first, then from the default for the configured environment. A
+ * hardcoded environment here would point every deployment at the production dlob.
+ */
+export async function subscribePriorityFeeMap(
+	velocityMarkets: VelocityMarketInfo[],
+	globalConfig: PriorityFeeEndpointConfig
+): Promise<PriorityFeeSubscriberMap> {
+	const priorityFeeSubscriberMap = new PriorityFeeSubscriberMap({
+		velocityPriorityFeeEndpoint:
+			globalConfig.priorityFeeEndpoint ??
+			getVelocityPriorityFeeEndpoint(globalConfig.velocityEnv),
+		velocityMarkets,
+		frequencyMs: 10_000,
+	});
+	await priorityFeeSubscriberMap.subscribe();
+
+	return priorityFeeSubscriberMap;
+}
 
 export const getAllPythOracleUpdateIxs = async (
 	marketIndex: number,
@@ -1269,89 +785,31 @@ export const shuffle = <T>(array: T[]): T[] => {
 	return array;
 };
 
-export function removePythIxs(
-	ixs: TransactionInstruction[],
-	receiverPublicKeyStr: string = VELOCITY_ORACLE_RECEIVER_ID
-): TransactionInstruction[] {
-	return ixs.filter(
-		(ix) =>
-			!(
-				ix.keys
-					.map((meta) => meta.pubkey.toString())
-					.includes(receiverPublicKeyStr) ||
-				ix.keys
-					.map((meta) => meta.pubkey.toString())
-					.includes(PYTH_LAZER_STORAGE_ACCOUNT_KEY.toString())
-			)
-	);
-}
-
+/**
+ * Wraps the SDK's transaction sizer and also reports the account count the
+ * instructions reference before any lookup table resolves them.
+ */
 export function getSizeOfTransaction(
 	instructions: TransactionInstruction[],
 	versionedTransaction = true,
 	addressLookupTables: AddressLookupTableAccount[] = []
 ): { bytes: number; accounts: number } {
-	const programs = new Set<string>();
-	const signers = new Set<string>();
-	let accounts = new Set<string>();
-
-	instructions.map((ix) => {
-		programs.add(ix.programId.toBase58());
+	const accounts = new Set<string>();
+	for (const ix of instructions) {
 		accounts.add(ix.programId.toBase58());
-		ix.keys.map((key) => {
-			if (key.isSigner) {
-				signers.add(key.pubkey.toBase58());
-			}
+		for (const key of ix.keys) {
 			accounts.add(key.pubkey.toBase58());
-		});
-	});
-
-	const instruction_sizes: number = instructions
-		.map(
-			(ix) =>
-				1 +
-				getSizeOfCompressedU16(ix.keys.length) +
-				ix.keys.length +
-				getSizeOfCompressedU16(ix.data.length) +
-				ix.data.length
-		)
-		.reduce((a, b) => a + b, 0);
-
-	let numberOfAddressLookups = 0;
-	const totalNumberOfAccounts = accounts.size;
-	if (addressLookupTables.length > 0) {
-		const lookupTableAddresses = addressLookupTables
-			.map((addressLookupTable) =>
-				addressLookupTable.state.addresses.map((address) => address.toBase58())
-			)
-			.flat();
-		accounts = new Set(
-			[...accounts].filter((account) => !lookupTableAddresses.includes(account))
-		);
-		accounts = new Set([...accounts, ...programs, ...signers]);
-		numberOfAddressLookups = totalNumberOfAccounts - accounts.size;
+		}
 	}
 
 	return {
-		bytes:
-			getSizeOfCompressedU16(signers.size) +
-			signers.size * 64 + // array of signatures
-			3 +
-			getSizeOfCompressedU16(accounts.size) +
-			32 * accounts.size + // array of account addresses
-			32 + // recent blockhash
-			getSizeOfCompressedU16(instructions.length) +
-			instruction_sizes + // array of instructions
-			(versionedTransaction ? 1 + getSizeOfCompressedU16(0) : 0) +
-			(versionedTransaction ? 32 * addressLookupTables.length : 0) +
-			(versionedTransaction && addressLookupTables.length > 0 ? 2 : 0) +
-			numberOfAddressLookups,
-		accounts: totalNumberOfAccounts,
+		bytes: getTransactionByteSize(
+			instructions,
+			versionedTransaction,
+			addressLookupTables
+		),
+		accounts: accounts.size,
 	};
-}
-
-function getSizeOfCompressedU16(n: number) {
-	return 1 + Number(n >= 128) + Number(n >= 16384);
 }
 
 export async function checkIfAccountExists(
@@ -1459,47 +917,11 @@ export function isSolLstToken(spotMarketIndex: number): boolean {
 	].includes(spotMarketIndex);
 }
 
-export function isFillableByVAMMDetails(
-	order: Order,
-	market: PerpMarketAccount,
-	mmOraclePriceData: MMOraclePriceData,
-	slot: number,
-	ts: number,
-	state: StateAccount
-): {
-	fillable: boolean;
-	fallbackAvailableLiquiditySource: boolean;
-	baseAssetAmountForAmmToFulfill: number;
-	minOrderSize: number;
-	orderExpired: boolean;
-} {
-	const fallbackAvailableLiquiditySource = isFallbackAvailableLiquiditySource(
-		order,
-		mmOraclePriceData,
-		slot,
-		state,
-		market
-	);
-	const baseAssetAmountForAmmToFulfill =
-		calculateBaseAssetAmountForAmmToFulfill(
-			order,
-			market,
-			mmOraclePriceData,
-			slot
-		);
-	const minOrderSize = market.marketStats.minOrderSize;
-	const orderExpired = isOrderExpired(order, ts);
-	return {
-		fillable:
-			(fallbackAvailableLiquiditySource &&
-				baseAssetAmountForAmmToFulfill.gte(minOrderSize)) ||
-			orderExpired,
-		fallbackAvailableLiquiditySource,
-		baseAssetAmountForAmmToFulfill: convertToNumber(
-			baseAssetAmountForAmmToFulfill,
-			BASE_PRECISION
-		),
-		minOrderSize: convertToNumber(minOrderSize, BASE_PRECISION),
-		orderExpired,
-	};
-}
+/** The compute-unit price instruction, in micro-lamports per compute unit. */
+export const getPriorityFeeInstruction = (
+	priorityFeeMicroLamports: number
+): TransactionInstruction => {
+	return ComputeBudgetProgram.setComputeUnitPrice({
+		microLamports: priorityFeeMicroLamports,
+	});
+};

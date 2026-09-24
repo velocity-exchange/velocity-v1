@@ -289,14 +289,11 @@ export class RevenueShareEscrowMap {
 
 	/**
 	 * Gets the `RevenueShareEscrow` accounts that still owe builder or referrer fees on
-	 * `marketIndex`. Such an account holds a row for that perp market with a non-zero
-	 * `feesAccrued`.
+	 * `marketIndex`: a row for that perp market with a non-zero `feesAccrued`.
 	 *
-	 * These rows are the work list for `settleRevenueShare`. Together they sum to the
-	 * `pendingRevenueShare` of the market. That counter reserves pnl-pool value until the program
-	 * pays the rows, and `settle_expired_market_pools_to_revenue_pool` requires it to be zero
-	 * before it delists the market. Call `syncAll()` first. This method reads the cache, and a
-	 * partial cache reports too few accounts.
+	 * These rows are the work list for `settleRevenueShare` and sum to the market's
+	 * `pendingRevenueShare`, which `settle_expired_market_pools_to_revenue_pool` requires
+	 * to be zero before delisting. Reads the cache; call `syncAll()` first.
 	 */
 	public getEscrowsOwingRevenueShare(
 		marketIndex: number

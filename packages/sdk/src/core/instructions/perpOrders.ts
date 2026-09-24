@@ -4,36 +4,32 @@ import type {
 	TransactionInstruction,
 } from '@solana/web3.js';
 import type { VelocityProgram } from '../../config';
+import type {
+	ClobAccounts,
+	PlaceAndTakeOrderSuccessCondition,
+} from '../../types';
 
 /**
- * Builds a `placePerpOrder` instruction, placing a single resting perp order. Rejects
- * immediate-or-cancel orders (`InvalidOrderIOC`) — use `buildPlaceAndTakePerpOrderInstruction`
- * or `buildPlaceAndMakePerpOrderInstruction` for IOC orders instead.
- * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
- * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
- * @param args.state - the global `State` PDA.
- * @param args.user - the `User` account the order is placed on.
- * @param args.userStats - accepted for forward-compatibility but not required by the current on-chain `place_perp_order` accounts.
- * @param args.authority - signer that must own or be a registered delegate of `user`.
- * @param args.remainingAccounts - oracle/market `AccountMeta[]` for `orderParams.marketIndex`, plus the placing user's `RevenueShareEscrow` account if the order carries a `builderIdx` and builder codes are enabled protocol-wide.
- * @returns the unsigned `placePerpOrder` `TransactionInstruction`.
+ * Builds a `placeTriggerOrdersV1` instruction, arming trigger orders in the user's own order slots. A slot holds one unfired conditional, so every entry must be a `TriggerMarket` or a `TriggerLimit` on a perp market, or the program returns `OrderTypeNotConditional`.
+ * A live order rests on the book instead, via `buildPlaceAndTakePerpOrderInstruction` or `buildPlaceAndMakePerpOrderInstruction`. One margin check covers the whole batch, letting a stop loss and a take profit arrive together.
+ * @param args.orderParams - the triggers to arm; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice` are PRICE_PRECISION (1e6).
+ * @param args.remainingAccounts - oracle/market `AccountMeta[]` for each `marketIndex`, plus the placing user's `RevenueShareEscrow` account if an order carries a `builderIdx` and builder codes are enabled protocol-wide.
+ * @returns the unsigned `placeTriggerOrdersV1` `TransactionInstruction`.
  */
-export async function buildPlacePerpOrderInstruction(args: {
+export async function buildPlaceTriggerOrdersInstruction(args: {
 	program: VelocityProgram;
-	orderParams: any;
+	orderParams: any[];
 	state: PublicKey;
 	user: PublicKey;
-	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
 }): Promise<TransactionInstruction> {
-	return await (args.program.instruction as any).placePerpOrder(
-		args.orderParams,
+	return await args.program.instruction.placeTriggerOrdersV1(
+		{ params: args.orderParams },
 		{
 			accounts: {
 				state: args.state,
 				user: args.user,
-				userStats: args.userStats,
 				authority: args.authority,
 			},
 			remainingAccounts: args.remainingAccounts,
@@ -42,86 +38,117 @@ export async function buildPlacePerpOrderInstruction(args: {
 }
 
 /**
- * Builds a `placeAndTakePerpOrder` instruction: places an order and immediately attempts
- * to fill it as a taker against the AMM and/or the supplied maker accounts.
+ * allow-verbose: enumerates every taker-side semantic (postOnly gate, successCondition,
+ * remainingAccounts ordering, clobAccounts shape) a caller must reproduce exactly.
+ *
+ * Builds a `placeAndTakePerpOrderV1` instruction: places an order and routes it as a
+ * taker against the market's book, its quoters and the AMM.
  * `orderParams.postOnly` must be `PostOnlyParam.None` (`InvalidOrderPostOnly` otherwise).
- * Any portion left unfilled is auto-cancelled when the order is (or becomes, via
- * `optionalParams`) immediate-or-cancel.
- * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
+ * A restable remainder rests on the book. Any portion left unfilled is auto-cancelled
+ * when the order is immediate-or-cancel.
  * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
- * @param args.optionalParams - packed `u32` combining a `PlaceAndTakeOrderSuccessCondition` (fail the tx if not at least partially/fully filled) and an auction-duration percentage override; `null` for default behavior. Passing any non-null value also forces IOC cancel-remainder semantics.
- * @param args.state - the global `State` PDA.
- * @param args.user - the taker's `User` account.
- * @param args.userStats - the taker's `UserStats` PDA.
+ * @param args.successCondition - a `PlaceAndTakeOrderSuccessCondition`. The instruction reverts unless the take fills at least partially or fully. `null` for no check.
  * @param args.authority - signer that must own or be a registered delegate of `user`.
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
- * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled.
+ * @param args.clobAccounts - the market's CLOB accounts, which are `quoterSlab`, a
+ * writable `clobMarket`, and `clobProgram`. The order routes through them, and a
+ * restable remainder rests on the book.
+ * @returns the unsigned `placeAndTakePerpOrderV1` `TransactionInstruction`.
  */
 export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	program: VelocityProgram;
 	orderParams: any;
-	optionalParams: number | null;
+	successCondition: PlaceAndTakeOrderSuccessCondition | null;
 	state: PublicKey;
 	user: PublicKey;
 	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
+	clobAccounts: ClobAccounts;
+
+	/** The flow authority, when it signs this transaction. Its presence attests the
+	 * flow, so a take on a book with a speed bump fills synchronously. */
+	flowAuthority?: PublicKey;
 }): Promise<TransactionInstruction> {
-	return await args.program.instruction.placeAndTakePerpOrder(
-		args.orderParams,
-		args.optionalParams,
-		{
-			accounts: {
-				state: args.state,
-				user: args.user,
-				userStats: args.userStats,
-				authority: args.authority,
-			},
-			remainingAccounts: args.remainingAccounts,
-		}
-	);
+	{
+		// Anchor encodes an omitted `Option` account as the program id, which the
+		// program decodes as `None`.
+		const omitted = args.program.programId;
+		return await args.program.instruction.placeAndTakePerpOrderV1(
+			{ params: args.orderParams, successCondition: args.successCondition },
+			{
+				accounts: {
+					state: args.state,
+					user: args.user,
+					userStats: args.userStats,
+					authority: args.authority,
+					quoterSlab: args.clobAccounts.quoterSlab,
+					clobMarket: args.clobAccounts.clobMarket,
+					clobProgram: args.clobAccounts.clobProgram,
+					// This account is the attestation. The flow authority signs
+					// the transaction as it. On a book with a speed bump, an
+					// unattested take rests the whole order instead of filling
+					// synchronously, which gives the maker priority.
+					flowAuthority: args.flowAuthority ?? omitted,
+				},
+
+				remainingAccounts: args.remainingAccounts,
+			}
+		);
+	}
 }
 
 /**
- * Builds a `placeAndMakePerpOrder` instruction: posts an immediate-or-cancel, post-only
- * `Limit` order for `user` and immediately fills it as the maker against `taker`'s
- * existing resting order (`InvalidOrderIOCPostOnly` if `orderParams` isn't IOC + post-only
- * + `Limit`). Any unfilled remainder of the just-placed maker order is auto-cancelled.
- * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
- * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
- * @param args.takerOrderId - the on-chain order ID of `taker`'s resting order being filled.
- * @param args.state - the global `State` PDA.
- * @param args.user - the maker's `User` account.
- * @param args.userStats - the maker's `UserStats` PDA.
- * @param args.taker - the taker's `User` account (order owner being filled).
- * @param args.takerStats - the taker's `UserStats` PDA.
+ * allow-verbose: enumerates the maker-side invariants (post-only gate, activationDelaySlots
+ * default/attestation rule) a caller must reproduce exactly.
+ *
+ * Builds a `placeAndMakePerpOrderV1` instruction. It posts a post-only `Limit` maker
+ * order for `user` that rests straight on the market's CLOB. It names no taker and
+ * matches nothing on placement. The program returns `InvalidOrderIOCPostOnly` when
+ * `orderParams` is not a post-only `Limit`. The maker never occupies a `User.orders`
+ * slot.
+ * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price` is PRICE_PRECISION (1e6).
  * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by any additional maker/referrer `(User, UserStats)` pairs needed to fill `taker`'s order, followed by `taker`'s `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
- * @returns the unsigned `placeAndMakePerpOrder` `TransactionInstruction`.
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`.
+ * @param args.clobAccounts - the market's CLOB accounts. All of them are required.
+ * `args.orderParams.activationDelaySlots` is the book speed bump the maker rests behind.
+ * A `null` value takes the book's default. A value below the default needs the flow
+ * authority to co-sign the transaction as `flowAuthority`, which is the attestation.
+ * @returns the unsigned `placeAndMakePerpOrderV1` `TransactionInstruction`.
  */
 export async function buildPlaceAndMakePerpOrderInstruction(args: {
 	program: VelocityProgram;
 	orderParams: any;
-	takerOrderId: number;
 	state: PublicKey;
 	user: PublicKey;
 	userStats: PublicKey;
-	taker: PublicKey;
-	takerStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
+	clobAccounts: ClobAccounts;
+
+	/** The flow authority, when it signs this transaction. It is required for an
+	 * `orderParams.activationDelaySlots` below the book's default. */
+	flowAuthority?: PublicKey;
 }): Promise<TransactionInstruction> {
-	return await args.program.instruction.placeAndMakePerpOrder(
-		args.orderParams,
-		args.takerOrderId,
+	// An omitted `Option` account is encoded as the program id, which the program
+	// decodes as `None`. The maker rests straight on the CLOB. It names no taker
+	// and matches nothing on placement.
+	const omitted = args.program.programId;
+	return await args.program.instruction.placeAndMakePerpOrderV1(
+		{ params: args.orderParams },
 		{
 			accounts: {
 				state: args.state,
 				user: args.user,
 				userStats: args.userStats,
-				taker: args.taker,
-				takerStats: args.takerStats,
 				authority: args.authority,
+				quoterSlab: args.clobAccounts.quoterSlab,
+				clobMarket: args.clobAccounts.clobMarket,
+				clobProgram: args.clobAccounts.clobProgram,
+				// This account attests an activation delay below the book's
+				// default. The flow authority signs the transaction as it. It
+				// is needed for nothing else.
+				flowAuthority: args.flowAuthority ?? omitted,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

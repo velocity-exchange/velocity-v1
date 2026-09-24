@@ -7,7 +7,7 @@ use {
     crate::{
         controller::{
             funding::settle_funding_payment,
-            orders::{self, cancel_order, fill_perp_order, place_perp_order},
+            orders::{self, create_detached_perp_order},
             position::{
                 get_position_index, update_position_and_market, update_quote_asset_amount,
                 update_quote_asset_and_break_even_amount, update_settled_pnl, PositionDirection,
@@ -21,7 +21,9 @@ use {
             spot_position::update_spot_balances_and_cumulative_deposits,
         },
         error::{ErrorCode, VelocityResult},
-        get_then_update_id, load_mut,
+        get_then_update_id,
+        instructions::optional_accounts::AccountMaps,
+        load_mut,
         math::{
             bankruptcy::{
                 has_pending_cross_margin_perp_bankruptcy, has_realizable_spot_assets_for_setoff,
@@ -72,11 +74,9 @@ use {
                 OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord,
                 PerpBankruptcyRecord, SpotBankruptcyRecord,
             },
-            fill_mode::FillMode,
             liquidation_mode::{get_perp_liquidation_mode, LiquidatePerpMode},
             margin_calculation::{MarginCalculation, MarginContext, MarketIdentifier},
             market_status::MarketStatus,
-            oracle_map::OracleMap,
             order_params::PlaceOrderOptions,
             paused_operations::{PerpOperation, SpotOperation},
             perp_market_map::PerpMarketMap,
@@ -84,7 +84,6 @@ use {
             spot_market_map::SpotMarketMap,
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
-            user_map::{UserMap, UserStatsMap},
         },
         validate,
         vlp::amm::{controller::get_fee_pool_tokens, refresh::update_amm_and_check_validity},
@@ -96,6 +95,29 @@ use {
 #[cfg(test)]
 mod tests;
 
+/// Refuse a fresh liquidation while the user holds orders on a CLOB.
+///
+/// A book order reserves `open_bids` and `open_asks`, which inflates the
+/// worst-case margin a liquidation entry reads. A liquidation slot cancel cannot
+/// remove it, so `force_cancel_clob_orders` runs first. A latched user is exempt,
+/// because that cancel refuses a latched user and would leave no way to liquidate.
+fn validate_no_clob_resident_orders(user: &User) -> VelocityResult {
+    if user.is_being_liquidated() {
+        return Ok(());
+    }
+
+    if let Some(clob_market) = user.first_market_with_clob_resident_orders() {
+        msg!(
+            "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
+            clob_market
+        );
+
+        return Err(ErrorCode::LiquidationConflictsWithClobOrders);
+    }
+
+    Ok(())
+}
+
 pub fn liquidate_perp(
     market_index: u16,
     liquidator_max_base_asset_amount: u64,
@@ -106,14 +128,12 @@ pub fn liquidate_perp(
     liquidator: &mut User,
     liquidator_key: &Pubkey,
     liquidator_stats: &mut UserStats,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     slot: u64,
     now: i64,
     state: &State,
 ) -> VelocityResult {
-    let slot_clock = oracle_map.slot_clock;
+    let slot_clock = maps.oracle_map.slot_clock;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
     let liquidation_duration = state.liquidation_duration_ms();
@@ -139,7 +159,7 @@ pub fn liquidate_perp(
         liquidator.pool_id
     )?;
 
-    let market = perp_market_map.get_ref(&market_index)?;
+    let market = maps.perp_market_map.get_ref(&market_index)?;
 
     validate!(
         !market.is_operation_paused(PerpOperation::Liquidation),
@@ -148,22 +168,11 @@ pub fn liquidate_perp(
         market_index
     )?;
 
-    // OtterSec #149: once `expiry_ts` passes, an expired perp position must only be
-    // closed out at the market's committed `expiry_price`, never at the live oracle.
-    //
-    // Every ordinary user path already refuses past expiry via the same
-    // `is_in_settlement(now)` predicate — placing, filling, triggering, transferring and
-    // settling all gate on it — but direct permissionless liquidation did not, so it kept
-    // valuing and transferring the position at the live oracle for the whole window
-    // between `expiry_ts` and a warm admin flipping the status to `Settlement`. A
-    // liquidator could take the position at a live price that the fixed settlement price
-    // then supersedes, while the owner had no way to act.
-    //
-    // Scoped precisely to that window. Deliberately NOT `is_in_settlement(now)`, which is
-    // also true once the status *is* `Settlement`/`Delisted` — by then `expiry_price` is
-    // committed and liquidation during the wind-down is a legitimate way to resolve bad
-    // debt (the delisting tests exercise exactly that). What must be refused is only the
-    // gap where the market has expired but no settlement price exists yet.
+    // An expired perp position must close at the committed `expiry_price`, never at the
+    // live oracle (OtterSec #149). This refuses only the window between `expiry_ts` and
+    // that committed price, where a liquidator could take the position at a live price
+    // the settlement price then supersedes. Once the status reaches `Settlement` or
+    // `Delisted` the price is committed, and liquidation legitimately resolves bad debt.
     let expired_awaiting_settlement = market.expiry_ts != 0
         && now >= market.expiry_ts
         && !matches!(
@@ -185,27 +194,26 @@ pub fn liquidate_perp(
     settle_funding_payment(
         user,
         user_key,
-        perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
+        maps.perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
     )?;
 
     settle_funding_payment(
         liquidator,
         liquidator_key,
-        perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
+        maps.perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
     )?;
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio)
             .track_market_margin_requirement(MarketIdentifier::perp(market_index))?,
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;
+    validate_no_clob_resident_orders(user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -250,9 +258,7 @@ pub fn liquidate_perp(
         user,
         user_key,
         Some(liquidator_key),
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         now,
         slot,
         OrderActionExplanation::Liquidation,
@@ -262,8 +268,8 @@ pub fn liquidate_perp(
         true,
     )?;
 
-    let mut market = perp_market_map.get_ref_mut(&market_index)?;
-    let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
+    let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
+    let oracle_price_data = maps.oracle_map.get_price_data(&market.oracle_id())?;
     let mm_oracle_price_data = market.get_mm_oracle_price_data(
         *oracle_price_data,
         slot,
@@ -293,9 +299,7 @@ pub fn liquidate_perp(
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 MarginContext::liquidation(liquidation_margin_buffer_ratio)
                     .track_market_margin_requirement(MarketIdentifier::perp(market_index))?,
             )?;
@@ -348,7 +352,7 @@ pub fn liquidate_perp(
 
     let liquidator_max_base_asset_amount = standardize_base_asset_amount(
         liquidator_max_base_asset_amount,
-        perp_market_map.get_ref(&market_index)?.order_step_size,
+        maps.perp_market_map.get_ref(&market_index)?.order_step_size,
     )?;
 
     validate!(
@@ -358,7 +362,7 @@ pub fn liquidate_perp(
     )?;
 
     {
-        let perp_market = perp_market_map.get_ref(&market_index)?;
+        let perp_market = maps.perp_market_map.get_ref(&market_index)?;
 
         if perp_market.status != MarketStatus::Settlement {
             let oracle_price_too_divergent = is_oracle_too_divergent_with_twap_5min(
@@ -381,18 +385,24 @@ pub fn liquidate_perp(
         .base_asset_amount
         .unsigned_abs();
 
-    let margin_ratio = perp_market_map.get_ref(&market_index)?.get_margin_ratio(
-        user_base_asset_amount.cast()?,
-        MarginRequirementType::Maintenance,
-    )?;
+    let margin_ratio = maps
+        .perp_market_map
+        .get_ref(&market_index)?
+        .get_margin_ratio(
+            user_base_asset_amount.cast()?,
+            MarginRequirementType::Maintenance,
+        )?;
 
     let margin_ratio_with_buffer = margin_ratio.safe_add(liquidation_margin_buffer_ratio)?;
 
     let margin_shortage = liquidation_mode.margin_shortage(&intermediate_margin_calculation)?;
 
-    let market = perp_market_map.get_ref(&market_index)?;
-    let quote_spot_market = spot_market_map.get_ref(&market.quote_spot_market_index)?;
-    let quote_oracle_price = oracle_map
+    let market = maps.perp_market_map.get_ref(&market_index)?;
+    let quote_spot_market = maps
+        .spot_market_map
+        .get_ref(&market.quote_spot_market_index)?;
+    let quote_oracle_price = maps
+        .oracle_map
         .get_price_data(&quote_spot_market.oracle_id())?
         .price;
 
@@ -480,7 +490,7 @@ pub fn liquidate_perp(
         .min(max_base_asset_amount_allowed_to_be_transferred.max(min_base_asset_amount));
     let base_asset_amount = standardize_base_asset_amount_ceil(
         base_asset_amount,
-        perp_market_map.get_ref(&market_index)?.order_step_size,
+        maps.perp_market_map.get_ref(&market_index)?.order_step_size,
     )?;
 
     // Make sure liquidator enters at better than limit price
@@ -558,7 +568,7 @@ pub fn liquidate_perp(
         liquidator_existing_position_direction,
         liquidator_existing_position_params_for_order_action,
     ) = {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
         let user_position = user.get_perp_position_mut(market_index)?;
         let user_existing_position_direction = user_position.get_direction();
@@ -622,9 +632,7 @@ pub fn liquidate_perp(
 
     let (margin_freed_for_perp_position, _) = calculate_margin_freed(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         liquidation_margin_buffer_ratio,
         margin_shortage,
         Some(liquidation_mode.as_ref()),
@@ -634,13 +642,13 @@ pub fn liquidate_perp(
 
     if base_asset_amount >= base_asset_amount_to_cover_margin_shortage {
         liquidation_mode.exit_liquidation(user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(user, &maps.spot_market_map)? {
         liquidation_mode.enter_bankruptcy(user)?;
-        flag_perp_bankruptcy_claim(user, market_index, perp_market_map)?;
+        flag_perp_bankruptcy_claim(user, market_index, &maps.perp_market_map)?;
     }
 
     let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;
+        meets_initial_margin_requirement(liquidator, maps)?;
 
     validate!(
         liquidator_meets_initial_margin_requirement,
@@ -648,12 +656,10 @@ pub fn liquidate_perp(
         "Liquidator doesnt have enough collateral to take over perp position"
     )?;
 
-    // The liquidation adds exposure to the liquidator like a risk-increasing
-    // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
-    if let Some(liquidator_net_equity) =
-        calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
-    {
+    // The liquidation adds exposure to the liquidator the way a risk-increasing
+    // fill does, so the liquidator subaccount must clear its own buffered
+    // equity floor before it accepts the exposure.
+    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
         liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
     }
 
@@ -661,7 +667,7 @@ pub fn liquidate_perp(
     let user_order_id = get_then_update_id!(user, next_order_id);
     let liquidator_order_id = get_then_update_id!(liquidator, next_order_id);
     let fill_record_id = {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
         get_then_update_id!(market, next_fill_record_id)
     };
 
@@ -797,23 +803,77 @@ pub fn liquidate_perp(
     Ok(())
 }
 
-pub fn liquidate_perp_with_fill(
+/// The two accounts a liquidation acts on, and the keys that address them.
+/// Everything else the fill needs belongs to the caller.
+pub struct LiquidationParties<'a, 'info> {
+    pub user: &'a AccountLoader<'info, User>,
+    pub user_key: &'a Pubkey,
+    pub liquidator: &'a AccountLoader<'info, User>,
+    pub liquidator_key: &'a Pubkey,
+}
+
+/// What [`place_liquidation_order`] left for the caller to act on.
+///
+/// `Placed` is 336 bytes and is not boxed. Velocity's heap is 32 KB and its
+/// allocator never reclaims, while 336 bytes sits well inside an SBF frame.
+#[allow(clippy::large_enum_variant)]
+pub enum LiquidationStep {
+    /// Nothing to liquidate. The account exited liquidation, holds no
+    /// position, or its shortage allows no transfer yet. All three are correct
+    /// outcomes, and none of them leaves work for the caller.
+    Settled,
+    /// A forced order is built and waiting for its fill. Route it, then hand
+    /// it and the fill back to [`settle_liquidation_fill`].
+    Placed(PlacedLiquidation),
+}
+
+/// The liquidation between its two halves. It holds what the first half
+/// decided and what settling the fill needs to know.
+///
+/// The struct is wide because the halves are one operation split across a
+/// fill. Every field here is computed before the fill and read after it, so
+/// carrying the field is what lets the caller run the fill.
+pub struct PlacedLiquidation {
+    /// The forced order itself. It holds no slot in the liquidated user's
+    /// `orders`, so the caller routes it through
+    /// `FillTarget::Detached { reserved: false }` and the fill writes its
+    /// progress back here.
+    pub order: Order,
+    pub market_index: u16,
+    liquidation_id: u16,
+    liquidation_mode: Box<dyn LiquidatePerpMode>,
+    canceled_order_ids: Vec<u32>,
+    margin_freed: u64,
+    margin_shortage: u128,
+    margin_calculation: MarginCalculation,
+    if_liquidation_fee: u32,
+    protocol_liquidation_fee: u32,
+    oracle_price: i64,
+    fill_record_id: u64,
+    existing_direction: PositionDirection,
+}
+
+/// Sizes a liquidation, cancels what blocks it, and places the forced order.
+///
+/// The order's size follows from the margin shortage, so the order does not exist
+/// until this function runs. The caller holds the quoter accounts and fills it.
+pub fn place_liquidation_order<'info>(
     market_index: u16,
-    user_loader: &AccountLoader<User>,
-    user_key: &Pubkey,
-    user_stats_loader: &AccountLoader<UserStats>,
-    liquidator_loader: &AccountLoader<User>,
-    liquidator_key: &Pubkey,
-    liquidator_stats_loader: &AccountLoader<UserStats>,
-    makers_and_referrer: &UserMap,
-    makers_and_referrer_stats: &UserStatsMap,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    parties: LiquidationParties<'_, 'info>,
+    maps: &mut AccountMaps<'info>,
     clock: &Clock,
     state: &State,
-) -> VelocityResult {
-    let slot_clock = oracle_map.slot_clock;
+    // This returns Anchor's `Result` rather than `VelocityResult`. The
+    // caller's fill runs CPIs into quoter programs, and the settle half returns
+    // the same type, so both halves use one error type.
+) -> Result<LiquidationStep> {
+    let LiquidationParties {
+        user: user_loader,
+        user_key,
+        liquidator: liquidator_loader,
+        liquidator_key,
+    } = parties;
+    let slot_clock = maps.oracle_map.slot_clock;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
 
@@ -845,7 +905,7 @@ pub fn liquidate_perp_with_fill(
         "liquidator bankrupt",
     )?;
 
-    let market = perp_market_map.get_ref(&market_index)?;
+    let market = maps.perp_market_map.get_ref(&market_index)?;
 
     validate!(
         !market.is_operation_paused(PerpOperation::Liquidation),
@@ -854,22 +914,11 @@ pub fn liquidate_perp_with_fill(
         market_index
     )?;
 
-    // OtterSec #149: once `expiry_ts` passes, an expired perp position must only be
-    // closed out at the market's committed `expiry_price`, never at the live oracle.
-    //
-    // Every ordinary user path already refuses past expiry via the same
-    // `is_in_settlement(now)` predicate — placing, filling, triggering, transferring and
-    // settling all gate on it — but direct permissionless liquidation did not, so it kept
-    // valuing and transferring the position at the live oracle for the whole window
-    // between `expiry_ts` and a warm admin flipping the status to `Settlement`. A
-    // liquidator could take the position at a live price that the fixed settlement price
-    // then supersedes, while the owner had no way to act.
-    //
-    // Scoped precisely to that window. Deliberately NOT `is_in_settlement(now)`, which is
-    // also true once the status *is* `Settlement`/`Delisted` — by then `expiry_price` is
-    // committed and liquidation during the wind-down is a legitimate way to resolve bad
-    // debt (the delisting tests exercise exactly that). What must be refused is only the
-    // gap where the market has expired but no settlement price exists yet.
+    // An expired perp position must close at the committed `expiry_price`, never at the
+    // live oracle (OtterSec #149). This refuses only the window between `expiry_ts` and
+    // that committed price, where a liquidator could take the position at a live price
+    // the settlement price then supersedes. Once the status reaches `Settlement` or
+    // `Delisted` the price is committed, and liquidation legitimately resolves bad debt.
     let expired_awaiting_settlement = market.expiry_ts != 0
         && now >= market.expiry_ts
         && !matches!(
@@ -891,37 +940,36 @@ pub fn liquidate_perp_with_fill(
     settle_funding_payment(
         &mut user,
         user_key,
-        perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
+        maps.perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
     )?;
 
     settle_funding_payment(
         &mut liquidator,
         liquidator_key,
-        perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
+        maps.perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
     )?;
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio)
             .track_market_margin_requirement(MarketIdentifier::perp(market_index))?,
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(&user)?;
+    validate_no_clob_resident_orders(&user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
         msg!("margin calculation: {:?}", margin_calculation);
-        return Err(ErrorCode::SufficientCollateral);
+        return Err(ErrorCode::SufficientCollateral.into());
     } else if user_is_being_liquidated
         && liquidation_mode.can_exit_liquidation(&margin_calculation)?
     {
         liquidation_mode.exit_liquidation(&mut user)?;
-        return Ok(());
+        return Ok(LiquidationStep::Settled);
     }
 
     user.get_perp_position(market_index).inspect_err(|_e| {
@@ -947,9 +995,7 @@ pub fn liquidate_perp_with_fill(
         &mut user,
         user_key,
         Some(liquidator_key),
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         now,
         slot,
         OrderActionExplanation::Liquidation,
@@ -959,8 +1005,8 @@ pub fn liquidate_perp_with_fill(
         true,
     )?;
 
-    let mut market = perp_market_map.get_ref_mut(&market_index)?;
-    let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
+    let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
+    let oracle_price_data = maps.oracle_map.get_price_data(&market.oracle_id())?;
     let mm_oracle_price_data = market.get_mm_oracle_price_data(
         *oracle_price_data,
         slot,
@@ -990,9 +1036,7 @@ pub fn liquidate_perp_with_fill(
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 &user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 MarginContext::liquidation(liquidation_margin_buffer_ratio)
                     .track_market_margin_requirement(MarketIdentifier::perp(market_index))?,
             )?;
@@ -1030,7 +1074,7 @@ pub fn liquidate_perp_with_fill(
             });
 
             liquidation_mode.exit_liquidation(&mut user)?;
-            return Ok(());
+            return Ok(LiquidationStep::Settled);
         }
 
         intermediate_margin_calculation
@@ -1040,12 +1084,12 @@ pub fn liquidate_perp_with_fill(
 
     if user.perp_positions[position_index].base_asset_amount == 0 {
         msg!("User has no base asset amount");
-        return Ok(());
+        return Ok(LiquidationStep::Settled);
     }
 
     let oracle_price_too_divergent = is_oracle_too_divergent_with_twap_5min(
         oracle_price,
-        perp_market_map
+        maps.perp_market_map
             .get_ref(&market_index)?
             .market_stats
             .historical_oracle_data
@@ -1062,26 +1106,30 @@ pub fn liquidate_perp_with_fill(
         .base_asset_amount
         .unsigned_abs();
 
-    let margin_ratio = perp_market_map.get_ref(&market_index)?.get_margin_ratio(
-        user_base_asset_amount.cast()?,
-        MarginRequirementType::Maintenance,
-    )?;
+    let margin_ratio = maps
+        .perp_market_map
+        .get_ref(&market_index)?
+        .get_margin_ratio(
+            user_base_asset_amount.cast()?,
+            MarginRequirementType::Maintenance,
+        )?;
 
     let margin_ratio_with_buffer = margin_ratio.safe_add(liquidation_margin_buffer_ratio)?;
 
     let margin_shortage = liquidation_mode.margin_shortage(&intermediate_margin_calculation)?;
 
-    let market = perp_market_map.get_ref(&market_index)?;
-    let quote_spot_market = spot_market_map.get_ref(&market.quote_spot_market_index)?;
-    let quote_oracle_price = oracle_map
+    let market = maps.perp_market_map.get_ref(&market_index)?;
+    let quote_spot_market = maps
+        .spot_market_map
+        .get_ref(&market.quote_spot_market_index)?;
+    let quote_oracle_price = maps
+        .oracle_map
         .get_price_data(&quote_spot_market.oracle_id())?
         .price;
-    // Use the time-adjusted liquidator fee (grace-period ramp) as the basis for
-    // both the IF/protocol fee budget and the margin-shortage base sizing, so it
-    // matches the fee the forced liquidation order is actually priced with
-    // (see `liquidator_fee` below). Sizing against the un-aged `market.liquidator_fee`
-    // would under-budget the insurance/protocol fees relative to the larger
-    // execution discount the victim pays post-grace-period (matches liquidate_perp).
+    // Use the time-adjusted liquidator fee for both the IF/protocol fee budget and the
+    // margin-shortage base sizing, so it matches the fee the forced order is priced with.
+    // The un-aged `market.liquidator_fee` would under-budget those fees against the larger
+    // execution discount the victim pays after the grace period. `liquidate_perp` matches.
     let liquidator_fee = get_liquidation_fee(
         market.get_base_liquidator_fee(),
         market.get_max_liquidation_fee()?,
@@ -1135,7 +1183,7 @@ pub fn liquidate_perp_with_fill(
 
     if max_base_asset_amount_allowed_to_be_transferred == 0 {
         msg!("max_base_asset_amount_allowed_to_be_transferred == 0");
-        return Ok(());
+        return Ok(LiquidationStep::Settled);
     }
 
     let base_asset_value =
@@ -1153,7 +1201,7 @@ pub fn liquidate_perp_with_fill(
         .min(max_base_asset_amount_allowed_to_be_transferred.max(min_base_asset_amount));
     let base_asset_amount = standardize_base_asset_amount_ceil(
         base_asset_amount,
-        perp_market_map.get_ref(&market_index)?.order_step_size,
+        maps.perp_market_map.get_ref(&market_index)?.order_step_size,
     )?;
 
     let existing_direction = user.perp_positions[position_index].get_direction();
@@ -1166,65 +1214,107 @@ pub fn liquidate_perp_with_fill(
         liquidator_fee,
     )?;
 
-    let order_id = user.next_order_id;
-    let fill_record_id = perp_market_map.get_ref(&market_index)?.next_fill_record_id;
-    place_perp_order(
+    let fill_record_id = maps
+        .perp_market_map
+        .get_ref(&market_index)?
+        .next_fill_record_id;
+
+    // The forced order never occupies a slot. A liquidation fills what it
+    // builds in the same instruction and rests no remainder, so a slot would
+    // be written and cancelled without anything ever reading it.
+    let order = create_detached_perp_order(
         state,
         &mut user,
         *user_key,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         clock,
         order_params,
         PlaceOrderOptions::default().explanation(OrderActionExplanation::Liquidation),
         &mut None,
-    )?;
+    )?
+    .ok_or_else(|| {
+        // The soft skips are an expired `max_ts` and a `TryPostOnly` order that
+        // would cross. A forced order is a market order with neither, so this
+        // is unreachable rather than a case with a correct empty outcome.
+        msg!("liquidation order was not built");
+        ErrorCode::LiquidationOrderFailedToFill
+    })?;
 
     drop(user);
     drop(liquidator);
 
-    let (fill_base_asset_amount, fill_quote_asset_amount) = fill_perp_order(
-        order_id,
-        state,
-        user_loader,
-        user_stats_loader,
-        spot_market_map,
-        perp_market_map,
-        oracle_map,
-        liquidator_loader,
-        liquidator_stats_loader,
-        makers_and_referrer,
-        makers_and_referrer_stats,
-        None,
-        clock,
-        FillMode::Liquidation,
-        &mut None,
-        false,
-    )?;
+    // The caller fills from here. It holds the transaction's quoter accounts,
+    // so the forced order routes like any other taker order and reaches the
+    // market's book rather than only the makers the caller loaded.
+    Ok(LiquidationStep::Placed(PlacedLiquidation {
+        order,
+        market_index,
+        liquidation_id,
+        liquidation_mode,
+        canceled_order_ids,
+        margin_freed,
+        margin_shortage,
+        margin_calculation,
+        if_liquidation_fee,
+        protocol_liquidation_fee,
+        oracle_price,
+        fill_record_id,
+        existing_direction,
+    }))
+}
+
+/// Books the fill against the liquidation that placed its order, and reports
+/// the quote it recovered.
+///
+/// The return is never zero. A liquidation that placed an order and filled
+/// nothing returns [`ErrorCode::LiquidationOrderFailedToFill`]. The caller
+/// prices its keeper payment against the returned quote, because a liquidation
+/// is worth landing in proportion to what it recovers, and that quote is the
+/// one figure a caller cannot inflate.
+pub fn settle_liquidation_fill<'info>(
+    placed: PlacedLiquidation,
+    fill: orders::FillAmounts,
+    parties: LiquidationParties<'_, 'info>,
+    maps: &mut AccountMaps<'info>,
+    clock: &Clock,
+    state: &State,
+) -> Result<u64> {
+    let LiquidationParties {
+        user: user_loader,
+        user_key,
+        liquidator_key,
+        ..
+    } = parties;
+    let PlacedLiquidation {
+        order,
+        market_index,
+        liquidation_id,
+        liquidation_mode,
+        canceled_order_ids,
+        mut margin_freed,
+        margin_shortage,
+        margin_calculation,
+        if_liquidation_fee,
+        protocol_liquidation_fee,
+        oracle_price,
+        fill_record_id,
+        existing_direction,
+    } = placed;
+    let orders::FillAmounts {
+        base: fill_base_asset_amount,
+        quote: fill_quote_asset_amount,
+    } = fill;
+    let now = clock.unix_timestamp;
+    let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
 
     let mut user = load_mut!(user_loader)?;
 
-    if let Ok(order_index) = user.get_order_index(order_id) {
-        cancel_order(
-            order_index,
-            &mut user,
-            user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            clock.unix_timestamp,
-            clock.slot,
-            OrderActionExplanation::None,
-            Some(liquidator_key),
-            0,
-            false,
-        )?;
-    }
+    // Nothing is cancelled here. The forced order held no slot and reserved
+    // nothing, so whatever the fill left unfilled goes out of scope with it.
 
     // no fill
     if fill_base_asset_amount == 0 {
-        return Err(ErrorCode::LiquidationOrderFailedToFill);
+        return Err(ErrorCode::LiquidationOrderFailedToFill.into());
     }
 
     let if_fee = -fill_quote_asset_amount
@@ -1240,7 +1330,7 @@ pub fn liquidate_perp_with_fill(
         .cast::<i64>()?;
 
     {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
         let user_position = user.get_perp_position_mut(market_index)?;
         update_quote_asset_and_break_even_amount(user_position, &mut market, if_fee)?;
@@ -1254,9 +1344,7 @@ pub fn liquidate_perp_with_fill(
 
     let (margin_freed_for_perp_position, margin_calculation_after) = calculate_margin_freed(
         &user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         liquidation_margin_buffer_ratio,
         margin_shortage,
         Some(liquidation_mode.as_ref()),
@@ -1267,9 +1355,9 @@ pub fn liquidate_perp_with_fill(
 
     if liquidation_mode.can_exit_liquidation(&margin_calculation_after)? {
         liquidation_mode.exit_liquidation(&mut user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(&user, spot_market_map)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(&user, &maps.spot_market_map)? {
         liquidation_mode.enter_bankruptcy(&mut user)?;
-        flag_perp_bankruptcy_claim(&mut user, market_index, perp_market_map)?;
+        flag_perp_bankruptcy_claim(&mut user, market_index, &maps.perp_market_map)?;
     }
 
     let user_position_delta = get_position_delta_for_fill(
@@ -1296,7 +1384,7 @@ pub fn liquidate_perp_with_fill(
             oracle_price,
             base_asset_amount: user_position_delta.base_asset_amount,
             quote_asset_amount: user_position_delta.quote_asset_amount,
-            user_order_id: order_id,
+            user_order_id: order.order_id,
             liquidator_order_id: 0,
             fill_record_id,
             liquidator_fee: 0,
@@ -1307,7 +1395,7 @@ pub fn liquidate_perp_with_fill(
         ..LiquidationRecord::default()
     });
 
-    Ok(())
+    Ok(fill_quote_asset_amount)
 }
 
 pub fn liquidate_spot(
@@ -1319,14 +1407,12 @@ pub fn liquidate_spot(
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
     state: &State,
 ) -> VelocityResult {
-    let slot_clock = oracle_map.slot_clock;
+    let slot_clock = maps.oracle_map.slot_clock;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
     let liquidation_duration = state.liquidation_duration_ms();
@@ -1344,7 +1430,7 @@ pub fn liquidate_spot(
         "liquidator bankrupt",
     )?;
 
-    let asset_spot_market = spot_market_map.get_ref(&asset_market_index)?;
+    let asset_spot_market = maps.spot_market_map.get_ref(&asset_market_index)?;
 
     validate!(
         !asset_spot_market.is_operation_paused(SpotOperation::Liquidation),
@@ -1363,7 +1449,7 @@ pub fn liquidate_spot(
 
     drop(asset_spot_market);
 
-    let liability_spot_market = spot_market_map.get_ref(&liability_market_index)?;
+    let liability_spot_market = maps.spot_market_map.get_ref(&liability_market_index)?;
 
     validate!(
         !liability_spot_market.is_operation_paused(SpotOperation::Liquidation),
@@ -1423,9 +1509,10 @@ pub fn liquidate_spot(
         asset_pool_id,
         asset_oracle_delay,
     ) = {
-        let mut asset_market = spot_market_map.get_ref_mut(&asset_market_index)?;
-        let (asset_price_data, validity_guard_rails) =
-            oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
+        let mut asset_market = maps.spot_market_map.get_ref_mut(&asset_market_index)?;
+        let (asset_price_data, validity_guard_rails) = maps
+            .oracle_map
+            .get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
         let asset_refresh = update_spot_market_and_check_validity(
             &mut asset_market,
@@ -1497,9 +1584,10 @@ pub fn liquidate_spot(
         liability_pool_id,
         liability_oracle_delay,
     ) = {
-        let mut liability_market = spot_market_map.get_ref_mut(&liability_market_index)?;
-        let (liability_price_data, validity_guard_rails) =
-            oracle_map.get_price_data_and_guard_rails(&liability_market.oracle_id())?;
+        let mut liability_market = maps.spot_market_map.get_ref_mut(&liability_market_index)?;
+        let (liability_price_data, validity_guard_rails) = maps
+            .oracle_map
+            .get_price_data_and_guard_rails(&liability_market.oracle_id())?;
 
         let liability_refresh = update_spot_market_and_check_validity(
             &mut liability_market,
@@ -1575,11 +1663,11 @@ pub fn liquidate_spot(
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         margin_context,
     )?;
+
+    validate_no_clob_resident_orders(user)?;
 
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
@@ -1600,9 +1688,7 @@ pub fn liquidate_spot(
         user,
         user_key,
         Some(liquidator_key),
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         now,
         slot,
         OrderActionExplanation::Liquidation,
@@ -1617,9 +1703,7 @@ pub fn liquidate_spot(
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 MarginContext::liquidation(liquidation_margin_buffer_ratio)
                     .track_market_margin_requirement(MarketIdentifier::spot(
                         liability_market_index,
@@ -1676,7 +1760,7 @@ pub fn liquidate_spot(
     // total insurance-side budget (margin-shortage aware) with the cap raised to
     // if + protocol rates, split IF-first (see liquidate_perp for rationale)
     let (liability_if_liquidation_fee, liability_protocol_liquidation_fee) = {
-        let liability_market = spot_market_map.get_ref(&liability_market_index)?;
+        let liability_market = maps.spot_market_map.get_ref(&liability_market_index)?;
         (
             liability_market.if_liquidation_fee,
             liability_market.protocol_liquidation_fee,
@@ -1787,9 +1871,9 @@ pub fn liquidate_spot(
     }
 
     // Both bands measure the live oracle against the TWAP as it stood on entry. This
-    // instruction already refreshed both TWAPs above, which pulls each one toward the very
-    // oracle price the band measures. Reading the fields back lets a divergent oracle widen
-    // its own band and pass trivially (OtterSec #109-#112, #134).
+    // instruction already refreshed both TWAPs above, and the refresh pulls each one toward
+    // the oracle price the band measures. Reading the fields back would let a divergent
+    // oracle widen its own band and pass (OtterSec #109 to #112, and #134).
     let liability_oracle_too_divergent = is_oracle_too_divergent_with_twap_5min(
         liability_oracle_price.cast()?,
         liability_pre_refresh_twap_5min,
@@ -1835,7 +1919,7 @@ pub fn liquidate_spot(
         .safe_mul(liquidation_protocol_fee.cast()?)?
         .safe_div(LIQUIDATION_FEE_PRECISION_U128)?;
     {
-        let mut liability_market = spot_market_map.get_ref_mut(&liability_market_index)?;
+        let mut liability_market = maps.spot_market_map.get_ref_mut(&liability_market_index)?;
 
         let user_liability_reduction = liability_transfer
             .safe_sub(if_fee)?
@@ -1873,7 +1957,7 @@ pub fn liquidate_spot(
     }
 
     {
-        let mut asset_market = spot_market_map.get_ref_mut(&asset_market_index)?;
+        let mut asset_market = maps.spot_market_map.get_ref_mut(&asset_market_index)?;
 
         update_spot_balances_and_cumulative_deposits(
             asset_transfer,
@@ -1896,9 +1980,7 @@ pub fn liquidate_spot(
 
     let (margin_freed_from_liability, _) = calculate_margin_freed(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         liquidation_margin_buffer_ratio,
         margin_shortage,
         None,
@@ -1908,7 +1990,7 @@ pub fn liquidate_spot(
 
     if liability_transfer >= liability_transfer_to_cover_margin_shortage {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
+    } else if is_cross_margin_bankrupt(user, &maps.spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -1917,9 +1999,7 @@ pub fn liquidate_spot(
     let liquidator_meets_initial_margin_requirement =
         calculate_margin_requirement_and_total_collateral_and_liability_info(
             liquidator,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             liq_margin_context,
         )
         .map(|calc| calc.meets_margin_requirement())?;
@@ -1930,12 +2010,10 @@ pub fn liquidate_spot(
         "Liquidator doesnt have enough collateral to take over borrow"
     )?;
 
-    // The liquidation adds exposure to the liquidator like a risk-increasing
-    // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
-    if let Some(liquidator_net_equity) =
-        calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
-    {
+    // The liquidation adds exposure to the liquidator the way a risk-increasing
+    // fill does, so the liquidator subaccount must clear its own buffered
+    // equity floor before it accepts the exposure.
+    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
         liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
     }
 
@@ -1965,14 +2043,16 @@ pub fn liquidate_spot(
     Ok(())
 }
 
-/// Opens a swap-backed spot liquidation. The swap lane does not advance either market's
-/// *oracle* TWAPs. It judges the oracles against the TWAPs as they stand, and both this
-/// instruction and `liquidate_spot_with_swap_end` price against the same unmoved values. A
-/// refresh here would pull each TWAP toward the live oracle price and then widen the band
-/// checks below, and it would also be gone from the account by the time `end` reads it. `end`
-/// is a separate instruction, so there is nowhere to hold a snapshot across the pair; not
-/// moving the value is the fix (OtterSec #109-#112, #134). The deposit, borrow and utilization
-/// TWAPs still advance, in `handle_liquidate_spot_with_swap_begin`.
+/// Opens a swap-backed spot liquidation.
+///
+/// The swap lane does not advance either market's oracle TWAPs. It judges the oracles
+/// against the TWAPs as they stand, and this instruction and `liquidate_spot_with_swap_end`
+/// both price against the same unmoved values. A refresh here would pull each TWAP toward
+/// the live oracle price and widen the band checks below. The refreshed value would also be
+/// gone from the account by the time `end` reads it. `end` is a separate instruction, so
+/// there is nowhere to hold a snapshot across the pair (OtterSec #109 to #112, and #134).
+/// The deposit, borrow and utilization TWAPs still advance, in
+/// `handle_liquidate_spot_with_swap_begin`.
 pub fn liquidate_spot_with_swap_begin(
     asset_market_index: u16,
     liability_market_index: u16,
@@ -1981,14 +2061,12 @@ pub fn liquidate_spot_with_swap_begin(
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
     state: &State,
 ) -> VelocityResult {
-    let slot_clock = oracle_map.slot_clock;
+    let slot_clock = maps.oracle_map.slot_clock;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
     let liquidation_duration = state.liquidation_duration_ms();
@@ -2005,7 +2083,7 @@ pub fn liquidate_spot_with_swap_begin(
         "liquidator bankrupt",
     )?;
 
-    let asset_spot_market = spot_market_map.get_ref(&asset_market_index)?;
+    let asset_spot_market = maps.spot_market_map.get_ref(&asset_market_index)?;
 
     validate!(
         !asset_spot_market.is_operation_paused(SpotOperation::Liquidation),
@@ -2014,7 +2092,7 @@ pub fn liquidate_spot_with_swap_begin(
         asset_market_index
     )?;
 
-    let liability_spot_market = spot_market_map.get_ref(&liability_market_index)?;
+    let liability_spot_market = maps.spot_market_map.get_ref(&liability_market_index)?;
 
     validate!(
         !liability_spot_market.is_operation_paused(SpotOperation::Liquidation),
@@ -2043,9 +2121,10 @@ pub fn liquidate_spot_with_swap_begin(
         asset_pool_id,
         asset_oracle_delay,
     ) = {
-        let asset_market = spot_market_map.get_ref(&asset_market_index)?;
-        let (asset_price_data, validity_guard_rails) =
-            oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
+        let asset_market = maps.spot_market_map.get_ref(&asset_market_index)?;
+        let (asset_price_data, validity_guard_rails) = maps
+            .oracle_map
+            .get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
         let asset_validity = check_spot_oracle_validity(
             &asset_market,
@@ -2110,9 +2189,10 @@ pub fn liquidate_spot_with_swap_begin(
         liability_pool_id,
         liability_oracle_delay,
     ) = {
-        let liability_market = spot_market_map.get_ref(&liability_market_index)?;
-        let (liability_price_data, validity_guard_rails) =
-            oracle_map.get_price_data_and_guard_rails(&liability_market.oracle_id())?;
+        let liability_market = maps.spot_market_map.get_ref(&liability_market_index)?;
+        let (liability_price_data, validity_guard_rails) = maps
+            .oracle_map
+            .get_price_data_and_guard_rails(&liability_market.oracle_id())?;
 
         let liability_validity = check_spot_oracle_validity(
             &liability_market,
@@ -2183,11 +2263,11 @@ pub fn liquidate_spot_with_swap_begin(
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         margin_context,
     )?;
+
+    validate_no_clob_resident_orders(user)?;
 
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
@@ -2207,9 +2287,7 @@ pub fn liquidate_spot_with_swap_begin(
         user,
         user_key,
         Some(liquidator_key),
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         now,
         slot,
         OrderActionExplanation::Liquidation,
@@ -2224,9 +2302,7 @@ pub fn liquidate_spot_with_swap_begin(
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 MarginContext::liquidation(liquidation_margin_buffer_ratio)
                     .track_market_margin_requirement(MarketIdentifier::spot(
                         liability_market_index,
@@ -2315,28 +2391,26 @@ pub fn liquidate_spot_with_swap_begin(
         .saturating_mul(max_pct_allowed)
         .safe_div(LIQUIDATION_PCT_PRECISION)?;
 
-    if max_liability_allowed_to_be_transferred == 0 {
-        msg!("max_liability_allowed_to_be_transferred == 0");
-        return Err(ErrorCode::InvalidLiquidation);
-    }
+    validate!(
+        max_liability_allowed_to_be_transferred != 0,
+        ErrorCode::InvalidLiquidation,
+        "max_liability_allowed_to_be_transferred == 0"
+    )?;
 
     // Size the swap bound against the time-ramped max-pct-to-liquidate throttle
     // (`max_liability_allowed_to_be_transferred`), NOT the uncapped
-    // `liability_transfer_to_cover_margin_shortage`. Deriving `max_asset_transfer`
-    // from the full shortage would let this lane seize more collateral in a single
-    // swap than the throttle permits, since `swap_amount_in` is only bounded by
-    // `max_asset_transfer` here (swap_end re-checks price, not the throttle). This
-    // mirrors the direct `liquidate_spot` path, which caps the transfer at
-    // `max_liability_allowed_to_be_transferred`.
+    // `liability_transfer_to_cover_margin_shortage`. Deriving `max_asset_transfer` from
+    // the full shortage would let this lane seize more collateral in a single swap than
+    // the throttle permits, since `swap_amount_in` is only bounded by `max_asset_transfer`
+    // here. `swap_end` re-checks price, not the throttle. This mirrors the direct
+    // `liquidate_spot` path, which caps the transfer at the same throttle.
     //
-    // The bound is exact. No headroom is added on top of the throttle: begin and
-    // end run in one transaction and read the same oracle prices, so there is no
-    // price drift to absorb, and `swap_end` bounds the exchange rate on its own
-    // with `validate_swap_within_liquidation_boundaries`. Headroom here only
-    // raises the collateral volume the liquidator can seize above the throttle.
-    // For the same reason this uses the exact conversion: the round-to-whole-
-    // deposit form would lift the bound to the user's entire deposit whenever the
-    // throttle lands within $1 of it.
+    // The bound is exact, and no headroom is added on top of the throttle. Begin and end
+    // run in one transaction and read the same oracle prices, so there is no price drift
+    // to absorb, and `swap_end` bounds the exchange rate on its own with
+    // `validate_swap_within_liquidation_boundaries`. The round-to-whole-deposit form
+    // would lift the bound to the user's entire deposit whenever the throttle lands
+    // within $1 of it.
     let max_asset_transfer = calculate_asset_transfer_for_liability_transfer_exact(
         LIQUIDATION_FEE_PRECISION,
         asset_decimals,
@@ -2386,7 +2460,7 @@ pub fn liquidate_spot_with_swap_begin(
 
     let liability_oracle_too_divergent = is_oracle_too_divergent_with_twap_5min(
         liability_oracle_price.cast()?,
-        spot_market_map
+        maps.spot_market_map
             .get_ref(&liability_market_index)?
             .historical_oracle_data
             .last_oracle_price_twap_5min,
@@ -2404,7 +2478,7 @@ pub fn liquidate_spot_with_swap_begin(
 
     let asset_oracle_too_divergent = is_oracle_too_divergent_with_twap_5min(
         asset_oracle_price.cast()?,
-        spot_market_map
+        maps.spot_market_map
             .get_ref(&asset_market_index)?
             .historical_oracle_data
             .last_oracle_price_twap_5min,
@@ -2429,22 +2503,21 @@ pub fn liquidate_spot_with_swap_end(
     user: &mut User,
     user_key: &Pubkey,
     liquidator_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
     state: &State,
     asset_transfer: u128,
     liability_transfer: u128,
 ) -> VelocityResult {
-    let slot_clock = oracle_map.slot_clock;
+    let slot_clock = maps.oracle_map.slot_clock;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
 
     let (asset_price, asset_decimals, asset_weight, asset_liquidation_multiplier) = {
-        let asset_market = spot_market_map.get_ref(&asset_market_index)?;
-        let (asset_price_data, validity_guard_rails) =
-            oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
+        let asset_market = maps.spot_market_map.get_ref(&asset_market_index)?;
+        let (asset_price_data, validity_guard_rails) = maps
+            .oracle_map
+            .get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
         // mirror the protective pricing applied in liquidate_spot_with_swap_begin: a
         // margin-invalid (stale/uncertain) deposit oracle must not lower the worst-case
@@ -2491,9 +2564,10 @@ pub fn liquidate_spot_with_swap_end(
         liability_if_liquidation_fee,
         liability_protocol_liquidation_fee,
     ) = {
-        let liability_market = spot_market_map.get_ref(&liability_market_index)?;
-        let (liability_price_data, validity_guard_rails) =
-            oracle_map.get_price_data_and_guard_rails(&liability_market.oracle_id())?;
+        let liability_market = maps.spot_market_map.get_ref(&liability_market_index)?;
+        let (liability_price_data, validity_guard_rails) = maps
+            .oracle_map
+            .get_price_data_and_guard_rails(&liability_market.oracle_id())?;
 
         // mirror the protective pricing applied in liquidate_spot_with_swap_begin: a
         // margin-invalid (stale/uncertain) borrow oracle must not raise the worst-case
@@ -2550,9 +2624,7 @@ pub fn liquidate_spot_with_swap_end(
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         margin_context,
     )?;
 
@@ -2594,7 +2666,7 @@ pub fn liquidate_spot_with_swap_end(
         .safe_mul(liquidation_protocol_fee.cast()?)?
         .safe_div(LIQUIDATION_FEE_PRECISION_U128)?;
     {
-        let mut liability_market = spot_market_map.get_ref_mut(&liability_market_index)?;
+        let mut liability_market = maps.spot_market_map.get_ref_mut(&liability_market_index)?;
 
         let user_liability_reduction = liability_transfer
             .cast::<u128>()?
@@ -2624,7 +2696,7 @@ pub fn liquidate_spot_with_swap_end(
     }
 
     {
-        let mut asset_market = spot_market_map.get_ref_mut(&asset_market_index)?;
+        let mut asset_market = maps.spot_market_map.get_ref_mut(&asset_market_index)?;
 
         update_spot_balances_and_cumulative_deposits(
             asset_transfer,
@@ -2638,9 +2710,7 @@ pub fn liquidate_spot_with_swap_end(
 
     let (margin_freed_from_liability, margin_calulcation_after) = calculate_margin_freed(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         liquidation_margin_buffer_ratio,
         margin_shortage,
         None,
@@ -2651,7 +2721,7 @@ pub fn liquidate_spot_with_swap_end(
 
     if margin_calulcation_after.can_exit_cross_margin_liquidation()? {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
+    } else if is_cross_margin_bankrupt(user, &maps.spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -2690,9 +2760,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
     liquidation_margin_buffer_ratio: u32,
@@ -2700,7 +2768,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     liquidation_duration: Millis,
     funding_paused: bool,
 ) -> VelocityResult {
-    let slot_clock = oracle_map.slot_clock;
+    let slot_clock = maps.oracle_map.slot_clock;
     // liquidator takes over a user borrow in exchange for that user's positive perpetual pnl
     // can only be done once a user's perpetual position size is 0
     // blocks borrows where oracle is deemed invalid
@@ -2724,7 +2792,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         liquidator.pool_id
     )?;
 
-    let perp_market = perp_market_map.get_ref(&perp_market_index)?;
+    let perp_market = maps.perp_market_map.get_ref(&perp_market_index)?;
 
     validate!(
         !perp_market.is_operation_paused(PerpOperation::Liquidation),
@@ -2735,7 +2803,7 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     drop(perp_market);
 
-    let liability_spot_market = spot_market_map.get_ref(&liability_market_index)?;
+    let liability_spot_market = maps.spot_market_map.get_ref(&liability_market_index)?;
 
     validate!(
         !liability_spot_market.is_operation_paused(SpotOperation::Liquidation),
@@ -2778,14 +2846,18 @@ pub fn liquidate_borrow_for_perp_pnl(
     settle_funding_payment(
         user,
         user_key,
-        perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
+        maps.perp_market_map
+            .get_ref_mut(&perp_market_index)?
+            .deref_mut(),
         now,
     )?;
 
     settle_funding_payment(
         liquidator,
         liquidator_key,
-        perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
+        maps.perp_market_map
+            .get_ref_mut(&perp_market_index)?
+            .deref_mut(),
         now,
     )?;
 
@@ -2815,10 +2887,13 @@ pub fn liquidate_borrow_for_perp_pnl(
             "Perp position is an isolated position"
         )?;
 
-        let market = perp_market_map.get_ref(&perp_market_index)?;
+        let market = maps.perp_market_map.get_ref(&perp_market_index)?;
 
-        let quote_spot_market = spot_market_map.get_ref(&market.quote_spot_market_index)?;
-        let quote_price = oracle_map
+        let quote_spot_market = maps
+            .spot_market_map
+            .get_ref(&market.quote_spot_market_index)?;
+        let quote_price = maps
+            .oracle_map
             .get_price_data(&quote_spot_market.oracle_id())?
             .price;
 
@@ -2845,9 +2920,10 @@ pub fn liquidate_borrow_for_perp_pnl(
         liability_weight,
         liability_liquidation_multiplier,
     ) = {
-        let mut liability_market = spot_market_map.get_ref_mut(&liability_market_index)?;
-        let (liability_price_data, validity_guard_rails) =
-            oracle_map.get_price_data_and_guard_rails(&liability_market.oracle_id())?;
+        let mut liability_market = maps.spot_market_map.get_ref_mut(&liability_market_index)?;
+        let (liability_price_data, validity_guard_rails) = maps
+            .oracle_map
+            .get_price_data_and_guard_rails(&liability_market.oracle_id())?;
 
         let liability_refresh = update_spot_market_and_check_validity(
             &mut liability_market,
@@ -2907,11 +2983,11 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
+
+    validate_no_clob_resident_orders(user)?;
 
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
@@ -2932,9 +3008,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         user,
         user_key,
         Some(liquidator_key),
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         now,
         slot,
         OrderActionExplanation::Liquidation,
@@ -2949,9 +3023,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 MarginContext::liquidation(liquidation_margin_buffer_ratio),
             )?;
 
@@ -2964,8 +3036,8 @@ pub fn liquidate_borrow_for_perp_pnl(
         user.increment_margin_freed(margin_freed)?;
 
         if intermediate_margin_calculation.can_exit_cross_margin_liquidation()? {
-            let market = perp_market_map.get_ref(&perp_market_index)?;
-            let market_oracle_price = oracle_map.get_price_data(&market.oracle_id())?.price;
+            let market = maps.perp_market_map.get_ref(&perp_market_index)?;
+            let market_oracle_price = maps.oracle_map.get_price_data(&market.oracle_id())?.price;
 
             emit!(LiquidationRecord {
                 ts: now,
@@ -3101,7 +3173,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     )?;
 
     {
-        let mut liability_market = spot_market_map.get_ref_mut(&liability_market_index)?;
+        let mut liability_market = maps.spot_market_map.get_ref_mut(&liability_market_index)?;
 
         update_spot_balances_and_cumulative_deposits(
             liability_transfer,
@@ -3123,7 +3195,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     }
 
     {
-        let mut market = perp_market_map.get_ref_mut(&perp_market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&perp_market_index)?;
         let liquidator_position = liquidator.force_get_perp_position_mut(perp_market_index)?;
         update_quote_asset_amount(liquidator_position, &mut market, pnl_transfer.cast()?)?;
 
@@ -3133,9 +3205,7 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     let (margin_freed_from_liability, _) = calculate_margin_freed(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         liquidation_margin_buffer_ratio,
         margin_shortage,
         None,
@@ -3145,13 +3215,13 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     if liability_transfer >= liability_transfer_to_cover_margin_shortage {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
+    } else if is_cross_margin_bankrupt(user, &maps.spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
-        flag_perp_bankruptcy_claim(user, perp_market_index, perp_market_map)?;
+        flag_perp_bankruptcy_claim(user, perp_market_index, &maps.perp_market_map)?;
     }
 
     let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;
+        meets_initial_margin_requirement(liquidator, maps)?;
 
     validate!(
         liquidator_meets_initial_margin_requirement,
@@ -3159,18 +3229,16 @@ pub fn liquidate_borrow_for_perp_pnl(
         "Liquidator doesnt have enough collateral to take over borrow"
     )?;
 
-    // The liquidation adds exposure to the liquidator like a risk-increasing
-    // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
-    if let Some(liquidator_net_equity) =
-        calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
-    {
+    // The liquidation adds exposure to the liquidator the way a risk-increasing
+    // fill does, so the liquidator subaccount must clear its own buffered
+    // equity floor before it accepts the exposure.
+    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
         liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
     }
 
     let market_oracle_price = {
-        let market = perp_market_map.get_ref_mut(&perp_market_index)?;
-        oracle_map.get_price_data(&market.oracle_id())?.price
+        let market = maps.perp_market_map.get_ref_mut(&perp_market_index)?;
+        maps.oracle_map.get_price_data(&market.oracle_id())?.price
     };
 
     emit!(LiquidationRecord {
@@ -3206,9 +3274,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
     liquidation_margin_buffer_ratio: u32,
@@ -3216,7 +3282,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     liquidation_duration: Millis,
     funding_paused: bool,
 ) -> VelocityResult {
-    let slot_clock = oracle_map.slot_clock;
+    let slot_clock = maps.oracle_map.slot_clock;
     // liquidator takes over remaining negative perpetual pnl in exchange for a user deposit
     // can only be done once the perpetual position's size is 0
     // blocked when 1) user deposit oracle is deemed invalid
@@ -3243,7 +3309,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         liquidator.pool_id
     )?;
 
-    let asset_spot_market = spot_market_map.get_ref(&asset_market_index)?;
+    let asset_spot_market = maps.spot_market_map.get_ref(&asset_market_index)?;
 
     validate!(
         !asset_spot_market.is_operation_paused(SpotOperation::Liquidation),
@@ -3254,7 +3320,7 @@ pub fn liquidate_perp_pnl_for_deposit(
 
     drop(asset_spot_market);
 
-    let perp_market = perp_market_map.get_ref(&perp_market_index)?;
+    let perp_market = maps.perp_market_map.get_ref(&perp_market_index)?;
 
     validate!(
         !perp_market.is_operation_paused(PerpOperation::Liquidation),
@@ -3296,14 +3362,18 @@ pub fn liquidate_perp_pnl_for_deposit(
     settle_funding_payment(
         user,
         user_key,
-        perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
+        maps.perp_market_map
+            .get_ref_mut(&perp_market_index)?
+            .deref_mut(),
         now,
     )?;
 
     settle_funding_payment(
         liquidator,
         liquidator_key,
-        perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
+        maps.perp_market_map
+            .get_ref_mut(&perp_market_index)?
+            .deref_mut(),
         now,
     )?;
 
@@ -3315,9 +3385,10 @@ pub fn liquidate_perp_pnl_for_deposit(
         asset_weight,
         asset_liquidation_multiplier,
     ) = {
-        let mut asset_market = spot_market_map.get_ref_mut(&asset_market_index)?;
-        let (asset_price_data, validity_guard_rails) =
-            oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
+        let mut asset_market = maps.spot_market_map.get_ref_mut(&asset_market_index)?;
+        let (asset_price_data, validity_guard_rails) = maps
+            .oracle_map
+            .get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
         let asset_refresh = update_spot_market_and_check_validity(
             &mut asset_market,
@@ -3387,10 +3458,13 @@ pub fn liquidate_perp_pnl_for_deposit(
             "Perp position must have negative pnl"
         )?;
 
-        let market = perp_market_map.get_ref(&perp_market_index)?;
+        let market = maps.perp_market_map.get_ref(&perp_market_index)?;
 
-        let quote_spot_market = spot_market_map.get_ref(&market.quote_spot_market_index)?;
-        let quote_price = oracle_map
+        let quote_spot_market = maps
+            .spot_market_map
+            .get_ref(&market.quote_spot_market_index)?;
+        let quote_price = maps
+            .oracle_map
             .get_price_data(&quote_spot_market.oracle_id())?
             .price;
 
@@ -3409,13 +3483,12 @@ pub fn liquidate_perp_pnl_for_deposit(
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;
+    validate_no_clob_resident_orders(user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -3437,9 +3510,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         user,
         user_key,
         Some(liquidator_key),
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         now,
         slot,
         OrderActionExplanation::Liquidation,
@@ -3450,7 +3521,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     )?;
 
     let (safest_tier_spot_liability, safest_tier_perp_liability) = liquidation_mode
-        .calculate_user_safest_position_tiers(user, perp_market_map, spot_market_map)?;
+        .calculate_user_safest_position_tiers(user, &maps.perp_market_map, &maps.spot_market_map)?;
     let is_contract_tier_violation =
         !(contract_tier.is_as_safe_as(&safest_tier_perp_liability, &safest_tier_spot_liability));
 
@@ -3459,9 +3530,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         let intermediate_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 MarginContext::liquidation(liquidation_margin_buffer_ratio),
             )?;
 
@@ -3478,8 +3547,8 @@ pub fn liquidate_perp_pnl_for_deposit(
             liquidation_mode.can_exit_liquidation(&intermediate_margin_calculation)?;
 
         if exiting_liq_territory || is_contract_tier_violation {
-            let market = perp_market_map.get_ref(&perp_market_index)?;
-            let market_oracle_price = oracle_map.get_price_data(&market.oracle_id())?.price;
+            let market = maps.perp_market_map.get_ref(&perp_market_index)?;
+            let market_oracle_price = maps.oracle_map.get_price_data(&market.oracle_id())?.price;
 
             let (margin_requirement, total_collateral, bit_flags) =
                 liquidation_mode.get_event_fields(&margin_calculation)?;
@@ -3525,38 +3594,28 @@ pub fn liquidate_perp_pnl_for_deposit(
         margin_calculation.clone()
     };
 
-    if is_contract_tier_violation {
-        msg!(
-            "liquidating contract tier={:?} pnl is riskier than outstanding {:?} & {:?}",
-            contract_tier,
-            safest_tier_perp_liability,
-            safest_tier_spot_liability
-        );
-        return Err(ErrorCode::TierViolationLiquidatingPerpPnl);
-    }
+    validate!(
+        !(is_contract_tier_violation),
+        ErrorCode::TierViolationLiquidatingPerpPnl,
+        "liquidating contract tier={:?} pnl is riskier than outstanding {:?} & {:?}",
+        contract_tier,
+        safest_tier_perp_liability,
+        safest_tier_spot_liability
+    )?;
 
     let margin_shortage = liquidation_mode.margin_shortage(&intermediate_margin_calculation)?;
 
     let pnl_liability_weight_plus_buffer =
         pnl_liability_weight.safe_add(liquidation_margin_buffer_ratio)?;
 
-    // Audit #25: refuse a transfer that cannot improve the account. The account
-    // gives up deposit valued at `asset_weight` and priced with the liquidator
-    // premium, and receives pnl relief valued at `pnl_liability_weight_plus_buffer`
-    // and priced with the liquidator discount. The margin improvement per unit
-    // transferred is therefore constant, and it is positive only while the asset
-    // side stays below the liability side. When the asset side reaches the
-    // liability side, every transfer size strips more collateral than it frees, so
-    // no partial size helps and the call must revert.
-    // `calculate_liability_transfer_to_cover_margin_shortage` below detects the
-    // same condition, but reports it as `u128::MAX`. The sizing then reads that
-    // sentinel as "no bound" and transfers the largest amount the other caps allow.
-    //
-    // `asset_weight` is the raw maintenance weight. A size-scaled (imf) weight is
-    // never higher, so this check errs toward refusing a transfer that would in
-    // fact help by a small amount.
-    //
-    // Settlement is exempt for the reason given at `market_in_settlement`.
+    // Refuse a transfer that cannot improve the account (OtterSec #25). The account gives
+    // up deposit valued at `asset_weight`, and receives pnl relief valued at
+    // `pnl_liability_weight_plus_buffer`. The margin improvement per unit is constant, and
+    // positive only while the asset side stays below the liability side. Above that, every
+    // size strips more collateral than it frees, so the call must revert.
+    // `calculate_liability_transfer_to_cover_margin_shortage` below reports `u128::MAX` in
+    // that case, which the sizing reads as an absent bound. `asset_weight` is the raw
+    // maintenance weight, so this may refuse a transfer that would in fact help a little.
     if !market_in_settlement {
         // The extra factor of 10 mirrors the precision scaling in
         // `calculate_liability_transfer_to_cover_margin_shortage`.
@@ -3632,20 +3691,13 @@ pub fn liquidate_perp_pnl_for_deposit(
         .min(max_pnl_allowed_to_be_transferred.max(minimum_pnl_transfer))
         .min(pnl_transfer_implied_by_asset_amount);
 
-    // Given the borrow amount to transfer, determine how much deposit amount to transfer.
-    //
-    // Audit #25: every unit seized must be paid for, so this path does not use the
-    // round-to-whole-deposit form of the conversion. That form takes up to $1 of
-    // collateral the pnl relief does not cover, which is real value, not rounding.
-    //
-    // The whole deposit still goes when the deposit is what limited the transfer:
-    // `pnl_transfer_implied_by_asset_amount` is the pnl the whole deposit buys, and
-    // it rounds up, so charging the whole deposit for it never overcharges. The
-    // only gap is the base-unit truncation of the two inverse conversions, and
-    // taking the deposit to zero avoids stranding that dust in the position.
-    //
-    // The exact form can exceed the deposit by a unit or two through the same
-    // truncation, so it is clamped.
+    // Every unit seized must be paid for, so this path does not use the
+    // round-to-whole-deposit form of the conversion (OtterSec #25). That form takes up to
+    // $1 of collateral the pnl relief does not cover. The whole deposit still goes when
+    // the deposit is what limited the transfer. `pnl_transfer_implied_by_asset_amount` is
+    // the pnl the whole deposit buys, and it rounds up, so charging the whole deposit for
+    // it never overcharges. The exact form can exceed the deposit by a unit or two through
+    // base-unit truncation, so it is clamped.
     let asset_transfer = if pnl_transfer == pnl_transfer_implied_by_asset_amount {
         asset_amount
     } else {
@@ -3686,7 +3738,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     )?;
 
     {
-        let mut asset_market = spot_market_map.get_ref_mut(&asset_market_index)?;
+        let mut asset_market = maps.spot_market_map.get_ref_mut(&asset_market_index)?;
 
         update_spot_balances_and_cumulative_deposits(
             asset_transfer,
@@ -3706,7 +3758,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     }
 
     {
-        let mut perp_market = perp_market_map.get_ref_mut(&perp_market_index)?;
+        let mut perp_market = maps.perp_market_map.get_ref_mut(&perp_market_index)?;
         let liquidator_position = liquidator.force_get_perp_position_mut(perp_market_index)?;
         update_quote_asset_amount(liquidator_position, &mut perp_market, -pnl_transfer.cast()?)?;
 
@@ -3716,31 +3768,17 @@ pub fn liquidate_perp_pnl_for_deposit(
 
     let (margin_freed_from_liability, margin_calculation_after) = calculate_margin_freed(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         liquidation_margin_buffer_ratio,
         margin_shortage,
         Some(liquidation_mode.as_ref()),
     )?;
 
-    // Audit #25: `liquidate_perp_pnl_for_deposit` must never worsen the account's
-    // (buffered) margin shortage. The weight check above rejects the market
-    // parameters that make the transfer loss-making at every size, and
-    // `calculate_margin_freed` saturates a negative improvement to 0, so this is
-    // the backstop for anything the sizing math does not model.
-    //
-    // The check is exact. It holds no tolerance, because the seizure above pays
-    // for every unit it takes. A tolerance here would let a liquidator size each
-    // transfer to degrade the account by just under it and repeat the call until
-    // the deposit is gone.
-    //
-    // Exempt Settlement (delisting): an expired market winds every position down
-    // at the expiry price and this path clears the residual expired pnl into the
-    // liquidator, which legitimately drives the account to bankruptcy. There is
-    // no live risk left to protect, so the worsen-check must not block the
-    // wind-down. The finding targets the ordinary permissionless liquidation of a
-    // live market, which stays guarded.
+    // `liquidate_perp_pnl_for_deposit` must never grow the account's buffered margin
+    // shortage (OtterSec #25). This backs up anything the sizing math does not model. It
+    // holds no tolerance, or a liquidator sizes each transfer to degrade the account by
+    // just under it and repeats until the deposit is gone. Settlement is exempt, because
+    // an expired market winds down at the expiry price and may legitimately go bankrupt.
     if !market_in_settlement {
         let new_margin_shortage = liquidation_mode.margin_shortage(&margin_calculation_after)?;
         validate!(
@@ -3757,13 +3795,13 @@ pub fn liquidate_perp_pnl_for_deposit(
 
     if pnl_transfer >= pnl_transfer_to_cover_margin_shortage {
         liquidation_mode.exit_liquidation(user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(user, &maps.spot_market_map)? {
         liquidation_mode.enter_bankruptcy(user)?;
-        flag_perp_bankruptcy_claim(user, perp_market_index, perp_market_map)?;
+        flag_perp_bankruptcy_claim(user, perp_market_index, &maps.perp_market_map)?;
     }
 
     let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;
+        meets_initial_margin_requirement(liquidator, maps)?;
 
     validate!(
         liquidator_meets_initial_margin_requirement,
@@ -3771,18 +3809,16 @@ pub fn liquidate_perp_pnl_for_deposit(
         "Liquidator doesnt have enough collateral to take over borrow"
     )?;
 
-    // The liquidation adds exposure to the liquidator like a risk-increasing
-    // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
-    if let Some(liquidator_net_equity) =
-        calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
-    {
+    // The liquidation adds exposure to the liquidator the way a risk-increasing
+    // fill does, so the liquidator subaccount must clear its own buffered
+    // equity floor before it accepts the exposure.
+    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
         liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
     }
 
     let market_oracle_price = {
-        let market = perp_market_map.get_ref_mut(&perp_market_index)?;
-        oracle_map.get_price_data(&market.oracle_id())?.price
+        let market = maps.perp_market_map.get_ref_mut(&perp_market_index)?;
+        maps.oracle_map.get_price_data(&market.oracle_id())?.price
     };
 
     let (margin_requirement, total_collateral, bit_flags) =
@@ -4086,9 +4122,7 @@ fn extinguish_unfundable_perp_claims(
 fn apply_quote_deposit_setoff_for_perp_bankruptcy(
     market_index: u16,
     user: &mut User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     funding_paused: bool,
 ) -> VelocityResult<u128> {
@@ -4105,8 +4139,10 @@ fn apply_quote_deposit_setoff_for_perp_bankruptcy(
         return Ok(0);
     }
 
-    let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
-    let oracle_price_data = oracle_map.get_price_data(&quote_spot_market.oracle_id())?;
+    let quote_spot_market = &mut maps.spot_market_map.get_quote_spot_market_mut()?;
+    let oracle_price_data = maps
+        .oracle_map
+        .get_price_data(&quote_spot_market.oracle_id())?;
     update_spot_market_cumulative_interest(
         quote_spot_market,
         Some(oracle_price_data),
@@ -4127,7 +4163,7 @@ fn apply_quote_deposit_setoff_for_perp_bankruptcy(
         return Ok(0);
     }
 
-    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+    let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
     transfer_spot_balances(
         setoff.cast()?,
@@ -4160,9 +4196,7 @@ pub fn resolve_perp_bankruptcy(
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     insurance_fund_vault_balance: u64,
     funding_paused: bool,
@@ -4170,7 +4204,7 @@ pub fn resolve_perp_bankruptcy(
     let liquidation_mode = get_perp_liquidation_mode(user, market_index)?;
 
     if !liquidation_mode.is_user_bankrupt(user)?
-        && liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)?
+        && liquidation_mode.should_user_enter_bankruptcy(user, &maps.spot_market_map)?
     {
         liquidation_mode.enter_bankruptcy(user)?;
     }
@@ -4193,7 +4227,7 @@ pub fn resolve_perp_bankruptcy(
         "liquidator being liquidated",
     )?;
 
-    let market = perp_market_map.get_ref(&market_index)?;
+    let market = maps.perp_market_map.get_ref(&market_index)?;
 
     validate!(
         !market.is_operation_paused(PerpOperation::Liquidation),
@@ -4235,7 +4269,7 @@ pub fn resolve_perp_bankruptcy(
         }
     };
     let quote_deposit_on_hand = {
-        let quote_spot_market = spot_market_map.get_quote_spot_market()?;
+        let quote_spot_market = maps.spot_market_map.get_quote_spot_market()?;
         let quote_position = user.get_quote_spot_position();
         if quote_position.balance_type == SpotBalanceType::Deposit {
             quote_position.get_token_amount(&quote_spot_market)?
@@ -4245,8 +4279,8 @@ pub fn resolve_perp_bankruptcy(
     };
     recover_perp_claims_from_pnl_pools(
         user,
-        perp_market_map,
-        spot_market_map,
+        &maps.perp_market_map,
+        &maps.spot_market_map,
         debt_to_cover.saturating_sub(quote_deposit_on_hand),
         now,
         funding_paused,
@@ -4259,27 +4293,16 @@ pub fn resolve_perp_bankruptcy(
     let setoff = apply_quote_deposit_setoff_for_perp_bankruptcy(
         market_index,
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         now,
         funding_paused,
     )?;
 
-    // OtterSec #130 fallback, for what the setoff cannot reach: a credit in a NON-QUOTE deposit.
-    // Netting that against a quote debt needs a cross-asset swap, not a balance transfer.
-    //
-    // If such an asset remains, the latch's premise is stale. Clear it and return without drawing.
-    // Ordinary liquidation rejects a latched user, so it becomes legal again, seizes the asset, and
-    // re-latches for the real residual.
-    //
-    // This tests only for realizable assets, not the full predicate. That one also vetoes on an open
-    // order or base exposure, which the resolvers are reached with. The mode decides which assets can
-    // reach this debt: an isolated position is walled off from the cross-margin book.
-    //
-    // Commit the un-latch instead of erroring. An error leaves the bit set and wedges both paths.
-    // Nothing is drawn here, so this cannot reorder insurance spending against the #52 precedence.
-    if liquidation_mode.has_realizable_assets(user, spot_market_map)? {
+    // OtterSec #130 fallback for what the setoff cannot reach, a credit in a NON-QUOTE deposit.
+    // The latch's premise is then stale, so clear it and return without drawing. Ordinary
+    // liquidation seizes the asset and re-latches for the real residual. An error would leave
+    // the bit set and block both paths, so the un-latch is committed instead.
+    if liquidation_mode.has_realizable_assets(user, &maps.spot_market_map)? {
         msg!(
             "stale bankruptcy latch (assets present after setoff of {}); un-latching without drawing",
             setoff
@@ -4292,24 +4315,18 @@ pub fn resolve_perp_bankruptcy(
         .quote_asset_amount
         .cast::<i128>()?;
 
-    // The setoff can clear this market's debt while a liability elsewhere keeps the account bankrupt.
-    // Nothing is left to resolve here. `has_pending_cross_margin_perp_bankruptcy` no longer reports
-    // this market, so the spot resolver is unblocked (#52). Return instead of tripping the assertion
-    // below.
-    //
-    // Admission is re-derived first, on the same rule as the tail of this function. The recovery pass
-    // caps what it draws at this debt, so a claim big enough to cover the debt makes a deposit equal
-    // to the debt the designed outcome, and the setoff then zeroes both. Without the re-derive the
-    // latch survives on an estate that owes nothing, and no path can clear it: a deposit rejects a
-    // bankrupt user, ordinary liquidation rejects a latched one, and a second call to this resolver
-    // reaches this same return. A liability in another market keeps the latch set.
+    // The setoff can clear this market's debt while a liability elsewhere keeps the account
+    // bankrupt. `has_pending_cross_margin_perp_bankruptcy` no longer reports this market, so
+    // the spot resolver is unblocked (OtterSec #52). Admission is re-derived first. Without
+    // that, the latch survives on an estate that owes nothing, and no path can clear it. A
+    // deposit rejects a bankrupt user, and ordinary liquidation rejects a latched one.
     if loss == 0 {
         msg!(
             "perp market {} bad debt fully covered by setoff; nothing to resolve",
             market_index
         );
 
-        if !liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
+        if !liquidation_mode.should_user_enter_bankruptcy(user, &maps.spot_market_map)? {
             liquidation_mode.exit_bankruptcy(user)?;
         }
 
@@ -4322,24 +4339,21 @@ pub fn resolve_perp_bankruptcy(
         "user must have negative pnl"
     )?;
 
-    // OtterSec #145: wind up the estate's unfundable claims, so the account cannot keep one after
-    // other people's money covers its debt.
-    //
-    // This MUST sit below the un-latch above. Forfeiting is irreversible, and the un-latch path hands
-    // the account back to ordinary liquidation, which may cover the whole debt out of the seized
-    // asset — leaving no bankruptcy, no draw, and a forfeit that bought nothing.
-    //
-    // It sits below the `loss` read because `loss` is what bounds it. This call pays off `loss` with
-    // the revenue pool, the insurance fund and the surviving depositors, so `loss` is exactly the
-    // amount of other people's money the estate is about to consume, and the most it can owe them.
-    // `resolve_spot_bankruptcy` bounds its own forfeit the same way, against the borrow it covers.
-    extinguish_unfundable_perp_claims(user, perp_market_map, spot_market_map, loss.unsigned_abs())?;
+    // OtterSec #145: wind up the estate's unfundable claims, so the account cannot keep one
+    // after other people's money covers its debt. This MUST sit below the un-latch above.
+    // Forfeiting is irreversible, and that path may leave no bankruptcy at all. It sits below
+    // the `loss` read because `loss` bounds it. `loss` is the amount of other people's money
+    // the estate is about to consume, and the most it can owe them.
+    extinguish_unfundable_perp_claims(
+        user,
+        &maps.perp_market_map,
+        &maps.spot_market_map,
+        loss.unsigned_abs(),
+    )?;
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Maintenance),
     )?;
 
@@ -4353,7 +4367,7 @@ pub fn resolve_perp_bankruptcy(
     // the fee value that would have swept to the revenue pool stays in the
     // pnl pool backing the counterparties this spares from socialization.
     let pending_if_payment: u128 = {
-        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
         let pending_if_payment = loss
             .unsigned_abs()
@@ -4373,7 +4387,7 @@ pub fn resolve_perp_bankruptcy(
 
     // Tranche 2: the shared insurance fund vault
     let if_payment = {
-        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
         let max_insurance_withdraw = perp_market
             .insurance_claim
             .quote_max_insurance
@@ -4391,8 +4405,8 @@ pub fn resolve_perp_bankruptcy(
             .safe_add(if_payment.cast()?)?;
 
         // move if payment to pnl pool
-        let spot_market = &mut spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
+        let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
         update_spot_market_cumulative_interest(
             spot_market,
             Some(oracle_price_data),
@@ -4432,10 +4446,10 @@ pub fn resolve_perp_bankruptcy(
     // booked into `total_fee_minus_distributions` at fill, and the dent to
     // `net_revenue_since_last_funding` lets the drawdown breaker see the hit.
     let amm_tranche_payment: i128 = if losses_remaining < 0 {
-        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
         // reborrow through the RefMut so disjoint field borrows split
         let perp_market = &mut *perp_market;
-        let spot_market = &mut spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
 
         let clawback_budget: u128 = losses_remaining
             .unsigned_abs()
@@ -4501,7 +4515,7 @@ pub fn resolve_perp_bankruptcy(
     let cumulative_funding_rate_delta = if loss_to_socialize < 0 {
         calculate_funding_rate_deltas_to_resolve_bankruptcy(
             loss_to_socialize,
-            perp_market_map.get_ref(&market_index)?.deref(),
+            maps.perp_market_map.get_ref(&market_index)?.deref(),
         )?
     } else {
         0
@@ -4509,24 +4523,18 @@ pub fn resolve_perp_bankruptcy(
 
     // socialize loss
     if loss_to_socialize < 0 {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
         market.total_social_loss = market
             .total_social_loss
             .safe_add(loss_to_socialize.unsigned_abs())?;
 
-        // Fully settle the AMM's OWN funding through the current (pre-
-        // socialization) cum rates against its actual net position first —
-        // exactly the payment the `FundingUpdated` quoter handler applies — so
-        // no genuine accrued AMM funding is dropped when we advance the AMM
-        // stamp past the socialization bump below. `calculate_amm_funding_payment`
-        // pays the AMM `(cumulative_funding_rate − amm.last_cumulative_funding_rate)
-        // × −net_position` per leg; here the deltas are only what has genuinely
-        // accrued (the socialization bump has NOT been applied yet). Today the
-        // market cum rates and the AMM stamp only ever advance together in
-        // `update_funding_rate`, so on entry this payment is 0 — but applying it
-        // explicitly (rather than assuming the invariant) keeps the AMM's books
-        // correct even if another writer of the cum rates is ever added.
+        // Settle the AMM's own funding through the pre-socialization cum rates first, so no
+        // accrued AMM funding is dropped when the AMM stamp advances past the socialization
+        // bump below. `calculate_amm_funding_payment` pays the AMM the cum-rate delta times
+        // the negated net position per leg, and here the deltas hold only what genuinely
+        // accrued. Today the cum rates and the AMM stamp only advance together in
+        // `update_funding_rate`, so this payment is 0 on entry. It guards a future writer.
         let amm_funding_payment = crate::math::funding::calculate_amm_funding_payment(
             market.base_asset_amount_long,
             market.base_asset_amount_short,
@@ -4577,7 +4585,7 @@ pub fn resolve_perp_bankruptcy(
 
     // clear bad debt
     {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
         let position_index = get_position_index(&user.perp_positions, market_index)?;
         let quote_asset_amount = user.perp_positions[position_index].quote_asset_amount;
         update_quote_asset_amount(
@@ -4590,7 +4598,8 @@ pub fn resolve_perp_bankruptcy(
     }
 
     // True if a bankrupting liability remains; clears status otherwise.
-    let still_bankrupt = liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)?;
+    let still_bankrupt =
+        liquidation_mode.should_user_enter_bankruptcy(user, &maps.spot_market_map)?;
     if !still_bankrupt {
         liquidation_mode.exit_bankruptcy(user)?;
     }
@@ -4629,14 +4638,12 @@ pub fn resolve_spot_bankruptcy(
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     insurance_fund_vault_balance: u64,
     funding_paused: bool,
 ) -> VelocityResult<u64> {
-    if !user.is_cross_margin_bankrupt() && is_cross_margin_bankrupt(user, spot_market_map)? {
+    if !user.is_cross_margin_bankrupt() && is_cross_margin_bankrupt(user, &maps.spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -4654,11 +4661,11 @@ pub fn resolve_spot_bankruptcy(
     // Bounded by the borrow's quote value at the same price the socialization counters use below.
     {
         let borrow_quote_value = {
-            let spot_market = spot_market_map.get_ref(&market_index)?;
+            let spot_market = maps.spot_market_map.get_ref(&market_index)?;
             let spot_position = user.get_spot_position(market_index)?;
             if spot_position.balance_type == SpotBalanceType::Borrow {
                 let borrow_amount = spot_position.get_token_amount(spot_market.deref())?;
-                let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+                let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
                 get_token_value(
                     borrow_amount.cast()?,
                     spot_market.decimals,
@@ -4672,30 +4679,25 @@ pub fn resolve_spot_bankruptcy(
 
         recover_perp_claims_from_pnl_pools(
             user,
-            perp_market_map,
-            spot_market_map,
+            &maps.perp_market_map,
+            &maps.spot_market_map,
             borrow_quote_value,
             now,
             funding_paused,
         )?;
     }
 
-    // OtterSec #130: assets can arrive after the latch is set, through the permissionless
-    // revenue-share sweep or keeper filler rewards. Every route that could apply them to the debt is
-    // closed to a bankrupt user, and this resolver reads only the liability row. A stale latch would
-    // socialize the whole borrow while the new asset became withdrawable.
-    //
-    // If a realizable asset is present, clear the latch and return without drawing. Ordinary
-    // liquidation then seizes it and re-latches for the real residual. Commit the un-latch instead of
-    // erroring, which would wedge both paths. This tests only for assets, not the full predicate.
-    // It sits above the #52 check because it draws nothing.
-    if has_realizable_spot_assets_for_setoff(user, spot_market_map)? {
+    // OtterSec #130: assets can arrive after the latch through the permissionless revenue-share
+    // sweep or keeper filler rewards, and a stale latch would socialize the whole borrow while
+    // the new asset became withdrawable. Clear the latch and return without drawing. Ordinary
+    // liquidation then seizes the asset and re-latches for the real residual.
+    if has_realizable_spot_assets_for_setoff(user, &maps.spot_market_map)? {
         msg!("stale cross-margin bankruptcy latch (assets present); un-latching without drawing");
         user.exit_cross_margin_bankruptcy();
         return Ok(0);
     }
 
-    // Audit #52: enforce a deterministic perp-before-spot bankruptcy precedence.
+    // Enforce a deterministic perp-before-spot bankruptcy precedence (OtterSec #52).
     // resolve_perp_bankruptcy and resolve_spot_bankruptcy both draw from the
     // shared (quote) insurance fund vault, so a public caller could otherwise
     // pick which resolver spends it first and shift socialized loss between perp
@@ -4720,7 +4722,7 @@ pub fn resolve_spot_bankruptcy(
         "liquidator being liquidated",
     )?;
 
-    let market = spot_market_map.get_ref(&market_index)?;
+    let market = maps.spot_market_map.get_ref(&market_index)?;
 
     validate!(
         !market.is_operation_paused(SpotOperation::Liquidation),
@@ -4746,26 +4748,16 @@ pub fn resolve_spot_bankruptcy(
         ..
     } = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Maintenance),
     )?;
 
-    // Accrue the borrow market's cumulative interest to `now` before reading
-    // the borrow amount. `SpotPosition::get_token_amount` scales the position
-    // by `cumulative_borrow_interest`, so a stale (un-accrued) index would clear
-    // the debt at less than its current value — under-drawing the revenue-pool
-    // and IF tranches, under-socializing the residual, and forgiving the
-    // interest accrued since the last touch. Pass `None` (interest + token/util
-    // TWAPs only, no oracle price data): the fix only needs the interest index
-    // refreshed, and interest accrual does not depend on the oracle. Feeding the
-    // oracle price here would also stamp the market's `historical_oracle_data`
-    // (conf/delay/TWAPs) as a side effect of a bankruptcy resolution — state
-    // this path never reads — so it is deliberately omitted, matching the
-    // sibling `resolve_perp_pnl_deficit` refresh.
+    // Accrue the borrow market's cumulative interest to `now` before reading the borrow
+    // amount. A stale index would clear the debt at less than its current value, and
+    // under-draw the revenue-pool and IF tranches. `None` refreshes interest alone. An
+    // oracle price would also stamp `historical_oracle_data`, which this path never reads.
     {
-        let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
         update_spot_market_cumulative_interest(spot_market, None, now, funding_paused)?;
     }
 
@@ -4781,15 +4773,15 @@ pub fn resolve_spot_bankruptcy(
             ErrorCode::UserHasInvalidBorrow
         )?;
 
-        spot_position.get_token_amount(spot_market_map.get_ref(&market_index)?.deref())?
+        spot_position.get_token_amount(maps.spot_market_map.get_ref(&market_index)?.deref())?
     };
 
     // The borrow priced in quote. This is what the tranches below are about to pay off with the
     // revenue pool, the insurance fund and the surviving depositors, so it is also the most the
     // estate can owe them. The counters below record the same value.
     let gross_quote_loss = {
-        let spot_market = spot_market_map.get_ref(&market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+        let spot_market = maps.spot_market_map.get_ref(&market_index)?;
+        let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
         get_token_value(
             -borrow_amount.cast()?,
             spot_market.decimals,
@@ -4797,15 +4789,14 @@ pub fn resolve_spot_bankruptcy(
         )?
     };
 
-    // OtterSec #145: an account can reach this resolver holding unfundable perp claims, because its
-    // liability is a spot borrow and the #52 precedence above does not divert it. Wind them up here
-    // too, or the tranches cover the borrow and the claim stays live to collect later.
-    //
-    // Bounded by the borrow this call covers, for the reason given in `resolve_perp_bankruptcy`.
+    // OtterSec #145: an account can reach this resolver holding unfundable perp claims, because
+    // its liability is a spot borrow and the OtterSec #52 precedence above does not divert it.
+    // Wind them up here too, or the tranches cover the borrow and the claim stays live to
+    // collect later. Bounded by the borrow this call covers, as in `resolve_perp_bankruptcy`.
     extinguish_unfundable_perp_claims(
         user,
-        perp_market_map,
-        spot_market_map,
+        &maps.perp_market_map,
+        &maps.spot_market_map,
         gross_quote_loss.unsigned_abs(),
     )?;
 
@@ -4818,7 +4809,7 @@ pub fn resolve_spot_bankruptcy(
     // this draw is not timer-gated or staker-APR-capped: in a bankruptcy the
     // pool is first-loss capital.
     let revenue_pool_payment = {
-        let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
+        let mut spot_market = maps.spot_market_map.get_ref_mut(&market_index)?;
         let revenue_pool_token_amount = get_token_amount(
             spot_market.revenue_pool.scaled_balance,
             spot_market.deref(),
@@ -4851,12 +4842,12 @@ pub fn resolve_spot_bankruptcy(
     let cumulative_deposit_interest_delta =
         calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(
             loss_to_socialize,
-            spot_market_map.get_ref(&market_index)?.deref(),
+            maps.spot_market_map.get_ref(&market_index)?.deref(),
         )?;
 
     {
-        let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
-        let oracle_price_data = &oracle_map.get_price_data(&spot_market.oracle_id())?;
+        let mut spot_market = maps.spot_market_map.get_ref_mut(&market_index)?;
+        let oracle_price_data = &maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
         // The user records the gross bad debt; the spot-market counters record
         // only the loss actually borne by depositors, i.e. after the
         // revenue-pool and IF payments.
@@ -4891,7 +4882,7 @@ pub fn resolve_spot_bankruptcy(
     }
 
     // True if a bankrupting liability remains; clears status otherwise.
-    let still_bankrupt = is_cross_margin_bankrupt(user, spot_market_map)?;
+    let still_bankrupt = is_cross_margin_bankrupt(user, &maps.spot_market_map)?;
     if !still_bankrupt {
         user.exit_cross_margin_bankruptcy();
     }
@@ -4921,9 +4912,7 @@ pub fn resolve_spot_bankruptcy(
 
 pub fn calculate_margin_freed(
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     liquidation_margin_buffer_ratio: u32,
     initial_margin_shortage: u128,
     liquidation_mode: Option<&dyn LiquidatePerpMode>,
@@ -4931,9 +4920,7 @@ pub fn calculate_margin_freed(
     let margin_calculation_after =
         calculate_margin_requirement_and_total_collateral_and_liability_info(
             user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             MarginContext::liquidation(liquidation_margin_buffer_ratio),
         )?;
 
@@ -4952,9 +4939,7 @@ pub fn calculate_margin_freed(
 
 pub fn set_user_status_to_being_liquidated(
     user: &mut User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     slot: u64,
     state: &State,
 ) -> VelocityResult {
@@ -4970,12 +4955,12 @@ pub fn set_user_status_to_being_liquidated(
         "user is already being liquidated",
     )?;
 
+    validate_no_clob_resident_orders(user)?;
+
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
@@ -5003,4 +4988,60 @@ pub fn set_user_status_to_being_liquidated(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod clob_guard_tests {
+    use {
+        super::{validate_no_clob_resident_orders, ErrorCode},
+        crate::state::user::{
+            MarketType, Order, OrderBitFlag, OrderStatus, PerpPosition, User, UserStatus,
+        },
+    };
+
+    const MARKET: u16 = 7;
+
+    fn user_with_shadow() -> User {
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: MARKET,
+            open_orders: 1,
+            open_bids: 1,
+            ..PerpPosition::default()
+        };
+
+        user.orders[0] = Order {
+            status: OrderStatus::Open,
+            market_type: MarketType::Perp,
+            market_index: MARKET,
+            ..Order::default()
+        };
+        user.orders[0].add_bit_flag(OrderBitFlag::PlacedOnClob);
+        user
+    }
+
+    #[test]
+    fn a_placed_trigger_shadow_refuses_a_fresh_liquidation() {
+        let user = user_with_shadow();
+        assert_eq!(
+            validate_no_clob_resident_orders(&user),
+            Err(ErrorCode::LiquidationConflictsWithClobOrders)
+        );
+    }
+
+    #[test]
+    fn a_slot_order_alone_allows_a_fresh_liquidation() {
+        let mut user = user_with_shadow();
+        user.orders[0].remove_bit_flag(OrderBitFlag::PlacedOnClob);
+        assert_eq!(validate_no_clob_resident_orders(&user), Ok(()));
+    }
+
+    /// `force_cancel_clob_orders` refuses a latched account, so the guard must
+    /// exempt one. A refusal here would leave the account unliquidatable.
+    #[test]
+    fn a_latched_account_stays_liquidatable() {
+        let mut user = user_with_shadow();
+        user.add_user_status(UserStatus::BeingLiquidated);
+        assert_eq!(validate_no_clob_resident_orders(&user), Ok(()));
+    }
 }

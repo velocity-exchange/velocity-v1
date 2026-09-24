@@ -1,27 +1,28 @@
 //! Client-side equity floor helpers, the Rust mirror of the TypeScript SDK's
 //! `calculateEquityFloorAutoDelta` and `getEquityFloorLevel` (`math/margin.ts`).
-//! The onchain predicates live on `User` in the program crate
-//! (`is_below_equity_floor`, `is_below_buffered_equity_floor`); this module
-//! covers the two computations a client performs off-chain: sizing the floor
-//! delta a quote transfer must carry, and classifying a subaccount's equity
-//! against its floor thresholds for monitoring. The equity these helpers
-//! expect is **net equity**, the metric the onchain floor checks use
-//! (`calculate_user_equity` in the program crate: unweighted asset value plus
-//! funding-inclusive perp pnl minus unweighted spot liability value, at live
-//! oracle prices), not the weighted margin numerator (`total_collateral`).
+//! The on-chain predicates live on `User` in the program crate,
+//! `is_below_equity_floor` and `is_below_buffered_equity_floor`. This module
+//! covers the two computations a client performs off-chain. It sizes the floor
+//! delta a quote transfer must carry, and it classifies a subaccount's equity
+//! against its floor thresholds for monitoring.
+//!
+//! These helpers take net equity, the metric the on-chain floor checks use.
+//! The program crate computes it in `calculate_user_equity`: unweighted asset
+//! value, plus funding-inclusive perp pnl, minus unweighted spot liability
+//! value, at live oracle prices. It is not the weighted margin numerator
+//! `total_collateral`.
 
 /// Warning threshold multiple used when none is specified: warn while equity
 /// is inside `floor + 2 * buffer`.
 pub const DEFAULT_WARNING_BUFFER_MULTIPLE: u64 = 2;
 
-/// Minimal equity floor to carry along with a quote transfer of `amount` out
-/// of a subaccount so the debited side ends at/above its buffered floor
-/// (`equity_floor + equity_floor_buffer`): the first
-/// `net_equity - (floor + buffer)` of the transfer carries no floor, the
-/// remainder carries floor one-for-one, capped at the floor the subaccount
-/// holds. Returns zero when no floor is set. The result never exceeds
-/// `amount`, so a credited side that met its own buffered floor before the
-/// transfer still meets it after. All values QUOTE_PRECISION.
+/// Minimal equity floor delta to carry with a quote transfer of `amount` out
+/// of a subaccount, so the debited side ends at or above its buffered floor
+/// `equity_floor + equity_floor_buffer`. The first `net_equity - (floor +
+/// buffer)` carries no floor; the remainder carries floor one for one,
+/// capped at `equity_floor`. Zero when no floor is set. The result never
+/// exceeds `amount`, so a credited side already at its buffered floor stays
+/// there. All values are QUOTE_PRECISION.
 pub fn calculate_equity_floor_auto_delta(
     amount: u64,
     net_equity: i128,

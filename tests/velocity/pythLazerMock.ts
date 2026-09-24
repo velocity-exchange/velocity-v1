@@ -1,9 +1,5 @@
-// Runtime generator for Pyth Lazer oracle messages, so the LiteSVM tests don't depend on
-// frozen, pre-signed fixtures (which go stale against the on-chain wall-clock max-age check,
-// PYTH_LAZER_MAX_STALENESS_SECONDS). We mint a throwaway Ed25519 signer, make the injected
-// Pyth Lazer storage trust it (in addition to Pyth's real signer, so the remaining frozen
-// fixtures still verify), and sign fresh messages stamped at ~now — always within the max-age
-// window, no clock pinning required. See docs/DRIFT-TO-VELOCITY.md `lazer-max-staleness`.
+// Fresh Pyth Lazer messages. Frozen fixtures go stale against PYTH_LAZER_MAX_STALENESS_SECONDS.
+// See docs/DRIFT-TO-VELOCITY.md `lazer-max-staleness`.
 import * as nacl from 'tweetnacl';
 import { PYTH_STORAGE_DATA } from './pythLazerData';
 
@@ -113,19 +109,8 @@ export function makeFreshLazerMessageHex(
 	return message.toString('hex');
 }
 
-/**
- * Convenience: a fresh SOL (feed 6) message stamped at the *LiteSVM* clock.
- * Pass `svmContextWrapper.connection.getTime()` (on-chain unix seconds), NOT `Date.now()`:
- * LiteSVM's clock advances ~1s per processed transaction, so in transaction-heavy tests it runs
- * well ahead of wall-clock; stamping off wall-clock would look stale on-chain.
- *
- * `leadSeconds` biases the stamp into the future to survive transactions that run between building
- * the message and its post executing. The program rejects a stamp more than
- * `PYTH_LAZER_MAX_FUTURE_SECONDS` ahead of the clock, so the lead must stay under that bound.
- * Keep it 0 for an immediate post: a future `publish_time` is fine for a fill but can wedge
- * time-delta math in the LP-pool settle/AUM path, so only lead when the post is genuinely
- * deferred (e.g. a crank bundled into a later-sent transaction).
- */
+// Fresh SOL message on feed 6, stamped at on-chain time (not wall clock).
+// LiteSVM advances ~1sec per tx. leadSeconds must stay under PYTH_LAZER_MAX_FUTURE_SECONDS.
 export function freshLazerSolHex(
 	nowSeconds: number,
 	leadSeconds = 0,

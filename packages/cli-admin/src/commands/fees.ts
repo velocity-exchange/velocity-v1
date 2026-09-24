@@ -3,6 +3,7 @@ import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
 import {
 	escrowHasReferrer,
+	getCrankTreasuryPublicKey,
 	getRevenueShareAccountPublicKey,
 	isBuilderOrderReferral,
 	isVariant,
@@ -62,6 +63,98 @@ export function registerFees(parent: Command): void {
 		.description(
 			'Protocol fee operations: recipient, withdrawals, sweeps, split.'
 		);
+
+	withGlobalOptions(
+		fees
+			.command(
+				'set-liquidation-crank-reimbursement <shareBps> <solSpotMarketIndex>'
+			)
+			.description(
+				'Set what the protocol spends to get a liquidation cranked, and the spot market whose oracle prices that spend in SOL. The warm or cold admin signs. A liquidation crank repays the priority fee its keeper paid, so the crank stays worth landing when the fee market moves. <shareBps> caps that repayment at a share of what the liquidation recovered, so the protocol does not subsidise a recovery too small to cover its own gas. 2000 is a fifth. A zero in either argument leaves the flat payment, which is where every market starts.'
+			)
+	).action(
+		async (
+			shareBps: string,
+			solSpotMarketIndex: string,
+			_flags,
+			cmd: Command
+		) => {
+			const share = Number.parseInt(shareBps, 10);
+			const market = Number.parseInt(solSpotMarketIndex, 10);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getUpdateLiquidationCrankReimbursementIx(
+					share,
+					market
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees set-liquidation-crank-reimbursement'
+				);
+
+				reportDispatch(
+					`liquidation_crank_reimbursement = ${share}bps, sol spot market ${market}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
+
+	withGlobalOptions(
+		fees
+			.command(
+				'set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>'
+			)
+			.description(
+				'Set what the protocol believes a transaction costs to land. The warm or cold admin signs. The rails are a fixed inclusion fee, a per-signature fee, and a rate in lamports per requested cost unit. Relay crank payments are derived from them, so this is the one write that re-prices every crank when the network changes its fee model. A zero denominator prices cost units at nothing, which is the model that charges per signature alone. The last argument caps the compute-unit price a liquidation crank reimburses its keeper for, in micro-lamports per compute unit, and zero turns that reimbursement off. A market keeps the payments already written on its conditions account until its attach runs again through velocity-admin quoter set-market-clob.'
+			)
+	).action(
+		async (
+			inclusionLamports: string,
+			signatureLamports: string,
+			resourceFeeNumerator: string,
+			resourceFeeDenominator: string,
+			maxPriorityMicroLamportsPerCu: string,
+			_flags,
+			cmd: Command
+		) => {
+			const rails = {
+				inclusionLamports: Number.parseInt(inclusionLamports, 10),
+				signatureLamports: Number.parseInt(signatureLamports, 10),
+				resourceFeeNumerator: Number.parseInt(resourceFeeNumerator, 10),
+				resourceFeeDenominator: Number.parseInt(resourceFeeDenominator, 10),
+				maxPriorityMicroLamportsPerCu: Number.parseInt(
+					maxPriorityMicroLamportsPerCu,
+					10
+				),
+			};
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getUpdateTransactionFeeRailsIx(rails);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees set-transaction-rails'
+				);
+
+				reportDispatch(
+					`transaction_fee_rails = ${JSON.stringify(rails)}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
 
 	withGlobalOptions(
 		fees
@@ -185,6 +278,37 @@ export function registerFees(parent: Command): void {
 
 	withGlobalOptions(
 		fees
+			.command('withdraw-protocol-user <market> <amount>')
+			.description(
+				"Withdraw settled crank rewards from the protocol-owned User to the recipient's associated token account. That User's authority is the velocity signer PDA, and rewards accrue there in program-keeper crank mode. Settle the accrued perp quote to deposits first with the permissionless settle-pnl. The signer must hold the FeeWithdraw hot role. <market> is the SPOT market index. <amount> is in token base units."
+			)
+	).action(async (market: string, amount: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getWithdrawProtocolUserDepositIx(
+				Number.parseInt(market, 10),
+				new BN(amount)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin fees withdraw-protocol-user'
+			);
+
+			reportDispatch(
+				`protocol user deposit (spot-market[${market}]) ${amount} -> recipient ATA`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		fees
 			.command('withdraw-spot <market> <amount>')
 			.description(
 				"Withdraw from a spot market protocol_fee_pool to the recipient's associated token account (created if needed). Signer must hold the FeeWithdraw hot role. <amount> in token base units."
@@ -243,7 +367,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('settle-revenue-share <market> [escrowAuthority]')
 			.description(
-				'Settle accrued builder/referrer revenue share for a perp market out of its pnl pool (permissionless). Pays beneficiaries without the escrow owner having to settle pnl. Pass an escrow authority for one escrow, or --all to scan for and settle every escrow still owed on the market — which is what `settle_expired_market_pools_to_revenue_pool` requires before it will delist.'
+				'Settle accrued builder and referrer revenue share for a perp market out of its pnl pool. Permissionless. It pays beneficiaries without the escrow owner settling pnl. Pass an escrow authority for one escrow, or --all to scan for and settle every escrow still owed on the market. `settle_expired_market_pools_to_revenue_pool` requires that before it delists a market.'
 			)
 			.option(
 				'--all',
@@ -384,14 +508,14 @@ export function registerFees(parent: Command): void {
 					}
 				}
 
-				// A row that still owes after the settle pass is one that the program will not pay.
+				// A row that still owes after the settle pass is one the program will not pay.
 				// The beneficiary has no payout account, the pool is too small, or the row names
-				// nobody. The delist needs a zero counter, so write those rows off here. The
+				// nobody. The delist needs a zero counter, so this pass forfeits those rows. The
 				// program proves each reason again and rejects a payable row with
 				// RevenueShareOrderNotForfeitable.
 				//
-				// Only for a closing market. On a live market the program refuses every forfeit, so
-				// this pass would report failures after a successful settle pass.
+				// This pass runs only for a closing market. On a live market the program refuses
+				// every forfeit, so the pass would report failures after a successful settle pass.
 				const marketStatus =
 					client.getPerpMarketAccountOrThrow(marketIndex).status;
 				const marketWindingDown =
@@ -497,11 +621,13 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-schedule <tier0bp> <tier1bp> <tier2bp> <tier3bp>')
 			.description(
-				'Rewrite the perp fee schedule in one instruction: taker fee (bps, decimals ok) for ' +
-					'the four live tiers (Regular / VIP 1 / VIP 2 / VIP 3; the $5M/$80M/$200M 30d-volume ' +
-					'thresholds are program constants). Unused tiers 4-9 mirror tier 3. Fetches the current fee ' +
-					'structure and patches only what is passed; maker rebate, referral fields, and the ' +
-					'amm/if split stay unchanged unless the matching option is given. Warm/cold admin.'
+				'Rewrite the perp fee schedule in one instruction. Each argument is a taker fee in ' +
+					'bps, and decimals are allowed, for the four live tiers Regular, VIP 1, VIP 2 and ' +
+					'VIP 3. The 30-day volume thresholds of $5M, $80M and $200M are program constants. ' +
+					'Unused tiers 4-9 mirror tier 3. The command fetches the current fee structure and ' +
+					'patches only what is passed. The maker rebate, the referral fields and the amm and ' +
+					'insurance-fund split stay unchanged unless the matching option is given. The warm ' +
+					'or cold admin signs.'
 			)
 			.option(
 				'--maker-rebate-bp <bp>',
@@ -509,11 +635,11 @@ export function registerFees(parent: Command): void {
 			)
 			.option(
 				'--referrer <pct>',
-				'referrer reward, percent of the taker fee (tiers 0-5)'
+				'referrer reward, as a percent of the taker fee'
 			)
 			.option(
 				'--referee <pct>',
-				'referee discount, percent of the taker fee (tiers 0-5)'
+				'referee discount, as a percent of the taker fee'
 			)
 			.option('--amm-split <pct>', 'amm share of the fee remainder, percent')
 			.option(
@@ -570,8 +696,9 @@ export function registerFees(parent: Command): void {
 							tiers[i].makerRebateDenominator
 						);
 					}
-					// Referral fields are populated on tiers 0-5 only; leave the
-					// zeroed tail alone.
+
+					// Only a tier with a nonzero referral numerator carries referral
+					// fields. The zeroed tail stays as it is.
 					if (
 						local.referrer !== undefined &&
 						tiers[i].referrerRewardNumerator > 0
@@ -702,7 +829,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-taker-addon <market> <tenthBps>')
 			.description(
-				"Set a perp market's additive taker-fee surcharge in tenth-bps (15 = +1.5bp, 0 = none), applied to the tier fee before feeAdjustment. Surcharge only, range 0..100; discounts go through set-promo-tier. Warm admin."
+				"Set a perp market's additive taker-fee surcharge in tenth-bps. 15 adds 1.5bp and 0 adds nothing. The program applies it to the tier fee before feeAdjustment. The value is a surcharge only and its range is 0 to 100. Discounts go through set-promo-tier. The warm admin signs."
 			)
 	).action(async (market: string, tenthBps: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -732,7 +859,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-promo-tier <tier>')
 			.description(
-				'Set the promotional fee-tier floor: every account gets at least this perp fee tier while set (1 = VIP 1, 2 = VIP 2, 3 = VIP 3; accounts already above keep their tier). 0 disables; accounts revert to volume tiers on their next fill. Warm admin.'
+				'Set the promotional fee-tier floor. While it is set, every account gets at least this perp fee tier: 1 is VIP 1, 2 is VIP 2 and 3 is VIP 3. An account already above the floor keeps its tier. 0 disables the floor, and accounts return to their volume tier on their next fill. The warm admin signs.'
 			)
 	).action(async (tier: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -753,4 +880,136 @@ export function registerFees(parent: Command): void {
 			await client.unsubscribe();
 		}
 	});
+
+	withGlobalOptions(
+		fees
+			.command('init-crank-treasury')
+			.description(
+				"Create the protocol's relay crank treasury, the single account every market's crank reservoir refills from. The warm or cold admin signs, and this runs once per deployment. The treasury is created inert. Price it with fees set-crank-treasury, then fund it by sending SOL to the address this prints. Markets refill themselves from it, so nobody has to watch a per-market balance."
+			)
+	).action(async (_flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getInitializeCrankTreasuryIx();
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin fees init-crank-treasury'
+			);
+
+			reportDispatch(
+				`crank treasury = ${getCrankTreasuryPublicKey(
+					client.program.programId
+				).toBase58()} (fund it by sending SOL to this address)`,
+
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		fees
+			.command(
+				'set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>'
+			)
+			.description(
+				"Set the two levels a market's crank reservoir is held between. The warm or cold admin signs. Both levels count that market's most expensive crank rather than lamports, so one setting serves every market and a market whose cranks cost more carries a proportionally larger float. <refillWatermarkCranks> is the level at which a refill wakes. It must cover the refill's own round trip, because the reservoir keeps paying cranks while that refill lands. <refillTargetCranks> is how full the refill leaves the reservoir, and it must exceed the watermark. The target reaches every market at once. A new watermark reaches a market on its next quoter set-market-clob. What a refill pays is priced on the market it fills, through --crank-cu-refill."
+			)
+	).action(
+		async (
+			refillTargetCranks: string,
+			refillWatermarkCranks: string,
+			_flags,
+			cmd: Command
+		) => {
+			const target = Number.parseInt(refillTargetCranks, 10);
+			const watermark = Number.parseInt(refillWatermarkCranks, 10);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getUpdateCrankTreasuryIx(target, watermark);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees set-crank-treasury'
+				);
+
+				reportDispatch(
+					`crank treasury wakes under ${watermark} cranks, fills to ${target}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
+
+	withGlobalOptions(
+		fees
+			.command('withdraw-crank-treasury <lamports>')
+			.description(
+				'Move lamports from the crank treasury to the admin. The warm or cold admin signs. The balance never falls below the account rent, so nobody can close the treasury while markets still draw on it.'
+			)
+	).action(async (lamports: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getWithdrawCrankTreasuryIx(new BN(lamports));
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin fees withdraw-crank-treasury'
+			);
+
+			reportDispatch(
+				`withdrew ${lamports} lamports from crank treasury`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		fees
+			.command('sweep-crank-reservoir <marketIndex> <lamports>')
+			.description(
+				"Move lamports from a market's crank reservoir back to the treasury. The warm or cold admin signs. Lamports reach a reservoir through the refill crank and leave it as crank payments, so without this command they travel one way and a retired or over-provisioned market holds them forever. The balance never falls below the account rent, and a reservoir swept under its watermark refills itself."
+			)
+	).action(
+		async (marketIndex: string, lamports: string, _flags, cmd: Command) => {
+			const market = Number.parseInt(marketIndex, 10);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getSweepCrankReservoirIx(
+					market,
+					new BN(lamports)
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees sweep-crank-reservoir'
+				);
+
+				reportDispatch(
+					`swept ${lamports} lamports from market ${market} reservoir`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
 }

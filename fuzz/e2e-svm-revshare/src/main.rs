@@ -5,8 +5,8 @@
 //! protocol state (State + USDC quote SpotMarket + PerpMarket + the
 //! RevenueShareEscrow / RevenueShareOrder / RevenueShare / User accounts the
 //! revenue-share paths read), and then drive the *real* instruction under test
-//! (`place_perp_order`, `place_and_take_perp_order`, `settle_multiple_pnls`)
-//! with `ctx.raw_call`, using IDL anchor discriminators + borsh-encoded args.
+//! (`place_and_take_perp_order_v1`, `settle_multiple_pnls`) with `ctx.raw_call`.
+//! A v1 take routes through the market's CLOB book, so `regr_256` installs one.
 //! Account reads use the velocity host-library zero-copy structs via
 //! `pod_read_unaligned` (see `read_zc`), never `read_zero_copy_account` (which
 //! panics on velocity's u128-aligned structs on unaligned LiteSVM data).
@@ -22,11 +22,11 @@
 //!
 //!  * `regr_256_reused_order_id_stale_builder_fee` (PR #256 / OtterSec #49):
 //!    `add_builder_order` writes a `RevenueShareOrder` keyed to
-//!    `user.next_order_id` *before* `place_perp_order` runs; when placement
+//!    `user.next_order_id` *before* the order is built; when placement
 //!    soft-skips on an expired `max_ts` it returns before consuming
 //!    `next_order_id` or setting `HasBuilder`, so the stale row persists for an
-//!    id the next placement reuses. The fix clears the row when place bails and
-//!    gates the fill-time lookup on the order's live `is_has_builder()`.
+//!    id the next placement reuses. The fix clears the row when placement bails
+//!    and gates the fill-time lookup on the order's live `is_has_builder()`.
 
 #![allow(dead_code)]
 
@@ -65,8 +65,6 @@ const VELOCITY_SO: &str = "../../target/deploy/velocity.so";
 const D_INITIALIZE_USER_STATS: [u8; 8] = [254, 243, 72, 98, 251, 130, 168, 213];
 const D_INITIALIZE_USER: [u8; 8] = [111, 17, 185, 250, 60, 122, 38, 254];
 const D_DEPOSIT: [u8; 8] = [242, 35, 198, 137, 82, 225, 242, 182];
-const D_PLACE_PERP_ORDER: [u8; 8] = [69, 161, 93, 202, 120, 126, 76, 185];
-const D_PLACE_AND_TAKE_PERP_ORDER: [u8; 8] = [213, 51, 1, 187, 108, 220, 230, 224];
 const D_SETTLE_MULTIPLE_PNLS: [u8; 8] = [127, 66, 117, 57, 40, 50, 152, 127];
 
 // System / builtin program ids.
@@ -515,26 +513,17 @@ fn regr_273_revenue_share_subaccount_redirect(fixture: &mut Regr273, #[range(0..
 // ===========================================================================
 // HARNESS 1 — regr_256_reused_order_id_stale_builder_fee (PR #256 / OtterSec #49)
 //
-// See the crate-level doc. Two-part reproduction, both driven by REAL calls:
-//   Part A (the orphaned-row half of the fix, always exercised): a real
-//     `place_perp_order` carrying a builder code with an expired `max_ts`. This
-//     runs the real `add_builder_order` (which writes a RevenueShareOrder keyed
-//     to `next_order_id`) and then soft-skips inside `place_perp_order`. On
-//     pre-fix master the row is NOT cleared, so an Open builder row lingers for
-//     an order id `next_order_id` still points at; the fix clears it.
-//   Part B (the fill-lookup half): a real `place_and_take_perp_order` that
-//     reuses the same order id (1) as a NON-builder order and fills it against
-//     the injected $1 AMM. On pre-fix master the fill-time lookup (keyed only by
-//     `(sub_account_id, order_id)`) matches the stale row and accrues a builder
-//     fee onto it (verified: the reused id-1 row ends with fees_accrued > 0);
-//     the fix gates the lookup on `is_has_builder()` so a non-builder order is
-//     never charged.
+// See the crate-level doc. Two real `place_and_take_perp_order_v1` calls:
+//   Part A: a take carrying a builder code with an expired `max_ts`. It runs the
+//     real `add_builder_order`, which writes a RevenueShareOrder keyed to
+//     `next_order_id`, and then soft-skips. The fix clears the row, so no Open
+//     builder row lingers for the order id `next_order_id` still names.
+//   Part B: a NON-builder take that reuses that order id and fills against the
+//     $1 vAMM. The fix gates the fill-time lookup on `is_has_builder()`, so the
+//     reused id is never charged a builder fee.
 //
-// Both halves are asserted. Part A (orphaned Open row after the soft-skip) and
-// Part B (a builder fee accrued to the reused non-builder id) each fail on
-// pre-fix master and hold once the PR merges. A clock bump to a positive
-// `unix_timestamp` is required so the `max_ts < now` soft-skip is reachable
-// (LiteSVM's genesis clock is 0).
+// A clock bump to a positive `unix_timestamp` makes the `max_ts < now` skip
+// reachable, because LiteSVM's genesis clock is 0.
 // ===========================================================================
 
 #[cfg(feature = "regr_256_reused_order_id_stale_builder_fee")]
@@ -562,6 +551,7 @@ mod regr_256 {
         pub trader_token: Pubkey,
         pub escrow_pda: Pubkey,
         pub builder_authority: Pubkey,
+        pub clob: velocity_fuzz_common::clob::ClobAccounts,
     }
 
     #[fuzz_fixture]
@@ -594,8 +584,18 @@ mod regr_256 {
                 Pubkey::find_program_address(&[b"velocity_signer"], &program_id);
             let (state_pda, _) = Pubkey::find_program_address(&[b"velocity_state"], &program_id);
 
+            // The warm admin installs the market's CLOB book.
+            let admin = Keypair::new();
+            ctx.create_account()
+                .pubkey(admin.pubkey())
+                .lamports(10_000_000_000)
+                .owner(system_program_id())
+                .create()
+                .unwrap();
+
             let mut state = build_state(signer_pda, signer_nonce);
             state.feature_bit_flags = velocity::state::state::FeatureBitFlags::BuilderCodes as u8;
+            state.warm_admin = anchor_pk(admin.pubkey());
             inject(&mut ctx, state_pda, &mut state);
 
             let usdc_mint = Keypair::new().pubkey();
@@ -649,6 +649,7 @@ mod regr_256 {
             // A funded pnl_pool so builder-fee bookkeeping during the fill has room.
             perp_market.amm.fee_pool.scaled_balance = 1_000 * SPOT_BALANCE_PRECISION;
             perp_market.pnl_pool.scaled_balance = 1_000 * SPOT_BALANCE_PRECISION;
+            perp_market.quoter_slab = anchor_pk(velocity_fuzz_common::clob::quoter_slab_pda());
             inject(&mut ctx, perp_market_pda, &mut perp_market);
 
             // Trader: real user + user_stats via real init instructions so the
@@ -678,6 +679,13 @@ mod regr_256 {
                 &program_id,
             );
 
+            // `initialize_user` creates the relay liquidation-coverage account
+            // alongside the user, so its list carries the PDA.
+            let (trader_pda_conditions, _) = Pubkey::find_program_address(
+                &[b"user_conditions", trader_pda.as_ref()],
+                &program_id,
+            );
+
             let _ = ctx
                 .raw_call(Instruction {
                     program_id,
@@ -702,6 +710,7 @@ mod regr_256 {
                     program_id,
                     accounts: vec![
                         AccountMeta::new(trader_pda, false),
+                        AccountMeta::new(trader_pda_conditions, false),
                         AccountMeta::new(trader_stats_pda, false),
                         AccountMeta::new(state_pda, false),
                         AccountMeta::new_readonly(trader_kp.pubkey(), false),
@@ -760,6 +769,16 @@ mod regr_256 {
 
             let _ = RevenueShare::default();
 
+            let clob = velocity_fuzz_common::clob::install(
+                &mut ctx,
+                &admin,
+                state_pda,
+                perp_market_pda,
+                perp_market.order_step_size,
+                perp_market.market_stats.min_order_size,
+                trader_pda,
+            );
+
             Regr256 {
                 ctx,
                 program_id,
@@ -775,11 +794,46 @@ mod regr_256 {
                 trader_token,
                 escrow_pda,
                 builder_authority,
+                clob,
             }
         }
 
         pub fn action_noop(&mut self) {
             let _ = &self.ctx;
+        }
+
+        /// `place_and_take_perp_order_v1` for the trader. The remaining accounts
+        /// are the markets, no makers, the trader's escrow, then the market's
+        /// book entry.
+        pub fn take_ix(&self, params: velocity::state::order_params::OrderParams) -> Instruction {
+            use anchor_lang::{InstructionData, ToAccountMetas};
+
+            let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+                state: self.state_pda,
+                user: self.trader_pda,
+                user_stats: self.trader_stats_pda,
+                authority: self.trader_kp.pubkey(),
+                quoter_slab: self.clob.quoter_slab,
+                clob_market: self.clob.book,
+                clob_program: self.clob.program,
+                flow_authority: None,
+            }
+            .to_account_metas(None);
+            accounts.push(AccountMeta::new(self.spot_market_pda, false));
+            accounts.push(AccountMeta::new(self.perp_market_pda, false));
+            accounts.push(AccountMeta::new(self.escrow_pda, false));
+            accounts.extend(self.clob.route_metas());
+            Instruction {
+                program_id: self.program_id,
+                accounts,
+                data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+                    args: velocity::instructions::PlaceAndTakePerpOrderV1Args {
+                        params,
+                        success_condition: None,
+                    },
+                }
+                .data(),
+            }
         }
 
         /// Parse the escrow account bytes and return, for each order slot, a
@@ -828,75 +882,49 @@ use regr_256::Regr256;
 #[cfg(feature = "regr_256_reused_order_id_stale_builder_fee")]
 #[crucible_fuzz]
 fn regr_256_reused_order_id_stale_builder_fee(fixture: &mut Regr256, #[range(0..1u8)] _unused: u8) {
-    use {
-        anchor_lang::AnchorSerialize as _,
-        velocity::{
-            controller::position::PositionDirection,
-            state::{
-                order_params::{OrderParams, PostOnlyParam},
-                user::{MarketType, OrderType},
-            },
+    use velocity::{
+        controller::position::PositionDirection,
+        state::{
+            order_params::{OrderParams, PostOnlyParam},
+            user::{MarketType, OrderType},
         },
     };
 
-    // --- Step 1: place a BUILDER order with an expired `max_ts`. ---
-    // `add_builder_order` writes a RevenueShareOrder keyed to next_order_id (=1);
-    // `place_perp_order` then hits `max_ts < now` and soft-skips, returning
-    // before next_order_id is consumed. On pre-fix master the builder row is NOT
-    // cleared, so it lingers as an Open row for order id 1.
+    // --- Part A: a BUILDER take with an expired `max_ts`. ---
+    // `add_builder_order` writes a RevenueShareOrder keyed to next_order_id (=1),
+    // and the take then soft-skips on `max_ts < now` before consuming the id.
     let builder_params = OrderParams {
         order_type: OrderType::Limit,
         market_type: MarketType::Perp,
         direction: PositionDirection::Long,
         base_asset_amount: 10_000_000,
-        price: 900_000, // $0.90 bid, below $1 oracle (won't cross)
+        price: 1_050_000,
         market_index: 0,
-        // MustPostOnly avoids the AMM auction/reserve math (the default injected
-        // AMM has zero reserves) so placement reaches the `max_ts` soft-skip.
-        post_only: PostOnlyParam::MustPostOnly,
+        post_only: PostOnlyParam::None,
         max_ts: Some(1), // expired: 1 << now
         builder_idx: Some(0),
         builder_fee_tenth_bps: Some(1000),
         ..Default::default()
     };
-    let mut buf = Vec::new();
-    builder_params.serialize(&mut buf).unwrap();
     let place_outcome = fixture
         .ctx
-        .raw_call(Instruction {
-            program_id: fixture.program_id,
-            accounts: vec![
-                AccountMeta::new_readonly(fixture.state_pda, false),
-                AccountMeta::new(fixture.trader_pda, false),
-                AccountMeta::new_readonly(fixture.trader_kp.pubkey(), true),
-                // remaining: quote spot market (r), perp market (w), escrow (w)
-                AccountMeta::new_readonly(fixture.spot_market_pda, false),
-                AccountMeta::new(fixture.perp_market_pda, false),
-                AccountMeta::new(fixture.escrow_pda, false),
-            ],
-            data: ix_data(D_PLACE_PERP_ORDER, &buf),
-        })
+        .raw_call(fixture.take_ix(builder_params))
         .signers(&[&fixture.trader_kp])
         .send();
 
     let place_code = place_outcome.as_ref().ok().and_then(|o| o.error_code());
     fuzz_assert!(
         place_outcome.is_ok() && place_code.is_none(),
-        "builder place_perp_order (expired max_ts) should soft-skip and return Ok (error_code={:?})",
+        "builder take (expired max_ts) should soft-skip and return Ok (error_code={:?})",
         place_code
     );
 
-    // Snapshot the escrow immediately after the soft-skipped placement. On
-    // pre-fix master this shows a stale Open row keyed to the un-consumed order
-    // id 1; the fix clears it here.
+    // The escrow as the soft-skipped take left it.
     let orders_after_place = fixture.escrow_orders();
 
-    // --- Step 2 (Part B, best-effort): reuse order id 1 with a NON-builder
-    // order and fill it against the AMM via `place_and_take_perp_order`. Because
-    // the soft-skip did not consume `next_order_id`, this order also gets id 1.
-    // On pre-fix master the fill-time lookup matches the stale row by
-    // (sub_account_id, order_id) and charges the builder fee into it; the fix
-    // gates the lookup on the order's live `is_has_builder()`. ---
+    // --- Part B: a NON-builder take reuses order id 1 and fills against the
+    // vAMM. A fill-time lookup keyed only by (sub_account_id, order_id) would
+    // match a stale row and charge the builder fee into it. ---
     let taker_params = OrderParams {
         order_type: OrderType::Limit,
         market_type: MarketType::Perp,
@@ -907,33 +935,25 @@ fn regr_256_reused_order_id_stale_builder_fee(fixture: &mut Regr256, #[range(0..
         post_only: PostOnlyParam::None,
         ..Default::default()
     };
-    let mut tbuf = Vec::new();
-    taker_params.serialize(&mut tbuf).unwrap();
-    tbuf.push(0u8); // optional_params: Option<u32>::None
-    let _fill_outcome = fixture
+    let fill_outcome = fixture
         .ctx
-        .raw_call(Instruction {
-            program_id: fixture.program_id,
-            accounts: vec![
-                AccountMeta::new_readonly(fixture.state_pda, false),
-                AccountMeta::new(fixture.trader_pda, false),
-                AccountMeta::new(fixture.trader_stats_pda, false),
-                AccountMeta::new_readonly(fixture.trader_kp.pubkey(), true),
-                // remaining: quote spot market (w), perp market (w), then (no
-                // makers) the escrow (w).
-                AccountMeta::new(fixture.spot_market_pda, false),
-                AccountMeta::new(fixture.perp_market_pda, false),
-                AccountMeta::new(fixture.escrow_pda, false),
-            ],
-            data: ix_data(D_PLACE_AND_TAKE_PERP_ORDER, &tbuf),
-        })
+        .raw_call(fixture.take_ix(taker_params))
         .signers(&[&fixture.trader_kp])
         .send();
 
+    let filled = read_zc::<User>(&fixture.ctx, &fixture.trader_pda)
+        .map(|u| u.perp_positions[0].base_asset_amount > 0)
+        .unwrap_or(false);
+    fuzz_assert!(
+        filled,
+        "the non-builder take did not fill, so Part B checks nothing (logs: {:?})",
+        fill_outcome.as_ref().map(|o| o.logs().to_vec())
+    );
+
     let orders_after_fill = fixture.escrow_orders();
 
-    // Sanity: the soft-skipped placement must NOT have consumed the order id, so
-    // the taker below reuses id 1. (next_order_id stays 1 after the bail.)
+    // Sanity: the soft-skipped take did NOT consume the order id, so the
+    // non-builder take reused id 1 and left next_order_id at 2.
     let taker_reused_id = read_zc::<User>(&fixture.ctx, &fixture.trader_pda)
         .map(|u| u.next_order_id == 2)
         .unwrap_or(false);
@@ -942,24 +962,20 @@ fn regr_256_reused_order_id_stale_builder_fee(fixture: &mut Regr256, #[range(0..
         "expected the soft-skip to leave next_order_id unconsumed so the taker reuses order id 1"
     );
 
-    // --- Assertion (Part A): no orphaned Open builder row may linger after the
-    // soft-skipped placement. The order id (1) was NOT consumed, so a lingering
-    // Open row attaches to the next order that reuses id 1. The fix clears the
-    // row on the max_ts bail. This reproduces the bug on master regardless of
-    // whether the Part-B fill executes. ---
+    // --- Assertion (Part A): no Open builder row lingers for the un-consumed
+    // order id 1 after the soft-skipped take. ---
     let orphan = orders_after_place
         .iter()
         .find(|(order_id, is_open, is_completed, _)| *is_open && !*is_completed && *order_id == 1);
     fuzz_assert!(
         orphan.is_none(),
         "PR #256: a stale Open builder-order row lingers for the un-consumed order id 1 \
-         after place soft-skipped on expired max_ts (escrow orders: {:?})",
+         after the take soft-skipped on expired max_ts (escrow orders: {:?})",
         orders_after_place
     );
 
-    // --- Assertion (Part B): the reused non-builder order id 1 must NOT be
-    // charged a builder fee. If the fill executed, a pre-fix master would have
-    // accrued the stale row's builder fee onto order id 1's row. ---
+    // --- Assertion (Part B): the reused non-builder order id 1 is NOT charged a
+    // builder fee. ---
     let charged = orders_after_fill
         .iter()
         .find(|(order_id, _, _, fees_accrued)| *order_id == 1 && *fees_accrued > 0);

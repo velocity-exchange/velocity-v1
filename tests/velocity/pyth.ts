@@ -284,7 +284,11 @@ describe('pyth-oracle', () => {
 		assert.ok(feedDataBefore.exponent === expo);
 		const newPrice = 55000;
 
-		await setFeedPriceNoProgram(svmContextWrapper, newPrice, priceFeedAddress);
+		await setFeedPriceNoProgram(
+			svmContextWrapper,
+			newPrice,
+			priceFeedAddress
+		);
 		const feedDataAfter = await getFeedDataNoProgram(
 			svmContextWrapper.connection,
 			priceFeedAddress

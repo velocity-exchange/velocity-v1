@@ -198,10 +198,11 @@ describe('protocol fees', () => {
 			MARKET_INDEX,
 			bufferTarget
 		);
-		// disable the bankruptcy IF floor (default 10 bps of OI notional) so
-		// this test can assert a FULL drain; bankruptcyIfFloor.ts covers the
-		// floor-active behavior. 0 selects the default, so disabling needs the
-		// sentinel.
+
+		// Disable the bankruptcy IF floor, which defaults to 10 bps of open-interest
+		// notional, so this test can assert a full drain. bankruptcyIfFloor.ts covers
+		// the behavior with the floor active. 0 selects the default, so disabling the
+		// floor needs the sentinel.
 		await velocityClient.updatePerpMarketBankruptcyIfFloorPct(
 			MARKET_INDEX,
 			BANKRUPTCY_IF_FLOOR_DISABLED
@@ -315,9 +316,10 @@ describe('protocol fees', () => {
 		);
 		await velocityClient.fetchAccounts();
 
-		const recipientBalance = await svmContextWrapper.connection.getTokenAccount(
-			recipientTokenAccount
-		);
+		const recipientBalance =
+			await svmContextWrapper.connection.getTokenAccount(
+				recipientTokenAccount
+			);
 		assert(
 			new BN(Number(recipientBalance.amount)).eq(poolTokens),
 			`recipient got ${recipientBalance.amount}, expected ${poolTokens} (capped)`

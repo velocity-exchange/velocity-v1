@@ -1,12 +1,14 @@
 //! P2 "amm-pricing" — host-tier property harnesses over velocity's pure vAMM
-//! math (`vlp/amm/math/{amm,spread,repeg,cp_curve,jit}`). No LiteSVM: every
+//! math (`vlp/amm/math/{amm,spread,repeg,cp_curve}` and the router adapter that
+//! quotes the curve as a ladder). No LiteSVM: every
 //! harness constructs `AMM` / `PerpMarket` fixtures via `..Default::default()`
 //! and drives the math functions directly, so Crucible gets edge coverage over
 //! the compiled curve code.
 //!
 //! Two harness sets:
 //!  * `prop_*`  — always-on invariants (Families IV + II): constant-product
-//!    conservation, spread caps, price bounds, repeg/k cost sign, JIT clamp.
+//!    conservation, spread caps, price bounds, repeg/k cost sign, ladder
+//!    sizing.
 //!  * `regr_269_*` — PENDING PR #269 (OtterSec F7). Each asserts the FIXED
 //!    invariant, so it reports a violation on current (pre-fix) master.
 
@@ -27,6 +29,7 @@ use {
             market_status::MarketStatus,
             oracle::{MMOraclePriceData, OraclePriceData},
             perp_market::{PerpMarket, AMM},
+            prop_amm::Direction,
         },
         vlp::amm::{
             controller::SwapDirection,
@@ -37,13 +40,13 @@ use {
                     sanitize_new_price,
                 },
                 cp_curve::{adjust_k_cost, get_update_k_result},
-                jit::{calculate_amm_jit_liquidity, calculate_clamped_jit_base_asset_amount},
                 repeg::{
                     calculate_repeg_cost, project_post_refresh, project_post_refresh_scalar,
                     ProjectionInputs,
                 },
                 spread::{calculate_base_asset_amount_to_trade_to_price, cap_to_max_spread},
             },
+            router_adapter::vamm_quote_levels,
         },
     },
 };
@@ -291,28 +294,78 @@ fn prop_repeg_k_cost(
     }
 }
 
-/// Family IV: `calculate_clamped_jit_base_asset_amount` never exceeds its input
-/// (intensity <= 100 scaling) and never exceeds the AMM's net inventory.
+/// Family IV: the vAMM ladder never quotes more base than the router asked
+/// for, and never quotes a rung on the wrong side of the curve's own top of
+/// book.
+///
+/// The router splits a taker's size across quoters and hands the vAMM its
+/// share; a ladder that over-quotes would take fills the router never
+/// allocated, and a rung priced better than the curve's top would sell the
+/// LPs' inventory below the spread they set.
 #[cfg(feature = "prop_jit_clamped_bound")]
 #[crucible_fuzz]
 fn prop_jit_clamped_bound(
     fixture: &mut AmmFixture,
-    #[range(0..1_000_000_000_000u64)] jit_in: u64,
-    #[range(0..101u8)] intensity: u8,
+    #[range(0..1_000_000_000_000u64)] size: u64,
+    #[range(0..10_000u32)] spread: u32,
     #[range(-500_000_000_000..500_000_000_000i64)] baa: i64,
 ) {
     let _ = &fixture.ctx;
-    let market = PerpMarket {
-        amm: AMM {
-            amm_jit_intensity: intensity,
-            base_asset_amount_with_amm: baa as i128,
-            ..AMM::default()
-        },
-        ..PerpMarket::default()
+    let base = 100 * AMM_RESERVE_PRECISION;
+    let step: u64 = 1_000_000;
+    let amm = AMM {
+        base_asset_reserve: base,
+        quote_asset_reserve: base,
+        sqrt_k: base,
+        peg_multiplier: PEG_PRECISION,
+        min_base_asset_reserve: base / 2,
+        max_base_asset_reserve: base * 2,
+        base_asset_amount_with_amm: baa as i128,
+        long_spread: spread,
+        short_spread: spread,
+        max_fill_reserve_fraction: 100,
+        ..AMM::default()
     };
-    let clamped = calculate_clamped_jit_base_asset_amount(&market, jit_in).unwrap();
-    fuzz_assert_le!(clamped, jit_in);
-    fuzz_assert!((clamped as u128) <= (baa as i128).unsigned_abs());
+
+    let Ok(reserve_price) = amm.reserve_price() else {
+        return;
+    };
+
+    for direction in [Direction::Long, Direction::Short] {
+        let Ok(levels) = vamm_quote_levels(&amm, direction, size, step, &[], None) else {
+            continue;
+        };
+        let quoted: u64 = levels.iter().map(|level| level.size).sum();
+        fuzz_assert_le!(quoted, size);
+
+        let (position_direction, top) = match direction {
+            Direction::Long => (
+                PositionDirection::Long,
+                amm.ask_price(reserve_price, amm.long_spread, amm.reference_price_offset),
+            ),
+            Direction::Short => (
+                PositionDirection::Short,
+                amm.bid_price(reserve_price, amm.short_spread, amm.reference_price_offset),
+            ),
+        };
+        let Ok(top) = top else {
+            continue;
+        };
+
+        for level in &levels {
+            match direction {
+                // The taker buys: no rung may undercut the ask.
+                Direction::Long => fuzz_assert_ge!(level.price, top),
+                // The taker sells: no rung may overbid the bid.
+                Direction::Short => fuzz_assert_le!(level.price, top),
+            }
+        }
+
+        // And never past the per-fill reserve throttle.
+        if let Ok(available) = calculate_amm_available_liquidity(&amm, &position_direction, step) {
+            fuzz_assert_le!(quoted, available);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,18 +543,19 @@ fn regr_269_scalar_k_floor(
     fuzz_assert_eq!(scalar.cost, full.cost);
 }
 
-/// PENDING PR #269 (F7 #63): a JIT slice sized from a DLOB match context must
-/// be clamped to `calculate_amm_available_liquidity` (the per-fill reserve
-/// throttle, `max_fill_reserve_fraction`), the same bound the standalone AMM
-/// path enforces. `calculate_amm_jit_liquidity` (the sizing
-/// `AmmJitQuoter::from_match_context` uses) only bounds by oracle proximity,
-/// intensity and inventory — not by how far one fill pushes reserves. Asserting
-/// the fixed bound (jit <= available liquidity) fails on master.
+/// A vAMM slice sized inside a fill must be clamped to
+/// `calculate_amm_available_liquidity` — the per-fill reserve throttle
+/// (`max_fill_reserve_fraction`) — not only by inventory and spread.
+///
+/// The throttle bounds how far one fill may push the reserves, so a path that
+/// sizes a slice without it can move the curve further in one transaction than
+/// the market's own configuration allows. The router adapter is the only
+/// sizing path left, and it applies the throttle before it builds a rung.
 #[cfg(feature = "regr_269_jit_available_liquidity")]
 #[crucible_fuzz]
 fn regr_269_jit_available_liquidity(
     fixture: &mut AmmFixture,
-    #[range(4_000_000..40_000_000_000u64)] maker_size: u64,
+    #[range(4_000_000..40_000_000_000u64)] taker_size: u64,
     #[range(4_000_000..60_000_000_000u64)] baa: u64,
 ) {
     let _ = &fixture.ctx;
@@ -510,42 +564,26 @@ fn regr_269_jit_available_liquidity(
     // Tight ask-side room => small per-side available liquidity.
     let max_base = base + 2 * step as u128;
 
-    let market = PerpMarket {
-        amm: AMM {
-            base_asset_reserve: base,
-            quote_asset_reserve: base,
-            sqrt_k: base,
-            peg_multiplier: PEG_PRECISION,
-            min_base_asset_reserve: 0,
-            max_base_asset_reserve: max_base,
-            base_asset_amount_with_amm: baa as i128, // net long => wants to JIT a Short taker
-            amm_jit_intensity: 100,
-            max_fill_reserve_fraction: 1,
-            ..AMM::default()
-        },
-        order_step_size: step,
-        ..PerpMarket::default()
+    let amm = AMM {
+        base_asset_reserve: base,
+        quote_asset_reserve: base,
+        sqrt_k: base,
+        peg_multiplier: PEG_PRECISION,
+        min_base_asset_reserve: 0,
+        max_base_asset_reserve: max_base,
+        base_asset_amount_with_amm: baa as i128, // net long => quotes a bid to a short taker
+        max_fill_reserve_fraction: 1,
+        ..AMM::default()
     };
 
-    let oracle_price: i64 = PEG_PRECISION as i64; // reserve price for balanced pool
+    // The taker sells, so the vAMM quotes the bid side.
     let taker_dir = PositionDirection::Short;
-
-    let Ok(jit) = calculate_amm_jit_liquidity(
-        &market,
-        taker_dir,
-        oracle_price as u64, // maker/auction price == oracle => no wash shrink
-        Some(oracle_price),
-        maker_size, // base_asset_amount (== the size JIT halves)
-        maker_size, // taker_unfilled
-        maker_size, // maker_unfilled
-        true,       // taker_has_limit_price => no "amm fills next round" short-circuit
-    ) else {
+    let Ok(levels) = vamm_quote_levels(&amm, Direction::Short, taker_size, step, &[], None) else {
         return;
     };
+    let quoted: u64 = levels.iter().map(|level| level.size).sum();
 
-    let avail = calculate_amm_available_liquidity(&market.amm, &taker_dir, step).unwrap();
+    let avail = calculate_amm_available_liquidity(&amm, &taker_dir, step).unwrap();
 
-    // FIXED invariant: the match-context JIT slice is throttled to the same
-    // per-fill reserve bound as the standalone path.
-    fuzz_assert_le!(jit, avail);
+    fuzz_assert_le!(quoted, avail);
 }

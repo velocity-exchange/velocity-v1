@@ -4,13 +4,13 @@ use {
         types::{
             messages::{
                 DepositAndPlaceRequest, IncomingSignedMessage, OrderMetadataAndMessage,
-                ProcessOrderResponse, PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND,
-                PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET,
+                ProcessOrderResponse, PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_DELIVERY_FAILED,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_ORDER_SLOT_TOO_OLD,
                 PROCESS_ORDER_RESPONSE_ERROR_MSG_VERIFY_SIGNATURE,
+                PROCESS_ORDER_RESPONSE_ERROR_MSG_WORST_PRICE_OUTSIDE_ORACLE_BAND,
                 PROCESS_ORDER_RESPONSE_IGNORE_PUBKEY, PROCESS_ORDER_RESPONSE_INVALID_UUID_UTF8,
                 PROCESS_ORDER_RESPONSE_MESSAGE_SUCCESS,
             },
@@ -92,21 +92,17 @@ struct Config {
     /// `AccountNotFound` before the program runs. Defaults to the
     /// gas-station-maintained fee payer; override with `SIM_FEE_PAYER`.
     sim_fee_payer: Pubkey,
-    /// Reject signed orders whose auction start/end prices sit more than this
-    /// many bps from the live oracle — a server-side fat-finger / stale-order
-    /// guard. The program preserves signed A/B auctions verbatim (it no longer
-    /// re-prices them), so genuinely-off auctions are caught here instead of
-    /// on-chain, protecting the client without hijacking a well-formed
-    /// aggressive one. `0` disables. Override with `AUCTION_ORACLE_BAND_BPS`
+    /// Reject a signed order whose worst price sits more than this many bps from
+    /// the live oracle. It is a fat-finger and stale-order guard. The program
+    /// takes a named worst price as given, so an order priced far off the market
+    /// is stopped here. `0` disables. Override with `WORST_PRICE_ORACLE_BAND_BPS`
     /// (default 300 = 3%).
-    auction_oracle_band_bps: u32,
-    /// Skip the oracle-band guard (fail open) when the server's own oracle is
-    /// more than this many slots behind the latest slot — so a stale swift-side
-    /// oracle can't start rejecting otherwise-valid orders. `0` disables the
-    /// staleness gate (always apply the band). Override with
-    /// `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10 ≈ 4s), in 400ms
-    /// baseline slot units — inflated to actual slots at the live slot duration.
-    auction_oracle_max_staleness_slots: u64,
+    worst_price_oracle_band_bps: u32,
+    /// Skip the oracle-band guard, failing open, when the server's own oracle
+    /// is more than this far behind the latest slot. `0` disables the gate.
+    /// Override with `ORACLE_BAND_MAX_STALENESS_SLOTS` (default 10, about
+    /// 4 seconds of wall clock at 400ms per slot).
+    oracle_band_max_staleness_slots: u64,
 }
 
 /// Gas-station-maintained fee payer (see infrastructure-v3 gas-station-bot,
@@ -125,11 +121,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse::<Pubkey>().ok())
                 .unwrap_or(DEFAULT_SIM_FEE_PAYER),
-            auction_oracle_band_bps: std::env::var("AUCTION_ORACLE_BAND_BPS")
+            worst_price_oracle_band_bps: std::env::var("WORST_PRICE_ORACLE_BAND_BPS")
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(300),
-            auction_oracle_max_staleness_slots: std::env::var("AUCTION_ORACLE_MAX_STALENESS_SLOTS")
+            oracle_band_max_staleness_slots: std::env::var("ORACLE_BAND_MAX_STALENESS_SLOTS")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(10),
@@ -139,6 +135,8 @@ impl Config {
 
 pub struct ServerParams {
     velocity: velocity_rs::VelocityClient,
+    attest: crate::attest::AttestContext,
+    route: crate::route::RouteContext,
     slot_subscriber: Arc<SuperSlotSubscriber>,
     metrics: SwiftServerMetrics,
     redis_pool: MultiplexedConnection,
@@ -146,6 +144,16 @@ pub struct ServerParams {
     config: Arc<Config>,
     farmer_pubkeys: HashSet<Pubkey>,
     rpc_health_cache: RpcHealthCache,
+}
+
+impl ServerParams {
+    pub fn route(&self) -> &crate::route::RouteContext {
+        &self.route
+    }
+
+    pub fn attest(&self) -> &crate::attest::AttestContext {
+        &self.attest
+    }
 }
 
 /// TTL for the cached RPC `get_health` result. k8s liveness/readiness probes
@@ -206,16 +214,16 @@ pub async fn process_order_wrapper(
     let (status, resp) = match process_order(server_params, incoming_message, false, &context).await
     {
         Ok(order_metadata) => {
-            let metrics_labels = &[
-                context.market_type,
-                &context.market_index.to_string(),
-                match order_metadata.will_sanitize {
-                    true => "true",
-                    false => "false",
-                },
-            ];
+            let metrics_labels = &[context.market_type, &context.market_index.to_string()];
             let topic = format!("swift_orders_{}_{}", metrics_labels[0], metrics_labels[1]);
             let payload = order_metadata.encode();
+            // The order is now attestable. A keeper may request the
+            // flow-authority co-signature once the hold window elapses.
+            server_params.attest.record(
+                order_metadata.uuid,
+                order_metadata.ts,
+                order_metadata.order_signature,
+            );
 
             server_params
                 .publish_order(
@@ -314,6 +322,12 @@ pub async fn process_order(
         None
     };
 
+    // Both reach the log and the keeper feed. The network tag is what the
+    // program validates. The route is the custom quoters the taker signed
+    // for, because the CLOB and vAMM baseline is implicit.
+    let network = signed_msg.network();
+    let route = signed_msg.route().map(<[_]>::to_vec);
+
     let current_slot = server_params.slot_subscriber.current_slot();
     let (
         SignedMessageInfo {
@@ -333,7 +347,7 @@ pub async fn process_order(
 
     log::info!(
         target: "server",
-        "{} signer={} taker_subaccount={} slot={} side={:?} base={} price={} order_type={:?} reduce_only={} post_only={:?} iso={:?} delegate_signer={:?}",
+        "{} signer={} taker_subaccount={} slot={} side={:?} base={} price={} order_type={:?} reduce_only={} post_only={:?} iso={:?} delegate_signer={:?} network={:?} route={:?}",
         context.log_prefix,
         signing_pubkey,
         taker_pubkey,
@@ -346,6 +360,8 @@ pub async fn process_order(
         order_params.post_only,
         isolated_position_deposit,
         delegate_signer,
+        network.map(|tag| tag as char),
+        route,
     );
 
     // check the order is valid for execution by program
@@ -384,11 +400,9 @@ pub async fn process_order(
         ));
     }
 
-    // Server-side stale / fat-finger guard: reject auctions priced far off the
-    // live oracle. Replaces the on-chain sanitizer for signed A/B orders, which
-    // the program now preserves verbatim. Skips itself (fail open) if the
-    // server's own oracle is stale — see validate_auction_within_oracle_band.
-    server_params.validate_auction_within_oracle_band(&order_params, current_slot, context)?;
+    // Reject an order whose worst price sits far off the live oracle. The check
+    // fails open when the server's own oracle is stale.
+    server_params.validate_worst_price_within_oracle_band(&order_params, current_slot, context)?;
 
     if !skip_sim {
         match server_params
@@ -440,9 +454,6 @@ pub async fn process_order(
     }
 
     if let Some(order_message_str) = signed_msg.raw() {
-        // If fat fingered order that requires sanitization, then just send the order
-        let will_sanitize =
-            server_params.simulate_will_auction_params_sanitize(&order_params, context);
         let order_metadata = OrderMetadataAndMessage {
             market_index: order_params.market_index,
             market_type: order_params.market_type,
@@ -452,17 +463,16 @@ pub async fn process_order(
             order_signature: taker_signature.into(),
             ts: context.recv_ts,
             uuid,
-            will_sanitize,
         };
 
         server_params
             .metrics
             .current_slot_gauge
             .set(current_slot as f64);
-        // Recorded on accept, not on publish: this is the one point both HTTP entry
-        // points converge on with `order_params` still in scope. A publish that then
-        // fails counts here anyway — swift_redis_publish_fail_count is the panel for
-        // that gap, and it is normally zero.
+        // This is recorded on accept rather than on publish. It is the one
+        // point both HTTP entry points reach with `order_params` still in
+        // scope. A failed publish still counts here; `swift_redis_publish_fail_count`
+        // measures that gap, and it is normally zero.
         server_params.record_order_notional(&order_params, context);
 
         Ok(order_metadata)
@@ -502,7 +512,7 @@ pub async fn send_heartbeat(server_params: &'static ServerParams) {
             server_params
                 .metrics
                 .order_type_counter
-                .with_label_values(&["_", "heartbeat", "_"])
+                .with_label_values(&["_", "heartbeat"])
                 .inc();
             server_params
                 .metrics
@@ -648,6 +658,7 @@ pub async fn deposit_trade(
         if !server_params.simulate_taker_order_local(
             &signed_order_info.order_params,
             &user,
+            signed_order_info.slot,
             max_margin_ratio,
             &context,
         ) {
@@ -665,14 +676,7 @@ pub async fn deposit_trade(
     // TODO: deposit tx should enable sim to pass, if it didn't before otherwise order is invalid
     let (status, resp) = match process_order(server_params, req.swift_order, true, &context).await {
         Ok(order_metadata) => {
-            let metrics_labels = &[
-                context.market_type,
-                &context.market_index.to_string(),
-                match order_metadata.will_sanitize {
-                    true => "true",
-                    false => "false",
-                },
-            ];
+            let metrics_labels = &[context.market_type, &context.market_index.to_string()];
             let topic = format!(
                 "swift_orders_deposit_{}_{}",
                 metrics_labels[0], metrics_labels[1]
@@ -802,7 +806,6 @@ pub async fn start_server() {
         velocity_rs::utils::get_http_url(&env::var("ENDPOINT").expect("valid rpc endpoint"))
             .expect("valid RPC endpoint");
 
-    // Registry for metrics
     let registry = Registry::new();
     let metrics = SwiftServerMetrics::new();
     metrics.register(&registry);
@@ -813,13 +816,12 @@ pub async fn start_server() {
         _ => panic!("Invalid velocity environment: {velocity_env}"),
     };
     let wallet = Wallet::new(Keypair::new());
-    let client = VelocityClient::new(context, RpcClient::new(rpc_endpoint), wallet)
+    let client = VelocityClient::new(context, RpcClient::new(rpc_endpoint.clone()), wallet)
         .await
         .expect("initialized client");
 
     let user_account_fetcher = UserAccountFetcher::from_env(client.clone()).await;
 
-    // Slot subscriber
     let mut ws_clients = vec![];
     for (_k, ws_endpoint) in std::env::vars().filter(|(k, _v)| k.starts_with("WS_ENDPOINT")) {
         ws_clients.push(Arc::new(PubsubClient::new(&ws_endpoint).await.unwrap()));
@@ -831,7 +833,6 @@ pub async fn start_server() {
     let mut slot_subscriber = SuperSlotSubscriber::new(ws_clients, client.rpc());
     slot_subscriber.subscribe();
 
-    // Set ignore pubkeys
     let ignore_pubkeys = env::var("IGNORE_PUBKEYS").unwrap_or_else(|_| "".to_string());
     let pubkeys = ignore_pubkeys
         .split(',')
@@ -845,6 +846,12 @@ pub async fn start_server() {
         });
 
     let state: &'static ServerParams = Box::leak(Box::new(ServerParams {
+        attest: crate::attest::AttestContext::from_env(),
+        route: crate::route::RouteContext::with_metrics(
+            rpc_endpoint,
+            velocity_rs::constants::PROGRAM_ID,
+            &registry,
+        ),
         velocity: client,
         slot_subscriber: Arc::new(slot_subscriber),
         metrics,
@@ -888,7 +895,6 @@ pub async fn start_server() {
         }
     });
 
-    // App
     let host = env::var("HOST").unwrap_or("0.0.0.0".to_string());
     let port = env::var("PORT").unwrap_or("3000".to_string());
     let cors = CorsLayer::new()
@@ -899,6 +905,8 @@ pub async fn start_server() {
     let app = Router::new()
         .fallback(fallback)
         .route("/orders", post(process_order_wrapper))
+        .route("/route", get(crate::route::route_quote))
+        .route("/attest", post(crate::attest::attest))
         .route("/depositTrade", post(deposit_trade))
         .route("/health", get(health_check))
         .layer(cors)
@@ -907,9 +915,11 @@ pub async fn start_server() {
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     log::info!("Swift server on {}", listener.local_addr().unwrap());
 
-    // Metrics
     let registry = Arc::new(registry);
-    let server_metrics_state = MetricsServerParams { registry };
+    let server_metrics_state = MetricsServerParams {
+        registry,
+        quoter_health: Some(state.route.health().clone()),
+    };
     let metrics_addr: SocketAddr = format!(
         "0.0.0.0:{}",
         env::var("METRICS_PORT").unwrap_or("9464".to_string())
@@ -926,8 +936,8 @@ pub async fn start_server() {
         listener_metrics.local_addr().unwrap()
     );
 
-    // RPC sim loop to avoid rpc cold starts when orders are infrequent
-    // Build tx once and just resign with new blockhash
+    // Avoids RPC cold starts when orders are infrequent: builds one tx and
+    // resigns it with a fresh blockhash each tick.
     let rpc_sim_loop = tokio::spawn(async {
         let sender = Keypair::new();
         let receiver = Keypair::new();
@@ -1008,68 +1018,33 @@ fn validate_signed_order_params(
         }
     }
 
-    // has_valid_auction_params
-    if taker_order_params.auction_duration.is_some()
-        && taker_order_params.auction_start_price.is_some()
-        && taker_order_params.auction_end_price.is_some()
-    {
-        let start_price = taker_order_params.auction_start_price.unwrap();
-        let end_price = taker_order_params.auction_end_price.unwrap();
-
-        if taker_order_params.direction == PositionDirection::Long && start_price <= end_price
-            || taker_order_params.direction == PositionDirection::Short && start_price >= end_price
-        {
-            Ok(())
-        } else {
-            log::info!(target: "server", "auction price reversed");
-            Err(ErrorCode::InvalidOrderAuction)
-        }
-    } else if taker_order_params.order_type == OrderType::Limit
-        && taker_order_params.auction_duration.is_none()
-        && taker_order_params.auction_start_price.is_none()
-        && taker_order_params.auction_end_price.is_none()
-    {
-        Ok(())
-    } else {
-        Err(ErrorCode::InvalidOrderAuction)
-    }
+    Ok(())
 }
 
-/// True when the order carries a fully-specified auction (duration + start +
-/// end), i.e. there are prices to bound against the oracle.
-fn has_bounded_auction(order_params: &OrderParams) -> bool {
-    order_params.auction_duration.is_some()
-        && order_params.auction_start_price.is_some()
-        && order_params.auction_end_price.is_some()
-}
-
-/// Pure check: are the order's auction start & end prices within `band_bps` of
-/// `oracle_price`? `OrderType::Oracle` auctions carry oracle-relative offsets
-/// (already stale-immune); every other type carries absolute prices, which are
-/// normalised to a signed distance from oracle before comparison. Returns true
-/// when there is nothing to bound (band disabled, no auction, or bad oracle).
-fn auction_within_oracle_band(
+/// Whether the order's worst price sits within `band_bps` of `oracle_price`. An
+/// `OrderType::Oracle` order carries its worst price as an offset from the
+/// oracle. Every other type carries an absolute price, compared as a distance
+/// from the oracle. Returns true when there is nothing to bound: the band is
+/// disabled, the order names no price, or the oracle is unusable.
+fn worst_price_within_oracle_band(
     order_params: &OrderParams,
     oracle_price: i64,
     band_bps: u32,
 ) -> bool {
-    if band_bps == 0 || oracle_price <= 0 || !has_bounded_auction(order_params) {
+    if band_bps == 0 || oracle_price <= 0 {
         return true;
     }
-    let start = order_params.auction_start_price.unwrap();
-    let end = order_params.auction_end_price.unwrap();
 
     let band = (oracle_price as i128 * band_bps as i128 / 10_000) as i64;
-    let is_offset = order_params.order_type == OrderType::Oracle;
-    let distance_from_oracle = |p: i64| {
-        if is_offset {
-            p
-        } else {
-            p.saturating_sub(oracle_price)
-        }
+    let distance_from_oracle = if order_params.order_type == OrderType::Oracle {
+        order_params.oracle_price_offset.unwrap_or(0)
+    } else if order_params.price == 0 {
+        return true;
+    } else {
+        (order_params.price as i64).saturating_sub(oracle_price)
     };
 
-    distance_from_oracle(start).abs() <= band && distance_from_oracle(end).abs() <= band
+    distance_from_oracle.abs() <= band
 }
 
 #[derive(Debug)]
@@ -1122,11 +1097,18 @@ impl ServerParams {
         &self,
         order_params: &OrderParams,
         user: &velocity_rs::types::accounts::User,
+        signing_slot: Slot,
         max_margin_ratio: Option<u16>,
         context: &RequestContext,
     ) -> bool {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.simulate_taker_order_local_inner(order_params, user, max_margin_ratio, context)
+            self.simulate_taker_order_local_inner(
+                order_params,
+                user,
+                signing_slot,
+                max_margin_ratio,
+                context,
+            )
         })) {
             Ok(ok) => ok,
             Err(panic) => {
@@ -1149,6 +1131,7 @@ impl ServerParams {
         &self,
         order_params: &OrderParams,
         user: &velocity_rs::types::accounts::User,
+        signing_slot: Slot,
         max_margin_ratio: Option<u16>,
         context: &RequestContext,
     ) -> bool {
@@ -1184,11 +1167,12 @@ impl ServerParams {
             }
         };
 
-        match crate::util::local_sim::simulate_place_perp_order(
+        match crate::util::local_sim::simulate_detached_perp_order(
             user,
             accounts,
             &state_bytes,
             *order_params,
+            signing_slot,
             max_margin_ratio,
         ) {
             Ok(()) => true,
@@ -1284,7 +1268,13 @@ impl ServerParams {
 
         // TODO: isolated deposits need changes for local simming
         if isolated_deposit.is_none()
-            && self.simulate_taker_order_local(taker_order_params, &user, max_margin_ratio, context)
+            && self.simulate_taker_order_local(
+                taker_order_params,
+                &user,
+                slot,
+                max_margin_ratio,
+                context,
+            )
         {
             sim_result = SimulationStatus::Success;
             log::info!(
@@ -1317,10 +1307,25 @@ impl ServerParams {
             );
         }
 
+        // The order routes as it places, so the simulation must carry the
+        // market's book accounts to reproduce what the real placement does.
+        let Some(book) =
+            velocity_rs::market_book(&self.velocity, taker_order_params.market_index).await
+        else {
+            return Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!(
+                    "market {} has no approved book on its quoter slab",
+                    taker_order_params.market_index
+                ),
+                None,
+            ));
+        };
+
         // always set fee payer to some other account with SOL
         // supports privey wallets and how a swift order is intended to be placed anyway
         let message = tx
-            .place_orders(vec![*taker_order_params])
+            .place_and_take(*taker_order_params, book.accounts, None)
             .fee_payer(self.config.sim_fee_payer)
             .build();
 
@@ -1466,36 +1471,31 @@ impl ServerParams {
         }
     }
 
-    /// Simulate if auction params will be sanitized
-    /// Server-side stale / fat-finger guard. Rejects a signed order whose
-    /// auction prices sit outside `config.auction_oracle_band_bps` of the live
-    /// oracle. The program preserves signed A/B auctions verbatim, so this is
-    /// where a genuinely-off auction (stale data, fat finger) is stopped —
-    /// off-program, still saving the client, without re-pricing a well-formed
-    /// aggressive auction.
+    /// Reject a signed order whose worst price sits outside
+    /// `config.worst_price_oracle_band_bps` of the live oracle.
     ///
     /// The guard is designed to never itself become a source of rejections:
     /// it **fails open** if the oracle can't be read, and it **skips the check**
     /// (also failing open) when the server's own oracle is more than
-    /// `auction_oracle_max_staleness_slots` behind the latest slot — a lagging
+    /// `oracle_band_max_staleness_slots` behind the latest slot — a lagging
     /// swift-side oracle must not start bouncing otherwise-valid orders. Every
     /// rejection logs the oracle's staleness (oracle slot vs current slot) for
     /// debuggability.
-    fn validate_auction_within_oracle_band(
+    fn validate_worst_price_within_oracle_band(
         &self,
         order_params: &OrderParams,
         current_slot: Slot,
         context: &RequestContext,
     ) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
-        let band_bps = self.config.auction_oracle_band_bps;
-        if band_bps == 0 || !has_bounded_auction(order_params) {
+        let band_bps = self.config.worst_price_oracle_band_bps;
+        if band_bps == 0 {
             return Ok(());
         }
 
         let market_index_str = order_params.market_index.to_string();
         let record = |outcome: &str| {
             self.metrics
-                .auction_band_guard
+                .oracle_band_guard
                 .with_label_values(&[&market_index_str, outcome])
                 .inc();
         };
@@ -1508,7 +1508,7 @@ impl ServerParams {
                 record("skip_oracle_missing");
                 log::warn!(
                     target: "server",
-                    "{}: oracle price None (market {market_id:?}); skipping auction band check",
+                    "{}: oracle price None (market {market_id:?}); skipping oracle band check",
                     context.log_prefix
                 );
                 return Ok(());
@@ -1518,7 +1518,7 @@ impl ServerParams {
         let oracle_slot = oracle.slot;
         let oracle_staleness_slots = current_slot.saturating_sub(oracle_slot);
         self.metrics
-            .auction_oracle_staleness_slots
+            .oracle_band_staleness_slots
             .with_label_values(&[&market_index_str])
             .set(oracle_staleness_slots as f64);
 
@@ -1527,10 +1527,9 @@ impl ServerParams {
         // measurement — unreliable) or a stale oracle must never turn this guard
         // into a source of rejections for otherwise-valid orders.
         let slot_subscriber_stale = self.slot_subscriber.is_stale();
-        // configured in 400ms unit encoding (env knob); the measured age is
-        // wall clock, integrated per slot duration regime
-        let max_staleness =
-            Millis::from_stored_units(self.config.auction_oracle_max_staleness_slots);
+        // The env knob is configured in 400ms units. The measured age is
+        // wall clock, integrated over each slot duration regime.
+        let max_staleness = Millis::from_stored_units(self.config.oracle_band_max_staleness_slots);
         let oracle_age = self
             .velocity
             .slot_clock()
@@ -1544,7 +1543,7 @@ impl ServerParams {
             });
             log::warn!(
                 target: "server",
-                "{}: skipping auction band check (fail open) — slot_subscriber_stale={slot_subscriber_stale} \
+                "{}: skipping oracle band check (fail open) — slot_subscriber_stale={slot_subscriber_stale} \
                  oracle_stale_by={oracle_staleness_slots} slots (oracle_slot={oracle_slot} \
                  current_slot={current_slot} max={}ms)",
                 context.log_prefix,
@@ -1553,41 +1552,42 @@ impl ServerParams {
             return Ok(());
         }
 
-        if auction_within_oracle_band(order_params, oracle.data.price, band_bps) {
+        if worst_price_within_oracle_band(order_params, oracle.data.price, band_bps) {
             return Ok(());
         }
         record("reject");
 
         log::warn!(
             target: "server",
-            "{}: rejecting order — auction outside oracle band: start={:?} end={:?} \
+            "{}: rejecting order — worst price outside oracle band: price={} offset={:?} \
              oracle_price={} oracle_slot={oracle_slot} current_slot={current_slot} \
              oracle_staleness_slots={oracle_staleness_slots} band_bps={band_bps}",
             context.log_prefix,
-            order_params.auction_start_price,
-            order_params.auction_end_price,
+            order_params.price,
+            order_params.oracle_price_offset,
             oracle.data.price,
         );
         Err((
             axum::http::StatusCode::BAD_REQUEST,
             ProcessOrderResponse {
-                message: PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND,
+                message: PROCESS_ORDER_RESPONSE_ERROR_MSG_WORST_PRICE_OUTSIDE_ORACLE_BAND,
                 error: None,
             },
         ))
     }
 
-    /// Record the notional USD of an accepted order (`base_asset_amount × oracle
-    /// price`). Reads the locally subscribed oracle — no RPC, so this is safe
-    /// in the request path.
+    /// Record the notional USD of an accepted order, as `base_asset_amount`
+    /// times the oracle price. This reads the locally subscribed oracle and
+    /// makes no RPC call, so it is safe in the request path.
     ///
-    /// Skips (and counts the skip) rather than guessing in the two cases where a
-    /// number would be worse than a gap:
-    ///   - `base_asset_amount == u64::MAX` — the max-leverage sentinel, resolved to
-    ///     a real size on-chain. Multiplying it out would add ~1.8e10 base units of
-    ///     imaginary notional per order and swamp every real number on the chart.
-    ///   - no readable oracle price — the same condition that makes the auction band
-    ///     guard fail open.
+    /// Two cases skip the record and count the skip, because a number there
+    /// would be worse than a gap.
+    ///   - `base_asset_amount == u64::MAX` is the max-leverage sentinel, which
+    ///     the program resolves to a real size on chain. Multiplying it out
+    ///     would add about 1.8e10 base units of imaginary notional per order,
+    ///     which hides every real number.
+    ///   - No readable oracle price. This is the same condition that makes the
+    ///     oracle band guard fail open.
     fn record_order_notional(&self, order_params: &OrderParams, context: &RequestContext) {
         let market_index_str = order_params.market_index.to_string();
         let labels = [order_params.market_type.as_str(), &market_index_str];
@@ -1618,9 +1618,9 @@ impl ServerParams {
             return;
         }
 
-        // Precision-correct in f64: base is 1e9-scaled, price 1e6-scaled. The
-        // product of the raw integers overflows i64 for a large order, so divide
-        // before multiplying rather than after.
+        // Base is 1e9-scaled and price is 1e6-scaled. The product of the raw
+        // integers overflows i64 for a large order, so each one is divided
+        // down before the multiply.
         let base = order_params.base_asset_amount as f64 / BASE_PRECISION_U64 as f64;
         let price = oracle.data.price as f64 / PRICE_PRECISION_I64 as f64;
         self.metrics
@@ -1629,61 +1629,12 @@ impl ServerParams {
             .inc_by(base * price);
     }
 
-    fn simulate_will_auction_params_sanitize(
-        &self,
-        order_params: &OrderParams,
-        context: &RequestContext,
-    ) -> bool {
-        let perp_market = match self
-            .velocity
-            .try_get_perp_market_account(order_params.market_index)
-        {
-            Ok(m) => m,
-            Err(err) => {
-                log::debug!(
-                    target: "sim",
-                    "{}: couldn't get perp market: {err:?}",
-                    context.log_prefix
-                );
-                return false;
-            }
-        };
-
-        let market_id = MarketId::new(order_params.market_index, order_params.market_type);
-        let oracle_data = match self.velocity.try_get_oracle_price_data_and_slot(market_id) {
-            Some(p) => p,
-            None => {
-                log::debug!(
-                    target: "sim",
-                    "{}: oracle price is None",
-                    context.log_prefix
-                );
-                return false;
-            }
-        };
-
-        // Mirrors the on-chain `place_perp_order` sanitize step: returns true
-        // when the program would adjust the auction params at placement time.
-        let mut params = order_params.clone();
-        match params.update_perp_auction_params(&perp_market, oracle_data.data.price, true) {
-            Ok(sanitized) => sanitized,
-            Err(err) => {
-                log::debug!(
-                    target: "sim",
-                    "{}: local sim failed: {err:?}",
-                    context.log_prefix
-                );
-                true
-            }
-        }
-    }
-
     async fn publish_order(
         &self,
         topic: &str,
         payload: &String,
         uuid: &str,
-        metrics_labels: &[&str; 3],
+        metrics_labels: &[&str; 2],
         context: &RequestContext,
     ) -> (axum::http::StatusCode, ProcessOrderResponse) {
         let mut conn = self.redis_pool.clone();
@@ -1808,8 +1759,9 @@ fn validate_order(
         ));
     }
 
-    // Validate slot: ~200s of wall clock age, integrated per slot duration
-    // regime; mirrors the program's signed-msg staleness gate
+    // Validate the slot against about 200 seconds of wall-clock age,
+    // integrated over each slot duration regime. This mirrors the program's
+    // signed-msg staleness gate.
     if slot_clock.elapsed(taker_slot, current_slot) > Millis::from_secs(200) {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
@@ -1993,6 +1945,7 @@ mod tests {
         std::collections::HashMap,
         velocity_rs::{
             program::math::time::SlotDuration,
+            swift_order_subscriber::expected_network_tag,
             types::{
                 accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
                 SignedMsgTriggerOrderParams,
@@ -2016,93 +1969,81 @@ mod tests {
         market_type: MarketType,
         base_asset_amount: u64,
         direction: PositionDirection,
-        auction_params: Option<(u8, i64, i64)>, // (duration, start_price, end_price)
+        price: u64,
+        oracle_price_offset: Option<i64>,
     ) -> OrderParams {
-        let (auction_duration, auction_start_price, auction_end_price) =
-            auction_params.unwrap_or((0, 0, 0));
         OrderParams {
             market_index: 0,
             market_type,
             order_type,
             base_asset_amount,
-            price: 1_000,
+            price,
             direction,
-            auction_duration: if auction_duration > 0 {
-                Some(auction_duration)
-            } else {
-                None
-            },
-            auction_start_price: if auction_start_price > 0 {
-                Some(auction_start_price)
-            } else {
-                None
-            },
-            auction_end_price: if auction_end_price > 0 {
-                Some(auction_end_price)
-            } else {
-                None
-            },
+            oracle_price_offset,
             ..Default::default()
         }
     }
 
     #[test]
-    fn test_auction_within_oracle_band() {
+    fn test_worst_price_within_oracle_band() {
         let oracle = 10_000_i64; // arbitrary price units; the check is proportional
         let band_bps = 300; // 3% -> band of 300 price units
 
-        // Absolute (Market) auction hugging oracle: start -1%, end +1% -> inside.
-        let near = create_test_order_params(
-            OrderType::Market,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            Some((5, 9_900, 10_100)),
-        );
-        assert!(auction_within_oracle_band(&near, oracle, band_bps));
+        let order = |price: u64, offset: Option<i64>| {
+            create_test_order_params(
+                if offset.is_some() {
+                    OrderType::Oracle
+                } else {
+                    OrderType::Market
+                },
+                MarketType::Perp,
+                1_000_000_000,
+                PositionDirection::Long,
+                price,
+                offset,
+            )
+        };
 
-        // Fat-finger end at +10% -> outside the band -> rejected.
-        let far = create_test_order_params(
-            OrderType::Market,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            Some((5, 9_900, 11_000)),
-        );
-        assert!(!auction_within_oracle_band(&far, oracle, band_bps));
+        // A worst price 1% above oracle is inside the band.
+        assert!(worst_price_within_oracle_band(
+            &order(10_100, None),
+            oracle,
+            band_bps
+        ));
+
+        // A fat-finger 10% above is outside it.
+        assert!(!worst_price_within_oracle_band(
+            &order(11_000, None),
+            oracle,
+            band_bps
+        ));
 
         // band_bps == 0 disables the guard entirely.
-        assert!(auction_within_oracle_band(&far, oracle, 0));
+        assert!(worst_price_within_oracle_band(
+            &order(11_000, None),
+            oracle,
+            0
+        ));
 
-        // A resting limit with no auction has nothing to bound.
-        let no_auction = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            None,
-        );
-        assert!(auction_within_oracle_band(&no_auction, oracle, band_bps));
+        // An order naming no price has nothing to bound.
+        assert!(worst_price_within_oracle_band(
+            &order(0, None),
+            oracle,
+            band_bps
+        ));
 
-        // Oracle-type auctions carry oracle-relative offsets: +2% end offset is
-        // inside, +5% is outside — no dependence on absolute oracle level.
-        let offset_near = create_test_order_params(
-            OrderType::Oracle,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            Some((5, 1, 200)),
-        );
-        assert!(auction_within_oracle_band(&offset_near, oracle, band_bps));
-
-        let offset_far = create_test_order_params(
-            OrderType::Oracle,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            Some((5, 1, 500)),
-        );
-        assert!(!auction_within_oracle_band(&offset_far, oracle, band_bps));
+        // An oracle-relative order carries an offset, so the check does not
+        // depend on the absolute oracle level.
+        assert!(worst_price_within_oracle_band(
+            &order(0, Some(200)),
+            oracle,
+            band_bps
+        ));
+        assert!(!worst_price_within_oracle_band(
+            &order(0, Some(500)),
+            oracle,
+            band_bps
+        ));
     }
 
     #[test]
@@ -2115,7 +2056,8 @@ mod tests {
             MarketType::Perp,
             min_order_size,
             PositionDirection::Long,
-            Some((1, 99, 100)),
+            1_000,
+            None,
         );
         assert!(validate_signed_order_params(&params, min_order_size).is_ok());
 
@@ -2125,7 +2067,8 @@ mod tests {
             MarketType::Spot,
             min_order_size,
             PositionDirection::Long,
-            Some((1, 99, 100)),
+            1_000,
+            None,
         );
         assert_eq!(
             validate_signed_order_params(&params, min_order_size),
@@ -2143,7 +2086,8 @@ mod tests {
             MarketType::Perp,
             min_order_size,
             PositionDirection::Long,
-            Some((1, 99, 100)),
+            1_000,
+            None,
         );
         assert!(validate_signed_order_params(&params, min_order_size).is_ok());
 
@@ -2153,84 +2097,12 @@ mod tests {
             MarketType::Perp,
             min_order_size - 1,
             PositionDirection::Long,
+            1_000,
             None,
         );
         assert_eq!(
             validate_signed_order_params(&params, min_order_size),
             Err(ErrorCode::InvalidOrderSizeTooSmall)
-        );
-    }
-
-    #[test]
-    fn test_validate_auction_params() {
-        let min_order_size = 1 * LAMPORTS_PER_SOL;
-
-        // Test valid auction params for long position
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Long,
-            Some((100, 1000, 1100)), // start < end for long
-        );
-        assert!(validate_signed_order_params(&params, min_order_size).is_ok());
-
-        // Test valid auction params for short position
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Short,
-            Some((100, 1100, 1000)), // start > end for short
-        );
-        assert!(validate_signed_order_params(&params, min_order_size).is_ok());
-
-        // Test invalid auction params for long position
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Long,
-            Some((100, 1100, 1000)), // start > end for long (invalid)
-        );
-        assert_eq!(
-            validate_signed_order_params(&params, min_order_size),
-            Err(ErrorCode::InvalidOrderAuction)
-        );
-
-        // Test invalid auction params for short position
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Short,
-            Some((100, 1000, 1100)), // start < end for short (invalid)
-        );
-        assert_eq!(
-            validate_signed_order_params(&params, min_order_size),
-            Err(ErrorCode::InvalidOrderAuction)
-        );
-
-        // Test limit order with no auction params
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Long,
-            None,
-        );
-        assert!(validate_signed_order_params(&params, min_order_size).is_ok());
-
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Long,
-            Some((100, 1000, 1100)),
-        );
-        assert_eq!(
-            validate_signed_order_params(&params, min_order_size),
-            Ok(())
         );
     }
 
@@ -2257,6 +2129,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
         let msg = IncomingSignedMessage {
             taker_pubkey: taker,
@@ -2295,6 +2169,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
         let msg = IncomingSignedMessage {
             taker_pubkey: taker,
@@ -2331,6 +2207,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
 
         let result = extract_signed_message_info(
@@ -2368,6 +2246,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
 
         let result = extract_signed_message_info(
@@ -2409,6 +2289,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
 
         let result = extract_signed_message_info(
@@ -2448,6 +2330,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
 
         let result = extract_signed_message_info(
@@ -2488,6 +2372,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
 
         let result = extract_signed_message_info(
@@ -2531,6 +2417,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
         assert!(!is_isolated_deposit(&delegated_msg));
         let result = extract_signed_message_info(
@@ -2561,6 +2449,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(0),
+            network: Some(expected_network_tag()),
+            route: None,
         });
         assert!(!is_isolated_deposit(&delegated_msg));
         let result = extract_signed_message_info(
@@ -2594,6 +2484,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(100_000_000), // 0.1 SOL
+            network: Some(expected_network_tag()),
+            route: None,
         });
         assert!(is_isolated_deposit(&delegated_msg));
         let result = extract_signed_message_info(
@@ -2624,6 +2516,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: Some(expected_network_tag()),
+            route: None,
         });
         assert!(!is_isolated_deposit(&authority_msg));
         let result = extract_signed_message_info(
@@ -2654,6 +2548,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(50_000_000), // 0.05 SOL
+            network: Some(expected_network_tag()),
+            route: None,
         });
         assert!(is_isolated_deposit(&authority_msg));
         let result = extract_signed_message_info(
@@ -2714,6 +2610,11 @@ mod tests {
             metrics: SwiftServerMetrics::new(),
             user_account_fetcher: UserAccountFetcher::mock(users),
             config: Arc::new(crate::swift_server::Config::from_env()),
+            attest: crate::attest::AttestContext::from_env(),
+            route: crate::route::RouteContext::new(
+                velocity.rpc().url(),
+                velocity_rs::constants::PROGRAM_ID,
+            ),
             velocity,
             farmer_pubkeys: Default::default(),
             redis_pool,

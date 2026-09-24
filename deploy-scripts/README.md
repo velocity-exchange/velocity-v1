@@ -32,8 +32,8 @@ bun run release mainnet [prog]        # push program-<prog>-v<Cargo version> at 
 ```
 
 Flags: `--execute`, `--infra <path>` (or `VELOCITY_INFRA_DIR`), `--branch <ref>` (devnet only),
-`--no-fetch`, `--no-color`, `-h`. Programs default to `velocity`. The other choices are `jit_proxy`
-and, on devnet only, `token_faucet`.
+`--no-fetch`, `--no-color`, `-h`. Programs default to `velocity`. On devnet only, `token_faucet` is
+the other choice.
 
 `status` also warns about several conditions that are easy to miss. It flags a Cargo version that is
 not ahead of the last `program-*` tag while the program has new commits, because the tag would
@@ -96,7 +96,7 @@ upgrade keypair.
 
 | Target | Trigger | Workflow |
 | --- | --- | --- |
-| mainnet | Push tag `program-<name>-v<version>` where `<name>` is the program lib name, `velocity` or `jit_proxy` (for example `program-velocity-v2.163.0`, `program-jit_proxy-v0.21.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
+| mainnet | Push tag `program-<name>-v<version>` where `<name>` is the program lib name, `velocity` (for example `program-velocity-v2.163.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
 | devnet | Run **Manual Devnet Program Deploy** from the Actions tab, picking program and branch | [`.github/workflows/manual-devnet-deploy.yaml`](../.github/workflows/manual-devnet-deploy.yaml) |
 
 Both workflows do the same thing on different multisigs.
@@ -159,12 +159,6 @@ batch are involved, because the deployer sends the chunked writes directly.
 The Anchor CLI does not do this. `anchor deploy` only deploys the program, and `anchor idl init`
 targets the legacy onchain IDL account rather than the program-metadata account velocity's clients
 resolve. Use the program-metadata CLI explicitly.
-
-> jit-proxy: its program id is a create-with-seed vanity address with no keypair, so step 1 below
-> does not apply. The initial deploy must go through [`deploy-jit-proxy.sh`](./deploy-jit-proxy.sh),
-> which does a write-buffer, a `createAccountWithSeed`, and a hand-built `DeployWithMaxDataLen`.
-> Steps 2 through 5 (IDL metadata account, delegation, authority handoff to the vault) apply to
-> jit-proxy unchanged, substituting `jit_proxy` for `velocity`.
 
 Run this once per cluster, against a private RPC, in the order given, and before transferring the
 upgrade authority to the multisig. Mainnet is not deployed yet. Devnet's account already exists.

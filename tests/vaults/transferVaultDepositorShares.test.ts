@@ -193,9 +193,18 @@ describe('transferVaultDepositorShares', () => {
 
 		// `before` runs once; each test re-mints USDC and builds its own vault +
 		// depositors below, so top the reused signers up for the whole suite.
-		await svmContextWrapper.fundKeypair(managerSigner, 100 * LAMPORTS_PER_SOL);
-		await svmContextWrapper.fundKeypair(user1Signer, 100 * LAMPORTS_PER_SOL);
-		await svmContextWrapper.fundKeypair(user2Signer, 100 * LAMPORTS_PER_SOL);
+		await svmContextWrapper.fundKeypair(
+			managerSigner,
+			100 * LAMPORTS_PER_SOL
+		);
+		await svmContextWrapper.fundKeypair(
+			user1Signer,
+			100 * LAMPORTS_PER_SOL
+		);
+		await svmContextWrapper.fundKeypair(
+			user2Signer,
+			100 * LAMPORTS_PER_SOL
+		);
 	});
 
 	// Per-test: a fresh uniquely-named vault, fresh USDC for each depositor, and

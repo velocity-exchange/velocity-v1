@@ -10,13 +10,11 @@ export class TestClient extends AdminClient {
 		if (config.accountSubscription?.type !== 'polling') {
 			throw new Error('Test client must be polling');
 		}
-		// Blockhash caching keys its TTL off the wall clock, which is incompatible
-		// with LiteSVM's simulated clock: within a single 2s wall-clock window the
-		// LiteSVM runtime advances many slots (and its blockhash), so a cached
-		// blockhash goes stale and sequential builds collide into identical
-		// transactions ("already processed") or reference an expired blockhash
-		// ("Blockhash not found"). There is also no real RPC to save under LiteSVM.
-		// Force fresh fetches unless a test explicitly opts back in.
+
+		// Blockhash caching keys its TTL off the wall clock, but LiteSVM advances many
+		// slots per wall-clock window, so a cached blockhash goes stale and collides
+		// ("already processed") or expires ("Blockhash not found"). Force fresh
+		// fetches unless a test explicitly opts back in.
 		config.txHandlerConfig = {
 			...config.txHandlerConfig,
 			blockhashCachingEnabled:

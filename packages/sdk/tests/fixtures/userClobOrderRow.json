@@ -1,0 +1,14 @@
+{
+  "orderId": 41,
+  "nodeIndex": 7,
+  "marketIndex": 3,
+  "direction": "short",
+  "price": "99000000",
+  "baseAssetAmount": "500000000",
+  "maxTs": "0",
+  "activationSlot": "1234",
+  "placedSlot": "1233",
+  "takerOrigin": false,
+  "venue": "clob",
+  "clobOrderId": "18446744073709551615"
+}

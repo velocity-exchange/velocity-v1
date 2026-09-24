@@ -7,6 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import Redis from 'ioredis';
 import { sleep, selectMostRecentBySlot, GROUPING_OPTIONS } from './utils/utils';
 import { VelocityEnv, PerpMarkets, SpotMarkets } from '@velocity-exchange/sdk';
+import { PublicKey } from '@solana/web3.js';
 import {
 	RedisClient,
 	RedisClientPrefix,
@@ -240,6 +241,27 @@ const getChannelPrefix = (channel: string | undefined): string | undefined => {
 
 const getRedisChannelFromMessage = (message: any): string => {
 	const channel = message.channel;
+
+	// A user's resting orders span every market, so this channel names a user
+	// rather than a market and resolves before the market lookup below. Resting
+	// orders are public on-chain state, so the channel needs no authorization.
+	// The publisher republishes only when the user's own set changes, so a
+	// subscriber that hears nothing still rests what it rested before.
+	if (channel?.toLowerCase() === 'user_orders') {
+		const user = message.user;
+		if (!user || typeof user !== 'string') {
+			throw new Error('Bad user specified');
+		}
+
+		try {
+			new PublicKey(user);
+		} catch {
+			throw new Error('Bad user specified');
+		}
+
+		return `user_orders_${user}`;
+	}
+
 	const marketName = message.market?.toUpperCase();
 	const marketType = message.marketType?.toLowerCase();
 	if (!['spot', 'perp'].includes(marketType)) {
@@ -272,15 +294,6 @@ const getRedisChannelFromMessage = (message: any): string => {
 				return `orderbook_${marketType}_${marketIndex}_grouped_${message.grouping}`;
 			}
 			return `orderbook_${marketType}_${marketIndex}_grouped_1`;
-		case 'orderbook_indicative': {
-			if (
-				message.grouping &&
-				GROUPING_OPTIONS.includes(parseInt(message.grouping))
-			) {
-				return `orderbook_${marketType}_${marketIndex}_grouped_${message.grouping}_indicative`;
-			}
-			return `orderbook_${marketType}_${marketIndex}_grouped_1_indicative`;
-		}
 		case 'priorityfees':
 			return `priorityFees_${marketType}_${marketIndex}`;
 		case undefined:

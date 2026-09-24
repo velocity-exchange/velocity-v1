@@ -1,15 +1,16 @@
 use crate::{
-    controller::{
-        matching::fill_perp_market_against_amm,
-        position::{update_position_and_market, PositionDelta, PositionDirection},
-    },
+    controller::position::{update_position_and_market, PositionDelta},
+    instructions::optional_accounts::AccountMaps,
     math::time::SlotClock,
-    state::quoter::QuoteContext,
-    vlp::amm::{controller::SwapDirection, refresh::_update_amm},
+    state::{
+        prop_amm::Direction,
+        quoter::{QuoteContext, RouterQuoter},
+    },
+    vlp::amm::{controller::SwapDirection, refresh::_update_amm, AmmQuoter},
 };
 
 /// Replacement for the deleted `swap_base_asset` test-only entry point.
-/// Runs the matcher's sole-AMM path against a zero-spread quote state
+/// Runs the vAMM as a lone router quoter against a zero-spread quote state
 /// (the exact shape `swap_base_asset` had), mutates the market like
 /// `swap_base_asset` did, and returns `(quote_filled, surplus)`.
 fn run_amm_swap_for_test(
@@ -36,12 +37,12 @@ fn run_amm_swap_for_test(
     };
     market.amm.seed_no_spread_quote_state();
     // SwapDirection::Remove (base leaves the AMM, taker buys) ↔ taker Long.
-    let taker_dir = match swap_direction {
-        SwapDirection::Remove => PositionDirection::Long,
-        SwapDirection::Add => PositionDirection::Short,
+    let direction = match swap_direction {
+        SwapDirection::Remove => Direction::Long,
+        SwapDirection::Add => Direction::Short,
     };
-    let result = fill_perp_market_against_amm(market, &ctx, taker_dir, base_amount).unwrap();
-    let (_, fill) = result.fills.first().unwrap();
+    let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
+    let fill = RouterQuoter::execute(&mut amm_quoter, &ctx, direction, base_amount).unwrap();
     (fill.quote_filled, fill.quote_asset_amount_surplus)
 }
 
@@ -324,6 +325,7 @@ fn amm_pred_expiry_price_yes_market_example() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map: SpotMarketMap<'_> =
         SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
     let market_index;
 
     {
@@ -341,22 +343,15 @@ fn amm_pred_expiry_price_yes_market_example() {
 
     crate::vlp::amm::refresh::update_amm(
         market_index,
-        &perp_market_map,
-        &mut oracle_map,
+        &maps.perp_market_map,
+        &mut maps.oracle_map,
         &state,
         &clock,
     )
     .unwrap();
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        market_index,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(market_index, &mut maps, &state, &clock)
+        .unwrap();
 
     {
         let perp_market = perp_market_loader.load_mut().unwrap();
@@ -452,6 +447,7 @@ fn amm_pred_expiry_price_market_example() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map: SpotMarketMap<'_> =
         SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
     let market_index;
 
     {
@@ -469,22 +465,15 @@ fn amm_pred_expiry_price_market_example() {
 
     crate::vlp::amm::refresh::update_amm(
         market_index,
-        &perp_market_map,
-        &mut oracle_map,
+        &maps.perp_market_map,
+        &mut maps.oracle_map,
         &state,
         &clock,
     )
     .unwrap();
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        market_index,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(market_index, &mut maps, &state, &clock)
+        .unwrap();
 
     {
         let perp_market = perp_market_loader.load_mut().unwrap();
@@ -579,6 +568,7 @@ fn amm_pred_settle_market_example() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map: SpotMarketMap<'_> =
         SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
     let market_index;
 
     {
@@ -589,22 +579,15 @@ fn amm_pred_settle_market_example() {
 
     crate::vlp::amm::refresh::update_amm(
         market_index,
-        &perp_market_map,
-        &mut oracle_map,
+        &maps.perp_market_map,
+        &mut maps.oracle_map,
         &state,
         &clock,
     )
     .unwrap();
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        market_index,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(market_index, &mut maps, &state, &clock)
+        .unwrap();
 }
 
 #[test]
@@ -3059,19 +3042,12 @@ fn settle_expired_market_prices_against_pnl_pool_only() {
     let pre_fix_fee_pool_contribution = 490 * QUOTE_PRECISION_I128;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
     let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        0,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(0, &mut maps, &state, &clock).unwrap();
 
-    let m = perp_market_map.get_ref(&0).unwrap();
-    let quote_spot_market = spot_market_map.get_ref(&0).unwrap();
+    let m = maps.perp_market_map.get_ref(&0).unwrap();
+    let quote_spot_market = maps.spot_market_map.get_ref(&0).unwrap();
 
     let pnl_pool = get_token_amount(
         m.pnl_pool.scaled_balance,
@@ -3105,7 +3081,7 @@ fn settle_expired_market_prices_against_pnl_pool_only() {
     );
 
     // Aggregate claims at the chosen price fit inside the PnL pool. This is the
-    // conservation invariant #116 broke.
+    // conservation invariant OtterSec #116 broke.
     let claims = calculate_net_user_pnl(
         &m.amm,
         m.expiry_price,
@@ -3256,8 +3232,9 @@ fn expiry_price_cost_basis_includes_unsettled_funding() {
 /// matching builder/referrer payable recorded, so the pool holds them but they are
 /// owed elsewhere. Every ordinary fee sweep reserves the counter, and
 /// `calculate_perp_market_amm_summary_stats` subtracts it; the expiry solver was
-/// the one consumer treating the gross pool as payable. This extends the #116 fix
-/// in the same expression — #116 stopped counting the un-moved fee pool, #147 stops
+/// the one consumer treating the gross pool as payable. This extends the OtterSec #116 fix
+/// in the same expression. OtterSec #116 stopped counting the un-moved fee pool, and
+/// OtterSec #147 stops
 /// counting tokens already owed to third parties.
 #[test]
 fn settle_expired_market_reserves_pending_revenue_share() {
@@ -3296,25 +3273,18 @@ fn settle_expired_market_reserves_pending_revenue_share() {
 
     // $400 pool, of which $150 is already owed to builders/referrers, so only $250
     // actually backs winner claims. No fee-pool transfer in play (tfmd = 0), which
-    // isolates this from #116.
+    // isolates this from OtterSec #116.
     let owed = 150 * (QUOTE_PRECISION as u64);
     let mut market = expired_market_fixture(400, 0, 0, 0);
     market.pending_revenue_share = owed;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
     let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        0,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(0, &mut maps, &state, &clock).unwrap();
 
-    let m = perp_market_map.get_ref(&0).unwrap();
-    let quote_spot_market = spot_market_map.get_ref(&0).unwrap();
+    let m = maps.perp_market_map.get_ref(&0).unwrap();
+    let quote_spot_market = maps.spot_market_map.get_ref(&0).unwrap();
     let pnl_pool = get_token_amount(
         m.pnl_pool.scaled_balance,
         &quote_spot_market,

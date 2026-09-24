@@ -8,12 +8,10 @@ use {
     velocity_rs::{types::accounts::User, VelocityClient},
 };
 
-/// Max age (in slots, ~90s at 400ms slots; the wall-clock window shrinks as
-/// slot time drops — deliberate, a tighter cache tolerance only costs extra
-/// RPC fallbacks) of a redis-cached user account before it's treated as too
-/// stale to simulate against. This is a swift-side freshness tolerance, not a
-/// program constant (cf. velocity's `SIGNED_MSG_EVICTION_BUFFER (Millis, 4000ms)`,
-/// which governs onchain order-id eviction, not user-account caching).
+/// Max age, in slots, before swift treats a redis-cached user account as
+/// stale. 225 slots is about 90 seconds at 400ms slots; the window shrinks
+/// as slot time drops, which is intended and only costs extra RPC
+/// fallbacks. Distinct from the on-chain `SIGNED_MSG_EVICTION_BUFFER`.
 const MAX_CACHED_USER_AGE_SLOTS: u64 = 225;
 
 /// Fallback lookup strategy

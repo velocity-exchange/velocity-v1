@@ -218,6 +218,7 @@ describe('insurance fund stake', () => {
 				amount: usdcAmount,
 				collateralAccountPublicKey: userUSDCAccount.publicKey,
 			});
+
 			svmContextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
@@ -265,6 +266,7 @@ describe('insurance fund stake', () => {
 				marketIndex,
 				amountFromShare
 			);
+
 			svmContextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
@@ -309,6 +311,7 @@ describe('insurance fund stake', () => {
 			marketIndex,
 			userUSDCAccount.publicKey
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const spotMarket0 = velocityClient.getSpotMarketAccount(marketIndex);
@@ -360,6 +363,7 @@ describe('insurance fund stake', () => {
 			0,
 			new BN(10)
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const marketIndex = 0;
@@ -368,6 +372,7 @@ describe('insurance fund stake', () => {
 			marketIndex,
 			nShares
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig2);
 
 		try {
@@ -375,6 +380,7 @@ describe('insurance fund stake', () => {
 				marketIndex,
 				userUSDCAccount.publicKey
 			);
+
 			svmContextWrapper.connection.printTxLogs(txSig3);
 			assert(false); // todo
 		} catch (e) {
@@ -428,6 +434,7 @@ describe('insurance fund stake', () => {
 			marketIndex,
 			userUSDCAccount.publicKey
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
@@ -497,6 +504,7 @@ describe('insurance fund stake', () => {
 			marketIndex,
 			secondUserVelocityClientWSOLAccount
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const spotMarket = await velocityClient.getSpotMarketAccount(marketIndex);
@@ -532,6 +540,7 @@ describe('insurance fund stake', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
@@ -695,6 +704,7 @@ describe('insurance fund stake', () => {
 				amount: new BN(usdcbalance),
 				collateralAccountPublicKey: userUSDCAccount.publicKey,
 			});
+
 			svmContextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
@@ -815,6 +825,7 @@ describe('insurance fund stake', () => {
 			const txSig = await velocityClient.settleRevenueToInsuranceFund(
 				marketIndex
 			);
+
 			svmContextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
@@ -833,6 +844,7 @@ describe('insurance fund stake', () => {
 		const txSig = await velocityClient.cancelRequestRemoveInsuranceFundStake(
 			marketIndex
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const ifStakeAccountAfter =

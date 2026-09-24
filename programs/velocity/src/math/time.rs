@@ -1,43 +1,43 @@
 //! Wall-clock durations and the live slot length.
 //!
-//! Solana's slot time is dropping from 400ms to 200ms through a series of
-//! feature gates (400 -> 350 -> 300 -> 250 -> 200). Any slot count used as a
+//! Solana's slot time drops from 400ms to 200ms through a series of feature
+//! gates: 400, then 350, then 300, then 250, then 200. Any slot count used as a
 //! wall-clock duration drifts with each gate, so the program separates the two
-//! concepts by type:
+//! concepts by type.
 //!
 //! - [`Millis`] is the only duration unit in the codebase. Every wall-clock
 //!   threshold, window, ramp, and grace period is a `Millis`, whether it comes
-//!   from a code constant or an admin-set field. It cannot be compared against
-//!   a slot count without converting through the live slot length.
+//!   from a code constant or an admin-set field. A comparison against a slot
+//!   count must convert through the live slot length first.
 //! - [`SlotDuration`] is the slot length resolved from the permissionlessly
-//!   synchronized transition archive on `State`. It is the sole bridge between durations and slots
-//!   and is not constructible from an arbitrary number, so a raw slot value
-//!   can never be passed where the slot length belongs.
+//!   synchronized transition archive on `State`. It is the only bridge between
+//!   durations and slots. No constructor takes an arbitrary number, so a raw
+//!   slot value can never be passed where the slot length belongs.
 //! - [`StoredSlotDuration`] is a compact onchain duration encoded in quanta of
 //!   a slot length fixed when the field was introduced. For example,
 //!   `StoredSlotDuration<u8, 400>` still occupies one byte, but its type records
-//!   that a stored `10` means 4,000ms. Program logic immediately normalizes it
-//!   to [`Millis`]; it is never interpreted using the live slot length.
-//! - Plain `u64` remains the type of actual slot counts: same-slot
-//!   idempotence, blockhash windows, per-order auction snapshots. Genuine
+//!   that a stored `10` means 4,000ms. Program logic normalizes it to [`Millis`]
+//!   at once. It is never read against the live slot length.
+//! - Plain `u64` remains the type of actual slot counts, such as same-slot
+//!   idempotence, blockhash windows, and per-order auction snapshots. Genuine
 //!   chain-slot logic never touches `Millis`.
 //!
 //! Legacy admin-set fields keep their compact onchain encoding in units of
-//! [`STORED_UNIT_MS`] = 400ms, the historical slot length. Ordinary duration
-//! fields express that fact in their [`StoredSlotDuration`] type. Signed fields
-//! whose raw values carry sentinel meanings keep their raw integer type and use
-//! a purpose-specific decoder such as [`DelayOverride`].
+//! [`STORED_UNIT_MS`], the historical 400ms slot length. Ordinary duration
+//! fields state that in their [`StoredSlotDuration`] type. Signed fields whose
+//! raw values carry sentinel meanings keep their raw integer type and use a
+//! purpose-specific decoder such as [`DelayOverride`].
 //!
-//! Rounding is deliberate and mirrored by the TypeScript SDK exactly:
-//! [`Millis::to_slots`] floors (staleness windows come out marginally tighter,
-//! the safe direction); [`Millis::to_slots_ceil`] is for user-protection
-//! windows (the user never gets less than the intended time);
-//! [`Millis::from_slots`] is exact; [`Millis::div_periods`] floors (elapsed
-//! time is under-counted, so rate ramps engage marginally later, favoring the
-//! affected user).
+//! Rounding is deliberate, and the TypeScript SDK mirrors it exactly.
+//! [`Millis::to_slots`] floors, so a staleness window comes out marginally
+//! tighter, which is the safe direction. [`Millis::to_slots_ceil`] serves
+//! user-protection windows, where the user never gets less than the intended
+//! time. [`Millis::from_slots`] is exact. [`Millis::div_periods`] floors, so
+//! elapsed time is under-counted and a rate ramp engages marginally later,
+//! which favors the affected user.
 //!
-//! Full design rationale, the gate-activation runbook, and worked examples
-//! live in [`docs/SLOT-DURATION.md`](../../../../docs/SLOT-DURATION.md).
+//! [`docs/SLOT-DURATION.md`](../../../../docs/SLOT-DURATION.md) holds the
+//! design rationale, the gate-activation runbook, and worked examples.
 
 use {
     crate::math::safe_math::SafeMath,
@@ -46,25 +46,24 @@ use {
     std::convert::{TryFrom, TryInto},
 };
 
-/// Storage encoding quantum for pre-gate duration fields: the historical
-/// 400ms slot length. Exists only in the encode/decode of those fields (and in
-/// the calibration periods of a few legacy per-slot rates). New compact fields
-/// should put their chosen quantum in [`StoredSlotDuration`]'s const parameter
-/// rather than referring to this legacy constant implicitly.
+/// Storage encoding quantum for pre-gate duration fields. It is the historical 400ms slot length.
+/// It appears only in the encode and decode of those fields, and in the calibration period of a
+/// few legacy per-slot rates. A new compact field puts its own quantum in [`StoredSlotDuration`]'s
+/// const parameter instead.
 pub const STORED_UNIT_MS: u64 = 400;
 
 /// A compact wall-clock duration stored as `T` fixed-slot quanta.
 ///
-/// `SLOT_MS` records the slot length assumed when the field was introduced;
-/// it is a storage codec, not the chain's live slot length. The transparent
-/// representation preserves the wrapped integer's exact size, alignment, and
-/// bytes, so existing accounts remain layout-compatible.
+/// `SLOT_MS` records the slot length assumed when the field was introduced. It
+/// is a storage codec and not the chain's live slot length. The transparent
+/// representation keeps the wrapped integer's exact size, alignment, and bytes,
+/// so existing accounts stay layout-compatible.
 ///
-/// New fields and APIs should create values with [`Self::try_from_millis`],
-/// which rejects durations that are not an exact multiple of `SLOT_MS` or do
-/// not fit in `T`. Existing admin instructions intentionally retain their
-/// legacy raw-unit wire arguments; [`Self::from_raw_units`] exists for those
-/// boundaries and for decoding already-encoded account data.
+/// A new field or API creates values with [`Self::try_from_millis`], which
+/// rejects a duration that is not an exact multiple of `SLOT_MS` or does not
+/// fit in `T`. Existing admin instructions keep their legacy raw-unit wire
+/// arguments. [`Self::from_raw_units`] serves those boundaries and decodes
+/// account data that is already encoded.
 #[repr(transparent)]
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, AnchorSerialize, AnchorDeserialize,
@@ -72,21 +71,22 @@ pub const STORED_UNIT_MS: u64 = 400;
 pub struct StoredSlotDuration<T, const SLOT_MS: u64>(T);
 
 // SAFETY: `StoredSlotDuration` is `repr(transparent)` over its only stored
-// field, `T`; the const generic occupies no memory. Therefore every all-zero
-// bit pattern valid for a `Zeroable` `T` is also valid for this wrapper.
+// field, `T`. The const generic occupies no memory. Every all-zero bit pattern
+// valid for a `Zeroable` `T` is therefore valid for this wrapper.
 unsafe impl<T: Zeroable, const SLOT_MS: u64> Zeroable for StoredSlotDuration<T, SLOT_MS> {}
 
 // SAFETY: `repr(transparent)` gives this wrapper exactly `T`'s layout, with no
-// additional fields or padding. If `T` is `Pod`, the wrapper has the same valid
-// bit patterns and can be read from zero-copy account bytes safely.
+// extra field and no padding. When `T` is `Pod`, the wrapper has the same valid
+// bit patterns, so a zero-copy account read is safe.
 unsafe impl<T: Pod, const SLOT_MS: u64> Pod for StoredSlotDuration<T, SLOT_MS> {}
 
 impl<T, const SLOT_MS: u64> StoredSlotDuration<T, SLOT_MS>
 where
     T: Copy + TryFrom<u64> + TryInto<u64>,
 {
-    /// Wrap already-encoded fixed-slot units. Keep this at account/legacy-API
-    /// boundaries; duration arithmetic should use [`Self::to_millis`].
+    /// Wrap fixed-slot units that are already encoded. Use it only at an
+    /// account boundary or a legacy API boundary. Duration arithmetic goes
+    /// through [`Self::to_millis`].
     pub const fn from_raw_units(units: T) -> Self {
         assert!(SLOT_MS > 0, "stored slot-duration quantum must be nonzero");
         Self(units)
@@ -94,7 +94,7 @@ where
 
     /// Encode an exact millisecond duration without changing storage width.
     pub fn try_from_millis(duration: Millis) -> Option<Self> {
-        if SLOT_MS == 0 || duration.as_ms() % SLOT_MS != 0 {
+        if SLOT_MS == 0 || !duration.as_ms().is_multiple_of(SLOT_MS) {
             return None;
         }
         T::try_from(duration.as_ms() / SLOT_MS).ok().map(Self)
@@ -103,9 +103,9 @@ where
     /// Decode into the common wall-clock arithmetic type.
     pub fn to_millis(self) -> Millis {
         assert!(SLOT_MS > 0, "stored slot-duration quantum must be nonzero");
-        // Signed legacy fields may contain historical negative values. Their
-        // failed conversion deliberately normalizes to zero, matching the
-        // pre-newtype `value.max(0) as u64` decode.
+        // A signed legacy field may hold a historical negative value. The
+        // failed conversion normalizes to zero on purpose. That matches the
+        // `value.max(0) as u64` decode this type replaced.
         let units = self.0.try_into().unwrap_or(0);
         Millis::from_ms(units.saturating_mul(SLOT_MS))
     }
@@ -125,19 +125,19 @@ impl<T: std::fmt::Display, const SLOT_MS: u64> std::fmt::Display
     }
 }
 
-// Runtime and IDL builds deliberately see different Rust type names with the
-// same wire bytes:
+// A runtime build and an IDL build see different Rust type names over the same
+// wire bytes.
 //
-// - Normal program builds use `StoredSlotDuration`, giving Rust the strong
-//   fixed-quantum type.
-// - Anchor's `idl-build` sees the original integer type. Anchor currently
-//   describes the transparent generic wrapper as a defined tuple struct, and
-//   its JavaScript Borsh coder would decode it as `{ 0: value }` rather than the
-//   primitive number/BN clients already consume.
+// - A normal program build uses `StoredSlotDuration`, which gives Rust the
+//   strong fixed-quantum type.
+// - Anchor's `idl-build` sees the original integer type. Anchor describes the
+//   transparent generic wrapper as a defined tuple struct, so its JavaScript
+//   Borsh coder would decode it as `{ 0: value }` instead of the primitive
+//   number or BN that clients already consume.
 //
-// The complementary `cfg` attributes are required because each alias name may
-// have exactly one definition in any build. Remove this split once Anchor's IDL
-// and JavaScript coder flatten transparent wrappers to their inner primitive.
+// Each alias name may have exactly one definition in a build, so the two `cfg`
+// attributes must complement each other. Remove this split once Anchor's IDL
+// and JavaScript coder flatten a transparent wrapper to its inner primitive.
 #[cfg(feature = "idl-build")]
 pub type LegacySlotDurationU8 = u8;
 #[cfg(not(feature = "idl-build"))]
@@ -241,13 +241,13 @@ pub fn legacy_slot_duration_u64_to_millis(value: LegacySlotDurationU64) -> Milli
     }
 }
 
-/// The four post baseline regimes, in activation order, matching the IBRL
-/// feature gate schedule (400 is the pre upgrade baseline; there is no path
-/// back to slower slots, feature gates cannot deactivate). `State` stores the
-/// exact first slot of each regime at the matching array index.
+/// The four regimes after the baseline, in activation order. They match the
+/// IBRL feature gate schedule. 400ms is the baseline before the upgrade. A
+/// feature gate cannot deactivate, so there is no path back to slower slots.
+/// `State` stores the first slot of each regime at the matching array index.
 pub const SLOT_DURATION_TRANSITION_MS: [u16; 4] = [350, 300, 250, 200];
 
-/// Archive index for a post baseline slot duration.
+/// Archive index of a slot duration after the baseline.
 pub const fn slot_duration_transition_index(slot_duration_ms: u16) -> Option<usize> {
     let mut i = 0;
     while i < SLOT_DURATION_TRANSITION_MS.len() {
@@ -259,11 +259,12 @@ pub const fn slot_duration_transition_index(slot_duration_ms: u16) -> Option<usi
     None
 }
 
-/// The raw `slot_duration_ms` in effect at `now_slot` given the `State` staging
-/// fields: the staged `pending_ms` once `now_slot` reaches `effective_slot`,
-/// otherwise the current `base_ms`. The single source of truth for the staged
-/// switch, shared by `State::active_slot_duration_ms`, the native fast-path
-/// reader, and the off-chain mirrors, so they cannot diverge.
+/// The raw `slot_duration_ms` in force at `now_slot`, from the `State` staging
+/// fields. It is the staged `pending_ms` once `now_slot` reaches
+/// `effective_slot`, and the current `base_ms` before that. This is the one
+/// statement of the staged switch. `State::active_slot_duration_ms`, the native
+/// fast-path reader and the off-chain mirrors all share it, so they cannot
+/// diverge.
 pub const fn active_slot_duration_ms(
     base_ms: u16,
     pending_ms: u16,
@@ -277,12 +278,12 @@ pub const fn active_slot_duration_ms(
     }
 }
 
-/// Cluster slot clock reconstructed from the four IBRL transition slots.
+/// Cluster slot clock rebuilt from the four IBRL transition slots.
 ///
-/// The legacy staging fields remain as a fallback for accounts written by the
+/// The legacy staging fields stay as a fallback for an account written by the
 /// first slot duration implementation. Once any archive entry exists, the
-/// archive is authoritative and elapsed intervals are integrated piecewise.
-/// `Default` is the 400ms baseline: all zero fields are exactly
+/// archive wins, and an elapsed interval is integrated one regime at a time.
+/// `Default` is the 400ms baseline, because all-zero fields are exactly
 /// [`SlotClock::baseline`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct SlotClock {
@@ -338,9 +339,9 @@ impl SlotClock {
         SlotDuration::from_state_ms(duration_ms)
     }
 
-    /// Exact elapsed wall clock milliseconds from the start of `start_slot`
-    /// to the start of `end_slot`. Every crossed slot duration regime is
-    /// integrated separately, matching Agave's transition archive semantics.
+    /// Exact elapsed wall-clock milliseconds from the start of `start_slot` to
+    /// the start of `end_slot`. The walk integrates each crossed slot duration
+    /// regime on its own, which matches Agave's transition archive.
     pub fn elapsed(self, start_slot: u64, end_slot: u64) -> Millis {
         if end_slot <= start_slot {
             return Millis::ZERO;
@@ -380,9 +381,9 @@ impl SlotClock {
         self.elapsed(end_slot.saturating_sub(slot_delta), end_slot)
     }
 
-    /// First slot whose start is at least `duration` after `start_slot`.
-    /// Integrates known future transition boundaries instead of converting the
-    /// whole window with the duration at one endpoint.
+    /// First slot whose start is at least `duration` after `start_slot`. The
+    /// walk integrates the known future transition boundaries. It does not
+    /// convert the whole window at the duration of one endpoint.
     pub fn slot_at_or_after_duration(self, start_slot: u64, duration: Millis) -> u64 {
         if duration == Millis::ZERO {
             return start_slot;
@@ -417,8 +418,8 @@ impl SlotClock {
     }
 }
 
-/// A wall-clock duration in milliseconds. The only duration unit in the
-/// codebase; see the module doc for the type discipline.
+/// A wall-clock duration in milliseconds. It is the only duration unit in the
+/// codebase. The module doc states the type discipline.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Millis(u64);
 
@@ -426,9 +427,9 @@ impl Millis {
     pub const ZERO: Millis = Millis(0);
 
     /// The historical 400ms calibration period. A few legacy rates and step
-    /// functions were tuned as "per slot" in the 400ms era; their accrual
-    /// period is this constant, made explicit at the site because changing it
-    /// changes economics.
+    /// functions were tuned per slot in the 400ms era. Their accrual period is
+    /// this constant, named at the site because a change to it changes
+    /// economics.
     pub const UNIT: Millis = Millis(STORED_UNIT_MS);
 
     pub const fn from_ms(ms: u64) -> Self {
@@ -439,8 +440,8 @@ impl Millis {
         Millis(secs.saturating_mul(1_000))
     }
 
-    /// Decode a legacy stored value denominated in [`STORED_UNIT_MS`] units.
-    /// Storage codec only; never use for new values.
+    /// Decode a legacy stored value held in [`STORED_UNIT_MS`] units. It is a
+    /// storage codec. Never use it for a new value.
     pub const fn from_stored_units(units: u64) -> Self {
         Millis(units.saturating_mul(STORED_UNIT_MS))
     }
@@ -455,23 +456,23 @@ impl Millis {
         self.0
     }
 
-    /// This duration expressed in actual slots at the current slot duration,
-    /// rounding down. Default for staleness windows: marginally tighter than
-    /// wall-clock is the safe direction.
+    /// This duration in actual slots at the current slot duration, rounded
+    /// down. It is the default for a staleness window, because marginally
+    /// tighter than wall-clock is the safe direction.
     pub fn to_slots(self, d: SlotDuration) -> u64 {
         self.0.safe_div(d.0.max(1)).unwrap_or(0)
     }
 
-    /// This duration expressed in actual slots, rounding up. For
-    /// user-protection windows (liquidation ramps, grace periods): the user
+    /// This duration in actual slots, rounded up. It serves a user-protection
+    /// window such as a liquidation ramp or a grace period, where the user
     /// never gets less than the intended time.
     pub fn to_slots_ceil(self, d: SlotDuration) -> u64 {
         self.0.safe_div_ceil(d.0.max(1)).unwrap_or(0)
     }
 
-    /// How many whole `period`s fit in this duration (floor). For legacy
-    /// per-period rates: elapsed time is under-counted, so ramps engage
-    /// marginally later, favoring the affected user.
+    /// How many whole `period` spans fit in this duration, rounded down. It
+    /// serves the legacy per-period rates. Elapsed time is under-counted, so a
+    /// ramp engages marginally later, which favors the affected user.
     pub fn div_periods(self, period: Millis) -> u64 {
         self.0.safe_div(period.0.max(1)).unwrap_or(0)
     }
@@ -481,22 +482,22 @@ impl Millis {
     }
 }
 
-/// The live slot length in milliseconds. Read it via [`SlotDuration::from_state_ms`]
-/// on `State::slot_duration()`; there is deliberately no constructor from a
-/// bare number in program logic, so a slot count can never be passed as the
-/// slot length.
+/// The live slot length in milliseconds. Read it with
+/// [`SlotDuration::from_state_ms`] on `State::slot_duration()`. Program logic
+/// has no constructor from a bare number, so a slot count can never be passed
+/// as the slot length.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SlotDuration(u64);
 
 impl SlotDuration {
-    /// The pre-gate 400ms baseline; what an unset (`0`) `State.slot_duration_ms`
-    /// resolves to, and the value under which every conversion in this module
-    /// is the identity on the legacy stored units.
+    /// The 400ms baseline before the gates. An unset `State.slot_duration_ms`
+    /// of `0` resolves to it. Under it every conversion in this module is the
+    /// identity on the legacy stored units.
     pub const BASELINE: SlotDuration = SlotDuration(STORED_UNIT_MS);
 
-    /// Resolve the raw `State.slot_duration_ms` field: `0` is what pre-upgrade
-    /// accounts read out of former padding and means "unset" (the 400ms
-    /// baseline).
+    /// Resolve the raw `State.slot_duration_ms` field. A pre-upgrade account
+    /// reads `0` out of former padding. `0` means unset, which is the 400ms
+    /// baseline.
     pub const fn from_state_ms(raw: u16) -> Self {
         if raw == 0 {
             SlotDuration::BASELINE
@@ -510,36 +511,38 @@ impl SlotDuration {
     }
 }
 
-/// A per-market oracle slot-delay override, decoded from its stored `i8`
-/// (values are legacy [`STORED_UNIT_MS`] units).
+/// A per-market oracle slot-delay override, decoded from its stored `i8`. The
+/// stored values are in legacy [`STORED_UNIT_MS`] units.
 ///
-/// The two override fields share this decode but use different sentinel
-/// schemes, so each has its own constructor:
-/// - immediate-fill override: `0` = never allow immediate AMM fills, `< 0` =
-///   unset (source-aware fallback), `> 0` = explicit threshold;
-/// - low-risk override: `0` = unset (use the guard rails), otherwise an
-///   explicit threshold clamped at zero.
+/// The two override fields share this decode but use different sentinels, so
+/// each has its own constructor.
+///
+/// - Immediate-fill override: `0` never allows an immediate AMM fill, a
+///   negative value is unset and takes the source-aware fallback, and a
+///   positive value is an explicit threshold.
+/// - Low-risk override: `0` is unset and takes the guard rails, and any other
+///   value is an explicit threshold clamped at zero.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DelayOverride {
     /// Immediate fills never allowed on this market.
     Never,
-    /// No explicit threshold configured; the caller's fallback applies.
+    /// No explicit threshold configured. The caller's fallback applies.
     Unset,
     /// Explicit staleness threshold.
     Fixed(Millis),
 }
 
-/// The storage codec both override fields share: an `i8` in
-/// [`STORED_UNIT_MS`] quanta, the same encoding
-/// `StoredSlotDuration<i8, STORED_UNIT_MS>` would express. The overrides cannot
-/// use that type because their raw values carry sentinels, so the quantum is
-/// named here instead. The same migration rule applies: changing it reinterprets
-/// every stored byte and needs an admin rewrite, never a type edit alone.
+/// The storage codec both override fields share. It is an `i8` in
+/// [`STORED_UNIT_MS`] quanta. The override fields cannot hold that type
+/// directly, because their raw values carry sentinels, so the quantum is named
+/// here. The migration rule is the same as for any stored quantum. A change to
+/// it reinterprets every stored byte and needs an admin rewrite, never a type
+/// edit alone.
 type DelayOverrideStored = StoredSlotDuration<i8, STORED_UNIT_MS>;
 
 impl DelayOverride {
-    /// Decode a positive override's raw units. Callers branch on the sentinels
-    /// first, so only strictly positive values reach this.
+    /// Decode the raw units of a positive override. Every caller branches on
+    /// the sentinels first, so only a strictly positive value reaches this.
     fn decode_positive(raw: i8) -> Millis {
         DelayOverrideStored::from_raw_units(raw).to_millis()
     }
@@ -610,8 +613,8 @@ mod tests {
     #[cfg(feature = "idl-build")]
     #[test]
     fn idl_build_alias_helpers_preserve_primitive_semantics() {
-        // Anchor's IDL build substitutes primitive aliases for the transparent
-        // wrappers. Pin those cfg-only branches so they cannot silently drift
+        // Anchor's IDL build puts a primitive alias in place of each
+        // transparent wrapper. Pin those cfg-only branches so they cannot drift
         // from the runtime codec.
         let u8_value = legacy_slot_duration_u8(10);
         let i64_value = legacy_slot_duration_i64(-1);
@@ -654,27 +657,30 @@ mod tests {
         let d = SlotDuration::from_state_ms(200);
         assert_eq!(Millis::from_secs(4).to_slots(d), 20);
         assert_eq!(Millis::from_secs(60).to_slots_ceil(d), 300);
-        // 20 actual slots at 200ms = 4s = 10 whole 400ms periods
+        // 20 actual slots at 200ms is 4s, which is 10 whole 400ms periods.
         assert_eq!(Millis::from_slots(20, d).div_periods(Millis::UNIT), 10);
     }
 
     #[test]
     fn intermediate_gates_round_as_documented() {
-        // 4s at 350ms: 4000 / 350 = 11.43
+        // 4s at 350ms: 4000 / 350 = 11.43.
         let d350 = SlotDuration::from_state_ms(350);
         assert_eq!(Millis::from_secs(4).to_slots(d350), 11);
         assert_eq!(Millis::from_secs(4).to_slots_ceil(d350), 12);
-        // 4s at 300ms: 13.33
+        // 4s at 300ms: 13.33.
         assert_eq!(
             Millis::from_secs(4).to_slots(SlotDuration::from_state_ms(300)),
             13
         );
-        // 4s at 250ms: exact
+
+        // 4s at 250ms: exact.
         assert_eq!(
             Millis::from_secs(4).to_slots(SlotDuration::from_state_ms(250)),
             16
         );
-        // period counting floors: 3 slots at 200ms = 600ms = 1 whole 400ms period
+
+        // Period counting floors: 3 slots at 200ms is 600ms, which is 1 whole
+        // 400ms period.
         assert_eq!(
             Millis::from_slots(3, SlotDuration::from_state_ms(200)).div_periods(Millis::UNIT),
             1
@@ -683,12 +689,12 @@ mod tests {
 
     #[test]
     fn transition_durations_are_the_gate_values_only() {
-        // pins the synchronizable set: exactly the four IBRL gate values, and
-        // neither 0 (unset sentinel) nor 400 (baseline) has a gate.
+        // The synchronizable set is exactly the four IBRL gate values. Neither
+        // the unset sentinel 0 nor the 400ms baseline has a gate.
         assert_eq!(SLOT_DURATION_TRANSITION_MS, [350, 300, 250, 200]);
         assert!(!SLOT_DURATION_TRANSITION_MS.contains(&0));
         assert!(!SLOT_DURATION_TRANSITION_MS.contains(&400));
-        // every value is strictly below the 400ms baseline: there is no path
+        // Every value is below the 400ms baseline, because there is no path
         // back to slower slots.
         for v in SLOT_DURATION_TRANSITION_MS {
             assert!((v as u64) < SlotDuration::BASELINE.as_ms());
@@ -697,12 +703,12 @@ mod tests {
 
     #[test]
     fn slot_clock_without_history_falls_back_to_legacy_staging() {
-        // legacy staging fields: base 400, pending 350 effective at 1_000
+        // Legacy staging fields: base 400, pending 350 effective at 1_000.
         let clock = SlotClock::from_state_fields([0; 4], 400, 350, 1_000);
         assert!(!clock.has_transition_history());
         assert_eq!(clock.slot_duration_at(999).as_ms(), 400);
         assert_eq!(clock.slot_duration_at(1_000).as_ms(), 350);
-        // no history: the whole delta is priced at the end slot duration
+        // With no history the whole delta is priced at the end slot duration.
         assert_eq!(clock.elapsed(0, 10).as_ms(), 10 * 400);
         assert_eq!(clock.elapsed(1_000, 1_010).as_ms(), 10 * 350);
     }
@@ -711,7 +717,8 @@ mod tests {
     fn slot_clock_archive_is_authoritative_over_legacy_fields() {
         let clock = SlotClock::from_state_fields([1_000, 0, 0, 0], 200, 250, 5);
         assert!(clock.has_transition_history());
-        // pre transition is the 400ms baseline regardless of stale legacy fields
+        // Before the transition the clock reads the 400ms baseline, whatever
+        // the stale legacy fields say.
         assert_eq!(clock.slot_duration_at(999).as_ms(), 400);
         assert_eq!(clock.slot_duration_at(1_000).as_ms(), 350);
     }
@@ -738,25 +745,27 @@ mod tests {
     #[test]
     fn slot_clock_integrates_elapsed_time_piecewise() {
         let clock = SlotClock::from_state_fields([1_000, 2_000, 3_000, 4_000], 0, 0, 0);
-        // fully inside one regime
+        // Fully inside one regime.
         assert_eq!(clock.elapsed(0, 10).as_ms(), 10 * 400);
         assert_eq!(clock.elapsed(4_000, 4_010).as_ms(), 10 * 200);
-        // spanning one transition: 10 slots at 400ms + 10 at 350ms
+        // Spanning one transition: 10 slots at 400ms plus 10 at 350ms.
         assert_eq!(clock.elapsed(990, 1_010).as_ms(), 10 * 400 + 10 * 350);
-        // spanning every transition
+        // Spanning every transition.
         assert_eq!(
             clock.elapsed(0, 5_000).as_ms(),
             1_000 * 400 + 1_000 * 350 + 1_000 * 300 + 1_000 * 250 + 1_000 * 200
         );
-        // degenerate intervals are zero
+
+        // A degenerate interval is zero.
         assert_eq!(clock.elapsed(10, 10), Millis::ZERO);
         assert_eq!(clock.elapsed(20, 10), Millis::ZERO);
-        // the delta form anchors the interval at its end slot
+        // The delta form anchors the interval at its end slot.
         assert_eq!(
             clock.elapsed_slot_delta(20, 1_010).as_ms(),
             10 * 400 + 10 * 350
         );
-        // a delta larger than the end slot saturates to slot zero
+
+        // A delta larger than the end slot saturates to slot zero.
         assert_eq!(clock.elapsed_slot_delta(100, 50).as_ms(), 50 * 400);
     }
 
@@ -782,7 +791,7 @@ mod tests {
 
     #[test]
     fn slot_clock_with_partial_archive_stays_on_the_last_synced_regime() {
-        // only the first two transitions synchronized so far
+        // Only the first two transitions are synchronized so far.
         let clock = SlotClock::from_state_fields([1_000, 2_000, 0, 0], 0, 0, 0);
         assert_eq!(clock.slot_duration_at(1_000_000).as_ms(), 300);
         assert_eq!(clock.elapsed(1_990, 2_010).as_ms(), 10 * 350 + 10 * 300);

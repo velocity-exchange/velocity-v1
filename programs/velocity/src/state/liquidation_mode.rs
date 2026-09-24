@@ -66,14 +66,15 @@ pub trait LiquidatePerpMode {
         spot_market_map: &SpotMarketMap,
     ) -> VelocityResult<bool>;
 
-    /// Whether the estate holds value that ordinary liquidation can move onto this debt, which makes
-    /// the bankruptcy latch stale (OtterSec #130).
+    /// Whether the estate holds value that ordinary liquidation can move onto
+    /// this debt. Such value makes the bankruptcy latch stale (OtterSec #130).
     ///
-    /// The answer depends on the mode, so it belongs on the mode. A cross-margin estate pays from its
-    /// spot rows and its perp claims. An isolated position is walled off from both and pays only from
-    /// its own collateral row. A resolver that asked the cross question about an isolated bankruptcy
-    /// would un-latch on a deposit that can never reach that debt, re-admit on the next call, and
-    /// never resolve.
+    /// The answer depends on the mode, so it belongs on the mode. A
+    /// cross-margin estate pays from its spot rows and its perp claims. An
+    /// isolated position cannot reach either one. It pays only from its own
+    /// collateral row. A resolver that asked the cross question about an
+    /// isolated bankruptcy would clear the latch on a deposit that can never
+    /// reach that debt, set it again on the next call, and never resolve.
     fn has_realizable_assets(
         &self,
         user: &User,
@@ -366,8 +367,9 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         user: &User,
         _spot_market_map: &SpotMarketMap,
     ) -> VelocityResult<bool> {
-        // Isolated positions carry their own collateral, so the cross-margin
-        // realizability questions (#145 / #151) do not apply here.
+        // An isolated position carries its own collateral, so the cross-margin
+        // question of what the estate can realize does not apply
+        // (OtterSec #145 / #151).
         is_isolated_margin_bankrupt(user, self.market_index)
     }
 
@@ -376,8 +378,8 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         user: &User,
         _spot_market_map: &SpotMarketMap,
     ) -> VelocityResult<bool> {
-        // Only this position's own collateral can pay this position's debt. The cross-margin book is
-        // out of reach, so it must not be read here.
+        // Only this position's own collateral can pay this position's debt.
+        // The cross-margin rows cannot reach it, so this must not read them.
         has_realizable_isolated_assets(user, self.market_index)
     }
 

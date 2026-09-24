@@ -23,7 +23,7 @@ npm i @velocity-exchange/sdk
 
 ### Requirements
 
-- Node 20 or newer.
+- Node 20.18.0 or newer.
 - CommonJS only. The package ships a `module` field, but it points at a
   browser-shimmed CommonJS build rather than ESM. Import it with `require`, or
   from TypeScript and bundlers configured for interop.
@@ -132,7 +132,7 @@ CI typechecks both examples, so they stay in step with the API.
 | `VelocityClient` | Anything that touches the exchange: reading markets, placing and cancelling orders, deposits and withdrawals. The entry point. |
 | `User` | You need one account's positions, orders, collateral, health, or liquidation price. |
 | `accountSubscription` modes | Choosing how state reaches you: see below. |
-| `dlob/` | You want the order book itself: resting orders, crossing logic, book levels, `DLOBSubscriber`. |
+| `clob/`, `orderBookLevels.ts` | You want the order book itself. `UserClobOrdersClient` reads a user's resting orders from the dlob-server, and the `L2`/`L3` types describe the market's book the same server serves. |
 | `math/` | You need to predict an on-chain result off-chain: margin, funding, fees, AMM pricing, auctions, liquidation. |
 | `events/` | You want to stream or backfill fills, funding payments, liquidations, and other program events. |
 | `swift/` | You are placing signed-message orders rather than sending transactions yourself. |

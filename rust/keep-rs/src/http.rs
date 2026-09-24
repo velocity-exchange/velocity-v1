@@ -12,6 +12,9 @@ use {
     serde::{Deserialize, Serialize},
     std::sync::Arc,
     tokio::sync::RwLock,
+    velocity_quoter_health::{
+        metrics::Metrics as QuoterMetrics, store::now_ms, Health, Policy as QuoterPolicy,
+    },
 };
 
 /// Margin status indicating liquidation risk level
@@ -64,6 +67,9 @@ pub struct Metrics {
     pub trigger_actual: IntCounter,
     pub swift_placed: IntCounter,
     pub swift_place_skipped: IntCounter,
+    pub clob_makers_dropped: IntCounter,
+    /// Book makers a fill did carry. Read it against `clob_makers_dropped` as a ratio.
+    pub clob_makers_carried: IntCounter,
     pub fill_expected: IntCounterVec,
     pub fill_actual: IntCounterVec,
     pub liquidation_attempts: IntCounterVec,
@@ -77,12 +83,22 @@ pub struct Metrics {
     pub titan_quote_failures: IntCounter,
     pub confirmation_slots: HistogramVec,
     pub cu_spent: HistogramVec,
+    /// Quoter health, from what the filler's own simulations show: a quoter
+    /// whose execute leg breaks a real fill, a failure nothing else sees. It
+    /// does not exclude the quoter itself; a signed route is enforced on
+    /// chain, so exclusion belongs where the route is chosen and signed.
+    pub quoter_health: Arc<Health>,
     pub registry: Registry,
 }
 
 impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
+        let quoter_metrics = Arc::new(QuoterMetrics::register(&registry));
+        let quoter_health = Arc::new(Health::with_metrics(
+            QuoterPolicy::default(),
+            quoter_metrics,
+        ));
 
         let tx_sent = IntCounterVec::new(
             prometheus::Opts::new("rfb_tx_sent_total", "Number of transactions sent"),
@@ -149,6 +165,27 @@ impl Metrics {
         .unwrap();
         registry
             .register(Box::new(swift_place_skipped.clone()))
+            .unwrap();
+
+        // A book stops at the first maker the transaction did not bring. Every
+        // dropped maker is therefore depth that this fill left resting and the
+        // taker did not get. This counter measures how often that happens.
+        let clob_makers_dropped = IntCounter::new(
+            "rfb_clob_makers_dropped_total",
+            "CLOB makers within reach of a fill that its account budget could not carry",
+        )
+        .unwrap();
+        registry
+            .register(Box::new(clob_makers_dropped.clone()))
+            .unwrap();
+
+        let clob_makers_carried = IntCounter::new(
+            "rfb_clob_makers_carried_total",
+            "CLOB makers a fill carried the accounts for",
+        )
+        .unwrap();
+        registry
+            .register(Box::new(clob_makers_carried.clone()))
             .unwrap();
 
         let liquidation_attempts = IntCounterVec::new(
@@ -295,16 +332,25 @@ impl Metrics {
             titan_quote_failures,
             confirmation_slots,
             cu_spent,
+            quoter_health,
             registry,
             trigger_expected,
             trigger_actual,
             swift_placed,
             swift_place_skipped,
+            clob_makers_dropped,
+            clob_makers_carried,
         }
     }
 }
 
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    // A quoter gauge reports the state as it stands, so the scrape refreshes it
+    // here. The counters beside it were written as each observation arrived.
+    if let Some(quoter) = state.metrics.quoter_health.metrics() {
+        quoter.sync(&state.metrics.quoter_health, now_ms());
+    }
+
     let metric_families = state.metrics.registry.gather();
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();
@@ -411,9 +457,9 @@ pub struct FeedHealth {
 }
 
 impl FeedHealth {
-    /// gRPC slots arrive at least ~2.5/s (faster as slot time drops); this much silence means the feed is dead
+    /// gRPC slots arrive at 2.5 per second or faster; this much silence means the feed is dead
     const GRPC_STALE_LIMIT_MS: u64 = 60_000;
-    /// pyth-lazer feeds tick every 50-200ms; this much silence means the feed is dead
+    /// pyth-lazer feeds tick every 50ms to 200ms; this much silence means the feed is dead
     const PYTH_STALE_LIMIT_MS: u64 = 60_000;
 
     fn unix_now_ms() -> u64 {

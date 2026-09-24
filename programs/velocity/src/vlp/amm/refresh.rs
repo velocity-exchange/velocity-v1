@@ -5,6 +5,7 @@ use {
     crate::{
         controller::spot_balance::update_spot_balances,
         error::{ErrorCode, *},
+        instructions::optional_accounts::AccountMaps,
         load_mut,
         math::{
             bn,
@@ -26,7 +27,6 @@ use {
             perp_market::PerpMarket,
             perp_market_map::PerpMarketMap,
             spot_market::{SpotBalance, SpotBalanceType},
-            spot_market_map::SpotMarketMap,
             state::{OracleGuardRails, State},
             user::MarketType,
         },
@@ -226,7 +226,7 @@ pub fn compute_amm_refresh_validity(
 
 /// Same as `compute_amm_refresh_validity` but takes the guard-rail config
 /// directly. Use this when you only have a `&ValidityGuardRails` available
-/// (e.g. inside `fulfill_perp_order_step`, which doesn't carry `&State`).
+/// (e.g. inside `fulfill_perp_order`, which does not carry `&State`).
 pub fn compute_amm_refresh_validity_with_guard_rails(
     market: &PerpMarket,
     mm_oracle_price_data: &MMOraclePriceData,
@@ -266,7 +266,7 @@ pub fn compute_amm_refresh_validity_with_guard_rails(
 /// explicit AMM-refresh entrypoint surviving in the target architecture —
 /// invoked by the `update_amms` keeper crank to align stored peg with
 /// oracle on quiet markets. Quote/fill paths refresh the AMM atomically
-/// inside `QuoterCommit::commit_fill` instead.
+/// inside `AmmQuoter::commit_fill` instead.
 ///
 /// Pure AMM-side: writes only AMM fields (peg, reserves, sqrt_k,
 /// total_fee_minus_distributions, net_revenue_since_last_funding,
@@ -315,26 +315,25 @@ pub fn snap_to_oracle(
     // PerpMarket-stats field — the orchestrator updates it via
     // `refresh_perp_market_stats_from_oracle` alongside this call.
     if let Some(validity) = oracle_validity {
-        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))? {
-            if !projection.rejected_due_to_affordability {
-                market.amm.last_update_slot = slot;
-            }
+        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))?
+            && !projection.rejected_due_to_affordability
+        {
+            market.amm.last_update_slot = slot;
         }
     }
 
     Ok(projection.cost)
 }
 
-/// Scalar-input, fill-path variant of [`snap_to_oracle`]: project the AMM
-/// against the current oracle and apply the result in place, bumping
-/// `last_update_slot` under the same gates. Slot-idempotent: returns
-/// immediately when the AMM was already refreshed at `slot`, so the
-/// projection runs at most once per market per slot no matter how many
-/// callers invoke it. Emits no `AmmCurveChanged` event (matching the
-/// historical `Quoter::setup` refresh; the explicit keeper crank is the
-/// evented path). Shared by `AmmQuoter::setup` and the routing phase of
-/// `controller::orders::fulfill_perp_order`, so routing and execution can
-/// never diverge on the projected curve.
+/// Scalar-input, fill-path variant of [`snap_to_oracle`]. It projects the AMM
+/// against the current oracle, applies the result in place, and sets
+/// `last_update_slot` under the same gates.
+///
+/// The call is slot-idempotent. It returns at once when the AMM was already
+/// refreshed at `slot`, so the projection runs at most once per market per slot
+/// however many callers invoke it.
+///
+/// It emits no `AmmCurveChanged` event. The keeper crank is the evented path.
 pub fn project_and_apply(
     amm: &mut crate::vlp::amm::AMM,
     inputs: &repeg::ProjectionInputs,
@@ -348,10 +347,10 @@ pub fn project_and_apply(
     let projection =
         repeg::project_post_refresh_scalar(amm, inputs, mm_oracle_price_data, oracle_validity)?;
     projection.apply_to(amm)?;
-    // Same bump gates as `snap_to_oracle`: the oracle must be fresh enough
-    // for low-risk fills and the affordability floor must have accepted the
-    // debit, otherwise the AMM stays marked stale for same-slot freshness
-    // gates downstream.
+    // Same gates as `snap_to_oracle`. The oracle must be fresh enough for
+    // low-risk fills and the affordability floor must accept the debit.
+    // Otherwise the AMM stays marked stale for same-slot freshness gates
+    // downstream.
     if let Some(validity) = oracle_validity {
         if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))?
             && !projection.rejected_due_to_affordability
@@ -430,14 +429,12 @@ pub fn apply_cost_to_market(
 
 pub fn settle_expired_market(
     market_index: u16,
-    market_map: &PerpMarketMap,
-    _oracle_map: &mut OracleMap,
-    spot_market_map: &SpotMarketMap,
+    maps: &mut AccountMaps,
     _state: &State,
     clock: &Clock,
 ) -> VelocityResult {
     let now = clock.unix_timestamp;
-    let market = &mut market_map.get_ref_mut(&market_index)?;
+    let market = &mut maps.perp_market_map.get_ref_mut(&market_index)?;
 
     validate!(
         market.expiry_ts != 0,
@@ -453,7 +450,7 @@ pub fn settle_expired_market(
         now
     )?;
 
-    let spot_market = &mut spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
+    let spot_market = &mut maps.spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
     // tfmd contains only the AMM's own equity post-isolation: the whole
     // surplus is spendable on the expiry settlement (no protocol floor)
     let budget = market.amm.total_fee_minus_distributions.max(0);
@@ -538,47 +535,14 @@ pub fn settle_expired_market(
         target_expiry_price
     )?;
 
-    // Price against the PnL pool ONLY — read after the transfer above, so it
-    // already includes `fee_pool_transfer`.
-    //
-    // The whole fee pool used to be added in here, but only
-    // `min(total_fee_minus_distributions, fee_pool)` is ever moved into the PnL
-    // pool, and expired-position settlement pays exclusively out of the PnL pool
-    // (`update_pnl_pool_and_user_balance` caps there and reverts
-    // `InsufficientPerpPnlPool`). Whenever `tfmd < fee_pool` the un-moved
-    // remainder inflated the expiry price by value no claim could ever draw on,
-    // so the tail of the winners reverted and the market could never finish
-    // winding down (OtterSec #116).
-    //
-    // Deliberately NOT fixed by moving the entire fee pool instead: the fee pool
-    // can hold more than the AMM's own accounted equity (`tfmd`), and that excess
-    // is protocol/IF fee revenue awaiting the sweep, not AMM surplus payable to
-    // perp winners. Whatever is left is routed to the revenue pool by
-    // `settle_expired_market_pools_to_revenue_pool` at delisting, as before.
-    //
-    // The pool is then read net of `pending_revenue_share` (OtterSec #147). That
-    // counter is a booked third-party liability, not AMM surplus: the taker's quote
-    // was debited at fill and a matching builder/referrer payable recorded, so the
-    // pool holds those tokens while they are owed elsewhere. `sweep_market_fees`
-    // reserves the counter ahead of every fee drain and
-    // `calculate_perp_market_amm_summary_stats` subtracts it; the expiry solver was
-    // the one consumer pricing against the gross pool. Reserving it here is what
-    // lets the payable survive wind-down at all —
-    // `settle_expired_market_pools_to_revenue_pool` validates that base amounts and
-    // net user cost basis are zero but never that the revenue share is paid, so
-    // once winners drain the pool the accrued builder fee is unrecoverable: the
-    // tokens leave for the revenue pool and the escrow rows stay outstanding.
-    //
-    // `pending_protocol_fee` / `pending_if_fee` are deliberately NOT reserved. They
-    // are the protocol's own revenue and sit junior to user claims by design:
-    // `sweep_market_fees` reserves `max(net_user_pnl, 0)` — valued at
-    // `expiry_price` while the market is in Settlement — ahead of both drains, so a
-    // short pool pays winners first and the carveouts take the loss. Reserving them
-    // here would invert that ladder and pay protocol revenue ahead of expiring
-    // traders.
-    //
-    // Saturating: a corrupt counter larger than the pool must floor the backing at
-    // zero rather than solve against a negative balance.
+    // Prices against the PnL pool only, after the transfer above, since
+    // only `min(total_fee_minus_distributions, fee_pool)` reaches it, and
+    // settlement pays winners from it alone. The raw fee pool would
+    // overprice winners past what it can pay (OtterSec #116). It can also
+    // exceed AMM equity with protocol and IF revenue awaiting sweep. Read
+    // net of `pending_revenue_share` (OtterSec #147), a booked builder or
+    // referrer payable, not AMM surplus. `pending_protocol_fee` and
+    // `pending_if_fee` stay unreserved: junior claims, paid after winners.
     let pnl_pool_token_amount = get_token_amount(
         market.pnl_pool.scaled_balance,
         spot_market,
@@ -597,8 +561,8 @@ pub fn settle_expired_market(
         target_expiry_price,
         total_excess_balance,
         market.quote_asset_amount,
-        // Folded into the cost basis: `settle_expired_position` settles funding
-        // into each user's quote before paying them (OtterSec #125).
+        // The cost basis folds this in. `settle_expired_position` settles
+        // funding into each user's quote before it pays them (OtterSec #125).
         market.net_unsettled_funding_pnl,
         market.order_step_size,
     )?;

@@ -20,7 +20,9 @@ Required environment variables:
 
 Optional: `MARKET_IDS` (default `0,1,2`), `MAINNET` (default `true`), `DRY_RUN`,
 `SUBACCOUNTS` (default `0`), `METRICS_PORT` (default `9898`), and `SWIFT_WS_URL` to point
-the filler's swift order feed at a different swift ws server. `.env.example` lists the
+the filler's swift order feed at a different swift ws server. The liquidator reads
+`DLOB_SERVER_URL` (default `http://localhost:6969`) to get a liquidatee's resting CLOB
+orders, which it force-cancels before a perp liquidation. `.env.example` lists the
 per-bot knobs. Every bot serves `/metrics`, `/health`, and a dashboard at `/` on
 `METRICS_PORT`.
 
@@ -29,7 +31,7 @@ per-bot knobs. Every bot serves `/metrics`, `/health`, and a dashboard at `/` on
 
 ## Run perp filler
 
-The perp filler matches swift orders and onchain auction orders against resting liquidity.
+The perp filler places swift orders, which route against resting liquidity as they land.
 It also attempts to uncross resting limit orders.
 
 ```shell
@@ -108,7 +110,7 @@ flowchart TD
         C1["Slot Receiver (from gRPC)"]
         C2["Swift Order Stream"]
         C3["Find Crosses"]
-        C4["try_auction_fill / try_swift_fill"]
+        C4["place swift order / uncross limits"]
     end
 
     subgraph Transaction_Worker

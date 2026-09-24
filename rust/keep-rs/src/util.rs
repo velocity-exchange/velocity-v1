@@ -20,17 +20,20 @@ use {
             perp_market_index_to_pyth_lazer_feed_id, pyth_lazer_feed_id_to_perp_market_index,
             pyth_lazer_feed_id_to_spot_market_index, spot_market_index_to_pyth_lazer_feed_id,
         },
-        dlob::{L3Order, MakerCrosses},
         math::constants::PRICE_PRECISION,
-        program::math::time::{Millis, SlotClock, SlotDuration},
+        program::{
+            math::time::{Millis, SlotClock, SlotDuration},
+            state::signed_msg_user::signed_msg_max_slot,
+        },
         types::{MarketId, MarketType, OraclePriceData, OracleSource, OrderParams, OrderType},
         Pubkey,
     },
 };
 
-/// Live slot duration at `now_slot` from the client's cached `State`, resolved
-/// through the full slot clock (transition archive first, legacy staging fields
-/// as fallback); the 400ms baseline when State is not yet subscribed.
+/// Live slot duration at `now_slot`, read from the client's cached `State`. The
+/// full slot clock resolves it. The clock reads the transition archive first and
+/// falls back to the legacy staging fields. It returns the 400ms baseline while
+/// State has no subscription.
 pub fn client_slot_duration(velocity: &velocity_rs::VelocityClient, now_slot: u64) -> SlotDuration {
     velocity.slot_duration_at(now_slot)
 }
@@ -105,21 +108,13 @@ impl<const N: usize> OrderSlotLimiter<N> {
 pub enum TxIntent {
     #[default]
     None,
-    AuctionFill {
-        market_index: u16,
-        taker_order_id: u32,
-        /// taker subaccount the fill was sent for (order ids are per-user counters,
-        /// so `taker_order_id` alone is ambiguous across users)
-        taker_user: Pubkey,
-        has_trigger: bool,
-        maker_crosses: MakerCrosses,
-    },
     SwiftFill {
         uuid: [u8; 8],
         market_index: u16,
         /// taker subaccount the fill was sent for (disambiguates the swift uuid across users)
         taker_user: Pubkey,
-        maker_crosses: MakerCrosses,
+        /// The slot the fill was built against.
+        slot: u64,
     },
     /// place-only swift order: order placed on-chain (no immediate fill) so the normal
     /// per-slot fill path can pick it up while it remains live
@@ -199,20 +194,7 @@ impl TxIntent {
     pub fn label(&self) -> &'static str {
         match self {
             TxIntent::None => "none",
-            TxIntent::AuctionFill { maker_crosses, .. } => {
-                if maker_crosses.has_vamm_cross {
-                    "auction_fill_vamm"
-                } else {
-                    "auction_fill"
-                }
-            }
-            TxIntent::SwiftFill { maker_crosses, .. } => {
-                if maker_crosses.has_vamm_cross {
-                    "swift_fill_vamm"
-                } else {
-                    "swift_fill"
-                }
-            }
+            TxIntent::SwiftFill { .. } => "swift_fill",
             TxIntent::SwiftPlace { .. } => "swift_place",
             TxIntent::LimitUncross { .. } => "limit_uncross",
             TxIntent::VAMMTakerFill { .. } => "vamm_taker",
@@ -230,12 +212,10 @@ impl TxIntent {
     pub fn expected_fill_count(&self) -> usize {
         match self {
             TxIntent::None => 0,
-            TxIntent::AuctionFill { maker_crosses, .. } => {
-                maker_crosses.orders.len() + if maker_crosses.has_vamm_cross { 1 } else { 0 }
-            }
-            TxIntent::SwiftFill { maker_crosses, .. } => {
-                maker_crosses.orders.len() + if maker_crosses.has_vamm_cross { 1 } else { 0 }
-            }
+            // The router decides how many sources a fill reaches, and the
+            // keeper learns the count from the fill records rather than
+            // predicting it.
+            TxIntent::SwiftFill { .. } => 1,
             // place-only: no fill expected in this tx (the fill happens later via the slot loop)
             TxIntent::SwiftPlace { .. } => 0,
             TxIntent::VAMMTakerFill { .. } => 1,
@@ -254,32 +234,27 @@ impl TxIntent {
     /// true if tx was expected to trigger the taker order
     pub fn expected_trigger(&self) -> bool {
         match self {
-            TxIntent::AuctionFill { has_trigger, .. } => *has_trigger,
             TxIntent::Trigger { .. } => true,
             _ => false,
         }
     }
 
-    pub fn crosses_and_slot(&self) -> (Vec<(L3Order, u64)>, u64) {
+    /// The slot the intent was built against.
+    pub fn sent_slot(&self) -> u64 {
         match self {
-            TxIntent::None => (vec![], 0),
-            TxIntent::AuctionFill { maker_crosses, .. } => {
-                (maker_crosses.orders.to_vec(), maker_crosses.slot)
-            }
-            TxIntent::SwiftFill { maker_crosses, .. } => {
-                (maker_crosses.orders.to_vec(), maker_crosses.slot)
-            }
-            TxIntent::SwiftPlace { slot, .. } => (vec![], *slot),
-            Self::VAMMTakerFill { slot, .. } => (vec![], *slot),
-            Self::LimitUncross { slot, .. } => (vec![], *slot),
-            Self::LiquidateWithFill { slot, .. } => (vec![], *slot),
-            Self::LiquidatePerp { slot, .. } => (vec![], *slot),
-            Self::LiquidatePerpPnlForDeposit { slot, .. } => (vec![], *slot),
-            Self::LiquidateBorrowForPerpPnl { slot, .. } => (vec![], *slot),
-            Self::LiquidateSpot { slot, .. } => (vec![], *slot),
-            TxIntent::Derisk { .. } => (vec![], 0),
-            TxIntent::SettlePnl { .. } => (vec![], 0),
-            TxIntent::Trigger { slot, .. } => (vec![], *slot),
+            TxIntent::None => 0,
+            TxIntent::SwiftFill { slot, .. } => *slot,
+            TxIntent::SwiftPlace { slot, .. } => *slot,
+            Self::VAMMTakerFill { slot, .. } => *slot,
+            Self::LimitUncross { slot, .. } => *slot,
+            Self::LiquidateWithFill { slot, .. } => *slot,
+            Self::LiquidatePerp { slot, .. } => *slot,
+            Self::LiquidatePerpPnlForDeposit { slot, .. } => *slot,
+            Self::LiquidateBorrowForPerpPnl { slot, .. } => *slot,
+            Self::LiquidateSpot { slot, .. } => *slot,
+            TxIntent::Derisk { .. } => 0,
+            TxIntent::SettlePnl { .. } => 0,
+            TxIntent::Trigger { slot, .. } => *slot,
         }
     }
 
@@ -301,8 +276,7 @@ impl TxIntent {
     /// Market index this tx acts on, where the intent carries one. Used for wide-event logging.
     pub fn market_index(&self) -> Option<u16> {
         match self {
-            Self::AuctionFill { market_index, .. }
-            | Self::SwiftFill { market_index, .. }
+            Self::SwiftFill { market_index, .. }
             | Self::SwiftPlace { market_index, .. }
             | Self::VAMMTakerFill { market_index, .. }
             | Self::LimitUncross { market_index, .. }
@@ -328,8 +302,7 @@ impl TxIntent {
     /// Taker/target order id, where the intent carries one. Used for wide-event logging.
     pub fn order_id(&self) -> Option<u32> {
         match self {
-            Self::AuctionFill { taker_order_id, .. }
-            | Self::LimitUncross { taker_order_id, .. } => Some(*taker_order_id),
+            Self::LimitUncross { taker_order_id, .. } => Some(*taker_order_id),
             Self::VAMMTakerFill { maker_order_id, .. } => Some(*maker_order_id),
             Self::Trigger { order_id, .. } => Some(*order_id),
             _ => None,
@@ -343,8 +316,7 @@ impl TxIntent {
     /// intent, not just `limit_uncross`.
     pub fn user(&self) -> Option<Pubkey> {
         match self {
-            Self::AuctionFill { taker_user, .. }
-            | Self::SwiftFill { taker_user, .. }
+            Self::SwiftFill { taker_user, .. }
             | Self::SwiftPlace { taker_user, .. }
             | Self::VAMMTakerFill { taker_user, .. }
             | Self::LimitUncross { taker_user, .. }
@@ -463,53 +435,48 @@ impl<const N: usize> PendingTxs<N> {
     }
 }
 
-/// Max age of a swift signed message before the program refuses to place it
-/// (~200s, expressed in actual slots at the current slot duration).
-///
-/// Mirrors the staleness gate in `place_signed_msg_taker_order`
-/// (programs/velocity/src/instructions/keeper.rs).
+/// The maximum age of a swift signed message before the program refuses to place
+/// it. The bound is measured in actual slots at the current slot duration. It
+/// mirrors the staleness gate in `place_signed_msg_taker_order`, in
+/// `programs/velocity/src/instructions/keeper.rs`.
 pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
-/// Max lead of a resting swift limit's message slot over the current slot before the
-/// program refuses to place it early (~30s; the UI stamps ~14s ahead).
-///
-/// Mirrors `max_resting_limit_lead` in `place_signed_msg_taker_order`.
+/// The maximum lead of a resting swift limit's message slot over the current slot
+/// before the program refuses to place it early. The UI stamps about 14 seconds
+/// ahead. This mirrors `max_resting_limit_lead` in
+/// `place_signed_msg_taker_order`.
 pub const SWIFT_RESTING_LIMIT_MAX_LEAD: Millis = Millis::from_secs(30);
 
 /// How to treat a swift order whose signed message may be stamped ahead of the chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwiftSlotWait {
-    /// The message slot has arrived: the order can be filled or placed now.
+    /// The message slot has arrived. The order can be filled or placed now.
     Ready,
-    /// Stamped ahead of the chain, within a credible signing buffer: hold the order and
-    /// re-evaluate once its slot arrives.
+    /// The stamp is ahead of the chain and within a credible signing buffer. Hold the
+    /// order and read it again once its slot arrives.
     Wait,
-    /// Stamped so far ahead it cannot be a signing buffer: don't hold it.
+    /// The stamp is so far ahead that it cannot be a signing buffer. Do not hold the order.
     TooFarAhead,
 }
 
-/// True if a swift order is a limit order with no auction. It rests from placement, so the
-/// program treats its message slot as a placement deadline rather than an auction start
-/// and accepts it ahead of that slot (see [`swift_slot_wait`]).
+/// True if a swift order rests from placement. The program treats such an
+/// order's message slot as a placement deadline rather than a fill deadline,
+/// and accepts it ahead of that slot. See [`swift_slot_wait`].
 pub fn is_resting_swift_limit(order_params: &OrderParams) -> bool {
-    order_params.order_type == OrderType::Limit && order_params.auction_duration.unwrap_or(0) == 0
+    order_params.order_type == OrderType::Limit
 }
 
-/// Classify a swift order's signed-message slot against the current slot.
+/// For a taker order, `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
+/// with `InvalidSignedMsgOrderParam`, so an early order can be neither filled nor placed
+/// yet. A signer adds a buffer so the message stays valid while it travels, and the UI
+/// stamps a few slots ahead. An early stamp is therefore a normal arrival state. The swift
+/// feed delivers each order once, so the only way to keep it is to hold it until its slot
+/// arrives. `max_wait` bounds how far ahead a stamp is still credible as a signing buffer.
 ///
-/// For an auction order `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
-/// (`InvalidSignedMsgOrderParam`), so one stamped ahead of the chain can be neither
-/// filled nor placed yet. Signers add a buffer so the message stays valid while it travels
-/// (the UI stamps a few slots ahead), which makes this a normal arrival state rather than a
-/// bad order: the swift feed delivers each order exactly once, so the only way not to lose
-/// it is to hold it until its slot arrives. `max_wait` bounds how far ahead a stamp is
-/// still credible as a signing buffer.
-///
-/// A resting limit (`resting_limit`, see [`is_resting_swift_limit`]) has no auction to
-/// start: its message slot is the placement deadline (`max_slot`), stamped a whole signing
-/// budget ahead, and the program places it before that slot as long as the stamp is within
-/// [`SWIFT_RESTING_LIMIT_MAX_LEAD`]. Waiting would leave a single slot to land the tx, so it
-/// is ready on arrival.
+/// A resting limit, the `resting_limit` argument, is the exception. See
+/// [`is_resting_swift_limit`]. Its message slot is the placement deadline, and the program
+/// places it before that slot when the stamp is within [`SWIFT_RESTING_LIMIT_MAX_LEAD`].
+/// Waiting would leave one slot to land the transaction, so the order is ready on arrival.
 pub fn swift_slot_wait(
     order_slot: u64,
     current_slot: u64,
@@ -556,9 +523,9 @@ pub fn swift_slot_wait_if_known(
     }
 }
 
-/// Whether the biased filler select should poll Swift this iteration. When both
-/// streams stay ready, `prefer_slot` alternates after each successful slot/Swift
-/// poll so neither a slot backlog nor a busy Swift feed can starve the other.
+/// Whether the biased filler select polls Swift this iteration. When both streams
+/// stay ready, `prefer_slot` alternates after each successful slot poll and Swift
+/// poll, so neither a slot backlog nor a busy Swift feed can starve the other.
 pub fn should_poll_swift(
     swift_feed_live: bool,
     slot_update_pending: bool,
@@ -567,27 +534,18 @@ pub fn should_poll_swift(
     swift_feed_live && !(slot_update_pending && prefer_slot)
 }
 
-/// Returns true if a swift (signed-message) order is too old to be usefully filled or placed
-/// on-chain, so the bot shouldn't spend a tx on it.
+/// The two slot gates mirror `place_signed_msg_taker_order` exactly. The program rejects
+/// the order once its wall clock age, integrated over each slot duration regime, exceeds
+/// about 200 seconds. It also does nothing once `max_slot < current_slot`, where `max_slot`
+/// is the program's own `signed_msg_max_slot`. The `max_ts` check mirrors the placement's
+/// soft skip of an expired order, which lands as a no-op.
 ///
-/// The two slot gates mirror `place_signed_msg_taker_order` exactly:
-/// - **signed message staleness**: the program rejects once the order's
-///   wall clock age (integrated per slot duration regime) exceeds ~200s
-/// - **placement deadline**: program silently no-ops once `max_slot < current_slot`, where
-///   `max_slot` is the first slot reaching the auction duration across all
-///   known slot-duration transitions (identical formula for limit & market orders)
-///
-/// The `max_ts` check is an *additional* client-side guard (the program does not gate placement
-/// on `max_ts`): an order whose `max_ts` has passed is already dead, so placing it would waste a
-/// tx. Note `auction_duration` is a `u8` (≤ 255 units ≈ 102s), so the placement deadline always
-/// binds before the ~200s staleness window; both are checked for completeness/robustness.
-///
-/// The opposite end of the window, an order stamped *ahead* of the chain, is
-/// [`swift_slot_wait`]'s job: that order is not dead but early, and is held rather than dropped.
-/// This function reports "not expired" for one, so callers must run the wait gate first.
+/// An order stamped ahead of the chain is early rather than dead. [`swift_slot_wait`]
+/// handles it, and this function reports "not expired" for one. A caller must run the wait
+/// gate first.
 pub fn swift_order_expired(
     order_slot: u64,
-    auction_duration: u8,
+    resting_limit: bool,
     max_ts: i64,
     current_slot: u64,
     now_ts: i64,
@@ -598,10 +556,7 @@ pub fn swift_order_expired(
         return true;
     }
     // placement deadline: program no-ops once max_slot < current_slot
-    let max_slot = slot_clock.slot_at_or_after_duration(
-        order_slot,
-        Millis::from_stored_units(auction_duration as u64),
-    );
+    let max_slot = signed_msg_max_slot(slot_clock, order_slot, resting_limit);
     if current_slot > max_slot {
         return true;
     }
@@ -623,28 +578,32 @@ pub struct PythPriceUpdate {
     pub ts: TimestampUs,
 }
 
-/// One-shot marker recorded when a liquidate-with-fill tx fails onchain with
-/// `LiquidationOrderFailedToFill`, telling the liquidator to route the next
-/// attempt on that (liquidatee, market) straight to a collateral takeover.
-/// The marker survives until a takeover tx is actually sent; `attempts`
-/// counts takeover routings it has driven and `recorded_ms` bounds its
-/// lifetime, so a takeover path that keeps failing before send cannot pin
-/// the marker forever.
+/// A marker recorded when a liquidate-with-fill transaction fails on chain with
+/// `LiquidationOrderFailedToFill`. It routes the next attempt on that liquidatee
+/// and market straight to a collateral takeover. It survives until a takeover
+/// transaction is sent.
 #[derive(Clone, Copy, Debug)]
 pub struct PerpFillFallback {
+    /// Bounds the marker's lifetime, so a takeover path that keeps failing before
+    /// send cannot hold the marker forever.
     pub recorded_ms: u64,
+    /// Counts the takeover routings the marker has driven.
     pub attempts: u32,
 }
 
-/// The oracle state `update_pyth_lazer_oracle` would persist for `update`,
-/// read back the way `get_pyth_price` reads it, with `delay: 0` since the
-/// posting tx stamps the current slot. Mirrors the program end to end:
-/// confidence is the widest of the 20bps floor, the bid/ask distance and the
-/// signed confidence property (`calculate_lazer_conf`), price and confidence
-/// scale by the feed exponent and the source multiple, and a stablecoin
-/// source snaps to $1 inside the tighter of 5bps and the confidence
-/// (`get_pyth_stable_coin_price`). Returns `None` when the retained message
-/// does not parse or does not carry the update's feed.
+/// The oracle state that `update_pyth_lazer_oracle` would persist for `update`,
+/// read back the way `get_pyth_price` reads it. `delay` is 0, because the posting
+/// transaction stamps the current slot.
+///
+/// This mirrors the program end to end. The confidence is the widest of the 20bps
+/// floor, the distance between the best bid and the best ask, and the signed
+/// confidence property. See `calculate_lazer_conf`. The price and the confidence
+/// scale by the feed exponent and the source multiple. A stablecoin source snaps
+/// to one dollar inside the tighter of 5bps and the confidence. See
+/// `get_pyth_stable_coin_price`.
+///
+/// Returns `None` when the retained message does not parse, or does not carry the
+/// update's feed.
 pub fn preview_pyth_lazer_oracle(
     update: &PythPriceUpdate,
     oracle_source: &OracleSource,
@@ -678,7 +637,7 @@ pub fn preview_pyth_lazer_oracle(
     let price = price.filter(|p| *p != 0)?;
     let exponent = exponent?;
 
-    // widest-of-three confidence, as `calculate_lazer_conf` stores it
+    // The widest of the three confidence signals, as `calculate_lazer_conf` stores it.
     let mut conf = price / 500;
     if let (Some(bid), Some(ask)) = (best_bid, best_ask) {
         let spread = i128::from(ask)
@@ -691,7 +650,7 @@ pub fn preview_pyth_lazer_oracle(
         conf = conf.max(signed_confidence);
     }
 
-    // scale mantissas to PRICE_PRECISION, as `get_pyth_price` reads them
+    // Scale the mantissas to PRICE_PRECISION, as `get_pyth_price` reads them.
     let multiple = match oracle_source {
         OracleSource::PythLazer | OracleSource::PythLazerStableCoin => 1u128,
         OracleSource::PythLazer1K => 1_000,
@@ -738,23 +697,6 @@ pub fn preview_pyth_lazer_oracle(
         has_sufficient_number_of_data_points: true,
         sequence_id: feed_ts_us,
     })
-}
-
-/// Tolerated forward clock skew before a future-dated feed timestamp is treated as invalid —
-/// a timestamp further ahead than this means a bad clock on one side, not a fresh price.
-const PYTH_MAX_CLOCK_SKEW_US: u64 = 1_000_000;
-
-/// Returns true if a pyth-lazer update's feed timestamp is within `max_age_us` of wall-clock
-/// `now_us`. Used to gate consumption of the cached `PythPriceUpdate` on wall-clock age, since
-/// a frozen websocket (see [`subscribe_price_feeds`]) leaves the cache holding a price that's
-/// arbitrarily old with no signal of that in the update itself.
-pub fn pyth_update_is_fresh(
-    update_ts_us: TimestampUs,
-    now_us: TimestampUs,
-    max_age_us: u64,
-) -> bool {
-    now_us.saturating_us_since(update_ts_us) <= max_age_us
-        && update_ts_us.saturating_us_since(now_us) <= PYTH_MAX_CLOCK_SKEW_US
 }
 
 fn fixed_rate(feed_id: u32) -> FixedRate {
@@ -811,10 +753,10 @@ pub fn subscribe_price_feeds(
     let feed_ids: Vec<PriceFeedId> = feed_id_set.into_iter().map(PriceFeedId).collect();
 
     const MAX_RETRIES: u32 = 10;
-    // Pyth feeds tick every 50-200ms (see `fixed_rate`), so this much silence on the
-    // websocket is unambiguous. A half-open socket never yields an error or `None` —
-    // `stream.next()` just pends forever — so wrap it in a timeout and fall through
-    // to the existing reconnect/backoff machinery below rather than trusting the socket.
+    // A pyth feed ticks every 50ms to 200ms. See `fixed_rate`. This much silence on the
+    // websocket therefore has one meaning. A half-open socket never yields an error or
+    // `None`, because `stream.next()` pends forever. So the read runs under a timeout and
+    // falls through to the reconnect and backoff machinery below.
     const PYTH_FEED_STALE_LIMIT: Duration = Duration::from_secs(30);
 
     let (price_tx, price_rx) = tokio::sync::mpsc::channel(512);
@@ -909,12 +851,10 @@ pub fn subscribe_price_feeds(
 
                                     log::trace!(target: "pyth", "got update: {data:?}");
                                     for f in data.feeds {
-                                        // the program gates staleness and monotonicity on the
-                                        // per-feed `FeedUpdateTimestamp` (see
-                                        // `instructions/pyth_lazer_oracle.rs`), not the payload
-                                        // timestamp — a fixed-rate channel keeps ticking a fresh
-                                        // payload timestamp even when a feed's price is stalled,
-                                        // so stamp updates with the timestamp the program checks
+                                        // The program gates staleness and monotonicity on
+                                        // the per-feed `FeedUpdateTimestamp`, not the payload
+                                        // one, which a fixed-rate channel keeps fresh while a
+                                        // feed stalls. See `instructions/pyth_lazer_oracle.rs`.
                                         let feed_update_ts = f
                                             .properties
                                             .iter()
@@ -1052,10 +992,10 @@ pub fn subscribe_price_feeds(
 mod tests {
     use {
         super::{
-            is_resting_swift_limit, preview_pyth_lazer_oracle, pyth_update_is_fresh,
-            should_poll_swift, swift_order_expired, swift_slot_wait, swift_slot_wait_if_known,
-            OrderParams, OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey,
-            PythPriceUpdate, SwiftSlotWait, TxIntent,
+            is_resting_swift_limit, preview_pyth_lazer_oracle, should_poll_swift,
+            swift_order_expired, swift_slot_wait, swift_slot_wait_if_known, OrderParams,
+            OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate,
+            SwiftSlotWait, TxIntent,
         },
         pyth_lazer_protocol::{
             message::SolanaMessage,
@@ -1065,7 +1005,10 @@ mod tests {
         solana_signature::Signature,
         std::num::NonZeroI64,
         velocity_rs::{
-            program::math::time::{Millis, SlotClock},
+            program::{
+                math::time::{Millis, SlotClock},
+                state::signed_msg_user::SIGNED_MSG_FILL_WINDOW,
+            },
             types::{MarketType, OracleSource},
         },
     };
@@ -1245,7 +1188,7 @@ mod tests {
 
     #[test]
     fn swift_slot_wait_places_a_resting_limit_ahead_of_its_slot() {
-        // A no-auction limit's stamp is its placement deadline, set a whole signing budget
+        // A resting limit's stamp is its placement deadline, set a whole signing budget
         // (~14s, 35 baseline slots) ahead: past the deferral bound, yet ready now.
         assert_eq!(
             swift_slot_wait(135, 100, Millis::from_secs(10), true, SlotClock::baseline()),
@@ -1268,19 +1211,14 @@ mod tests {
     }
 
     #[test]
-    fn resting_swift_limit_is_a_limit_with_no_auction() {
+    fn a_limit_order_rests_and_a_market_order_does_not() {
         let mut params = OrderParams {
             order_type: OrderType::Limit,
-            auction_duration: None,
             ..Default::default()
         };
         assert!(is_resting_swift_limit(&params));
-        params.auction_duration = Some(0);
-        assert!(is_resting_swift_limit(&params));
-        params.auction_duration = Some(10);
-        assert!(!is_resting_swift_limit(&params));
+
         params.order_type = OrderType::Market;
-        params.auction_duration = None;
         assert!(!is_resting_swift_limit(&params));
     }
 
@@ -1326,65 +1264,25 @@ mod tests {
         assert!(!should_poll_swift(false, false, false));
     }
 
+    /// The fill window binds before the signed-message staleness window, so
+    /// an order stops being placeable long before it reads as stale.
     #[test]
-    fn swift_expiry_placement_deadline_binds_before_staleness() {
-        // `auction_duration` is a u8 (<=255), so the placement deadline
-        // (order_slot + auction_duration) always binds before the 500-slot signed-message
-        // window. The order is unplaceable one slot past the deadline, well before slot 500.
-        assert!(!swift_order_expired(
-            0,
-            255,
-            0,
-            255,
-            0,
-            SlotClock::baseline()
-        ));
-        assert!(swift_order_expired(
-            0,
-            255,
-            0,
-            256,
-            0,
-            SlotClock::baseline()
-        ));
+    fn the_fill_window_binds_before_staleness() {
+        let clock = SlotClock::baseline();
+        let deadline = clock.slot_at_or_after_duration(0, SIGNED_MSG_FILL_WINDOW);
+
+        assert!(!swift_order_expired(0, false, 0, deadline, 0, clock));
+        assert!(swift_order_expired(0, false, 0, deadline + 1, 0, clock));
     }
 
+    /// A resting limit's stamp is its placement deadline, with no fill window
+    /// past it.
     #[test]
-    fn swift_expiry_placement_deadline() {
-        // max_slot = order_slot + auction_duration = 130. Program rejects once max_slot < slot.
-        assert!(!swift_order_expired(
-            100,
-            30,
-            0,
-            130,
-            0,
-            SlotClock::baseline()
-        )); // exactly at deadline: still placeable
-        assert!(swift_order_expired(
-            100,
-            30,
-            0,
-            131,
-            0,
-            SlotClock::baseline()
-        )); // one past: gone
-            // Zero auction duration (limit order default): only placeable in the signing slot.
-        assert!(!swift_order_expired(
-            100,
-            0,
-            0,
-            100,
-            0,
-            SlotClock::baseline()
-        ));
-        assert!(swift_order_expired(
-            100,
-            0,
-            0,
-            101,
-            0,
-            SlotClock::baseline()
-        ));
+    fn a_resting_limit_expires_at_its_stamp() {
+        let clock = SlotClock::baseline();
+
+        assert!(!swift_order_expired(100, true, 0, 100, 0, clock));
+        assert!(swift_order_expired(100, true, 0, 101, 0, clock));
     }
 
     #[test]
@@ -1392,7 +1290,7 @@ mod tests {
         // max_ts == 0 disables the ts check.
         assert!(!swift_order_expired(
             100,
-            200,
+            false,
             0,
             100,
             i64::MAX,
@@ -1401,7 +1299,7 @@ mod tests {
         // now == max_ts is still valid; now > max_ts expires.
         assert!(!swift_order_expired(
             100,
-            200,
+            false,
             5_000,
             100,
             5_000,
@@ -1409,7 +1307,7 @@ mod tests {
         ));
         assert!(swift_order_expired(
             100,
-            200,
+            false,
             5_000,
             100,
             5_001,
@@ -1456,35 +1354,6 @@ mod tests {
         assert_eq!(intent.swift_uuid(), Some(*b"abcd1234"));
         // even the place-only path carries the taker so its lifecycle is filterable by user
         assert_eq!(intent.user(), Some(taker));
-    }
-
-    #[test]
-    fn pyth_update_freshness() {
-        let update_ts = TimestampUs(1_000_000);
-        // exactly at max_age: still fresh
-        assert!(pyth_update_is_fresh(
-            update_ts,
-            TimestampUs(1_010_000),
-            10_000
-        ));
-        // one us past max_age: stale
-        assert!(!pyth_update_is_fresh(
-            update_ts,
-            TimestampUs(1_010_001),
-            10_000
-        ));
-        // update from the near future (clock skew within PYTH_MAX_CLOCK_SKEW_US): fresh
-        assert!(pyth_update_is_fresh(
-            update_ts,
-            TimestampUs(500_000),
-            10_000
-        ));
-        // update from beyond the tolerated skew: invalid, treated as stale
-        assert!(!pyth_update_is_fresh(
-            TimestampUs(3_000_001),
-            TimestampUs(2_000_000),
-            10_000
-        ));
     }
 
     #[test]

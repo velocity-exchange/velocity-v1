@@ -40,8 +40,8 @@ describe('selectLiquidationExitCandidates', () => {
 			ALL_MARKETS
 		);
 
-		// Orders alongside a base position still need a sized amount: a zero base
-		// amount is rejected once the program reaches the transfer.
+		// Orders next to a base position still need a sized amount. The program
+		// rejects a zero base amount once it reaches the transfer.
 		expect(candidates[0]).to.deep.equal({ kind: 'base', marketIndex: 1 });
 	});
 
@@ -114,8 +114,8 @@ describe('selectLiquidationExitCandidates', () => {
 			[0, 1]
 		);
 
-		// Market 3 is paused or unconfigured, so only the empty-market crank is
-		// left rather than a call that would revert every tick.
+		// Market 3 is paused or unconfigured, so the empty-market crank is the
+		// only candidate left. Any other call would revert every tick.
 		expect(candidates).to.deep.equal([{ kind: 'crank', marketIndex: 0 }]);
 	});
 
@@ -143,9 +143,9 @@ describe('selectLiquidationExitCandidates', () => {
 		});
 
 		it('never offers an isolated market for the account-level flag', () => {
-			// Targeting the isolated position would switch the program to isolated
-			// mode, which reads a flag that is not set, and fail as
-			// SufficientCollateral without clearing anything.
+			// Targeting the isolated position switches the program to isolated
+			// mode. That mode reads a flag which is not set, so the call fails
+			// with SufficientCollateral and clears nothing.
 			const candidates = selectLiquidationExitCandidates(
 				[position(1, { hasBase: true, isolated: true })],
 				true,

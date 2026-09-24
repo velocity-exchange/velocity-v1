@@ -4,8 +4,8 @@
 //! (manual / scheduled). Requires `TEST_DEVNET_RPC_ENDPOINT` and a funded
 //! `TEST_PRIVATE_KEY`, and an initialized devnet (run `deploy-scripts/init-devnet.ts`).
 //!
-//! Hybrid intent: for actions a DEPLOYED bot owns (DLOB fills, JIT fills,
-//! liquidations, pnl settling, mark-twap crank) the test sets up one side and
+//! Hybrid intent: for actions a DEPLOYED bot owns (DLOB fills, liquidations,
+//! pnl settling, mark-twap crank) the test sets up one side and
 //! polls for the bot to act; pure user actions (deposit/withdraw/AMM-take) are
 //! driven directly. Each scenario owns a fixed, REUSED subaccount of the one
 //! funded payer (see the `SUB_*` ids + `TestCtx::acquire`, which resets the
@@ -13,8 +13,8 @@
 //! allocation leaked rent and exhausted the monotonic u16 sub-account-id space.
 //! Run with `--test-threads=1`.
 //!
-//! Bot-timing-dependent scenarios (jit-maker incentive, liquidation via oracle
-//! drift, settler thresholds) RUN — their setup is deterministic and they treat
+//! Bot-timing-dependent scenarios (liquidation via oracle drift, settler
+//! thresholds) RUN — their setup is deterministic and they treat
 //! "bot didn't act in time" as inconclusive (warn, not failure), so they're safe
 //! in the nightly non-gating job. `#[ignore]` is reserved for scenarios whose
 //! setup itself can't be established on devnet right now (swift HTTP 502, SOL
@@ -58,16 +58,15 @@ const SUB_TAKER_AMM: u16 = 3;
 const SUB_TAKER_JIT: u16 = 4;
 const SUB_DLOB_MAKER: u16 = 5;
 const SUB_DLOB_TAKER: u16 = 6;
-const SUB_JIT_AUCTION: u16 = 7;
-const SUB_BAD_PERP: u16 = 8;
-const SUB_BAD_SPOT_BORROW: u16 = 9;
-const SUB_UNSETTLED_PNL: u16 = 10;
-const SUB_SWIFT: u16 = 11;
+const SUB_BAD_PERP: u16 = 7;
+const SUB_BAD_SPOT_BORROW: u16 = 8;
+const SUB_UNSETTLED_PNL: u16 = 9;
+const SUB_SWIFT: u16 = 10;
 
 /// A marketable 1-SOL limit order priced 5% through the oracle in the trade
 /// direction, so it crosses the AMM and the DEPLOYED filler fills it against the
 /// AMM (place_and_take with no makers does NOT fill vs the AMM — fills go through
-/// the filler). Rest it with `place_orders`, then poll for the fill.
+/// the filler). Rest it with `place_and_make`, then poll for the fill.
 fn marketable_limit(px: u64, direction: PositionDirection) -> OrderParams {
     let (amount, price) = match direction {
         PositionDirection::Long => (ONE_SOL, px + px * 5 / 100),
@@ -243,9 +242,12 @@ async fn taker_fills_against_amm() {
 
     let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
 
-    // Aggressive RELATIVE TO THE LIVE BASELINE so sanitization must clamp both ends
-    // (a long market order: NOT place_and_take, NOT a plain limit — a resting limit
-    // parks as a maker and is never routed to the AMM).
+    // allow-verbose: derivation of the aggression margin below is a bound a
+    // reader cannot reconstruct from the code alone.
+    //
+    // Aggressive RELATIVE TO THE LIVE BASELINE so sanitization must clamp both ends.
+    // place_and_take routes the order through the book; a remainder it cannot fill
+    // in this transaction rests on the CLOB until the deployed filler crosses it.
     //
     // The baseline read here is not the one the program will apply: it recomputes at
     // the placement slot. Size the offset so the request stays past the live
@@ -282,12 +284,13 @@ async fn taker_fills_against_amm() {
         auction_duration: Some(200),
         ..Default::default()
     };
+    let clob = clob_accounts(&ctx.client, 0).await;
     let tx = ctx
         .client
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_orders(vec![order])
+        .place_and_take(order, clob, None)
         .build();
     ctx.send_confirmed(tx).await;
 
@@ -526,12 +529,13 @@ async fn taker_fills_against_amm_via_jit() {
         base_asset_amount: ONE_SOL as u64,
         ..Default::default()
     };
+    let clob = clob_accounts(&ctx.client, 0).await;
     let tx = ctx
         .client
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_and_take(order, &[], None, None)
+        .place_and_take(order, clob, None)
         .build();
     ctx.send_confirmed(tx).await;
 
@@ -575,6 +579,8 @@ async fn dlob_maker_taker_filled_by_filler() {
     ctx.fund_and_deposit_dusdt(taker, 100).await;
 
     let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
+    let clob = clob_accounts(&ctx.client, 0).await;
+
     // Maker rests a best bid 5bps under oracle (post-only so it can't cross).
     let maker_bid = px - px * 5 / 10_000;
     let tx = ctx
@@ -582,11 +588,14 @@ async fn dlob_maker_taker_filled_by_filler() {
         .init_tx(&maker, false)
         .await
         .unwrap()
-        .place_orders(vec![NewOrder::limit(SOL_PERP)
-            .amount(ONE_SOL)
-            .price(maker_bid)
-            .post_only(PostOnlyParam::MustPostOnly)
-            .build()])
+        .place_and_make(
+            NewOrder::limit(SOL_PERP)
+                .amount(ONE_SOL)
+                .price(maker_bid)
+                .post_only(PostOnlyParam::MustPostOnly)
+                .build(),
+            clob,
+        )
         .build();
     ctx.send_confirmed(tx).await;
 
@@ -598,10 +607,13 @@ async fn dlob_maker_taker_filled_by_filler() {
         .init_tx(&taker, false)
         .await
         .unwrap()
-        .place_orders(vec![NewOrder::limit(SOL_PERP)
-            .amount(-ONE_SOL)
-            .price(taker_ask)
-            .build()])
+        .place_and_make(
+            NewOrder::limit(SOL_PERP)
+                .amount(-ONE_SOL)
+                .price(taker_ask)
+                .build(),
+            clob,
+        )
         .build();
     ctx.send_confirmed(tx).await;
 
@@ -672,55 +684,11 @@ async fn mark_twap_crank_advances() {
     );
 }
 
-// ---- Scenario 2: JIT auction taker, DEPLOYED jit-maker fills ---------------
-// Nightly-safe: warn-skips (not fails) if the jit-maker doesn't fill in time, so
-// it never blocks. Verified live: the deployed jit-maker fills the 1-SOL auction.
-#[tokio::test]
-async fn jit_auction_filled_by_jit_maker() {
-    let ctx = TestCtx::new().await;
-    let sub = ctx.acquire(SUB_JIT_AUCTION).await;
-    ctx.fund_and_deposit_dusdt(sub, 100).await;
-
-    let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle");
-    // Rest (place_orders, NOT place_and_take) an oracle auction order generous to
-    // the maker so the jit-maker is incentivized to fill during the auction.
-    let order = OrderParams {
-        order_type: OrderType::Oracle,
-        market_type: MarketType::Perp,
-        market_index: 0,
-        direction: PositionDirection::Long,
-        base_asset_amount: ONE_SOL as u64,
-        oracle_price_offset: Some(px / 50), // +2% room
-        auction_start_price: Some(0),
-        auction_end_price: Some(px / 50),
-        auction_duration: Some(30),
-        ..Default::default()
-    };
-    let tx = ctx
-        .client
-        .init_tx(&sub, false)
-        .await
-        .unwrap()
-        .place_orders(vec![order])
-        .build();
-    ctx.send_confirmed(tx).await;
-
-    // If the jit-maker fills, it fills the whole 1-SOL auction order (exact base).
-    if ctx
-        .wait_perp_base_eq(sub, 0, ONE_SOL, Duration::from_secs(60))
-        .await
-        .is_none()
-    {
-        log::warn!("INCONCLUSIVE: jit-maker did not fill the 1-SOL auction within 60s");
-    }
-    ctx.cleanup(sub).await;
-}
-
 // ---- Scenario 1s / 2s: swift taker submitted to deployed swift server -------
 // Nightly-safe: warn-skips (never fails) if `POST /orders` is non-200 OR the
 // connection drops OR the deployed maker doesn't fill in time. The `POST /orders`
 // 502s that previously kept this `#[ignore]`d were NOT flaky ALB/cloudfront — they
-// were the swift-server panicking in `simulate_place_perp_order`: `State` is
+// were the swift-server panicking in `simulate_detached_perp_order`: `State` is
 // `#[account(zero_copy)]` (16-aligned off-chain), so deserializing it from a
 // non-16-aligned buffer panicked with `TargetAlignmentGreaterAndInputNotAligned`
 // and dropped the connection (proxy → 502). Fixed in `swift/src/util/local_sim.rs`
@@ -757,6 +725,9 @@ async fn swift_taker_filled_by_deployed_maker() {
         builder_idx: None,
         builder_fee_tenth_bps: None,
         isolated_position_deposit: None,
+        // Devnet: the program refuses a message tagged for another cluster.
+        network: Some(velocity_rs::program::state::order_params::SIGNED_MSG_NETWORK_DEVNET),
+        route: None,
     };
     let signed = SignedOrderType::authority(msg);
     let hex_msg = hex::encode(signed.to_borsh());
@@ -807,13 +778,14 @@ async fn bad_perp_trade_gets_liquidated() {
     ctx.fund_and_deposit_dusdt(sub, 20).await;
 
     let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
+    let clob = clob_accounts(&ctx.client, 0).await;
     // Rest a marketable long; the deployed filler opens it to exactly +1 SOL vs AMM.
     let tx = ctx
         .client
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_orders(vec![marketable_limit(px, PositionDirection::Long)])
+        .place_and_make(marketable_limit(px, PositionDirection::Long), clob)
         .build();
     if ctx.client.sign_and_send(tx).await.is_err() {
         log::warn!("INCONCLUSIVE: could not place opening order");
@@ -911,12 +883,13 @@ async fn unsettled_pnl_gets_settled() {
     // Open then close a position (filler fills each vs the AMM) to bank realized
     // but unsettled pnl, then wait for the deployed userPnlSettler to settle it.
     let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
+    let clob = clob_accounts(&ctx.client, 0).await;
     let open = ctx
         .client
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_orders(vec![marketable_limit(px, PositionDirection::Long)])
+        .place_and_make(marketable_limit(px, PositionDirection::Long), clob)
         .build();
     ctx.send_confirmed(open).await;
     if ctx
@@ -932,7 +905,7 @@ async fn unsettled_pnl_gets_settled() {
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_orders(vec![marketable_limit(px, PositionDirection::Short)])
+        .place_and_make(marketable_limit(px, PositionDirection::Short), clob)
         .build();
     ctx.send_confirmed(close).await;
     ctx.wait_perp_base_eq(sub, 0, 0, Duration::from_secs(60))

@@ -69,7 +69,7 @@ describe('spot deposit and withdraw 22', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = startLiteSVM() as any;
+		const context = (startLiteSVM()) as any;
 
 		svmContextWrapper = new LiteSVMContextWrapper(context);
 
@@ -166,6 +166,7 @@ describe('spot deposit and withdraw 22', () => {
 			0,
 			await getMaxWithdrawGuardThreshold(admin, 0)
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);
@@ -215,6 +216,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			firstUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		// the deposit went through firstUserVelocityClient — refresh admin's cache

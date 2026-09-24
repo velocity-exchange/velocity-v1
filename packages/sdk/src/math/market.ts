@@ -370,15 +370,10 @@ export function calculateBankruptcyIfFloor(perpMarket: PerpMarketAccount): BN {
 }
 
 /**
- * Calculates the pnl-pool tokens that a drain must leave in the pool to back the first-loss
- * insurance-fund tranche. This mirrors `PerpMarket::get_bankruptcy_if_tranche_reservation` and
- * equals `min(pendingIfFee, bankruptcyIfFloor)`. `resolvePerpBankruptcy` changes only the
- * `pendingIfFee` counter, so the tokens must stay in the pool. The final delist sweep passes
- * `force` and reserves nothing.
- *
- * @param {PerpMarketAccount} perpMarket - The perp market account
- * @param {boolean} force - Delisting sweep; waives the reservation
- * @return {BN} The reservation, QUOTE_PRECISION (1e6)
+ * Pnl-pool tokens a drain must leave to back the first-loss insurance-fund tranche, mirroring
+ * `PerpMarket::get_bankruptcy_if_tranche_reservation`: `min(pendingIfFee, bankruptcyIfFloor)`.
+ * @param force True for the delisting sweep, which waives the reservation.
+ * @return The reservation, QUOTE_PRECISION (1e6).
  */
 export function calculateBankruptcyIfTrancheReservation(
 	perpMarket: PerpMarketAccount,
@@ -394,24 +389,11 @@ export function calculateBankruptcyIfTrancheReservation(
 }
 
 /**
- * Calculates the part of the pnl pool of a perp market that can pay accrued builder and referrer
- * fees. This mirrors the reserve that `sweep_completed_revenue_share_for_market` applies. The
- * result is `pnlPoolTokens - max(netUserPnl, 0) - bankruptcyIfTrancheReservation`, and never less
- * than zero.
- *
- * The sweep pays a row only when its `feesAccrued` fits in this amount. A keeper can therefore
- * check whether a `settleRevenueShare` call will pay before it sends the call. The sweep does not
- * reserve `pendingRevenueShare`, because it pays that claim.
- *
- * In settlement the reserve uses the `expiryPrice` of the market, not the live price. Expired
- * positions settle at `expiryPrice`. A lower live price on a net-long market would make the
- * reserve too small.
- *
- * @param {PerpMarketAccount} perpMarket - The perp market account
- * @param {SpotMarketAccount} spotMarket - The quote spot market account
- * @param {Pick<OraclePriceData, 'price'>} oraclePriceData - Live oracle price, PRICE_PRECISION (1e6);
- *   ignored while the market is in settlement
- * @return {BN} Tokens available to pay revenue share, QUOTE_PRECISION (1e6)
+ * Part of a perp market's pnl pool available to pay accrued builder/referrer fees, per
+ * `sweep_completed_revenue_share_for_market`: `pnlPoolTokens - max(netUserPnl, 0) -
+ * bankruptcyIfTrancheReservation`, floored at zero, using `expiryPrice` during settlement.
+ * @param oraclePriceData Live oracle price, PRICE_PRECISION (1e6); ignored during settlement.
+ * @return Tokens available to pay revenue share, QUOTE_PRECISION (1e6).
  */
 export function calculateRevenueShareSweepAvailable(
 	perpMarket: PerpMarketAccount,

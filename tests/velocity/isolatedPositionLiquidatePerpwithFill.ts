@@ -262,6 +262,7 @@ describe('liquidate perp (no open orders)', () => {
 				reduceOnly: true,
 				marketIndex: 0,
 			});
+
 			svmContextWrapper.connection.printTxLogs(failToPlaceTxSig);
 			throw new Error('Expected placePerpOrder to throw an error');
 		} catch (error) {
@@ -319,7 +320,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-15757926))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-15757943))
 		);
 
 		assert(

@@ -112,10 +112,10 @@ export function registerAuth(parent: Command): void {
 	).action(async (role: string, pubkey: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const provider = buildProvider(opts);
-		// No subscription: the ix needs only the state PDA and the signer, and
-		// this command must work while zero-copy accounts are pre-extension
-		// size (the account-extension migration window), when a subscribed
-		// client fails to decode them.
+		// The client does not subscribe. The instruction needs only the state PDA
+		// and the signer. This command must also work while zero-copy accounts
+		// still hold their pre-extension size, because a subscribed client fails
+		// to decode them during the account-extension migration.
 		const client = await buildAdminClient(opts, false);
 		try {
 			const multisigPda = opts.multisig

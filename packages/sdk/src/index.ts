@@ -1,14 +1,6 @@
 /**
  * @module @velocity-exchange/sdk
- * Main package barrel — re-exports all public SDK types, classes, and utilities.
- *
- * Primary entry points:
- *   {@link VelocityClient}  — trading and keeper instruction builders (velocityClient.ts)
- *   {@link AdminClient}  — governance/admin instruction builders (adminClient.ts)
- *   {@link User}         — user account abstraction: margin queries, position accessors (user.ts)
- *   {@link DLOB}         — decentralized limit order book (dlob/DLOB.ts)
- *
- * Key re-exported namespaces: types, addresses/pda, accounts (subscribers), math, events, oracles, constants.
+ * Main package barrel. Entry points: `VelocityClient`, `AdminClient`, `User`, `UserClobOrdersClient`.
  */
 import { BN } from './isomorphic/anchor';
 import { PublicKey } from '@solana/web3.js';
@@ -42,6 +34,7 @@ export * from './accounts/oneShotUserAccountSubscriber';
 export * from './accounts/oneShotUserStatsAccountSubscriber';
 export * from './accounts/types';
 export * from './addresses/pda';
+export * from './quoterSlab';
 export * from './adminClient';
 export * from './assert/assert';
 export {
@@ -71,10 +64,10 @@ export * from './events/pollingLogProvider';
 export * from './jupiter/jupiterClient';
 // Primary swap client interface - use this for all swap operations
 export * from './swap/UnifiedSwapClient';
-// The SwapProvider contract both providers implement, and the shared route filter
 export * from './swap/types';
 export * from './swap/routeInstructions';
-export * from './math/auction';
+export * from './math/worstPrice';
+export * from './math/crankFee';
 export * from './math/builder';
 export * from './math/spotMarket';
 export * from './math/conversion';
@@ -86,6 +79,8 @@ export * from './math/oracles';
 export * from './math/amm';
 export * from './math/trade';
 export * from './math/orders';
+export * from './math/router';
+export * from './math/vammLadder';
 export * from './math/repeg';
 export * from './math/liquidation';
 export * from './math/margin';
@@ -127,22 +122,15 @@ export * from './util/digest';
 export * from './util/promiseTimeout';
 export * from './math/spotBalance';
 export * from './velocityClientConfig';
-export * from './dlob/DLOB';
-export * from './dlob/DLOBNode';
-export * from './dlob/NodeList';
-export * from './dlob/DLOBSubscriber';
-export * from './dlob/types';
-export * from './dlob/orderBookLevels';
+export * from './clob/topMakersClient';
+export * from './clob/userOrdersClient';
+export * from './orderBookLevels';
 export * from './userMap/userMap';
 export * from './userMap/referrerMap';
 export * from './userMap/userStatsMap';
 export * from './userMap/revenueShareEscrowMap';
 export * from './userMap/userMapConfig';
 export * from './math/bankruptcy';
-export * from './orderSubscriber';
-export * from './orderSubscriber/types';
-export * from './auctionSubscriber';
-export * from './auctionSubscriber/types';
 export * from './memcmp';
 export * from './decode/user';
 export * from './blockhashSubscriber';

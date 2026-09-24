@@ -20,8 +20,8 @@ migrating from the Drift SDK, read [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-V
 
 | Path              | What it is                                                                                                                   |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `programs/`       | On-chain programs: `velocity` (core protocol), `vaults`, `jit-proxy`, plus oracle stubs and integrations used by tests        |
-| `packages/`       | Publishable npm libraries: `@velocity-exchange/sdk`, `admin-cli`, `vaults-sdk`, `jit-proxy`                                   |
+| `programs/`       | On-chain programs: `velocity` (core protocol), `vaults`, plus the oracle type stubs the tests use                             |
+| `packages/`       | Publishable npm libraries: `@velocity-exchange/sdk`, `admin-cli`, `vaults-sdk`                                                |
 | `apps/`           | Private deployable services, shipped as Docker images and never to npm: `dlob-server`, `keeper-bots-v2`, `usermap-server`     |
 | `rust/`           | A second, separate Cargo workspace: `velocity-rs` (Rust SDK), `keep-rs` (keeper bots), `swift` (tx server)                    |
 | `tests/`          | ~120 TypeScript integration test files. Nearly all run in-process on LiteSVM; a handful use a local validator                 |
@@ -34,11 +34,10 @@ own `rust/target/`, so its split solana 4.2 crate tree never unifies with the SB
 
 ## Deployments
 
-| Program     | ID                                             |
-| ----------- | ---------------------------------------------- |
-| `velocity`  | `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`  |
-| `vaults`    | `vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR`  |
-| `jit-proxy` | `J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ` |
+| Program    | ID                                            |
+| ---------- | --------------------------------------------- |
+| `velocity` | `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P` |
+| `vaults`   | `vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR` |
 
 ## Prerequisites
 
@@ -129,7 +128,7 @@ extra sync step. [`fuzz/README.md`](./fuzz/README.md) has the harness list and t
 | Task                                          | Command                                                                    |
 | --------------------------------------------- | -------------------------------------------------------------------------- |
 | Build program + sync IDL/types into the SDK   | `bun run program:build`                                                     |
-| Regenerate IDL/types only (fast, no SBF build) | `bun run program:idl` (vaults: `program:idl:vaults`, jit: `program:idl:jit-proxy`) |
+| Regenerate IDL/types only (fast, no SBF build) | `bun run program:idl` (vaults: `program:idl:vaults`)                       |
 | Deployable devnet `.so`                       | `bun run program:build:devnet`                                              |
 | Mainnet `.so` (production gates on)           | `bun run program:build:mainnet`                                             |
 | Build one TS package + its deps               | `bunx turbo run build --filter=@velocity-exchange/sdk`                      |
@@ -137,7 +136,7 @@ extra sync step. [`fuzz/README.md`](./fuzz/README.md) has the harness list and t
 | Rust unit tests                               | `cargo test -p velocity` (add `-- --show-output` for stdout)                |
 | One integration test                          | `ts-mocha -t 300000 ./tests/<test_file>.ts`                                 |
 | Full integration suite (skip rebuild)         | `bash test-scripts/run-anchor-tests.sh --skip-build`                        |
-| SDK unit tests                                | `cd packages/sdk && bun run test:ci` (DLOB: `bun run test:dlob`)            |
+| SDK unit tests                                | `cd packages/sdk && bun run test:ci`                                        |
 | Rust lint/format                              | `bun run fmt:rust && cargo clippy -p velocity` (CI enforces both)           |
 | SDK lint/format                               | `cd packages/sdk && bun run prettify:fix && bun run lint`                   |
 
@@ -215,7 +214,6 @@ built from `docker-info.json` by the `velocity-publish` workflow, not to npm.
 | `@velocity-exchange/sdk`        | `npm-sdk-v0.2.3`        |
 | `@velocity-exchange/admin-cli`  | `npm-cli-admin-v0.2.3`  |
 | `@velocity-exchange/vaults-sdk` | `npm-vaults-sdk-v0.2.3` |
-| `@velocity-exchange/jit-proxy`  | `npm-jit-proxy-v0.2.3`  |
 
 The tag version must match the `package.json` version committed by the "Version Packages" PR. Do not
 edit `package.json` versions by hand; changesets and the bot own those fields.
@@ -228,6 +226,8 @@ edit `package.json` versions by hand; changesets and the bot own those fields.
 | [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md)                      | The canonical record of every change vs upstream Drift. Read it if you are integrating |
 | [docs/FEES.md](./docs/FEES.md)                                                | The fee architecture: per-fill splits, fee ledger, sweeps, carveouts          |
 | [deploy-scripts/README.md](./deploy-scripts/README.md)                        | The devnet upgrade runbook: two-phase buffer deploys, wipe and reinit         |
+| [docs/clob-client-integration.md](./docs/clob-client-integration.md)          | Placing, cancelling, modifying and displaying orders that rest on a CLOB      |
+| [docs/clob-client-surface.md](./docs/clob-client-surface.md)                  | The design behind the CLOB client surface, and what is still open             |
 | [docs/alignment-and-native-offsets.md](./docs/alignment-and-native-offsets.md) | Zero-copy struct alignment invariants. Read before adding fields to accounts  |
 | [docs/ACCOUNT-EXTENSION.md](./docs/ACCOUNT-EXTENSION.md)                      | Growing zero-copy accounts past their padding: the `extend_account` crank, the migration runbook, the client rules |
 | [docs/EXTERNAL-DEPENDENCIES.md](./docs/EXTERNAL-DEPENDENCIES.md)             | Every external dependency of the on-chain programs. CPI targets, oracles, whitelisted venues, and the full transitive crate graph, each with its trust assumption and failure mode |

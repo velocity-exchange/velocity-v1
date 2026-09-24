@@ -23,9 +23,3 @@ GRPC_X_TOKEN="" \
 ```
 
 Unset `MAINNET` to run against devnet.
-
-## JIT making
-
-Velocity MMs can also provide just in time (JIT) matching via swift and the jit-proxy helper
-program. For examples see the `swift-maker` and `jitter` examples next to this one, and the
-jit-proxy example: https://github.com/velocity-exchange/jit-proxy/tree/master/rust

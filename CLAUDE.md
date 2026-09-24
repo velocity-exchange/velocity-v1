@@ -50,14 +50,14 @@ has the full invariant rules and covers adding fields to zero-copy structs.
 correct feature flags so you do not have to remember them.
 
 ```bash
-bun run program:build           # all five test programs + IDL/types synced into packages/sdk/src/idl/
+bun run program:build           # all four test programs + IDL/types synced into packages/sdk/src/idl/
 bun run program:idl             # IDL/types only, no SBF build. Fast path for layout/name changes
 bun run program:build:devnet    # deployable devnet .so (wraps deploy-scripts/build-devnet.sh)
 bun run program:build:mainnet   # mainnet .so (default features: production gates on, devnet ixs compiled out)
 ```
 
 `program:build` and `program:idl` use `--no-default-features --features no-entrypoint,anchor-test`
-for velocity; `program:build` gives the other four programs their own flags (see build-sbf.sh).
+for velocity; `program:build` gives the other three programs their own flags (see build-sbf.sh).
 That is required even though `declare_id!` is now unconditional, because default features include
 `mainnet-beta`. `mainnet-beta` compiles out the devnet-only instructions, including
 `force_wipe_accounts_devnet`, which `wipe-devnet.ts` calls through the SDK IDL, and it switches
@@ -110,7 +110,7 @@ Two things to keep:
   cache-wipe commands use `target/sbpf*-solana-solana` so they cover both.
 
 `deploy-scripts/assert-sbpf-version.sh` fails unless a `.so` carries the expected version. It runs
-at the end of every build and again in the devnet buffer and jit-proxy deploy scripts, because a v0
+at the end of every build and again in the devnet buffer deploy scripts, because a v0
 artifact builds and deploys fine today and becomes un-upgradable the day SIMD-0500 activates.
 
 The verifiable build emits v3 as well. The image tag does not decide the bytecode version:
@@ -161,8 +161,7 @@ never the reverse.
 
 **Mirror Rust program logic changes in the TypeScript SDK.** Beyond layout, the SDK re-implements
 chunks of the program's logic in TypeScript: pricing, margin and health, funding, fees, the AMM math
-in `packages/sdk/src/math/`, the DLOB matching and auction logic in `packages/sdk/src/dlob/`, and
-the account abstractions in `user.ts` and `velocityClient.ts`.
+in `packages/sdk/src/math/`, and the account abstractions in `user.ts` and `velocityClient.ts`.
 
 So whenever you change program behavior, update the corresponding TypeScript in the same change, so
 the SDK stays a faithful offchain mirror. That covers a formula, rounding or precision, a threshold
@@ -247,6 +246,15 @@ This is almost always stale SBF build artifacts after a Cargo.lock dep change. S
 rm -rf target/sbpf*-solana-solana target/deploy
 bash deploy-scripts/build-sbf.sh test
 ```
+
+**Symptom: `Access violation in stack frame 3 at address 0x2000...` on instructions that were fine before** (first seen: `initialize_user_stats` on a local validator), and a clean rebuild does NOT fix it.
+This is a **platform-tools v1.52 miscompile**, not a stale cache: v1.52 (the default bundled with `cargo-build-sbf` 3.1.14, which plain `anchor build` uses) emits velocity code that overflows a 4KB stack frame at runtime; v1.54 and later compile the same code correctly. Any velocity `.so` that will actually be *executed* (validator deploys, the e2e localnet harness, devnet buffers) must pin the toolchain explicitly rather than rely on a default. `deploy-scripts/build-sbf.sh` pins v1.57 and every build path routes through it:
+
+```bash
+bash deploy-scripts/build-sbf.sh test velocity
+```
+
+The litesvm/bankrun suites can mask this: they exercise only the instructions each test calls, and older runtimes were lenient. `integration-tests/tests/init_probe.rs` pins the real `initialize_user_stats` path so a miscompiled `.so` fails fast.
 
 ## Testing
 
@@ -343,12 +351,51 @@ passes through only fds 0, 1 and 2. Colors follow the same gate as `deploy-scrip
 
 The integration tests in `tests/` import the SDK by relative path (`../packages/sdk/src/...`) and resolve `@coral-xyz/anchor` and friends from the repo-root `node_modules`. The single root `bun install` provides both. There is no separate per-package install. If deps are missing, run `bun install` at the repo root.
 
+**Rust integration tests (litesvm, `integration-tests/`):** a standalone workspace that loads the
+real `.so` fixtures and drives real instructions. It needs three built programs first — velocity, and
+the CLOB + midpoint from `anchor-v2/`:
+
+```bash
+bash deploy-scripts/build-sbf.sh test velocity
+bun run program:build:clob && bun run program:build:midpoint
+cd integration-tests && cargo test --locked
+```
+
+Gated in CI by the `integration-tests` job in `.github/workflows/main.yml`.
+
 **SDK unit tests:**
 
 ```bash
-cd packages/sdk/ && bun run test:dlob    # DLOB tests
 cd packages/sdk/ && bun run test:ci      # CI subset
 ```
+
+### Which suites to run while working
+
+The long suites are minutes-to-tens-of-minutes each and rebuild the SBF program. **Do not re-run them
+repeatedly inside a working session** — the loop is: unit tests while iterating, **one** integration
+run before you push, CI for everything else.
+
+| While iterating (seconds–a minute, run freely)                                                            | Once before pushing                                            | CI only                                                 |
+| --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------- |
+| `cargo test -p velocity`, `cargo check -p velocity`, `cargo check -p vaults`, `cargo clippy -p velocity`   | `bash test-scripts/run-anchor-tests.sh` (`--skip-build` if the `.so` is current) | `vault-tests`, `rust-workspace-check`, `docker-images-*` |
+| `cd packages/sdk && bun run test:ci`                                                                      | `cd integration-tests && cargo test --locked`                   | the fuzz workflow                                       |
+
+When an integration suite fails, **read the failure and fix the cause** — do not re-run it hoping for a
+different result, and do not re-run the whole file set to check one test. Re-run the single failing
+test (`ts-mocha -t 300000 ./tests/<file>.ts`, or `cargo test --locked <test_name>` in
+`integration-tests/`), then do the one full run at the end.
+
+**`bun run test:e2e:localnet` is a manual, local-only gate — never part of an iteration loop, and
+deliberately not in CI.** It stands up a real `solana-test-validator`, a `redis-server`, the Rust
+book-publisher and swift-server, and a relay crank-turner, and it needs a **separate `relay`
+checkout** (`RELAY_REPO`, default `~/source/relay`) whose program and turner it builds from source.
+That last dependency is why it is not CI-feasible today: relay is a different private repo, so a CI
+job would need a deploy key plus a pinned relay revision, and the run would be a ~40-minute
+multi-service job whose failures are usually the harness rather than the change. Run it locally
+before a devnet upgrade and after touching the relay-facing surface (condition blocks, resolvers,
+executors). If it ever needs to gate, the prerequisite is pinning relay as a submodule (or vendoring
+`relay.so` + the turner binary) — recommend that before wiring the job, don't approximate it with a
+partial harness.
 
 **Lint/format:**
 
@@ -419,7 +466,6 @@ OIDC trusted publishing. `<pkg>` is the directory name under `packages/`:
 | `@velocity-exchange/sdk`        | `npm-sdk-v0.2.3`        |
 | `@velocity-exchange/admin-cli`  | `npm-cli-admin-v0.2.3`  |
 | `@velocity-exchange/vaults-sdk` | `npm-vaults-sdk-v0.2.3` |
-| `@velocity-exchange/jit-proxy`  | `npm-jit-proxy-v0.2.3`  |
 
 The tag version must match the `package.json` version set by the "Version Packages" PR. The workflow
 is idempotent and skips the publish if that version is already on the registry. `npm` (not `bun`) is used
@@ -429,6 +475,8 @@ are rewritten to concrete versions by `.github/scripts/rewrite-workspace-deps.mj
 **Release CLI:** `bun run release <status|bump|devnet|npm|docker|infra|mainnet>` (`deploy-scripts/release.sh`) drives the tag pushes, workflow dispatches and infra pin updates above, in release order; it is read-only until `--execute` is passed. See the "Release CLI" section of [`deploy-scripts/README.md`](./deploy-scripts/README.md). When a tag convention, workflow name or publish path changes in `.github/workflows/`, update the script in the same change.
 
 **PRs that change user-facing behavior in a publishable package should include a changeset.** That covers new features, bug fixes and API changes, but not chores, CI config, or internal refactors that do not affect consumers. To add one, run `bun run changeset` at the repo root, select the affected package(s), choose the bump type (patch/minor/major), and write a short description. Commit the generated `.changeset/*.md` file with your changes. Do not manually edit `package.json` versions. Changesets and the "Version Packages" bot own those fields.
+
+**One changeset per feature branch.** While a branch is unmerged, it carries exactly one `.changeset/*.md` file; every later change on the branch folds into that file in place. The changeset becomes the published release notes, and a consumer only ever sees the branch's final surface — so rewrite it to describe that final surface, and delete anything an intra-branch change superseded ("X was renamed to Y" is noise when X never shipped). Never add a second changeset for the same branch.
 
 ## Devnet program upgrade
 
@@ -477,7 +525,6 @@ This is Velocity Protocol v1, a Solana perpetuals and spot trading protocol.
 - **`vaults/`**: Velocity vaults program (Anchor 1.0; program id `vAuLTsyrv…`). Depends on the `velocity` program as a host/CPI path-dep, referenced by its real crate name `velocity` (not the `program` alias velocity-rs uses, because anchor's IDL build resolves dependency programs by name, so `velocity` maps to `programs/velocity`). Its TS client is `packages/vaults-sdk` (`@velocity-exchange/vaults-sdk`). Regenerate the SDK's IDL + types from the program with `bun run program:idl:vaults` (writes `packages/vaults-sdk/src/idl/vaults.json` and `src/types/vaults.ts`). Never hand-edit them.
 - **`pyth-lazer/`**: Pyth Lazer message/payload/signature/storage types, linked into `velocity` as a real library dependency and used by `instructions/pyth_lazer_oracle.rs` (not a CPI target).
 - **`pyth/`**: Pyth V1 account layout types, an optional dependency of `velocity` pulled in only by the `fuzz-fixtures` feature (plus a dev-dependency for tests).
-- **`jit-proxy/`**: Just-in-time fill/arb proxy program; CPIs into `velocity` (depends on it with the `cpi` feature).
 - **`token_faucet/`**: Devnet/test token minting utility.
 
 Switchboard oracle support and external spot-fulfillment venues (Serum, Phoenix, OpenBook) were removed from the protocol; there is no `programs/switchboard*` or `programs/openbook_v2`. The `OracleSource` enum keeps `DeprecatedSwitchboard`/`DeprecatedSwitchboardOnDemand` variants only to preserve ABI discriminants. Both error out in `get_oracle_price`.
@@ -488,7 +535,8 @@ TypeScript library (`@velocity-exchange/sdk`). Key modules in `src/`:
 
 - `velocityClient.ts`: main client class
 - `user.ts`: user account abstraction
-- `dlob/`: Decentralized Limit Order Book implementation
+- `clob/`: user-orders feed client for orders resting on a CLOB
+- `orderBookLevels.ts`: the `L2`/`L3` book shapes the dlob-server serves
 - `math/`: pricing, margin, funding math
 - `idl/velocity.json`: generated Anchor IDL (do not edit manually)
 
@@ -509,9 +557,137 @@ Preferred layout for instruction code (reference: `instructions/protocol_fees/`)
 
 **Prefer constraints over in-handler validation when the check is trivial.** Account _identity_ checks belong on the accounts struct, not in the handler: PDA `seeds`/`bump` derivation (including deriving one account's seeds from another's loaded field, e.g. `seeds = [b"spot_market", perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()]`), `has_one` for top-level pubkey fields (e.g. `has_one = oracle`), and `address =` locks. Only keep a check in the handler when it is genuinely non-trivial as a constraint: multi-account/stateful logic, math on loaded data, or a _data invariant_ rather than an account identity. Don't contort complex logic into constraint expressions just to move it.
 
+### Function and module shape
+
+The reference for this is `controller/orders/`: one 7,967-line file became a 343-line module root
+over nine subject modules, and its fill path went from four functions of 571, 196, 155 and 331
+lines to a chain whose largest step is 70.
+
+**Size limits.** A function body stays around 60 lines or under, and takes six arguments or fewer.
+These are not arbitrary: a body you cannot see at once hides its own control flow, and a long
+argument list is almost always a context struct that has not been written yet. Exceeding either is
+allowed, but say why in a comment at the definition.
+
+**Carry context in a struct; put the validating on it.** When several steps need the same maps,
+market, clock and seats, that is a type. Give it a constructor in the shape of `AccountMaps::new`
+and make each step a method, so a step takes the context and its own few arguments and nothing
+else. Prefer several small contexts over one wide one: a struct that accumulates every lifetime in
+the call graph becomes its own obstacle. `PerpFill` went from 8 lifetimes and 25 fields to 4 and 19
+by moving the external-book concern into `ExternalVenue` and the running totals into `FillTally`.
+
+**Name a layer for what it governs, not for what it does to the data.** A chain that read
+`fill_perp_order` to `fulfill_perp_order` to `route_and_settle_perp_fill` told a reader nothing:
+three synonyms, and each layer had exactly one caller, so the layering carried no reuse either.
+Those layers govern the order, the taker's risk limits, and liquidity, and they say so now. If two
+functions in a chain could swap names without anybody noticing, the names are wrong.
+
+**One subject per file.** A file is the right size when a reader who opens it finds one subject. A
+module root holds the doc, the imports, the `mod` declarations, the re-exports, and only what
+several subjects genuinely share. Re-export every public name the old file exported, so a split
+changes no caller's imports.
+
+**Some long signatures are deliberate, and stay.** `emit_perp_action_record` keeps its long
+parameter list because a struct there makes the caller build the 480-byte record in its own frame
+and trips the SBPF stack-overwrite check. `FillerSide` keeps four lifetimes because `&mut &mut` is
+invariant. An instruction handler keeps its argument list because that list is the program's ABI.
+Each of those carries a comment saying so. Do not "fix" them.
+
+### Verifying a refactor
+
+A refactor that changes behaviour is a rewrite, and the unit test count is the proof it did not:
+**the count must be identical before and after.**
+
+- **`cargo check` and `cargo clippy` without `--all-targets` build only the lib.** They report clean
+  over a test tree that does not compile. Always pass `--all-targets`.
+- **Run each verification command on its own.** Chaining them has produced output that reported
+  compile errors at line numbers which did not exist in the file, and has hidden a real `fmt`
+  failure that was then reported as clean.
+- **Diff the compiler's warning population against a clean `HEAD` worktree**, bucketed by
+  `(level, file, message)` so line numbers do not matter. This has caught several real regressions
+  that the tests did not, including a settle path reading the raw book instead of the clamped
+  ladder a quoter was allocated against, and a shared maker-seat step using the strict position
+  lookup where one caller needs the creating one.
+- **Measure every function, not the one that improved.** A report that the inner pass reached 155
+  lines was true and useless while its three siblings sat at 571, 196 and 331.
+- **Verify a re-export by compiling it.** Generate a temporary module that imports every public
+  item of the old file by path, compile it under the feature flavors that include the gated names
+  and through the path `lib.rs` actually uses, then delete it. Reading the `pub use` list proves
+  nothing.
+
+### Refactoring against an audit
+
+A split moves code, so it destroys the feature diff. An auditor reading `master..<branch>` for a
+file that was split sees the file deleted and new files appear, with the branch's own changes
+scattered inside them. Weigh that before restructuring a file the branch already changed: the cost
+is not the new code, it is the diff that can no longer be read. Land readability work only on files that are majorly changed or created in the feature. For example, if you only slightly change liquidation, you should not break up the entire file into modules. But if you overhaul orders, you break it into modules.
+
+### Rust style
+
+Prefer declarative iterator chains (`map`/`filter`/`fold`/`try_fold`/`collect`) over imperative `for`/`while` loops wherever the two are performance-equivalent. Explicit loops are fine when they are genuinely better: hot paths where the imperative form saves real work, or indexed mutation across parallel structures that the borrow checker won't allow through closures. Also avoid redundant recomputation in loops — hoist or precompute values that don't change (or change predictably) across iterations.
+
+That last rule is about recomputation, not about plain field reads. **Do not copy a field into a
+local for its own sake.** `let min_order_size = self.min_order_size;` at the top of a function,
+used once sixty lines below, costs a reader a lookup and buys nothing. Read `self.min_order_size`
+where the value is used, or `book.min_order_size` inside a `walk_side` closure, which receives the
+market as its first argument for exactly this reason.
+
+It does not save compute. It spends it. Removing these locals from `quote`, `quote_l3` and
+`execute` moved `quote(full side)` from 16439 CU to 16237 and `execute(50 orders)` from 45639 to
+45633, measured with `cu_benchmarks` in `anchor-v2/programs/clob/tests/clob_tests.rs`. A local a
+walk closure captures stays live across every iteration and every call the body makes. A field
+read at the point of use folds into the instruction that needs it and leaves the closure's
+environment smaller, which matters on a 4 KB SBF frame.
+
+Two cases still earn the local. Keep it on the line before its use, not at the top of the
+function:
+
+- The borrow checker refuses the field read. `l3_row_flags(node, book.blocking_min_size, ..)`
+  inside a call that already takes `&mut book.response` does not compile.
+- The value has to be read before something changes it, such as `let order_id =
+  self.next_order_id;` before the counter increments.
+
 ### Doc comments
 
+**`allow-verbose:` marks a comment that may exceed the length budget.** The budget is in
+`~/.claude/CLAUDE.md` and enforced by the `deslop-comments` skill: a comment is at most half
+the lines of the code it documents. A comment that must run longer carries a line starting
+`allow-verbose:` saying why, and the tooling then skips it. `grep -rn "allow-verbose:"` lists
+every place the rule was set aside, so an exception is a decision rather than a quiet drift.
+
+What earns it here: a wire format or ABI a client builds bytes from, a security bound whose
+derivation a reader cannot reconstruct, an operator runbook, an audit finding's full
+reasoning. What does not: wanting to keep a paragraph.
+
 All modules have doc comments. When making feature or refactor changes, update any module-level doc comments that would be invalidated by the change.
+
+**No plan codenames in comments.** A comment must never point at a design doc, plan, spec section,
+work phase, or review round as its justification — not `S1`–`S7` / "the S5 rule", not "Phase 2",
+not "the plan settles this", "per the sync log", "as the spec warns", "deferred to a later phase". A
+reader has the code, not the plan; those labels expire the moment the doc is renamed, reorganized, or
+merged, and they encode nothing a reader can act on. Write the reason itself instead:
+
+```rust
+// BAD:  the S5 rule applied to the taker flow
+// GOOD: an unfilled place_and_take remainder rests on the book instead of
+//       cancelling, so the taker keeps queue position at its limit price
+```
+
+Referring to a *named, stable artifact* is fine — a crate (`relay-spec`), a type
+(`relay_spec::ConditionV0`), a module path, a durable doc that explains a whole subsystem
+(`docs/alignment-and-native-offsets.md`) — because those are things the reader can go read and that
+change with the code. `docs/propamm-plan.md` is where S1–S7 are *defined*; that document may use
+them, code may not. Local step labels inside one function ("first pass … second pass") are fine too,
+as long as they describe that function rather than a project timeline.
+
+**Version new event structs.** An `#[event]`'s discriminator is derived from its struct name, so
+adding a field to an existing record silently changes the payload under a discriminator consumers
+already decode. New velocity events therefore end in `V0` (e.g. `ProtocolUserWithdrawRecordV0`), and
+a field addition ships as `…V1` with its own discriminator rather than mutating the `V0` shape. The
+records inherited from upstream Drift keep their unversioned names — don't rename those. Wire every
+new event into the SDK's subscriber surface in the same change: `EventMap`, the `eventTypes` default
+list, and the `VelocityEvent` union in `packages/sdk/src/events/types.ts`, plus the record's type
+mirror in `packages/sdk/src/types.ts`. A type mirror without the `EventMap` entry compiles fine and
+is simply never decoded.
 
 ### Migration doc ([docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md))
 
@@ -526,6 +702,8 @@ All modules have doc comments. When making feature or refactor changes, update a
 - Removing or adding a protocol feature
 
 Match the doc's existing structure: feature-level changes go in §2/§3, SDK surface in §4, ABI/layout notes in §5, and add a row to the PR change log in §6. Update the §7 checklist if the migration steps themselves change. Keep stated facts (sizes, pubkeys, counts) verified against the code, not guessed. Purely internal refactors that don't change the program ABI or SDK surface do not need a doc update.
+
+**One §6 row per branch.** While a branch is unmerged, it gets exactly one §6 row; every later change on the branch folds into that row (and into the branch's §2–§5 prose) in place. An integrator migrates against the branch's final state and never saw its intermediate ones, so rewrite the row to the final surface rather than narrating intra-branch history — a rename or a check that only ever existed inside the branch does not belong in the log. The same rule applies to a design doc's sync/change log: one entry per branch, edited in place.
 
 ### Error enum stability
 

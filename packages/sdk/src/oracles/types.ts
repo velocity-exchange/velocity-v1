@@ -37,9 +37,8 @@ export type MMOraclePriceData = Omit<
 	 */
 	isMMExchangeDiffBpsHigh?: boolean;
 	/**
-	 * Whether `price` carries the MM oracle price (true) or fell back to the exchange oracle
-	 * (false), mirroring `MMOraclePriceData::is_safe_price_mm_sourced`. Drives the source-aware
-	 * unset-default resolution of the immediate-fill staleness threshold in `getOracleValidity`.
+	 * True when `price` carries the MM oracle price, false when it fell back to the exchange
+	 * oracle. Mirrors `MMOraclePriceData::is_safe_price_mm_sourced`, used by `getOracleValidity`'s default staleness threshold.
 	 */
 	isMMSourcedPrice?: boolean;
 };

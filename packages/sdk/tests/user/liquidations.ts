@@ -7,7 +7,7 @@ import {
 	SPOT_MARKET_BALANCE_PRECISION,
 } from '../../src/constants/numericConstants';
 import { BN } from '../../src';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import {
 	mockUserAccount as baseMockUserAccount,
 	makeMockUser,

@@ -88,6 +88,16 @@ pub mod lighthouse {
     declare_id!("L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95");
 }
 
+/// The CLOB program velocity wrote and trusts, and the trust root for maker
+/// identity. `initialize_quoter` pins a `Clob` entry to it. The assert below
+/// fails the build if this key and the CLOB's own `declare_id!` ever diverge.
+pub mod clob_program {
+    use solana_program::declare_id;
+    declare_id!("BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU");
+
+    const _: () = assert!(clob_wire::is_clob_program_id(ID.to_bytes()));
+}
+
 pub mod dflow_mainnet_aggregator_4 {
     use solana_program::declare_id;
     declare_id!("DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH");

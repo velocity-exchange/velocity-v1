@@ -509,6 +509,7 @@ export class User {
 			maxMarginRatio: 0,
 			isolatedPositionScaledBalance: ZERO,
 			positionFlag: 0,
+			reduceOnlyClobOrders: 0,
 		};
 	}
 
@@ -1531,17 +1532,8 @@ export class User {
 	}
 
 	/**
-	 * True when the account has an admin-set `equityFloor` and its net equity
-	 * (unweighted assets and perp PnL minus unweighted spot liabilities) is below
-	 * it. This is the trip threshold of the permissionless `tripEquityFloorBreaker`;
-	 * action gating happens at `equityFloor + equityFloorBuffer` (see
-	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor` onchain.
-	 *
-	 * The value always comes from `getFloorNetEquity` so it prices the
-	 * account exactly the way the gates do. Note the onchain trip decides
-	 * with a separate upper-bound verdict from the same position walk
-	 * (`provesEquityFloorBreach` mirrors it exactly); this predicate only
-	 * compares the point value.
+	 * True when net equity (`getFloorNetEquity`) is below `equityFloor`. Mirrors `User::is_below_equity_floor`.
+	 * The trip breaker instead uses the separate verdict `provesEquityFloorBreach` mirrors.
 	 */
 	public isBelowEquityFloor(slot?: BN): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
@@ -1552,17 +1544,9 @@ export class User {
 	}
 
 	/**
-	 * True when the equity floor authorizes a keeper to force-cancel this account's
-	 * orders. Mirrors the `force_cancel_orders` arm of the onchain gate.
-	 *
-	 * Being below the floor AUTHORIZES a third party against the account, so
-	 * this fails closed in the opposite direction from the gates: it is true
-	 * only when every oracle is valid and the trusted value sits below the
-	 * floor, so a bad price cannot manufacture that authorization.
-	 *
-	 * The onchain instruction also authorizes on a breached maintenance margin, and
-	 * that arm is independent of this one. A `false` here does not mean the keeper
-	 * cannot force-cancel.
+	 * True when the equity floor authorizes a keeper to force-cancel orders. Mirrors `force_cancel_orders`.
+	 * True only when every oracle is valid and the trusted value sits below the floor.
+	 * The onchain gate also authorizes on breached maintenance margin. A `false` here does not rule that out.
 	 */
 	public isForceCancelAuthorizedByEquityFloor(slot: BN): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
@@ -1600,10 +1584,11 @@ export class User {
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		// With a slot, predict the gates exactly: they fail closed, so any
-		// invalid oracle rejects the same way a value below the buffered
-		// floor does. Without one, the value is priced the same way but
-		// oracles are assumed valid.
+
+		// With a slot, this predicts the gates exactly. They fail closed, so an
+		// invalid oracle rejects the same way a value below the buffered floor
+		// does. Without a slot, the value is priced the same way and every oracle
+		// counts as valid.
 		const netEquity = this.getFloorNetEquity(slot);
 		return (
 			!netEquity.allOraclesValid ||
@@ -1612,13 +1597,9 @@ export class User {
 	}
 
 	/**
-	 * Net equity in excess of the admin-set `equityFloor`, floored at zero
-	 * (QUOTE_PRECISION). Unbounded (`null`) when no floor is set. This is headroom
-	 * above the trip threshold; headroom above the level risk-increasing actions
-	 * must clear is `getEquityAboveBufferedFloor`.
-	 *
-	 * Pass `slot` to measure headroom the way the gates do: any invalid
-	 * oracle reports zero headroom (the gates fail closed).
+	 * Net equity above `equityFloor`, floored at zero (QUOTE_PRECISION). Unbounded
+	 * (`null`) when no floor is set. Pass `slot` to measure headroom the way the
+	 * gates do. An invalid oracle then reports zero headroom.
 	 */
 	public getEquityAboveFloor(slot?: BN): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
@@ -1633,12 +1614,9 @@ export class User {
 	}
 
 	/**
-	 * Net equity in excess of `equityFloor + equityFloorBuffer`, floored at zero
-	 * (QUOTE_PRECISION). Unbounded (`null`) when no floor is set. When this reaches
-	 * zero, risk-increasing actions start rejecting.
-	 *
-	 * Pass `slot` to measure headroom the way the gates do: any invalid
-	 * oracle reports zero headroom (the gates fail closed).
+	 * Net equity above `equityFloor + equityFloorBuffer`, floored at zero (QUOTE_PRECISION).
+	 * Unbounded (`null`) when no floor is set. Pass `slot` to measure headroom the way the gates do.
+	 * An invalid oracle then reports zero headroom.
 	 */
 	public getEquityAboveBufferedFloor(slot?: BN): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
@@ -2321,20 +2299,19 @@ export class User {
 	/**
 	 * Net equity plus the oracle-validity verdict, mirroring the program's
 	 * `calculate_net_equity_for_floor` metric (`calculate_user_equity`).
-	 * Every position is valued at its live oracle price; settled markets are
-	 * valued at their expiry price and their oracle is excluded from the
-	 * verdict.
+	 * Every position is valued at its live oracle price. A settled market is
+	 * valued at its expiry price and its oracle is excluded from the verdict.
 	 *
-	 * The onchain floor gates fail closed on the verdict: risk-increasing
+	 * The onchain floor gates fail closed on the verdict. Risk-increasing
 	 * actions, withdrawals and transfers out are authorized only when
-	 * `allOraclesValid` and `value` clears `equityFloor + equityFloorBuffer`;
-	 * being below the raw floor counts as force-cancel grounds only when
-	 * `allOraclesValid` and `value` sits below it. The breaker trip uses its
+	 * `allOraclesValid` holds and `value` clears `equityFloor + equityFloorBuffer`.
+	 * Being below the raw floor counts as force-cancel grounds only when
+	 * `allOraclesValid` holds and `value` sits below it. The breaker trip uses its
 	 * own upper-bound verdict (`getTripNetEquity`).
-	 * @param slot Current slot, for oracle staleness classification. Omit to
-	 * skip the verdict: `value` is still priced exactly as the gates price it
-	 * (live oracles, expiry price for settled markets), but `allOraclesValid`
-	 * is reported `true` unconditionally.
+	 * @param slot Current slot, for oracle staleness classification. Omit it to
+	 * skip the verdict. `value` is still priced exactly as the gates price it
+	 * (live oracles, expiry price for settled markets), and `allOraclesValid` is
+	 * reported `true` whatever the oracles say.
 	 * @returns Value and verdict, QUOTE_PRECISION.
 	 */
 	private calculateFloorEquity(slot?: BN): FloorEquityCalculation {
@@ -2501,17 +2478,8 @@ export class User {
 	}
 
 	/**
-	 * Net-equity upper bound for the breaker trip, mirroring the program's
-	 * `calculate_user_equity_for_trip`. The shared portfolio walk values valid
-	 * positions exactly as `getFloorNetEquity` does. An invalid-oracle asset or
-	 * long makes the upper bound unprovable; an invalid-oracle liability or
-	 * short base leg contributes zero, its sound maximum at a positive price.
-	 * Invalid quote conversion also makes the result unprovable. Both onchain
-	 * trip paths arm the breaker only when this finite upper bound is below the
-	 * raw floor.
-	 * @param slot Current slot, for oracle staleness classification. Omit to
-	 * treat every oracle as valid: the result equals `getFloorNetEquity`.
-	 * @returns Upper bound and provability, QUOTE_PRECISION.
+	 * Net-equity upper bound for the trip breaker, mirroring `calculate_user_equity_for_trip`. An invalid-oracle asset or long is unprovable.
+	 * An invalid-oracle liability or short base leg values at zero, its sound maximum at a positive price.
 	 */
 	getTripNetEquity(slot?: BN): TripNetEquity {
 		const { tripEquityUpperBound } = this.calculateFloorEquity(slot);
@@ -2521,10 +2489,7 @@ export class User {
 	}
 
 	/**
-	 * Whether the onchain breaker trip would fire for this subaccount:
-	 * `getTripNetEquity` is provable and its upper bound sits below the raw
-	 * `equityFloor`. Mirrors the program's `TripNetEquity::proves_breach`,
-	 * the single predicate both trip paths decide with.
+	 * True when `getTripNetEquity` is provable and its bound sits below `equityFloor`, mirroring `TripNetEquity::proves_breach`.
 	 * @param slot Current slot, for oracle staleness classification.
 	 */
 	provesEquityFloorBreach(slot?: BN): boolean {
@@ -4386,12 +4351,8 @@ export class User {
 	}
 
 	/**
-	 * The user's perp fee-tier index, the rung `getUserFeeTier` reads its rates
-	 * from. Exposed for surfaces that rank the tier itself (highlighting the
-	 * active row of a fee schedule, progress toward the next tier) rather than
-	 * just charging it.
-	 * @param now Optional unix timestamp (seconds) to evaluate the rolling volume window as of; defaults to current time.
-	 * @returns The index into `state.perpFeeStructure.feeTiers`.
+	 * Perp fee-tier index, the rung `getUserFeeTier` reads rates from. For surfaces that rank the tier itself, such as a fee schedule row.
+	 * @param now Unix timestamp (seconds) for the rolling volume window. Defaults to now.
 	 */
 	public getUserPerpFeeTierIndex(now?: BN): number {
 		return getPerpFeeTierIndex(
@@ -4402,28 +4363,8 @@ export class User {
 	}
 
 	/**
-	 * True when the program charges a builder fee on this user's perp fills.
-	 *
-	 * A builder fee is an additive debit on the taker that the builder later
-	 * claims into its own account, and the taker is the party that approves the
-	 * builder. The program therefore treats the fee as a transfer out and
-	 * charges it only when the taker meets initial margin, the gate a
-	 * withdrawal clears. A position-decreasing fill is otherwise checked
-	 * against maintenance margin alone. Mirrors the gate in
-	 * `fulfill_perp_order` (`controller/orders.rs`); when it is false the fill
-	 * still executes and the builder is paid nothing for it.
-	 *
-	 * The program applies initial margin to the bucket the order trades in and
-	 * maintenance margin to the user's other buckets. This method applies
-	 * initial margin to every bucket, so for a user with isolated positions it
-	 * can report false where the program still charges the fee.
-	 *
-	 * The program also waives the fee when any liability oracle is invalid, and
-	 * values a deposit with an invalid oracle at zero. This method does not
-	 * model oracle validity, so it can report true where the program waives the
-	 * fee. Treat the result as an estimate, not a guarantee.
-	 *
-	 * @return {boolean} Whether a builder fee applies to this user's fills
+	 * True when the program charges a builder fee, mirroring `builder_fee_allowed` (`controller/orders/perp_fill/taker_risk.rs`). Applies initial margin everywhere, so it may read false for isolated positions the program still charges.
+	 * Does not model oracle validity, so it may read true where the program waives. Estimate only.
 	 */
 	public isBuilderFeeCharged(): boolean {
 		return this.getMarginCalculation('Initial', {
@@ -4492,7 +4433,7 @@ export class User {
 
 			// Builder fee (M12): charged on top of the tiered fee, on the raw quote
 			// (independent of the referee discount), mirroring `builder_fee` in `math/fees.rs`.
-			// The program waives it when the taker is below initial margin — see
+			// The program waives it when the taker is below initial margin. See
 			// `isBuilderFeeCharged`.
 			if (
 				builderInfo &&

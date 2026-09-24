@@ -4,5 +4,6 @@
   "usermap-server":    { "path": "apps/usermap-server",      "lang": "ts",   "scope": "@velocity-exchange/usermap-server",  "out": "lib",  "start": "lib/publisher.js",  "ecr": "usermap-server",    "port": 9464 },
   "keeper-bots-v2":    { "path": "apps/keeper-bots-v2",      "lang": "ts",   "scope": "@velocity-exchange/keeper-bots-v2",         "out": "lib",  "start": "lib/index.js",  "ecr": "keeper-bots-v2",    "port": 9464 },
   "keep-rs":           { "path": "rust/keep-rs",             "lang": "rust", "bin": "keeprs",                               "ecr": "keep-rs",           "port": 9898 },
-  "swift":             { "path": "rust/swift",               "lang": "rust", "bin": "swift-server",                         "ecr": "swift" }
+  "swift":             { "path": "rust/swift",               "lang": "rust", "bin": "swift-server",                         "ecr": "swift" },
+  "book-publisher":    { "path": "rust/book-publisher",      "lang": "rust", "bin": "book-publisher",                       "ecr": "book-publisher" }
 }

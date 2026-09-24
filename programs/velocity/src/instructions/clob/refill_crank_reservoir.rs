@@ -1,0 +1,177 @@
+//! Refill a market's crank reservoir from the protocol treasury.
+//!
+//! The instruction is permissionless and relay-cranked, like the work the
+//! reservoir funds. A reservoir mirrors its spendable balance into its own
+//! account data. The refill condition wakes when that balance falls to the
+//! treasury's watermark, and this instruction moves the difference. No operator
+//! watches per-market balances.
+//!
+//! The treasury pays the caller. The reservoir the caller filled does not pay,
+//! because it is low at that moment by definition.
+
+use {
+    super::helpers::crank_common::ResolveClobCrank,
+    crate::{
+        error::ErrorCode,
+        instructions::relay_harness::StagedCall,
+        math::safe_math::SafeMath,
+        state::{
+            clob_crank::ClobCrankConditionsV0,
+            crank_treasury::{CrankTreasuryV0, CRANK_TREASURY_PDA_SEED},
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
+
+/// Stage a refill when this market's reservoir has fallen to the watermark.
+///
+/// The condition already fired on the mirrored balance, so this reads the real
+/// balance and confirms it. A mirror can lag its account. A payment writes
+/// both, but a plain lamport transfer into the reservoir writes only the
+/// balance. The wake is therefore a hint, and this is the check.
+pub(super) fn stage_refill(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
+    let (market_index, watermark, _target) = {
+        let conditions = ctx.accounts.crank_conditions.load()?;
+        (
+            conditions.market_index,
+            conditions.refill_watermark_lamports,
+            ctx.accounts
+                .treasury
+                .load()?
+                .refill_target(conditions.crank_payments.max_payment())?,
+        )
+    };
+    let conditions_info = ctx.accounts.crank_conditions.to_account_info();
+    let spendable = ClobCrankConditionsV0::spendable_lamports(&conditions_info)?;
+    if spendable > watermark {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        crate::staged_call!(RefillCrankReservoir {
+            treasury: crate::state::pdas::crank_treasury(),
+            crank_conditions: ctx.accounts.crank_conditions.key(),
+            authority: crate::state::pdas::keeper_placeholder(),
+        })
+        .arg(RefillCrankReservoirArgs { market_index })?,
+    ))
+}
+
+#[derive(Accounts)]
+#[instruction(args: RefillCrankReservoirArgs)]
+pub struct RefillCrankReservoir<'info> {
+    /// The protocol's lamport pool.
+    #[account(mut, seeds = [CRANK_TREASURY_PDA_SEED], bump)]
+    pub treasury: AccountLoader<'info, CrankTreasuryV0>,
+    /// The market reservoir being filled.
+    #[account(
+        mut,
+        seeds = [
+            crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
+            args.market_index.to_le_bytes().as_ref(),
+        ],
+
+        bump
+    )]
+    pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
+    /// CHECK: the lamport payout target, which is relay's keeper-placeholder
+    /// slot. It never signs, so a turner can name a payout account that is not
+    /// the key paying for the transaction.
+    #[account(mut)]
+    pub authority: UncheckedAccount<'info>,
+}
+
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct RefillCrankReservoirArgs {
+    pub market_index: u16,
+}
+
+pub fn handle_refill_crank_reservoir(
+    ctx: Context<RefillCrankReservoir>,
+    args: RefillCrankReservoirArgs,
+) -> Result<()> {
+    let RefillCrankReservoirArgs { market_index } = args;
+    let (refill_payment, watermark, target) = {
+        let treasury = ctx.accounts.treasury.load()?;
+        let conditions = ctx.accounts.crank_conditions.load()?;
+        (
+            u64::from(conditions.crank_payments.refill),
+            conditions.refill_watermark_lamports,
+            treasury.refill_target(conditions.crank_payments.max_payment())?,
+        )
+    };
+
+    let conditions_info = ctx.accounts.crank_conditions.to_account_info();
+    let conditions_rent = Rent::get()?.minimum_balance(conditions_info.data_len());
+    let spendable = conditions_info.lamports().saturating_sub(conditions_rent);
+
+    // The no-work guard. Without it a caller could refill a full reservoir over
+    // and over and draw the keeper payment each time. The treasury would pay to
+    // move its own lamports.
+    validate!(
+        spendable <= watermark,
+        ErrorCode::CrankReservoirNotLow,
+        "reservoir holds {} spendable lamports, above the {} watermark",
+        spendable,
+        watermark
+    )?;
+
+    let treasury_info = ctx.accounts.treasury.to_account_info();
+    let treasury_rent = Rent::get()?.minimum_balance(treasury_info.data_len());
+    // The keeper is paid from the same pool, so its fee is reserved before the
+    // refill is sized. A refill that consumed the last lamports would leave
+    // nothing to pay the caller and the whole transaction would fail.
+    let reserved = treasury_rent.safe_add(refill_payment)?;
+    let available = treasury_info.lamports().saturating_sub(reserved);
+    // A target at or below what the reservoir already holds adds nothing, and
+    // an unpriced treasury has no target. Either way there is no work. Paying
+    // for no work lets a repeated call drain the treasury.
+    validate!(
+        target > spendable,
+        ErrorCode::CrankReservoirNotLow,
+        "reservoir holds {} spendable lamports against a refill target of {}",
+        spendable,
+        target
+    )?;
+
+    let amount = target.safe_sub(spendable)?.min(available);
+    // A refill must leave the reservoir above the watermark that woke it.
+    // Otherwise a partial refill pays a keeper, leaves the condition due, and
+    // gets cranked again, spending more on payments than it moves. Reverting
+    // holds the remaining lamports for other markets and signals underfunding.
+    validate!(
+        spendable.safe_add(amount)? > watermark,
+        ErrorCode::InsufficientCrankTreasury,
+        "treasury can spare {} lamports for market {}, short of the {} watermark",
+        available,
+        market_index,
+        watermark
+    )?;
+
+    CrankTreasuryV0::pay_out(&treasury_info, &conditions_info, amount, treasury_rent)?;
+    // The refill condition reads the mirror. Rewriting it here takes the
+    // condition back below its wake, so the crank does not fire again.
+    ClobCrankConditionsV0::write_spendable_mirror(&conditions_info, conditions_rent)?;
+
+    let paid = CrankTreasuryV0::pay_out(
+        &treasury_info,
+        &ctx.accounts.authority.to_account_info(),
+        refill_payment,
+        treasury_rent,
+    )?;
+
+    let mut treasury = ctx.accounts.treasury.load_mut()?;
+    treasury.total_refilled = treasury.total_refilled.saturating_add(amount);
+    treasury.total_paid = treasury.total_paid.saturating_add(paid);
+
+    msg!(
+        "refilled market {} reservoir with {} lamports, paid {} to {}",
+        market_index,
+        amount,
+        paid,
+        ctx.accounts.authority.key()
+    );
+
+    Ok(())
+}

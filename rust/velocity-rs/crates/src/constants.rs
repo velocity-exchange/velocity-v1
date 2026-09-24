@@ -18,6 +18,12 @@ pub const SYSVAR_INSTRUCTIONS_PUBKEY: Pubkey =
 pub const SYSVAR_RENT_PUBKEY: Pubkey =
     solana_pubkey::pubkey!("SysvarRent111111111111111111111111111111111");
 
+/// Default ceiling on the account data one transaction may load, in bytes.
+///
+/// A transaction is charged for the limit it requests; omitting one gets 64
+/// MiB. 12 MiB is about twice what velocity needs; raise it for a wider account list.
+pub const LOADED_ACCOUNTS_DATA_SIZE_DEFAULT: u32 = 12 * 1024 * 1024;
+
 /// Velocity program address
 pub const PROGRAM_ID: Pubkey =
     solana_pubkey::pubkey!("vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P");
@@ -30,9 +36,6 @@ pub const VAULT_PROGRAM_ID: Pubkey =
 pub const ED25519_PROGRAM_ID: Pubkey =
     solana_pubkey::pubkey!("Ed25519SigVerify111111111111111111111111111");
 
-/// JIT proxy program address
-pub const JIT_PROXY_ID: Pubkey =
-    solana_pubkey::pubkey!("J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ");
 /// Empty pubkey
 pub const DEFAULT_PUBKEY: Pubkey = solana_pubkey::pubkey!("11111111111111111111111111111111");
 
@@ -115,6 +118,41 @@ pub fn derive_spot_market_vault(market_index: u16) -> Pubkey {
 /// calculate the PDA for the velocity signer
 pub fn derive_velocity_signer() -> Pubkey {
     let (account, _seed) = Pubkey::find_program_address(&[&b"velocity_signer"[..]], &PROGRAM_ID);
+    account
+}
+
+/// allow-verbose: documents a security invariant (why one shared signer per
+/// market is safe) that a reader cannot reconstruct from the derivation alone.
+///
+/// The market's quoter slab, the one account holding every approved quoter
+/// config; router fills and CLOB order-flow instructions name it in place
+/// of per-quoter registry entries.
+///
+/// The slab is also the one signer for every external quoter CPI on its
+/// market: the book's `place_authority` and each midpoint quoter's
+/// `execute_authority`. It is not [`derive_velocity_signer`], the vault
+/// token authority, because a CPI callee inherits signer privilege. One
+/// shared key per market is safe because approval excludes other quoters'
+/// response accounts from the registered list, so a forwarded signature has
+/// no instruction it can complete. `programs/velocity/src/signer.rs`
+/// documents this model.
+pub fn derive_quoter_slab(market_index: u16) -> Pubkey {
+    let (account, _seed) = Pubkey::find_program_address(
+        &[&b"quoter_slab"[..], &market_index.to_le_bytes()],
+        &PROGRAM_ID,
+    );
+
+    account
+}
+
+/// The per-market relay crank conditions account, which also holds the
+/// reservoir that pays crank keepers.
+pub fn derive_clob_crank_conditions(market_index: u16) -> Pubkey {
+    let (account, _seed) = Pubkey::find_program_address(
+        &[&b"clob_crank_conditions"[..], &market_index.to_le_bytes()],
+        &PROGRAM_ID,
+    );
+
     account
 }
 

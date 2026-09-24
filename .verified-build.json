@@ -4,9 +4,5 @@
 		"8d2cd726afdc800f89c841ff3cf1968980719df0",
 		"--library-name",
 		"velocity"
-	],
-	"J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ": [
-		"--library-name",
-		"jit_proxy"
 	]
 }

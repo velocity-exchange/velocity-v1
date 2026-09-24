@@ -9,12 +9,12 @@ import { BN } from '../isomorphic/anchor';
 export type SwapMode = 'ExactIn' | 'ExactOut';
 export type SwapClientType = 'jupiter' | 'titan';
 
-/** Account budget assumed when a caller doesn't specify one. */
+/** Account budget used when a caller does not specify one. */
 export const DEFAULT_SWAP_MAX_ACCOUNTS = 50;
 
 /**
- * Quote fields shared by every provider. Provider-specific extras are optional
- * and must never be required to build a swap — see {@link SwapQuote}.
+ * Quote fields shared by every provider. A provider-specific extra is optional.
+ * Building a swap must never require one. See {@link SwapQuote}.
  */
 export interface UnifiedQuoteResponse {
 	inputMint: string;
@@ -23,16 +23,15 @@ export interface UnifiedQuoteResponse {
 	outAmount: string;
 	swapMode: SwapMode;
 	/**
-	 * The slippage the route was quoted at. Authoritative — this is what the
-	 * swap executes with, since {@link SwapProvider.getRouteInstructions} takes
-	 * no slippage override. To swap at different slippage, quote again.
+	 * Slippage the route was quoted at. {@link SwapProvider.getRouteInstructions}
+	 * takes no override, so a different slippage needs a new quote.
 	 */
 	slippageBps: number;
 	routePlan: Array<{ swapInfo: any; percent: number }>;
 
 	/** Jupiter only. */
 	otherAmountThreshold?: string;
-	/** Jupiter provides this; Titan doesn't, so callers derive it. */
+	/** Jupiter provides this. Titan does not, so a caller derives it. */
 	priceImpactPct?: string;
 	platformFee?: { amount?: string; feeBps?: number };
 	contextSlot?: number;
@@ -42,11 +41,8 @@ export interface UnifiedQuoteResponse {
 }
 
 /**
- * What the provider says its route does, recorded when the quote was produced.
- *
- * An implementation detail of the tamper check described on
- * {@link expectProviderRoute} — you never write one of these. {@link
- * buildSwapQuote} records it from the quote a provider is already returning.
+ * What the provider says its route does, recorded at quote time by
+ * {@link buildSwapQuote}. Used by the tamper check in {@link expectProviderRoute}.
  */
 export interface SwapRouteFields {
 	readonly inputMint: string;
@@ -58,15 +54,8 @@ export interface SwapRouteFields {
 }
 
 /**
- * Everything a provider needs to turn its own quote back into instructions.
- *
- * Attached to the quote rather than held on the client so that building a swap
- * is a pure function of the quote you were given. A provider that kept this
- * internally would silently build against whatever route it happened to have
- * cached, which is invisible at the call site and wrong whenever more than one
- * quote is in flight.
- *
- * Opaque — read the normalized fields on {@link SwapQuote} instead.
+ * Rides on the quote, not the client, so a provider never replays a stale
+ * route. See {@link SwapQuote} for the normalized fields.
  */
 export type SwapProviderRoute =
 	| {
@@ -83,8 +72,8 @@ export type SwapProviderRoute =
 	  };
 
 /**
- * A {@link SwapProviderRoute} as a provider hands it to {@link buildSwapQuote} —
- * the payload without the `routed` fields, which `buildSwapQuote` records itself.
+ * A {@link SwapProviderRoute} without the `routed` fields. {@link buildSwapQuote}
+ * records those itself.
  */
 export type SwapProviderRoutePayload = OmitRouted<SwapProviderRoute>;
 
@@ -92,12 +81,8 @@ export type SwapProviderRoutePayload = OmitRouted<SwapProviderRoute>;
 type OmitRouted<R> = R extends unknown ? Omit<R, 'routed'> : never;
 
 /**
- * A quote plus the provider payload needed to execute it. Always pass the quote
- * you intend to swap on; providers will not fall back to a previous one.
- *
- * Treat it as immutable. The normalized fields are checked against the payload
- * before a swap is built, so an edited copy is rejected rather than silently
- * executed as the swap it was originally quoted for — re-quote instead.
+ * A quote and the provider payload that executes it, treated as immutable.
+ * An edited copy fails the payload check and is rejected rather than run.
  */
 export type SwapQuote = UnifiedQuoteResponse & {
 	readonly providerRoute: SwapProviderRoute;
@@ -139,29 +124,16 @@ export interface SwapRouteInstructions {
 export interface GetRouteInstructionsParams {
 	quote: SwapQuote;
 	/**
-	 * Wallet the swap executes as. Must be the wallet the quote was requested
-	 * for when the provider binds routes to a wallet — see
-	 * {@link expectProviderRoute}.
-	 *
-	 * Don't be confused by the Velocity user account public key, which is different.
-	 * This is usually the Velocity authority.
+	 * Wallet the swap executes as, not the Velocity user account public key.
+	 * Usually the Velocity authority. See {@link expectProviderRoute}.
 	 */
 	userPublicKey: PublicKey;
 }
 
 /**
- * The contract every swap provider implements.
- *
- * Quote, then build — either into velocity's swap bracket, or into a standalone
- * transaction. Both clients satisfying the same interface is what stops one
- * provider growing behaviour the other doesn't have; callers get identical
- * semantics regardless of which is configured.
- *
- * Provider-specific request fields live on {@link SwapQuoteParams} and are
- * mapped by the provider itself, so adding one never means editing the unified
- * client. Nothing that only one provider can honour belongs on
- * {@link GetRouteInstructionsParams} — a build-time parameter the other silently
- * ignores is indistinguishable from it being applied.
+ * A caller quotes, then builds either velocity's swap bracket or a standalone
+ * transaction through one shared interface. Provider-specific fields live on
+ * {@link SwapQuoteParams}, never on {@link GetRouteInstructionsParams}.
  */
 export interface SwapProvider {
 	readonly providerName: SwapClientType;
@@ -169,25 +141,16 @@ export interface SwapProvider {
 	getQuote(params: SwapQuoteParams): Promise<SwapQuote>;
 
 	/**
-	 * Builds the route instructions for a quote returned by this provider's
-	 * `getQuote`, at the slippage that quote was priced at.
-	 * @throws If the quote came from a different provider or a different wallet.
+	 * Builds route instructions for a quote from `getQuote`, at its priced slippage.
+	 * @throws If the quote came from a different provider or wallet.
 	 */
 	getRouteInstructions(
 		params: GetRouteInstructionsParams
 	): Promise<SwapRouteInstructions>;
 
 	/**
-	 * Builds a complete, self-contained swap transaction — the setup and
-	 * teardown `getRouteInstructions` strips are still attached: compute budget,
-	 * token account creation, and SOL wrapping.
-	 *
-	 * For swaps the caller signs and sends on its own. A swap running inside
-	 * velocity's `beginSwap`/`endSwap` bracket wants `getRouteInstructions`
-	 * instead — velocity supplies all three itself, and a second copy wraps SOL
-	 * that nothing then unwraps.
-	 *
-	 * @throws If the quote came from a different provider or a different wallet.
+	 * Keeps the setup and teardown {@link getRouteInstructions} strips.
+	 * Do not call it inside velocity's bracket. It double-wraps SOL that nothing unwraps.
 	 */
 	getSwapTransaction(
 		params: GetRouteInstructionsParams
@@ -195,13 +158,13 @@ export interface SwapProvider {
 }
 
 /**
- * Assembles the {@link SwapQuote} a provider's `getQuote` returns, from the
- * normalized quote and the route payload that will execute it.
+ * Assemble the {@link SwapQuote} a provider's `getQuote` returns, from the
+ * normalized quote and the route payload that executes it.
  *
- * Providers call this rather than building the object themselves. It records
- * what the route was quoted with next to the payload, which is what lets
- * {@link expectProviderRoute} reject a quote edited after it was returned — so
- * that check needs no cooperation from the provider beyond calling this.
+ * A provider calls this rather than building the object itself. It records what
+ * the route was quoted with next to the payload. That record lets
+ * {@link expectProviderRoute} reject a quote edited after it was returned, so
+ * the check needs nothing else from the provider.
  */
 export function buildSwapQuote<Q extends UnifiedQuoteResponse>(
 	quote: Q,
@@ -236,14 +199,14 @@ const ROUTED_FIELDS = [
 ] as const satisfies ReadonlyArray<keyof SwapRouteFields>;
 
 /**
- * Throws unless the quote's normalized fields still describe the route it
+ * Throw unless the quote's normalized fields still describe the route it
  * carries.
  *
- * Callers and velocity's swap guards read the normalized fields; the provider
- * executes the opaque payload. Nothing but this ties the two together, so a
- * quote that was copied and edited — `{ ...quote, inAmount }`, a mint rewritten
- * in place — would pass every pair, size and slippage check and then execute the
- * route it was originally quoted for.
+ * A caller and velocity's swap guards read the normalized fields. The provider
+ * executes the opaque payload. This check is the only thing that ties the two
+ * together. Without it, a copied and edited quote such as
+ * `{ ...quote, inAmount }` would pass every pair, size and slippage check and
+ * then execute the route it was originally quoted for.
  */
 function assertQuoteMatchesRoute(
 	quote: SwapQuote,
@@ -257,7 +220,8 @@ function assertQuoteMatchesRoute(
 	}
 
 	for (const field of ROUTED_FIELDS) {
-		// Stringified: a provider may normalize a numeric field it decoded.
+		// Compare as strings, because a provider may normalize a numeric field it
+		// decoded.
 		if (String(quote[field]) !== String(routed[field])) {
 			throw new Error(
 				`Quote reports ${field} ${String(
@@ -271,13 +235,13 @@ function assertQuoteMatchesRoute(
 }
 
 /**
- * Narrows a quote's payload to `provider`, checks it can be executed by
- * `userPublicKey`, and checks it still matches the quote it travels on.
+ * Narrow a quote's payload to `provider`, check that `userPublicKey` can execute
+ * it, and check that it still matches the quote it travels on.
  *
- * A route is wallet-bound when the provider resolves the user's token accounts
- * at quote time (Titan does; Jupiter builds per-wallet at swap time). Those
- * providers record the wallet on `quotedFor`, and executing such a route as
- * anyone else moves funds through accounts the signer doesn't own.
+ * A route is wallet-bound when the provider builds it for one wallet at quote
+ * time. Titan does, and so does Jupiter's v2 API. Those providers record the
+ * wallet on `quotedFor`. Executing such a route as anyone else moves funds
+ * through accounts the signer does not own.
  *
  * @throws If the quote was produced by a different provider, for a wallet other
  * than `userPublicKey`, or for a different pair, size, mode or slippage than the

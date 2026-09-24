@@ -1,0 +1,85 @@
+//! What removal work the book has, answered by the book.
+//!
+//! Expiry and eviction are the book's own business. A quoter with no resting
+//! orders has neither. The consequences of a removal belong to the caller: a
+//! maker's margin reservation, the reward the removal pays, and a trigger slot
+//! that follows the order. The caller does the removing, and asks here which
+//! order to remove.
+//!
+//! The caller used to read the answer out of the market account's bytes. That
+//! meant knowing where a node keeps its expiry and how the free list is
+//! threaded, so a book that changed its data structures broke a program that
+//! never called into it. The book can answer the question itself, which lets
+//! the arena stay the book's own.
+//!
+//! Read-only. A caller simulates this to find work, then sends the removal it
+//! names.
+
+/// Declared by `clob-wire`.
+pub use clob_wire::{ClobRemovalKindV0, NextRemovalArgsV0, OrderViewV0};
+use {
+    crate::{
+        book::{ClobBook, NodeArena},
+        instructions::MarketViewV0,
+        state::{ClobMarketV0, OrderBitFlag, Side},
+    },
+    anchor_lang::prelude::*,
+};
+
+/// The next order of `kind` this book would let a caller remove, or
+/// [`OrderViewV0::NONE`].
+pub fn handle_next_removal_v0(
+    ctx: &mut Context<MarketViewV0>,
+    args: NextRemovalArgsV0,
+) -> Result<OrderViewV0> {
+    let clock = Clock::get()?;
+    let market = &ctx.accounts.market;
+    match args.kind {
+        ClobRemovalKindV0::Expired => expired(market, clock.unix_timestamp),
+        ClobRemovalKindV0::Evictable => Ok(evictable(market)),
+    }
+}
+
+/// The first live order past its expiry.
+///
+/// This walks the arena rather than a side, since expiry has no book
+/// ordering and keeping one would cost every placement. The walk reads the
+/// book's own memory only in simulation, so the cost never lands on chain.
+fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
+    for index in 0..market.len() as u32 {
+        let node = market.read_node(index)?;
+        if !node.is_bit_flag_set(OrderBitFlag::Open) || node.max_ts == 0 || node.max_ts > now {
+            continue;
+        }
+
+        return Ok(crate::state::order_view(&node, index));
+    }
+
+    Ok(OrderViewV0::NONE)
+}
+
+/// The worst-priced order on the side that has reached the eviction threshold.
+/// When both sides have reached it, the fuller side is relieved first.
+///
+/// The threshold and the choice of side are the book's policy and stay here. A
+/// caller that had to know them would re-decide, from numbers it read out of
+/// the header, what the book already decides for itself.
+fn evictable(market: &ClobMarketV0) -> OrderViewV0 {
+    let bids = market.node_count(Side::Bid);
+    let asks = market.node_count(Side::Ask);
+    let threshold = market.evict_threshold_per_side;
+    let side = match (bids >= threshold, asks >= threshold) {
+        (true, true) if asks > bids => Side::Ask,
+        (true, _) => Side::Bid,
+        (_, true) => Side::Ask,
+        _ => return OrderViewV0::NONE,
+    };
+    let worst = market.worst(side);
+    market
+        .read_node(worst)
+        .ok()
+        .filter(|node| node.is_bit_flag_set(OrderBitFlag::Open))
+        .map_or(OrderViewV0::NONE, |node| {
+            crate::state::order_view(&node, worst)
+        })
+}

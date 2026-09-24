@@ -12,17 +12,14 @@ use {
         AccountMapProvider, VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        cpi::accounts::UpdateUser, instructions::optional_accounts::AccountMaps, program::Velocity,
-        state::user::User,
-    },
+    velocity::{cpi::accounts::UpdateUser, program::Velocity, state::user::User},
 };
 
 pub fn liquidate<'info>(ctx: Context<'info, Liquidate<'info>>) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -37,11 +34,7 @@ pub fn liquidate<'info>(ctx: Context<'info, Liquidate<'info>>) -> Result<()> {
     vault.validate_vault_protocol(&vp)?;
     let vp = vp.as_mut().map(|vp| vp.load_mut()).transpose()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(vault.spot_market_index),
         vp.is_some(),
@@ -54,16 +47,8 @@ pub fn liquidate<'info>(ctx: Context<'info, Liquidate<'info>>) -> Result<()> {
         .last_withdraw_request
         .check_redeem_period_finished(&vault, now)?;
     // 2. Check that the depositor is unable to withdraw
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
-    vault_depositor.check_cant_withdraw(
-        &vault,
-        vault_equity,
-        &mut user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-    )?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
+    vault_depositor.check_cant_withdraw(&vault, vault_equity, &mut user, &mut maps)?;
     // 3. Check that the vault is not already in liquidation
     vault.check_available_for_liquidation(now)?;
 

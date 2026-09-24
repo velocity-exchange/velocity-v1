@@ -24,8 +24,8 @@ import {
 
 // `recenter_perp_market_amm_crank` sets the market peg from the oracle account
 // the caller passes, under the `AmmCrank` hot role. The market must bind that
-// account, otherwise the hot key sets the peg from a feed of its choosing —
-// the power the warm-admin `recenter_perp_market_amm` holds.
+// account. Without the binding, the hot key sets the peg from any feed it
+// chooses, which is the power the warm-admin `recenter_perp_market_amm` holds.
 describe('recenter amm crank oracle binding', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 	const INVALID_ORACLE = '0x1793'; // ErrorCode::InvalidOracle (6035)
@@ -91,8 +91,9 @@ describe('recenter amm crank oracle binding', () => {
 			undefined,
 			10000
 		);
-		// A second real feed at a far higher price. This is the substitution the
-		// binding has to refuse: a valid oracle for a different asset.
+
+		// A second real feed at a much higher price. The binding must refuse this
+		// substitution, because it is a valid oracle for a different asset.
 		otherOracle = await mockOracleNoProgram(
 			svmContextWrapper,
 			50000,
@@ -168,8 +169,8 @@ describe('recenter amm crank oracle binding', () => {
 		assert(pegAfter.eq(pegBefore), `peg moved: ${pegBefore} -> ${pegAfter}`);
 	});
 
-	// Control: the rejection above must come from the oracle binding, not from
-	// some other failure that the same call would hit anyway.
+	// A control. The rejection above must come from the oracle binding, and not
+	// from another failure the same call would hit anyway.
 	it('does not report InvalidOracle for the market oracle', async () => {
 		try {
 			await sendCrank(marketOracle);

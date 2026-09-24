@@ -19,7 +19,10 @@ export const TEN_THOUSAND = new BN(10000);
 export const BN_MAX = new BN(Number.MAX_SAFE_INTEGER);
 export const TEN_MILLION = TEN_THOUSAND.mul(TEN_THOUSAND);
 
-/** Accelerated referrers receive this percentage of the referee's taker fee, independently of the configured Standard rate. */
+/**
+ * Percent of the referee's taker fee that an accelerated referrer receives.
+ * The configured Standard rate does not change this value.
+ */
 export const ACCELERATED_REFERRER_REWARD_PERCENT = 20;
 
 /** Default max leverage (5x) used by SDK helpers when a market's actual `marginRatioInitial` isn't available. */
@@ -33,24 +36,13 @@ export const PERCENTAGE_PRECISION_EXP = new BN(6);
 export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
 
 /**
- * Minimum wall-clock time the program requires between two accepted MM-oracle writes
- * (`MM_ORACLE_MIN_WRITE_GAP` in `math/constants.rs`). Also the immediate-fill
- * staleness threshold a perp market falls back to when
- * `oracleSlotDelayOverride` is unset and the price is MM-oracle-sourced,
- * since a tighter threshold than this is unsatisfiable for such a price
- * (an exchange-sourced price keeps the strict zero threshold when unset).
+ * Minimum wall-clock time between two accepted MM-oracle writes. An MM-oracle price
+ * without `oracleSlotDelayOverride` also uses it as the immediate-fill staleness bound.
  */
 export const MM_ORACLE_MIN_WRITE_GAP = millis(800);
 /**
- * Max wall-clock age the program tolerates between an MM-oracle update's source
- * observation slot (carried in the payload) and the slot it lands, enforced
- * symmetrically in both directions (`MM_ORACLE_MAX_SOURCE_AGE` in
- * `math/constants.rs`). An update landing later than this is skipped, since
- * the stored `mmOracleSlot` is the landing slot and a late-landing update
- * would make an old observation read as fresh; a source slot further ahead
- * than this is skipped as a wrong-unit/wrong-scale caller bug. Pinned at or
- * below `MM_ORACLE_MIN_WRITE_GAP` by a program-side assert, since the
- * landing-slot stamp understates observation age by up to this bound.
+ * Max wall-clock age between an MM-oracle update's source observation slot and the slot it lands. The
+ * program skips an update outside the bound either way, and asserts this value is at or below `MM_ORACLE_MIN_WRITE_GAP`.
  */
 export const MM_ORACLE_MAX_SOURCE_AGE = millis(800);
 /** Alias of `PERCENTAGE_PRECISION` (1e6) for the AMM's `concentrationCoef` field. */
@@ -61,6 +53,13 @@ export const QUOTE_PRECISION_EXP = new BN(6);
 /** Exponent for `FUNDING_RATE_BUFFER_PRECISION` (1e3) — the extra precision funding rates carry beyond `PRICE_PRECISION`. */
 export const FUNDING_RATE_BUFFER_PRECISION_EXP = new BN(3);
 /** Exponent for `PRICE_PRECISION` (1e6). */
+/**
+ * A market order that names no price fills at most `oracle / this` away from
+ * the oracle. 200 is 0.5 percent. Mirrors the program's
+ * `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION`.
+ */
+export const DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION = new BN(200);
+
 export const PRICE_PRECISION_EXP = new BN(6);
 /** Exponent for `FUNDING_RATE_PRECISION` (1e9) = `PRICE_PRECISION_EXP` + `FUNDING_RATE_BUFFER_PRECISION_EXP`. */
 export const FUNDING_RATE_PRECISION_EXP = PRICE_PRECISION_EXP.add(
@@ -148,11 +147,15 @@ export const MARGIN_PRECISION = TEN_THOUSAND;
 export const BPS_PRECISION = TEN_THOUSAND; // 1 unit = 1bp
 /** 1e6; precision for AMM bid/ask spread fields (`baseSpread`, `maxSpread`, `longSpread`, `shortSpread`, `lastOracleReservePriceSpreadPct`). */
 export const BID_ASK_SPREAD_PRECISION = new BN(1000000); // 10^6
-/** `PERCENTAGE_PRECISION / 400` = 2500 ppm (25 bp); oracle confidence at or above this carries full weight in the vol spread. Below it the weight ramps continuously from `1 / SPREAD_CONF_DISCOUNT_DIVISOR` to full. Mirrors the program's `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. */
+/**
+ * `PERCENTAGE_PRECISION / 400`, which is 2500 ppm, or 25 bp. Oracle confidence at or above this carries
+ * full weight in the vol spread. Below it the weight ramps continuously from `1 / SPREAD_CONF_DISCOUNT_DIVISOR`.
+ */
 export const SPREAD_CONF_FULL_WEIGHT_THRESHOLD = PERCENTAGE_PRECISION.div(
 	new BN(400)
 );
-/** Denominator (20) of the confidence contribution's starting weight below `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. Mirrors the program's `SPREAD_CONF_DISCOUNT_DIVISOR`. */
+
+/** Denominator of the confidence contribution's starting weight below `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. */
 export const SPREAD_CONF_DISCOUNT_DIVISOR = new BN(20);
 
 /** 1e4; precision for `StateAccount.initialPctToLiquidate`, the fraction of a position liquidated per partial-liquidation pass. */
@@ -182,38 +185,19 @@ export const ONE_HOUR = new BN(60 * 60);
 export const ONE_YEAR = new BN(31536000);
 
 /**
- * Mirror of the program's `MARK_TWAP_RESEED_FUNDING_PERIODS`.
- *
- * How many funding periods the mark TWAP may go unwritten before the program discards
- * its stored value and re-seeds it from the oracle TWAP. The weight an incoming
- * fill-path sample receives grows with the time since the last write (crank samples
- * are weight-capped on-chain), so past this many periods the stored TWAP holds no
- * usable history. The threshold is floored at {@link ONE_HOUR}, because a market's
- * funding period can be zero.
+ * How many funding periods the mark TWAP may stay unwritten. Past this many periods the program discards
+ * the stored value and re-seeds it from the oracle TWAP. Callers floor the window at {@link ONE_HOUR}, because a market's funding period can be zero.
  */
 export const MARK_TWAP_RESEED_FUNDING_PERIODS = new BN(3);
 
 /**
- * Mirror of the program's `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN`: the largest
- * share of a spot borrow that un-booked interest may hide, in
- * `PERCENTAGE_PRECISION` (one basis point).
- *
- * A value-releasing path (withdraw, transfer, swap, or a perp fill) rejects with
- * `SpotMarketInterestStaleForMargin` when a market that carries one of the account's
- * borrows has not accrued interest recently enough to hold its omission under this
- * share. `updateSpotMarketCumulativeInterest` is permissionless and can be bundled
- * into the same transaction.
- *
- * Use `maxSpotInterestStalenessForMargin` to turn this into one market's time window.
+ * The largest share of a spot borrow that un-booked interest may hide, in `PERCENTAGE_PRECISION`. One basis point.
+ * Withdraw, transfer, swap and a perp fill reject with `SpotMarketInterestStaleForMargin` past this share. Use `maxSpotInterestStalenessForMargin` for one market's time window.
  */
 export const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN =
 	PERCENTAGE_PRECISION.divn(10_000);
 
-/**
- * Mirror of the program's `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`: the ceiling on
- * the window `maxSpotInterestStalenessForMargin` derives, so a low-rate market
- * cannot go un-cranked indefinitely.
- */
+/** Ceiling on the window `maxSpotInterestStalenessForMargin` derives, so a low-rate market cannot go un-cranked indefinitely. */
 export const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN = ONE_HOUR;
 
 /** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
@@ -235,19 +219,13 @@ export const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT = new BN(
 /** 13 days in seconds; minimum account age before an idle user account becomes eligible for keeper-initiated deletion. */
 export const ACCOUNT_AGE_DELETION_CUTOFF_SECONDS = 60 * 60 * 24 * 13; // 13 days
 /**
- * Inactivity threshold (accelerated tier, equity < $1,000) after which a user
- * account is eligible to be marked idle: 1 hour. The non-accelerated tier is
- * 1 week. Compare against `millisFromSlots(elapsedSlots, slotDuration)`.
+ * Inactivity time in milliseconds after which a keeper can mark a user account idle. This one-hour
+ * threshold applies to an account with equity under $1,000. Every other account waits one week.
  */
 export const IDLE_TIME = millisFromSecs(3_600);
 /**
- * @deprecated Solana slot time is no longer a constant (400 -> 350 -> 300 ->
- * 250 -> 200ms via feature gates). Resolve the live value with
- * `currentSlotDuration(client, currentSlot)` from `math/time.ts` (or
- * `currentSlotClock` when you need to know whether it came from live data),
- * and convert with its `millisToSlots`/`millisFromSlots` helpers. Given a
- * decoded `State` and a slot already in hand, call
- * `activeSlotDurationFromState(state, slot)` directly.
+ * @deprecated Solana slot time is no longer a constant. Feature gates move it from 400 down to
+ * 200ms. Resolve the live value with `currentSlotDuration(client, currentSlot)` from `math/time.ts`.
  */
 export const SLOT_TIME_ESTIMATE_MS = 400;
 
@@ -269,16 +247,13 @@ export const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN = new BN(100).mul(
 export const GET_MULTIPLE_ACCOUNTS_CHUNK_SIZE = 99;
 
 /**
- * 10 bps of open-interest notional (`PERCENTAGE_PRECISION`); the standing bankruptcy first-loss
- * tranche the fee sweep leaves in `feeLedger.pendingIfFee`. A market whose `bankruptcyIfFloorPct`
- * reads 0 — every market written before the field existed — uses this value. Mirrors the Rust
- * `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` constant; keep both in sync.
+ * The standing bankruptcy first-loss tranche the fee sweep leaves in `feeLedger.pendingIfFee`. 10 bps of open-interest notional, in `PERCENTAGE_PRECISION`.
+ * A market whose `bankruptcyIfFloorPct` reads 0 uses this value, which covers every market written before that field existed.
  */
 export const DEFAULT_BANKRUPTCY_IF_FLOOR_PCT = 1000;
 /**
- * The `PerpMarketAccount.bankruptcyIfFloorPct` value that turns the standing floor off, since 0
- * means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`. A latched bankruptcy still freezes the sweep through
- * `pendingBankruptcyClaims`. Mirrors the Rust `BANKRUPTCY_IF_FLOOR_DISABLED` constant.
+ * The `PerpMarketAccount.bankruptcyIfFloorPct` value that turns the standing floor off. The sentinel is needed because 0 means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`.
+ * A latched bankruptcy still freezes the sweep through `pendingBankruptcyClaims`.
  */
 export const BANKRUPTCY_IF_FLOOR_DISABLED = 4294967295; // u32::MAX
 
@@ -292,21 +267,22 @@ export const MAX_I64 = new BN('9223372036854775807');
 export const MIN_I64 = new BN('-9223372036854775808');
 
 /**
- * Fee tier VIP 1 volume threshold
+ * Trailing 30-day volume breakpoint between the Regular tier and VIP 1, in
+ * `QUOTE_PRECISION`.
  */
 export const VIP_FEE_TIER_ONE_VOLUME_QUOTE = new BN(5_000_000).mul(
 	QUOTE_PRECISION
 );
 
 /**
- * Fee tier VIP 2 volume threshold
+ * Trailing 30-day volume breakpoint between VIP 1 and VIP 2, in `QUOTE_PRECISION`.
  */
 export const VIP_FEE_TIER_TWO_VOLUME_QUOTE = new BN(80_000_000).mul(
 	QUOTE_PRECISION
 );
 
 /**
- * Fee tier VIP 3 volume threshold
+ * Trailing 30-day volume breakpoint between VIP 2 and VIP 3, in `QUOTE_PRECISION`.
  */
 export const VIP_FEE_TIER_THREE_VOLUME_QUOTE = new BN(200_000_000).mul(
 	QUOTE_PRECISION

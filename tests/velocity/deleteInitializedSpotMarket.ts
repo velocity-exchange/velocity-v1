@@ -126,10 +126,11 @@ describe('max deposit', () => {
 			0
 		);
 
-		let result = await svmContextWrapper.connection.getAccountInfoAndContext(
-			spotMarketKey,
-			'processed'
-		);
+		let result =
+			await svmContextWrapper.connection.getAccountInfoAndContext(
+				spotMarketKey,
+				'processed'
+			);
 		assert(result.value === null);
 
 		const spotMarketVaultKey = await getSpotMarketVaultPublicKey(

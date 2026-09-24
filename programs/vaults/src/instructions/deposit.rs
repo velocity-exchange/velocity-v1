@@ -16,19 +16,16 @@ use {
     anchor_spl::token::{self, Token, TokenAccount, Transfer},
     velocity::{
         cpi::accounts::Deposit as VelocityDeposit,
-        instructions::optional_accounts::AccountMaps,
         program::Velocity,
         state::user::{User, UserStats},
     },
 };
 
 pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE the NAV
-    // snapshot, so the entrant mints against indexes that already hold the
-    // incumbents' accrued lender interest (OtterSec #136). The deposit CPI below
-    // refreshes the denomination market too, but that runs after shares are minted.
-    // Must precede `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable
-    // accounts still have live borrows, and the maps must read post-refresh data.
+    // Book lending interest before the NAV snapshot, so the entrant mints
+    // against indexes that already hold depositors' accrued interest
+    // (OtterSec #136). Must run before `load_mut`/`load_maps`: `invoke`
+    // rejects a CPI with live borrows, and the maps need refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -50,11 +47,7 @@ pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Resul
     let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(spot_market_index),
         vp.is_some(),
@@ -62,8 +55,7 @@ pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Resul
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
     let deposit_room_remaining = vault.max_tokens.saturating_sub(vault_equity);
     let mut deposit_amount = amount;
@@ -77,8 +69,8 @@ pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Resul
         deposit_amount = deposit_room_remaining;
     }
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
-    let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
+    let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     vault_depositor.deposit(
         deposit_amount,

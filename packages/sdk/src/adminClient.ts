@@ -40,11 +40,14 @@ import {
 	ConstituentStatus,
 	LPPoolAccount,
 	TransferFeeAndPnlPoolDirection,
+	TransactionFeeRails,
 	MarketType,
 	SpotMarketAccount,
 	UserAccount,
+	CrankCostUnitsV0,
+	QuoterType,
 } from './types';
-import { DEFAULT_MARKET_NAME, encodeName } from './userName';
+import { DEFAULT_MARKET_NAME, DEFAULT_USER_NAME, encodeName } from './userName';
 import { BN } from './isomorphic/anchor';
 import * as anchor from './isomorphic/anchor';
 import {
@@ -67,6 +70,12 @@ import {
 	getLpPoolTokenVaultPublicKey,
 	getVelocitySignerPublicKey,
 	getConstituentCorrelationsPublicKey,
+	getCrankTreasuryPublicKey,
+	getClobCrankConditionsPublicKey,
+	getProgramDataAddress,
+	getQuoterPublicKey,
+	getQuoterSlabPublicKey,
+	getUserConditionsPublicKey,
 } from './addresses/pda';
 import { squareRootBN } from './math/utils';
 import {
@@ -93,11 +102,7 @@ import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
 
 /**
- * The IBRL feature gate whose activation drops the slot to each target duration.
- * `syncStateSlotDuration` passes the matching account so the program can read
- * its activation slot, derive the effective slot from the cluster
- * `EpochSchedule` (first slot of the epoch after the activation epoch,
- * mirroring Agave), and record it in `State.slotDurationTransitionSlots`.
+ * The feature gate whose activation drops the slot to each target duration.
  * Mirrors `ibrl_feature_gate` in the program.
  */
 const IBRL_FEATURE_GATES: Record<number, PublicKey> = {
@@ -108,10 +113,8 @@ const IBRL_FEATURE_GATES: Record<number, PublicKey> = {
 };
 
 /**
- * The IBRL feature-gate account whose activation drops the slot to
- * `slotDurationMs`, or `undefined` for the 400ms baseline / a non-schedule
- * value. Mirrors `ibrl_feature_gate` in the program; exposed so tooling can read
- * the account's activation slot and preview the effective (switch) slot.
+ * Returns `undefined` for the 400ms baseline and for any duration that is not
+ * on the schedule. The account's activation slot previews the switch.
  */
 export function getIbrlFeatureGate(
 	slotDurationMs: number
@@ -169,15 +172,11 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Initializes a new spot market: creates the `SpotMarket` PDA plus its token vault and
-	 * insurance-fund vault, and appends it at `state.numberOfSpotMarkets` (or `marketIndex`
-	 * if explicitly supplied — the on-chain handler asserts it matches the next sequential
-	 * index). Requires warm admin (`check_warm`); if `activeStatus` is `true` the on-chain
-	 * handler additionally requires the **cold** admin specifically (a market cannot be
-	 * launched active by a warm-only signer). For `oracleSource: QuoteAsset` (used only for
-	 * the index-0 quote market), `oracle` must be `PublicKey.default`.
-	 * @param mint - Spot market's token mint. Must have >= 5 decimals (exactly 6 for the
-	 *   quote/index-0 market).
+	 * Creates the `SpotMarket` PDA, its token vault and its insurance-fund vault, then
+	 * appends the market at `state.numberOfSpotMarkets`. Requires warm admin (`check_warm`).
+	 * An `activeStatus` of `true` requires the cold admin. For `oracleSource: QuoteAsset`,
+	 * which only the index-0 quote market uses, `oracle` must be `PublicKey.default`.
+	 * @param mint - Token mint. Needs >= 5 decimals, and exactly 6 for the index-0 market.
 	 * @param optimalUtilization - Utilization at the borrow-rate kink, SPOT_UTILIZATION_PRECISION (1e6, 100% = 1e6).
 	 * @param optimalRate - Borrow rate at `optimalUtilization`, SPOT_RATE_PRECISION (1e6, 100% APR = 1e6).
 	 * @param maxRate - Borrow rate at 100% utilization, SPOT_RATE_PRECISION (1e6).
@@ -193,13 +192,12 @@ export class AdminClient extends VelocityClient {
 	 * @param activeStatus - If `true`, market is `Active` immediately; otherwise `Initialized` (trading disabled until a later status update). Requires cold admin when `true`. Default `true`.
 	 * @param assetTier - Collateral tier gating cross-margin usability. Default `AssetTier.COLLATERAL`.
 	 * @param scaleInitialAssetWeightStart - Deposit-token-amount threshold, QUOTE_PRECISION (1e6) equivalent notional, above which `initialAssetWeight` scales down. Default 0 (disabled).
-	 * @param withdrawGuardThreshold - Token-amount level, market's native decimals, *below* which the withdraw guards stop binding. Resulting deposits are never floored above `depositTokenTwap - withdrawGuardThreshold`, and borrows are always permitted up to this amount. It also sizes the small-depositor exception to the withdraw circuit breaker: an account qualifies below a tenth of it, and the whole eligible cohort shares one of it below the breaker floor. Raising it loosens the guards. Capped on chain at `MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL` ($10k) of oracle notional. Default 0 (guards always bind, no exception).
+	 * @param withdrawGuardThreshold - Token-amount level, market's native decimals, below which the withdraw guards stop binding. Resulting deposits are never floored above `depositTokenTwap - withdrawGuardThreshold`, and borrows are always permitted up to this amount. It also sizes the small-depositor exception to the withdraw circuit breaker. An account qualifies below a tenth of it. The whole eligible cohort shares one of it below the breaker floor. Capped on chain at `MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL`, which is $10k of oracle notional. Default 0, which makes the guards always bind and removes the exception.
 	 * @param orderTickSize - Minimum price increment for spot orders, PRICE_PRECISION (1e6). Default 1.
 	 * @param orderStepSize - Minimum base size increment for spot orders, market's native decimals. Also seeds `minOrderSize`. Default 1.
 	 * @param ifTotalFactor - Insurance fund fee share of the total spot fee, IF_FACTOR_PRECISION (1e6). Default 0.
 	 * @param name - Market display name, UTF-8 encoded and padded/truncated to 32 bytes. Default `DEFAULT_MARKET_NAME`.
-	 * @param marketIndex - Explicit spot market index; defaults to `state.numberOfSpotMarkets` (the next free slot) when omitted.
-	 * @returns Transaction signature.
+	 * @param marketIndex - Explicit spot market index. Defaults to `state.numberOfSpotMarkets`, the next free slot.
 	 */
 	public async initializeSpotMarket(
 		mint: PublicKey,
@@ -1402,8 +1400,9 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionInstruction> {
 		const perpMarket = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 
-		// live chain slot so the target-price trade sizes against the AMM's
-		// current-slot spread smoothing / MM-oracle validity across a gate switch
+		// The live chain slot, so the target-price trade sizes against the AMM's
+		// spread smoothing for this slot. It also decides MM-oracle validity
+		// across a slot-duration gate switch.
 		const currentSlot = await this.connection.getSlot();
 		const [direction, tradeSize, _] = calculateTargetPriceTrade(
 			perpMarket,
@@ -1627,8 +1626,8 @@ export class AdminClient extends VelocityClient {
 	 * Builds the `depositIntoPerpMarketFeePool` instruction without sending it. See
 	 * `depositIntoPerpMarketFeePool`.
 	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
-	 *   `VaultDeposit` hot role as well as warm/cold, so pass the key that will actually
-	 *   sign at execution. Defaults to `state.coldAdmin`.
+	 *   `VaultDeposit` hot role as well as warm and cold, so pass the key that signs at
+	 *   execution. Defaults to `state.coldAdmin`.
 	 * @returns The unsigned `depositIntoPerpMarketFeePool` instruction.
 	 */
 	public async getDepositIntoPerpMarketFeePoolIx(
@@ -1822,14 +1821,11 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets how aggressively a perp market's AMM curve auto-adjusts. Requires the market's
-	 * `HotAdminUpdatePerpMarket` gate: cold, warm, or `HotRole.VammQuoteManagement`. On-chain, values
-	 * `0..=100` control repeg/formulaic-k intensity and `101..=200` additionally enable
-	 * reference-price-offset intensity; values above 200 throw `DefaultError`. Calls made only by
-	 * the hot role are restricted to the protocol-wide safe range.
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param curveUpdateIntensity - 0-200 intensity knob (see above for the two sub-ranges).
-	 * @returns Transaction signature.
+	 * Sets how aggressively a perp market's AMM curve auto-adjusts, on a 0-200 scale.
+	 * `0..=100` sets repeg and formulaic-k intensity. `101..=200` also enables
+	 * reference-price-offset intensity. Above 200 throws `DefaultError`. Requires cold,
+	 * warm, or `HotRole.VammQuoteManagement` through `HotAdminUpdatePerpMarket`. A signer
+	 * that holds only the hot role must stay inside the protocol-wide hot-role bounds.
 	 */
 	public async updatePerpMarketCurveUpdateIntensity(
 		perpMarketIndex: number,
@@ -1877,15 +1873,10 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets the dead-band, as a percent of price, within which the AMM's reference-price offset
-	 * (used to bias the AMM's quoted price away from the raw oracle/mark price) is suppressed.
-	 * Gated the same as `updatePerpMarketCurveUpdateIntensity` (`HotRole.VammQuoteManagement`, warm,
-	 * or cold). Throws `DefaultError` on-chain if
-	 * `referencePriceOffsetDeadbandPct > 100`; hot-only callers are restricted to the
-	 * protocol-wide safe range.
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param referencePriceOffsetDeadbandPct - 0-100 percent dead-band.
-	 * @returns Transaction signature.
+	 * Sets the dead-band, as a percent of price, within which the AMM's reference-price
+	 * offset is suppressed. That offset biases the AMM's quoted price away from the raw
+	 * oracle price. Gated like `updatePerpMarketCurveUpdateIntensity`. A value above 100
+	 * throws `DefaultError`.
 	 */
 	public async updatePerpMarketReferencePriceOffsetDeadbandPct(
 		perpMarketIndex: number,
@@ -1998,8 +1989,9 @@ export class AdminClient extends VelocityClient {
 	 * `updatePerpMarketAmmSummaryStats`. Throws if `perpMarketIndex` isn't tracked by the
 	 * local account subscriber (needed to resolve the market's oracle account).
 	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
-	 *   `AmmCrank` hot role as well as warm/cold, so pass the key that will actually sign
-	 *   at execution. Defaults to `state.coldAdmin` (or the wallet when `useHotWalletAdmin`).
+	 *   `AmmCrank` hot role as well as warm and cold, so pass the key that signs at
+	 *   execution. Defaults to `state.coldAdmin`, or to the wallet when `useHotWalletAdmin`
+	 *   is set.
 	 * @returns The unsigned `updatePerpMarketAmmSummaryStats` instruction.
 	 */
 	public async getUpdatePerpMarketAmmSummaryStatsIx(
@@ -2282,14 +2274,10 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets how aggressively the AMM just-in-time-fills incoming taker orders against its own
-	 * inventory before routing to the DLOB. Gated the same as `updatePerpMarketCurveUpdateIntensity`
-	 * (`HotRole.VammQuoteManagement`, warm, or cold). Throws
-	 * `DefaultError` on-chain if outside `0..=100`; hot-only callers are restricted to the
-	 * protocol-wide safe range.
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param ammJitIntensity - 0-100 intensity; 0 disables AMM JIT fills.
-	 * @returns Transaction signature.
+	 * Sets how aggressively the AMM just-in-time-fills incoming taker orders against its
+	 * own inventory before routing to the book. Gated like
+	 * `updatePerpMarketCurveUpdateIntensity`. A value outside `0..=100` throws
+	 * `DefaultError`. `0` disables AMM JIT fills.
 	 */
 	public async updateAmmJitIntensity(
 		perpMarketIndex: number,
@@ -2469,14 +2457,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a perp market's maximum allowed total bid/ask spread. Gated the same as
-	 * `updatePerpMarketCurveUpdateIntensity` (`HotRole.VammQuoteManagement`, warm, or cold). Throws
-	 * `DefaultError` on-chain if `maxSpread` is below the
-	 * market's current `baseSpread` or exceeds `marginRatioInitial * 100`. Hot-only callers are
-	 * additionally restricted to the protocol-wide safe range.
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param maxSpread - New max spread, BID_ASK_SPREAD_PRECISION (1e6). Must be >= `baseSpread` and <= `marginRatioInitial * 100`.
-	 * @returns Transaction signature.
+	 * Sets a perp market's maximum total bid/ask spread, BID_ASK_SPREAD_PRECISION (1e6).
+	 * Gated like `updatePerpMarketCurveUpdateIntensity`. A `maxSpread` below the market's
+	 * `baseSpread`, or above `marginRatioInitial * 100`, throws `DefaultError`.
 	 */
 	public async updatePerpMarketMaxSpread(
 		perpMarketIndex: number,
@@ -2644,11 +2627,8 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets how many slots it takes for a liquidation's max-closeable fraction to ramp
-	 * from `initialPctToLiquidate` up to 100% (see `updateInitialPctToLiquidate`).
-	 * Requires warm admin (`check_warm`).
-	 * @param liquidationDuration - Ramp duration, stored in legacy 400ms units (decode with `millisFromStoredUnits`; ~150 ≈ 1 minute).
-	 * @returns Transaction signature.
+	 * Ramp length from `initialPctToLiquidate` to 100%, in legacy 400ms units. 150 is about a
+	 * minute. Decode with `millisFromStoredUnits` in `math/time.ts`. Requires warm admin.
 	 */
 	public async updateLiquidationDuration(
 		liquidationDuration: number
@@ -2814,13 +2794,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Synchronizes one IBRL slot duration transition (400 -> 350 -> 300 -> 250 ->
-	 * 200) from its feature gate account. Permissionless: any signer may crank it;
-	 * the program validates the feature account (key, owner, activation) and
-	 * derives the effective slot from the cluster `EpochSchedule` itself, then
-	 * records it in `State.slotDurationTransitionSlots`. Idempotent per gate.
-	 * @param slotDurationMs - Target slot duration in milliseconds (selects the gate).
-	 * @returns Transaction signature.
+	 * Records one slot duration transition (400 -> 350 -> 300 -> 250 -> 200) in
+	 * `State.slotDurationTransitionSlots`, from the gate `slotDurationMs` selects. The
+	 * program checks the gate's key, owner and activation. Permissionless and idempotent.
 	 */
 	public async syncStateSlotDuration(
 		slotDurationMs: number
@@ -2839,8 +2815,8 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `syncStateSlotDuration` instruction without sending it. See
 	 * `syncStateSlotDuration`. Passes the IBRL feature gate account for the
-	 * target duration; the program verifies it is activated and derives the
-	 * effective slot from the `EpochSchedule` sysvar.
+	 * target duration. The program verifies that the gate is activated and
+	 * derives the effective slot from the `EpochSchedule` sysvar.
 	 * @returns The unsigned `syncStateSlotDuration` instruction.
 	 */
 	public async getSyncStateSlotDurationIx(
@@ -2949,25 +2925,11 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a spot market's withdraw guard threshold — the token-amount level *below* which the
-	 * withdraw guards stop binding. It relaxes the min-deposit floor by up to its own size,
-	 * always permits borrows up to its own size, and sizes the small-depositor exception to the
-	 * withdraw circuit breaker (eligibility below a tenth of it, and one of it as the shared
-	 * market-level budget below the breaker floor). Raising it loosens the guards; `0` disables
-	 * the carve-out entirely. Requires warm admin (`check_warm`, on the
-	 * `AdminUpdateSpotMarketWithdrawGuardThreshold` context). On-chain the notional is priced
-	 * with the max of the live oracle price and the 5-minute oracle TWAP (`StrictOraclePrice`),
-	 * so a momentarily-manipulated-down oracle can't let an oversized threshold through;
-	 * `validate_withdraw_guard_threshold` then re-derives the implied cap and rejects an
-	 * inconsistent value.
-	 * @param spotMarketIndex - Spot market to update.
-	 * @param withdrawGuardThreshold - New threshold, the market's native token decimals.
-	 * @param oracle - Must equal `spotMarket.oracle` — the account struct's `has_one = oracle`
-	 *   constraint (`ErrorCode::InvalidOracle`) enforces this on-chain, so it is not a way to
-	 *   point at a different price feed. When omitted, this is resolved automatically from the
-	 *   local account cache (or, if not subscribed, by fetching and decoding the `SpotMarket`
-	 *   account directly) — pass it explicitly only to avoid that extra lookup.
-	 * @returns Transaction signature.
+	 * Sets the token-amount level below which a spot market's withdraw guards stop binding.
+	 * It relaxes the min-deposit floor, permits borrows up to its own size, and sizes the
+	 * small-depositor exception to the withdraw circuit breaker. An account qualifies below a tenth of it, and the whole eligible cohort shares one of it below the breaker floor. `0` removes that exception.
+	 * Requires warm admin. The on-chain notional prices it at the greater of the live oracle price and the 5-minute TWAP, so a momentary dip cannot admit an oversized threshold.
+	 * @param oracle - Must equal `spotMarket.oracle`, which the account struct's `has_one = oracle` constraint enforces on chain. Omitted, it resolves from the local account cache, or by fetching and decoding the `SpotMarket` account. Pass it only to avoid that lookup.
 	 */
 	public async updateWithdrawGuardThreshold(
 		spotMarketIndex: number,
@@ -4639,12 +4601,8 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets the protocol-wide default minimum perp-order auction duration
-	 * (`state.minPerpAuctionDuration`) — orders placed without an explicit longer
-	 * auction fall back to this floor. Requires warm admin (`check_warm`).
-	 * @param minDuration - Minimum auction duration in legacy 400ms units
-	 * (for example, 10 means 4 seconds).
-	 * @returns Transaction signature.
+	 * Sets `state.minPerpAuctionDuration`, the floor an order without a longer explicit
+	 * auction falls back to. In 400ms units, so 10 means 4 seconds. Requires warm admin.
 	 */
 	public async updatePerpAuctionDuration(
 		minDuration: BN | number
@@ -4681,10 +4639,7 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets the protocol-wide default spot-order auction duration
-	 * (`state.defaultSpotAuctionDuration`). Requires warm admin (`check_warm`).
-	 * @param defaultAuctionDuration - Default auction duration in fixed 400ms units.
-	 * @returns Transaction signature.
+	 * Sets `state.defaultSpotAuctionDuration`, in 400ms units. Requires warm admin.
 	 */
 	public async updateSpotAuctionDuration(
 		defaultAuctionDuration: number
@@ -5116,15 +5071,10 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a perp market's additive taker-fee surcharge: `taker fee = (tier fee
-	 * + add-on) * (1 +/- feeAdjustment%)`. Unsigned, surcharge only (promo
-	 * discounts go through `updatePromoFeeTier` — a discount could push the
-	 * taker fee below the maker rebate it funds); maker rebates are untouched.
-	 * Requires warm admin (`check_warm`). Throws `DefaultError` on-chain if
-	 * `takerFeeAddonTenthBps > MAX_TAKER_FEE_ADDON_TENTH_BPS` (100).
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param takerFeeAddonTenthBps - Unsigned add-on in tenth-bps (10 = 1bp, 15 = 1.5bp), 0..100.
-	 * @returns Transaction signature.
+	 * Sets a perp market's additive taker-fee surcharge: `taker fee = (tier fee + add-on) * (1 +/- feeAdjustment%)`.
+	 * The add-on is unsigned, so it can only raise the fee. A discount goes through `updatePromoFeeTier` instead, because a discount here could push the taker fee below the maker rebate it funds.
+	 * Maker rebates are unchanged. Requires warm admin (`check_warm`).
+	 * @param takerFeeAddonTenthBps - Unsigned add-on in tenth-bps (10 = 1bp, 15 = 1.5bp), 0..100. Above `MAX_TAKER_FEE_ADDON_TENTH_BPS`, which is 100, the program throws `DefaultError`.
 	 */
 	public async updatePerpMarketTakerFeeAddon(
 		perpMarketIndex: number,
@@ -5170,14 +5120,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets the promotional fee-tier floor: while non-zero, every account's
-	 * effective perp fee tier is `max(volume tier, promoFeeTier)`, so nobody
-	 * is downgraded and accounts already above the floor keep their tier.
-	 * 0 disables the promo; accounts revert to their volume tier on their
-	 * next fill. Requires warm admin (`check_warm`). Throws `DefaultError`
-	 * on-chain if the tier index is out of range (>= 10).
-	 * @param promoFeeTier - Fee-tier index to floor everyone at (0 = disabled).
-	 * @returns Transaction signature.
+	 * Sets the promotional perp fee-tier floor, so an account's effective tier becomes
+	 * `max(volume tier, promoFeeTier)`. `0` disables it at the next fill. Warm admin. Above `PERP_FEE_TIER_MAX_INDEX`, which is 3, it throws `DefaultError`.
+	 * @param promoFeeTier - Fee-tier index to floor every account at, 0 to 3. `0` disables the promo.
 	 */
 	public async updatePromoFeeTier(
 		promoFeeTier: number
@@ -5303,18 +5248,10 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Sets the fraction of open-interest notional the streaming fee sweep must leave behind in
-	 * `feeLedger.pendingIfFee` as a standing bankruptcy tranche (notional valued at the market's
-	 * oracle TWAP). The permissionless sweep cannot drain the tranche below this floor, so a
-	 * sweep front-running a `resolvePerpBankruptcy` cannot strip the first-loss coverage up to
-	 * the floor. Requires warm admin (`check_warm`).
-	 *
-	 * `0` selects `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps), which is also what a market written
-	 * before the field existed reads. Pass `BANKRUPTCY_IF_FLOOR_DISABLED` to turn the floor off.
-	 * Turning it off does not expose a latched bankruptcy: `pendingBankruptcyClaims` still
-	 * freezes the sweep until the debt resolves.
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param bankruptcyIfFloorPct - Floor as PERCENTAGE_PRECISION (1e6 = 100%; 1000 = 10 bps); max 1e6, or `BANKRUPTCY_IF_FLOOR_DISABLED`.
-	 * @returns Transaction signature.
+	 * `feeLedger.pendingIfFee` as a standing bankruptcy tranche, valued at the market's oracle TWAP.
+	 * The permissionless sweep cannot drain the tranche below this floor, so a sweep front-running a
+	 * `resolvePerpBankruptcy` cannot strip the first-loss coverage up to the floor. Turning the floor off does not expose a latched bankruptcy, because `pendingBankruptcyClaims` still freezes the sweep until the debt resolves. Requires warm admin.
+	 * @param bankruptcyIfFloorPct - Floor as PERCENTAGE_PRECISION, where 1e6 is 100% and 1000 is 10 bps. The maximum is 1e6. `0` selects `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, which is 10 bps, and a market written before the field existed also reads `0`. Pass `BANKRUPTCY_IF_FLOOR_DISABLED` to turn the floor off.
 	 */
 	public async updatePerpMarketBankruptcyIfFloorPct(
 		perpMarketIndex: number,
@@ -5362,13 +5299,10 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Scales a spot market's taker fee and maker rebate up or down by a percentage of the base
-	 * fee tier. Requires warm admin (`check_warm`). Throws `DefaultError` on-chain if
-	 * `abs(feeAdjustment) > FEE_ADJUSTMENT_MAX` (100). Note: the first parameter is a **spot**
-	 * market index despite being named `perpMarketIndex` here.
-	 * @param perpMarketIndex - Spot market index to update (misnamed; not a perp market index).
-	 * @param feeAdjustment - Percent adjustment applied to the base taker fee / maker rebate, -100..100 (negative reduces, positive increases; 0 = no adjustment).
-	 * @returns Transaction signature.
+	 * Scales a spot market's taker fee and maker rebate by a percent of the base fee tier,
+	 * -100 to 100. Requires warm admin. Throws `DefaultError` above `FEE_ADJUSTMENT_MAX`,
+	 * which is 100. The first parameter is a spot market index, despite its name.
+	 * @param feeAdjustment - Percent adjustment applied to the base taker fee and maker rebate. A negative value reduces them, a positive value increases them, and `0` leaves them alone.
 	 */
 	public async updateSpotMarketFeeAdjustment(
 		perpMarketIndex: number,
@@ -5566,6 +5500,491 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
+	 * Sets what the protocol will spend getting a liquidation cranked, and the spot market whose oracle prices that spend in SOL.
+	 * A liquidation crank repays the priority fee its keeper paid, so the crank stays worth landing when the fee market moves. `shareBps` bounds that repayment at a share of what the liquidation recovers, so a recovery too small to cover its own transaction cost is left alone. Zero in either field leaves the flat payment.
+	 * @param shareBps - The largest share of a liquidation's filled quote the protocol repays, in basis points. The maximum is 10,000.
+	 * @param solSpotMarketIndex - Spot market whose oracle prices SOL. `0` disables the reimbursement.
+	 */
+	public async updateLiquidationCrankReimbursement(
+		shareBps: number,
+		solSpotMarketIndex: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateLiquidationCrankReimbursementIx(
+			shareBps,
+			solSpotMarketIndex
+		);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateLiquidationCrankReimbursement` instruction without
+	 * sending it. See `updateLiquidationCrankReimbursement`.
+	 * @param shareBps - The largest share of a liquidation's filled quote the protocol repays, in basis points.
+	 * @param solSpotMarketIndex - Spot market whose oracle prices SOL.
+	 * @returns The unsigned instruction.
+	 */
+	public async getUpdateLiquidationCrankReimbursementIx(
+		shareBps: number,
+		solSpotMarketIndex: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateLiquidationCrankReimbursement(
+			{ shareBps, solSpotMarketIndex },
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `initializeQuoter` instruction, which creates a market's staging
+	 * `QuoterV0` registry entry. Nothing fills from it until an admin approves it
+	 * into the market's slab. A CLOB entry passes the slab, because the program
+	 * refuses a book an approved entry already names. Any other type passes null.
+	 * @param quoterProgram - The program velocity calls the quote and execute legs on.
+	 * @param user - The `User` a Custom entry quotes for. A CLOB entry passes the default pubkey.
+	 * @param authority - Creates and manages the entry, and pays its rent. Defaults to the wallet.
+	 */
+	public async getInitializeQuoterIx(
+		marketIndex: number,
+		args: {
+			quoterType: QuoterType;
+			responseAccount: PublicKey;
+			quoteV0Discriminator: number[];
+			quoteL3V0Discriminator: number[];
+			executeV0Discriminator: number[];
+		},
+
+		quoterProgram: PublicKey,
+		user: PublicKey,
+		authority?: PublicKey
+	): Promise<TransactionInstruction> {
+		const signer = authority ?? this.wallet.publicKey;
+		const isClob = 'clob' in (args.quoterType as object);
+
+		return await this.program.instruction.initializeQuoter(
+			{ marketIndex, ...args },
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					payer: signer,
+					authority: signer,
+					quoter: getQuoterPublicKey(
+						this.program.programId,
+						marketIndex,
+						quoterProgram,
+						user
+					),
+
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					quoterSlab: isClob
+						? getQuoterSlabPublicKey(this.program.programId, marketIndex)
+						: null,
+					quoterProgram,
+					user,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `initializeQuoterSlab` instruction, which creates a market's
+	 * `QuoterSlabV0`. There is one slab per market and every approved quoter config
+	 * lives in it. Permissionless, and `payer` pays the rent.
+	 */
+	public async getInitializeQuoterSlabIx(
+		marketIndex: number,
+		payer?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.initializeQuoterSlab(
+			{ marketIndex },
+			{
+				accounts: {
+					payer: payer ?? this.wallet.publicKey,
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					quoterSlab: getQuoterSlabPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `updateQuoterAccounts` instruction, which replaces a staging entry's
+	 * registered CPI account list whole. The approved slab copy keeps serving until the
+	 * admin approves again. A book entry answers to the State admin roles rather than to
+	 * the key that registered it, and a Custom entry answers to its own stored authority.
+	 * @param quoteIndexes - Indexes into `metas` forwarded to `quoteV0` and `quoteL3V0`, in CPI order.
+	 * @param executeIndexes - Indexes into `metas` forwarded to `executeV0`, in CPI order.
+	 */
+	public async getUpdateQuoterAccountsIx(
+		quoter: PublicKey,
+		metas: { pubkey: PublicKey; isWritable: boolean }[],
+		quoteIndexes: number[],
+		executeIndexes: number[],
+		authority?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateQuoterAccounts(
+			{
+				metas,
+				quoteIndexes: Buffer.from(quoteIndexes),
+				executeIndexes: Buffer.from(executeIndexes),
+			},
+
+			{
+				accounts: {
+					authority: authority ?? this.wallet.publicKey,
+					quoter,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `updateQuoterApproved` instruction, which copies a staging entry into the
+	 * market's slab, or pulls that approval. Approval approves the binary behind the entry,
+	 * so it reads the program-data account that records whether the program can redeploy.
+	 * A book approval also asks the book for its own placement rules.
+	 * @param clobMarket - The book, for approving a CLOB entry. Pass null for every other case.
+	 */
+	public async getUpdateQuoterApprovedIx(
+		quoter: PublicKey,
+		approved: boolean,
+		marketIndex: number,
+		quoterProgram: PublicKey,
+		clobMarket: PublicKey | null,
+		admin?: PublicKey
+	): Promise<TransactionInstruction> {
+		const quoterProgramData = getProgramDataAddress(quoterProgram);
+
+		return await this.program.instruction.updateQuoterApproved(
+			{ approved },
+			{
+				accounts: {
+					admin: admin ?? this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					quoter,
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					quoterSlab: getQuoterSlabPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					quoterProgram,
+					quoterProgramData: approved ? quoterProgramData : null,
+					clobMarket: approved ? clobMarket : null,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `updatePerpMarketClobQuoter` instruction, which names a market's canonical
+	 * book and creates its crank conditions and keeper-payment reservoir. The reservoir
+	 * starts holding rent and nothing more, and the crank treasury refills it.
+	 */
+	public async getUpdatePerpMarketClobQuoterIx(
+		marketIndex: number,
+		quoter: PublicKey,
+		clobMarket: PublicKey,
+		clobProgram: PublicKey,
+		args: {
+			crankCostUnits: CrankCostUnitsV0;
+			expireFallbackSlots: BN;
+			minCrossSurplus: BN;
+		},
+
+		admin?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updatePerpMarketClobQuoter(args, {
+			accounts: {
+				admin: admin ?? this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+				perpMarket: await getPerpMarketPublicKey(
+					this.program.programId,
+					marketIndex
+				),
+
+				quoter,
+				quoterSlab: getQuoterSlabPublicKey(this.program.programId, marketIndex),
+				clobMarket,
+				clobProgram,
+				crankConditions: getClobCrankConditionsPublicKey(
+					this.program.programId,
+					marketIndex
+				),
+
+				treasury: getCrankTreasuryPublicKey(this.program.programId),
+				rent: SYSVAR_RENT_PUBKEY,
+				systemProgram: SystemProgram.programId,
+			},
+		});
+	}
+
+	/**
+	 * Builds the `UserStats` and sub-account 0 instructions for the protocol `User`, whose
+	 * authority is the velocity signer PDA. Neither instruction needs an authority
+	 * signature, so any payer can create it. It holds the fees the protocol keeps.
+	 * @param name - Sub-account name. Defaults to the SDK's default user name.
+	 * @param payer - Pays the rent for both accounts. Defaults to the wallet.
+	 */
+	public async getInitializeProtocolUserIxs(
+		name?: string,
+		payer?: PublicKey
+	): Promise<TransactionInstruction[]> {
+		const authority = this.getSignerPublicKey();
+		const rentPayer = payer ?? this.wallet.publicKey;
+		const protocolUser = getUserAccountPublicKeySync(
+			this.program.programId,
+			authority,
+			0
+		);
+
+		const userStatsIx = await this.getInitializeUserStatsIx({
+			externalWallet: rentPayer,
+			authority,
+		});
+
+		const userIx = await this.program.instruction.initializeUser(
+			0,
+			encodeName(name ?? DEFAULT_USER_NAME),
+			{
+				accounts: {
+					user: protocolUser,
+					userConditions: getUserConditionsPublicKey(
+						this.program.programId,
+						protocolUser
+					),
+
+					userStats: getUserStatsAccountPublicKey(
+						this.program.programId,
+						authority
+					),
+
+					state: await this.getStatePublicKey(),
+					authority,
+					payer: rentPayer,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
+
+		return [userStatsIx, userIx];
+	}
+
+	/**
+	 * Creates the relay crank treasury every market's reservoir refills from. Warm or cold
+	 * admin, once per deployment. It pays nothing until `updateCrankTreasury` prices it.
+	 */
+	public async initializeCrankTreasury(): Promise<TransactionSignature> {
+		const ix = await this.getInitializeCrankTreasuryIx();
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `initializeCrankTreasury` instruction without sending it.
+	 * See `initializeCrankTreasury`.
+	 * @returns The unsigned instruction.
+	 */
+	public async getInitializeCrankTreasuryIx(): Promise<TransactionInstruction> {
+		return await this.program.instruction.initializeCrankTreasury({
+			accounts: {
+				treasury: getCrankTreasuryPublicKey(this.program.programId),
+				admin: this.isSubscribed
+					? this.getStateAccount().warmAdmin
+					: this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+				rent: SYSVAR_RENT_PUBKEY,
+				systemProgram: anchor.web3.SystemProgram.programId,
+			},
+		});
+	}
+
+	/**
+	 * Prices the crank treasury in cranks, not lamports, so one setting serves every market.
+	 * `refillTargetCranks` is how full a refill leaves a reservoir, read at refill time.
+	 * `refillWatermarkCranks` is the level that wakes a refill. It reaches a market at that
+	 * market's next `updatePerpMarketClobQuoter`. Warm or cold admin.
+	 */
+	public async updateCrankTreasury(
+		refillTargetCranks: number,
+		refillWatermarkCranks: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateCrankTreasuryIx(
+			refillTargetCranks,
+			refillWatermarkCranks
+		);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateCrankTreasury` instruction without sending it. See `updateCrankTreasury`.
+	 * @param refillTargetCranks - Fill a reservoir to this many of its most expensive crank.
+	 * @param refillWatermarkCranks - Wake the refill when a reservoir can pay fewer than this many.
+	 * @returns The unsigned instruction.
+	 */
+	public async getUpdateCrankTreasuryIx(
+		refillTargetCranks: number,
+		refillWatermarkCranks: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateCrankTreasury(
+			{ refillTargetCranks, refillWatermarkCranks },
+			{
+				accounts: {
+					treasury: getCrankTreasuryPublicKey(this.program.programId),
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Moves lamports from a market's crank reservoir back to the treasury, never below the
+	 * reservoir's rent. Without it a retired market keeps them. Warm or cold admin.
+	 */
+	public async sweepCrankReservoir(
+		marketIndex: number,
+		lamports: BN
+	): Promise<TransactionSignature> {
+		const ix = await this.getSweepCrankReservoirIx(marketIndex, lamports);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `sweepCrankReservoir` instruction without sending it. See `sweepCrankReservoir`.
+	 * @param marketIndex - Perp market whose reservoir to sweep.
+	 * @param lamports - How many lamports to move back.
+	 * @returns The unsigned instruction.
+	 */
+	public async getSweepCrankReservoirIx(
+		marketIndex: number,
+		lamports: BN
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.sweepCrankReservoir(
+			{ marketIndex, lamports },
+			{
+				accounts: {
+					treasury: getCrankTreasuryPublicKey(this.program.programId),
+					crankConditions: getClobCrankConditionsPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Recovers lamports from the crank treasury to the admin. Warm or cold admin. It never
+	 * goes below the rent exemption, so it cannot close a treasury markets still draw on.
+	 */
+	public async withdrawCrankTreasury(
+		lamports: BN
+	): Promise<TransactionSignature> {
+		const ix = await this.getWithdrawCrankTreasuryIx(lamports);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `withdrawCrankTreasury` instruction without sending it.
+	 * See `withdrawCrankTreasury`.
+	 * @param lamports - How many lamports to take out.
+	 * @returns The unsigned instruction.
+	 */
+	public async getWithdrawCrankTreasuryIx(
+		lamports: BN
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.withdrawCrankTreasury(
+			{ lamports },
+			{
+				accounts: {
+					treasury: getCrankTreasuryPublicKey(this.program.programId),
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Sets what the protocol treats a transaction as costing to land. It prices every relay
+	 * crank's keeper payment. A market keeps its stored figures until its next `updatePerpMarketClobQuoter`. Warm or cold admin.
+	 */
+	public async updateTransactionFeeRails(
+		rails: TransactionFeeRails
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateTransactionFeeRailsIx(rails);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateTransactionFeeRails` instruction without sending it. See
+	 * `updateTransactionFeeRails`.
+	 * @param rails - The fee model to write.
+	 * @returns The unsigned `updateTransactionFeeRails` instruction.
+	 */
+	public async getUpdateTransactionFeeRailsIx(
+		rails: TransactionFeeRails
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateTransactionFeeRails(rails, {
+			accounts: {
+				admin: this.isSubscribed
+					? this.getStateAccount().warmAdmin
+					: this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+			},
+		});
+	}
+
+	/**
 	 * Builds the `updateProtocolFeeRecipient` instruction without sending it. See
 	 * `updateProtocolFeeRecipient`.
 	 * @returns The unsigned `updateProtocolFeeRecipient` instruction.
@@ -5589,18 +6008,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Withdraws a spot market's accrued protocol fees (lending-interest + spot-liquidation
-	 * carveouts, tracked in `spotMarket.protocolFeePool`) from its vault to
-	 * `state.protocolFeeRecipientSpot`'s ATA. Requires `HotRole.FeeWithdraw` (cold, warm,
-	 * or the configured fee-withdraw hot key) — `this.wallet` must hold that role, since
-	 * `getWithdrawProtocolFeesSpotIx` signs as `this.wallet.publicKey` for both `payer`
-	 * and `authority`. The recipient ATA is created (`init_if_needed`) if missing. The
-	 * withdrawn amount is capped at whatever is actually available, and the vault must
-	 * still fully cover depositor backing afterward or the instruction fails.
-	 * @param marketIndex - Spot market to withdraw protocol fees from.
-	 * @param amount - Requested amount, the market's native token decimals (clamped down to the available balance on-chain).
-	 * @param txParams - Optional transaction-building overrides.
-	 * @returns Transaction signature.
+	 * Withdraws `spotMarket.protocolFeePool`, the lending-interest and spot-liquidation
+	 * carveouts, to `state.protocolFeeRecipientSpot`'s ATA, created if missing. `this.wallet`
+	 * must hold `HotRole.FeeWithdraw`, because it signs as both payer and authority. `amount` is the market's native decimals, clamped to what is available, and the vault must still cover depositor backing.
 	 */
 	public async withdrawProtocolFeesSpot(
 		marketIndex: number,
@@ -5669,16 +6079,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Withdraws a perp market's accrued protocol fees (quote-denominated, tracked in
-	 * `perpMarket.protocolFeePool`) from the quote spot market's vault to
-	 * `state.protocolFeeRecipientPerp`'s ATA. Requires `HotRole.FeeWithdraw` — see
-	 * `withdrawProtocolFeesSpot` for the same signer/ATA/clamping/vault-invariant
-	 * behavior (this mirrors it against the perp market's quote-denominated pool
-	 * instead of a spot market's own token).
-	 * @param marketIndex - Perp market to withdraw protocol fees from.
-	 * @param amount - Requested amount, QUOTE_PRECISION (1e6) (clamped down to the available balance on-chain).
-	 * @param txParams - Optional transaction-building overrides.
-	 * @returns Transaction signature.
+	 * Withdraws `perpMarket.protocolFeePool` from the quote spot market's vault to
+	 * `state.protocolFeeRecipientPerp`'s ATA. `amount` is QUOTE_PRECISION (1e6). The signer,
+	 * ATA, clamping and vault invariant match `withdrawProtocolFeesSpot`.
 	 */
 	public async withdrawProtocolFeesPerp(
 		marketIndex: number,
@@ -5751,18 +6154,89 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Creates a market-local synthetic "oracle" account (`PrelaunchOracle`) for a perp market
-	 * that has no real price feed yet (e.g. a pre-launch/pre-listing market), seeded with an
-	 * admin-supplied price. Requires warm admin (`check_warm`). Set the market's `oracle` to
-	 * this account's address (via `updatePerpMarketOracle`, with a matching `OracleSource`) to
-	 * use it. `PrelaunchOracle::validate` runs at the end of the handler and throws
-	 * `InvalidOracle` if `price` or `maxPrice` end up `0` (both are zero-initialized and only
-	 * set when the corresponding argument is provided) or if `price > maxPrice` — in practice
-	 * both must be supplied and satisfy `price <= maxPrice`.
-	 * @param perpMarketIndex - Perp market this oracle backs; fixes the PDA seed.
-	 * @param price - Initial synthetic price, PRICE_PRECISION (1e6). Must be nonzero and <= `maxPrice`.
-	 * @param maxPrice - Ceiling the price is allowed to move to, PRICE_PRECISION (1e6). Must be nonzero and >= `price`.
-	 * @returns Transaction signature.
+	 * Withdraws settled crank rewards from the protocol-owned `User`, the account whose authority is the velocity signer PDA, to `state.protocolFeeRecipientPerp`'s associated token account for the spot market's mint. Crank rewards accrue there in program-keeper mode. Requires `HotRole.FeeWithdraw`.
+	 * Settle the accrued perp quote to deposits first with the permissionless `settlePNL`.
+	 * @param amount - Requested amount in the market's token base units. The program clamps it down to the deposit, so the protocol `User` never becomes a borrower.
+	 */
+	public async withdrawProtocolUserDeposit(
+		marketIndex: number,
+		amount: BN,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getWithdrawProtocolUserDepositIx(marketIndex, amount);
+		const tx = await this.buildTransaction(ix, txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `withdrawProtocolUserDeposit` instruction without sending it. The
+	 * protocol `User` is derived as the velocity signer's sub-account 0. See
+	 * `withdrawProtocolUserDeposit`.
+	 * @returns The unsigned `withdrawProtocolUserDeposit` instruction.
+	 */
+	public async getWithdrawProtocolUserDepositIx(
+		marketIndex: number,
+		amount: BN
+	): Promise<TransactionInstruction> {
+		const spotMarket = this.getSpotMarketAccountOrThrow(marketIndex);
+		const tokenProgramId = this.getTokenProgramForSpotMarket(spotMarket);
+		const recipient = this.getStateAccount().protocolFeeRecipientPerp;
+		const recipientTokenAccount = getAssociatedTokenAddressSync(
+			spotMarket.mint,
+			recipient,
+			true,
+			tokenProgramId
+		);
+		const protocolUser = getUserAccountPublicKeySync(
+			this.program.programId,
+			this.getSignerPublicKey(),
+			0
+		);
+
+		const remainingAccounts: {
+			pubkey: PublicKey;
+			isSigner: boolean;
+			isWritable: boolean;
+		}[] = [];
+
+		if (this.isTransferHook(spotMarket)) {
+			await this.addExtraAccountMetasToRemainingAccounts(
+				spotMarket.mint,
+				remainingAccounts
+			);
+		}
+
+		return await this.program.instruction.withdrawProtocolUserDeposit(
+			{ marketIndex, amount },
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					payer: this.wallet.publicKey,
+					authority: this.wallet.publicKey,
+					protocolUser,
+					spotMarket: spotMarket.pubkey,
+					spotMarketVault: spotMarket.vault,
+					mint: spotMarket.mint,
+					recipient,
+					recipientTokenAccount,
+					tokenProgram: tokenProgramId,
+					velocitySigner: this.getSignerPublicKey(),
+					systemProgram: SystemProgram.programId,
+					associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+				},
+
+				remainingAccounts,
+			}
+		);
+	}
+
+	/**
+	 * Creates a market-local synthetic `PrelaunchOracle` for a perp market that has no real
+	 * price feed yet, seeded with an admin-supplied price. Requires warm admin. Point the
+	 * market at it with `updatePerpMarketOracle` and a matching `OracleSource`.
+	 * `PrelaunchOracle::validate` throws `InvalidOracle` unless both `price` and `maxPrice`
+	 * are supplied, nonzero, and `price <= maxPrice`. Both are PRICE_PRECISION (1e6).
 	 */
 	public async initializePrelaunchOracle(
 		perpMarketIndex: number,
@@ -5816,18 +6290,11 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Updates a perp market's `PrelaunchOracle` price and/or ceiling. Requires warm admin
-	 * (`check_warm`). If `price` is provided, this **also directly overwrites the perp market's
-	 * mark-price TWAPs** (`lastMarkPriceTwap`, `lastMarkPriceTwap5min`, and clamps
-	 * `lastBidPriceTwap`/`lastAskPriceTwap` toward the new price) and their timestamp — a much
-	 * broader side effect than the field name suggests. `PrelaunchOracle::validate` re-runs at
-	 * the end and throws `InvalidOracle` if the resulting `price`/`maxPrice` are `0` or
-	 * `price > maxPrice`. Either argument omitted leaves that field (and, for `price`, the TWAPs)
-	 * unchanged.
-	 * @param perpMarketIndex - Perp market whose prelaunch oracle to update.
-	 * @param price - New synthetic price, PRICE_PRECISION (1e6). Also overwrites the market's mark-price TWAPs when provided. Omit to leave unchanged.
-	 * @param maxPrice - New price ceiling, PRICE_PRECISION (1e6). Omit to leave unchanged.
-	 * @returns Transaction signature.
+	 * Updates a perp market's `PrelaunchOracle` price or ceiling, both PRICE_PRECISION (1e6).
+	 * Requires warm admin. A supplied `price` also overwrites the market's mark-price TWAPs
+	 * (`lastMarkPriceTwap`, `lastMarkPriceTwap5min`), clamps `lastBidPriceTwap` and
+	 * `lastAskPriceTwap` toward it, and moves their timestamp. `PrelaunchOracle::validate`
+	 * throws `InvalidOracle` if the result has a `0` field or `price > maxPrice`. An omitted argument leaves that field, and for `price` the TWAPs, unchanged.
 	 */
 	public async updatePrelaunchOracleParams(
 		perpMarketIndex: number,
@@ -5885,18 +6352,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Closes a perp market's `PrelaunchOracle` account and refunds rent to the admin. Requires
-	 * warm admin (`check_warm`). On-chain, throws `DefaultError` if the oracle is still the
-	 * market's active `oracle` — repoint the market to a different oracle first (via
-	 * `updatePerpMarketOracle`).
-	 *
-	 * **Currently broken**: `getDeletePrelaunchOracleIx` builds a `PrelaunchOracleParams`-shaped
-	 * object (`{ perpMarketIndex, price, maxPrice }`) as the instruction argument, but the
-	 * on-chain `deletePrelaunchOracle` instruction (and its IDL) takes a single `u16`
-	 * `perpMarketIndex` scalar, not that object — this throws when the Borsh encoder tries to
-	 * serialize an object where a `u16` is expected.
-	 * @param perpMarketIndex - Perp market whose prelaunch oracle to delete; must not be the market's current oracle.
-	 * @returns Transaction signature (in practice: throws before a transaction is built).
+	 * Closes a perp market's `PrelaunchOracle` and refunds rent. Requires warm admin. It throws
+	 * `DefaultError` while the oracle is still the market's active `oracle`, so repoint the market with `updatePerpMarketOracle` first.
+	 * Broken: `getDeletePrelaunchOracleIx` passes a `PrelaunchOracleParams`-shaped object where the on-chain instruction takes a `u16` `perpMarketIndex`, so Borsh encoding throws before a transaction is built.
 	 */
 	public async deletePrelaunchOracle(
 		perpMarketIndex: number
@@ -5950,16 +6408,11 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Overrides how many slots of oracle delay a perp market tolerates before its "low-risk"
-	 * oracle-staleness check (`OracleValidity`'s `is_stale_for_amm_low_risk`, consumed by margin
-	 * calculations, order fills, AMM repeg/refresh, and the AMM cache) trips. Requires warm or
-	 * cold admin; oracle-staleness controls are deliberately excluded from vAMM active management.
-	 * `0` (the default) means no override — the market falls back to the global
-	 * `state.oracleGuardRails.validity.slotsBeforeStaleForAmm`; a nonzero value is clamped to
-	 * `>= 0` and used as the slot threshold directly.
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param oracleLowRiskSlotDelayOverride - Slots of oracle delay tolerated for low-risk AMM actions before staleness trips. `0` = use the global default; negative values are treated as `0`.
-	 * @returns Transaction signature.
+	 * Overrides how many slots of oracle delay a perp market tolerates before its low-risk
+	 * oracle-staleness check trips. `OracleValidity`'s `is_stale_for_amm_low_risk` is consumed by margin
+	 * calculations, order fills, AMM repeg and refresh, and the AMM cache. Requires warm or cold admin.
+	 * The `VammQuoteManagement` hot role is not accepted for oracle-staleness controls.
+	 * @param oracleLowRiskSlotDelayOverride - Slots of oracle delay tolerated for low-risk AMM actions before staleness trips. `0`, the default, means no override, and the market falls back to the global `state.oracleGuardRails.validity.slotsBeforeStaleForAmm`. A negative value is clamped to `0`.
 	 */
 	public async updatePerpMarketOracleLowRiskSlotDelayOverride(
 		perpMarketIndex: number,
@@ -6007,15 +6460,11 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Overrides how many slots of oracle delay a perp market tolerates before its "immediate"
-	 * per-fill staleness check trips (used for AMM-immediate fills; the on-chain field is
-	 * `perpMarket.oracleSlotDelayOverride`, default `-1`). Requires warm or cold admin;
-	 * oracle-staleness controls are deliberately excluded from vAMM active management. `0` means
-	 * the market is always treated as stale for immediate AMM actions; any other value is clamped to `>= 0` and used as the slot threshold
-	 * (delay > threshold is stale).
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param oracleSlotDelay - Slots of oracle delay tolerated before the immediate-fill staleness check trips. `0` = always stale; negative input is clamped to `0` on-chain.
-	 * @returns Transaction signature.
+	 * Writes `perpMarket.oracleSlotDelayOverride`, the slots of oracle delay the immediate
+	 * per-fill staleness check tolerates. The default is `-1`. Requires warm or cold admin.
+	 * The `VammQuoteManagement` hot role is not accepted for oracle-staleness controls. `0`
+	 * makes the market always stale for immediate AMM actions. Any other value is clamped to
+	 * `>= 0` and used as the slot threshold.
 	 */
 	public async updatePerpMarketOracleSlotDelayOverride(
 		perpMarketIndex: number,
@@ -6064,17 +6513,12 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Sets a perp market's manual spread-widening scalars. Requires `HotRole.VammQuoteManagement`,
-	 * warm, or cold via `HotAdminUpdatePerpMarket`. **`referencePriceOffset` is accepted for wire/IDL
-	 * compatibility but ignored on-chain** — `amm.referencePriceOffset` is a per-crank output
-	 * recomputed from inventory and market stats by
-	 * `crate::vlp::amm::math::spread::update_amm_quote_state`, not an admin-settable value; pass
-	 * any value. For a hot-only caller, both adjustment values must remain inside the
-	 * protocol-wide safe range or neither write occurs.
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param ammSpreadAdjustment - Signed scalar on the AMM's base spread, same convention as `fee_adjustment` (-100 = spread scaled to 0, 100 = spread doubled, 0 = no adjustment).
+	 * warm, or cold through `HotAdminUpdatePerpMarket`. `referencePriceOffset` is accepted for wire and IDL compatibility, and the program ignores it.
+	 * For a signer that holds only the hot role, both adjustment values must be inside the
+	 * protocol-wide hot-role bounds, or neither write happens.
+	 * @param ammSpreadAdjustment - Signed scalar on the AMM's base spread, same convention as `fee_adjustment`. -100 scales the spread to 0, 100 doubles it, 0 leaves it alone.
 	 * @param ammInventorySpreadAdjustment - Signed scalar on the inventory-skew component of the spread, same -100..100 convention.
-	 * @param referencePriceOffset - Ignored on-chain; retained only for instruction-argument compatibility.
-	 * @returns Transaction signature.
+	 * @param referencePriceOffset - Ignored. `crate::vlp::amm::math::spread::update_amm_quote_state` recomputes `amm.referencePriceOffset` each crank from inventory and market stats.
 	 */
 	public async updatePerpMarketAmmSpreadAdjustment(
 		perpMarketIndex: number,
@@ -6101,10 +6545,10 @@ export class AdminClient extends VelocityClient {
 	 * Builds the `updatePerpMarketAmmSpreadAdjustment` instruction without sending it. See
 	 * `updatePerpMarketAmmSpreadAdjustment`.
 	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
-	 *   `VammQuoteManagement` hot role as well as warm/cold, so pass the key that will
-	 *   actually sign at execution — e.g. the Squads hot-role vault PDA when the ix is
-	 *   wrapped in a multisig proposal. Defaults to `state.coldAdmin` (or the wallet when
-	 *   `useHotWalletAdmin`).
+	 *   `VammQuoteManagement` hot role as well as warm and cold, so pass the key that
+	 *   signs at execution. That is the Squads hot-role vault PDA when the instruction
+	 *   is wrapped in a multisig proposal. Defaults to `state.coldAdmin`, or to the
+	 *   wallet when `useHotWalletAdmin` is set.
 	 * @returns The unsigned `updatePerpMarketAmmSpreadAdjustment` instruction.
 	 */
 	public async getUpdatePerpMarketAmmSpreadAdjustmentIx(
@@ -6136,14 +6580,11 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets how much a perp market's paying-side spread widens while the vAMM's inventory is
-	 * paying funding: `amm.fundingBiasSensitivity = s` gives multiplier `β(f) = 1 + s/100 * ρ(f)`
-	 * (at full ramp, `ρ = 1`: 50 -> 1.5x, 100 -> 2x). Requires `HotRole.VammQuoteManagement`,
-	 * warm, or cold via `HotAdminUpdatePerpMarket`; hot-only callers are restricted to the
-	 * protocol-wide safe range.
-	 * @param perpMarketIndex - Perp market to update.
-	 * @param fundingBiasSensitivity - Sensitivity `s`, in hundredths (value/100 is the multiplier slope); `0` disables the bias. `u8` range caps `s` at 2.55.
-	 * @returns Transaction signature.
+	 * Sets how much a perp market's paying-side spread widens while the vAMM's inventory pays
+	 * funding. `amm.fundingBiasSensitivity = s` gives multiplier `β(f) = 1 + s/100 * ρ(f)`, so
+	 * at full ramp (`ρ = 1`) 50 is 1.5x and 100 is 2x. `0` disables the bias, and the `u8`
+	 * range caps `s` at 2.55. Requires `HotRole.VammQuoteManagement`, warm, or cold through
+	 * `HotAdminUpdatePerpMarket`. A hot-role-only signer must stay inside the hot-role bounds.
 	 */
 	public async updatePerpMarketFundingBiasSensitivity(
 		perpMarketIndex: number,
@@ -6166,10 +6607,10 @@ export class AdminClient extends VelocityClient {
 	 * Builds the `updatePerpMarketFundingBiasSensitivity` instruction without sending it. See
 	 * `updatePerpMarketFundingBiasSensitivity`.
 	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
-	 *   `VammQuoteManagement` hot role as well as warm/cold, so pass the key that will
-	 *   actually sign at execution — e.g. the Squads hot-role vault PDA when the ix is
-	 *   wrapped in a multisig proposal. Defaults to `state.coldAdmin` (or the wallet when
-	 *   `useHotWalletAdmin`).
+	 *   `VammQuoteManagement` hot role as well as warm and cold, so pass the key that
+	 *   signs at execution. That is the Squads hot-role vault PDA when the instruction
+	 *   is wrapped in a multisig proposal. Defaults to `state.coldAdmin`, or to the
+	 *   wallet when `useHotWalletAdmin` is set.
 	 * @returns The unsigned `updatePerpMarketFundingBiasSensitivity` instruction.
 	 */
 	public async getUpdatePerpMarketFundingBiasSensitivityIx(
@@ -6197,12 +6638,8 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Creates the zero'd `PythLazerOracle` PDA for a Pyth Lazer feed id (one-time setup
-	 * before that feed can be pushed to via `updatePythLazerOracle`/keeper cranks).
-	 * Requires warm admin (`check_warm`, `InitPythLazerOracle` context). Idempotent per
-	 * `feedId` — a second call for the same id fails (`init` on an existing PDA).
+	 * Creates the zero'd `PythLazerOracle` PDA that `updatePythLazerOracle` and keeper cranks push to. Requires warm admin. A second call for the same `feedId` fails on `init`.
 	 * @param feedId - Pyth Lazer feed id; seeds the `PythLazerOracle` PDA (`getPythLazerOraclePublicKey`).
-	 * @returns Transaction signature.
 	 */
 	public async initializePythLazerOracle(
 		feedId: number
@@ -6310,14 +6747,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Resets a perp market's push-oracle ("MM oracle") state — `marketStats.mmOraclePrice`,
-	 * `mmOracleSequenceId`, and `mmOracleSlot` — all to `0`. Requires warm or cold admin and is
-	 * deliberately excluded from vAMM active management because it bypasses the next MM-oracle
-	 * step-size clamp. Use to force the next `updateMmOracleNative` push to be
-	 * treated as a fresh bootstrap (its step-size cap is skipped when the previous
-	 * price is `0`).
-	 * @param marketIndex - Perp market whose MM oracle fields to zero.
-	 * @returns Transaction signature.
+	 * Resets a perp market's MM oracle state to `0`: `marketStats.mmOraclePrice`,
+	 * `mmOracleSequenceId`, and `mmOracleSlot`. Requires warm or cold admin, not the
+	 * `VammQuoteManagement` hot role, because the step-size clamp is skipped when the previous price is `0`. The next `updateMmOracleNative` push is then a fresh bootstrap.
 	 */
 	public async zeroMMOracleFields(
 		marketIndex: number
@@ -6355,16 +6787,8 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Toggles the `FeatureBitFlags.MM_ORACLE_UPDATE` bit on `state.featureBitFlags`,
-	 * which gates the native (non-Anchor) `updateMmOracleNative` push-oracle
-	 * dispatch — the on-chain handler asserts this bit before accepting a push.
-	 * Requires `HotRole.FeatureFlag` (`HotAdminUpdateState`'s `check_hot`) to disable,
-	 * but **enabling requires `state.coldAdmin` specifically** — the handler rejects
-	 * `enable: true` from any other signer, even one otherwise authorised for the
-	 * `FeatureFlag` role, so a compromised feature-flag hot key can only trip this
-	 * kill switch, never clear it.
-	 * @param enable - `true` to enable (cold-admin-only), `false` to disable (any `FeatureFlag`-authorised signer).
-	 * @returns Transaction signature.
+	 * Toggles `FeatureBitFlags.MM_ORACLE_UPDATE`, which gates the native `updateMmOracleNative`
+	 * push. Disable needs `HotRole.FeatureFlag`. Enable needs `state.coldAdmin`, so a compromised feature-flag hot key can trip this kill switch but never clear it.
 	 */
 	public async updateFeatureBitFlagsMMOracle(
 		enable: boolean
@@ -6438,11 +6862,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Toggles the `VammMakerRebate` feature bit. When enabled, the vAMM earns
-	 * the maker rebate on fills it makes, carved off the taker-fee remainder
-	 * and folded into the AMM's fee provision.
-	 * @param enable - `true` to enable (cold-admin-only), `false` to disable (any `FeatureFlag`-authorised signer).
-	 * @returns Transaction signature.
+	 * Toggles the `VammMakerRebate` feature bit. While it is on, the vAMM earns the maker rebate on the fills it makes.
+	 * The rebate comes out of the taker-fee remainder and goes into the AMM's fee provision.
+	 * @param enable - `true` to enable, which requires cold admin. `false` to disable, which any `FeatureFlag`-authorized signer can do.
 	 */
 	public async updateFeatureBitFlagsVammMakerRebate(
 		enable: boolean
@@ -6480,15 +6902,9 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * @deprecated There is no `BuilderReferral` bit in the on-chain `FeatureBitFlags`
-	 * enum (only `MmOracleUpdate`, `MedianTriggerPrice`, `BuilderCodes` exist) and no
-	 * `update_feature_bit_flags_builder_referral` instruction is defined in the
-	 * program or present in the IDL. Calling this (or
-	 * `getUpdateFeatureBitFlagsBuilderReferralIx`) throws at runtime — hence the
-	 * `as any` cast on `this.program.instruction` used to bypass the TS type check.
-	 * Do not call until (and unless) a matching on-chain instruction ships.
-	 * @param enable - Intended flag state (unused while dead).
-	 * @returns Transaction signature (never reached).
+	 * @deprecated The program has no `BuilderReferral` bit and no
+	 * `update_feature_bit_flags_builder_referral` instruction, so this throws at runtime. The
+	 * `as any` cast on `this.program.instruction` is what lets it compile. Do not call it until a matching on-chain instruction ships.
 	 */
 	public async updateFeatureBitFlagsBuilderReferral(
 		enable: boolean
@@ -6608,12 +7024,8 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Toggles the LP-pool swap-enabled bit on `state.lpPoolFeatureBitFlags` (gates
-	 * `lpPoolSwap`/begin-end swap flows protocol-wide). Same kill-switch gating as
-	 * `updateFeatureBitFlagsMMOracle`: `HotRole.FeatureFlag` may disable, only
-	 * `coldAdmin` may enable.
-	 * @param enable - `true` to enable (cold-admin-only), `false` to disable (any `FeatureFlag`-authorised signer).
-	 * @returns Transaction signature.
+	 * Toggles the LP-pool swap-enabled bit on `state.lpPoolFeatureBitFlags`, which gates
+	 * `lpPoolSwap` protocol-wide. Same kill-switch gating as `updateFeatureBitFlagsMMOracle`: `HotRole.FeatureFlag` may disable, only `coldAdmin` may enable.
 	 */
 	public async updateFeatureBitFlagsSwapLpPool(
 		enable: boolean
@@ -6856,16 +7268,10 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Adds a new constituent (backing spot-market asset) to an existing LP pool:
-	 * creates its `Constituent` PDA + token vault, appends a slot to
-	 * `ConstituentTargetBase`, and records its correlation row in
-	 * `ConstituentCorrelations`. Requires warm admin (`check_warm`). On-chain,
-	 * `newConstituentCorrelations`'s length must equal the pool's current constituent
-	 * count *before* this call (one correlation entry per existing constituent); the
-	 * new constituent's `constituentIndex` is assigned as the next sequential index.
-	 * @param lpPoolId - Target LP pool's id byte.
-	 * @param initializeConstituentParams - Constituent configuration; see `InitializeConstituentParams` for per-field precision.
-	 * @returns Transaction signature.
+	 * Adds a constituent, a backing spot-market asset, to an LP pool. Creates its `Constituent` PDA and token vault,
+	 * appends a slot to `ConstituentTargetBase`, and records its row in `ConstituentCorrelations`.
+	 * Requires warm admin. `newConstituentCorrelations` needs one entry per constituent the pool
+	 * already holds. The new `constituentIndex` is the next sequential index.
 	 */
 	public async initializeConstituent(
 		lpPoolId: number,
@@ -8274,14 +8680,10 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a perp market's `marketConfig` bitmask (currently one bit:
-	 * `MarketConfigFlag.DisableFormulaicKUpdate`, which turns off the AMM's automatic
-	 * k-adjustment for the market). Requires warm or cold admin, but **setting any bit (a non-zero value)
-	 * requires `state.coldAdmin` specifically** — a warm-only signer may only pass `0`
-	 * (clear all bits). Unknown bits are rejected (`InvalidPerpMarketConfig`).
-	 * @param marketIndex - Perp market to update.
-	 * @param marketConfig - New bitmask; non-zero values require cold admin.
-	 * @returns Transaction signature.
+	 * Sets a perp market's `marketConfig` bitmask. The one bit today is `MarketConfigFlag.DisableFormulaicKUpdate`, which turns off the AMM's automatic k-adjustment for the market.
+	 * Requires warm or cold admin. Setting any bit, which means passing a non-zero value, requires `state.coldAdmin`.
+	 * A warm-only signer can pass `0` alone, which clears every bit. The program rejects unknown bits
+	 * with `InvalidPerpMarketConfig`.
 	 */
 	public async updatePerpMarketConfig(
 		marketIndex: number,
@@ -8318,20 +8720,12 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Moves quote value between one perp market's protocol fee pool and another (or
-	 * the same) perp market's pnl pool — a pure internal ledger transfer against the
-	 * shared quote spot market's scaled balances, no tokens actually move. Requires
-	 * warm admin (`check_warm`). On-chain, the transfer is capped at the source
-	 * pool's available token amount. For a same-market move the AMM's
-	 * `totalFeeMinusDistributions` ledger is left untouched (equity-neutral within
-	 * one market's perimeter); for a cross-market move, the fee-pool market's ledger
-	 * is adjusted to reflect quote leaving/entering its perimeter (reconciled later
-	 * by the summary-stats recompute ix).
-	 * @param perpMarketIndexWithFeePool - Perp market whose fee pool is the transfer source/destination.
-	 * @param perpMarketIndexWithPnlPool - Perp market whose pnl pool is the transfer destination/source.
-	 * @param amount - Amount to move, QUOTE_PRECISION (1e6) (clamped down to the source pool's available balance on-chain).
+	 * Moves quote value between one perp market's protocol fee pool and another perp market's
+	 * pnl pool. Only the shared quote spot market's scaled balances change, so no tokens move.
+	 * Requires warm admin. `amount` is QUOTE_PRECISION (1e6) and is capped at the source pool's
+	 * available amount. A same-market move leaves the AMM's `totalFeeMinusDistributions` untouched.
+	 * A cross-market move adjusts the fee-pool market's ledger for the quote that crosses its perimeter, which the summary-stats recompute instruction reconciles later.
 	 * @param direction - `TransferFeeAndPnlPoolDirection.FEE_TO_PNL_POOL` or `.PNL_TO_FEE_POOL`.
-	 * @returns Transaction signature.
 	 */
 	public async transferFeeAndPnlPool(
 		perpMarketIndexWithFeePool: number,
@@ -8488,21 +8882,10 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Clears the authority-wide equity floor breaker set by the permissionless
-	 * `tripEquityFloorBreaker` keeper instruction, unfreezing all of the
-	 * authority's subaccounts. Requires warm admin (`check_warm`); intended to
-	 * be called after a human has reviewed why the breaker fired.
-	 *
-	 * The clear is self-verifying onchain: the instruction carries every live
-	 * subaccount of the authority (fetched here, count pinned onchain by
-	 * `UserStats.numberOfSubAccounts`) plus their markets and oracles, and
-	 * reverts with `InvalidEquityBreakerReset` unless every floored subaccount
-	 * clears its floor + buffer at execution time. To resume a maker whose
-	 * equity does not clear the floors anyway, lower the floors first with
-	 * `updateUserEquityFloor`.
+	 * Clears the authority-wide equity floor breaker set by the permissionless `tripEquityFloorBreaker` keeper instruction, unfreezing all of the authority's subaccounts. Requires warm admin, and is intended for use after a human has reviewed why the breaker fired.
+	 * The program checks the clear for itself. The instruction carries every live subaccount of the authority plus their markets and oracles. This method fetches the subaccounts, and `UserStats.numberOfSubAccounts` pins the count on chain.
+	 * The program reverts with `InvalidEquityBreakerReset` unless every floored subaccount clears its floor plus its buffer at execution time. To resume a maker whose equity does not clear the floors, lower the floors first with `updateUserEquityFloor`.
 	 * @param userStatsPublicKey - `UserStats` PDA of the authority to unfreeze.
-	 * @param txParams - Optional transaction-building overrides.
-	 * @returns Transaction signature.
 	 */
 	public async resetEquityFloorBreaker(
 		userStatsPublicKey: PublicKey,
@@ -8521,9 +8904,9 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `resetEquityFloorBreaker` instruction without sending it. See
 	 * `resetEquityFloorBreaker`.
-	 * @param userAccounts - The authority's live subaccounts; fetched via
-	 * `getUserAccountsForAuthority` when omitted (pass them on connections
-	 * without `getProgramAccounts` support).
+	 * @param userAccounts - The authority's live subaccounts. When omitted, they come from
+	 * `getUserAccountsForAuthority`. Pass them on a connection that does not support
+	 * `getProgramAccounts`.
 	 * @returns The unsigned `resetEquityFloorBreaker` instruction.
 	 */
 	public async getResetEquityFloorBreakerIx(
@@ -8539,8 +8922,9 @@ export class AdminClient extends VelocityClient {
 			);
 		}
 
-		// subaccounts first (the program consumes user accounts off the front
-		// of remaining accounts by discriminator), then their markets/oracles
+		// The subaccounts come first, because the program reads user accounts
+		// from the front of the remaining accounts by discriminator. Their
+		// markets and oracles follow.
 		const remainingAccounts = userAccounts.map((userAccount) => ({
 			pubkey: getUserAccountPublicKeySync(
 				this.program.programId,
@@ -8572,11 +8956,8 @@ export class AdminClient extends VelocityClient {
 	// separate "initialize admin authority config" ix.
 
 	/**
-	 * Rotates `state.warmAdmin`, the operational (multisig+timelock) tier that can
-	 * rotate every hot role key (`updateHotAdmin`). Cold only: the `UpdateWarmAdmin`
-	 * context requires `state.coldAdmin == admin.key()`.
-	 * @param newWarmAdmin - New warm admin pubkey. `PublicKey.default()` unsets the role — only `coldAdmin` can then act where warm was accepted.
-	 * @returns Transaction signature.
+	 * Rotates `state.warmAdmin`, the tier that rotates every hot-role key (`updateHotAdmin`).
+	 * Cold-only. `PublicKey.default()` unsets the role, leaving only `coldAdmin` able to act where warm was accepted.
 	 */
 	public async updateWarmAdmin(
 		newWarmAdmin: PublicKey
@@ -8643,14 +9024,8 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Rotates one purpose specific hot role key on `state` (e.g. `hotFeeWithdraw`,
-	 * `hotVaultDeposit`). Warm-or-cold: the `UpdateHotAdmin` context requires
-	 * `state.isWarm(admin.key())`. Compromise of one hot key only exposes the
-	 * instructions gated on that specific `HotRole` — rotating it here fully revokes
-	 * the old key for that role.
-	 * @param role - Which hot role's key to rotate.
-	 * @param newPubkey - New key for that role. `PublicKey.default()` unsets it — only warm/cold can then call handlers gated on that role.
-	 * @returns Transaction signature.
+	 * Rotates one purpose-specific hot-role key on `state`, such as `hotFeeWithdraw`. Warm or
+	 * cold. `PublicKey.default()` unsets the role, so only warm and cold can call its handlers.
 	 */
 	public async updateHotAdmin(
 		role: HotRole,
@@ -8705,8 +9080,9 @@ export enum HotRole {
 	AmmSpreadAdjust = 'ammSpreadAdjust',
 	FeeWithdraw = 'feeWithdraw',
 	AccountExtension = 'accountExtension',
-	/** vAMM active-management authority (spread/JIT/curve and related quoting controls). */
+	/** vAMM active-management authority for the spread, JIT, curve and related quoting controls. */
 	VammQuoteManagement = 'vammQuoteManagement',
+	FlowAuthority = 'flowAuthority',
 }
 
 /** Anchor encodes Rust enums as `{ <variant>: {} }`. */

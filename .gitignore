@@ -38,4 +38,10 @@ vendor
 # Devnet deploy artifacts — contain keypairs, never commit
 /devnet_program_admin.json
 /deploy-scripts/out/
+
+# Never commit keypairs (program deploy keys live outside the repo,
+# e.g. ~/.config/solana/velocity-keys/). Tests only need the pubkey in declare_id.
+anchor-v2/**/*keypair*.json
+
 .ci-local-logs/
+fuzz/e2e-svm-signedmsg/velocity.fuzz-idl.json

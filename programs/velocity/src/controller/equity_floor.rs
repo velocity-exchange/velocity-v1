@@ -1,53 +1,44 @@
-//! Lazy equity-breaker trips. The authority-wide equity breaker is normally
-//! armed by the permissionless `trip_equity_floor_breaker` instruction, which
-//! requires a separate keeper transaction to land. This module lets the paths
-//! that are allowed to run while a floored subaccount sits below its raw
-//! floor (reducing fills, strictly reducing swaps, trigger cancels) arm the
-//! breaker inline as a side effect of the interaction itself, shrinking the
-//! window in which sibling subaccounts can keep taking risk to the next
-//! touch instead of the next keeper transaction. A rejected instruction
-//! reverts its own writes, so only succeeding paths can host a trip; the
-//! gated paths (which reject at floor + buffer) never can, and never need to.
+//! Lazy equity-breaker trips.
+//!
+//! The permissionless `trip_equity_floor_breaker` instruction normally arms
+//! the authority-wide equity breaker, and it needs its own keeper transaction
+//! to land. This module lets the paths that may run while a floored subaccount
+//! sits below its raw floor arm the breaker inline, as a side effect of the
+//! interaction. Those paths are reducing fills, strictly reducing swaps, and
+//! trigger cancels. The window in which sibling subaccounts can keep taking
+//! risk then ends at the next touch instead of the next keeper transaction.
+//!
+//! A rejected instruction reverts its own writes, so only a path that succeeds
+//! can host a trip. The gated paths reject at the floor plus the buffer, so
+//! they never host one and never need to.
 
 use crate::{
     error::VelocityResult,
+    instructions::optional_accounts::AccountMaps,
     math::margin::calculate_user_equity_for_trip,
     msg,
-    state::{
-        oracle_map::OracleMap,
-        perp_market_map::PerpMarketMap,
-        spot_market_map::SpotMarketMap,
-        user::{User, UserStats},
-    },
+    state::user::{User, UserStats},
 };
 
 /// Arms the authority-wide equity breaker if the subaccount's net equity is
-/// provably below its raw floor. Decides with the same
-/// `TripNetEquity::proves_breach` predicate as the permissionless trip:
-/// invalid-oracle liabilities and shorts receive their sound zero upper
-/// bound, while any invalid-oracle asset or long keeps the breach
-/// unprovable. Where the permissionless trip
-/// rejects on an unprovable breach so the keeper can retry, this skips
-/// silently (it must not fail its host); a breach that rides out such an
-/// outage is armed by
-/// the next touch after the feed recovers. The gates cover the outage
-/// itself, failing closed on the strict verdict, and match fills carry
-/// their own `FillOrderMatch` validity rule. Skips all work when the
-/// subaccount has no floor or the breaker is already set, and never fails
-/// the host instruction on its own.
+/// provably below its raw floor. Uses the same `TripNetEquity::proves_breach`
+/// predicate as the permissionless trip: an invalid-oracle liability or short
+/// gets its sound zero upper bound, while an invalid-oracle asset or long
+/// stays unprovable. The permissionless trip rejects an unprovable breach so
+/// the keeper can retry; this function skips instead, since it must not fail
+/// its host. The next touch after the feed recovers arms a breach that rode
+/// out the outage. A no-op when the subaccount has no floor or the breaker is
+/// already set; match fills use their own `FillOrderMatch` validity rule.
 pub fn try_lazy_equity_breaker_trip(
     user: &User,
     user_stats: &mut UserStats,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult {
     if user.equity_floor == 0 || user_stats.is_equity_breaker_tripped() {
         return Ok(());
     }
 
-    let trip_equity =
-        calculate_user_equity_for_trip(user, perp_market_map, spot_market_map, oracle_map)?;
+    let trip_equity = calculate_user_equity_for_trip(user, maps)?;
 
     if trip_equity.proves_breach(user) {
         msg!(
@@ -69,6 +60,7 @@ mod tests {
         super::try_lazy_equity_breaker_trip,
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, PRICE_PRECISION,
@@ -89,7 +81,7 @@ mod tests {
                 spot_market_map::SpotMarketMap,
                 user::{Order, PerpPosition, SpotPosition, User, UserStats},
             },
-            test_utils::{get_positions, get_pyth_price, *},
+            test_utils::*,
         },
         solana_program::pubkey::Pubkey,
         std::str::FromStr,
@@ -171,6 +163,7 @@ mod tests {
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_one(&usdc_spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -195,14 +188,7 @@ mod tests {
         let mut user_stats = UserStats::default();
         user_stats.set_equity_breaker_tripped(already_tripped);
 
-        try_lazy_equity_breaker_trip(
-            &user,
-            &mut user_stats,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        try_lazy_equity_breaker_trip(&user, &mut user_stats, &mut maps).unwrap();
 
         user_stats
     }

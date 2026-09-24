@@ -1,9 +1,9 @@
 //! AMM zero-copy struct and its methods.
 //!
 //! Hosts:
-//! - [`AMM`]: the constant-product vAMM state. See the doc-comment on the
-//!   struct for the write-access policy that keeps mutations funneled through
-//!   `AmmContract` / `QuoterCommit` rather than direct field writes.
+//! - [`AMM`]: the constant-product vAMM state. The doc comment on the struct
+//!   holds the write-access policy. That policy routes every mutation through
+//!   `AmmContract` or `AmmQuoter` rather than a direct field write.
 
 #[cfg(test)]
 use crate::math::constants::{AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT};
@@ -35,18 +35,18 @@ use {
 ///
 /// # Write-access policy
 ///
-/// In the target architecture, the vAMM is one of several quoter modules
-/// that share a perp-market account's bytes — its state slice sits next
-/// to other quoter slices (DLOB makers, future propAMM-style
-/// participants, etc.) in the same program. No external code reaches into
-/// AMM fields directly; every mutation goes through a method on the AMM
-/// module. The contract boundary is enforced in-process by the type
-/// system, not by a CPI — and today's code follows the same discipline:
+/// In the target architecture the vAMM is one of several quoter modules that
+/// share a perp-market account's bytes. Its state slice sits next to other
+/// quoter slices, such as book state and future propAMM-style participants, in
+/// the same program. No external code reaches into AMM fields directly. Every
+/// mutation goes through a method on the AMM module. The type system enforces
+/// the contract boundary in-process rather than a CPI, and today's code follows
+/// the same discipline.
 ///
-/// - **Fills + market events**: `controller/match` dispatches through
-///   `QuoterCommit::commit_fill` / `on_market_event` on [`crate::vlp::amm::AmmQuoter`].
-/// - **AMM-special P&L / position operations**: external code (insurance fund,
-///   settlement) calls methods on the
+/// - Fills and market events: `controller/match` dispatches through
+///   `commit_fill` and `on_market_event` on [`crate::vlp::amm::AmmQuoter`].
+/// - AMM-special P&L and position operations: external code, such as the
+///   insurance fund and settlement, calls methods on the
 ///   [`crate::vlp::amm::quoter::AmmContract`] trait (`record_credit`,
 ///   `record_amm_pnl`, `apply_fill_fees`, `apply_settlement_counterparty`).
 /// - **Admin / keeper-crank operations**: call methods on `&mut AMM`

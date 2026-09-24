@@ -922,6 +922,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "brine-ed25519"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb50edc4cf7a2eb8bdd300e2c370724c1fb8772666734f6ef79c2873152e52c6"
+dependencies = [
+ "curve25519-dalek",
+ "sha2 0.10.9",
+ "solana-address 2.6.1",
+ "solana-define-syscall 5.2.0",
+ "solana-program-error",
+]
+
+[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1102,6 +1115,16 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+
+[[package]]
+name = "clob-wire"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "quoter-spec",
+ "solana-address 2.6.1",
+ "wincode 0.6.1",
+]
 
 [[package]]
 name = "cmov"
@@ -3067,6 +3090,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quoter-spec"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "solana-address 2.6.1",
+ "wincode 0.6.1",
+]
+
+[[package]]
 name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3189,6 +3222,22 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "relay-anchor"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
+dependencies = [
+ "relay-spec",
+]
+
+[[package]]
+name = "relay-spec"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "rend"
@@ -5849,16 +5898,18 @@ dependencies = [
 
 [[package]]
 name = "velocity"
-version = "2.166.0"
+version = "2.168.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
  "arrayref",
  "base64 0.13.1",
  "borsh",
+ "brine-ed25519",
  "bytemuck",
  "byteorder",
  "bytes",
+ "clob-wire",
  "enumflags2",
  "hex",
  "num-integer",
@@ -5866,6 +5917,10 @@ dependencies = [
  "pyth",
  "pyth-client",
  "pyth_lazer",
+ "quoter-spec",
+ "relay-anchor",
+ "relay-spec",
+ "solana-cpi",
  "solana-program",
  "solana-security-txt",
  "static_assertions",

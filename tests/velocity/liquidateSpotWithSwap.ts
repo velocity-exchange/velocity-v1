@@ -36,17 +36,9 @@ import {
 	startLiteSVM,
 } from '../../packages/sdk/src/litesvm/litesvmConnection';
 
-// Regression guard for `liquidate_spot_with_swap`: the begin handler introspects
-// the matching end instruction and binds accounts by hard-coded index, with the
-// swap (remaining) accounts assumed to start right after the fixed accounts.
-// `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11), the last of
-// them the liquidator_stats the equity-breaker gate reads; a stale guard
-// previously used the old 13-account Drift layout, which made the begin/end
-// account-count check unsatisfiable and bricked the route.
-// This test builds begin + end through the generated SDK/IDL and asserts the account
-// order the program guard depends on, so any future struct reshuffle that desyncs the
-// guard is caught here rather than on-chain.
-// InvalidLiquidateSpotWithSwap
+// The begin handler binds swap accounts by hard-coded index; this test asserts
+// the account order the guard depends on. A struct reshuffle that desyncs the
+// guard fails here rather than on chain.
 const INVALID_LIQUIDATE_SPOT_WITH_SWAP_HEX = '0x18a4';
 
 describe('liquidate spot with swap account bindings', () => {
@@ -84,8 +76,8 @@ describe('liquidate spot with swap account bindings', () => {
 	const TOKEN_PROGRAM_IX_INDEX = 8;
 	const VELOCITY_SIGNER_IX_INDEX = 9;
 	const INSTRUCTIONS_SYSVAR_IX_INDEX = 10;
-	// last, not beside the liquidator as in the direct liquidation contexts,
-	// so that adding it renumbered none of the accounts above
+	// This account sits last, and not beside the liquidator as it does in the
+	// direct liquidation contexts. Adding it therefore renumbered no account above.
 	const LIQUIDATOR_STATS_IX_INDEX = 11;
 	const NUM_FIXED_ACCOUNTS = 12;
 
@@ -264,12 +256,12 @@ describe('liquidate spot with swap account bindings', () => {
 			);
 		}
 
-		// The guard counts remaining accounts as `ix.accounts.len() - 12` and
-		// loops from index 12, so the last fixed account must sit at index 11.
-		// Pinning the tail is what catches a 13th fixed account being appended:
-		// that shifts nothing at 0..=8, so every binding assertion above would
-		// still pass while the program read the first swap account as a fixed
-		// one and the count check went off by one.
+		// The guard counts remaining accounts as `ix.accounts.len() - 12` and loops
+		// from index 12, so the last fixed account must sit at index 11. Pinning the
+		// tail catches a 13th fixed account appended to the struct. Such an account
+		// shifts nothing at indexes 0 through 8, so every binding assertion above
+		// still passes while the program reads the first swap account as a fixed one
+		// and the count check goes off by one.
 		for (const ix of [beginSwapIx, endSwapIx]) {
 			assert.ok(
 				ix.keys[TOKEN_PROGRAM_IX_INDEX].pubkey.equals(
@@ -306,20 +298,8 @@ describe('liquidate spot with swap account bindings', () => {
 	});
 
 	it('the program accepts the layout the sdk builds', async () => {
-		// Everything above compares the built instructions against the IDL,
-		// which cannot catch the program's own copy of these indexes being
-		// wrong: `begin` introspects the matching `end` and compares the two
-		// lists by position, and no test had ever executed that block. The
-		// other suites that send this pair reject earlier, at the equity
-		// breaker check or an account constraint.
-		//
-		// The fixture's user is genuinely liquidatable, so `begin` runs to
-		// completion, introspection included. The pair still fails, at `end`
-		// with InvalidSwap, because nothing swaps between the two
-		// instructions and the flash loan is never repaid. That is the point:
-		// reaching `end` at all means the guard accepted this account order,
-		// while any mis-numbered index or an off-by-one fixed/remaining
-		// boundary would have stopped it in `begin` with the error below.
+		// IDL checks cannot catch wrong program indices. `begin` introspects `end`
+		// and compares by position. Reaching `end` means the account order is valid.
 		const { beginSwapIx, endSwapIx } =
 			await liquidatorClient.getLiquidateSpotWithSwapIx({
 				swapAmount: new BN(10 ** 6),

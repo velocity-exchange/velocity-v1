@@ -1,20 +1,14 @@
 import { BN } from '@coral-xyz/anchor';
 
 /**
- * Strict positional-argument parsers.
- *
- * `Number(x)` and `Number.parseInt(x, 10)` both silently accept junk on an
- * admin CLI where a misread argument targets the wrong market or writes the
- * wrong value: `Number('')` and `Number(' ')` are `0`, `parseInt('0x10', 10)`
- * is `0`, `parseInt('1abc', 10)` is `1`, `parseInt('5.9', 10)` is `5`. `new
- * BN('')` is `0` and `new BN(' ')` never terminates. Everything here demands a
- * full decimal-integer match and throws on anything else.
+ * Strict positional-argument parsers. `Number`, `parseInt`, and `new BN` accept
+ * malformed input silently, so every parser here demands a full decimal-integer match.
  */
 
 const INTEGER = /^[+-]?\d+$/;
 const UNSIGNED_INTEGER = /^\+?\d+$/;
 
-/** Largest exactly-representable integer bound for a `number`-typed argument. */
+/** Check a parsed `number` argument against its inclusive bounds. */
 function assertRange(
 	name: string,
 	raw: string,
@@ -31,12 +25,8 @@ function assertRange(
 }
 
 /**
- * Parse a signed decimal integer argument, rejecting empty strings, whitespace,
- * hex, floats, exponents, and trailing garbage.
- * @param name - Argument name, used in the error message.
- * @param raw - Raw argv string.
- * @param min - Inclusive lower bound.
- * @param max - Inclusive upper bound.
+ * Parse a signed decimal integer argument. Rejects an empty string, whitespace,
+ * hex, a float, an exponent, and any trailing text.
  */
 export function parseIntArg(
 	name: string,
@@ -60,10 +50,8 @@ export function parseMarketIndex(raw: string): number {
 }
 
 /**
- * Parse an unsigned decimal integer argument of arbitrary width into a `BN`
- * (for u64/u128 amounts that overflow `number`).
- * @param name - Argument name, used in the error message.
- * @param raw - Raw argv string.
+ * Parse an unsigned decimal integer argument of any width into a `BN`. Use it
+ * for a u64 or u128 amount that overflows `number`.
  */
 export function parseBnArg(name: string, raw: string): BN {
 	if (!UNSIGNED_INTEGER.test(raw)) {
@@ -72,4 +60,15 @@ export function parseBnArg(name: string, raw: string): BN {
 		);
 	}
 	return new BN(raw, 10);
+}
+
+/** Parse a CLI truthy/falsy flag argument (`true|false|on|off|1|0|enable|disable`). */
+export function parseEnable(value: string): boolean {
+	const v = value.trim().toLowerCase();
+	if (['true', 'on', '1', 'enable', 'enabled', 'yes'].includes(v)) return true;
+	if (['false', 'off', '0', 'disable', 'disabled', 'no'].includes(v))
+		return false;
+	throw new Error(
+		`expected true|false (got "${value}"). Use on/off, 1/0, enable/disable.`
+	);
 }

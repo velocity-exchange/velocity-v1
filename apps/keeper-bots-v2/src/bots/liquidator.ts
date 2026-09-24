@@ -26,6 +26,9 @@ import {
 	isOperationPaused,
 	PerpOperation,
 	standardizeBaseAssetAmount,
+	UserClobOrdersClient,
+	ForceCancelClobRefV0,
+	ClobSide,
 } from '@velocity-exchange/sdk';
 
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
@@ -52,16 +55,15 @@ import {
 	perpTierIsAsSafeAs,
 } from '@velocity-exchange/sdk';
 import {
-	ComputeBudgetProgram,
 	PublicKey,
 	AddressLookupTableAccount,
 	TransactionInstruction,
 } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import {
+	buildVersionedTransactionWithSimulatedCus as buildSimulatedCuTx,
 	calculateAccountValueUsd,
 	handleSimResultError,
-	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
 } from '../utils';
 import { LiquidatorDerisk } from './liquidatorDerisk';
@@ -75,7 +77,8 @@ const errorCodesToSuppress = [
 
 const LIQUIDATE_THROTTLE_BACKOFF = 5000; // the time to wait before trying to liquidate a throttled user again
 
-// Markets whose positions are wound down out of band; never send a liquidation. Once markets are settled properly, this can be removed.
+// Markets whose positions are closed out of band. Never send a liquidation
+// against one of these. The list can go once every market settles normally.
 const PERP_MARKETS_NEVER_LIQUIDATED: number[] = [];
 
 /** A perp position, reduced to what liquidation-exit market selection depends on. */
@@ -91,9 +94,8 @@ export type LiquidationExitPosition = {
 
 export type LiquidationExitCandidate = {
 	/**
-	 * `crank`  - zero-base liquidate_perp; clears the flag via the early exit.
-	 * `base`   - real, step-sized liquidate_perp.
-	 * `pnl`    - liquidate_perp_pnl_for_deposit / settle_pnl.
+	 * `crank` clears a stuck flag via zero-base liquidate_perp; `base` is
+	 * step-sized; `pnl` is liquidate_perp_pnl_for_deposit or settle_pnl.
 	 */
 	kind: 'crank' | 'base' | 'pnl';
 	marketIndex: number;
@@ -102,13 +104,13 @@ export type LiquidationExitCandidate = {
 /**
  * Orders the calls that could clear a stuck `beingLiquidated` flag, best first.
  *
- * Scoping matters because the program picks its liquidation mode from the
- * position in the target market: an isolated position's own flag is only
- * cleared by targeting that market, and the account-level flag only by
- * targeting a cross position or a market holding no position at all. Within a
- * scope the order is cheapest-first - cancelling orders can free enough margin
- * on its own, a sized liquidation is the fallback, and a pnl-only slot needs a
- * different instruction entirely.
+ * The scope matters because the program picks its liquidation mode from the
+ * position in the target market. An isolated position's own flag is cleared only
+ * by targeting that market. The account-level flag is cleared only by targeting
+ * a cross position, or a market holding no position at all. Within a scope the
+ * order is cheapest first. Cancelling orders can free enough margin on its own,
+ * a sized liquidation is the fallback, and a pnl-only slot needs a different
+ * instruction.
  */
 export function selectLiquidationExitCandidates(
 	positions: LiquidationExitPosition[],
@@ -147,10 +149,10 @@ export function selectLiquidationExitCandidates(
 	if (isCrossFlagged) {
 		push(positions.filter((p) => !p.isolated));
 
-		// Last resort for the account-level flag: a market the user holds nothing
+		// Last resort for the account-level flag. A market the user holds nothing
 		// in takes cross mode on chain, so the early exit still fires. This is the
-		// only call that clears an account whose positions are all gone - the
-		// common shape once the last one has been settled away.
+		// only call that clears an account whose positions are all gone, which is
+		// the common shape once the last position is settled away.
 		const emptyMarket = actionableMarkets.find(
 			(marketIndex) => !positions.some((p) => p.marketIndex === marketIndex)
 		);
@@ -265,6 +267,10 @@ export class LiquidatorBot implements Bot {
 	private userMapUserAccountKeysGauge?: ObservableGauge;
 
 	private velocityClient: VelocityClient;
+	/// Reads a liquidatee's resting CLOB orders off the dlob-server user-orders
+	/// feed, so they can be force-cancelled before a perp liquidation. Undefined
+	/// when no dlob-server URL is configured.
+	private userClobOrdersClient?: UserClobOrdersClient;
 	private serumLookupTableAddress?: PublicKey;
 	private velocityLookupTables?: AddressLookupTableAccount[];
 	private velocitySpotLookupTables?: AddressLookupTableAccount;
@@ -328,6 +334,16 @@ export class LiquidatorBot implements Bot {
 		this.name = config.botId;
 		this.dryRun = config.dryRun;
 		this.velocityClient = velocityClient;
+		if (config.dlobServerHttpUrl) {
+			this.userClobOrdersClient = new UserClobOrdersClient(
+				config.dlobServerHttpUrl
+			);
+		} else {
+			logger.info(
+				`${config.botId}: no dlobServerHttpUrl configured; perp liquidations will not force-cancel CLOB orders (on-chain revert is the backstop)`
+			);
+		}
+
 		this.runtimeSpecs = runtimeSpec;
 		this.userMap = userMap;
 
@@ -517,49 +533,12 @@ export class LiquidatorBot implements Bot {
 		luts: Array<AddressLookupTableAccount>,
 		cuPriceMicroLamports?: number
 	): Promise<SimulateAndGetTxWithCUsResponse> {
-		const fullIxs = [
-			ComputeBudgetProgram.setComputeUnitLimit({
-				units: 1_400_000, // will be overwriten in sim
-			}),
-		];
-		if (cuPriceMicroLamports !== undefined) {
-			fullIxs.push(
-				ComputeBudgetProgram.setComputeUnitPrice({
-					microLamports: cuPriceMicroLamports,
-				})
-			);
-		}
-		fullIxs.push(...ixs);
-
-		let resp: SimulateAndGetTxWithCUsResponse;
-		try {
-			const recentBlockhash =
-				await this.velocityClient.connection.getLatestBlockhash('confirmed');
-			resp = await simulateAndGetTxWithCUs({
-				ixs: fullIxs,
-				connection: this.velocityClient.connection,
-				payerPublicKey: this.velocityClient.wallet.publicKey,
-				lookupTableAccounts: luts,
-				cuLimitMultiplier: 1.2,
-				doSimulation: true,
-				dumpTx: false,
-				recentBlockhash: recentBlockhash.blockhash,
-			});
-		} catch (e) {
-			const err = e as Error;
-			logger.error(
-				`error in buildVersionedTransactionWithSimulatedCus, using max CUs: ${err.message}\n${err.stack}`
-			);
-			resp = {
-				cuEstimate: -1,
-				simTxLogs: null,
-				simError: err,
-				simTxDuration: -1,
-				// @ts-ignore
-				tx: undefined,
-			};
-		}
-		return resp;
+		return await buildSimulatedCuTx(
+			this.velocityClient,
+			ixs,
+			luts,
+			cuPriceMicroLamports
+		);
 	}
 
 	public async init() {
@@ -813,10 +792,8 @@ export class LiquidatorBot implements Bot {
 			return false;
 		}
 		this.setState(BOT_STATE.DERISKING);
-		const dlob = await this.userMap.getDLOB(this.userMap.getSlot());
 		try {
 			const didWork = await this.deriskHelper!.deriskAllSubaccounts(
-				dlob,
 				Array.from(this.allSubaccounts)
 			);
 			return didWork;
@@ -1601,6 +1578,55 @@ export class LiquidatorBot implements Bot {
 		return sentTx;
 	}
 
+	/// Build a `forceCancelClobOrders` instruction for the liquidatee's resting
+	/// CLOB orders in `perpMarketIndex`. The caller puts it before a perp
+	/// liquidation. Returns undefined when there is nothing to cancel, when no
+	/// dlob-server is configured, or when the lookup fails. The caller then
+	/// liquidates anyway, and the on-chain revert is the backstop.
+	private async buildForceCancelClobIx(
+		user: User,
+		perpMarketIndex: number,
+		liquidatorSubAccountId: number
+	): Promise<TransactionInstruction | undefined> {
+		if (!this.userClobOrdersClient) {
+			return undefined;
+		}
+
+		try {
+			const clobOrders = await this.userClobOrdersClient.fetch(
+				user.userAccountPublicKey,
+				[perpMarketIndex]
+			);
+
+			if (clobOrders.length === 0) {
+				return undefined;
+			}
+			const orderRefs: ForceCancelClobRefV0[] = clobOrders.map((order) => ({
+				orderRef: { nodeIndex: order.nodeIndex, orderId: order.clobOrderId },
+				// A long rests as a bid, a short as an ask.
+				side: isVariant(order.direction, 'long') ? ClobSide.BID : ClobSide.ASK,
+			}));
+			const filler = await this.velocityClient.getUserAccountPublicKey(
+				liquidatorSubAccountId
+			);
+
+			return await this.velocityClient.getForceCancelClobOrdersIx(
+				perpMarketIndex,
+				user.userAccountPublicKey,
+				user.getUserAccountOrThrow(),
+				orderRefs,
+				undefined,
+				filler
+			);
+		} catch (err) {
+			logger.error(
+				`force-cancel CLOB lookup failed for ${user.userAccountPublicKey.toBase58()} on market ${perpMarketIndex}: ${err}; liquidating anyway (on-chain revert is the backstop)`
+			);
+
+			return undefined;
+		}
+	}
+
 	private isThrottled(userKey: string, auth: string): boolean {
 		const lastAttempt = this.throttledUsers.get(userKey);
 		if (!lastAttempt) {
@@ -1623,23 +1649,23 @@ export class LiquidatorBot implements Bot {
 	 * Clears the `beingLiquidated` flag on a user who is no longer liquidatable.
 	 *
 	 * `liquidate_perp` with a zero base amount is a crank rather than a real
-	 * liquidation: when the account already clears the maintenance-plus-buffer
-	 * band it exits liquidation outright, before it ever looks at the position.
-	 * That early exit is why a market the user holds nothing in still works, and
-	 * it is the only thing that clears an account whose positions are all gone.
+	 * liquidation. When the account already clears the maintenance-plus-buffer
+	 * band, the program exits liquidation before it looks at the position. That
+	 * early exit is why a market the user holds nothing in still works, and it is
+	 * the only thing that clears an account whose positions are all gone.
 	 *
-	 * Past the early exit the market matters:
+	 * Past the early exit the market matters.
 	 *
 	 * - The program derives its liquidation mode from the position in the target
-	 *   market, so an isolated position's own flag is only cleared by targeting
-	 *   that market, and the account-level flag only by targeting a cross
-	 *   position (or a market with no position, which falls back to cross mode).
-	 * - It then requires a base position or an open order
-	 *   (`PositionDoesntHaveOpenPositionOrOrders`), and rejects a zero base
-	 *   amount once it reaches the transfer with a base position still open
-	 *   (`InvalidBaseAssetAmountForLiquidatePerp`).
-	 * - A slot holding only unsettled pnl satisfies neither, and has to go
-	 *   through `liquidate_perp_pnl_for_deposit` / `settle_pnl` instead.
+	 *   market. An isolated position's own flag is cleared only by targeting that
+	 *   market. The account-level flag is cleared only by targeting a cross
+	 *   position, or a market with no position, which falls back to cross mode.
+	 * - The program then requires a base position or an open order, and otherwise
+	 *   returns `PositionDoesntHaveOpenPositionOrOrders`. It rejects a zero base
+	 *   amount once it reaches the transfer with a base position still open, and
+	 *   returns `InvalidBaseAssetAmountForLiquidatePerp`.
+	 * - A slot holding only unsettled pnl satisfies neither requirement. It has
+	 *   to go through `liquidate_perp_pnl_for_deposit` or `settle_pnl` instead.
 	 */
 	private async clearBeingLiquidatedStatus(user: User): Promise<{
 		liquidatePerp: number;
@@ -1660,8 +1686,8 @@ export class LiquidatorBot implements Bot {
 			positions.map((position) => ({
 				marketIndex: position.marketIndex,
 				hasBase: !position.baseAssetAmount.isZero(),
-				// Mirrors the program's has_open_order(), which also counts the
-				// bid/ask exposure an order leaves behind.
+				// This mirrors the program's has_open_order(), which also counts
+				// the bid and ask exposure an order leaves behind.
 				hasOpenOrder:
 					position.openOrders > 0 ||
 					!position.openBids.isZero() ||
@@ -1683,9 +1709,9 @@ export class LiquidatorBot implements Bot {
 			return sent;
 		}
 
-		// Walk the candidates rather than committing to the first one: it may sit
-		// in a market with no configured subaccount, or be too small to size, and
-		// stopping there would stall on the same slot every tick.
+		// Walk the candidates rather than take the first one. The first candidate
+		// may sit in a market with no configured subaccount, or be too small to
+		// size, and stopping there would stall on the same slot every tick.
 		for (const candidate of candidates) {
 			const issued = await this.issueLiquidationExitCandidate(
 				user,
@@ -1737,10 +1763,10 @@ export class LiquidatorBot implements Bot {
 		const userKey = user.userAccountPublicKey.toBase58();
 
 		if (candidate.kind === 'crank') {
-			// A zero base amount transfers no liability, so this deliberately does
-			// not go through getSubAccountIdToLiquidatePerp: gating the crank on a
-			// subaccount holding collateral would block the one call that clears a
-			// recovered account for free.
+			// A zero base amount transfers no liability, so this does not go
+			// through getSubAccountIdToLiquidatePerp. Gating the crank on a
+			// subaccount that holds collateral would block the one call that
+			// clears a recovered account for free.
 			return (await this.liqPerp(
 				user,
 				candidate.marketIndex,
@@ -1816,8 +1842,8 @@ export class LiquidatorBot implements Bot {
 				this.maxPositionTakeoverPctOfCollateralDenom
 			);
 
-		// liquidate_perp_pnl_for_deposit needs a deposit to seize; without one the
-		// call has nothing to work with and liqPerpPnl would log a spot market -1.
+		// liquidate_perp_pnl_for_deposit needs a deposit to seize. Without one the
+		// call has nothing to take, and liqPerpPnl logs a spot market of -1.
 		if (position.quoteAssetAmount.lt(ZERO) && depositMarketIndextoLiq === -1) {
 			return undefined;
 		}
@@ -1858,8 +1884,17 @@ export class LiquidatorBot implements Bot {
 			undefined,
 			subAccountToLiqPerp
 		);
+
+		// A perp liquidation reverts while the liquidatee holds resting CLOB
+		// orders, so force-cancel them first. On a feed error the force-cancel is
+		// skipped, and the on-chain revert is the backstop.
+		const forceCancelIx = await this.buildForceCancelClobIx(
+			user,
+			perpMarketIndex,
+			subAccountToLiqPerp
+		);
 		const simResult = await this.buildVersionedTransactionWithSimulatedCus(
-			[ix],
+			forceCancelIx ? [forceCancelIx, ix] : [ix],
 			this.velocityLookupTables!,
 			Math.floor(this.priorityFeeSubscriber.getCustomStrategyResult())
 		);

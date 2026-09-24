@@ -74,20 +74,18 @@ pub struct HistoricalOracleData {
 impl HistoricalOracleData {
     /// Seed the quote spot market's historical oracle data at launch.
     ///
-    /// Deliberately leaves `last_oracle_price_twap_ts` at zero, unlike
+    /// This leaves `last_oracle_price_twap_ts` at zero, unlike
     /// [`Self::default_with_current_oracle`]. `OracleSource::QuoteAsset` returns a
     /// constant `PRICE_PRECISION`, so this market's TWAP and live price are always
-    /// the same number and its `StrictOraclePrice` band is degenerate by
-    /// construction — the collapse [`Self::default_with_current_oracle`] guards
-    /// against cannot happen here.
+    /// the same number and its `StrictOraclePrice` band is a single point. The
+    /// collapse `default_with_current_oracle` guards against cannot happen here.
     ///
-    /// Stamping it anyway is not harmless: it changes which way
-    /// `calculate_weighted_average`'s ±1 rounding bias falls on the first crank
-    /// (`999999` vs `1000001`, since a zero timestamp saturates `from_start` to 1
-    /// and flips the bias), and every collateral valuation reads that TWAP. Both
-    /// values are noise around a definitionally constant 1.0, so the correct move is
-    /// to leave this market's behavior untouched rather than trade one artifact for
-    /// another.
+    /// allow-verbose: a stamped timestamp is not harmless even so. It changes
+    /// which way the plus or minus one rounding bias in `calculate_weighted_average`
+    /// falls on the first crank, so the TWAP reads `999999` instead of `1000001`. A
+    /// zero timestamp saturates `from_start` to 1 and flips that bias. Every
+    /// collateral valuation reads this TWAP, but both values are noise around a
+    /// price that is 1.0 by definition, so the market keeps zero.
     pub fn default_quote_oracle() -> Self {
         HistoricalOracleData {
             last_oracle_price: PRICE_PRECISION_I64,
@@ -111,15 +109,10 @@ impl HistoricalOracleData {
     }
 
     /// Seed a spot market's historical oracle data at launch.
-    ///
-    /// `now` **must** land in `last_oracle_price_twap_ts`. Left at zero, the first
-    /// `update_spot_market_twap_stats` computes `since_last = now - 0`, which
-    /// dwarfs any TWAP period, so `from_start` saturates to 0 and the new TWAP
-    /// becomes the live price *exactly*. Both `StrictOraclePrice` bounds (`min` /
-    /// `max` of current vs the 5-min TWAP) then collapse onto that single price,
-    /// leaving the first price-banded operation on the market unguarded in both
-    /// directions (OtterSec #121). The perp initializer has always stamped this;
-    /// on the spot path the assignment was commented out.
+    /// `now` must land in `last_oracle_price_twap_ts`. A zero timestamp saturates
+    /// `from_start` to 0, so the new TWAP becomes the live price exactly and both
+    /// `StrictOraclePrice` bounds collapse onto it, leaving the first price-banded
+    /// operation unguarded in both directions (OtterSec #121).
     pub fn default_with_current_oracle(oracle_price_data: OraclePriceData, now: i64) -> Self {
         HistoricalOracleData {
             last_oracle_price: oracle_price_data.price,
@@ -128,9 +121,8 @@ impl HistoricalOracleData {
             last_oracle_price_twap: oracle_price_data.price,
             last_oracle_price_twap_5min: oracle_price_data.price,
             last_oracle_price_twap_ts: now,
-            // Every field is set explicitly (no `..default()`): a future field
-            // addition should be a compile error here, not a silent zero — that is
-            // exactly how the missing timestamp went unnoticed.
+            // Every field is set here, with no `..default()`. A field added
+            // later must be a compile error rather than a silent zero.
         }
     }
 
@@ -307,11 +299,10 @@ pub struct MMOraclePriceData {
     mm_exchange_diff_bps: u128,
     exchange_oracle_price_data: OraclePriceData,
     safe_oracle_price_data: OraclePriceData,
-    /// Whether `safe_oracle_price_data` carries the MM oracle price (true) or
-    /// fell back to the exchange oracle (false). The unset-default resolution
-    /// of the immediate-fill staleness threshold depends on it: only an
-    /// MM-oracle-sourced price is structurally unable to be fresher than
-    /// `MM_ORACLE_MIN_WRITE_GAP`.
+    /// True when `safe_oracle_price_data` carries the MM oracle price. False
+    /// when it fell back to the exchange oracle. The default immediate-fill
+    /// staleness threshold resolves from this flag, because only a price taken
+    /// from the MM oracle cannot be fresher than `MM_ORACLE_MIN_WRITE_GAP`.
     safe_price_is_mm_sourced: bool,
 }
 
@@ -489,13 +480,10 @@ pub fn get_oracle_price(
     }
 }
 
-/// Pyth writes the same four `u32` words at the start of every account it
-/// owns: `magic`, `ver`, `atype`, `size`. The first three identify the
-/// account; `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the `AccountType::Price`
-/// discriminant.
-///
-/// These are public so that a test fixture builds its header from the same
-/// values the check reads, and cannot drift from them.
+/// Pyth writes four `u32` words at the start of every account it owns:
+/// `magic`, `ver`, `atype`, and `size`. `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the
+/// `AccountType::Price` discriminant. These are public so a test fixture
+/// builds its header from the same values the check reads.
 pub const PYTH_PUSH_MAGIC: u32 = 0xa1b2_c3d4;
 pub const PYTH_PUSH_VERSION: u32 = 2;
 pub const PYTH_PUSH_ACCOUNT_TYPE_PRICE: u32 = 3;
@@ -504,22 +492,22 @@ pub const PYTH_PUSH_ACCOUNT_TYPE_PRICE: u32 = 3;
 ///
 /// Ownership by the pyth program does not make an account a price feed. That
 /// program also owns mapping accounts and product accounts, and it creates an
-/// account for anybody who asks. `pyth_client::cast` reinterprets whatever
-/// bytes it receives as a `Price`, so without this check the caller chooses
-/// the price and the exponent that come back. The header makes the account
-/// prove its own type first.
+/// account for anybody who asks. `pyth_client::cast` reads whatever bytes it
+/// receives as a `Price`. Without this check the caller chooses the price and
+/// the exponent that come back. The header makes the account prove its own
+/// type first.
 ///
-/// The header words are read from the raw bytes rather than through the cast,
-/// so no field is interpreted before the account is known to be a price
+/// This reads the header words from the raw bytes rather than through the
+/// cast, so it interprets no field before the account is known to be a price
 /// account.
 ///
 /// The length and alignment checks come first, because `pyth_client::cast`
 /// discards the unaligned head of the slice and then indexes the first whole
-/// `Price` in the rest. Two consequences: the cast panics when what remains
-/// is shorter than the struct, and on an unaligned slice it would read from a
-/// different offset than the header below. The alignment check keeps the
-/// header and the price the same bytes. Solana aligns account data to eight
-/// bytes, so a real account passes both.
+/// `Price` in the rest. That has two consequences. The cast panics when what
+/// remains is shorter than the struct. On an unaligned slice the cast reads
+/// from a different offset than the header check below. The alignment check
+/// keeps the header and the price in the same bytes. Solana aligns account
+/// data to eight bytes, so a real account passes both checks.
 pub fn load_pyth_push_price(data: &[u8]) -> VelocityResult<&pyth_client::Price> {
     if data.len() < std::mem::size_of::<pyth_client::Price>() {
         msg!("Account is smaller than a pyth price account");
@@ -599,7 +587,9 @@ pub fn get_pyth_price(
         let price_data = load_pyth_push_price(pyth_price_data)?;
         oracle_price = price_data.agg.price;
         oracle_conf = price_data.agg.conf;
+        #[cfg_attr(not(feature = "mainnet-beta"), allow(unused_variables))]
         let min_publishers = price_data.num.min(3);
+        #[cfg_attr(not(feature = "mainnet-beta"), allow(unused_variables))]
         let publisher_count = price_data.num_qt;
 
         #[cfg(feature = "mainnet-beta")]

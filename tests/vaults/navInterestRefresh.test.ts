@@ -1,24 +1,5 @@
 /**
- * Regression suite for OtterSec #136 / #137.
- *
- * `Vault::calculate_equity` values the vault's velocity spot deposit off the spot
- * market's STORED `cumulative_deposit_interest`. Only velocity may write that
- * account, so the vaults program has to CPI
- * `update_spot_market_cumulative_interest` before it snapshots NAV. Before the
- * fix:
- *
- *   #136 `deposit` refreshed the market only *after* minting shares (as a side
- *        effect of the deposit CPI), so an entrant priced its shares against a
- *        stale index and captured a slice of the lender interest the incumbents
- *        had already earned.
- *   #137 `request_withdraw` / `cancel_withdraw_request` never refreshed at all,
- *        so the recorded request value understated NAV and the cancellation
- *        share-forfeiture rule saw no request-window gain to forfeit.
- *
- * Every test below drives real interest accrual (a borrower creates utilization
- * on the vault's denomination market) and then warps the clock WITHOUT cranking
- * the market, so the on-chain index is provably stale when the vault
- * instruction runs.
+ * Regression suite for NAV interest refresh: stale-index and no-refresh bugs (OtterSec #136/#137).
  */
 import * as anchor from '@coral-xyz/anchor';
 import { BN, Program } from '@coral-xyz/anchor';
@@ -243,8 +224,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 			user2Signer.publicKey
 		);
 
-		// The borrower never touches the vault; it only creates utilization (and
-		// therefore lender interest) on the vault's denomination market.
+		// The borrower never touches the vault. It only creates utilization on the
+		// vault's denomination market, which is what pays lender interest.
 		const borrowerBootstrap = await bootstrapSignerClientAndUser({
 			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
@@ -329,8 +310,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		const indexBeforeWarp = await fetchDepositInterestIndex();
 		await svmContextWrapper.moveTimeForward(SIX_MONTHS);
 
-		// Nothing cranked the market, so the stored index is provably stale — this
-		// is precisely the state in which the pre-fix `deposit` priced shares.
+		// Nothing cranked the market, so the stored index is provably stale. This is
+		// the state in which the old `deposit` priced shares.
 		expect((await fetchDepositInterestIndex()).eq(indexBeforeWarp)).to.equal(
 			true
 		);
@@ -362,13 +343,13 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		const user2Shares = (await fetchVaultDepositor(user2VaultDepositor))
 			.vaultShares as BN;
 
-		// Direction 1 (what the bug produced): pricing against the stale index would
-		// have valued the vault at exactly `depositAmount`, minting user2 the same
-		// number of shares as user1.
+		// Direction 1, the old outcome. Pricing against the stale index valued the
+		// vault at exactly `depositAmount`. It then minted user2 the same number of
+		// shares as user1.
 		expect(user2Shares.lt(user1Shares)).to.equal(true);
 		expect(user2Shares.eq(user1Shares)).to.equal(false);
 
-		// Direction 2 (what the fix produces): shares = amount * totalShares / freshNav.
+		// Direction 2, the current outcome: shares = amount * totalShares / freshNav.
 		const expectedUser2Shares = depositAmount.mul(user1Shares).div(freshNav);
 		expect(
 			user2Shares.sub(expectedUser2Shares).abs().lten(2),
@@ -430,7 +411,7 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		);
 
 		// `request_withdraw` has no other velocity CPI, so the index can only have
-		// moved because of the new refresh CPI. Pre-fix this stayed equal.
+		// moved because of the refresh CPI. The old code left this equal.
 		const indexAfter = await fetchDepositInterestIndex();
 		expect(
 			indexAfter.gt(indexBeforeWarp),
@@ -509,8 +490,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 			.vaultShares as BN;
 
 		// Direction 1: with a stale index the vault looks unchanged since the
-		// request, `calculate_shares_lost` returns 0, and user1 keeps every share —
-		// pocketing request-window interest it had already asked to exit before.
+		// request, `calculate_shares_lost` returns 0, and user1 keeps every share.
+		// User1 then keeps request-window interest it had already asked to exit.
 		expect(
 			sharesAfterCancel.lt(sharesAfterRequest),
 			`shares not forfeited: ${sharesAfterCancel.toString()} vs ${sharesAfterRequest.toString()}`
@@ -530,8 +511,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 			`user1Equity=${user1Equity.toString()} requestValue=${requestValue.toString()}`
 		).to.equal(true);
 
-		// The forfeited shares accrue to the remaining shareholder: user2 ends up
-		// worth more than the $1,000 it put in.
+		// The forfeited shares accrue to the remaining shareholder. User2 is worth
+		// more than the $1,000 it put in.
 		const user2Equity = totalNav
 			.mul(user2Shares)
 			.div(vaultAfter.totalShares as BN);
@@ -541,14 +522,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		).to.equal(true);
 	});
 
-	// The refresh CPI used to carry velocity's `spot_market_valid` access control, which
-	// rejects a delisted market. Every vault instruction ran that CPI first, so delisting
-	// the denomination market froze all of them, including the paths that move no tokens.
-	// Delisting is terminal (`handle_update_spot_market_status` carries the same guard), so
-	// there was no recovery.
-	//
-	// The token-moving paths stay blocked either way: velocity's own withdraw admits only
-	// Active, ReduceOnly and Settlement. This test covers what the refresh actually unblocks.
+	// The refresh CPI once rejected delisted markets via `spot_market_valid`.
+	// Token-less paths now work; token-moving paths stay blocked.
 	it('keeps the token-less paths working when the denomination market is delisted', async () => {
 		await user1Client.deposit(
 			user1VaultDepositor,
@@ -579,8 +554,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 			).value.gt(ZERO)
 		).to.equal(true);
 
-		// Cancelling is the case with no recovery path of its own: a depositor stuck
-		// mid-request could neither finish nor undo it.
+		// Cancelling has no recovery path of its own. A depositor stuck mid-request
+		// could neither finish the request nor undo it.
 		await user1Client.syncVaultUsers();
 		await user1Client.cancelRequestWithdraw(user1VaultDepositor, {
 			noLut: true,
@@ -593,8 +568,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		).to.equal(true);
 
 		// The interest still accrues on a delisted market, so the refresh still books it.
-		// Nothing about delisting stops the accrual — `deposit` and `force_delete_user`
-		// book interest there too — so refusing here only ever blocked the caller.
+		// Delisting does not stop the accrual. `deposit` and `force_delete_user` book
+		// interest there too, so refusing here only ever blocked the caller.
 		const indexBefore = await fetchDepositInterestIndex();
 		await svmContextWrapper.moveTimeForward(SIX_MONTHS);
 		await user1Client.syncVaultUsers();

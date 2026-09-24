@@ -135,7 +135,7 @@ export enum UserStatus {
 	REDUCE_ONLY = 4,
 	ADVANCED_LP = 8,
 	// 16 reserved (was PROTECTED_MAKER)
-	/** Owned by a Strategy Vault (authority is a vault PDA; equity prices vault shares). Revenue-share sweeps skip such Users so a builder/referral reward can't enter vault NAV. */
+	/** Owned by a Strategy Vault: the authority is a vault PDA and the equity prices vault shares. Revenue-share sweeps skip such Users, so a builder or referral reward cannot enter vault NAV. */
 	VAULT_OWNED = 32,
 }
 
@@ -328,6 +328,10 @@ export class OrderBitFlag {
 	static readonly NewTriggerReduceOnly = 8;
 	static readonly HasBuilder = 16;
 	static readonly IsIsolatedPosition = 32;
+	/** the slot is a shadow of a trigger-limit order resting on the CLOB (`triggerLimitOrderV1`). It keeps the trigger params and the CLOB order ref in the auction price fields. It reads as untriggered, so a trigger crank ignores it */
+	static readonly PlacedOnClob = 64;
+	/** set when an evicted placed trigger re-arms. It may not fire again until a crank observes the price back on the non-trigger side */
+	static readonly AwaitingTriggerRecross = 128;
 }
 
 /** The kind of action an `OrderActionRecord` event describes. */
@@ -390,7 +394,327 @@ export class OrderActionExplanation {
 	static readonly TRANSFER_PERP_POSITION = {
 		transferPerpPosition: {},
 	};
+	static readonly ORDER_FILLED_WITH_EXTERNAL_QUOTER = {
+		orderFilledWithExternalQuoter: {},
+	};
 }
+
+/** Which kind of liquidity a quoted book came from (`QuotedSourceKind` on-chain). A `quoter` source executes through a CPI leg and `vamm` off the curve. A PropAMM's levels are a quote at a size rather than resting orders, so a UI needs the distinction. `dlobOrder` is deprecated: no source publishes it, and the variant stays so the wire layout does not shift. */
+export class QuotedSourceKind {
+	static readonly VAMM = { vamm: {} };
+	static readonly DLOB_ORDER = { dlobOrder: {} };
+	static readonly QUOTER = { quoter: {} };
+}
+
+/** One quoted level in a `RouterQuoteBufferV0` slot. */
+export type QuotedLevelV0 = {
+	/** PRICE_PRECISION */
+	price: BN;
+	/** base precision */
+	size: BN;
+};
+
+/** One source's entry in a `RouterQuoteBufferV0`, parallel to its `levels` slot. */
+export type QuotedSourceV0 = {
+	/** the `QuoterV0` entry for a quoter, the perp market for the vAMM */
+	key: PublicKey;
+	levelCount: number;
+	/** routing tier the split applies (lower fills first at a price) */
+	priority: number;
+	kind: QuotedSourceKind;
+	/** verification reduced this book. A Custom quoter advertised more depth than its `User`'s margin supports */
+	clamped: boolean;
+	/** this source's slice of the buffer's `rows`: where it starts */
+	rowStart: number;
+	/** how many rows it holds; 0 for a source with no per-order detail (the vAMM) */
+	rowLen: number;
+	padding: number[];
+};
+
+/**
+ * One resting order behind a quoted book, with the user it settles against. A quoter that fills from
+ * one account reports its ladder against that account, with no `orderId`.
+ */
+export type QuotedRowV0 = {
+	/** PRICE_PRECISION */
+	price: BN;
+	/** base precision */
+	size: BN;
+	/** the quoter's own handle for the order; zero when the row is not an order */
+	orderId: BN;
+	/** authority half of the user this row settles against */
+	authority: PublicKey;
+	subAccountId: number;
+	/** `L3_ROW_FLAG_*`: bit 0 = the row is a migrated taker remainder */
+	flags: number;
+	padding: number[];
+};
+
+/**
+ * Output of the `quoteRouter` view instruction: per-source verified books for a taker of
+ * `(direction, quotedSize)`. It is written only under simulation. Read it out of post-simulation
+ * account state, never by landing the instruction. `quotedSize` truncates a resting source such as
+ * the CLOB, and the vAMM and PropAMM levels price against it. `slot` makes a cached book's
+ * staleness checkable.
+ */
+export type RouterQuoteBufferV0Account = {
+	authority: PublicKey;
+	quotedSize: BN;
+	slot: BN;
+	market: number;
+	sourceCount: number;
+	/** taker direction quoted: 0 = long, 1 = short */
+	direction: number;
+	/** live entries in `rows` */
+	rowCount: number;
+	/** the row region filled before every source was described, so the last sources carry fewer rows than their books hold; the ladders are unaffected */
+	rowsTruncated: boolean;
+	padding: number[];
+	sources: QuotedSourceV0[];
+	/** one 128-level slot per source, parallel to `sources` */
+	levels: QuotedLevelV0[][];
+	/** the orders behind the ladders, in the order the sources were quoted; each source names its own run through `rowStart`/`rowLen` */
+	rows: QuotedRowV0[];
+};
+
+/**
+ * Per-market relay conditions for the CLOB cranks, created when the admin attaches a CLOB
+ * (`updatePerpMarketClobQuoter`). `relay` is an opaque relay-spec block read by crank turners. The
+ * account's lamport balance is the reservoir its cranks pay keepers from, refilled from the single
+ * `CrankTreasuryV0` by `refillCrankReservoir`. Its two conditions watch this account: a PropAMM
+ * repricing into a cross, and the reservoir reaching its refill watermark. The book's own four conditions live on the CLOB market account.
+ */
+export type ClobCrankConditionsV0Account = {
+	/** relay-spec RelayBlockV0<2, 8> wire bytes (header, 2 conditions, and the resolver account list), parsed by relay tooling rather than the SDK */
+	relay: number[];
+	/** the market's oracle, captured at attach time */
+	oracle: PublicKey;
+	/** lamports each of the market's cranks pays its keeper, drawn from this account's balance; derived at attach time from `State.transactionFeeRails` and the cost units the admin measured for each crank */
+	crankPayments: CrankPaymentsV0;
+	/** floor on the protocol's quote surplus from a cross-match crank, QUOTE_PRECISION (1e6); cranking a cross pays the reservoir's keeper fee, so a cross that clears by less is declined. 0 = strictly-profitable only */
+	minCrossSurplus: BN;
+	/** account-data offset of the book's own condition block, as it reported at attach. The book's relay watch registers at this offset. A market needs two watches: this account at offset 8, and the book here */
+	clobBlockOffset: number;
+	/** the region of the book that changes when either side's best moves, as it reported at attach. A cross watch on the book registers at this region */
+	topOfBookOffset: number;
+	topOfBookLen: number;
+	marketIndex: number;
+	quoteSpotMarketIndex: number;
+	/** the spendable balance this reservoir wakes its refill at, in lamports. The attach resolves it from the treasury's watermark setting and this market's most expensive crank. It is stored because it is the threshold the wake condition carries */
+	refillWatermarkLamports: BN;
+	/** this account's spendable lamports (balance less rent exemption) as of the last payment or refill. It is mirrored into account data because a relay watch reads data and a lamport balance is metadata. It is advisory: the refill instruction reads the real balance */
+	spendableMirror: BN;
+	padding: number[];
+};
+
+/**
+ * The protocol's single relay crank treasury. Market crank reservoirs refill from it through the
+ * permissionless `refillCrankReservoir`. A plain SOL transfer to the PDA funds it, and `withdrawCrankTreasury` takes lamports back out, never below rent.
+ */
+export type CrankTreasuryV0Account = {
+	/** lifetime lamports paid to keepers that refilled a reservoir or resynced a user's liquidation conditions */
+	totalPaid: BN;
+	/** lifetime lamports moved out to market reservoirs */
+	totalRefilled: BN;
+	paddingU64: BN;
+	/** a refill fills a reservoir to this many of its most expensive crank. Read at refill time, so re-tuning it reaches every market at once. */
+	refillTargetCranks: number;
+	/** wake a refill when a reservoir can pay fewer than this many of its most expensive crank. The attach resolves it to lamports and writes it onto the market (`ClobCrankConditionsV0.refillWatermarkLamports`), because that is the threshold the market's wake condition carries. A new watermark therefore reaches a market on its next attach. It must be under `refillTargetCranks`, or a refill would leave the reservoir still due */
+	refillWatermarkCranks: number;
+	padding: number[];
+};
+
+/**
+ * What the network charges to land one transaction: a fixed inclusion fee, a per-signature fee, and a rate
+ * on the cost units requested. Set by `updateTransactionFeeRails`. A zero `resourceFeeDenominator` prices cost units at nothing, which charges per signature alone.
+ */
+export type TransactionFeeRails = {
+	/** charged once per transaction, whatever it contains */
+	inclusionLamports: number;
+	/** charged per signature the transaction carries */
+	signatureLamports: number;
+	/** lamports per requested cost unit, as a fraction; rounded up */
+	resourceFeeNumerator: number;
+	/** zero prices cost units at nothing */
+	resourceFeeDenominator: number;
+	/** ceiling on the compute-unit price a crank's priority fee is reimbursed against, in micro-lamports per compute unit; 0 disables priority reimbursement */
+	maxPriorityMicroLamportsPerCu: number;
+};
+
+/**
+ * What each of a market's cranks pays its keeper, in lamports. There is one figure per crank because
+ * a book removal and a two-legged cross differ by an order of magnitude in the cost units they
+ * request, and the network charges a transaction for what it requests.
+ */
+export type CrankPaymentsV0 = {
+	/** `evictWorst` / `removeExpired` */
+	removal: number;
+	/** `crankCrossMatch` */
+	cross: number;
+	/** `crankTakerOriginCross` */
+	takerOriginCross: number;
+	/** `triggerOrder` / `triggerLimitOrderV1` in program-keeper mode */
+	trigger: number;
+	/** `liquidatePerpWithFill` in program-keeper mode */
+	liquidation: number;
+	/** `forceCancelClobOrders` */
+	forceCancel: number;
+	/** `refillCrankReservoir`. The protocol `CrankTreasuryV0` pays it rather than this reservoir. It is priced and advertised here because the refill condition lives here and a turner filters on the floor a condition advertises. It does not count toward the float the reservoir is held at, because a reservoir never spends on being filled */
+	refill: number;
+	padding: number;
+};
+
+/**
+ * Cost units each of a market's cranks requests, measured by simulating it. It
+ * is the argument `updatePerpMarketClobQuoter` prices into `CrankPaymentsV0`.
+ */
+export type CrankCostUnitsV0 = Omit<CrankPaymentsV0, 'padding'>;
+
+/**
+ * Per-market relay conditions that watch a Custom quoter for a cross against the market's CLOB,
+ * created by `initializeQuoterCrossConditions`. The account has the same shape as
+ * `ClobCrankConditionsV0Account`. Its own lamport balance pays the cross crank.
+ */
+export type QuoterCrossConditionsV0Account = {
+	/** relay-spec RelayBlockV0<3, 48> wire bytes, parsed by relay tooling rather than the SDK */
+	relay: number[];
+	/** the Custom `QuoterV0` entry these conditions watch for crosses */
+	quoter: PublicKey;
+	/** the market's book and its program, captured at attach time */
+	clobMarket: PublicKey;
+	clobProgram: PublicKey;
+	/** the market's oracle, captured at attach time */
+	oracle: PublicKey;
+	marketIndex: number;
+	quoteSpotMarketIndex: number;
+	padding: number[];
+};
+
+/**
+ * Book side of a resting CLOB order, as the CLOB encodes it on its wire. `quoter-spec` declares it as
+ * `SideV0` in the IDL. The variants serialize by position, so the name differs and the encoding does not.
+ */
+export class ClobSide {
+	static readonly BID = { bid: {} };
+	static readonly ASK = { ask: {} };
+}
+
+/**
+ * Swift's detached flow attestation: the flow authority's signature over an order's own signature plus
+ * an expiry in unix seconds. `placeSignedMsgTakerOrder` verifies it in-program, so a fill on a book with a speed bump can take synchronously without the flow authority signing the keeper's transaction.
+ */
+export type FlowAttestationV0 = {
+	signature: number[];
+	expiryTs: BN;
+};
+
+/**
+ * A resting CLOB order's handle: the node hint the book verifies against the order id. A stale hint
+ * fails closed rather than acting on whichever order took the slot. `placeAndMakePerpOrderV1` returns it, and every row of the user-orders feed carries it.
+ */
+export type ClobOrderRefV0 = {
+	nodeIndex: number;
+	orderId: BN;
+};
+
+/** Which sides a `cancelOrdersV1` sweep withdraws. */
+export class CancelSidesV0 {
+	static readonly BIDS = { bids: {} };
+	static readonly ASKS = { asks: {} };
+	static readonly BOTH = { both: {} };
+}
+
+/** Args of `cancelOrderV1` (cancel one resting CLOB order). */
+export type CancelOrderV1Params = {
+	marketIndex: number;
+	orderRef: ClobOrderRefV0;
+};
+
+/** Args of `modifyOrderV1`. A modify keeps the order's id and loses its queue position. */
+export type ModifyOrderV1Params = {
+	marketIndex: number;
+	orderRef: ClobOrderRefV0;
+	/** `null` keeps the resting price. */
+	price: BN | null;
+	/** `null` keeps the *remaining* size, not the original. */
+	baseAssetAmount: BN | null;
+	/** `null` keeps the resting expiry; `0` makes the replacement good-till-cancelled. */
+	maxTs: BN | null;
+	activationDelaySlots: number | null;
+	rejectIfCrossed: boolean;
+};
+
+/** Args of `cancelOrdersV1` (sweep a whole side, or both, off the book). */
+export type CancelOrdersV1Params = {
+	marketIndex: number;
+	sides: CancelSidesV0;
+};
+
+/**
+ * One resting order on the user-orders feed. A CLOB order has no `User.orders` slot, so this is
+ * where a client learns what it is resting. `orderId` is velocity's, from the same counter an armed
+ * trigger draws from. `nodeIndex` and `clobOrderId` are the book's handle for the same order, and
+ * together they form the `ClobOrderRefV0` a cancel takes.
+ */
+export type UserClobOrder = {
+	orderId: number;
+	nodeIndex: number;
+	clobOrderId: BN;
+	marketIndex: number;
+	direction: PositionDirection;
+	price: BN;
+	baseAssetAmount: BN;
+	maxTs: BN;
+	activationSlot: BN;
+	placedSlot: BN;
+	/** a migrated taker remainder. It demands liquidity, and a cross settles at the other side's price */
+	takerOrigin: boolean;
+	venue: 'clob';
+};
+
+/**
+ * One order handed to `forceCancelClobOrders`. The caller declares the side because a book node carries
+ * none of its own, which lets the risk-reducing test run before the cancel CPI. The program checks the declared side against what the CLOB reports for the removal, and a mismatch reverts.
+ */
+export type ForceCancelClobRefV0 = {
+	orderRef: { nodeIndex: number; orderId: BN };
+	side: ClobSide;
+};
+
+/** The order a `UserConditionsV0` trigger slot watches, plus the CLOB it goes onto when it fires. All three CLOB keys are the default pubkey for an empty slot. */
+export type TriggerSlotMetaV0 = {
+	quoter: PublicKey;
+	clobMarket: PublicKey;
+	clobProgram: PublicKey;
+	orderId: number;
+	marketIndex: number;
+	padding: number[];
+};
+
+/**
+ * One user's relay conditions: a liquidation liveness poll and one watch per armed trigger order, rewritten
+ * whole by the permissionless `syncLiqConditions` and `syncTriggerConditions`. The poll wakes on a clock and the resolver runs the maintenance-margin calculation, so the block holds that calculation's margin map, the markets and oracles of the user's exposures. It is not a prediction of the price at which they turn liquidatable.
+ * `positionsDigest` digests the exposures the last sync ran against, so a stale block is detectable.
+ */
+export type UserConditionsV0Account = {
+	/** relay-spec RelayBlockV0<11, 48> wire bytes, parsed by relay tooling rather than the SDK */
+	relay: number[];
+	/** parallel to the 8 trigger condition slots */
+	triggerSlots: TriggerSlotMetaV0[];
+	/** per-slot trigger resolver account lists, relay-spec wire bytes */
+	triggerResolvers: number[];
+	/** the `User` these conditions watch */
+	user: PublicKey;
+	/** lamports the sync executor pays its keeper, drawn from the protocol `CrankTreasuryV0` rather than from this account. Whoever opts in states it, and pricing caps it, because opting in is permissionless and the payer is protocol funds */
+	syncPaymentLamports: BN;
+	/** fallback poll interval, in slots. It is also the rate limit on what the treasury pays for this account, so a paid sync may not name an interval short enough to be paid every slot */
+	syncFallbackSlots: BN;
+	/** digest of the exposures the last sync ran against */
+	positionsDigest: BN;
+	/** slot the treasury last paid a keeper for resyncing this account. A resync is paid at most once per `syncFallbackSlots`. Opting in is permissionless and the protocol treasury pays, so without this bound the same account could be cranked in a loop for the fee */
+	lastPaidSyncSlot: BN;
+	padding: number[];
+};
 
 /** Trigger-order condition on `Order.triggerCondition`. `ABOVE`/`BELOW` are the pending (not-yet-triggered) states; `TRIGGERED_ABOVE`/`TRIGGERED_BELOW` record that the condition has already fired, so the order is now live for filling. */
 export class OrderTriggerCondition {
@@ -488,7 +812,7 @@ export class AcceleratedReferralStatusChange {
  * enrollment on an eligible interaction, or an admin grant/revoke. `previousStatus` and
  * `newStatus` are `AcceleratedReferralStatus` bitmasks.
  */
-export type AcceleratedReferralStatusChangedRecord = {
+export type AcceleratedReferralStatusChangedRecordV0 = {
 	ts: BN;
 	authority: PublicKey;
 	previousStatus: number;
@@ -1073,7 +1397,8 @@ export type LPBorrowLendDepositRecord = {
  *
  * **Hot role keys** (`hot*`): purpose-specific bot keys for high-frequency keeper actions (AMM
  * cranking, LP cache/swap/settle, feature-flag toggles, fuel, user-flag updates, vault deposits,
- * mm-oracle cranking, native spread adjustment, vAMM active management, protocol-fee withdrawal). `PublicKey.default()` means
+ * mm-oracle cranking, native spread adjustment, vAMM active management, protocol-fee withdrawal).
+ * `PublicKey.default()` means
  * the role is unassigned and only `warmAdmin`/`coldAdmin` may call handlers gated on that role.
  */
 export type StateAccount = {
@@ -1097,6 +1422,14 @@ export type StateAccount = {
 	hotAccountExtension: PublicKey;
 	/** vAMM active-management authority; may be a multisig PDA with its own timelock policy */
 	hotVammQuoteManagement: PublicKey;
+	/** the retail-flow attestation key, held by swift. A transaction it co-signs is attested flow, which a faster-than-default CLOB activation requires. `PublicKey.default()` disables fast activation */
+	hotFlowAuthority: PublicKey;
+	/** what the network charges to land one transaction; every relay crank payment is derived from it */
+	transactionFeeRails: TransactionFeeRails;
+	/** ceiling on what the protocol repays whoever cranked a liquidation, as basis points of the liquidation's filled quote value. 0 disables the reimbursement and leaves the flat payment */
+	liquidationCrankReimbursementBps: number;
+	/** spot market whose oracle prices SOL, for converting a quote-denominated reimbursement into lamports; 0 disables it */
+	solSpotMarketIndex: number;
 	/** treasury PERP protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes perp fee withdrawals inert */
 	protocolFeeRecipientPerp: PublicKey;
 	/** treasury SPOT protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes spot fee withdrawals inert */
@@ -1130,7 +1463,7 @@ export type StateAccount = {
 	spotFeeStructure: FeeStructure;
 	/** LIQUIDATION_PCT_PRECISION (1e4); fraction of a position liquidated per partial-liquidation pass */
 	initialPctToLiquidate: number;
-	/** liquidation ramp length, stored in legacy 400ms units (decode with `millisFromStoredUnits`), NOT seconds */
+	/** liquidation ramp length, stored in legacy 400ms units. Decode it with `millisFromStoredUnits` from `math/time.ts` */
 	liquidationDuration: number;
 	/** max SOL fee `getInitUserFee` may charge to create a new sub-account, in value/100 SOL (e.g. 100 = 1 SOL); ramps from 0 to this max as account-space utilization rises from 80% to 100% of `maxNumberOfSubAccounts` */
 	maxInitializeUserFee: number;
@@ -1140,24 +1473,16 @@ export type StateAccount = {
 	lpPoolFeatureBitFlags: number;
 	/** bitmask, see `SolvencyStatus` */
 	solvencyStatus: number;
-	/** promotional fee-tier floor for every account: effective perp tier = max(volume tier, promoFeeTier); 0 = disabled */
+	/** promotional fee-tier floor for every account. The effective perp tier is `max(volume tier, promoFeeTier)`. 0 disables it */
 	promoFeeTier: number;
 	/**
-	 * current Solana slot duration in ms, synchronized (permissionlessly) as the
-	 * IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200). 0 = unset
-	 * (pre upgrade padding), meaning the 400ms baseline. Do not read directly:
-	 * resolve with `activeSlotDurationFromState` (or `slotDurationFromState` for
-	 * the base) from `math/time.ts`, which also consults the authoritative
-	 * `slotDurationTransitionSlots` archive. Wall-clock durations (`Millis`) are
-	 * expressed in actual slots through the resolved value via
-	 * `millisToSlots`/`millisFromSlots`.
+	 * current Solana slot duration in ms, synchronized permissionlessly as the IBRL feature gates activate
+	 * (400 -> 350 -> 300 -> 250 -> 200). 0 means unset and stands for the 400ms baseline. Do not read it directly. Resolve it with `activeSlotDurationFromState` from `math/time.ts`, which also consults the authoritative `slotDurationTransitionSlots` archive.
 	 */
 	slotDurationMs: number;
 	/**
-	 * legacy staged next slot duration in ms. 0 = nothing staged. Once the chain
-	 * slot reaches `slotDurationEffectiveSlot`, this is the live value (see
-	 * `activeSlotDurationFromState`). Superseded by
-	 * `slotDurationTransitionSlots` once any archive entry is set.
+	 * legacy staged next slot duration in ms. 0 means nothing is staged. Once the chain slot reaches
+	 * `slotDurationEffectiveSlot`, this is the live value. `slotDurationTransitionSlots` supersedes it once any archive entry is set.
 	 */
 	pendingSlotDurationMs: number;
 	/** explicit alignment padding (2 bytes) before `slotDurationEffectiveSlot` */
@@ -1168,14 +1493,23 @@ export type StateAccount = {
 	 */
 	slotDurationEffectiveSlot: BN;
 	/**
-	 * first slot of each post baseline IBRL regime, ordered
-	 * `[350ms, 300ms, 250ms, 200ms]`; 0 = that transition not synchronized yet.
-	 * Written by the permissionless `syncStateSlotDuration` instruction. These
-	 * anchors let elapsed time math integrate an interval piecewise
-	 * (`elapsedMillis` in `math/time.ts`) instead of pricing the whole slot
-	 * delta at one endpoint duration.
+	 * first slot of each post-baseline IBRL regime, ordered `[350ms, 300ms, 250ms, 200ms]`. 0 means that
+	 * transition is not synchronized yet. The permissionless `syncStateSlotDuration` instruction writes them. These anchors let `elapsedMillis` in `math/time.ts` integrate an interval piecewise instead of pricing the whole slot delta at one endpoint duration.
 	 */
 	slotDurationTransitionSlots: BN[];
+};
+
+/**
+ * The three accounts every CLOB order instruction on a perp market takes.
+ * `VelocityClient.getClobAccounts` resolves them from a market index.
+ */
+export type ClobAccounts = {
+	/** the market's quoter slab PDA, which lists the approved quoters */
+	quoterSlab: PublicKey;
+	/** the book account the slab's slot 0 writes its responses into */
+	clobMarket: PublicKey;
+	/** the program that owns `clobMarket` */
+	clobProgram: PublicKey;
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */
@@ -1214,13 +1548,13 @@ export type PerpMarketAccount = {
 	ifLiquidationFee: number;
 	/** LIQUIDATOR_FEE_PRECISION (1e6); protocol's cut of a liquidation, taken from the liquidatee */
 	protocolLiquidationFee: number;
-	/** unsigned tenth-bps (10 = 1bp); additive per-market taker-fee surcharge, applied to the tier fee before `feeAdjustment` scales the sum. Taker only, never a discount */
+	/** unsigned tenth-bps (10 = 1bp); additive per-market taker-fee surcharge, applied to the tier fee before `feeAdjustment` scales the sum. It applies to takers only and can never be a discount */
 	takerFeeAddonTenthBps: number;
 	/** QUOTE_PRECISION (1e6); pnl-pool retention buffer the fee-sweep leaves untouched above `max(net_user_pnl, 0)` */
 	feePoolBufferTarget: BN;
 	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche. 0 means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps), `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off */
 	bankruptcyIfFloorPct: number;
-	/** count of unresolved bankrupt quote debts booked against this market; while it is above zero the fee sweep withholds the whole `feeLedger.pendingIfFee` so a permissionless sweep cannot drain the first-loss tranche before `resolvePerpBankruptcy` consumes it */
+	/** count of unresolved bankrupt quote debts booked against this market. While it is above zero the fee sweep withholds the whole `feeLedger.pendingIfFee`, so a permissionless sweep cannot drain the first-loss tranche before `resolvePerpBankruptcy` consumes it */
 	pendingBankruptcyClaims: number;
 	/** QUOTE_PRECISION (1e6); aggregate builder/referrer revenue share accrued but not yet paid out of this market's pnl pool. The fee sweep reserves it (like `max(net_user_pnl, 0)` and the floored IF tranche) so a protocol-fee drain can't leave accrued revenue-share claims temporarily unpayable */
 	pendingRevenueShare: BN;
@@ -1273,6 +1607,11 @@ export type PerpMarketAccount = {
 	paddingFuture: number[];
 	/** bitmask, see `MarketConfigFlag` */
 	marketConfig: number;
+
+	/** the market's canonical book, which is the CLOB market account. When it is set, every router fill must consult it. The default pubkey means no requirement */
+	clobMarket: PublicKey;
+	/** the market's quoter slab PDA, stored at market initialization so accounts structs bind the two with `has_one` */
+	quoterSlab: PublicKey;
 
 	// Fields migrated off AMM to top-level PerpMarket
 	oracle: PublicKey;
@@ -1388,12 +1727,9 @@ export type SpotMarketAccount = {
 	protocolLiquidationFee: number;
 	/** IF_FACTOR_PRECISION (1e6); protocol's carveout of lending deposit-interest gains */
 	protocolFeeFactor: number;
-	/** token mint precision; lowest IF vault balance since the end of the last revenue settle.
-	 * The settle writes the balance it leaves behind, and every IF outflow lowers it again. The
-	 * per-period revenue-settle APR cap is sized off `min(live IF vault, this)`, so it counts only
-	 * capital the fund held for the whole period and neither a pre-settle donation nor one that
-	 * refills a mid-period dip can lift it (see `settle_revenue_to_insurance_fund`);
-	 * `0` = the market never settled revenue */
+	/** token mint precision; lowest IF vault balance since the end of the last revenue settle. The per-period
+	 * revenue-settle APR cap is sized off `min(live IF vault, this)`, so it counts only capital the fund held for
+	 * the whole period. A donation cannot lift the cap (see `settle_revenue_to_insurance_fund`). `0` means the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
 	/** reserved for future market fields */
 	paddingFuture: number[];
@@ -1509,19 +1845,13 @@ export type PoolBalance = {
 	/** the spot market this balance's token amount is denominated in */
 	marketIndex: number;
 	/**
-	 * Remainder of one index-space division that splits deposit interest between lenders and the
-	 * carveout pools. The division depends on the pool. On `revenuePool` it is the
-	 * lenders-vs-carveouts split, with divisor `IF_FACTOR_PRECISION`. On `protocolFeePool` it is the
-	 * insurance-fund-vs-protocol split, with divisor `ifFeeFactor + protocolFeeFactor`. Only a spot
-	 * market's `revenuePool` and `protocolFeePool` use it; it is 0 everywhere else.
+	 * Remainder of the index-space division that splits deposit interest between lenders and the carveout pools.
+	 * On `revenuePool` the divisor is `IF_FACTOR_PRECISION`. On `protocolFeePool` it is `ifFeeFactor + protocolFeeFactor`. Only a spot market's `revenuePool` and `protocolFeePool` use it. It is 0 everywhere else.
 	 */
 	pendingInterestSplitDust: number;
 	/**
-	 * Remainder of the token-space division for this pool's carveout
-	 * (`depositBalance * cut / 10^(19 - decimals)`). The program carries it so a cut too small to
-	 * reach a whole token is not taken from lenders and given to nobody.
-	 * precision: token * 10^(19 - decimals). Only a spot market's `revenuePool` and
-	 * `protocolFeePool` use it; it is 0 everywhere else.
+	 * Remainder of the token-space division for this pool's carveout (`depositBalance * cut / 10^(19 - decimals)`),
+	 * carried so a cut too small to reach a whole token is not lost. Precision is token * 10^(19 - decimals). Only a spot market's `revenuePool` and `protocolFeePool` use it. It is 0 everywhere else.
 	 */
 	pendingInterestDust: BN;
 };
@@ -1622,7 +1952,7 @@ export type AMM = {
 	fundingBiasSensitivity: number;
 };
 
-/** Market-wide stats shared across all makers (vAMM, DLOB resting orders, JIT participants), updated on every fill regardless of which maker filled. */
+/** Market-wide stats shared across every source a fill routes through (the vAMM, the book, PropAMM quoters), updated on every fill regardless of which one filled. */
 export type MarketStats = {
 	/** average (bid+ask)/2 price over `fundingPeriod`, PRICE_PRECISION (1e6) */
 	lastMarkPriceTwap: BN;
@@ -1694,6 +2024,8 @@ export type PerpPosition = {
 	positionFlag: number;
 	/** SPOT_BALANCE_PRECISION (1e9) scaled balance backing this position when it is isolated-margin (`PositionFlag.IsolatedPosition` set) */
 	isolatedPositionScaledBalance: BN;
+	/** count of reduce-only orders resting on the CLOB for this market. The router caps a user's reduce-only fills only while this is non-zero */
+	reduceOnlyClobOrders: number;
 };
 
 /** Decoded mirror of the on-chain `UserStats` account: authority-level (cross-sub-account) rolling volume, fee, and referral stats. */
@@ -1826,18 +2158,20 @@ export type Order = {
 	immediateOrCancel: boolean;
 	/** if set, the limit price is `oraclePrice + oraclePriceOffset`; PRICE_PRECISION (1e6), signed */
 	oraclePriceOffset: BN;
-	/** auction length in wall clock 400ms units (one slot at the 400ms baseline); only relevant for market/oracle orders */
-	auctionDuration: number;
-	/** PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders */
-	auctionStartPrice: BN;
-	/** PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders */
-	auctionEndPrice: BN;
+	/** free byte; it held the auction length until an order stopped resting to auction */
+	unusedAuctionDuration: number;
+	/** the CLOB node a placed-trigger shadow points at, when `OrderBitFlag.PlacedOnClob` is set; zero otherwise */
+	clobNodeIndex: BN;
+	/** the CLOB order id that shadow points at, under the same condition */
+	clobOrderId: BN;
 	/** unix timestamp after which the order expires */
 	maxTs: BN;
 	/** bitmask, see `OrderBitFlag` */
 	bitFlags: number;
 	/** low 8 bits of the slot the order was posted on-chain (not the order's `slot` field for signed-msg orders) */
 	postedSlotTail: number;
+	/** free bytes. A signed-message order carries its route on `SignedMsgOrderId.routeDigest` instead */
+	padding: number[];
 };
 
 /** Instruction-parameter shape for placing an order (perp or spot). Optional fields default to `null`/unset on-chain unless noted. */
@@ -1858,16 +2192,12 @@ export type OrderParams = {
 	/** PRICE_PRECISION (1e6); only used for trigger orders */
 	triggerPrice: BN | null;
 	triggerCondition: OrderTriggerCondition;
-	/** signed offset from the oracle price, PRICE_PRECISION (1e6); when set, the order's effective limit price tracks the oracle */
+	/** signed offset from the oracle price, PRICE_PRECISION (1e6); when set, the order's effective limit price tracks the oracle. Only `ORACLE` orders accept it. The program refuses a `LIMIT` order that carries one (`InvalidOrderOracleOffset`) */
 	oraclePriceOffset: BN | null;
-	/** wall clock 400ms units (one slot at the 400ms baseline); only used for market/oracle orders */
-	auctionDuration: number | null;
 	/** unix timestamp after which the order expires */
 	maxTs: BN | null;
-	/** PRICE_PRECISION (1e6) or oracle-offset units depending on the order, signed; only used for market/oracle orders */
-	auctionStartPrice: BN | null;
-	/** PRICE_PRECISION (1e6) or oracle-offset units depending on the order, signed; only used for market/oracle orders */
-	auctionEndPrice: BN | null;
+	/** how many slots the rested remainder waits before the book will take it; null takes the book default, the book caps it at `maxActivationDelaySlots`, and a value below the default needs the flow-authority attestation. Distinct from `maxTs`, which ends the order. A trigger order refuses it */
+	activationDelaySlots: number | null;
 	/** index into the placing user's RevenueShareEscrow.approved_builders list (non-swift builder codes) */
 	builderIdx?: number | null;
 	/** builder fee on this order, in tenths of a bps, e.g. 100 = 0.01% */
@@ -1928,7 +2258,7 @@ export class PositionFlag {
 	static readonly IsolatedPosition = 1;
 	static readonly BeingLiquidated = 2;
 	static readonly Bankruptcy = 4;
-	/** this position's quote debt is counted in its market's `pendingBankruptcyClaims`, which freezes that market's IF-fee sweep until the debt resolves */
+	/** this position's quote debt counts in its market's `pendingBankruptcyClaims`, which freezes that market's IF-fee sweep until the debt resolves */
 	static readonly BankruptcyClaim = 8;
 }
 
@@ -1946,8 +2276,11 @@ export type OptionalOrderParams = {
 } & NecessaryOrderParams;
 
 /** Fields to change on an existing order via `modifyOrder`. Only the fields present (non-`undefined`) are changed on-chain; the rest of the order is left as-is. `null` explicitly clears an optional on-chain field (e.g. `triggerPrice: null` removes the trigger). */
+/** A slot order holds a trigger, which stores no activation delay, so a modify names none. */
 export type ModifyOrderParams = {
-	[Property in keyof OrderParams]?: OrderParams[Property] | null;
+	[Property in keyof Omit<OrderParams, 'activationDelaySlots'>]?:
+		| OrderParams[Property]
+		| null;
 } & { policy?: ModifyOrderPolicy | null };
 
 /** Bitmask passed as `ModifyOrderParams.policy` (combine with `|`). `MustModify`: fail the instruction instead of silently no-op'ing if the target order id can't be found. `ExcludePreviousFill`: when a new `baseAssetAmount` is given, treat it as the new *remaining* size — the already-filled amount is subtracted off it (rather than replacing the order's total size outright). */
@@ -1971,10 +2304,8 @@ export const DefaultOrderParams: OrderParams = {
 	triggerPrice: null,
 	triggerCondition: OrderTriggerCondition.ABOVE,
 	oraclePriceOffset: null,
-	auctionDuration: null,
 	maxTs: null,
-	auctionStartPrice: null,
-	auctionEndPrice: null,
+	activationDelaySlots: null,
 	builderIdx: null,
 	builderFeeTenthBps: null,
 };
@@ -1995,7 +2326,25 @@ export type SignedMsgOrderParamsMessage = {
 	builderFeeTenthBps?: number | null;
 	/** if set, deposits this amount (spot market token-mint precision) into a new isolated-margin position when placing the order */
 	isolatedPositionDeposit?: BN | null;
+	/** which cluster this message is for: `SignedMsgNetwork.MAINNET` or `DEVNET`. It is required. The signature covers the order rather than the chain, so an untagged message replays verbatim from one cluster to the other. The program refuses a message that carries no tag, and one that names the other cluster. `VelocityClient` fills it from its own `env` */
+	network: number;
+	/** the route the taker signs for: `QuoterV0` entry keys of the **custom** quoters (PropAMMs) to use. The CLOB and the vAMM are every router fill's mandatory baseline, so they are implicit and never listed. It is advisory on-chain, and swift forwards it to keepers */
+	route?: PublicKey[] | null;
 };
+
+/** A `SignedMsgOrderParamsMessage` as a caller hands it to `VelocityClient`. The caller may leave the network tag out, and the client stamps its own cluster on it. */
+export type SignedMsgOrderParamsMessageInput = Omit<
+	SignedMsgOrderParamsMessage,
+	'network'
+> & { network?: number };
+
+/** Network tag on a signed-msg order (`SignedMsgOrderParamsMessage.network`). */
+export const SignedMsgNetwork = {
+	/** `'m'` */
+	MAINNET: 109,
+	/** `'d'` */
+	DEVNET: 100,
+} as const;
 
 /** Same as `SignedMsgOrderParamsMessage`, but signed by a delegate on the taker's behalf; carries `takerPubkey` explicitly since the signer isn't the taker's own authority. */
 export type SignedMsgOrderParamsDelegateMessage = {
@@ -2009,7 +2358,17 @@ export type SignedMsgOrderParamsDelegateMessage = {
 	builderIdx?: number | null;
 	builderFeeTenthBps?: number | null;
 	isolatedPositionDeposit?: BN | null;
+	/** see `SignedMsgOrderParamsMessage.network` */
+	network: number;
+	/** see `SignedMsgOrderParamsMessage.route` */
+	route?: PublicKey[] | null;
 };
+
+/** A `SignedMsgOrderParamsDelegateMessage` as a caller hands it to `VelocityClient`; see `SignedMsgOrderParamsMessageInput`. */
+export type SignedMsgOrderParamsDelegateMessageInput = Omit<
+	SignedMsgOrderParamsDelegateMessage,
+	'network'
+> & { network?: number };
 
 /** A bracket take-profit/stop-loss order attached to a signed-msg order message. */
 export type SignedMsgTriggerOrderParams = {
@@ -2052,14 +2411,14 @@ export enum ReferrerStatus {
 /** Persistent referral reward flags stored on `UserStatsAccount.acceleratedReferralStatus`. */
 export enum AcceleratedReferralStatus {
 	Accelerated = 1,
-	/** prevents an admin revoked user from being immediately reenrolled by another trade */
+	/** stops an admin-revoked user from being re-enrolled by the next trade */
 	AutoEnrollmentBlocked = 2,
 }
 
 /** Which fill outcome counts as "success" for a `placeAndTake*` instruction's on-chain success check. */
-export enum PlaceAndTakeOrderSuccessCondition {
-	PartialFill = 1,
-	FullFill = 2,
+export class PlaceAndTakeOrderSuccessCondition {
+	static readonly PARTIAL_FILL = { partialFill: {} };
+	static readonly FULL_FILL = { fullFill: {} };
 }
 
 type ExactType<T> = Pick<T, keyof T>;
@@ -2070,6 +2429,11 @@ export type BaseTxParams = ExactType<{
 	computeUnits?: number;
 	/** micro-lamports per compute unit for the priority fee */
 	computeUnitsPrice?: number;
+	/**
+	 * ceiling, in bytes, on the account data the transaction may load: its own accounts plus the programs it
+	 * names and their program data. A transaction is charged for the limit it requests, and the default when none is requested is 64 MiB. 0 requests no limit and takes that default, which is the most expensive option.
+	 */
+	loadedAccountsDataSize?: number;
 }>;
 
 /** Controls how the SDK derives compute-unit limit/price when not explicitly given in `BaseTxParams`. */
@@ -2126,7 +2490,7 @@ export interface IWalletV2 extends IWallet {
 
 /** The fee schedule applied to fills in a market category (perp or spot); decoded from `StateAccount.perpFeeStructure`/`spotFeeStructure`. */
 export type FeeStructure = {
-	/** volume-based fee tiers, evaluated by the taker's 30-day volume; tier 0 (Regular) is the base/default tier, tiers 1/2/3 are VIP 1/VIP 2/VIP 3 */
+	/** volume-based fee tiers, evaluated by the taker's 30-day volume; tier 0 (Regular) is the base tier, and tiers 1, 2, and 3 are VIP 1, VIP 2, and VIP 3 */
 	feeTiers: FeeTier[];
 	fillerRewardStructure: OrderFillerRewardStructure;
 	/** flat portion of the filler (keeper) reward, QUOTE_PRECISION (1e6) */
@@ -2343,7 +2707,12 @@ export type SignedMsgOrderId = {
 	/** slot after which this signed message is no longer eligible to be placed */
 	maxSlot: BN;
 	uuid: Uint8Array;
+	/** the CLOB order this message's remainder rests as. Zero when nothing of it rests */
+	clobOrderId: BN;
 	orderId: number;
+	padding: number;
+	/** digest of the quoter entries the taker's signed route named; all-zero when the message named no route. See `getRouteDigest`. */
+	routeDigest: number[];
 };
 
 /** Per-authority account tracking recently-seen signed-msg order UUIDs, used to detect replay/duplicate submission of the same signed message. */
@@ -2433,6 +2802,85 @@ export type ProtocolFeeWithdrawRecord = {
 	/** spot market token-mint precision */
 	amount: BN;
 	recipientTokenAccount: PublicKey;
+};
+
+/** Emitted when the hot fee-withdraw role drains settled crank rewards from the protocol-owned `User` (`withdrawProtocolUserDeposit`). */
+export type ProtocolUserWithdrawRecordV0 = {
+	ts: BN;
+	/** the spot market the tokens were drawn from */
+	spotMarketIndex: number;
+	/** spot market token-mint precision */
+	amount: BN;
+	/** the protocol-owned `User` account debited */
+	protocolUser: PublicKey;
+	recipientTokenAccount: PublicKey;
+};
+
+/**
+ * Emitted when `crankTakerOriginCross` resolves a taker-origin cross on a CLOB book: what the taker
+ * gained by settling at the counterparty's price instead of its own, and what the cranker took out of
+ * that. The match also emits the ordinary `OrderActionRecord`. This record carries three things that
+ * one has no field for: the price the order was resting at, the improvement between the two prices,
+ * and the crank reward. The reward is charged to the taker out of the improvement rather than carved
+ * out of the taker fee, so it never appears as that record's `fillerReward`.
+ */
+export type TakerOriginCrossRecordV0 = {
+	ts: BN;
+	slot: BN;
+	marketIndex: number;
+	/** owner of the taker-origin order that aggressed this match. When both sides were taker-origin, it is the later of the two to rest */
+	taker: PublicKey;
+	/** the counterparty, filled at its own price */
+	maker: PublicKey;
+	/** the cranker's `User`, credited `crankReward` in quote */
+	filler: PublicKey;
+	/** BASE_PRECISION (1e9) */
+	baseAssetAmount: BN;
+	/** QUOTE_PRECISION (1e6) */
+	quoteAssetAmount: BN;
+	/** PRICE_PRECISION (1e6); the price the taker-origin order was resting at */
+	restPrice: BN;
+	/** PRICE_PRECISION (1e6); the counterparty's price, which the match settled at */
+	fillPrice: BN;
+	/** QUOTE_PRECISION (1e6); gross quote the taker gained, `|restPrice - fillPrice| * base` */
+	improvement: BN;
+	/** QUOTE_PRECISION (1e6); quote paid to the cranker out of that improvement */
+	crankReward: BN;
+	/** the counterparty was itself a migrated taker remainder and won the price by resting first. The match was two remainders clearing against each other rather than one against an ordinary maker */
+	makerTakerOrigin: boolean;
+	/** size the match was too small to consume, put back on the book still taker-origin. 0 when the cross consumed both orders outright, or the leftover fell below the book's minimum and was dropped */
+	remainderBaseAssetAmount: BN;
+	/** the re-placed remainder's new CLOB order id, and the client's handle for it. The old handle is stale. 0 when nothing was re-placed */
+	remainderOrderId: BN;
+	/** whose remainder was re-placed: `taker` or `maker` above, or the default pubkey when nothing was. Only a match between two remainders can leave it on the maker, because an ordinary counterparty is consumed to exactly the size the cross was priced for */
+	remainderOwner: PublicKey;
+};
+
+/** Emitted when `crankTakerOriginCross` routes a resting taker remainder: what the taker gained by being routed instead of left at its own price, and what the cranker took out of that. The fill also emits one ordinary `OrderActionRecord` per source the router reached, which is where the counterparties are named. */
+export type TakerOriginCrossRecordV1 = {
+	ts: BN;
+	slot: BN;
+	marketIndex: number;
+	/** owner of the remainder this crank resolved. Of two crossed remainders, it is the later to rest */
+	taker: PublicKey;
+	/** the cranker's `User`, credited `crankReward` in quote */
+	filler: PublicKey;
+	/** BASE_PRECISION (1e9) */
+	baseAssetAmount: BN;
+	/** QUOTE_PRECISION (1e6) */
+	quoteAssetAmount: BN;
+	/** PRICE_PRECISION (1e6); the price the remainder was resting at, and the bound the fill was held to */
+	restPrice: BN;
+	/** PRICE_PRECISION (1e6); what the fill averaged across every source it reached */
+	fillPrice: BN;
+	/** QUOTE_PRECISION (1e6); gross quote the taker gained, `|restPrice - fillPrice| * base` */
+	improvement: BN;
+	/** QUOTE_PRECISION (1e6); quote paid to the cranker out of that improvement */
+	crankReward: BN;
+	/** size still resting after the fill. 0 when the fill took the whole remainder, or what was left fell under the book's minimum and was culled */
+	remainderBaseAssetAmount: BN;
+	/** the CLOB order this resolved. It keeps its id and its queue position, because the fill shrinks it in place rather than re-placing it. An existing handle stays good */
+	clobOrderId: BN;
 };
 
 /** Emitted when a builder's/referrer's accrued `RevenueShareOrder` fees are settled into their `RevenueShareAccount`. */
@@ -2712,4 +3160,108 @@ export type TransferFeeAndPnlPoolRecord = {
 	direction: TransferFeeAndPnlPoolDirection;
 	/** QUOTE_PRECISION (1e6) */
 	amount: BN;
+};
+
+/** Kind of quoter a `QuoterV0Account` registry entry names: the in-program vAMM, an external CLOB, or a custom quoter program that quotes for a single user. That user's authority creates the entry, so creation is consent. */
+export class QuoterType {
+	static readonly VAMM = { vamm: {} };
+	static readonly CLOB = { clob: {} };
+	static readonly CUSTOM = { custom: {} };
+}
+
+/** One registered account forwarded on a quoter program's CPI legs. `isSigner` is not stored, because a quoter CPI never receives signer privilege. */
+export type AmmAccountMeta = {
+	pubkey: PublicKey;
+	/** whether the account is passed writable to the quoter program */
+	isWritable: boolean;
+	padding: number[];
+};
+
+/**
+ * One quoter's whole configuration: the CPI surface velocity calls it on and the declarations that
+ * bound how it fills. It is held in two places with two meanings. On the `QuoterV0` staging entry
+ * it is the maker's proposal. In a `QuoterSlabV0` slot it is the copy the admin approved, and that
+ * is the only copy a fill reads.
+ */
+export type QuoterConfigV0 = {
+	/**
+	 * Slot the approved program was last deployed at, read from its program-data account when the admin copied
+	 * this config into the slab. `0` when the program's loader cannot redeploy it. Only a slab slot's figure is meaningful. Approval does not freeze the program, so compare this figure to the live program-data slot to learn that the code changed.
+	 */
+	approvedProgramSlot: BN;
+	/** the book's tick size, mirrored from `order_rules_v0` by the attach; zero for non-CLOB entries and unattached books */
+	bookTickSize: BN;
+	/** the book's minimum order size, mirrored by the attach */
+	bookMinOrderSize: BN;
+	/** for a Custom quoter, the user it may quote for. That user's authority creates the entry, so creation is consent. For the vAMM it is the vAMM user, and a CLOB entry ignores it */
+	user: PublicKey;
+	/** the external program invoked for `quoteV0` / `executeV0` */
+	programId: PublicKey;
+	/** account owned by `programId` that quote and execute responses are written into. Both legs' index lists must name it. For a CLOB entry it is the book itself. It is unique across one slab's occupied slots, because a route names the quoters it consults by carrying their response accounts */
+	responseAccount: PublicKey;
+	/** manages the staging entry. For a Custom quoter it is the quoted user's authority, fixed at creation with no handoff, so the maker can always kill their own quoter */
+	authority: PublicKey;
+	/** maker-declared reprice region. Relay cross-discovery conditions wake when `watchAccount.data[watchOffset..watchOffset+watchLen]` changes. `watchLen == 0` means no declaration, which leaves poll-only discovery */
+	watchAccount: PublicKey;
+	/** raw 8-byte instruction discriminator of `quoteV0` on `programId` */
+	quoteV0Discriminator: number[];
+	/** raw 8-byte instruction discriminator of `executeV0` on `programId` */
+	executeV0Discriminator: number[];
+	/** raw 8-byte instruction discriminator of the optional `quoteL3V0` leg, which reports the resting orders behind a ladder and who each belongs to. All-zero means the quoter does not implement it, and a reader attributes the whole ladder to `user` */
+	quoteL3V0Discriminator: number[];
+	/** the one registered CPI account list. Only the first `accountsCount` entries are live. Each leg forwards a subset named by the index lists below */
+	accounts: AmmAccountMeta[];
+	/** indexes into `accounts` forwarded to `quoteV0` (and `quoteL3V0`), in CPI order; only the first `quoteAccountsCount` are live */
+	quoteAccountIndexes: number[];
+	/** indexes into `accounts` forwarded to `executeV0`, in CPI order; only the first `executeAccountsCount` are live */
+	executeAccountIndexes: number[];
+	watchOffset: number;
+	watchLen: number;
+	/**
+	 * The furthest from oracle a fill on this entry may price, in MARGIN_PRECISION units, so one unit is one
+	 * basis point. `0` means no declaration, and the market's own band stands. It applies as the smaller of this and the market's `marginRatioInitial`, so it only tightens a bound the admin already vetted, and it writes through to the approved copy without re-vetting. Custom entries only.
+	 */
+	maxOracleDeviationBps: number;
+	/** the book's default activation delay in slots, mirrored by the attach. A non-zero value marks the book speed-bumped for unattested flow */
+	bookDefaultActivationDelaySlots: number;
+	/** perp market index this quoter serves */
+	market: number;
+	quoterType: QuoterType;
+	/** the maker's own on/off switch. The entry authority can always set it, and it writes through to the approved copy so a kill takes effect at once */
+	isActive: boolean;
+	/** routing priority. At a price, lower-priority tiers fill first, pro rata within a tier. It defaults by type (vAMM 0, CLOB 10, Custom 20) and the admin sets it thereafter, never the maker */
+	priority: number;
+	accountsCount: number;
+	quoteAccountsCount: number;
+	executeAccountsCount: number;
+};
+
+/** Decoded mirror of the on-chain `QuoterV0` account: the *staging* half of the registry, one entry per (perp market, quoter program, quoted user), holding the config its authority proposes. Nothing fills from it. The admin copies it into the market's `QuoterSlabV0` (`updateQuoterApproved`), and fills read only that copy. The entry's address is the quoter's identity: signed routes name it and its slab slot records it. */
+export type QuoterV0Account = {
+	config: QuoterConfigV0;
+	padding: number[];
+};
+
+/** One approved quoter in a market's slab. Slot 0 is reserved for the market's book (`QuoterType.CLOB`), and `Custom` quoters occupy slot 1 and above. A vacant slot is all zeroes, so its `entry` is the default pubkey. */
+export type QuoterSlotV0 = {
+	/** the staging `QuoterV0` this approved copy came from, and the quoter's identity everywhere one is named. The default pubkey marks a vacant slot */
+	entry: PublicKey;
+	/** set when the admin pulls approval from a `Clob` slot. The config stays so removal paths keep working on the dead book, and the slot quotes nothing. A revoked `Custom` slot is cleared instead */
+	suspended: boolean;
+	padding: number[];
+	/** the admin-approved copy of the entry's config */
+	config: QuoterConfigV0;
+};
+
+/** Decoded mirror of the on-chain `QuoterSlabV0` account header: one slab per perp market, holding every approved quoter config in back-to-back `QuoterSlotV0`s after this fixed header. Capacity follows the account's size, recorded here, rather than a layout constant. The approval flow keeps the account right-sized. Use `decodeQuoterSlab` to read the slot region. */
+export type QuoterSlabV0Account = {
+	/** perp market this slab serves. It is also in the PDA seeds */
+	market: number;
+	/** slots the tail region holds; approval grows it and revocation shrinks it */
+	capacity: number;
+	/** the slab PDA's bump. The slab signs every external quoter CPI */
+	bump: number;
+	/** the market's book, which is the Clob slot's response account, written at approval. It survives a suspension. The default pubkey means no book is approved */
+	clobMarket: PublicKey;
+	padding: number[];
 };

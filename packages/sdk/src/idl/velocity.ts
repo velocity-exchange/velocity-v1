@@ -788,6 +788,73 @@ export type Velocity = {
       ]
     },
     {
+      "name": "cancelOrderV1",
+      "discriminator": [
+        51,
+        184,
+        83,
+        34,
+        163,
+        184,
+        149,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "Read-only, and read for one value: the cached oracle price that stamps",
+            "the cancel record. This is not an oracle account. A maker who removes",
+            "orders from a book must not fail on a stale feed."
+          ]
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab"
+          ],
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designated."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "cancelOrderV1Params"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "cancelOrders",
       "discriminator": [
         238,
@@ -871,6 +938,65 @@ export type Velocity = {
           "name": "orderIds",
           "type": {
             "vec": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancelOrdersV1",
+      "docs": [
+        "Cancel every resting CLOB order this `User` holds on one side, or on",
+        "both, in a single CPI. It unwinds the aggregates from per-side totals.",
+        "The book caps one sweep. The log says when the sweep stopped early, and",
+        "the call is safe to repeat."
+      ],
+      "discriminator": [
+        59,
+        47,
+        26,
+        254,
+        5,
+        35,
+        224,
+        226
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab. The book's configuration is its `Clob` slot."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "cancelOrdersV1Params"
+            }
           }
         }
       ]
@@ -1153,6 +1279,587 @@ export type Velocity = {
         {
           "name": "add",
           "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "crankClobEvict",
+      "discriminator": [
+        151,
+        166,
+        191,
+        4,
+        122,
+        28,
+        36,
+        220
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "constraint below enforces. In program-keeper mode it is only the lamport",
+            "payout target, relay's `KEEPER_PLACEHOLDER` slot, and no signature is",
+            "required."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the order the crank removes. Eviction removes the book's",
+            "tail and expiry removes the hinted order. The CLOB's return data is",
+            "checked against this account, so a race that removed someone else's",
+            "order fails the whole crank."
+          ],
+          "writable": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "Not gated on active or approved, because a dead book still needs its",
+            "resting orders reclaimed."
+          ],
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designated."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions account: the expiry-hint host and the",
+            "lamport reservoir. It is optional so that a signed keeper can crank a",
+            "market whose conditions were never initialized. Program-keeper mode",
+            "requires it."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoterSlab"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "crankClobEvictArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "crankClobRemoveExpired",
+      "discriminator": [
+        35,
+        80,
+        27,
+        105,
+        148,
+        23,
+        65,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "constraint below enforces. In program-keeper mode it is only the lamport",
+            "payout target, relay's `KEEPER_PLACEHOLDER` slot, and no signature is",
+            "required."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the order the crank removes. Eviction removes the book's",
+            "tail and expiry removes the hinted order. The CLOB's return data is",
+            "checked against this account, so a race that removed someone else's",
+            "order fails the whole crank."
+          ],
+          "writable": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "Not gated on active or approved, because a dead book still needs its",
+            "resting orders reclaimed."
+          ],
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designated."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions account: the expiry-hint host and the",
+            "lamport reservoir. It is optional so that a signed keeper can crank a",
+            "market whose conditions were never initialized. Program-keeper mode",
+            "requires it."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoterSlab"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "crankClobRemoveExpiredArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "crankCrossMatch",
+      "docs": [
+        "Fill two crossed resting sources against each other. The call is",
+        "permissionless. The protocol User takes both legs and keeps the spread,",
+        "and the caller is paid reservoir lamports. It reverts unless the match",
+        "is profitable after fees."
+      ],
+      "discriminator": [
+        121,
+        104,
+        3,
+        82,
+        220,
+        85,
+        74,
+        57
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "signature is required. The cross's own profitability rules are the gate."
+          ],
+          "writable": true
+        },
+        {
+          "name": "taker",
+          "docs": [
+            "The protocol-owned pass-through taker. Locked to the protocol `User`",
+            "so the reservoir never pays for someone else's private arb."
+          ],
+          "writable": true
+        },
+        {
+          "name": "takerStats",
+          "writable": true
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's conditions account: the reservoir that pays the keeper."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "The crossed market. It is named rather than read out of the maps",
+            "section, because the cross serves one market."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's approved quoters. The market's `has_one` binds it, which",
+            "costs a memcmp where a seeds constraint pays a PDA derivation. Each leg",
+            "assembles its route off the copy that rides the account tail, as every",
+            "router fill does."
+          ],
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "many account locks the transaction holds, and this is what counts them."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "crankCrossMatchArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "crankTakerOriginCross",
+      "docs": [
+        "Resolve one taker-origin cross on a market's CLOB. The call is permissionless. It settles the",
+        "crossing counterparty and the migrated remainder at the counterparty's price, so the taker",
+        "captures the improvement. The cranker earns a filler reward from that improvement, capped so",
+        "the taker's net price beats its resting price. A cross that cannot clear the cap is left resting."
+      ],
+      "discriminator": [
+        105,
+        245,
+        226,
+        50,
+        241,
+        206,
+        172,
+        254
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "constraint below enforces. In program-keeper mode it is only the lamport",
+            "payout target, relay's keeper-placeholder slot, and no signature is",
+            "required."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "docs": [
+            "The cranker's margin account: the crank reward lands here as quote."
+          ],
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "taker",
+          "docs": [
+            "Owner of the taker-origin order, and the taker of this match. Verified",
+            "against the identity the CLOB reports on removal, so a wrong account",
+            "fails the crank rather than settling against someone else."
+          ],
+          "writable": true
+        },
+        {
+          "name": "takerStats",
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab. The book's config is its `Clob` slot."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "registered response account, so a valid slot cannot be pointed at an",
+            "arbitrary account."
+          ],
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions account: the wake-hint host and the",
+            "lamport reservoir. It is optional so that a signed keeper can crank a",
+            "market whose conditions were never initialized. Program-keeper mode",
+            "requires it."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "signedMsgUserOrders",
+          "docs": [
+            "The taker's signed-message record, which carries the route its signer",
+            "chose. Derived seeds mean a caller cannot omit or substitute it. An",
+            "absent record arrives system-owned and reads as unrouted."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  73,
+                  71,
+                  78,
+                  69,
+                  68,
+                  95,
+                  77,
+                  83,
+                  71
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "taker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "many account locks the transaction holds, and this is what counts them."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "crankTakerOriginCrossArgs"
+            }
+          }
         }
       ]
     },
@@ -1505,15 +2212,14 @@ export type Velocity = {
         {
           "name": "revenueShareEscrow",
           "docs": [
-            "most users never create one. Deliberately an `UncheckedAccount` **pinned by",
-            "`seeds`** rather than a typed `AccountLoader`: because the address is derived",
-            "and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler",
-            "can distinguish \"this authority has no escrow\" from \"the caller omitted it to",
-            "skip the check\". A typed loader would instead make deletion impossible for the",
-            "majority of users, who have no escrow account to pass.",
+            "never create one. It is an `UncheckedAccount` pinned by `seeds`, not a typed",
+            "`AccountLoader`. The address is derived and not caller-chosen, so",
+            "`data_is_empty()` proves absence. The handler can then tell \"this authority has",
+            "no escrow\" from \"the caller omitted it to skip the check\". A typed loader would",
+            "make deletion impossible for the many users who have no escrow account to pass.",
             "",
-            "Required rather than `Option` so a caller holding fee-bearing builder rows",
-            "cannot simply leave it out (OtterSec #128)."
+            "It is required rather than `Option`, so a caller holding fee-bearing builder",
+            "rows cannot leave it out (OtterSec #128)."
           ],
           "writable": true,
           "pda": {
@@ -2278,12 +2984,10 @@ export type Velocity = {
     {
       "name": "extendAccount",
       "docs": [
-        "Grow a zero-copy account to the size this program build compiles in",
-        "for its type (resolved from the account discriminator). The migration",
-        "crank after an upgrade that appends fields to an account struct; no-op",
-        "when already at size. Payer covers the rent-exempt shortfall (auth:",
-        "`AccountExtension` hot key, or warm/cold admin). See",
-        "`docs/ACCOUNT-EXTENSION.md`."
+        "Grow a zero-copy account to the size this program build compiles in for its type. This is the",
+        "migration crank after an upgrade that appends fields to an account struct. It does nothing when",
+        "the account is already at size. The authority is the `AccountExtension` hot key, or the warm or",
+        "cold admin. See `docs/ACCOUNT-EXTENSION.md`."
       ],
       "discriminator": [
         234,
@@ -2311,7 +3015,7 @@ export type Velocity = {
         {
           "name": "account",
           "docs": [
-            "size) from the account discriminator"
+            "target size from the account discriminator."
           ],
           "writable": true
         },
@@ -2325,11 +3029,10 @@ export type Velocity = {
     {
       "name": "extendAccountDevnet",
       "docs": [
-        "Devnet/test-only: grow a zero-copy account to an arbitrary larger size",
-        "to exercise the extension flow before a real struct extension exists.",
-        "Stripped from production mainnet builds; `anchor-test` keeps it so the",
-        "integration suite (which builds with default features + `anchor-test`)",
-        "can exercise extension end to end."
+        "Devnet and test builds only. Grows a zero-copy account to an arbitrary larger size, so the",
+        "extension flow can be exercised before a real struct extension exists. Production mainnet",
+        "builds compile it out. `anchor-test` keeps it, so the integration suite can exercise extension",
+        "end to end."
       ],
       "discriminator": [
         58,
@@ -2357,7 +3060,7 @@ export type Velocity = {
         {
           "name": "account",
           "docs": [
-            "zero-copy discriminator"
+            "zero-copy discriminator."
           ],
           "writable": true
         },
@@ -2374,16 +3077,20 @@ export type Velocity = {
       ]
     },
     {
-      "name": "fillPerpOrder",
+      "name": "forceCancelClobOrders",
+      "docs": [
+        "Force-cancel a failing account's CLOB orders. The keeper passes the",
+        "`OrderRef`s. The gates and the flat fee match `force_cancel_orders`."
+      ],
       "discriminator": [
-        13,
-        188,
-        248,
-        103,
-        134,
-        217,
-        106,
-        240
+        4,
+        155,
+        214,
+        86,
+        4,
+        110,
+        182,
+        30
       ],
       "accounts": [
         {
@@ -2391,7 +3098,12 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode, where the protocol `User` is the filler and relay",
+            "turners call, it is only the reservoir payout target and needs no",
+            "signature."
+          ],
+          "writable": true
         },
         {
           "name": "filler",
@@ -2403,24 +3115,84 @@ export type Velocity = {
         },
         {
           "name": "user",
+          "docs": [
+            "The deteriorated account whose CLOB orders are being reclaimed."
+          ],
           "writable": true
         },
         {
-          "name": "userStats",
-          "writable": true
+          "name": "quoterSlab",
+          "docs": [
+            "Not gated on the active and approved flags, because a dead book still",
+            "needs a failing maker's orders reclaimed. The header's book pointer",
+            "survives a suspension, so the `has_one` still passes on a killed",
+            "book."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host. It is optional, as on every other CLOB path."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
         }
       ],
       "args": [
         {
-          "name": "orderId",
+          "name": "args",
           "type": {
-            "option": "u32"
-          }
-        },
-        {
-          "name": "makerOrderId",
-          "type": {
-            "option": "u32"
+            "defined": {
+              "name": "forceCancelClobOrdersArgs"
+            }
           }
         }
       ]
@@ -2504,7 +3276,7 @@ export type Velocity = {
             "`DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so",
             "the handler can tell \"this authority has no escrow\" (`data_is_empty()`) from \"the",
             "keeper omitted the account to skip the check\". It is required rather than",
-            "`Option` for that second reason (OtterSec #128)."
+            "`Option` for that second reason."
           ],
           "writable": true,
           "pda": {
@@ -2626,7 +3398,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -2666,13 +3438,15 @@ export type Velocity = {
         {
           "name": "escrowAuthority",
           "docs": [
-            "The owner of the escrow that holds the row."
+            "The owner of the escrow that holds the row.",
+            "the authority in the escrow header."
           ]
         },
         {
           "name": "revenueShareEscrow",
           "docs": [
-            "The escrow that holds the row to write off."
+            "The escrow that holds the row to write off.",
+            "seeds fix the address."
           ],
           "writable": true,
           "pda": {
@@ -2702,19 +3476,20 @@ export type Velocity = {
         {
           "name": "beneficiaryUser",
           "docs": [
-            "Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves",
-            "that it does not exist."
+            "Payout account: sub-account 0 of the row's beneficiary. The handler proves it is absent.",
+            "other address. Anchor `seeds` cannot express this, because the address depends on",
+            "`builder_idx` and on `approved_builders`, which the handler reads at run time."
           ]
         }
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "orderIndex",
-          "type": "u32"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "forfeitRevenueShareOrderArgs"
+            }
+          }
         }
       ]
     },
@@ -3135,6 +3910,70 @@ export type Velocity = {
           }
         }
       ]
+    },
+    {
+      "name": "initializeCrankTreasury",
+      "docs": [
+        "Create the protocol's relay crank treasury, the one account that funds",
+        "every market's crank reservoir. It starts unpriced.",
+        "`update_crank_treasury` sets what it spends."
+      ],
+      "discriminator": [
+        192,
+        223,
+        190,
+        57,
+        205,
+        128,
+        10,
+        235
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "initializeInsuranceFundStake",
@@ -3811,6 +4650,436 @@ export type Velocity = {
       ]
     },
     {
+      "name": "initializeQuoter",
+      "discriminator": [
+        95,
+        22,
+        79,
+        28,
+        163,
+        15,
+        117,
+        109
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Becomes `QuoterV0::authority`, which manages the entry's config."
+          ],
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              },
+              {
+                "kind": "account",
+                "path": "quoterProgram"
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "Written when the entry is the market's book. A `Clob` entry becomes the",
+            "market's `clob_market` here, once and for good."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check that a non-`Custom` type needs."
+          ]
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's approved set. A book designation needs it, because the",
+            "designation is refused when an approved entry already names the book",
+            "account. Every other registration omits it."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoterProgram"
+        },
+        {
+          "name": "user",
+          "docs": [
+            "loads it and requires `authority` to be its authority, so creation is the",
+            "consent. A `Vamm` or `Clob` entry ignores it."
+          ]
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "initializeQuoterArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "initializeQuoterCrossConditions",
+      "docs": [
+        "Create or re-price a Custom quoter's relay cross-discovery conditions.",
+        "The call is permissionless, and the caller pays the rent."
+      ],
+      "discriminator": [
+        22,
+        71,
+        18,
+        82,
+        184,
+        158,
+        94,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The Custom entry to discover crosses for. The conditions PDA derives",
+            "from it. Its live config comes from the slab rather than from here."
+          ]
+        },
+        {
+          "name": "perpMarket",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab. It holds the entry's approved config, and the",
+            "book's config at slot 0. The book is the other leg of every staged",
+            "cross. The market's `has_one` binds the slab, which costs a memcmp where",
+            "a seeds constraint would pay for a PDA derivation."
+          ],
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "marketConditions",
+          "docs": [
+            "The market's crank conditions, which are the source of truth for the",
+            "keeper payment."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "crossConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  99,
+                  114,
+                  111,
+                  115,
+                  115,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "initializeQuoterCrossConditionsArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "initializeQuoterSlab",
+      "discriminator": [
+        12,
+        251,
+        171,
+        79,
+        180,
+        169,
+        121,
+        240
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "Existence check, so a slab serves a market that exists. The market",
+            "stored the slab PDA at its own initialization, so `has_one` holds",
+            "before the slab account exists."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoterSlab",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          },
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "initializeQuoterSlabArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "initializeReferrerName",
       "discriminator": [
         235,
@@ -3890,6 +5159,66 @@ export type Velocity = {
           }
         }
       ]
+    },
+    {
+      "name": "initializeRelayScratch",
+      "docs": [
+        "Create the program's shared resolver staging account. There is one for",
+        "the whole program. The call is permissionless, and the caller pays its",
+        "rent once."
+      ],
+      "discriminator": [
+        87,
+        141,
+        72,
+        84,
+        238,
+        1,
+        115,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "initializeRevenueShare",
@@ -4020,6 +5349,45 @@ export type Velocity = {
         {
           "name": "numOrders",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "initializeRouterQuoteBuffer",
+      "discriminator": [
+        19,
+        61,
+        93,
+        219,
+        121,
+        124,
+        63,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "quoteBuffer",
+          "docs": [
+            "Pre-created, zeroed, velocity-owned, and sized `RouterQuoteBufferV0::SIZE`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "The only signer that may later quote into this buffer."
+          ],
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "initializeRouterQuoteBufferArgs"
+            }
+          }
         }
       ]
     },
@@ -4426,6 +5794,47 @@ export type Velocity = {
           }
         },
         {
+          "name": "userConditions",
+          "docs": [
+            "Relay liquidation coverage, created alongside the account it watches.",
+            "It is required because relay can only watch an account that exists.",
+            "Coverage first matters when somebody else's transaction gives the user a",
+            "position. The user signs nothing there, so no rent can be charged to",
+            "them. `deploy-scripts/migrate.ts` backfills the accounts that predate",
+            "the field. An empty block is fine, because the first sync writes the",
+            "thresholds."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
           "name": "userStats",
           "writable": true
         },
@@ -4608,7 +6017,13 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode the liquidator is the protocol `User` and the caller",
+            "is a relay turner. This account is then only the lamport payout target,",
+            "and it needs no signature. Program-keeper mode reaches",
+            "`liquidate_perp_with_fill` alone, because the plain path rejects it."
+          ],
+          "writable": true
         },
         {
           "name": "liquidator",
@@ -4625,6 +6040,26 @@ export type Velocity = {
         {
           "name": "userStats",
           "writable": true
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The fired market's crank conditions. Its reservoir pays the keeper in",
+            "program-keeper mode, and the handler checks it against `market_index`.",
+            "Program-keeper mode requires the account."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "a crank that wants its priority fee reimbursed. The transaction's own",
+            "compute-budget instructions state the fee, and the handler reads it back",
+            "from here. Without this account the crank takes the flat payment."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -4720,7 +6155,13 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode the liquidator is the protocol `User` and the caller",
+            "is a relay turner. This account is then only the lamport payout target,",
+            "and it needs no signature. Program-keeper mode reaches",
+            "`liquidate_perp_with_fill` alone, because the plain path rejects it."
+          ],
+          "writable": true
         },
         {
           "name": "liquidator",
@@ -4737,6 +6178,26 @@ export type Velocity = {
         {
           "name": "userStats",
           "writable": true
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The fired market's crank conditions. Its reservoir pays the keeper in",
+            "program-keeper mode, and the handler checks it against `market_index`.",
+            "Program-keeper mode requires the account."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "a crank that wants its priority fee reimbursed. The transaction's own",
+            "compute-budget instructions state the fee, and the handler reads it back",
+            "from here. Without this account the crank takes the flat payment."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -4764,6 +6225,12 @@ export type Velocity = {
         },
         {
           "name": "authority",
+          "docs": [
+            "A spot liquidation settles by handing the liquidator the borrow and the",
+            "collateral behind it, so whoever liquidates takes on that inventory and",
+            "its price risk. A protocol keeper (and so relay) has no way to unwind",
+            "it, so this path requires a signer: an executor names none."
+          ],
           "signer": true
         },
         {
@@ -4922,14 +6389,14 @@ export type Velocity = {
             "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
             "equity breaker is tripped.",
             "",
-            "It sits last, not beside `liquidator` where the direct liquidation",
-            "contexts carry it, because this pair is addressed by position rather",
-            "than by name: `begin` introspects the matching `end` and compares the",
-            "two account lists index by index, and the swap accounts both forward",
-            "begin where this fixed block ends. Taking the last slot renumbered",
-            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
-            "vaults and both token accounts down one, silently invalidating every",
-            "hand-built transaction that still filled the old order."
+            "It sits last instead of beside `liquidator`, where the direct liquidation",
+            "contexts carry it. This pair is addressed by position and not by name.",
+            "`begin` introspects the matching `end` and compares the two account lists",
+            "index by index, and the swap accounts of both instructions start where",
+            "this fixed block ends. The last slot renumbers nothing. A slot beside",
+            "`liquidator` would move `user`, both vaults and both token accounts down",
+            "one, and that breaks every hand-built transaction that still fills the",
+            "old order."
           ]
         }
       ],
@@ -5071,14 +6538,14 @@ export type Velocity = {
             "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
             "equity breaker is tripped.",
             "",
-            "It sits last, not beside `liquidator` where the direct liquidation",
-            "contexts carry it, because this pair is addressed by position rather",
-            "than by name: `begin` introspects the matching `end` and compares the",
-            "two account lists index by index, and the swap accounts both forward",
-            "begin where this fixed block ends. Taking the last slot renumbered",
-            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
-            "vaults and both token accounts down one, silently invalidating every",
-            "hand-built transaction that still filled the old order."
+            "It sits last instead of beside `liquidator`, where the direct liquidation",
+            "contexts carry it. This pair is addressed by position and not by name.",
+            "`begin` introspects the matching `end` and compares the two account lists",
+            "index by index, and the swap accounts of both instructions start where",
+            "this fixed block ends. The last slot renumbers nothing. A slot beside",
+            "`liquidator` would move `user`, both vaults and both token accounts down",
+            "one, and that breaks every hand-built transaction that still fills the",
+            "old order."
           ]
         }
       ],
@@ -5738,6 +7205,80 @@ export type Velocity = {
       ]
     },
     {
+      "name": "modifyOrderV1",
+      "docs": [
+        "Reprice or resize a resting CLOB order. It cancels and replaces the",
+        "order in one instruction, with a single margin gate over the net",
+        "change. A `None` field keeps the resting order's value."
+      ],
+      "discriminator": [
+        163,
+        94,
+        18,
+        30,
+        100,
+        199,
+        112,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab. The book's configuration is its `Clob` slot.",
+            "The replacement leg also requires that slot to be active and",
+            "approved."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "flowAuthority",
+          "docs": [
+            "The flow authority, signing this transaction as a named account.",
+            "It is required only for an activation delay below the default on the",
+            "replacement. The signature is the attestation. The zero key cannot sign,",
+            "so an unset flow authority admits nobody."
+          ],
+          "signer": true,
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "modifyOrderV1Params"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "moveAmmPrice",
       "discriminator": [
         235,
@@ -5902,197 +7443,23 @@ export type Velocity = {
       "args": []
     },
     {
-      "name": "placeAndMakePerpOrder",
-      "discriminator": [
-        149,
-        117,
-        11,
-        237,
-        47,
-        95,
-        89,
-        237
+      "name": "placeAndMakePerpOrderV1",
+      "docs": [
+        "Rest a maker limit order on the market's CLOB. The order goes straight",
+        "to the book as a maker quote and never occupies a `User.orders` slot.",
+        "`params.activation_delay_slots` sets the book speed bump, or `None` for",
+        "the default. A value below the default needs the flow-authority",
+        "attestation."
       ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "taker",
-          "writable": true
-        },
-        {
-          "name": "takerStats",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "orderParams"
-            }
-          }
-        },
-        {
-          "name": "takerOrderId",
-          "type": "u32"
-        }
-      ]
-    },
-    {
-      "name": "placeAndMakeSignedMsgPerpOrder",
       "discriminator": [
-        16,
-        26,
-        123,
-        131,
-        94,
         29,
-        175,
-        98
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "taker",
-          "writable": true
-        },
-        {
-          "name": "takerStats",
-          "writable": true
-        },
-        {
-          "name": "takerSignedMsgUserOrders",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  83,
-                  73,
-                  71,
-                  78,
-                  69,
-                  68,
-                  95,
-                  77,
-                  83,
-                  71
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "taker"
-              }
-            ]
-          }
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "orderParams"
-            }
-          }
-        },
-        {
-          "name": "signedMsgOrderUuid",
-          "type": {
-            "array": [
-              "u8",
-              8
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "placeAndTakePerpOrder",
-      "discriminator": [
-        213,
-        51,
-        1,
-        187,
-        108,
-        220,
-        230,
-        224
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "orderParams"
-            }
-          }
-        },
-        {
-          "name": "successCondition",
-          "type": {
-            "option": "u32"
-          }
-        }
-      ]
-    },
-    {
-      "name": "placeOrders",
-      "discriminator": [
-        60,
+        136,
+        72,
+        149,
         63,
-        50,
-        123,
-        12,
-        197,
-        60,
-        190
+        222,
+        134,
+        96
       ],
       "accounts": [
         {
@@ -6103,68 +7470,74 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "vec": {
-              "defined": {
-                "name": "orderParams"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "placePerpOrder",
-      "discriminator": [
-        69,
-        161,
-        93,
-        202,
-        120,
-        126,
-        76,
-        185
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
+          "name": "userStats",
           "writable": true
         },
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab. The maker only ever rests on the vetted book",
+            "that its `Clob` slot names."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "registered response account. A valid slot cannot be pointed at an",
+            "arbitrary account."
+          ],
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "flowAuthority",
+          "docs": [
+            "The flow authority, signing this transaction as a named account.",
+            "It is required only for an activation delay below the default. The",
+            "signature is the attestation. The zero key cannot sign, so an unset flow",
+            "authority admits nobody."
+          ],
+          "signer": true,
+          "optional": true
         }
       ],
       "args": [
         {
-          "name": "params",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "orderParams"
+              "name": "placeAndMakePerpOrderV1Args"
             }
           }
         }
       ]
     },
     {
-      "name": "placeScaleOrders",
+      "name": "placeAndTakePerpOrderV1",
+      "docs": [
+        "Place a taker order and fill it in one instruction. Whatever the route",
+        "leaves unfilled rests on the market's book when the order can rest."
+      ],
       "discriminator": [
-        129,
-        249,
-        70,
-        55,
-        177,
-        250,
+        168,
+        73,
+        91,
+        161,
+        18,
+        41,
         252,
         94
       ],
@@ -6177,16 +7550,57 @@ export type Velocity = {
           "writable": true
         },
         {
+          "name": "userStats",
+          "writable": true
+        },
+        {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab. The remainder only ever rests on the vetted",
+            "book that its `Clob` slot names."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "registered response account. A valid slot cannot be pointed at an",
+            "arbitrary account."
+          ],
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "flowAuthority",
+          "docs": [
+            "The flow authority, signing this transaction as a named account. Swift",
+            "builds and signs its own user transactions, so a signature here marks",
+            "the flow attested. An absent signer reads as unattested. On a book with",
+            "a speed bump, an unattested order rests whole instead of filling. The",
+            "zero key cannot sign, so an unset flow authority admits nobody."
+          ],
+          "signer": true,
+          "optional": true
         }
       ],
       "args": [
         {
-          "name": "params",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "scaleOrderParams"
+              "name": "placeAndTakePerpOrderV1Args"
             }
           }
         }
@@ -6194,6 +7608,14 @@ export type Velocity = {
     },
     {
       "name": "placeSignedMsgTakerOrder",
+      "docs": [
+        "Place, route and rest one signed-message taker order in one call. It verifies the signature. It",
+        "routes through the market's quoters and books at or better than the order's worst price. It",
+        "rests any remainder as a taker-origin remainder. The order never occupies a slot.",
+        "`flow_attestation` is swift's detached signature over the order and an expiry. It stands in for",
+        "the flow authority's signature on this keeper-built transaction. An absent attestation reads as",
+        "unattested. A book with a speed bump then rests the order whole instead of filling it."
+      ],
       "discriminator": [
         32,
         79,
@@ -6255,6 +7677,41 @@ export type Velocity = {
             "in the Anchor framework yet, so this is the safe approach."
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "filler",
+          "docs": [
+            "The keeper's own `User`, credited for the fill it lands. The taker did",
+            "not sign this transaction, so the keeper is a filler and owes the taker",
+            "every maker it had room to carry."
+          ],
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab. The remainder only ever rests on the vetted",
+            "book its `Clob` slot names, and that book is the mandatory baseline of",
+            "a router fill."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "handler re-checks it through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         }
       ],
       "args": [
@@ -6265,6 +7722,58 @@ export type Velocity = {
         {
           "name": "isDelegateSigner",
           "type": "bool"
+        },
+        {
+          "name": "flowAttestation",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "flowAttestationV0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "placeTriggerOrdersV1",
+      "docs": [
+        "Arm trigger orders in the user's own order slots. A slot holds one",
+        "unfired conditional, and every other order type rests on the market's",
+        "book instead. One margin check covers the whole batch, so a stop loss",
+        "and a take profit can arrive together."
+      ],
+      "discriminator": [
+        74,
+        40,
+        227,
+        127,
+        252,
+        82,
+        67,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "placeTriggerOrdersV1Args"
+            }
+          }
         }
       ]
     },
@@ -6299,6 +7808,49 @@ export type Velocity = {
         {
           "name": "pythMessage",
           "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "quoteRouter",
+      "docs": [
+        "Read-only router quote. It writes per-source verified books into the",
+        "caller's quote buffer. Simulate it rather than landing it."
+      ],
+      "discriminator": [
+        130,
+        18,
+        102,
+        250,
+        85,
+        231,
+        54,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "quoteBuffer"
+          ]
+        },
+        {
+          "name": "quoteBuffer",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "quoteRouterArgs"
+            }
+          }
         }
       ]
     },
@@ -6445,6 +7997,116 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "refillCrankReservoir",
+      "docs": [
+        "Refill a market's crank reservoir from the protocol treasury. The call",
+        "is permissionless, and relay cranks it like the work it funds. It",
+        "reverts while the reservoir is above its watermark, so it cannot be",
+        "repeated for the payment."
+      ],
+      "discriminator": [
+        65,
+        90,
+        188,
+        226,
+        191,
+        95,
+        208,
+        169
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "docs": [
+            "The protocol's lamport pool."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market reservoir being filled."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "slot. It never signs, so a turner can name a payout account that is not",
+            "the key paying for the transaction."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "refillCrankReservoirArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "refreshSpotMarketInterest",
       "discriminator": [
         11,
@@ -6463,9 +8125,11 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndexes",
+          "name": "args",
           "type": {
-            "vec": "u16"
+            "defined": {
+              "name": "refreshSpotMarketInterestArgs"
+            }
           }
         }
       ]
@@ -7014,6 +8678,304 @@ export type Velocity = {
       ]
     },
     {
+      "name": "resolveClobCrank",
+      "docs": [
+        "Resolver for every condition a market's CLOB cranks wake on. Those are an expired order, a",
+        "side at its eviction threshold, and the book crossing itself. Another is the poll that catches",
+        "a cross a PropAMM created. Relay reports which condition fired, so one resolver stages the",
+        "executor that fits and returns a response pointer. Simulate it rather than landing it."
+      ],
+      "discriminator": [
+        0,
+        10,
+        93,
+        76,
+        45,
+        249,
+        99,
+        54
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Read-only, because resolvers stage into the shared scratch account",
+            "rather than into the block they read."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "It is writable for the book's response tail, scratch the book rewrites",
+            "every quote as the cross resolver streams resting orders into it",
+            "through `quote_l3_v0`. Nothing a resolver sends lands there."
+          ],
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "quoterSlab"
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The linkage check verifies it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "Read-only. The refill resolver reads the levels a reservoir is held",
+            "between, which the treasury sets rather than the market."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "fired",
+          "type": {
+            "defined": {
+              "name": "firedConditionArgV0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "resolveCrankCrossMatchQuoter",
+      "docs": [
+        "Relay resolver for a Custom quoter's cross conditions. It prices the",
+        "quoter through its registered `quote_v0` surface and stages",
+        "`crank_cross_match`. Simulate it rather than landing it."
+      ],
+      "discriminator": [
+        170,
+        98,
+        124,
+        98,
+        157,
+        243,
+        148,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crossConditions",
+          "docs": [
+            "Read-only, because resolvers stage into the shared scratch account."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "book's response tail, which is where `quote_l3_v0` streams the resting",
+            "orders this resolver crosses the entry against."
+          ],
+          "writable": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab, which holds both legs' approved configs: the entry",
+            "the conditions name, and the book at slot 0."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "crossConditions"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The entry's quoted user, and the maker every staged balance change lands",
+            "on. Its identity derives the staged `(User, UserStats)` pair. The handler",
+            "checks it against the entry's approved config."
+          ]
+        },
+        {
+          "name": "clobProgram"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolveLiquidatePerpWithFill",
+      "docs": [
+        "Relay resolver for a liquidation threshold. It runs the real margin",
+        "calculation and stages `liquidate_perp_with_fill` with the protocol",
+        "`User` as the liquidator. That `User` holds no inventory. Simulate it",
+        "rather than landing it."
+      ],
+      "discriminator": [
+        170,
+        221,
+        26,
+        188,
+        165,
+        176,
+        102,
+        89
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "liqConditions",
+          "docs": [
+            "Read-only. A resolver stages into the shared scratch account rather",
+            "than into the block it reads."
+          ]
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "resolvePerpBankruptcy",
       "discriminator": [
         224,
@@ -7248,6 +9210,66 @@ export type Velocity = {
       ]
     },
     {
+      "name": "resolveResyncLiqConditions",
+      "docs": [
+        "Relay resolver for the self-sync conditions. Simulate it rather than",
+        "landing it."
+      ],
+      "discriminator": [
+        192,
+        11,
+        237,
+        99,
+        246,
+        44,
+        57,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "liqConditions",
+          "docs": [
+            "Read-only. A resolver stages into the shared scratch account rather",
+            "than into the block it reads."
+          ]
+        },
+        {
+          "name": "user"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "resolveSpotBankruptcy",
       "discriminator": [
         124,
@@ -7369,32 +9391,233 @@ export type Velocity = {
       ]
     },
     {
-      "name": "revertFill",
+      "name": "resolveTriggerLimitOrderV1",
+      "docs": [
+        "Relay resolver for `trigger_limit_order_v1`. Simulate it rather than",
+        "landing it."
+      ],
       "discriminator": [
-        236,
-        238,
-        176,
-        69,
-        239,
-        10,
-        181,
-        193
+        207,
+        143,
+        198,
+        105,
+        218,
+        207,
+        43,
+        27
       ],
       "accounts": [
         {
-          "name": "state"
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
         },
         {
-          "name": "authority",
-          "signer": true
+          "name": "triggerConditions",
+          "docs": [
+            "Read-only. A resolver stages into the shared scratch account rather",
+            "than into the block it reads."
+          ]
         },
         {
-          "name": "filler",
+          "name": "user"
+        },
+        {
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "perpMarket"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolveTriggerMarketOrderV1",
+      "docs": [
+        "Relay resolver for `trigger_market_order_v1`. Simulate it rather than",
+        "landing it."
+      ],
+      "discriminator": [
+        12,
+        180,
+        48,
+        230,
+        39,
+        213,
+        101,
+        242
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "Read-only. A resolver stages into the shared scratch account rather",
+            "than into the block it reads."
+          ]
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "perpMarket"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resyncLiqConditions",
+      "docs": [
+        "Relay's unsigned self-maintenance path. It rewrites an existing block",
+        "and pays the keeper from the block's own lamports. It names no signer,",
+        "because a staged executor is submitted unsigned."
+      ],
+      "discriminator": [
+        1,
+        22,
+        75,
+        53,
+        225,
+        51,
+        245,
+        190
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "docs": [
+            "`KEEPER_PLACEHOLDER` slot. It is never a signer, as the module doc",
+            "explains. It only receives lamports."
+          ],
           "writable": true
         },
         {
-          "name": "fillerStats",
-          "writable": true
+          "name": "user"
+        },
+        {
+          "name": "liqConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "The protocol pool this resync is paid from."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -7816,13 +10039,15 @@ export type Velocity = {
         {
           "name": "escrowAuthority",
           "docs": [
-            "The owner of the escrow to settle."
+            "The owner of the escrow to settle.",
+            "the authority in the escrow header."
           ]
         },
         {
           "name": "revenueShareEscrow",
           "docs": [
-            "The escrow that holds the accrued builder and referrer rows."
+            "The escrow that holds the accrued builder and referrer rows.",
+            "seeds fix the address."
           ],
           "writable": true,
           "pda": {
@@ -7888,12 +10113,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "numOwnerSubAccounts",
-          "type": "u8"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "settleRevenueShareArgs"
+            }
+          }
         }
       ]
     },
@@ -8065,6 +10290,107 @@ export type Velocity = {
       ]
     },
     {
+      "name": "sweepCrankReservoir",
+      "docs": [
+        "Move lamports from a market's crank reservoir back to the treasury, so",
+        "an over-provisioned or retired market does not hold them forever."
+      ],
+      "discriminator": [
+        163,
+        83,
+        223,
+        15,
+        134,
+        144,
+        208,
+        53
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "sweepCrankReservoirArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "sweepPerpMarketFees",
       "discriminator": [
         194,
@@ -8110,9 +10436,6 @@ export type Velocity = {
         },
         {
           "name": "spotMarket",
-          "docs": [
-            "The perp market's quote spot market (enforced by the PDA derivation)"
-          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -8150,6 +10473,95 @@ export type Velocity = {
         {
           "name": "perpMarketIndex",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "syncLiqConditions",
+      "docs": [
+        "Rewrite only the liquidation half of a user's condition block. Prefer",
+        "`sync_user_conditions` unless the trigger half is known current. The",
+        "block's own self-sync watch on position changes stages this half, which",
+        "is why this half has a relay path and the other does not."
+      ],
+      "discriminator": [
+        87,
+        58,
+        107,
+        39,
+        182,
+        230,
+        153,
+        200
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "Whoever runs the sync. It pays the rent when this call creates the",
+            "conditions account, so it is writable."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the fee rails the sync's own keeper payment is priced from."
+          ]
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "liqConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "syncLiqConditionsArgs"
+            }
+          }
         }
       ]
     },
@@ -8196,11 +10608,164 @@ export type Velocity = {
         {
           "name": "featureGate",
           "docs": [
-            "serialized activation state is validated by the handler."
+            "keys. The handler validates the serialized activation state."
           ]
         }
       ],
       "args": []
+    },
+    {
+      "name": "syncTriggerConditions",
+      "docs": [
+        "Rewrite only the trigger half of a user's condition block. Prefer",
+        "`sync_user_conditions` unless the liquidation half is known current."
+      ],
+      "discriminator": [
+        105,
+        93,
+        218,
+        179,
+        236,
+        229,
+        95,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "triggerConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "syncUserConditions",
+      "docs": [
+        "Derive a user's whole relay condition block, the liquidation thresholds and the trigger",
+        "watches, in one pass. `sync_liq_conditions` and `sync_trigger_conditions` remain for a caller",
+        "that wants only one half. Both write the same account, so calling them in sequence classifies",
+        "the same `remaining_accounts` twice."
+      ],
+      "discriminator": [
+        25,
+        90,
+        224,
+        168,
+        223,
+        46,
+        67,
+        255
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the fee rails the sync's own keeper payment is priced from."
+          ]
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "userConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "syncLiqConditionsArgs"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "transferDeposit",
@@ -8812,16 +11377,22 @@ export type Velocity = {
       ]
     },
     {
-      "name": "triggerOrder",
+      "name": "triggerLimitOrderV1",
+      "docs": [
+        "Crank an armed trigger-limit order onto the market's CLOB once its",
+        "trigger condition is met. The call is permissionless, and the keeper",
+        "earns the flat reward from the user. A stop-market goes through",
+        "`trigger_market_order_v1`."
+      ],
       "discriminator": [
-        63,
-        112,
-        51,
-        233,
-        232,
-        47,
-        240,
-        199
+        238,
+        119,
+        143,
+        92,
+        79,
+        248,
+        199,
+        152
       ],
       "accounts": [
         {
@@ -8829,25 +11400,323 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode, where the protocol `User` is the filler and relay",
+            "turners call, it is only the lamport payout target and needs no",
+            "signature."
+          ],
+          "writable": true
         },
         {
           "name": "filler",
           "writable": true
         },
         {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
           "name": "user",
+          "docs": [
+            "The owner of the armed trigger order."
+          ],
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "docs": [
+            "Read for the authority-wide equity breaker in the margin gate."
+          ]
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab. Placement is allowed only on the vetted book",
+            "that its `Clob` slot names, as in `place_and_make_perp_order_v1`."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "in the handler."
+          ],
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Expiry-hint host, same optional contract as `place_and_make_perp_order_v1`."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "The user's relay trigger conditions. The handler releases the fired",
+            "slot, which silences its level-triggered wake. It is optional, like",
+            "every relay-side account."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "triggerLimitOrderV1Args"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "triggerMarketOrderV1",
+      "docs": [
+        "Fire an armed trigger order straight to the book. It fills the fired",
+        "order in the same instruction and rests only the remainder as a",
+        "taker-origin order, so nothing stays live in `User.orders`."
+      ],
+      "discriminator": [
+        126,
+        192,
+        210,
+        218,
+        108,
+        177,
+        5,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "program-keeper mode, where the protocol `User` is the filler and relay",
+            "turners call, it is only the lamport payout target and needs no",
+            "signature."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the armed trigger order."
+          ],
           "writable": true
         },
         {
           "name": "userStats",
           "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab. The remainder only ever rests on the vetted",
+            "book that its `Clob` slot names."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host for the rested remainder, optional as on every CLOB",
+            "placement path."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "The user's relay trigger conditions. The handler releases the fired",
+            "slot, which silences its level-triggered wake. It is optional, like",
+            "every relay-side account."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ixSysvar",
+          "docs": [
+            "the owner signed the transaction and how many accounts it locks, which",
+            "are the filler-obligation facts a fill needs. It is optional and costs",
+            "one lock. A fill needs it only when a book withholds",
+            "depth for an owner the transaction does not carry, and the owner did not",
+            "sign. A trigger crank's owner never signs, so a fill that reaches a",
+            "withheld order and passes `None` here is refused."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
         {
-          "name": "orderId",
-          "type": "u32"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "triggerMarketOrderV1Args"
+            }
+          }
         }
       ]
     },
@@ -8870,7 +11739,7 @@ export type Velocity = {
         {
           "name": "keeper",
           "docs": [
-            "Any signer may trip the breaker; the proof is the margin calculation."
+            "Any signer may trip the breaker. The margin calculation is the proof."
           ],
           "signer": true
         },
@@ -9366,6 +12235,70 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateCrankTreasury",
+      "docs": [
+        "Set the two levels a market's crank reservoir is held between, counted",
+        "in that market's most expensive crank so one setting fits every market.",
+        "Markets take a new watermark on their next attach."
+      ],
+      "discriminator": [
+        18,
+        218,
+        78,
+        149,
+        45,
+        183,
+        2,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateCrankTreasuryArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "updateDiscountMint",
       "discriminator": [
         32,
@@ -9842,6 +12775,43 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateLiquidationCrankReimbursement",
+      "docs": [
+        "Set what the protocol spends getting a liquidation cranked, and the",
+        "spot market whose oracle prices it in SOL."
+      ],
+      "discriminator": [
+        228,
+        33,
+        165,
+        153,
+        37,
+        218,
+        237,
+        252
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateLiquidationCrankReimbursementArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "updateLiquidationDuration",
       "discriminator": [
         28,
@@ -10132,6 +13102,35 @@ export type Velocity = {
           "relations": [
             "keeperStats"
           ]
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's approved quoter set, which names the book below.",
+            "",
+            "Optional, for a market that names no book. A market that names one is",
+            "refused without it."
+          ],
+          "optional": true
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "slab cannot be pointed at an arbitrary account.",
+            "",
+            "Writable because `quote_l3_v0` streams its answer into the book's own",
+            "response tail. The crank changes no order."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration, which `validate_clob_book` re-checks through the slot."
+          ],
+          "optional": true,
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         }
       ],
       "args": []
@@ -10369,6 +13368,171 @@ export type Velocity = {
         {
           "name": "baseSpread",
           "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "updatePerpMarketClobQuoter",
+      "discriminator": [
+        210,
+        80,
+        79,
+        140,
+        168,
+        8,
+        27,
+        243
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "docs": [
+            "Also pays the conditions account's rent on first attach."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "`has_one = clob_market` holds because registration",
+            "(`initialize_quoter`) designated the book before any attach."
+          ],
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "Writable, because the attach mirrors the book's placement rules onto",
+            "the staging entry. A later re-approval then copies them forward."
+          ],
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "Writable, because the attach mirrors the book's placement rules onto",
+            "the approved copy in the book's slot. The hot paths then read a loaded",
+            "field instead of calling `order_rules_v0` by CPI. The market's `has_one`",
+            "binds this account."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designated. Writable because the attach registers velocity's resolvers",
+            "on it. The conditions for expiry, activation, a side at its cap and a",
+            "crossed book live on this account because those are facts about it."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions and keeper reservoir. The attach creates",
+            "them, or re-prices them, so a new market needs no separate crank",
+            "ceremony."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "Read-only. The treasury holds the levels a reservoir is kept between.",
+            "The attach resolves the low level onto this market."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updatePerpMarketClobQuoterArgs"
+            }
+          }
         }
       ]
     },
@@ -11865,6 +15029,465 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateQuoterAccounts",
+      "discriminator": [
+        60,
+        210,
+        110,
+        134,
+        146,
+        21,
+        140,
+        220
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check that a non-`Custom` entry needs. A `Custom`",
+            "entry answers to its own stored authority and omits this account."
+          ],
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterAccountsArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterActive",
+      "discriminator": [
+        62,
+        158,
+        7,
+        155,
+        123,
+        213,
+        219,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab, so the switch reaches the approved copy. It is",
+            "optional because an entry that was never approved has no copy to write.",
+            "An approved entry that omits it keeps the live copy as it was, and the",
+            "staged value lands at the next approval. A maker who wants the switch",
+            "to take effect at once passes the slab."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check that a non-`Custom` entry needs. A `Custom`",
+            "entry answers to its own stored authority and omits this account."
+          ],
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterActiveArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterApproved",
+      "discriminator": [
+        170,
+        62,
+        247,
+        58,
+        166,
+        107,
+        153,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "docs": [
+            "Mutable, because approval growth takes the added rent from the admin",
+            "and revocation refunds it there."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The staging entry whose config is copied in, or whose copy is pulled."
+          ]
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "The market the entry serves. A `Clob` approval is held to the book this",
+            "market designated at registration. The staging entry's response account",
+            "is maker-editable. Without that pin an edited entry could put a different",
+            "book into slot 0 than the one the market names."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoterSlab",
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "quoterProgram",
+          "docs": [
+            "which says whether a deploy slot exists to record."
+          ]
+        },
+        {
+          "name": "quoterProgramData",
+          "docs": [
+            "account. It is read for the slot the program was last deployed at. It is",
+            "optional, because revoking approval needs none of this, and a program on",
+            "a loader that cannot redeploy has no such account."
+          ],
+          "optional": true
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designation. A `Clob` approval needs it, because the handler asks the",
+            "book for its own placement rules. Every other entry omits it."
+          ],
+          "optional": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterApprovedArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterConfig",
+      "discriminator": [
+        210,
+        218,
+        133,
+        195,
+        87,
+        215,
+        7,
+        209
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check that a non-`Custom` entry needs. A `Custom`",
+            "entry answers to its own stored authority and omits this account."
+          ],
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterConfigArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterMaxOracleDeviation",
+      "discriminator": [
+        71,
+        255,
+        142,
+        165,
+        199,
+        225,
+        55,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "The entry's own authority. For a `Custom` entry that is the quoted",
+            "user's wallet."
+          ],
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab. It is optional for an entry that was never approved.",
+            "An approved entry that omits it keeps the live band as it was."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterMaxOracleDeviationArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterPriority",
+      "discriminator": [
+        192,
+        118,
+        16,
+        53,
+        87,
+        232,
+        85,
+        234
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab. Optional for an entry that was never approved."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterPriorityArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterWatch",
+      "discriminator": [
+        97,
+        137,
+        30,
+        49,
+        137,
+        246,
+        203,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "The entry's own authority. For a `Custom` entry that is the quoted",
+            "user's wallet."
+          ],
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "watchAccount",
+          "docs": [
+            "quoter's own state account. Nothing else constrains it. The admin",
+            "reviews it, and a wrong watch only costs the maker latency."
+          ]
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check that a non-`Custom` entry needs. A `Custom`",
+            "entry answers to its own stored authority and omits this account."
+          ],
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterWatchArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "updateSolvencyStatus",
       "discriminator": [
         81,
@@ -12923,6 +16546,39 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateTransactionFeeRails",
+      "discriminator": [
+        196,
+        239,
+        164,
+        219,
+        198,
+        45,
+        242,
+        11
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "rails",
+          "type": {
+            "defined": {
+              "name": "transactionFeeRails"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "updateUserAcceleratedReferralStatus",
       "discriminator": [
         109,
@@ -13638,11 +17294,10 @@ export type Velocity = {
     {
       "name": "updateUserVaultOwned",
       "docs": [
-        "Mark a User as vault-owned (its authority is a vault PDA and its equity",
-        "prices vault depositor shares). Set-only and authority-gated: only the",
-        "User's authority may call it, and it is CPI'd by the vaults program at",
-        "vault init. A vault-owned User is skipped by the revenue-share sweep so a",
-        "builder/referral reward can never enter vault NAV (OtterSec #91/#92/#93)."
+        "Mark a User as vault-owned. Its authority is a vault PDA, and its equity prices vault depositor",
+        "shares. The instruction sets the flag once and never clears it. Only the authority may call it,",
+        "and the vaults program CPIs it at vault init. The revenue-share sweep skips a vault-owned User,",
+        "so a builder or referral reward can never enter vault NAV (OtterSec #91/#92/#93)."
       ],
       "discriminator": [
         50,
@@ -14129,6 +17784,69 @@ export type Velocity = {
         {
           "name": "reduceOnly",
           "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "withdrawCrankTreasury",
+      "docs": [
+        "Recover lamports from the crank treasury, never below its own rent."
+      ],
+      "discriminator": [
+        7,
+        7,
+        168,
+        31,
+        50,
+        178,
+        211,
+        130
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "withdrawCrankTreasuryArgs"
+            }
+          }
         }
       ]
     },
@@ -14676,6 +18394,189 @@ export type Velocity = {
       ]
     },
     {
+      "name": "withdrawProtocolUserDeposit",
+      "discriminator": [
+        148,
+        218,
+        82,
+        85,
+        187,
+        96,
+        44,
+        87
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "protocolUser",
+          "writable": true
+        },
+        {
+          "name": "spotMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "spotMarketVault"
+          ]
+        },
+        {
+          "name": "recipient"
+        },
+        {
+          "name": "recipientTokenAccount",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "recipient"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "withdrawProtocolUserDepositArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "zeroMmOracleFields",
       "discriminator": [
         192,
@@ -14731,6 +18632,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "clobCrankConditionsV0",
+      "discriminator": [
+        192,
+        236,
+        226,
+        61,
+        136,
+        80,
+        33,
+        74
+      ]
+    },
+    {
       "name": "constituent",
       "discriminator": [
         0,
@@ -14767,6 +18681,19 @@ export type Velocity = {
         66,
         198,
         99
+      ]
+    },
+    {
+      "name": "crankTreasuryV0",
+      "discriminator": [
+        50,
+        111,
+        200,
+        27,
+        38,
+        23,
+        240,
+        155
       ]
     },
     {
@@ -14835,6 +18762,45 @@ export type Velocity = {
       ]
     },
     {
+      "name": "quoterCrossConditionsV0",
+      "discriminator": [
+        72,
+        61,
+        211,
+        139,
+        238,
+        110,
+        226,
+        41
+      ]
+    },
+    {
+      "name": "quoterSlabV0",
+      "discriminator": [
+        67,
+        176,
+        136,
+        206,
+        194,
+        105,
+        138,
+        84
+      ]
+    },
+    {
+      "name": "quoterV0",
+      "discriminator": [
+        71,
+        216,
+        164,
+        77,
+        121,
+        15,
+        57,
+        124
+      ]
+    },
+    {
       "name": "referrerName",
       "discriminator": [
         105,
@@ -14845,6 +18811,19 @@ export type Velocity = {
         42,
         28,
         182
+      ]
+    },
+    {
+      "name": "relayScratchV0",
+      "discriminator": [
+        233,
+        134,
+        29,
+        108,
+        164,
+        128,
+        221,
+        138
       ]
     },
     {
@@ -14871,6 +18850,19 @@ export type Velocity = {
         177,
         173,
         252
+      ]
+    },
+    {
+      "name": "routerQuoteBufferV0",
+      "discriminator": [
+        226,
+        115,
+        111,
+        70,
+        54,
+        54,
+        253,
+        75
       ]
     },
     {
@@ -14939,6 +18931,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "userConditionsV0",
+      "discriminator": [
+        199,
+        61,
+        169,
+        235,
+        49,
+        162,
+        162,
+        70
+      ]
+    },
+    {
       "name": "userStats",
       "discriminator": [
         176,
@@ -14954,16 +18959,16 @@ export type Velocity = {
   ],
   "events": [
     {
-      "name": "acceleratedReferralStatusChangedRecord",
+      "name": "acceleratedReferralStatusChangedRecordV0",
       "discriminator": [
-        95,
-        227,
-        167,
-        93,
-        152,
-        42,
-        2,
-        91
+        61,
+        226,
+        119,
+        155,
+        0,
+        100,
+        16,
+        4
       ]
     },
     {
@@ -15188,6 +19193,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "protocolUserWithdrawRecordV0",
+      "discriminator": [
+        225,
+        65,
+        189,
+        186,
+        181,
+        79,
+        234,
+        100
+      ]
+    },
+    {
       "name": "revenueShareSettleRecord",
       "discriminator": [
         61,
@@ -15263,6 +19281,32 @@ export type Velocity = {
         56,
         250,
         241
+      ]
+    },
+    {
+      "name": "takerOriginCrossRecordV0",
+      "discriminator": [
+        124,
+        217,
+        157,
+        153,
+        11,
+        104,
+        35,
+        145
+      ]
+    },
+    {
+      "name": "takerOriginCrossRecordV1",
+      "discriminator": [
+        240,
+        35,
+        45,
+        179,
+        207,
+        27,
+        133,
+        254
       ]
     },
     {
@@ -17167,6 +21211,426 @@ export type Velocity = {
       "code": 6374,
       "name": "vammQuoteManagementValueOutOfBounds",
       "msg": "vAMM quote management value is outside the hot role bounds"
+    },
+    {
+      "code": 6375,
+      "name": "invalidQuoterConfig",
+      "msg": "Quoter registry entry config is invalid"
+    },
+    {
+      "code": 6376,
+      "name": "invalidQuoterAuthority",
+      "msg": "Signer does not control this quoter registry entry"
+    },
+    {
+      "code": 6377,
+      "name": "insufficientCrankReservoir",
+      "msg": "CLOB crank condition account cannot cover the keeper payment"
+    },
+    {
+      "code": 6378,
+      "name": "orderPlacedOnClob",
+      "msg": "Order is placed on the CLOB; cancel it there (cancel_order_v1)"
+    },
+    {
+      "code": 6379,
+      "name": "orderAwaitingTriggerRecross",
+      "msg": "Trigger is awaiting a price recross after eviction"
+    },
+    {
+      "code": 6380,
+      "name": "crossMatchImbalanced",
+      "msg": "Cross match legs are imbalanced"
+    },
+    {
+      "code": 6381,
+      "name": "crossMatchUnprofitable",
+      "msg": "Cross match is not profitable after fees"
+    },
+    {
+      "code": 6382,
+      "name": "unattestedFastActivation",
+      "msg": "Faster-than-default activation requires the flow-authority attestation"
+    },
+    {
+      "code": 6383,
+      "name": "invalidQuoterResponse",
+      "msg": "Quoter returned a malformed quote/execute response"
+    },
+    {
+      "code": 6384,
+      "name": "quoterOverfilled",
+      "msg": "Quoter filled more base than the router allocated to it"
+    },
+    {
+      "code": 6385,
+      "name": "quoterFillOffQuote",
+      "msg": "Quoter filled at a price its quote does not support"
+    },
+    {
+      "code": 6386,
+      "name": "quoterSubjectNotPermitted",
+      "msg": "Quoter returned a balance change for a user it may not act against"
+    },
+    {
+      "code": 6387,
+      "name": "tooManyQuoterWireUsers",
+      "msg": "More loaded users than the quoter wire can carry"
+    },
+    {
+      "code": 6388,
+      "name": "signedRouteMismatch",
+      "msg": "Claimed route does not match the one the order was signed with"
+    },
+    {
+      "code": 6389,
+      "name": "signedRouteEntryMissing",
+      "msg": "A quoter the order's signed route names is absent from the fill"
+    },
+    {
+      "code": 6390,
+      "name": "crossedTakerRemainderPending",
+      "msg": "A crossed taker remainder must be resolved by crank_taker_origin_cross"
+    },
+    {
+      "code": 6391,
+      "name": "noTakerOriginCross",
+      "msg": "No resolvable taker-origin cross on this book"
+    },
+    {
+      "code": 6392,
+      "name": "takerOriginCrossWorseForTaker",
+      "msg": "Crossing would leave the taker worse off than its resting price"
+    },
+    {
+      "code": 6393,
+      "name": "insufficientCrankTreasury",
+      "msg": "Crank treasury has too few lamports for this payout"
+    },
+    {
+      "code": 6394,
+      "name": "crankReservoirNotLow",
+      "msg": "Crank reservoir is above its refill watermark"
+    },
+    {
+      "code": 6395,
+      "name": "invalidUserConditionsSync",
+      "msg": "User conditions sync does not cover every market the user is exposed in"
+    },
+    {
+      "code": 6396,
+      "name": "fillerOmittedReachableMaker",
+      "msg": "A book withheld depth and the transaction had room to carry its owner"
+    },
+    {
+      "code": 6397,
+      "name": "fillerPaddedTheUserSet",
+      "msg": "A book withheld depth and the transaction carries a loaded user that filled nothing"
+    },
+    {
+      "code": 6398,
+      "name": "fillerObligationUncountable",
+      "msg": "A book withheld depth and the fill cannot count the transaction's accounts"
+    },
+    {
+      "code": 6399,
+      "name": "quoterFilledShort",
+      "msg": "A quoter filled less base than the allocation it won from its own quote"
+    },
+    {
+      "code": 6400,
+      "name": "fillerCarriedUnroutedQuoter",
+      "msg": "A book withheld depth and the transaction carries a quoter outside the signed route"
+    },
+    {
+      "code": 6401,
+      "name": "reduceOnlyOrderCannotRestOnClob",
+      "msg": "A reduce-only order cannot rest on the CLOB; the book cannot clamp its fill to the position"
+    },
+    {
+      "code": 6402,
+      "name": "liquidationConflictsWithClobOrders",
+      "msg": "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
+    },
+    {
+      "code": 6403,
+      "name": "quoterReportExceedsReservation",
+      "msg": "A quoter reported more base or more retired orders than velocity reserved for that user"
+    },
+    {
+      "code": 6404,
+      "name": "unattestedSynchronousTake",
+      "msg": "The book runs an activation speed bump; an unattested taker rests on the book instead of filling synchronously"
+    },
+    {
+      "code": 6405,
+      "name": "quoterSlabFull",
+      "msg": "The market's quoter slab has no vacant slot"
+    },
+    {
+      "code": 6406,
+      "name": "quoterNotOnSlab",
+      "msg": "The market's quoter slab holds no approved copy of this entry"
+    },
+    {
+      "code": 6407,
+      "name": "crossMatchLegsDoNotCross",
+      "msg": "Cross match sold below the price its buy leg paid"
+    },
+    {
+      "code": 6408,
+      "name": "takerExposureNotProtocolOwned",
+      "msg": "Only the protocol user may skip the taker checks of a fill"
+    },
+    {
+      "code": 6409,
+      "name": "clobRestUnavailable",
+      "msg": "The market's book cannot rest a fired trigger, so the trigger stays armed"
+    },
+    {
+      "code": 6410,
+      "name": "orderTypeNotConditional",
+      "msg": "A user order slot holds only a trigger order"
+    },
+    {
+      "code": 6411,
+      "name": "propAmmArgsEncodeFailed",
+      "msg": "A quoter CPI's arguments could not be sized or serialized"
+    },
+    {
+      "code": 6412,
+      "name": "quoterCpiAccountMissing",
+      "msg": "An account the quoter entry names is absent from the fill's accounts"
+    },
+    {
+      "code": 6413,
+      "name": "quoterCpiArgsTooLarge",
+      "msg": "A quoter CPI's arguments exceed the byte cap the wire allows"
+    },
+    {
+      "code": 6414,
+      "name": "propAmmResponseAccountBorrowConflict",
+      "msg": "The quoter's response account is already borrowed"
+    },
+    {
+      "code": 6415,
+      "name": "tooManyQuotersConsulted",
+      "msg": "A fill consults more quoters than the route allows"
+    },
+    {
+      "code": 6416,
+      "name": "invalidConditionBlock",
+      "msg": "A relay condition block failed its layout, version or bounds check"
+    },
+    {
+      "code": 6417,
+      "name": "conditionResolverListTooLarge",
+      "msg": "A resolver list exceeds the condition block's region"
+    },
+    {
+      "code": 6418,
+      "name": "routerQuoteSourcesFull",
+      "msg": "The router quote buffer holds no more sources"
+    },
+    {
+      "code": 6419,
+      "name": "routerQuoteLevelsFull",
+      "msg": "A source's book holds no more levels"
+    },
+    {
+      "code": 6420,
+      "name": "routerQuoteRowWithoutSource",
+      "msg": "A router quote row names no source"
+    },
+    {
+      "code": 6421,
+      "name": "relayScratchStageFailed",
+      "msg": "A resolved crank does not fit the relay scratch region"
+    },
+    {
+      "code": 6422,
+      "name": "crankConditionsAccountRequired",
+      "msg": "A program-keeper crank requires the market's conditions account"
+    },
+    {
+      "code": 6423,
+      "name": "crankConditionsMarketMismatch",
+      "msg": "The conditions account is for a different market than the fired order"
+    },
+    {
+      "code": 6424,
+      "name": "perpMarketAccountMismatch",
+      "msg": "The perp market account is for a different market than the caller names"
+    },
+    {
+      "code": 6425,
+      "name": "tooManyForceCancelRefs",
+      "msg": "Force cancel received more order references than it allows"
+    },
+    {
+      "code": 6426,
+      "name": "forceCancelSideMismatch",
+      "msg": "The order rested on a different side than the caller declared"
+    },
+    {
+      "code": 6427,
+      "name": "crossParticipantOverlap",
+      "msg": "A cross names the same account as more than one participant"
+    },
+    {
+      "code": 6428,
+      "name": "clobQuoterNotActive",
+      "msg": "The market's CLOB quoter is not active and approved"
+    },
+    {
+      "code": 6429,
+      "name": "unrecognizedCrankCondition",
+      "msg": "The fired condition is not a crank velocity serves"
+    },
+    {
+      "code": 6430,
+      "name": "quoterExecutorMissingSlab",
+      "msg": "The router executor holds no quoter slab"
+    },
+    {
+      "code": 6431,
+      "name": "quoterExecutorIndexOutOfRange",
+      "msg": "The router executor has no quoter at the index the route names"
+    },
+    {
+      "code": 6432,
+      "name": "failedQuoterCpi",
+      "msg": "A CPI to a quoter program failed"
+    },
+    {
+      "code": 6433,
+      "name": "requiredBaselineQuoterOmitted",
+      "msg": "The fill omits the market's mandatory public book"
+    },
+    {
+      "code": 6434,
+      "name": "quoterRouteHasNoBooks",
+      "msg": "A router split needs at least one book"
+    },
+    {
+      "code": 6435,
+      "name": "ammQuoterMissingMmOracle",
+      "msg": "The AMM quoter refresh requires the market maker oracle"
+    },
+    {
+      "code": 6436,
+      "name": "clobCrankAccountTooSmall",
+      "msg": "The crank conditions account is too small for the reservoir mirror"
+    },
+    {
+      "code": 6437,
+      "name": "revenueShareOrderMarketMismatch",
+      "msg": "The escrow order belongs to a different market"
+    },
+    {
+      "code": 6438,
+      "name": "revenueShareOrderHasNoFeesAccrued",
+      "msg": "The escrow order accrued no fees to forfeit"
+    },
+    {
+      "code": 6439,
+      "name": "tooManyMarketsPassed",
+      "msg": "The caller passed more markets than the instruction allows"
+    },
+    {
+      "code": 6440,
+      "name": "spotMarketNotActive",
+      "msg": "The spot market is not active"
+    },
+    {
+      "code": 6441,
+      "name": "delegateTransferNotAllowed",
+      "msg": "A delegate cannot transfer a deposit"
+    },
+    {
+      "code": 6442,
+      "name": "builderCodesDisabled",
+      "msg": "The builder codes feature is disabled"
+    },
+    {
+      "code": 6443,
+      "name": "perpMarketQuoteSpotMismatch",
+      "msg": "The perp market is not quoted in the given quote spot market"
+    },
+    {
+      "code": 6444,
+      "name": "revenueShareEscrowNeedsOrderSlot",
+      "msg": "A revenue share escrow needs at least one order slot"
+    },
+    {
+      "code": 6445,
+      "name": "relayExecutorInvalid",
+      "msg": "The staged relay executor is malformed"
+    },
+    {
+      "code": 6446,
+      "name": "selfSyncCostAboveCeiling",
+      "msg": "The self-sync price is above the cost ceiling"
+    },
+    {
+      "code": 6447,
+      "name": "selfSyncIntervalAboveCeiling",
+      "msg": "The self-sync interval is above the slot ceiling"
+    },
+    {
+      "code": 6448,
+      "name": "resolverMarginMapMissing",
+      "msg": "The resolver needs the stored margin map accounts"
+    },
+    {
+      "code": 6449,
+      "name": "crankTreasuryWatermarkInvalid",
+      "msg": "The crank treasury watermark or refill target is out of range"
+    },
+    {
+      "code": 6450,
+      "name": "resolverAccountMustBeReadOnly",
+      "msg": "A resolver account must be read only"
+    },
+    {
+      "code": 6451,
+      "name": "invalidFeatureGateAccount",
+      "msg": "The feature gate account has the wrong data length"
+    },
+    {
+      "code": 6452,
+      "name": "featureGateNotActive",
+      "msg": "The feature gate is not activated yet"
+    },
+    {
+      "code": 6453,
+      "name": "slotDurationSyncRegresses",
+      "msg": "A slot duration sync cannot regress the active duration"
+    },
+    {
+      "code": 6454,
+      "name": "slotDurationTransitionInvalid",
+      "msg": "The slot duration transition is already recorded or not effective"
+    },
+    {
+      "code": 6455,
+      "name": "invalidOracleStalenessWindow",
+      "msg": "An oracle staleness window is out of range"
+    },
+    {
+      "code": 6456,
+      "name": "externalDepositorNotWhitelisted",
+      "msg": "The authority is not a whitelisted external depositor"
+    },
+    {
+      "code": 6457,
+      "name": "spotMarketVaultInvariantNotViolated",
+      "msg": "The spot market vault invariant is intact, so there is nothing to settle"
+    },
+    {
+      "code": 6458,
+      "name": "selfSyncIntervalTooShort",
+      "msg": "The self-sync interval is too short for the payment it carries"
     }
   ],
   "types": [
@@ -17511,9 +21975,10 @@ export type Velocity = {
     {
       "name": "acceleratedReferralStatusChange",
       "docs": [
-        "Consumers decode `action` by discriminant, so the order is ABI. `AutoEnrollment` is last",
-        "because it is deleted with `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`; removing a trailing",
-        "variant leaves the admin discriminants where they are."
+        "Consumers decode `action` by discriminant, so the variant order is ABI.",
+        "`AutoEnrollment` is last because it goes away with",
+        "`ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`. Removal of a trailing variant",
+        "leaves the admin discriminants where they are."
       ],
       "type": {
         "kind": "enum",
@@ -17531,7 +21996,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "acceleratedReferralStatusChangedRecord",
+      "name": "acceleratedReferralStatusChangedRecordV0",
       "type": {
         "kind": "struct",
         "fields": [
@@ -17581,6 +22046,41 @@ export type Velocity = {
           {
             "name": "weight",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ammAccountMeta",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pubkey",
+            "type": "pubkey"
+          },
+          {
+            "name": "isWritable",
+            "docs": [
+              "Whether the account is passed writable to the quoter program. `is_signer`",
+              "is not stored. The market's slab is the only account a quoter CPI ever",
+              "receives signer privilege on, and [`super::wire::write_quoter_account_metas`]",
+              "decides that by pubkey match rather than by registration."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
           }
         ]
       }
@@ -17926,6 +22426,227 @@ export type Velocity = {
       }
     },
     {
+      "name": "cancelOrderV1Params",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "The hint returned at placement. The CLOB rejects a stale hint."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "cancelOrdersV1Params",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "sides",
+            "type": {
+              "defined": {
+                "name": "cancelSidesV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "cancelSidesV0",
+      "docs": [
+        "Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of bools,",
+        "because the wire must not express \"neither\" and leave a maker believing its quotes",
+        "are gone. What a side means differs by reader. A book walks it as a book side and a",
+        "caller unwinds it as a position direction. The tags are the part that has to agree."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "bids"
+          },
+          {
+            "name": "asks"
+          },
+          {
+            "name": "both"
+          }
+        ]
+      }
+    },
+    {
+      "name": "clobCrankConditionsV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "relay",
+            "docs": [
+              "Everything relay hosts, in one field. It holds the `relay-spec` header,",
+              "the condition slots, and the resolver account list every condition here",
+              "points at. It is the first field, so its watch offset is 8."
+            ],
+            "type": {
+              "defined": {
+                "name": "relayBlock2x8"
+              }
+            }
+          },
+          {
+            "name": "oracle",
+            "docs": [
+              "The market's oracle, captured at attach time. The resolver account list",
+              "is fixed, so the staged executor's map section comes from here rather",
+              "than from the perp market account. An admin oracle rotation reaches the",
+              "cranks on the next attach."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "crankPayments",
+            "docs": [
+              "Lamports each executor pays its keeper, mirrored into that crank's `min_payment`.",
+              "This account is also the reservoir they come from, which costs no extra account.",
+              "[`crate::state::crank_treasury::CrankTreasuryV0`] refills it, and an empty",
+              "reservoir fails the crank rather than paying nothing."
+            ],
+            "type": {
+              "defined": {
+                "name": "crankPaymentsV0"
+              }
+            }
+          },
+          {
+            "name": "minCrossSurplus",
+            "docs": [
+              "Floor on the protocol's quote surplus from a cross-match crank, in",
+              "`QUOTE_PRECISION`. The reservoir pays `crank_payments.cross` in SOL, so a cross",
+              "that clears by a cent is worth declining. In quote rather than lamports, because",
+              "the cross crank carries no SOL oracle. Zero means profitable is enough."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "clobBlockOffset",
+            "docs": [
+              "Where the book's own condition block sits in the market account, as it reported at",
+              "attach. A market has two blocks and each needs its own relay watch, so a registrar",
+              "that watched only this account would leave the book's cranks unwoken."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "topOfBookOffset",
+            "docs": [
+              "The region of the book that changes whenever either side's best moves, as the book",
+              "reported it at attach. A crossing order is a new best, so a watch here catches",
+              "every cross. The book reports the region rather than velocity deriving it, so",
+              "velocity watches without knowing the book's layout."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "topOfBookLen",
+            "type": "u32"
+          },
+          {
+            "name": "marketIndex",
+            "docs": [
+              "The perp market these conditions crank. Also the PDA seed."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "quoteSpotMarketIndex",
+            "docs": [
+              "The market's quote spot market, captured at attach time. The staged",
+              "executor's map section needs its PDA."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "refillWatermarkLamports",
+            "docs": [
+              "The spendable balance this reservoir wakes its refill at, in lamports. Relay",
+              "compares the mirror against this number, so the executor reads it rather than",
+              "recomputing. A figure from a program constant would drift from conditions written",
+              "before an upgrade, and the market would wake at one level and refuse at another."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "spendableMirror",
+            "docs": [
+              "This account's spendable lamports as of the last payment or refill, meaning the",
+              "balance less rent exemption. A relay watch reads account data and a lamport",
+              "balance is metadata, so the mirror is what lets the refill condition wake.",
+              "Advisory: the refill instruction reads the real balance."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Tail reserve. It holds 4 bytes of alignment slack plus room for a",
+              "captured pubkey and change. A resolver that needs another fixed account",
+              "takes it from here, instead of forcing an `extend_account` migration on",
+              "every market's conditions."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "clobOrderRefV0",
+      "docs": [
+        "Order handle. The node index is an O(1) hint the book verifies against the order",
+        "id, so a stale hint fails closed rather than acting on whichever order took the",
+        "slot. The `Clob` prefix is deliberate: this is the one type here that lands in",
+        "velocity's IDL, beside `Order` and `OrderParams`, where `OrderRefV0` names no",
+        "program."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "nodeIndex",
+            "type": "u32"
+          },
+          {
+            "name": "orderId",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "constituent",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -18029,8 +22750,8 @@ export type Velocity = {
           {
             "name": "oracleStalenessThreshold",
             "docs": [
-              "Delay allowed for valid AUM calculation, encoded in historical 400ms",
-              "slot quanta while remaining a one-word onchain field."
+              "Delay allowed for valid AUM calculation. The value is stored in 400ms",
+              "units so the field stays one word onchain."
             ],
             "type": "u64"
           },
@@ -18368,6 +23089,293 @@ export type Velocity = {
       }
     },
     {
+      "name": "crankClobEvictArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "side",
+            "docs": [
+              "The side past its soft cap. The CLOB re-checks the threshold."
+            ],
+            "type": {
+              "defined": {
+                "name": "sideV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankClobRemoveExpiredArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "The hinted expired order. The CLOB re-checks that it is due."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankCostUnitsV0",
+      "docs": [
+        "Cost units each of a market's cranks requests, one field per crank. Measured figures:",
+        "a turner simulates the crank, and the rest of the sum comes from the transaction it",
+        "assembles. The unit is the block-packing cost unit, which",
+        "`State.transaction_fee_rails` turns into lamports."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "removal",
+            "docs": [
+              "`evict_worst` / `remove_expired`: one book write and a hint repair. The one crank",
+              "pair whose payment nothing compares against what the protocol collects. A rails",
+              "re-pricing that lifts `removal` past the `flat_filler_fee`'s value in SOL turns",
+              "each reservoir into a faucet."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "cross",
+            "docs": [
+              "`crank_cross_match`: two settlement legs through the router."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "takerOriginCross",
+            "docs": [
+              "`crank_taker_origin_cross`: the same, against a taker remainder."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "trigger",
+            "docs": [
+              "`trigger_order` / `trigger_limit_order_v1` in program-keeper mode."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "liquidation",
+            "docs": [
+              "`liquidate_perp_with_fill` in program-keeper mode."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "forceCancel",
+            "docs": [
+              "`force_cancel_clob_orders`."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "refill",
+            "docs": [
+              "`refill_crank_reservoir`: one lamport move and a mirror write."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankCrossMatchArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "size",
+            "docs": [
+              "Base the buy leg takes. The sell leg returns exactly what the buy leg",
+              "filled, and the cross is refused unless every unit of it crossed. A size",
+              "past the crossing depth therefore fails rather than sweeping through it."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankPaymentsV0",
+      "docs": [
+        "What each of a market's cranks pays its keeper, in lamports. One figure per crank,",
+        "because a removal and a two-legged cross differ by an order of magnitude and a single",
+        "figure would either underpay the cross or overpay every removal. The attach derives",
+        "them once from [`CrankCostUnitsV0`] and `State.transaction_fee_rails`, because an",
+        "executor that could re-derive its own terms could re-price its own work."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "removal",
+            "type": "u32"
+          },
+          {
+            "name": "cross",
+            "type": "u32"
+          },
+          {
+            "name": "takerOriginCross",
+            "type": "u32"
+          },
+          {
+            "name": "trigger",
+            "type": "u32"
+          },
+          {
+            "name": "liquidation",
+            "type": "u32"
+          },
+          {
+            "name": "forceCancel",
+            "type": "u32"
+          },
+          {
+            "name": "refill",
+            "docs": [
+              "What the treasury pays to have this market's reservoir refilled. Stored with the",
+              "market's other crank prices because the refill condition lives here, and a",
+              "condition has to advertise a floor a turner can filter on."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "padding",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankTakerOriginCrossArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "crossRows",
+            "docs": [
+              "How deep to read each side of the book. A short read truncates worse",
+              "prices, never a better counterparty."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "signedRoute",
+            "docs": [
+              "The taker's signed route, when the crank claims one. An empty vector",
+              "claims the market baseline."
+            ],
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankTreasuryV0",
+      "docs": [
+        "The protocol's lamport pool for relay cranks."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "totalPaid",
+            "docs": [
+              "Lifetime lamports paid to keepers that refilled a reservoir."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "totalRefilled",
+            "docs": [
+              "Lifetime lamports moved out to market reservoirs."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "paddingU64",
+            "docs": [
+              "Reserved."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "refillTargetCranks",
+            "docs": [
+              "Refill a reservoir up to this many of its most expensive crank.",
+              "",
+              "Read at refill time, so re-tuning it takes effect on every market at",
+              "once."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "refillWatermarkCranks",
+            "docs": [
+              "Wake the refill when a reservoir can pay fewer than this many. The attach resolves it to lamports",
+              "on the market, so a change reaches a market only at its next attach. Size it for the refill's own",
+              "round trip: itself a relay crank a turner polls, simulates and lands, worst together with",
+              "ordinary work at a market-wide move, when an empty reservoir stops cranking unreported."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Tail reserve, so a later field costs no migration."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                36
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "deleteUserRecord",
       "type": {
         "kind": "struct",
@@ -18566,14 +23574,33 @@ export type Velocity = {
       }
     },
     {
+      "name": "directionV0",
+      "docs": [
+        "Taker direction, from the taker's perspective.",
+        "",
+        "Encoded as its discriminant, `Long = 0`, and every program on this wire",
+        "reads the same declaration. A taker direction inverted across the boundary",
+        "would fill the wrong side of a book."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "long"
+          },
+          {
+            "name": "short"
+          }
+        ]
+      }
+    },
+    {
       "name": "feeLedger",
       "docs": [
-        "All of a perp market's fee-split accounting in one ledger.",
-        "Pure counters — token claims live in the pools",
-        "(`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).",
-        "Convention: gross-fee counters record what the taker actually paid",
-        "(post referee discount, pre carve-outs) on BOTH the AMM and DLOB-match",
-        "paths."
+        "All of a perp market's fee-split accounting in one ledger. Pure counters. Token claims",
+        "live in the pools (`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).",
+        "Gross-fee counters record what the taker actually paid, post referee discount and pre",
+        "carve-outs, on both the AMM and the maker-match paths."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -18619,24 +23646,19 @@ export type Velocity = {
           {
             "name": "ammProtocolFeesReceived",
             "docs": [
-              "cumulative fee provision granted to the AMM via `amm_fee_numerator`,",
-              "plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is",
-              "enabled — its backstop-of-last-resort tranche, drawable (and",
-              "decremented) only in bankruptcy. Enabling the rebate bit therefore",
-              "grows the bankruptcy clawback cap by the rebates earned. The AMM's own",
-              "spread/trading capital beyond this provision is never tapped.",
-              "precision: QUOTE_PRECISION"
+              "Cumulative fee provision granted to the AMM via `amm_fee_numerator`, plus the vAMM",
+              "maker rebate when `FeatureBitFlags::VammMakerRebate` is enabled. The AMM's",
+              "last-resort tranche: only a bankruptcy draws it down, so enabling the rebate bit",
+              "grows the bankruptcy clawback cap. precision: QUOTE_PRECISION"
             ],
             "type": "u128"
           },
           {
             "name": "pendingAmmProvision",
             "docs": [
-              "AMM fee provision (including the vAMM maker rebate when enabled)",
-              "accrued at fill (already booked into the AMM's",
-              "`total_fee_minus_distributions`) but not yet tokenized into",
-              "`amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.",
-              "precision: QUOTE_PRECISION"
+              "AMM fee provision, including the vAMM maker rebate when enabled, accrued at fill",
+              "but not yet tokenized into `amm.fee_pool` by the sweep. Invariant:",
+              "`<= amm_protocol_fees_received`. precision: QUOTE_PRECISION"
             ],
             "type": "u128"
           }
@@ -18740,6 +23762,156 @@ export type Velocity = {
           },
           {
             "name": "refereeFeeDenominator",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "firedConditionArgV0",
+      "docs": [
+        "Which condition relay is asking about.",
+        "",
+        "Byte-identical to `relay_spec::FiredConditionV0`, which is what the turner",
+        "appends to a resolver's instruction data. It is declared here because that",
+        "crate carries no borsh derives. It uses velocity's own types, a `Pubkey` and",
+        "a `u32`, rather than the byte arrays a `Pod` layout needs, so the IDL reads",
+        "as an argument list instead of a blob. The test",
+        "`the_fired_condition_is_what_relay_appends` pins the two encodings",
+        "together."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "target",
+            "docs": [
+              "The account holding the condition block."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "blockOffset",
+            "docs": [
+              "Byte offset of that block within the account."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "index",
+            "docs": [
+              "Slot of the condition within the block."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "flowAttestationV0",
+      "docs": [
+        "The flow authority's detached signature over one order's own signature and",
+        "an expiry. It marks the order's flow as having served the swift hold,",
+        "without the flow authority signing the transaction. A transaction signer",
+        "authorizes the whole transaction. The fill transaction is keeper-built, so a",
+        "co-signature on it needed an allowlist, a shape proof, and a drain-vector",
+        "analysis. A detached signature over one order's signature authorizes one",
+        "thing. It also costs no signature fee, because the program verifies it, like",
+        "the taker signature it binds to."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "signature",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "expiryTs",
+            "docs": [
+              "Unix seconds this attestation is good until. Bounds how long a",
+              "keeper can sit on a released attestation before filling."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "forceCancelClobOrdersArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRefs",
+            "docs": [
+              "The orders to cancel one by one, each judged not risk-reducing by the",
+              "declared side. Empty asks for the whole-side sweep instead."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "forceCancelClobRefV0"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "forceCancelClobRefV0",
+      "docs": [
+        "One order the caller wants reclaimed.",
+        "",
+        "The side is declared, not read, since a node carries no side of its own.",
+        "It lets the risk-reducing test run before the CPI, but is not trusted: the handler checks it against the real side the CLOB removal returns."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "orderRef",
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "sideV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "forfeitRevenueShareOrderArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderIndex",
+            "docs": [
+              "Index of the escrow order row to forfeit."
+            ],
             "type": "u32"
           }
         ]
@@ -19083,6 +24255,105 @@ export type Velocity = {
           },
           {
             "name": "vammQuoteManagement"
+          },
+          {
+            "name": "flowAuthority"
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeQuoterArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "quoterType",
+            "type": {
+              "defined": {
+                "name": "quoterType"
+              }
+            }
+          },
+          {
+            "name": "responseAccount",
+            "type": "pubkey"
+          },
+          {
+            "name": "quoteV0Discriminator",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "quoteL3V0Discriminator",
+            "docs": [
+              "Zero when the quoter has no `quote_l3_v0` leg, which is every quoter",
+              "that fills from one account."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "executeV0Discriminator",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeQuoterCrossConditionsArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "expireFallbackSlots",
+            "docs": [
+              "The poll interval behind the reprice watch. It is the discovery floor",
+              "when the maker's declared watch misses a reprice. Bounded above by",
+              "[`QUOTER_CROSS_FALLBACK_MAX_SLOTS`]."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeQuoterSlabArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeRouterQuoteBufferArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
           }
         ]
       }
@@ -19183,12 +24454,10 @@ export type Velocity = {
           {
             "name": "ifFeeFactor",
             "docs": [
-              "Fraction of spot deposit-interest gains carved out to the insurance fund",
-              "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
-              "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.) A cut too small to reach a",
-              "whole unit is carried on `revenue_pool`, not floored away. See",
-              "`split_deposit_interest`."
+              "Fraction of spot deposit-interest gains carved out to the insurance fund (staker-owned), in",
+              "`IF_FACTOR_PRECISION`. Was `total_factor` before the protocol/staker split was removed; the IF",
+              "is now 100% staker-owned, so this is the whole staker carveout. A cut too small to reach a",
+              "whole unit is carried on the carveout pools, not floored away. See `split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -19692,10 +24961,9 @@ export type Velocity = {
             "name": "targetOracleDelayFeeBpsPer10Slots",
             "docs": [
               "Bps of fee charged per 10 whole 400ms periods of oracle delay past the",
-              "staleness threshold, so one step is 4 seconds of wall clock. The `_slots`",
-              "suffix is the historical name from when a slot was 400ms; `step_fee`",
-              "receives period counts, so the rate no longer scales with slot time.",
-              "Renaming the field would change the IDL, so the unit lives here."
+              "staleness threshold. One step is 4 seconds of wall clock. `step_fee`",
+              "takes period counts, not slot time, though the field keeps its legacy",
+              "`_slots` name because renaming would change the IDL."
             ],
             "type": "u8"
           },
@@ -19703,7 +24971,7 @@ export type Velocity = {
             "name": "targetPositionDelayFeeBpsPer10Slots",
             "docs": [
               "Bps of fee charged per 10 whole 400ms periods of position delay past the",
-              "staleness threshold. Same units as the oracle sibling above."
+              "staleness threshold. The units match the oracle field above."
             ],
             "type": "u8"
           },
@@ -20260,8 +25528,8 @@ export type Velocity = {
       "name": "marketStats",
       "docs": [
         "Historic market data shared across all makers, updated on every fill",
-        "regardless of which maker filled (vAMM, DLOB resting order, JIT participant,",
-        "future quoter types). Holds mark/oracle TWAPs, rolling std, volume,",
+        "regardless of which maker filled (vAMM, a resting book order, future quoter",
+        "types). Holds mark/oracle TWAPs, rolling std, volume,",
         "intensity, mm-oracle snapshot, `historical_oracle_data`,",
         "`last_oracle_normalised_price`, `last_oracle_valid`.",
         "",
@@ -20603,28 +25871,84 @@ export type Velocity = {
             }
           },
           {
-            "name": "auctionDuration",
-            "type": {
-              "option": "u8"
-            }
-          },
-          {
-            "name": "auctionStartPrice",
-            "type": {
-              "option": "i64"
-            }
-          },
-          {
-            "name": "auctionEndPrice",
-            "type": {
-              "option": "i64"
-            }
-          },
-          {
             "name": "policy",
             "type": {
               "option": "u8"
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "modifyOrderV1Params",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "Handle for the order being modified. The CLOB rejects a stale hint, and",
+              "velocity fails the whole call if the removal took another user's",
+              "order."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          },
+          {
+            "name": "price",
+            "docs": [
+              "`None` keeps the resting price."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "baseAssetAmount",
+            "docs": [
+              "`None` keeps the remaining size of the resting order, not its original",
+              "size."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "maxTs",
+            "docs": [
+              "`None` keeps the resting expiry, which the CLOB's removal response",
+              "reports. `Some(0)` makes the replacement good-till-cancelled."
+            ],
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "activationDelaySlots",
+            "docs": [
+              "The rule of `place_and_make_perp_order_v1` applies. `None` takes the",
+              "book's default speed bump. A value below it needs the flow-authority",
+              "attestation."
+            ],
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "rejectIfCrossed",
+            "docs": [
+              "The rule of `place_and_make_perp_order_v1` applies: refuse rather than",
+              "rest crossed. The original is already off the book, so a refused",
+              "replacement leaves the maker with no order at all."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -20812,18 +26136,20 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "auctionStartPrice",
+            "name": "clobNodeIndex",
             "docs": [
-              "The start price for the auction. Only relevant for market/oracle orders",
-              "precision: PRICE_PRECISION"
+              "The CLOB node this order's shadow points at, when",
+              "[`OrderBitFlag::PlacedOnClob`] is set. Zero otherwise. Read it through",
+              "[`Order::clob_order_ref`], which casts it back to `u32`. The width is",
+              "what `Order`'s fixed 104-byte layout leaves here."
             ],
             "type": "i64"
           },
           {
-            "name": "auctionEndPrice",
+            "name": "clobOrderId",
             "docs": [
-              "The end price for the auction. Only relevant for market/oracle orders",
-              "precision: PRICE_PRECISION"
+              "The CLOB order id this order's shadow points at, under the same",
+              "conditions as [`Order::clob_node_index`]. Cast back to `u64`."
             ],
             "type": "i64"
           },
@@ -20951,13 +26277,11 @@ export type Velocity = {
             }
           },
           {
-            "name": "auctionDuration",
+            "name": "unusedAuctionDuration",
             "docs": [
-              "Auction length in wall clock 400ms units (one slot at the 400ms",
-              "baseline, where the raw value is identical to the historical slot",
-              "count). Progress compares `SlotClock::elapsed` against this value's",
-              "wall clock length, so the ramp holds at every slot duration and the",
-              "u8 keeps the full historical 72s range."
+              "Free byte. It held the auction length until an order stopped resting",
+              "to auction. `Order` is 104 bytes with no slack and is an array element",
+              "in `User`, so the byte cannot move."
             ],
             "type": "u8"
           },
@@ -20978,6 +26302,12 @@ export type Velocity = {
           },
           {
             "name": "padding",
+            "docs": [
+              "Free bytes. These held a route digest until routing moved to placement",
+              "and `SignedMsgOrderId::route_digest`. `Order` is 104 bytes with no",
+              "slack and is an array element in `User`. Removing them would rewrite",
+              "every existing account."
+            ],
             "type": {
               "array": [
                 "u8",
@@ -21078,6 +26408,15 @@ export type Velocity = {
           },
           {
             "name": "transferPerpPosition"
+          },
+          {
+            "name": "orderFilledWithExternalQuoter"
+          },
+          {
+            "name": "clobOrderEvicted"
+          },
+          {
+            "name": "clobRemainderCulled"
           }
         ]
       }
@@ -21511,21 +26850,19 @@ export type Velocity = {
             }
           },
           {
-            "name": "auctionDuration",
+            "name": "activationDelaySlots",
+            "docs": [
+              "How many slots the order's rested remainder waits before the book will",
+              "take it. `None` takes the book's default. A longer wait gives more",
+              "counterparties the chance to cross it, and a taker-origin remainder is",
+              "crossed at the counterparty's price, so the wait can only improve the",
+              "fill. The book caps it at `max_activation_delay_slots`, and a value",
+              "below the default needs the flow-authority attestation. `max_ts` is a",
+              "separate bound: it ends the order, and this delays when it can fill.",
+              "A trigger order refuses it, because a slot stores no delay."
+            ],
             "type": {
-              "option": "u8"
-            }
-          },
-          {
-            "name": "auctionStartPrice",
-            "type": {
-              "option": "i64"
-            }
-          },
-          {
-            "name": "auctionEndPrice",
-            "type": {
-              "option": "i64"
+              "option": "u32"
             }
           },
           {
@@ -21879,17 +27216,10 @@ export type Velocity = {
           {
             "name": "takerFeeAddonTenthBps",
             "docs": [
-              "Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),",
-              "unsigned: surcharge only (e.g. toxic-flow markets), never a discount.",
-              "A discount could push the taker fee below the maker rebate it must",
-              "fund and revert every match fill; promo discounts go through",
-              "`State.promo_fee_tier` instead. Applied on top of the tier fee before",
-              "`fee_adjustment` scales the sum:",
-              "`taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
-              "Taker fee only; the maker rebate and the post-only path see",
-              "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
-              "`_padding_buffer` (same offset/alignment on all targets), so existing",
-              "accounts read 0 = no add-on until the admin sets it."
+              "Additive per-market taker-fee surcharge in tenth-bps. 10 is one basis point.",
+              "Unsigned, because a discount could push the taker fee below the maker rebate it",
+              "must fund. Applied on top of the tier fee, before `fee_adjustment` scales the sum.",
+              "Existing accounts read 0, which is no surcharge."
             ],
             "type": "u16"
           },
@@ -21905,28 +27235,10 @@ export type Velocity = {
           {
             "name": "feePoolBufferTarget",
             "docs": [
-              "The pnl-pool retention buffer the streaming sweep's IF and",
-              "AMM-provision drains leave untouched: `sweep_market_fees` drains",
-              "those pendings only from what the pnl pool holds above",
-              "`max(net_user_pnl, 0) + fee_pool_buffer_target`. The protocol drain",
-              "is EXEMPT — it reserves only `max(net_user_pnl, 0)` and runs first;",
-              "it sweeps every settle, so each drain stays small, and its pending is",
-              "no bankruptcy tranche so retaining it buys nothing.",
-              "",
-              "Why a buffer on top of the user-claims reservation: `net_user_pnl`",
-              "is a mark-to-market snapshot, so a pool swept to the exact mark is",
-              "short on the next adverse oracle tick — and the sweep is a one-way",
-              "valve, so the slack can't be cheaply recalled (IF value returns only",
-              "through capped gated paths, the AMM provision only via bankruptcy",
-              "clawback). The buffer throttles those outflows per sweep; pool tokens",
-              "are fungible (pendings are counters, not segregated tokens), so",
-              "whichever cut lingers keeps settling winners in the meantime. This",
-              "delays materialization, it does not divert anyone's cut. Side",
-              "benefits: an unswept IF cut gives THIS market uncapped market-local",
-              "bankruptcy coverage (tranche 1) instead of capped shared-vault",
-              "coverage, and the buffer damps the IF settle ratchet (value settled",
-              "into the IF accrues to stakers permanently).",
-              "precision: QUOTE_PRECISION"
+              "Pnl-pool retention the streaming sweep's IF and AMM-provision drains leave",
+              "untouched. `net_user_pnl` is a mark-to-market snapshot, so a pool swept to the",
+              "exact mark is short on the next adverse tick, and the sweep is a one-way valve.",
+              "The protocol drain is exempt. precision: QUOTE_PRECISION"
             ],
             "type": "u64"
           },
@@ -22210,30 +27522,10 @@ export type Velocity = {
           {
             "name": "pendingBankruptcyClaims",
             "docs": [
-              "Number of unresolved bankrupt quote debts booked against this market.",
-              "A liquidation that latches a user bankrupt increments it. Both writers",
-              "of `PerpPosition.quote_asset_amount` decrement it when that debt",
-              "reaches zero: `update_quote_asset_amount` and",
-              "`update_position_and_market`. The count tracks the debt, not the latch:",
-              "an un-latched estate that still owes the market stays booked, because",
-              "the debt still resolves through the bankruptcy waterfall.",
-              "",
-              "While it is above zero the fee sweep withholds the whole",
-              "`pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is",
-              "permissionless, so a caller could otherwise drain the first-loss",
-              "tranche between the latch and the resolution and push the loss onto the",
-              "shared insurance fund or into socialization. The freeze is independent",
-              "of open interest and of `bankruptcy_if_floor_pct`, both of which can be",
-              "zero exactly when a bankruptcy is pending.",
-              "",
-              "Occupies 2 of the 6 bytes the Rust compiler inserts to 8-align",
-              "`last_fill_price`. The remaining 4 stay explicit padding, so every",
-              "later byte offset and the account size are unchanged and existing",
-              "accounts read 0 (no pending claim).",
-              "",
-              "`settle_expired_market_pools_to_revenue_pool` rejects while this count",
-              "is above zero, because that instruction's final sweep bypasses the",
-              "floor."
+              "Number of unresolved bankrupt quote debts booked against this market. The count",
+              "tracks the debt, not the latch. While it is above zero the fee sweep withholds the",
+              "whole `pending_if_fee`, because the sweep is permissionless and could otherwise",
+              "drain the first-loss tranche between the latch and the resolution."
             ],
             "type": "u16"
           },
@@ -22303,48 +27595,29 @@ export type Velocity = {
           {
             "name": "oracleSlotDelayOverride",
             "docs": [
-              "Max oracle delay (legacy 400ms units) tolerated by immediate (JIT / auction-skipping)",
-              "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
-              "fills entirely. Negative (the init default, `-1`) means unset, which",
-              "resolves by price source: `MM_ORACLE_MIN_WRITE_GAP` for an MM-oracle-sourced",
-              "price (the tightest window the crank can satisfy, since the program refuses",
-              "MM-oracle writes closer together than that) and `0` for an exchange-oracle",
-              "price, which can be same-slot fresh. See `math::oracle::oracle_validity`."
+              "Max oracle delay tolerated by an immediate AMM fill, in legacy 400ms units. A",
+              "positive value is a threshold, `0` disables immediate AMM fills, and a negative",
+              "value is unset. An unset override resolves by price source. See",
+              "`math::oracle::oracle_validity`."
             ],
             "type": "i8"
           },
           {
             "name": "oracleLowRiskSlotDelayOverride",
             "docs": [
-              "Low-risk oracle delay override (legacy 400ms units): 0 = unset (use the",
-              "guard rail), otherwise a literal threshold. See `math::time::DelayOverride`."
+              "Low-risk oracle delay override, in legacy 400ms units. `0` is unset and",
+              "takes the guard rail. Any other value is a literal threshold. See",
+              "`math::time::DelayOverride`."
             ],
             "type": "i8"
           },
           {
             "name": "bankruptcyIfFloorPct",
             "docs": [
-              "Floor on the unswept IF-fee carveout, as a percentage of open-interest",
-              "notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves",
-              "`pending_if_fee` at (at least) this floor, so a standing first-loss",
-              "tranche is available to `resolve_perp_bankruptcy` before any user is",
-              "latched bankrupt — a permissionless sweep (or the inline sweep on any",
-              "pnl settle) cannot drain the tranche below it. Notional is valued at",
-              "the market's own oracle TWAP so a manipulated spot print can't crush",
-              "the floor.",
-              "",
-              "`0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created",
-              "before the field existed carries the standing tranche without an admin",
-              "call. `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off. Read it",
-              "through `get_bankruptcy_if_floor_pct`, never directly.",
-              "",
-              "The floor sizes the tranche off market risk, which is a proxy for the",
-              "loss and can be smaller than it. `pending_bankruptcy_claims` covers",
-              "every latched bankruptcy exactly, by withholding all of",
-              "`pending_if_fee` until it resolves.",
-              "",
-              "Occupies the former 4-byte trailing padding before `market_stats`",
-              "(same offset/alignment on all targets)."
+              "Floor on the unswept IF-fee carveout, as a percentage of open-interest notional",
+              "(PERCENTAGE_PRECISION). No sweep drains `pending_if_fee` below it, so a first-loss",
+              "tranche stands before any user is latched bankrupt. Notional is valued at the",
+              "oracle TWAP. Read it through `get_bankruptcy_if_floor_pct`, never directly."
             ],
             "type": "u32"
           },
@@ -22366,32 +27639,19 @@ export type Velocity = {
           {
             "name": "pendingRevenueShare",
             "docs": [
-              "Aggregate accrued builder/referrer revenue-share owed out of this",
-              "market's `pnl_pool` but not yet paid: incremented as builder and",
-              "referrer fees accrue on fills (mirrors the per-order",
-              "`RevenueShareOrder.fees_accrued` writes) and decremented as",
-              "`sweep_completed_revenue_share_for_market` pays them. The",
-              "permissionless fee sweep reserves it (like `max(net_user_pnl, 0)` and",
-              "the floored IF tranche) so a protocol-fee drain can't move the tokens",
-              "backing already-owed revenue share out of the pnl pool and leave those",
-              "claims temporarily unpayable. precision: QUOTE_PRECISION.",
-              "",
-              "Occupies the 8 bytes Rust naturally inserts to 16-align AMM's leading",
-              "u128 (formerly explicit `_padding_align_amm`): a u64 at the same",
-              "8-aligned offset keeps every downstream byte offset and the total size",
-              "unchanged, so legacy accounts read 0 (nothing owed) until fees accrue."
+              "Aggregate builder and referrer revenue-share owed out of this market's `pnl_pool`",
+              "but not yet paid. The permissionless fee sweep reserves it, so a protocol-fee",
+              "drain cannot move the tokens backing already-owed share and leave those claims",
+              "unpayable. precision: QUOTE_PRECISION"
             ],
             "type": "u64"
           },
           {
             "name": "amm",
             "docs": [
-              "The automated market maker. Last field so future quoter modules can",
-              "land in the trailing region without disturbing earlier byte offsets",
-              "— in the target architecture this account holds back-to-back",
-              "per-quoter state slices (AMM, DLOB-maker state, future propAMM-style",
-              "participants, …) and each module owns a contiguous span starting at",
-              "a known offset."
+              "The automated market maker. Last field, so future quoter modules land in the",
+              "trailing region without disturbing earlier byte offsets. Each module owns a",
+              "contiguous span starting at a known offset."
             ],
             "type": {
               "defined": {
@@ -22412,15 +27672,36 @@ export type Velocity = {
             }
           },
           {
+            "name": "clobMarket",
+            "docs": [
+              "The market's canonical book, which is also the book slot's response account on the",
+              "slab. When set, every router fill must consult the book, so no route can exclude",
+              "it. A dead book must still be passed, but quoting skips it. `Pubkey::default()`",
+              "means the market has no CLOB requirement."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "quoterSlab",
+            "docs": [
+              "The market's quoter slab PDA, written at market initialization. Derivable from the",
+              "market index, but stored so an accounts struct binds them with",
+              "`has_one = quoter_slab`. That is a memcmp instead of a PDA derivation, and the",
+              "compiler keeps the check on every context."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "paddingFuture",
             "docs": [
-              "Reserved for future fields. Existing accounts must be extended before",
-              "the program loads them with this layout."
+              "Reserved for future fields. This is master's tail reservation, less the",
+              "64 bytes `clob_market` and `quoter_slab` take. Existing accounts must",
+              "be extended before the program loads them with this layout."
             ],
             "type": {
               "array": [
                 "u8",
-                256
+                192
               ]
             }
           }
@@ -22556,13 +27837,14 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                2
-              ]
-            }
+            "name": "reduceOnlyClobOrders",
+            "docs": [
+              "The count of reduce-only orders the user rests on the CLOB for this",
+              "market. The book is position-blind, so this is nonzero exactly when",
+              "the router must pass a `base_cover` cap for this user. Velocity arms",
+              "it when it rests a reduce-only order and disarms it when that order leaves the book."
+            ],
+            "type": "u16"
           },
           {
             "name": "maxMarginRatio",
@@ -22585,6 +27867,88 @@ export type Velocity = {
           {
             "name": "positionFlag",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "placeAndMakePerpOrderV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "params",
+            "type": {
+              "defined": {
+                "name": "orderParams"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "placeAndTakeOrderSuccessCondition",
+      "docs": [
+        "What a place-and-take must fill. The instruction reverts when the take",
+        "falls short of it."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "partialFill"
+          },
+          {
+            "name": "fullFill"
+          }
+        ]
+      }
+    },
+    {
+      "name": "placeAndTakePerpOrderV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "params",
+            "type": {
+              "defined": {
+                "name": "orderParams"
+              }
+            }
+          },
+          {
+            "name": "successCondition",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "placeAndTakeOrderSuccessCondition"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "placeTriggerOrdersV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "params",
+            "docs": [
+              "The triggers to arm. Each entry must be a `TriggerMarket` or a",
+              "`TriggerLimit` on a perp market."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "orderParams"
+                }
+              }
+            }
           }
         ]
       }
@@ -22617,11 +27981,10 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "Filler for the alignment gap before the two dust fields. Those fields must",
-              "start at offsets 20 and 24. The host layout and the SBF layout then agree,",
-              "and the packed borsh layout in the IDL reaches the same offsets. This",
-              "field shrank from 14 bytes to 2. The size of the struct and every other",
-              "field offset are unchanged. Do not reorder or resize these fields."
+              "Filler for the alignment gap before the two dust fields, which must start",
+              "at offsets 20 and 24. The host layout, the SBF layout, and the packed",
+              "borsh layout in the IDL then agree. The struct size and every other field",
+              "offset are unchanged. Do not reorder or resize these fields."
             ],
             "type": {
               "array": [
@@ -22854,6 +28217,56 @@ export type Velocity = {
       }
     },
     {
+      "name": "protocolUserWithdrawRecordV0",
+      "docs": [
+        "Emitted when `withdraw_protocol_user_deposit` draws accumulated crank",
+        "rewards out of the protocol-owned `User`.",
+        "",
+        "The name carries a version, unlike the records inherited from upstream. An",
+        "`#[event]` derives its discriminator from its struct name. A field added to",
+        "a `…Record` therefore changes the payload under a discriminator that",
+        "consumers already decode. The old decoder then truncates or fails, and",
+        "nothing on the wire says which shape it received. A field addition here",
+        "ships as `ProtocolUserWithdrawRecordV1` with its own discriminator, so an",
+        "old subscriber ignores it rather than misreading it. Every event velocity",
+        "adds follows the same rule."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "spotMarketIndex",
+            "docs": [
+              "the spot market the tokens were drawn from"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "protocolUser",
+            "docs": [
+              "the protocol-owned `User` account debited"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "recipientTokenAccount",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "pythLazerOracle",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -22895,6 +28308,725 @@ export type Velocity = {
       }
     },
     {
+      "name": "quoteRouterArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "directionV0"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "docs": [
+              "Size to quote up to. The books returned are what a taker of this size",
+              "can get. A resting source is truncated by it. The vAMM and the",
+              "PropAMMs price against it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "takerServedWindow",
+            "docs": [
+              "Whether the flow this view prices for served a protection window: the",
+              "swift hold or the book's activation delay. A protected-flow quoter (e.g.",
+              "midpoint's `require_attested_flow`) hides depth from unprotected flow, so",
+              "the view must match the real route. Swift and the book publisher pass `true`."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "includeVamm",
+            "docs": [
+              "Quote the vAMM into the buffer as well. A market with more quoters than",
+              "one view can carry is read in several passes, and the vAMM shades against",
+              "every book in the call, so only one pass sets this flag; the caller merges",
+              "the vAMM from that pass, while the rest skip computing a discarded ladder."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quotedLevelV0",
+      "docs": [
+        "A quoted level in the buffer's Pod form. The wire `PriceLevel` is borsh."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quotedRowV0",
+      "docs": [
+        "One resting order behind a quoted book, in the buffer's Pod form. The wire",
+        "`L3RowV0` holds the same bytes.",
+        "",
+        "A book's ladder can aggregate orders that belong to different people. A",
+        "caller that must carry those accounts, or draw the book, needs them apart.",
+        "Every other quoter fills from the one account its registry entry names, so",
+        "its rows report that account. A consumer reads one shape either way."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "name": "orderId",
+            "docs": [
+              "The quoter's own handle for the order. Zero when the row is not an",
+              "order but a rung attributed to the quoter's user."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "nodeIndex",
+            "docs": [
+              "The other half of the handle, for a quoter that keeps an arena. Zero",
+              "when it does not."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "Authority of the `User` this row settles against."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "subAccountId",
+            "type": "u16"
+          },
+          {
+            "name": "flags",
+            "docs": [
+              "`L3_ROW_FLAG_*`, as the quoter reported them."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                1
+              ]
+            }
+          },
+          {
+            "name": "placedSlot",
+            "docs": [
+              "Slot the order was placed in. Zero when the quoter keeps no such",
+              "record."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quotedSourceKind",
+      "docs": [
+        "Which kind of liquidity a quoted book came from. The router needs it to",
+        "execute the allocation as a CPI leg or as the vAMM. A user interface needs",
+        "it to label depth, because a PropAMM's levels are a quote at a size rather",
+        "than resting orders."
+      ],
+      "repr": {
+        "kind": "rust"
+      },
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "vamm"
+          },
+          {
+            "name": "dlobOrder"
+          },
+          {
+            "name": "quoter"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quotedSourceV0",
+      "docs": [
+        "One source's slice of the buffer's level region."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key",
+            "docs": [
+              "The `QuoterV0` entry for a `Quoter`, the maker's `User` for a",
+              "`DlobOrder`, the perp market for `Vamm`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "levelCount",
+            "docs": [
+              "Live levels in this source's slot of `levels`."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "priority",
+            "docs": [
+              "Routing tier the split applies. It is `QuoterV0::priority`, or the",
+              "type default for the in-program sources."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "quotedSourceKind"
+              }
+            }
+          },
+          {
+            "name": "clamped",
+            "docs": [
+              "Set when verification cut this book. A Custom quoter can advertise more",
+              "depth than its `User`'s margin supports, and the cut removes the",
+              "excess. The caller then never routes against or displays depth that no",
+              "fill can take."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "rowStart",
+            "docs": [
+              "Where this source's slice of `rows` starts and how long it is. A source",
+              "with no per-order detail has no slice."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "rowLen",
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterAccountMetaArg",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pubkey",
+            "type": "pubkey"
+          },
+          {
+            "name": "isWritable",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterConfigV0",
+      "docs": [
+        "One quoter's whole configuration: the CPI surface velocity calls it on,",
+        "and the declarations that bound how it fills.",
+        "",
+        "Held in two places with two meanings. On the [`QuoterV0`] staging entry it",
+        "is the maker's proposal, writable by the entry authority. In a",
+        "[`super::QuoterSlabV0`] slot it is the copy the admin approved, which is the",
+        "only copy a fill reads. A maker edit therefore never reaches flow until the",
+        "admin copies it in again."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "approvedProgramSlot",
+            "docs": [
+              "The slot the approved program was last deployed at, read at approval and",
+              "meaningful only in a slab slot. Zero when the loader cannot redeploy the",
+              "program. Approval does not freeze the program, so an off-chain reader",
+              "compares this to the live slot to know the code changed."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bookTickSize",
+            "docs": [
+              "The book's placement rules, mirrored here by the attach",
+              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded field.",
+              "Zero for a non-`Clob` entry and for a book no market has attached. A",
+              "stale mirror degrades the remainder handling rather than failing a fill."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bookMinOrderSize",
+            "type": "u64"
+          },
+          {
+            "name": "user",
+            "docs": [
+              "For a Custom quoter, the User this quoter may quote for. That user's",
+              "authority creates the entry, so creation is consent. For the vAMM, the",
+              "vAMM user. For a CLOB it is ignored, because execute may return balance",
+              "changes for any user with resting orders on the CLOB."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "programId",
+            "docs": [
+              "The external program invoked for `quote_v0` and `execute_v0`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "responseAccount",
+            "docs": [
+              "Account owned by `program_id` that quote and execute responses are",
+              "written into. Both legs' index lists must name it. A response is read at",
+              "the pointer returned via return data, so a payload is not bound by the",
+              "1024-byte return-data cap. For a CLOB entry this is the book itself."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "Manages the staging entry. For a Custom quoter this is the quoted user's",
+              "authority, enforced at creation with no handoff. The maker can therefore",
+              "always kill their own quoter, because `is_active` writes through to the",
+              "approved copy."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "watchAccount",
+            "docs": [
+              "Maker-declared reprice region: the account bytes whose change means the",
+              "quoter may quote differently now. Relay cross-discovery conditions wake",
+              "on it, and `watch_len == 0` means the maker declared none, which leaves",
+              "discovery to the poll. A missed reprice costs cross latency, never correctness."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "quoteV0Discriminator",
+            "docs": [
+              "Raw instruction discriminators on `program_id`. Stored rather than",
+              "derived so non-Anchor programs can participate."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "executeV0Discriminator",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "quoteL3V0Discriminator",
+            "docs": [
+              "The optional third leg, `quote_l3_v0`. It reports the resting orders",
+              "behind a ladder and who each one belongs to. Zero means the quoter does",
+              "not implement it, and a reader attributes the whole ladder to",
+              "[`Self::user`]. A book is the exception, and this field is how it says so."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "accounts",
+            "docs": [
+              "The one registered CPI account list. Only the first `accounts_count`",
+              "entries are live. Each leg forwards a subset, in its own order, named by",
+              "the index lists below. That leaves one list to vet, and a leg cannot",
+              "smuggle an account the other leg's reviewer never saw."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "ammAccountMeta"
+                  }
+                },
+                12
+              ]
+            }
+          },
+          {
+            "name": "quoteAccountIndexes",
+            "docs": [
+              "Indexes into `accounts` forwarded to `quote_v0` and `quote_l3_v0`, in",
+              "CPI order. Only the first `quote_accounts_count` are live."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                12
+              ]
+            }
+          },
+          {
+            "name": "executeAccountIndexes",
+            "docs": [
+              "Indexes into `accounts` forwarded to `execute_v0`, in CPI order. Only",
+              "the first `execute_accounts_count` are live."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                12
+              ]
+            }
+          },
+          {
+            "name": "watchOffset",
+            "type": "u32"
+          },
+          {
+            "name": "watchLen",
+            "type": "u32"
+          },
+          {
+            "name": "maxOracleDeviationBps",
+            "docs": [
+              "The furthest from oracle a fill on this entry may price, in",
+              "MARGIN_PRECISION units. Zero means the market's own band stands. It",
+              "writes through to the approved copy without re-vetting, because the band",
+              "applies as the smaller of this and the market's. `Custom` entries only."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "bookDefaultActivationDelaySlots",
+            "type": "u32"
+          },
+          {
+            "name": "market",
+            "docs": [
+              "Perp market index this quoter serves."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "quoterType",
+            "type": {
+              "defined": {
+                "name": "quoterType"
+              }
+            }
+          },
+          {
+            "name": "isActive",
+            "docs": [
+              "The authority's own on and off switch. The maker can always set it, and",
+              "it writes through to the approved copy so a kill takes effect at once."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "priority",
+            "docs": [
+              "Routing priority. At one price, a lower-priority tier fills first, pro",
+              "rata within a tier. It defaults by type: vAMM 0, CLOB 10, Custom 20.",
+              "Only the admin sets it afterwards, never the maker."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "accountsCount",
+            "type": "u8"
+          },
+          {
+            "name": "quoteAccountsCount",
+            "type": "u8"
+          },
+          {
+            "name": "executeAccountsCount",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterCrossConditionsV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "relay",
+            "docs": [
+              "Everything relay needs, in one field. It holds the `relay-spec`",
+              "header, the condition slots, and the resolver account list that every",
+              "condition here points at. The attach writes that list. This is the",
+              "first field, so its watch offset is 8."
+            ],
+            "type": {
+              "defined": {
+                "name": "relayBlock3x48"
+              }
+            }
+          },
+          {
+            "name": "quoter",
+            "docs": [
+              "The Custom entry these conditions discover crosses for."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "clobMarket",
+            "docs": [
+              "The market's book and its program, captured at attach time. The",
+              "resolver stages the executor's CLOB leg from here without holding those",
+              "accounts. Attach again after a CLOB rotation."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "clobProgram",
+            "type": "pubkey"
+          },
+          {
+            "name": "oracle",
+            "docs": [
+              "The market's oracle, captured at attach time. It fills the map section",
+              "of the staged executor."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "quoteSpotMarketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Tail reserve. A resolver that needs another fixed account takes a",
+              "pubkey from here. That avoids an `extend_account` migration on every",
+              "attached quoter entry. The length also keeps `SIZE - 8` a multiple of",
+              "16."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                92
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterSlabV0",
+      "docs": [
+        "One market's approved quoters, in one account. This struct is only the fixed",
+        "header. Read the slot region that follows it through [`QuoterSlabExt::slots`]",
+        "or [`QuoterSlabExt::slots_mut`]. A vacant slot is all zeroes. Creation through",
+        "`initialize_quoter_slab` is permissionless, and only the approval flow writes",
+        "slots."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "docs": [
+              "Perp market this slab serves. It is also in the PDA seeds."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "capacity",
+            "docs": [
+              "Slots the region holds. Written at creation and when the account grows.",
+              "The account must be at least [`QuoterSlabV0::space`] of it."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "bump",
+            "docs": [
+              "The slab PDA's bump, stored at creation. The slab is the identity",
+              "velocity signs every external quoter CPI as. See `crate::signer`.",
+              "Signing needs the bump, and a stored byte is cheaper than a derivation",
+              "on every leg."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "pad",
+            "type": {
+              "array": [
+                "u8",
+                3
+              ]
+            }
+          },
+          {
+            "name": "clobMarket",
+            "docs": [
+              "The market's book, the `Clob` slot's response account. The header holds it so",
+              "every accounts struct that names both binds them with `has_one = clob_market`.",
+              "It survives a book suspension, because the removal paths must keep reaching a",
+              "killed book. `Pubkey::default()` means no book was ever approved."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Header reserve, so future header fields never move the slot region."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                120
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterType",
+      "repr": {
+        "kind": "rust"
+      },
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "vamm"
+          },
+          {
+            "name": "clob"
+          },
+          {
+            "name": "custom"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterV0",
+      "docs": [
+        "The staging half of the registry: one entry per perp market, quoter program",
+        "and quoted user. Nothing fills from it. `update_quoter_approved` copies it",
+        "into the market's [`super::QuoterSlabV0`], and a fill reads only that copy.",
+        "The entry's address is also the quoter's identity."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "config",
+            "type": {
+              "defined": {
+                "name": "quoterConfigV0"
+              }
+            }
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                48
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "referrerName",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -22921,6 +29053,130 @@ export type Velocity = {
               "array": [
                 "u8",
                 32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "refillCrankReservoirArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "refreshSpotMarketInterestArgs",
+      "docs": [
+        "The markets to refresh arrive as writable spot market accounts in `remaining_accounts`.",
+        "`SpotMarketMap` reads each market's index out of the account it loads, so a market is refreshed",
+        "only when its own account is passed."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndexes",
+            "type": {
+              "vec": "u16"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayBlock11x48",
+      "docs": [
+        "relay condition block (spec v0), 11 conditions, as one opaque wire region"
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": {
+              "array": [
+                "u8",
+                3728
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayBlock2x8",
+      "docs": [
+        "relay condition block (spec v0), 2 conditions, as one opaque wire region"
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": {
+              "array": [
+                "u8",
+                680
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayBlock3x48",
+      "docs": [
+        "relay condition block (spec v0), 3 conditions, as one opaque wire region"
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": {
+              "array": [
+                "u8",
+                2192
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayScratchV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "scratch",
+            "type": {
+              "array": [
+                "u8",
+                4096
               ]
             }
           }
@@ -23163,104 +29419,137 @@ export type Velocity = {
       }
     },
     {
-      "name": "scaleOrderParams",
-      "docs": [
-        "Parameters for placing scale orders - multiple limit orders distributed across a price range"
-      ],
+      "name": "routerQuoteBufferV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "marketType",
-            "type": {
-              "defined": {
-                "name": "marketType"
-              }
-            }
+            "name": "authority",
+            "docs": [
+              "Only this signer may quote into the buffer, so two routers that share a",
+              "market do not overwrite each other's reads."
+            ],
+            "type": "pubkey"
           },
           {
-            "name": "direction",
-            "type": {
-              "defined": {
-                "name": "positionDirection"
-              }
-            }
+            "name": "quotedSize",
+            "docs": [
+              "Taker size the books were quoted at. The size changes the answer rather",
+              "than echoing the request. It only truncates a resting book on the CLOB,",
+              "but the vAMM's levels and a PropAMM's levels depend on it."
+            ],
+            "type": "u64"
           },
           {
-            "name": "marketIndex",
+            "name": "slot",
+            "docs": [
+              "Slot the quote ran at, so a reader can tell how stale a cached book is."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "market",
             "type": "u16"
           },
           {
-            "name": "totalBaseAssetAmount",
+            "name": "sourceCount",
             "docs": [
-              "Total base asset amount to distribute across all orders"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "startPrice",
-            "docs": [
-              "Starting price for the scale (in PRICE_PRECISION)"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "endPrice",
-            "docs": [
-              "Ending price for the scale (in PRICE_PRECISION)"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "orderCount",
-            "docs": [
-              "Number of orders to place (min 2, max 32)"
+              "Live entries in `sources`."
             ],
             "type": "u8"
           },
           {
-            "name": "sizeDistribution",
+            "name": "rowCount",
             "docs": [
-              "How to distribute sizes across orders"
+              "Live entries in `rows`."
             ],
-            "type": {
-              "defined": {
-                "name": "sizeDistribution"
-              }
-            }
+            "type": "u8"
           },
           {
-            "name": "reduceOnly",
+            "name": "rowsTruncated",
             "docs": [
-              "Whether orders should be reduce-only"
+              "The rows region filled before every source was described, so the last",
+              "sources carry fewer rows than their books hold. The ladders keep every",
+              "level. A row is detail about a level, never the level itself."
             ],
             "type": "bool"
           },
           {
-            "name": "postOnly",
+            "name": "direction",
             "docs": [
-              "Post-only setting for all orders"
-            ],
-            "type": {
-              "defined": {
-                "name": "postOnlyParam"
-              }
-            }
-          },
-          {
-            "name": "bitFlags",
-            "docs": [
-              "Order bit flags"
+              "Taker direction quoted, as a `Direction` cast to u8. 0 is long and 1 is",
+              "short."
             ],
             "type": "u8"
           },
           {
-            "name": "maxTs",
+            "name": "padding",
             "docs": [
-              "Maximum timestamp for orders to be valid"
+              "Pads the header to 128 bytes. The reserve holds two more pubkeys, so",
+              "naming another account later does not move `sources` or `levels` and",
+              "break every off-chain decoder. The length also keeps",
+              "`(SIZE - 8) % 16 == 0`. See docs/alignment-and-native-offsets.md."
             ],
             "type": {
-              "option": "i64"
+              "array": [
+                "u8",
+                74
+              ]
+            }
+          },
+          {
+            "name": "sources",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "quotedSourceV0"
+                  }
+                },
+                16
+              ]
+            }
+          },
+          {
+            "name": "levels",
+            "docs": [
+              "One slot per source, parallel to `sources`."
+            ],
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    {
+                      "defined": {
+                        "name": "quotedLevelV0"
+                      }
+                    },
+                    128
+                  ]
+                },
+                16
+              ]
+            }
+          },
+          {
+            "name": "rows",
+            "docs": [
+              "The orders behind the ladders, in the order the sources were quoted.",
+              "Each source names its own run through `row_start`/`row_len`."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "quotedRowV0"
+                  }
+                },
+                128
+              ]
             }
           }
         ]
@@ -23343,7 +29632,57 @@ export type Velocity = {
       }
     },
     {
+      "name": "settleRevenueShareArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "numOwnerSubAccounts",
+            "docs": [
+              "How many of the owner's sub-accounts ride the remaining accounts."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sideV0",
+      "docs": [
+        "Which side an order rests on: a bid makes its owner long, an ask short."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "bid"
+          },
+          {
+            "name": "ask"
+          }
+        ]
+      }
+    },
+    {
       "name": "signedMsgOrderId",
+      "docs": [
+        "One signed message this user sent, and what is still live from it.",
+        "",
+        "The entry does two jobs. The `uuid` is replay protection, which is what",
+        "this account was built for. The rest is the routing state of the order the",
+        "message became. A signed-message order routes at placement and rests any",
+        "remainder on the market's CLOB. Somebody else builds the later transaction",
+        "that fills that remainder. `route_digest` holds that filler to the quoters",
+        "the taker chose, so it has to outlive the message.",
+        "",
+        "The field order leaves no padding hole under `#[repr(C)]`. The two `u64`",
+        "fields sit on eight-byte boundaries, and the two byte arrays need no",
+        "alignment of their own. The stride is 40 bytes."
+      ],
       "serialization": "bytemuckunsafe",
       "repr": {
         "kind": "c"
@@ -23365,12 +29704,34 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "clobOrderId",
+            "docs": [
+              "The CLOB order this message's remainder rests as, or zero when nothing",
+              "of it rests. An entry naming a live order survives the stale sweep,",
+              "because the fill that resolves it still needs the route below."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "orderId",
             "type": "u32"
           },
           {
             "name": "padding",
             "type": "u32"
+          },
+          {
+            "name": "routeDigest",
+            "docs": [
+              "[`crate::state::order_params::route_digest`] of the quoter entries the",
+              "taker's signed route named. Zero when the message named no route."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
           }
         ]
       }
@@ -23448,12 +29809,38 @@ export type Velocity = {
             "type": {
               "option": "u64"
             }
+          },
+          {
+            "name": "network",
+            "docs": [
+              "See [`SignedMsgOrderParamsMessage::network`]."
+            ],
+            "type": {
+              "option": "u8"
+            }
+          },
+          {
+            "name": "route",
+            "docs": [
+              "See [`SignedMsgOrderParamsMessage::route`]."
+            ],
+            "type": {
+              "option": {
+                "vec": "pubkey"
+              }
+            }
           }
         ]
       }
     },
     {
       "name": "signedMsgOrderParamsMessage",
+      "docs": [
+        "Trailing fields are appended, never inserted. The verifier zero-pads a",
+        "short payload before decoding, so an older producer's message reads as",
+        "`None` for everything it did not send. See",
+        "`validation::sig_verification`."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -23524,6 +29911,29 @@ export type Velocity = {
             "name": "isolatedPositionDeposit",
             "type": {
               "option": "u64"
+            }
+          },
+          {
+            "name": "network",
+            "docs": [
+              "[`SIGNED_MSG_NETWORK_MAINNET`] / [`SIGNED_MSG_NETWORK_DEVNET`]."
+            ],
+            "type": {
+              "option": "u8"
+            }
+          },
+          {
+            "name": "route",
+            "docs": [
+              "The route the taker signed for: the `QuoterV0` entries of the custom",
+              "quoters (PropAMMs) the taker wants used. The CLOB and vAMM are the",
+              "mandatory baseline of every router fill, so they are implicit and",
+              "never named here. The field is advisory today. Swift forwards it to keepers, which is what makes a routed order reach the quoters the taker chose."
+            ],
+            "type": {
+              "option": {
+                "vec": "pubkey"
+              }
             }
           }
         ]
@@ -23632,26 +30042,6 @@ export type Velocity = {
             "type": {
               "vec": "pubkey"
             }
-          }
-        ]
-      }
-    },
-    {
-      "name": "sizeDistribution",
-      "docs": [
-        "How to distribute order sizes across scale orders"
-      ],
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "flat"
-          },
-          {
-            "name": "ascending"
-          },
-          {
-            "name": "descending"
           }
         ]
       }
@@ -24306,19 +30696,24 @@ export type Velocity = {
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
               "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to",
-              "reach a whole unit is carried on the carveout pools, not floored away. See",
-              "`split_deposit_interest`."
+              "reach a whole unit is carried on the carveout pools rather than floored",
+              "away. See `split_deposit_interest`."
             ],
             "type": "u32"
           },
           {
             "name": "ifLastSettleVaultAmount",
             "docs": [
+              "allow-verbose: the donation-resistance logic and the exact outflow-path list are",
+              "load-bearing invariants for insurance-fund accounting. Cutting them below what an",
+              "auditor needs to verify the cap's donation-proofing would drop real information, not",
+              "restate the code.",
+              "",
               "Lowest insurance-fund vault balance since the end of the last revenue",
               "settle. `settle_revenue_to_insurance_fund` starts each period by writing",
               "the live vault balance plus the amount that settle transfers in, and",
               "`record_insurance_fund_outflow` lowers it on every path that moves tokens",
-              "out of the vault: `remove_insurance_fund_stake`,",
+              "out of the vault. Those paths are `remove_insurance_fund_stake`,",
               "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and",
               "`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so",
               "it lags the live vault by up to one `revenue_settle_period`.",
@@ -24326,20 +30721,21 @@ export type Velocity = {
               "The per-period revenue-settle APR cap is sized off",
               "`min(live_if_vault, this)`, so it counts only capital the fund held for",
               "the whole period. A donation spiked into the live vault right before a",
-              "settle is absent from this field and cannot lift the cap. Tracking the",
-              "running minimum is what closes the same trick after a dip: a loss draw",
-              "takes the vault to 100, a donation puts it back to 1000, and a plain",
-              "end-of-period snapshot would read 1000 again. A donation that does",
-              "survive a full period counts, and correctly so — by then it belongs to",
-              "the stakers pro rata, so the fund really is that large.",
+              "settle is absent from this field and cannot lift the cap. The running",
+              "minimum closes the same trick after a dip. A loss draw takes the vault",
+              "to 100 and a donation puts it back to 1000, where a plain end-of-period",
+              "snapshot would read 1000 again. A donation that survives a full period",
+              "does count. By then it belongs to the stakers pro rata, so the fund",
+              "really is that large.",
               "",
               "`0` means the market never settled revenue, or settled while the vault",
-              "was empty. Both give a cap base of `0` for one period and then self-heal,",
+              "was empty. Both give a cap base of `0` for one period and then recover,",
               "because the settle that reads `0` still writes the new period's balance.",
               "",
-              "(The unstake-cancel share forfeiture is donation-proofed differently — by",
-              "withdraw-and-restake at the active share price — and does *not* read this",
-              "field.) Repurposed from trailing padding — layout and size are unchanged."
+              "The unstake-cancel share forfeiture does not read this field. It is",
+              "donation-proofed by withdraw-and-restake at the active share price. The",
+              "field was repurposed from trailing padding, so the layout and the size",
+              "are unchanged."
             ],
             "type": "u64"
           },
@@ -24681,9 +31077,9 @@ export type Velocity = {
           {
             "name": "defaultSpotAuctionDuration",
             "docs": [
-              "An actual slot-count setting, not a wall-clock duration. It currently has",
-              "no onchain reader (spot DLOB trading is disabled), so it intentionally",
-              "remains raw rather than using `StoredSlotDuration`."
+              "A slot count rather than a wall-clock duration. Spot DLOB trading is",
+              "disabled, so no onchain reader reads it. It therefore stays raw instead",
+              "of using `StoredSlotDuration`."
             ],
             "type": "u8"
           },
@@ -24769,12 +31165,10 @@ export type Velocity = {
           {
             "name": "promoFeeTier",
             "docs": [
-              "Promotional fee-tier floor applied to every account: the effective",
-              "perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the",
-              "configured tier count), so nobody is downgraded by it. 0 = no-op",
-              "(disabled), also what pre-upgrade accounts read from former padding.",
-              "Reset to 0 and every account is back on its volume tier at its next",
-              "fill; no per-user state."
+              "Promotional fee-tier floor applied to every account. The effective",
+              "perp fee tier is `max(volume tier, promo_fee_tier)`, clamped to the",
+              "tier count. Zero disables it, matching what a pre-upgrade account",
+              "reads from former padding, and needs no per-user reset to take effect."
             ],
             "type": "u8"
           },
@@ -24851,22 +31245,75 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
-            "name": "padding",
+            "name": "hotFlowAuthority",
             "docs": [
-              "168 = the former 244 byte padding minus the 12 staging bytes, the 32 bytes",
-              "used by `slot_duration_transition_slots`, and the 32-byte quote management",
-              "authority.",
-              "(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte",
-              "`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that",
-              "were previously *implicit* trailing padding on x86_64 (State contains a",
-              "u128, align 16 on the host but 8 on SBF; explicit padding keeps",
-              "`size_of::<State>()` 1744 on both targets, per the alignment invariant in",
-              "docs/alignment-and-native-offsets.md)."
+              "The retail-flow attestation key (swift's), not an admin signer. It",
+              "signs as `flow_authority` on a swift transaction, or a detached",
+              "`FlowAttestationV0` on a keeper fill, to unlock faster activation.",
+              "`Pubkey::default()` disables that, since the zero key signs neither."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "transactionFeeRails",
+            "docs": [
+              "What one transaction costs the account that sends it, as the network",
+              "prices it now. Every relay crank payment derives from this, so a fee",
+              "model change is one write here instead of a re-price of every market.",
+              "Holds `u32`s, 4-aligned at offset 1608 with no alignment slack ahead."
+            ],
+            "type": {
+              "defined": {
+                "name": "transactionFeeRails"
+              }
+            }
+          },
+          {
+            "name": "liquidationCrankReimbursementBps",
+            "docs": [
+              "Share of a liquidation's filled quote value that bounds what a crank",
+              "is reimbursed for its actual cost (base fee plus priority fee), in",
+              "basis points. This caps what a keeper that is also the validator",
+              "could recapture through its own priority fee. Zero disables reimbursement, leaving the flat payment."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "solSpotMarketIndex",
+            "docs": [
+              "Spot market whose oracle prices SOL, for the one place the protocol",
+              "pays lamports against a quote-denominated figure. Zero disables the",
+              "reimbursement as surely as a zero share does: market zero is the quote",
+              "market, which prices nothing useful here."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "padding0",
+            "docs": [
+              "Trailing filler after the fee-rails fields. Vestigial: the rails already",
+              "sit 4-aligned behind `hot_flow_authority`, so no slack is needed ahead",
+              "of them."
             ],
             "type": {
               "array": [
                 "u8",
-                168
+                2
+              ]
+            }
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Former padding, now sized so the quote-management key, the slot-duration",
+              "archive and the fee-rails fields all fit while `size_of::<State>()` stays",
+              "1744 on x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below",
+              "pin it."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                110
               ]
             }
           }
@@ -24944,6 +31391,282 @@ export type Velocity = {
       }
     },
     {
+      "name": "sweepCrankReservoirArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "lamports",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "syncLiqConditionsArgs",
+      "docs": [
+        "What the caller asks for. [`SyncLiqConditionsTerms`] holds the terms the",
+        "account ends up with, derived from these."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "syncCostUnits",
+            "docs": [
+              "Cost units the staged self-sync requests, measured by simulating it.",
+              "Priced against `State.transaction_fee_rails`. Zero leaves the watch and",
+              "the fallback poll inactive, so only a manual sync updates the block. A",
+              "turner has no signal to take unpaid work."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "syncFallbackSlots",
+            "docs": [
+              "Coarse fallback interval, in slots. Zero keeps the previous value."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "takerOriginCrossRecordV0",
+      "docs": [
+        "The first shape of the taker-origin resolution record, from when the crank",
+        "resolved a cross against exactly one book counterparty.",
+        "[`TakerOriginCrossRecordV1`] replaces it. The crank now routes the",
+        "remainder, so a single `maker` no longer describes the match. Nothing emits",
+        "this type. It stays so that a reader of historical logs still has it."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "taker",
+            "docs": [
+              "owner of the taker-origin order that took liquidity in this match. When",
+              "both sides were taker-origin, this is the later of the two to rest."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "docs": [
+              "the counterparty, filled at its own price"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "filler",
+            "docs": [
+              "the cranker's `User`, credited `crank_reward` in quote"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "baseAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "quoteAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "restPrice",
+            "docs": [
+              "the price the taker-origin order was resting at"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fillPrice",
+            "docs": [
+              "the counterparty's price — what the match settled at"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "improvement",
+            "docs": [
+              "gross quote the taker gained, |rest_price - fill_price| times base"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "crankReward",
+            "docs": [
+              "quote paid to the cranker out of that improvement"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "makerTakerOrigin",
+            "docs": [
+              "true when the counterparty was itself a migrated taker remainder that",
+              "won the price by resting first. The match was then two remainders",
+              "clearing against each other rather than one against an ordinary maker."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "remainderBaseAssetAmount",
+            "docs": [
+              "size the match was too small to consume, placed back on the book still",
+              "taker-origin. Zero when the cross consumed both orders, or when what",
+              "was left fell below the book's minimum and was dropped."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "remainderOrderId",
+            "docs": [
+              "the re-placed remainder's new CLOB order id. Zero when nothing was",
+              "re-placed. The client's old handle is stale, and this is its new one."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "remainderOwner",
+            "docs": [
+              "whose remainder was re-placed, `taker` or `maker` above. The default",
+              "pubkey when nothing was. Only a match between two remainders can leave",
+              "it on the maker, because an ordinary counterparty is consumed to",
+              "exactly the size the cross was priced for."
+            ],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "takerOriginCrossRecordV1",
+      "docs": [
+        "Emitted when `crank_taker_origin_cross` resolves a resting taker remainder.",
+        "It reports what the taker gained by being routed instead of left at its own",
+        "price, and what the cranker took out of that gain.",
+        "",
+        "The fill also emits the ordinary `OrderActionRecord`s for the match, one",
+        "per source the router reached. Those records name the counterparties. This",
+        "record carries three things they cannot. The price the order was resting",
+        "at, because an `OrderActionRecord` only knows the price it filled at. The",
+        "improvement between the two prices. The crank reward, which is charged to",
+        "the taker out of the improvement rather than taken from the taker fee, so",
+        "it never appears as that record's `filler_reward`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "taker",
+            "docs": [
+              "owner of the remainder this crank resolved. When two remainders",
+              "crossed, this is the later of the two to rest, the one that demanded",
+              "liquidity."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "filler",
+            "docs": [
+              "the cranker's `User`, credited `crank_reward` in quote"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "baseAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "quoteAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "restPrice",
+            "docs": [
+              "the price the remainder was resting at, and the bound the fill was held",
+              "to"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fillPrice",
+            "docs": [
+              "what the fill averaged across every source it reached"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "improvement",
+            "docs": [
+              "gross quote the taker gained, |rest_price - fill_price| times base"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "crankReward",
+            "docs": [
+              "quote paid to the cranker out of that improvement"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "remainderBaseAssetAmount",
+            "docs": [
+              "size still resting after the fill. Zero when the fill took the whole",
+              "remainder, or when what was left fell under the book's minimum and was",
+              "culled."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "clobOrderId",
+            "docs": [
+              "the CLOB order this resolved. It keeps its id and its queue position,",
+              "because the fill shrinks it in place rather than re-placing it. A",
+              "client's existing handle stays good."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "targetsDatum",
       "serialization": "bytemuck",
       "repr": {
@@ -24976,6 +31699,62 @@ export type Velocity = {
           {
             "name": "lastPositionSlot",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "transactionFeeRails",
+      "docs": [
+        "What the network charges to land one transaction: a fixed inclusion",
+        "charge plus a rate on requested cost units, which differ by an order of",
+        "magnitude between a book removal and a two-legged cross. Every crank",
+        "payment derives from these fields, since the network sets the rate."
+      ],
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "inclusionLamports",
+            "docs": [
+              "Charged once per transaction, whatever it contains."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "signatureLamports",
+            "docs": [
+              "Charged per signature the transaction carries."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "resourceFeeNumerator",
+            "docs": [
+              "Lamports per requested cost unit, as a fraction. Rounded up: a payment",
+              "short by a lamport is a crank nobody runs."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "resourceFeeDenominator",
+            "docs": [
+              "Zero prices cost units at nothing."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "maxPriorityMicroLamportsPerCu",
+            "docs": [
+              "Ceiling on the compute-unit price a crank's priority fee is",
+              "reimbursed against, in micro-lamports per compute unit. Left",
+              "unbounded, a caller that also builds the block could set an",
+              "arbitrary price and bill the reservoir for it. Zero is the safe default."
+            ],
+            "type": "u32"
           }
         ]
       }
@@ -25031,6 +31810,208 @@ export type Velocity = {
       }
     },
     {
+      "name": "triggerLimitOrderV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderId",
+            "docs": [
+              "The trigger-limit order to fire, by its `User.orders` id."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "triggerMarketOrderV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderId",
+            "docs": [
+              "The trigger-market order to fire, by its `User.orders` id."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "signedRoute",
+            "docs": [
+              "The taker's signed route, when the fill claims one. Empty claims the",
+              "market baseline."
+            ],
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "triggerSlotMetaV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "quoterSlab",
+            "docs": [
+              "The market's quoter slab, book and program. They are set when this",
+              "slot's executor is `trigger_limit_order_v1`, and zeroed for",
+              "`trigger_order`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "clobMarket",
+            "type": "pubkey"
+          },
+          {
+            "name": "clobProgram",
+            "type": "pubkey"
+          },
+          {
+            "name": "orderId",
+            "type": "u32"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateCrankTreasuryArgs",
+      "docs": [
+        "Both levels are counted in cranks and not in lamports, so one setting serves",
+        "every market. A market whose cranks cost more then holds a proportionally",
+        "larger balance.",
+        "",
+        "A refill reads the target, so a new target reaches every market at once. The",
+        "attach resolves the watermark to lamports and writes it onto the market,",
+        "because the market's wake condition carries that threshold. A new watermark",
+        "therefore reaches a market on that market's next attach.",
+        "",
+        "This instruction does not set what a refill pays. That payment is priced from",
+        "the network rails like every other crank. It is stored on the market whose",
+        "reservoir the refill fills, because the condition that advertises it lives",
+        "there."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "refillTargetCranks",
+            "docs": [
+              "Cranks' worth of lamports a refill fills a reservoir up to."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "refillWatermarkCranks",
+            "docs": [
+              "Cranks' worth of lamports at or under which a refill wakes."
+            ],
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateLiquidationCrankReimbursementArgs",
+      "docs": [
+        "What the protocol spends to get a liquidation cranked, and the market",
+        "whose oracle prices that spend. The share repays a keeper's priority",
+        "fee as a fraction of what the liquidation recovers, leaving alone a",
+        "recovery too small to cover its own gas. Zero in either field is valid."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "shareBps",
+            "docs": [
+              "The liquidator fee share paid back to a cranked liquidation's payer,",
+              "in basis points of the fee."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "solSpotMarketIndex",
+            "docs": [
+              "The SOL spot market the reimbursement is priced through."
+            ],
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updatePerpMarketClobQuoterArgs",
+      "docs": [
+        "Names the market's canonical CLOB quoter entry. Every router fill must",
+        "then carry it, so no route can exclude the book. A dead entry is still",
+        "passed but skipped at quote time, so deactivating the book never stops",
+        "fills. There is no clear instruction. Kill the entry instead."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "crankCostUnits",
+            "docs": [
+              "What each crank requests, measured by simulating it. The lamport",
+              "payments derive from these and `State.transaction_fee_rails`. A change",
+              "in what the network charges is therefore one write to the rails plus a",
+              "re-run of this instruction per market."
+            ],
+            "type": {
+              "defined": {
+                "name": "crankCostUnitsV0"
+              }
+            }
+          },
+          {
+            "name": "expireFallbackSlots",
+            "docs": [
+              "The cross fallback poll interval, in slots."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "minCrossSurplus",
+            "docs": [
+              "The least a cross must clear by before the resolver stages it."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "updatePerpMarketSummaryStatsParams",
       "type": {
         "kind": "struct",
@@ -25046,6 +32027,169 @@ export type Velocity = {
             "type": {
               "option": "bool"
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterAccountsArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "metas",
+            "docs": [
+              "The unified registered list. It replaces the stored list whole."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "quoterAccountMetaArg"
+                }
+              }
+            }
+          },
+          {
+            "name": "quoteIndexes",
+            "docs": [
+              "Indexes into `metas` forwarded to `quote_v0` / `quote_l3_v0`, in CPI",
+              "order."
+            ],
+            "type": "bytes"
+          },
+          {
+            "name": "executeIndexes",
+            "docs": [
+              "Indexes into `metas` forwarded to `execute_v0`, in CPI order."
+            ],
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterActiveArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterApprovedArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "approved",
+            "docs": [
+              "True copies the staged config into the slab. False pulls the copy."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterConfigArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "responseAccount",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "quoteV0Discriminator",
+            "type": {
+              "option": {
+                "array": [
+                  "u8",
+                  8
+                ]
+              }
+            }
+          },
+          {
+            "name": "quoteL3V0Discriminator",
+            "docs": [
+              "Set to all-zero to withdraw the leg."
+            ],
+            "type": {
+              "option": {
+                "array": [
+                  "u8",
+                  8
+                ]
+              }
+            }
+          },
+          {
+            "name": "executeV0Discriminator",
+            "type": {
+              "option": {
+                "array": [
+                  "u8",
+                  8
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterMaxOracleDeviationArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maxOracleDeviationBps",
+            "docs": [
+              "In `MARGIN_PRECISION` units, so one unit is one basis point. Zero clears",
+              "the declaration, and the market's own band stands."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterPriorityArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "priority",
+            "docs": [
+              "Routing tier at a shared price. A lower value fills first."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterWatchArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "watchOffset",
+            "type": "u32"
+          },
+          {
+            "name": "watchLen",
+            "docs": [
+              "Zero clears the declaration. Discovery then polls."
+            ],
+            "type": "u32"
           }
         ]
       }
@@ -25264,15 +32408,13 @@ export type Velocity = {
           {
             "name": "openAuctions",
             "docs": [
-              "number of open orders with auction"
+              "Always zero. These counted orders that ran an auction. Nothing",
+              "auctions now, and `User` is a fixed layout, so the two stay."
             ],
             "type": "u8"
           },
           {
             "name": "hasOpenAuction",
-            "docs": [
-              "Whether or not user has open order with auction"
-            ],
             "type": "bool"
           },
           {
@@ -25317,6 +32459,117 @@ export type Velocity = {
               "precision: QUOTE_PRECISION"
             ],
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "userConditionsV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "relay",
+            "docs": [
+              "Everything relay needs, in one field. It holds the `relay-spec`",
+              "header, the condition slots, and the shared sync account list. See",
+              "[`LIQ_SYNC_ACCOUNTS_MAX`]. This is the first field, so its watch offset",
+              "is 8."
+            ],
+            "type": {
+              "defined": {
+                "name": "relayBlock11x48"
+              }
+            }
+          },
+          {
+            "name": "triggerSlots",
+            "docs": [
+              "Parallel to the trigger condition slots."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "triggerSlotMetaV0"
+                  }
+                },
+                8
+              ]
+            }
+          },
+          {
+            "name": "triggerResolvers",
+            "docs": [
+              "Per-slot trigger resolver lists. See [`TRIGGER_RESOLVERS_LEN`]."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1344
+              ]
+            }
+          },
+          {
+            "name": "user",
+            "docs": [
+              "The `User` these conditions watch."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "syncPaymentLamports",
+            "docs": [
+              "Fee the sync executor pays its keeper out of the protocol crank treasury. Stated by",
+              "whoever opts in and capped at [`LIQ_SYNC_MAX_COST_UNITS`], because opting in is",
+              "permissionless and the payer is protocol funds. A block below",
+              "[`LIQ_SYNC_MIN_FALLBACK_SLOTS`] pays nothing."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "syncFallbackSlots",
+            "docs": [
+              "The fallback poll interval."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "positionsDigest",
+            "docs": [
+              "Digest of the exposures the last sync ran against, compared to the user's current",
+              "positions to decide staleness. Comparing watched markets never converges for a user",
+              "whose exposures arm no condition, and the level-triggered wake then fires forever."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "lastPaidSyncSlot",
+            "docs": [
+              "Slot the treasury last paid a keeper for resyncing this account. A resync is paid",
+              "at most once per [`Self::sync_fallback_slots`]. Opting in is permissionless and the",
+              "instruction succeeds whether or not it had work, so without this slot anyone could",
+              "crank the same account in a loop and draw the fee every time."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Tail reserve, sized for two more pubkeys. A future sync input is",
+              "captured here instead of forcing an `extend_account` migration on every",
+              "opted-in user."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
           }
         ]
       }
@@ -25516,10 +32769,10 @@ export type Velocity = {
           {
             "name": "acceleratedReferralStatus",
             "docs": [
-              "Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept",
-              "separate from `referrer_status`, which describes whether this authority",
-              "refers or was referred by somebody else. Carved out of former padding so",
-              "preupgrade accounts read `0` (standard, automatic enrollment allowed)."
+              "Persistent referral reward status. See [`AcceleratedReferralStatus`].",
+              "Separate from `referrer_status`, which says whether this authority",
+              "refers or was referred by somebody else. The field comes from former",
+              "padding, so pre-upgrade accounts read `0`, standard status with automatic enrollment allowed."
             ],
             "type": "u8"
           },
@@ -25564,6 +32817,34 @@ export type Velocity = {
           {
             "name": "tooVolatileRatio",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "withdrawCrankTreasuryArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lamports",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "withdrawProtocolUserDepositArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
           }
         ]
       }

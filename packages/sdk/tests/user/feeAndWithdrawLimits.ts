@@ -16,7 +16,7 @@ import {
 	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from '../../src';
 import { assert } from '../../src/assert/assert';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import {
 	mockUserAccount as baseMockUserAccount,
 	makeMockUser,

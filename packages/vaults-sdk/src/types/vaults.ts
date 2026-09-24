@@ -1225,6 +1225,17 @@ export type Vaults = {
 					name: 'velocityUser';
 					writable: true;
 				},
+
+				{
+					name: 'velocityUserConditions';
+					docs: [
+						"from `velocity_user`. A vault's velocity user holds positions like any",
+						'other, so it carries the same relay liquidation coverage.',
+					];
+
+					writable: true;
+				},
+
 				{
 					name: 'velocityState';
 					writable: true;
@@ -1429,6 +1440,17 @@ export type Vaults = {
 					name: 'velocityUser';
 					writable: true;
 				},
+
+				{
+					name: 'velocityUserConditions';
+					docs: [
+						"from `velocity_user`. A vault's velocity user holds positions like any",
+						'other, so it carries the same relay liquidation coverage.',
+					];
+
+					writable: true;
+				},
+
 				{
 					name: 'velocityState';
 					writable: true;
@@ -4220,10 +4242,32 @@ export type Vaults = {
 						];
 						type: 'u8';
 					},
+
+					{
+						name: 'routeDigest';
+						docs: [
+							"The route this order's signer chose, as",
+							'[`crate::state::order_params::route_digest`] of the `QuoterV0` entries',
+							'their signed message named. Zero when no route was signed, which is',
+							'every directly-placed order.',
+							'',
+							'A digest rather than the list because an `Order` has no room for',
+							'pubkeys, and stored bytes here cost 32 slots each. The filler supplies',
+							'the list and this pins which list it may supply — the check that the',
+							'fill actually *carried* those entries is then a containment test',
+							'against the transaction. Bytes, not a `u32`, to stay alignment-free in',
+							'the middle of a byte run.',
+						];
+
+						type: {
+							array: ['u8', 4];
+						};
+					},
+
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 5];
+							array: ['u8', 1];
 						};
 					},
 				];

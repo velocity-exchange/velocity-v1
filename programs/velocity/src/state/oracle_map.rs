@@ -22,7 +22,11 @@ use {
         prelude::{AccountInfo, Pubkey},
         Discriminator, Key,
     },
-    std::{collections::BTreeMap, iter::Peekable, slice::Iter},
+    std::{
+        collections::{BTreeMap, BTreeSet},
+        iter::Peekable,
+        slice::Iter,
+    },
 };
 
 pub(crate) type OracleIdentifier = (Pubkey, OracleSource);
@@ -51,9 +55,14 @@ pub struct OracleMap<'a> {
     oracles: BTreeMap<Pubkey, AccountInfo<'a>>,
     price_data: BTreeMap<OracleIdentifier, OraclePriceData>,
     validity: BTreeMap<OracleValidityKey, OracleValidity>,
+    /// Which (oracle, market) pairs already wrote their validity diagnostics.
+    /// The cache keys on the market's TWAP, which moves every fill, so a
+    /// multi-maker fill recomputes it once per maker, cheaply. A formatted
+    /// `msg!` never reclaims heap, so only the first of ~30 repeats logs.
+    logged_validity: BTreeSet<(Pubkey, u8, u16)>,
     pub slot: u64,
-    /// Full transition archive (from `State::slot_clock()`): scales the
-    /// 400ms baseline staleness thresholds and measures oracle ages and
+    /// The full transition archive, from `State::slot_clock()`. It scales the
+    /// 400ms baseline staleness thresholds. It also measures oracle ages and
     /// cooldowns exactly across IBRL transitions.
     pub slot_clock: SlotClock,
     pub oracle_guard_rails: OracleGuardRails,
@@ -61,6 +70,25 @@ pub struct OracleMap<'a> {
 }
 
 impl<'a> OracleMap<'a> {
+    /// `log_mode` the first time this (oracle, market) writes diagnostics, and
+    /// [`LogMode::None`] after. See [`Self::logged_validity`].
+    fn log_mode_once(
+        &mut self,
+        oracle_id: &OracleIdentifier,
+        market_type: u8,
+        market_index: u16,
+        log_mode: LogMode,
+    ) -> LogMode {
+        if self
+            .logged_validity
+            .insert((oracle_id.0, market_type, market_index))
+        {
+            log_mode
+        } else {
+            LogMode::None
+        }
+    }
+
     pub fn contains(&self, pubkey: &Pubkey) -> bool {
         self.oracles.contains_key(pubkey) || pubkey == &Pubkey::default()
     }
@@ -134,10 +162,17 @@ impl<'a> OracleMap<'a> {
         );
 
         if self.price_data.contains_key(oracle_id) {
+            let cached = self.validity.get(&validity_key).copied();
+            // Resolved before the price data is borrowed, because the record
+            // of the first write needs `&mut self`.
+            let log_mode = match cached {
+                Some(_) => log_mode,
+                None => self.log_mode_once(oracle_id, market_type as u8, market_index, log_mode),
+            };
             let oracle_price_data = self.price_data.get(oracle_id).safe_unwrap()?;
 
-            let oracle_validity = if let Some(oracle_validity) = self.validity.get(&validity_key) {
-                *oracle_validity
+            let oracle_validity = if let Some(oracle_validity) = cached {
+                oracle_validity
             } else {
                 let oracle_validity = oracle_validity(
                     market_type,
@@ -284,6 +319,7 @@ impl<'a> OracleMap<'a> {
             oracles,
             price_data: BTreeMap::new(),
             validity: BTreeMap::new(),
+            logged_validity: BTreeSet::new(),
             slot,
             slot_clock,
             oracle_guard_rails: ogr,
@@ -350,6 +386,7 @@ impl<'a> OracleMap<'a> {
             oracles,
             price_data: BTreeMap::new(),
             validity: BTreeMap::new(),
+            logged_validity: BTreeSet::new(),
             slot,
             slot_clock,
             oracle_guard_rails: ogr,
@@ -385,6 +422,7 @@ impl<'a> OracleMap<'a> {
         OracleMap {
             oracles: BTreeMap::new(),
             validity: BTreeMap::new(),
+            logged_validity: BTreeSet::new(),
             price_data: BTreeMap::new(),
             slot: 0,
             slot_clock: SlotClock::baseline(),

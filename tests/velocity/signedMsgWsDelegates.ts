@@ -161,12 +161,13 @@ describe('place and make signedMsg order', () => {
 			newPubkey2
 		);
 
-		let delegateAccountInfo = await svmContextWrapper.connection.getAccountInfo(
-			getSignedMsgWsDelegatesAccountPublicKey(
-				makerVelocityClient.program.programId,
-				makerVelocityClient.wallet.publicKey
-			)
-		);
+		let delegateAccountInfo =
+			await svmContextWrapper.connection.getAccountInfo(
+				getSignedMsgWsDelegatesAccountPublicKey(
+					makerVelocityClient.program.programId,
+					makerVelocityClient.wallet.publicKey
+				)
+			);
 
 		const pubkeysBefore = deserializePublicKeys(
 			delegateAccountInfo.data.slice(8)

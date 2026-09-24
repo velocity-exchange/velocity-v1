@@ -55,7 +55,7 @@ options
   --no-color       plain output (also honours NO_COLOR)
   -h, --help       this text
 
-programs: velocity, jit_proxy (token_faucet: devnet only)
+programs: velocity (token_faucet: devnet only)
 USAGE
 }
 
@@ -93,16 +93,15 @@ NPM_WF="npm-publish.yml"
 DOCKER_WF="velocity-publish.yml"
 # npm-publish.yml's `if:` skips these packages' tags (not public yet).
 NPM_CI_SKIPPED=" vaults-sdk cli-admin "
-PROGRAMS="velocity jit_proxy token_faucet"
-MAINNET_PROGRAMS="velocity jit_proxy"
+PROGRAMS="velocity token_faucet"
+MAINNET_PROGRAMS="velocity"
 
-program_path()  { case "$1" in velocity) echo programs/velocity ;; jit_proxy) echo programs/jit-proxy ;; token_faucet) echo programs/token_faucet ;; esac; }
-program_crate() { case "$1" in velocity) echo velocity ;; jit_proxy) echo jit-proxy ;; token_faucet) echo token_faucet ;; esac; }
-program_idl()   { case "$1" in velocity) echo program:idl ;; jit_proxy) echo program:idl:jit-proxy ;; *) echo "" ;; esac; }
+program_path()  { case "$1" in velocity) echo programs/velocity ;; token_faucet) echo programs/token_faucet ;; esac; }
+program_crate() { case "$1" in velocity) echo velocity ;; token_faucet) echo token_faucet ;; esac; }
+program_idl()   { case "$1" in velocity) echo program:idl ;; *) echo "" ;; esac; }
 program_idl_files() {
 	case "$1" in
 		velocity) echo "packages/sdk/src/idl/velocity.json packages/sdk/src/idl/velocity.ts" ;;
-		jit_proxy) echo "packages/jit-proxy/src/idl/jit_proxy.json packages/jit-proxy/src/types/jit_proxy.ts" ;;
 	esac
 }
 check_program() { # $1 = name, $2 = allowed list
@@ -201,7 +200,7 @@ docker_apps() {
 	jq -r 'to_entries[] | select(.key | startswith("_") | not) | [.key, .value.lang, .value.path] | @tsv' docker-info.json
 }
 docker_watch_paths() { # $1 = lang, $2 = path
-	if [ "$1" = ts ]; then echo "$2 packages/sdk packages/jit-proxy docker/ts-app.Dockerfile"
+	if [ "$1" = ts ]; then echo "$2 packages/sdk docker/ts-app.Dockerfile"
 	else echo "$2 rust/velocity-rs packages/sdk/src/idl docker/rust-app.Dockerfile"; fi
 }
 

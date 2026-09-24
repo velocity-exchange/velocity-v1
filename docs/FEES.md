@@ -389,7 +389,7 @@ flowchart LR
 | IF bootstrap | `controller/insurance.rs` (`settle_revenue_to_insurance_fund`, `add_insurance_fund_stake`) |
 | Withdrawal | `instructions/protocol_fees/`; `State.protocol_fee_recipient_perp`/`_spot` + `hot_fee_withdraw`; `HotRole::FeeWithdraw` |
 | Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target`, `update_perp_market_bankruptcy_if_floor_pct`, `update_user_accelerated_referral_status` |
-| Event | `ProtocolFeeWithdrawRecord`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
+| Event | `ProtocolFeeWithdrawRecord`, `AcceleratedReferralStatusChangedRecordV0`; `protocol_fee` on liquidation records |
 
 ---
 

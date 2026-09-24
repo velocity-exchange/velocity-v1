@@ -2544,6 +2544,7 @@ pub mod update_trigger_order_params {
         math::time::SlotClock,
         state::{
             oracle::OraclePriceData,
+            perp_market::ContractTier,
             user::{Order, OrderTriggerCondition, OrderType},
         },
         PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
@@ -2562,14 +2563,20 @@ pub mod update_trigger_order_params {
             ..OraclePriceData::default()
         };
         let slot = 10;
-        update_trigger_order_params(&mut order, &oracle_price_data, slot, SlotClock::baseline())
-            .unwrap();
+        update_trigger_order_params(
+            &mut order,
+            &oracle_price_data,
+            ContractTier::B,
+            slot,
+            SlotClock::baseline(),
+        )
+        .unwrap();
         assert_eq!(order.slot, slot);
         assert_eq!(
             order.trigger_condition,
             OrderTriggerCondition::TriggeredAbove
         );
-        assert_eq!(order.oracle_price_offset, 500000);
+        assert_eq!(order.oracle_price_offset, 5_000_000);
         let mut order = Order {
             order_type: OrderType::TriggerMarket,
             direction: PositionDirection::Short,
@@ -2577,14 +2584,20 @@ pub mod update_trigger_order_params {
             ..Order::default()
         };
 
-        update_trigger_order_params(&mut order, &oracle_price_data, slot, SlotClock::baseline())
-            .unwrap();
+        update_trigger_order_params(
+            &mut order,
+            &oracle_price_data,
+            ContractTier::B,
+            slot,
+            SlotClock::baseline(),
+        )
+        .unwrap();
         assert_eq!(order.slot, slot);
         assert_eq!(
             order.trigger_condition,
             OrderTriggerCondition::TriggeredBelow
         );
-        assert_eq!(order.oracle_price_offset, -500000);
+        assert_eq!(order.oracle_price_offset, -5_000_000);
         let mut order = Order {
             order_type: OrderType::TriggerMarket,
             direction: PositionDirection::Short,
@@ -2594,6 +2607,7 @@ pub mod update_trigger_order_params {
         let err = update_trigger_order_params(
             &mut order,
             &oracle_price_data,
+            ContractTier::B,
             slot,
             SlotClock::baseline(),
         );
@@ -2608,6 +2622,7 @@ pub mod update_trigger_order_params {
         let err = update_trigger_order_params(
             &mut order,
             &oracle_price_data,
+            ContractTier::B,
             slot,
             SlotClock::baseline(),
         );

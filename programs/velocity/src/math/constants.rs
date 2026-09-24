@@ -303,8 +303,8 @@ pub const FUNDING_RATE_CLAMP_DENOMINATOR: i64 = 2000; // 2000 => 0.05%
 /// A market order that names no expiry lives this long.
 pub const DEFAULT_MARKET_ORDER_LIFETIME_SECONDS: i64 = 30;
 
-/// A market order that names no price fills at most `oracle / this` away
-/// from the oracle. 200 is 0.5 percent.
+/// A close built by `OrderParams::get_close_perp_params` crosses the oracle
+/// TWAP by `twap / this`. 200 is 0.5 percent.
 pub const DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION: i64 = 200;
 
 // WITHDRAWS

@@ -2,11 +2,10 @@
 //!
 //! A trigger order rests dormant until the market reaches its trigger price.
 //! Firing it turns it into a live market order and pays the keeper the flat
-//! reward. [`trigger_order`] leaves the fired order resting in `user.orders`.
-//! [`trigger_and_route_order`] hands it back detached for the caller to fill
-//! straight against the book.
+//! reward. [`trigger_and_route_order`] hands the fired order back detached
+//! for the caller to fill straight against the book.
 
-use super::*;
+use {super::*, crate::state::perp_market::ContractTier};
 
 /// The accounts one trigger crank runs against.
 ///
@@ -61,10 +60,14 @@ pub fn trigger_and_route_order(
     // Freeing the slot then never reserves exposure the detached fill does
     // not rest.
     let mut fired = user.orders[order_index];
-    {
-        let _perp_market = maps.perp_market_map.get_ref(&market_index)?;
-        update_trigger_order_params(&mut fired, &oracle_price_data, slot, state.slot_clock())?;
-    }
+    let contract_tier = maps.perp_market_map.get_ref(&market_index)?.contract_tier;
+    update_trigger_order_params(
+        &mut fired,
+        &oracle_price_data,
+        contract_tier,
+        slot,
+        state.slot_clock(),
+    )?;
 
     // A risk-increasing trigger on a failing account cancels instead of
     // firing. The gate runs before any reward.
@@ -498,9 +501,11 @@ fn free_fired_order_slot(user: &mut User, order_index: usize) -> VelocityResult 
     Ok(())
 }
 
+/// Turn a dormant trigger order into the live market order it fires as.
 pub(super) fn update_trigger_order_params(
     order: &mut Order,
     oracle_price_data: &OraclePriceData,
+    contract_tier: ContractTier,
     slot: u64,
     slot_clock: SlotClock,
 ) -> VelocityResult {
@@ -523,7 +528,12 @@ pub(super) fn update_trigger_order_params(
 
     // The worst price is stamped now rather than when the order was armed.
     // The oracle it is measured against moved while the order waited.
-    let worst_price = derive_worst_price(oracle_price_data, order.direction, order.price)?;
+    let worst_price = derive_worst_price(
+        oracle_price_data,
+        contract_tier,
+        order.direction,
+        order.price,
+    )?;
 
     if matches!(order.order_type, OrderType::TriggerMarket) {
         // A fired trigger-market is a market order priced off the oracle it

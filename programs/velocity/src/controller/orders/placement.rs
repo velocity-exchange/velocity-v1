@@ -176,7 +176,8 @@ pub fn build_perp_order(
 
     let market = &maps.perp_market_map.get_ref(&market_index)?;
     let oracle_price_data = maps.oracle_map.get_price_data(&market.oracle_id())?;
-    let Some(terms) = resolve_order_terms(oracle_price_data, &params, now)? else {
+    let Some(terms) = resolve_order_terms(oracle_price_data, market.contract_tier, &params, now)?
+    else {
         // The order id is not consumed yet, so the next placement reuses it.
         return skip_placement(rev_share_order);
     };
@@ -336,11 +337,17 @@ struct OrderTerms {
 /// caller skips the placement.
 fn resolve_order_terms(
     oracle_price_data: &OraclePriceData,
+    contract_tier: crate::state::perp_market::ContractTier,
     params: &OrderParams,
     now: i64,
 ) -> VelocityResult<Option<OrderTerms>> {
     let worst_price = match params.order_type {
-        OrderType::Market => derive_worst_price(oracle_price_data, params.direction, params.price)?,
+        OrderType::Market => derive_worst_price(
+            oracle_price_data,
+            contract_tier,
+            params.direction,
+            params.price,
+        )?,
         _ => params.price,
     };
 

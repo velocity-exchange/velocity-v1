@@ -40,9 +40,10 @@
 
 use {
     crate::{
-        completed_orders_fit, len_prefix, partial_orders_fit, CancelledRemainderV0,
-        CompletedOrderV0, L3RowV0, PartiallyFilledOrderV0, PriceLevelV0, SpecError,
-        UserBalanceChangeV0, LEN_BYTES,
+        len_prefix,
+        response::{completed_orders_fit, partial_orders_fit},
+        CancelledRemainderV0, CompletedOrderV0, L3RowV0, PartiallyFilledOrderV0, PriceLevelV0,
+        SpecError, UserBalanceChangeV0, LEN_BYTES,
     },
     bytemuck::Pod,
     core::mem::size_of,

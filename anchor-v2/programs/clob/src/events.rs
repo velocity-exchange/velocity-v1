@@ -182,3 +182,27 @@ pub struct FillEntryV0 {
 /// [`FillRecordV0`].
 pub const FILL_ENTRY_BYTES: usize =
     3 * core::mem::size_of::<u64>() + core::mem::size_of::<Address>() + core::mem::size_of::<u32>();
+
+// Market administration records. Each names the market account, because one
+// authority may administer several books.
+
+/// `propose_market_authority_v0` named a successor. A zero `proposed_authority`
+/// withdraws the open proposal.
+#[event(bytemuck)]
+#[repr(C)]
+pub struct MarketAuthorityProposedRecordV0 {
+    pub market: Address,
+    pub authority: Address,
+    pub proposed_authority: Address,
+    pub ts: i64,
+}
+
+/// `accept_market_authority_v0` installed the proposed authority.
+#[event(bytemuck)]
+#[repr(C)]
+pub struct MarketAuthorityAcceptedRecordV0 {
+    pub market: Address,
+    pub previous_authority: Address,
+    pub authority: Address,
+    pub ts: i64,
+}

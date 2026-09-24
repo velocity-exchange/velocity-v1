@@ -1,3 +1,6 @@
+/// Declared by `clob-wire`, because velocity sends it by CPI when velocity is
+/// the market's authority.
+pub use clob_wire::ResizeMarketArgsV0;
 use {
     crate::{book::ClobBook, error::ClobError, state::ClobMarketV0},
     anchor_lang::prelude::*,
@@ -12,12 +15,6 @@ pub struct ResizeMarketV0 {
     #[account(address = market.authority @ ClobError::InvalidAuthority)]
     pub authority: Signer,
     pub system_program: Program<System>,
-}
-
-#[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
-pub struct ResizeMarketArgsV0 {
-    pub new_capacity: u32,
 }
 
 /// Grow the order arena. Realloc is capped at 10KB per instruction, which is

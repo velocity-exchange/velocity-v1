@@ -14,7 +14,8 @@ use {
             LogBuf, EXECUTE_RECORD_LOG_BYTES, FILL_RECORD_LOG_BYTES,
         },
         events::{
-            ExecuteRecordV0, FillEntryV0, FillRecordV0, FillSlimV0, OrderCancelRecordV0,
+            ExecuteRecordV0, FillEntryV0, FillRecordV0, FillSlimV0, MarketAuthorityAcceptedRecordV0,
+            MarketAuthorityProposedRecordV0, OrderCancelRecordV0,
             OrderEvictRecordV0, OrderExpireRecordV0, OrderPlaceRecordV0, OrdersCancelRecordV0,
         },
         state::{
@@ -76,6 +77,23 @@ fn the_lifecycle_records_emit_the_bytes_the_event_impl_would() {
         market_index: 23,
         sub_account_id: 25,
         client_order_id: 27,
+    });
+}
+
+#[test]
+fn the_authority_records_emit_the_bytes_the_event_impl_would() {
+    let key = |seed: u8| Address::new_from_array([seed; 32]);
+    assert_pod_matches_event!(MarketAuthorityProposedRecordV0 {
+        market: key(1),
+        authority: key(2),
+        proposed_authority: key(3),
+        ts: -7,
+    });
+    assert_pod_matches_event!(MarketAuthorityAcceptedRecordV0 {
+        market: key(1),
+        previous_authority: key(2),
+        authority: key(3),
+        ts: -7,
     });
 }
 

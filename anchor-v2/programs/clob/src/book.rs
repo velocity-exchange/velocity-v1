@@ -583,24 +583,6 @@ impl ClobBook for ClobMarketV0 {
             ClobError::InvalidConfig
         );
 
-        validate_evict_threshold(config.evict_threshold_per_side, cap)?;
-        require!(
-            config.default_activation_delay_slots <= config.max_activation_delay_slots,
-            ClobError::InvalidConfig
-        );
-        require!(
-            config.max_quote_levels != 0 && config.max_quote_levels <= QUOTE_LEVELS_CEILING,
-            ClobError::InvalidConfig
-        );
-        require!(
-            config.max_execute_fills != 0 && config.max_execute_fills <= EXECUTE_FILLS_CEILING,
-            ClobError::InvalidConfig
-        );
-        require!(
-            config.max_execute_users != 0 && config.max_execute_users <= EXECUTE_USERS_CEILING,
-            ClobError::InvalidConfig
-        );
-
         let ClobHeaderV0 {
             authority,
             place_authority,
@@ -628,6 +610,7 @@ impl ClobBook for ClobMarketV0 {
             max_execute_users,
             next_expiry_ts,
             next_activation_slot,
+            pending_authority,
             padding,
             padding1,
             taker_origin_head,
@@ -640,6 +623,7 @@ impl ClobBook for ClobMarketV0 {
 
         *authority = new_authority;
         *place_authority = new_place_authority;
+        *pending_authority = ZERO_ADDRESS;
         *order_tick_size = config.order_tick_size;
         *order_step_size = config.order_step_size;
         *min_order_size = config.min_order_size;
@@ -690,6 +674,7 @@ impl ClobBook for ClobMarketV0 {
             Ok(())
         })?;
 
+        crate::config::validate_market_config(self)?;
         self.validate_book()
     }
 
@@ -731,11 +716,11 @@ impl ClobBook for ClobMarketV0 {
             ClobError::OrderTooSmall
         );
         require!(
-            price % self.order_tick_size.max(1) == 0,
+            price % self.order_tick_size == 0,
             ClobError::PriceNotTickAligned
         );
         require!(
-            base_asset_amount % self.order_step_size.max(1) == 0,
+            base_asset_amount % self.order_step_size == 0,
             ClobError::SizeNotStepAligned
         );
 

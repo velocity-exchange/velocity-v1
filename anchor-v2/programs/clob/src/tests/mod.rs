@@ -9,6 +9,7 @@
 //! anchor's `Event::data()` would.
 
 mod book;
+mod config;
 mod emit;
 mod market;
 mod parity;

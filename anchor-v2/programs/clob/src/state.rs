@@ -174,15 +174,10 @@ pub const EXECUTE_FILLS_CEILING: u16 = 113;
 /// unwind. [`CancelAllOutcome::exhaustive`] reports whether the call finished.
 pub const CANCEL_ALL_ORDERS_CEILING: u16 = 128;
 
-/// Ceiling on `max_execute_users`. It is how many balance changes fit the
-/// region once the other three sections have taken their worst case. Every
-/// completed order belongs to a fill, so `EXECUTE_FILLS_CEILING` bounds the
-/// completed section rather than any count of users.
-pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES
-    - 2 * RESPONSE_LEN_BYTES
-    - CANCELLED_BYTES
-    - EXECUTE_FILLS_CEILING as usize * COMPLETED_BYTES)
-    / CHANGE_BYTES) as u16;
+/// Ceiling on `max_execute_users`. A balance change names a user the caller
+/// loaded, and a caller loads at most `USER_SET_CAPACITY` users. An empty set
+/// restricts nothing, but the caller cannot settle a maker it did not load.
+pub const EXECUTE_USERS_CEILING: u16 = USER_SET_CAPACITY as u16;
 
 // The widest response either instruction can produce at the ceilings fits the
 // region. `ResponseTooLarge` is therefore unreachable for a market whose
@@ -364,11 +359,15 @@ pub struct ClobHeaderV0 {
     /// The book maintains them as it places and removes orders, so no caller
     /// passes a second account. `set_crank_conditions_v0` names the resolvers.
     pub crank: RelayBlockV0<CRANK_CONDITIONS, CRANK_RESOLVER_CAPACITY>,
+    /// The authority `propose_market_authority_v0` named, which
+    /// `accept_market_authority_v0` installs once it signs. Zero when no
+    /// rotation is open.
+    pub pending_authority: Address,
     /// Reserved bytes. A later field, such as a fee destination or a
     /// paused-operations bitmap, can claim them without moving `response`,
     /// changing the account size, or migrating every live market. The bytes
     /// must stay zero until a field claims them.
-    pub padding: [u8; 104],
+    pub padding: [u8; 72],
     /// Oldest taker-origin order on each side, indexed by [`Side`] (bid 0, ask
     /// 1). [`NIL`] when the side holds none. The list is in rest order. A
     /// taker-origin order is a migrated taker remainder that claims depth on

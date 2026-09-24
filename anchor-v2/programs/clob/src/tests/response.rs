@@ -730,14 +730,13 @@ fn a_user_set_past_the_capacity_is_refused() {
 }
 
 /// A market configured at the ceilings has to be able to emit the widest
-/// response the walk can produce. A maker only enters the response by being
-/// filled, and a full fill also writes a completed order — so the widest
-/// response is one change per fill plus one completed order each, and both
-/// counts are bounded by `max_execute_fills` rather than by
-/// `max_execute_users`.
+/// response the walk can produce: a completed order for every fill, and a
+/// balance change for every user the ceiling admits. Each maker rests several
+/// orders, so both ceilings bind in one walk.
 #[test]
 fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let fills = EXECUTE_FILLS_CEILING as usize;
+    let users = EXECUTE_USERS_CEILING as usize;
     let config = crate::state::MarketConfigV0 {
         max_execute_fills: EXECUTE_FILLS_CEILING,
         max_execute_users: EXECUTE_USERS_CEILING,
@@ -746,14 +745,19 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let market = TestMarket::new_with(2 * fills as u32, config);
     let mut book = market.book();
 
-    // One order per maker, each a full-width record: distinct user, its own
-    // price level, fully consumed.
+    // Order `i` belongs to maker `i % users` and sits on its own price level.
     // Seeds from 1: a zeroed authority is not a placeable user.
-    let makers: Vec<UserRefV0> = (0..fills).map(|i| user(i as u8 + 1)).collect();
-    let orders: Vec<_> = makers
-        .iter()
-        .enumerate()
-        .map(|(i, maker)| place(&mut book, Side::Ask, 100 + i as u64, UNIT, *maker))
+    let makers: Vec<UserRefV0> = (0..users).map(|i| user(i as u8 + 1)).collect();
+    let orders: Vec<_> = (0..fills)
+        .map(|i| {
+            place(
+                &mut book,
+                Side::Ask,
+                100 + i as u64,
+                UNIT,
+                makers[i % users],
+            )
+        })
         .collect();
 
     let outcome = book
@@ -772,21 +776,23 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let changes: Vec<_> = makers
         .iter()
         .enumerate()
-        .map(|(i, maker)| change(*maker, UNIT, 100 + i as u64))
+        .map(|(j, maker)| {
+            let prices = (j..fills).step_by(users).map(|i| 100 + i as u64);
+            let count = prices.clone().count() as u64;
+            change(*maker, count * UNIT, prices.sum())
+        })
         .collect();
     let completed: Vec<_> = orders
         .iter()
         .enumerate()
-        .map(|(i, order)| done(i as u16, order.order_id))
+        .map(|(i, order)| done((i % users) as u16, order.order_id))
         .collect();
     let expected = encode_execute(&changes, &[], &completed, &[]);
     assert_eq!(streamed(&book, outcome.response), expected);
     assert_eq!(outcome.fills.len(), fills);
     assert_eq!(book.node_count(Side::Ask), 0);
 
-    // The widest response the encoder can produce, and it fits with room to
-    // spare — `ResponseTooLarge` is unreachable at the configured ceilings.
-    let widest = 4 * RESPONSE_LEN_BYTES + fills * (CHANGE_BYTES + COMPLETED_BYTES);
+    let widest = 4 * RESPONSE_LEN_BYTES + users * CHANGE_BYTES + fills * COMPLETED_BYTES;
     assert_eq!(outcome.response.len as usize, widest);
     assert!(
         widest <= RESPONSE_BUFFER_BYTES,

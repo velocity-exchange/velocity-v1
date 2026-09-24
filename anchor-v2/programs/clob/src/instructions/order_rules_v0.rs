@@ -31,5 +31,6 @@ pub fn handle_order_rules_v0(ctx: &mut Context<MarketViewV0>) -> Result<OrderRul
         side_order_counts: [market.bid_count, market.ask_count],
         arena_capacity: market.capacity() as u32,
         evict_threshold_per_side: market.evict_threshold_per_side,
+        authority: market.authority.to_bytes(),
     })
 }

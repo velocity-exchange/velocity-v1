@@ -16,13 +16,14 @@ use {
             CancelSidesV0, ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
             OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0, BASE_PRECISION,
             CANCEL_ALL_ORDERS_CEILING, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY,
-            CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
-            REMOVED_ORDER_BYTES, RESERVATION_GRACE_SLOTS_CEILING,
+            CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING,
+            EXECUTE_USERS_CEILING, ORDERS_OFFSET, REMOVED_ORDER_BYTES,
+            RESERVATION_GRACE_SLOTS_CEILING, ZERO_ADDRESS,
         },
         CancelAllArgsV0, CancelOrderArgsV0, ClobRemovalKindV0, CrankAccountV0,
         CrankConditionsArgsV0, CrankResolverV0, EvictWorstArgsV0, ExecuteArgsV0, NextRemovalArgsV0,
-        OrderViewV0, OrdersArgsV0, PlaceOrderArgsV0, QuoteArgsV0, RemoveExpiredArgsV0,
-        ResizeMarketArgsV0, UpdateMarketArgsV0,
+        OrderViewV0, OrdersArgsV0, PlaceOrderArgsV0, ProposeMarketAuthorityArgsV0, QuoteArgsV0,
+        RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
     },
     litesvm::types::{FailedTransactionMetadata, TransactionMetadata},
     quoter_test_support::{addr, parse_u32, system_program},
@@ -2010,9 +2011,8 @@ fn cu_benchmark_interleaved_makers() {
 }
 
 /// The widest event and response a market can produce, on-chain: fills and
-/// users both configured at their ceilings, and every fill a distinct maker
-/// whose order is fully consumed (so every balance-change record also carries a
-/// completed order id).
+/// users both configured at their ceilings, and every order fully consumed.
+/// The makers rest several orders each, so both ceilings bind in one execute.
 ///
 /// Two things only a real SBF run can check. The response has to fit the
 /// region at the configured ceiling — the point of deriving the ceiling from
@@ -2028,7 +2028,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     let ix = instruction::UpdateMarketV0 {
         args: UpdateMarketArgsV0 {
             max_execute_fills: Some(EXECUTE_FILLS_CEILING),
-            max_execute_users: Some(EXECUTE_FILLS_CEILING),
+            max_execute_users: Some(EXECUTE_USERS_CEILING),
             ..Default::default()
         },
     }
@@ -2039,6 +2039,8 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
 
     send(&mut ctx, ix).unwrap();
 
+    let users = EXECUTE_USERS_CEILING as usize;
+    let makers: Vec<_> = (0..users).map(|_| addr(Pubkey::new_unique())).collect();
     let orders: Vec<OrderRefV0> = (0..fills)
         .map(|i| {
             place(
@@ -2047,7 +2049,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
                     client_order_id: 1_000 + i as u32,
                     ..place_args(Side::Ask, 100 + i as u64, 1)
                 },
-                addr(Pubkey::new_unique()),
+                makers[i % users],
             )
         })
         .collect();
@@ -2064,8 +2066,11 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     let meta = send_with_budget(&mut ctx, ix, Some(1_400_000)).unwrap();
     let response = read_response(&ctx, &meta);
     let changes = parse_balance_changes(&response);
-    assert_eq!(changes.len(), fills);
-    assert!(changes.iter().all(|change| change.3.len() == 1));
+    assert_eq!(changes.len(), users);
+    assert_eq!(
+        changes.iter().map(|change| change.3.len()).sum::<usize>(),
+        fills
+    );
 
     let clock: Clock = ctx.svm.get_sysvar();
     let expected = ExecuteRecordV0 {
@@ -2087,7 +2092,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
 
     assert_eq!(program_data(&meta), Event::data(&expected));
     println!(
-        "CU — execute({fills} fills, {fills} makers, at the ceilings): {}, response: {} bytes",
+        "CU — execute({fills} fills, {users} makers, at the ceilings): {}, response: {} bytes",
         meta.compute_units_consumed,
         response.len()
     );
@@ -2868,17 +2873,18 @@ fn initializing_a_market_needs_the_accounts_own_keypair() {
         Some(&payer.pubkey()),
         &blockhash,
     );
-    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&payer, &admin, &squatter];
+    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&payer, &squatter];
     assert!(
         VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).is_err(),
         "the market's signature cannot be produced without its keypair"
     );
 
-    // The creator holds it and initializes.
+    // The creator holds it and initializes. The config authority does not
+    // sign, so a program PDA can hold it from the start.
     svm.expire_blockhash();
     let blockhash = svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &blockhash);
-    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&payer, &admin, &market_kp];
+    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&payer, &market_kp];
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
     svm.send_transaction(tx).expect("the creator initializes");
 }
@@ -2927,6 +2933,73 @@ fn only_the_authority_closes_an_empty_market_and_takes_the_rent() {
     let ix = close_market_ix(&ctx, ctx.admin.pubkey(), recipient);
     send(&mut ctx, ix).expect("an empty market closes");
     assert_eq!(ctx.svm.get_account(&recipient).unwrap().lamports, rent);
+}
+
+fn propose_authority_ix(ctx: &Ctx, signer: Pubkey, proposed: Pubkey) -> Instruction {
+    instruction::ProposeMarketAuthorityV0 {
+        args: ProposeMarketAuthorityArgsV0 {
+            proposed_authority: addr(proposed),
+        },
+    }
+    .to_instruction(accounts::ProposeMarketAuthorityV0 {
+        market: addr(ctx.market),
+        authority: addr(signer),
+    })
+}
+
+fn accept_authority_ix(ctx: &Ctx, signer: Pubkey) -> Instruction {
+    instruction::AcceptMarketAuthorityV0 {}.to_instruction(accounts::AcceptMarketAuthorityV0 {
+        market: addr(ctx.market),
+        pending_authority: addr(signer),
+    })
+}
+
+/// The config authority moves only when the proposed key signs, so a mistyped
+/// proposal cannot strand the market.
+#[test]
+fn the_config_authority_rotates_only_when_the_successor_accepts() {
+    let mut ctx = setup();
+    let successor = Keypair::new();
+    let stranger = Keypair::new();
+
+    assert_clob_err(
+        {
+            let ix = accept_authority_ix(&ctx, successor.pubkey());
+            send_signed(&mut ctx, ix, &successor)
+        },
+        err_code(clob::error::ClobError::InvalidAuthority),
+    );
+
+    let ix = propose_authority_ix(&ctx, ctx.admin.pubkey(), successor.pubkey());
+    send(&mut ctx, ix).unwrap();
+    assert_eq!(market_state(&ctx).authority, addr(ctx.admin.pubkey()));
+    assert_eq!(
+        market_state(&ctx).pending_authority,
+        addr(successor.pubkey())
+    );
+
+    assert_clob_err(
+        {
+            let ix = accept_authority_ix(&ctx, stranger.pubkey());
+            send_signed(&mut ctx, ix, &stranger)
+        },
+        err_code(clob::error::ClobError::InvalidAuthority),
+    );
+
+    let ix = accept_authority_ix(&ctx, successor.pubkey());
+    send_signed(&mut ctx, ix, &successor).unwrap();
+    let state = market_state(&ctx);
+    assert_eq!(state.authority, addr(successor.pubkey()));
+    assert_eq!(state.pending_authority, ZERO_ADDRESS);
+
+    // The previous authority no longer configures the market.
+    assert_clob_err(
+        {
+            let ix = propose_authority_ix(&ctx, ctx.admin.pubkey(), stranger.pubkey());
+            send(&mut ctx, ix)
+        },
+        err_code(clob::error::ClobError::InvalidAuthority),
+    );
 }
 
 /// An order whose `max_ts` falls inside its own activation delay expires
@@ -3003,6 +3076,7 @@ fn the_order_rules_report_what_the_sides_hold() {
     assert_eq!(before.min_order_size, 1);
     assert_eq!(before.step_size, 1);
     assert_eq!(before.place_authority, ctx.place_auth.pubkey().to_bytes());
+    assert_eq!(before.authority, ctx.admin.pubkey().to_bytes());
 
     place(&mut ctx, place_args(Side::Ask, 100, 5), user);
     place(&mut ctx, place_args(Side::Bid, 90, 5), user);

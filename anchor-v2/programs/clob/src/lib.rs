@@ -17,12 +17,14 @@
 //! Module layout: [`state`] holds the account layout and the wire types.
 //! [`book`] holds the order-book algorithm over them, and the streaming
 //! encoder that writes quote and execute payloads into the market's response
-//! region. [`emit`] holds the event log path that allocates nothing.
+//! region. [`config`] holds the bounds every market config must meet.
+//! [`emit`] holds the event log path that allocates nothing.
 //! [`instructions`] holds one file per instruction.
 
 use anchor_lang::prelude::*;
 
 pub mod book;
+pub mod config;
 pub mod emit;
 pub mod error;
 pub mod events;
@@ -64,6 +66,19 @@ pub mod clob {
         args: UpdateMarketArgsV0,
     ) -> Result<()> {
         instructions::update_market_v0::handle_update_market_v0(ctx, args)
+    }
+
+    /// Name the key that may take over this market's config. It takes over
+    /// only when it signs `accept_market_authority_v0`.
+    pub fn propose_market_authority_v0(
+        ctx: &mut Context<ProposeMarketAuthorityV0>,
+        args: ProposeMarketAuthorityArgsV0,
+    ) -> Result<()> {
+        instructions::propose_market_authority_v0::handle_propose_market_authority_v0(ctx, args)
+    }
+
+    pub fn accept_market_authority_v0(ctx: &mut Context<AcceptMarketAuthorityV0>) -> Result<()> {
+        instructions::accept_market_authority_v0::handle_accept_market_authority_v0(ctx)
     }
 
     pub fn place_order_v0(

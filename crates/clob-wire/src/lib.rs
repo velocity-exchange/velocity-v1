@@ -354,6 +354,36 @@ wire_type! {
 }
 
 wire_type! {
+    derive(Clone, Copy, Default, PartialEq, Eq, Debug)
+    /// `update_market_v0` arguments. `None` leaves a setting unchanged. The book
+    /// checks the whole config after it applies every field, so one call can move
+    /// the step and the minimum together. The `Clob` prefix is there because this
+    /// type lands in velocity's IDL, as [`ClobOrderRefV0`] does.
+    pub struct ClobUpdateMarketArgsV0 {
+        pub order_tick_size: Option<u64>,
+        pub order_step_size: Option<u64>,
+        pub min_order_size: Option<u64>,
+        pub blocking_min_size: Option<u64>,
+        pub default_activation_delay_slots: Option<u32>,
+        pub max_activation_delay_slots: Option<u32>,
+        pub unknown_user_grace_slots: Option<u32>,
+        pub evict_threshold_per_side: Option<u32>,
+        pub max_quote_levels: Option<u16>,
+        pub max_execute_fills: Option<u16>,
+        pub max_execute_users: Option<u16>,
+        pub reservation_grace_slots: Option<u16>,
+    }
+}
+
+wire_type! {
+    derive(Clone, Copy, PartialEq, Eq, Debug)
+    /// `resize_market_v0` arguments.
+    pub struct ResizeMarketArgsV0 {
+        pub new_capacity: u32,
+    }
+}
+
+wire_type! {
     derive(Clone, Copy, PartialEq, Eq, Debug)
     /// Return data of `order_rules_v0`: what the book requires of an order before
     /// it will hold one.
@@ -399,6 +429,9 @@ wire_type! {
         /// between this and its cap still accepts placements, and the crank works
         /// it back down.
         pub evict_threshold_per_side: u32,
+        /// The key that may change these rules. A caller that mirrors them pins
+        /// it to its own signing PDA, so no rule changes without the caller.
+        pub authority: [u8; 32],
     }
 }
 
@@ -551,4 +584,6 @@ pub mod discriminator {
     pub const SET_CRANK_CONDITIONS_V0: [u8; 8] = [34, 160, 120, 93, 84, 133, 8, 95];
     pub const ORDERS_V0: [u8; 8] = [124, 117, 208, 33, 202, 209, 58, 199];
     pub const ORDER_RULES_V0: [u8; 8] = [201, 129, 212, 105, 18, 69, 149, 252];
+    pub const UPDATE_MARKET_V0: [u8; 8] = [180, 2, 86, 43, 47, 149, 218, 246];
+    pub const RESIZE_MARKET_V0: [u8; 8] = [33, 41, 148, 240, 254, 155, 147, 193];
 }

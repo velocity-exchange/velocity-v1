@@ -8,7 +8,11 @@ use {
 
 #[derive(Accounts)]
 pub struct InitializeMarketV0 {
-    pub authority: Signer,
+    /// Registered as the market's config authority. It need not sign, because
+    /// the market's own signature below already binds initialization to the
+    /// account's creator. A program PDA can therefore hold the role from the
+    /// start.
+    pub authority: UncheckedAccount,
     /// Registered as the market's place authority. It is an account rather
     /// than an argument, because a duplicated account costs one index byte in
     /// the transaction.

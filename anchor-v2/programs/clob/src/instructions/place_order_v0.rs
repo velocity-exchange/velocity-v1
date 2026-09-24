@@ -14,12 +14,6 @@ use {
     anchor_lang::prelude::*,
 };
 
-/// Floor on a slot's wall-clock length, in milliseconds.
-///
-/// The cluster targets 400ms per slot. This bound must stay at or below that
-/// rate, or the refusal below could reject an order that could still activate.
-const MIN_SLOT_MILLIS: u64 = 400;
-
 /// Place a resting order. Returns the new order's [`OrderRefV0`] as return
 /// data, so the CPI caller can store the hint.
 pub fn handle_place_order_v0(
@@ -54,13 +48,10 @@ pub fn handle_place_order_v0(
     // An order whose `max_ts` falls inside its own activation delay expires
     // before anything can match it. It still takes an arena slot, and it
     // still sits at the head of its side until the expiry crank reclaims it.
-    if args.max_ts != 0 && delay != 0 {
-        let earliest_activation = (delay as u64 * MIN_SLOT_MILLIS / 1_000) as i64;
-        require!(
-            args.max_ts.saturating_sub(clock.unix_timestamp) > earliest_activation,
-            ClobError::MaxTsBeforeActivation
-        );
-    }
+    require!(
+        !clob_wire::expires_before_activation(args.max_ts, clock.unix_timestamp, delay),
+        ClobError::MaxTsBeforeActivation
+    );
 
     let activation_slot = clock.slot + delay as u64;
     let order_ref = market.place(PlaceOrderParams {

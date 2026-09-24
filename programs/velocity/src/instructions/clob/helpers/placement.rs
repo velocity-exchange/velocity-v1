@@ -185,6 +185,9 @@ pub enum RestRefusal {
     ExpiryPassed,
     /// The requested activation delay is above the book's maximum.
     DelayAboveMaximum,
+    /// The expiry falls inside the activation delay, so nothing could match
+    /// the order.
+    ExpiresBeforeActivation,
     /// The side the remainder would rest on holds every order it can.
     SideAtCapacity,
 }
@@ -254,8 +257,13 @@ pub fn rest_admission(
         return RestAdmission::Refused(RestRefusal::ExpiryPassed);
     }
 
-    if activation_delay_slots.is_some_and(|delay| delay > rules.max_activation_delay_slots) {
+    let delay = activation_delay_slots.unwrap_or(rules.default_activation_delay_slots);
+    if delay > rules.max_activation_delay_slots {
         return RestAdmission::Refused(RestRefusal::DelayAboveMaximum);
+    }
+
+    if clob_wire::expires_before_activation(max_ts, now, delay) {
+        return RestAdmission::Refused(RestRefusal::ExpiresBeforeActivation);
     }
 
     // The arena is shared, so each side holds at most half of it.
@@ -688,6 +696,26 @@ mod rest_admission_tests {
         );
 
         assert_eq!(refusal(admission), None);
+    }
+
+    #[test]
+    fn an_expiry_inside_the_default_delay_is_refused() {
+        let mut rules = rules();
+        rules.default_activation_delay_slots = 10;
+        let admission = rest_admission(
+            &rules,
+            PositionDirection::Long,
+            104_629_000,
+            1_000,
+            102,
+            None,
+            100,
+        );
+
+        assert_eq!(
+            refusal(admission),
+            Some(RestRefusal::ExpiresBeforeActivation)
+        );
     }
 
     #[test]

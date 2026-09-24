@@ -110,6 +110,22 @@ wire_type! {
     }
 }
 
+/// Floor on a slot's wall-clock length, in milliseconds. It must stay at or
+/// below the cluster's 400ms target, or an order that can activate is refused.
+pub const MIN_SLOT_MILLIS: u64 = 400;
+
+/// True when an order expires inside its own activation delay. The book
+/// refuses it with `MaxTsBeforeActivation`, and a caller that rests an order
+/// tests this same rule first.
+pub fn expires_before_activation(max_ts: i64, now: i64, activation_delay_slots: u32) -> bool {
+    if max_ts == 0 || activation_delay_slots == 0 {
+        return false;
+    }
+
+    let earliest_activation = (activation_delay_slots as u64 * MIN_SLOT_MILLIS / 1_000) as i64;
+    max_ts.saturating_sub(now) <= earliest_activation
+}
+
 wire_type! {
     derive(Clone, Copy, PartialEq, Eq, Debug)
     /// `cancel_order_v0` arguments.

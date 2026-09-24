@@ -13,6 +13,7 @@ import {
 	PostOnlyParams,
 	PerpOperation,
 	StateAccount,
+	UserAccount,
 } from '../types';
 import {
 	ZERO,
@@ -36,6 +37,7 @@ import {
 	calculateUpdatedAMM,
 } from './amm';
 import { calculateSizePremiumLiabilityWeight } from './margin';
+import { positionIsAvailable } from './position';
 import { getOracleValidity } from './oracles';
 import { isAmmDrawdownPause, isOperationPaused } from './exchangeStatus';
 
@@ -700,3 +702,31 @@ export function isFallbackAvailableLiquiditySource(
  * @returns Auction price at the current slot, PRICE_PRECISION (1e6).
  * @throws if `order.orderType` doesn't match any known auction pricing path.
  */
+
+/**
+ * How many of the account's open orders in `marketIndex` rest on a CLOB book
+ * rather than in a `User.orders` slot. Mirrors `User::clob_resident_open_orders`.
+ * A placed-trigger shadow row counts as book-resident, because its order rests
+ * on the book.
+ */
+export function clobResidentOpenOrders(
+	user: UserAccount,
+	marketIndex: number
+): number {
+	const position = user.perpPositions.find(
+		(p) => p.marketIndex === marketIndex && !positionIsAvailable(p)
+	);
+	if (!position) {
+		return 0;
+	}
+
+	const listed = user.orders.filter(
+		(order) =>
+			isVariant(order.status, 'open') &&
+			isVariant(order.marketType, 'perp') &&
+			order.marketIndex === marketIndex &&
+			(order.bitFlags & OrderBitFlag.PlacedOnClob) === 0
+	).length;
+
+	return Math.max(position.openOrders - Math.min(listed, 255), 0);
+}

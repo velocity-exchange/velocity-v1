@@ -279,7 +279,11 @@ import { SignedMsgOrderParams } from './types';
 import { TakerInfo } from './types';
 import { getOracleConfidenceFromMMOracleData } from './oracles/utils';
 import { ConstituentMap } from './constituentMap/constituentMap';
-import { hasBuilder, signedMsgEntryOrderRefusal } from './math/orders';
+import {
+  clobResidentOpenOrders,
+  hasBuilder,
+  signedMsgEntryOrderRefusal,
+} from './math/orders';
 import { getMarketFeesForFeeTier, getPerpFeeTierIndex } from './math/fees';
 import { RevenueShareEscrowMap } from './userMap/revenueShareEscrowMap';
 import {
@@ -2973,6 +2977,10 @@ export class VelocityClient {
 				pubkey: new PublicKey(tokenProgram),
 			});
 		}
+
+		remainingAccounts.push(
+			...(await this.getLiquidationBookMetas(userAccount))
+		);
 
 		const authority = userAccount.authority;
 		const userStats = getUserStatsAccountPublicKey(
@@ -7747,7 +7755,6 @@ export class VelocityClient {
 					state: await this.getStatePublicKey(),
 					authority: this.wallet.publicKey,
 					filler,
-					fillerStats: await this.getUserStatsAccountPublicKey(),
 					user: userAccountPublicKey,
 					quoterSlab: clob.quoterSlab,
 					clobMarket: clob.clobMarket,
@@ -9774,6 +9781,9 @@ export class VelocityClient {
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [userAccount],
 		});
+		remainingAccounts.push(
+			...(await this.getLiquidationBookMetas(userAccount))
+		);
 		return await this.program.instruction.setUserStatusToBeingLiquidated({
 			accounts: {
 				state: await this.getStatePublicKey(),
@@ -9893,6 +9903,9 @@ export class VelocityClient {
 			useMarketLastSlotCache: true,
 			writablePerpMarketIndexes: [marketIndex],
 		});
+		remainingAccounts.push(
+			...(await this.getLiquidationBookMetas(userAccount))
+		);
 
 		return await VelocityCore.buildLiquidatePerpInstruction({
 			program: this.program,
@@ -9990,6 +10003,10 @@ export class VelocityClient {
 			writablePerpMarketIndexes: [marketIndex],
 		});
 
+		// The books of the other markets the liquidation sweeps come before the
+		// makers, because the route refuses a slab of another market.
+		const foreignBooks = await this.liquidationBooks(userAccount, marketIndex);
+		remainingAccounts.push(...foreignBooks.pairs);
 		remainingAccounts.push(...this.makerAccountMetas(makerInfos));
 
 		// The quoter section: the market's slab plus the consulted quoters'
@@ -10001,6 +10018,12 @@ export class VelocityClient {
 			remainingAccounts.push(
 				...this.quoterSectionMetas(clob, extraQuoterAccounts)
 			);
+		} else if (foreignBooks.clobProgram) {
+			remainingAccounts.push({
+				pubkey: foreignBooks.clobProgram,
+				isWritable: false,
+				isSigner: false,
+			});
 		}
 
 		return await this.program.instruction.liquidatePerpWithFill(marketIndex, {
@@ -10110,6 +10133,9 @@ export class VelocityClient {
 			useMarketLastSlotCache: true,
 			writableSpotMarketIndexes: [liabilityMarketIndex, assetMarketIndex],
 		});
+		remainingAccounts.push(
+			...(await this.getLiquidationBookMetas(userAccount))
+		);
 
 		return await (this.program.instruction as any).liquidateSpot(
 			assetMarketIndex,
@@ -10389,6 +10415,11 @@ export class VelocityClient {
 			}
 		}
 
+		// Begin and end must carry the same accounts, so both carry the books.
+		remainingAccounts.push(
+			...(await this.getLiquidationBookMetas(userAccount))
+		);
+
 		const beginSwapIx =
 			await this.program.instruction.liquidateSpotWithSwapBegin(
 				assetMarketIndex,
@@ -10528,6 +10559,9 @@ export class VelocityClient {
 			writablePerpMarketIndexes: [perpMarketIndex],
 			writableSpotMarketIndexes: [liabilityMarketIndex],
 		});
+		remainingAccounts.push(
+			...(await this.getLiquidationBookMetas(userAccount))
+		);
 
 		return await this.program.instruction.liquidateBorrowForPerpPnl(
 			perpMarketIndex,
@@ -10635,6 +10669,9 @@ export class VelocityClient {
 			writablePerpMarketIndexes: [perpMarketIndex],
 			writableSpotMarketIndexes: [assetMarketIndex],
 		});
+		remainingAccounts.push(
+			...(await this.getLiquidationBookMetas(userAccount))
+		);
 
 		return await this.program.instruction.liquidatePerpPnlForDeposit(
 			perpMarketIndex,
@@ -13037,6 +13074,51 @@ export class VelocityClient {
 			{ pubkey: makerInfo.maker, isWritable: true, isSigner: false },
 			{ pubkey: makerInfo.makerStats, isWritable: true, isSigner: false },
 		]);
+	}
+
+	/**
+	 * The CLOB books a liquidation sweeps for `userAccount`, then the CLOB program. Each market
+	 * where the account rests book orders contributes its quoter slab and its book. The program
+	 * finds them by key after the margin map, and skips a market outside the liquidation's scope.
+	 * Without a market's book, the liquidation stops after its cancel and a later call continues.
+	 */
+	public async getLiquidationBookMetas(
+		userAccount: UserAccount
+	): Promise<AccountMeta[]> {
+		const books = await this.liquidationBooks(userAccount);
+		return books.clobProgram
+			? [
+					...books.pairs,
+					{ pubkey: books.clobProgram, isWritable: false, isSigner: false },
+			  ]
+			: books.pairs;
+	}
+
+	/** The `(slab, book)` pairs of every market, except `excludeMarketIndex`, where the account rests book orders. */
+	private async liquidationBooks(
+		userAccount: UserAccount,
+		excludeMarketIndex?: number
+	): Promise<{ pairs: AccountMeta[]; clobProgram?: PublicKey }> {
+		const pairs: AccountMeta[] = [];
+		let clobProgram: PublicKey | undefined;
+		for (const position of userAccount.perpPositions) {
+			const marketIndex = position.marketIndex;
+			if (
+				marketIndex === excludeMarketIndex ||
+				clobResidentOpenOrders(userAccount, marketIndex) === 0
+			) {
+				continue;
+			}
+
+			const clob = await this.getClobAccounts(marketIndex);
+			pairs.push(
+				{ pubkey: clob.quoterSlab, isWritable: false, isSigner: false },
+				{ pubkey: clob.clobMarket, isWritable: true, isSigner: false }
+			);
+			clobProgram = clob.clobProgram;
+		}
+
+		return { pairs, clobProgram };
 	}
 
 	/**

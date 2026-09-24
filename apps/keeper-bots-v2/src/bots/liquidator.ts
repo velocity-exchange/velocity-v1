@@ -26,9 +26,6 @@ import {
 	isOperationPaused,
 	PerpOperation,
 	standardizeBaseAssetAmount,
-	UserClobOrdersClient,
-	ForceCancelClobRefV0,
-	ClobSide,
 } from '@velocity-exchange/sdk';
 
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
@@ -270,7 +267,6 @@ export class LiquidatorBot implements Bot {
 	/// Reads a liquidatee's resting CLOB orders off the dlob-server user-orders
 	/// feed, so they can be force-cancelled before a perp liquidation. Undefined
 	/// when no dlob-server URL is configured.
-	private userClobOrdersClient?: UserClobOrdersClient;
 	private serumLookupTableAddress?: PublicKey;
 	private velocityLookupTables?: AddressLookupTableAccount[];
 	private velocitySpotLookupTables?: AddressLookupTableAccount;
@@ -334,15 +330,6 @@ export class LiquidatorBot implements Bot {
 		this.name = config.botId;
 		this.dryRun = config.dryRun;
 		this.velocityClient = velocityClient;
-		if (config.dlobServerHttpUrl) {
-			this.userClobOrdersClient = new UserClobOrdersClient(
-				config.dlobServerHttpUrl
-			);
-		} else {
-			logger.info(
-				`${config.botId}: no dlobServerHttpUrl configured; perp liquidations will not force-cancel CLOB orders (on-chain revert is the backstop)`
-			);
-		}
 
 		this.runtimeSpecs = runtimeSpec;
 		this.userMap = userMap;
@@ -1578,55 +1565,6 @@ export class LiquidatorBot implements Bot {
 		return sentTx;
 	}
 
-	/// Build a `forceCancelClobOrders` instruction for the liquidatee's resting
-	/// CLOB orders in `perpMarketIndex`. The caller puts it before a perp
-	/// liquidation. Returns undefined when there is nothing to cancel, when no
-	/// dlob-server is configured, or when the lookup fails. The caller then
-	/// liquidates anyway, and the on-chain revert is the backstop.
-	private async buildForceCancelClobIx(
-		user: User,
-		perpMarketIndex: number,
-		liquidatorSubAccountId: number
-	): Promise<TransactionInstruction | undefined> {
-		if (!this.userClobOrdersClient) {
-			return undefined;
-		}
-
-		try {
-			const clobOrders = await this.userClobOrdersClient.fetch(
-				user.userAccountPublicKey,
-				[perpMarketIndex]
-			);
-
-			if (clobOrders.length === 0) {
-				return undefined;
-			}
-			const orderRefs: ForceCancelClobRefV0[] = clobOrders.map((order) => ({
-				orderRef: { nodeIndex: order.nodeIndex, orderId: order.clobOrderId },
-				// A long rests as a bid, a short as an ask.
-				side: isVariant(order.direction, 'long') ? ClobSide.BID : ClobSide.ASK,
-			}));
-			const filler = await this.velocityClient.getUserAccountPublicKey(
-				liquidatorSubAccountId
-			);
-
-			return await this.velocityClient.getForceCancelClobOrdersIx(
-				perpMarketIndex,
-				user.userAccountPublicKey,
-				user.getUserAccountOrThrow(),
-				orderRefs,
-				undefined,
-				filler
-			);
-		} catch (err) {
-			logger.error(
-				`force-cancel CLOB lookup failed for ${user.userAccountPublicKey.toBase58()} on market ${perpMarketIndex}: ${err}; liquidating anyway (on-chain revert is the backstop)`
-			);
-
-			return undefined;
-		}
-	}
-
 	private isThrottled(userKey: string, auth: string): boolean {
 		const lastAttempt = this.throttledUsers.get(userKey);
 		if (!lastAttempt) {
@@ -1885,16 +1823,10 @@ export class LiquidatorBot implements Bot {
 			subAccountToLiqPerp
 		);
 
-		// A perp liquidation reverts while the liquidatee holds resting CLOB
-		// orders, so force-cancel them first. On a feed error the force-cancel is
-		// skipped, and the on-chain revert is the backstop.
-		const forceCancelIx = await this.buildForceCancelClobIx(
-			user,
-			perpMarketIndex,
-			subAccountToLiqPerp
-		);
+		// The liquidation cancels the liquidatee's CLOB orders itself. The SDK
+		// builder carries the books of the markets that hold them.
 		const simResult = await this.buildVersionedTransactionWithSimulatedCus(
-			forceCancelIx ? [forceCancelIx, ix] : [ix],
+			[ix],
 			this.velocityLookupTables!,
 			Math.floor(this.priorityFeeSubscriber.getCustomStrategyResult())
 		);

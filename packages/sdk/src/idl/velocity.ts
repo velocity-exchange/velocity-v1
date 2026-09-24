@@ -3113,10 +3113,6 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "fillerStats",
-          "writable": true
-        },
-        {
           "name": "user",
           "docs": [
             "The deteriorated account whose CLOB orders are being reclaimed."
@@ -21451,7 +21447,7 @@ export type Velocity = {
     {
       "code": 6402,
       "name": "liquidationConflictsWithClobOrders",
-      "msg": "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
+      "msg": "Orders in the liquidation's scope still rest on a CLOB book"
     },
     {
       "code": 6403,

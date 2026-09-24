@@ -40,7 +40,7 @@ use {
             order_params::{OrderParams, PostOnlyParam},
             perp_market::PerpMarket,
             prop_amm::{
-                ClobCancelSides, ClobOrderRefV0, DirectionV0, L3ArgsV0, L3ResponseV0, L3RowV0,
+                CancelSidesV0, ClobOrderRefV0, DirectionV0, L3ArgsV0, L3ResponseV0, L3RowV0,
                 QuoterType, ResponsePointerV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
             },
             pyth_lazer_oracle::PythLazerOracle,
@@ -1212,7 +1212,7 @@ fn place_clob_bid(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
     }
 }
 
-fn cancel_all_clob_ix(fixture: &Fixture, sides: ClobCancelSides) -> Instruction {
+fn cancel_all_clob_ix(fixture: &Fixture, sides: CancelSidesV0) -> Instruction {
     Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::CancelOrdersV1 {
@@ -1257,7 +1257,7 @@ fn cancel_all_clob_orders_unwinds_a_whole_ladder_in_one_instruction() {
 
     // Bids only first, so the ask side proves the sweep is side-scoped all the
     // way through velocity's unwind.
-    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Bids);
+    let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Bids);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
     let after_bids: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(after_bids.perp_positions[0].open_bids, 0);
@@ -1267,7 +1267,7 @@ fn cancel_all_clob_orders_unwinds_a_whole_ladder_in_one_instruction() {
     assert_eq!(clob_bid_count(&fixture), 0);
     assert_eq!(clob_ask_count(&fixture), 5);
 
-    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Both);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
     let after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(after.perp_positions[0].open_bids, 0);
@@ -1278,7 +1278,7 @@ fn cancel_all_clob_orders_unwinds_a_whole_ladder_in_one_instruction() {
     assert_eq!(clob_ask_count(&fixture), 0);
 
     // Idempotent: nothing left to take is a success, not a failed transaction.
-    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Both);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
 }
 
@@ -1354,7 +1354,7 @@ fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
 
     assert_eq!(clob_ask_count(&fixture), 4);
 
-    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Both);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
 
     assert_eq!(clob_ask_count(&fixture), 2);
@@ -1414,7 +1414,7 @@ fn cu_bench_cancel_all_beats_cancelling_order_by_order() {
     // The sweep, at one order and at the full ladder.
     let mut fixture = setup();
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 4);
-    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Both);
     let one_order_cu = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[])
         .unwrap()
         .compute_units_consumed;
@@ -1424,7 +1424,7 @@ fn cu_bench_cancel_all_beats_cancelling_order_by_order() {
         place_clob_ask(&mut fixture, (99 + i) * PRICE, UNIT / 4);
     }
 
-    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Both);
     let ladder_cu = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[])
         .unwrap()
         .compute_units_consumed;
@@ -2368,9 +2368,9 @@ fn run_resolver(
                 fixture.clob_market,
                 fixture.crank_block_offset,
                 if expire {
-                    velocity::state::prop_amm::CLOB_CRANK_SLOT_EXPIRY
+                    velocity::state::prop_amm::CRANK_SLOT_EXPIRY
                 } else {
-                    velocity::state::prop_amm::CLOB_CRANK_SLOT_CAPACITY
+                    velocity::state::prop_amm::CRANK_SLOT_CAPACITY
                 },
             ),
         }
@@ -2412,7 +2412,7 @@ fn run_cross_resolver(
             fired: fired_condition(
                 fixture.clob_market,
                 fixture.crank_block_offset,
-                velocity::state::prop_amm::CLOB_CRANK_SLOT_CROSS,
+                velocity::state::prop_amm::CRANK_SLOT_CROSS,
             ),
         }
         .data(),
@@ -3836,7 +3836,7 @@ fn cancel_all_frees_placed_trigger_shadows() {
     assert_eq!(before.perp_positions[0].open_orders, 2);
     assert_eq!(clob_ask_count(&fixture), 2);
 
-    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Asks);
+    let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Asks);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
 
     let after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);

@@ -25,5 +25,5 @@ pub fn handle_cancel_order_v0(
 
     emit_removal!(OrderCancelRecordV0, removed, clock, market.market_index);
 
-    Ok(removed.into())
+    Ok(removed)
 }

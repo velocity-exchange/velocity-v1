@@ -21,7 +21,7 @@ use {
     crate::{
         book::{is_live, walk_side_ref, CrossReservation, Walk},
         instructions::MarketViewV0,
-        state::{ClobMarketV0, Side},
+        state::{ClobMarketV0, SideV0},
     },
     anchor_lang::prelude::*,
 };
@@ -31,8 +31,8 @@ pub fn handle_next_cross_v0(ctx: &mut Context<MarketViewV0>) -> Result<NextCross
     let clock = Clock::get()?;
     let market = &ctx.accounts.market;
     Ok(NextCrossV0 {
-        bid: head(market, Side::Bid, clock.slot, clock.unix_timestamp),
-        ask: head(market, Side::Ask, clock.slot, clock.unix_timestamp),
+        bid: head(market, SideV0::Bid, clock.slot, clock.unix_timestamp),
+        ask: head(market, SideV0::Ask, clock.slot, clock.unix_timestamp),
     })
 }
 
@@ -44,7 +44,7 @@ pub fn handle_next_cross_v0(ctx: &mut Context<MarketViewV0>) -> Result<NextCross
 /// An order a crossing taker remainder claims whole is skipped too, because
 /// only the crank settling that remainder may take it. The walk still returns
 /// the crossing order itself, since hiding it would hide the cross.
-fn head(market: &ClobMarketV0, side: Side, slot: u64, now: i64) -> OrderViewV0 {
+fn head(market: &ClobMarketV0, side: SideV0, slot: u64, now: i64) -> OrderViewV0 {
     let mut reservation = CrossReservation::new(market, side, slot, now, false);
     let mut found = OrderViewV0::NONE;
     let walk = walk_side_ref(market, side, |index, node| {

@@ -10,7 +10,7 @@ use {
     crate::{
         instructions::relay_harness::StagedCall,
         state::prop_amm::{
-            ClobNextRemovalArgsV0, ClobOrderRefV0, ClobRemovalKindV0, ClobRemoveExpiredArgsV0,
+            ClobOrderRefV0, ClobRemovalKindV0, NextRemovalArgsV0, RemoveExpiredArgsV0,
         },
     },
     anchor_lang::prelude::*,
@@ -35,7 +35,7 @@ pub fn handle_crank_clob_remove_expired(
     crank_clob_removal(
         ctx,
         market_index,
-        ClobRemoval::Expire(ClobRemoveExpiredArgsV0 { order_ref }),
+        ClobRemoval::Expire(RemoveExpiredArgsV0 { order_ref }),
     )
 }
 
@@ -44,7 +44,7 @@ pub fn handle_crank_clob_remove_expired(
 pub(super) fn stage_expired_removal(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
     // The book finds the expired order. Expiry is the book's own bookkeeping,
     // and the book holds the timestamps.
-    let found = clob_reader(ctx).next_removal(ClobNextRemovalArgsV0 {
+    let found = clob_reader(ctx).next_removal(NextRemovalArgsV0 {
         kind: ClobRemovalKindV0::Expired,
     })?;
 

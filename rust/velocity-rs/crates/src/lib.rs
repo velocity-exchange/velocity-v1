@@ -2818,7 +2818,7 @@ impl<'a> TransactionBuilder<'a> {
     pub fn cancel_clob_orders(
         mut self,
         clob: ClobFillAccounts,
-        sides: program::state::prop_amm::ClobCancelSides,
+        sides: program::state::prop_amm::CancelSidesV0,
     ) -> Self {
         let accounts = build_accounts(
             self.program_data,

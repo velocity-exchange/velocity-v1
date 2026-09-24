@@ -16,9 +16,9 @@ use {
     crate::{
         book::{ClobBook, NodeArena},
         state::{
-            CancelSidesV0, ClobHeaderV0, ClobMarketV0, ClobSideExt, Direction, ExecuteResponseV0,
-            L3ResponseV0, MarketConfigV0, OrderNodeV0, OrderRefV0, PlaceOrderParams,
-            QuoteResponseV0, Side, UserCapV0, UserCapsV0, UserRefV0, L3_ROWS_CEILING, NIL,
+            CancelSidesV0, ClobHeaderV0, ClobMarketV0, ClobOrderRefV0, DirectionV0,
+            ExecuteResponseV0, L3ResponseV0, MarketConfigV0, OrderNodeV0, PlaceOrderParams,
+            QuoteResponseV0, SideV0, UserCapV0, UserCapsV0, UserRefV0, L3_ROWS_CEILING, NIL,
         },
     },
     quoter_spec::L3_ROW_FLAG_RESERVED,
@@ -55,19 +55,19 @@ impl Rng {
         items[self.below(items.len() as u64) as usize]
     }
 
-    fn side(&mut self) -> Side {
+    fn side(&mut self) -> SideV0 {
         if self.chance(50) {
-            Side::Ask
+            SideV0::Ask
         } else {
-            Side::Bid
+            SideV0::Bid
         }
     }
 
-    fn direction(&mut self) -> Direction {
+    fn direction(&mut self) -> DirectionV0 {
         if self.chance(50) {
-            Direction::Long
+            DirectionV0::Long
         } else {
-            Direction::Short
+            DirectionV0::Short
         }
     }
 }
@@ -121,10 +121,10 @@ fn place_random(
     let side = rng.side();
     let taker_origin = rng.chance(20);
     let price = match (side, taker_origin) {
-        (Side::Ask, false) => 98 + rng.below(12),
-        (Side::Bid, false) => 90 + rng.below(12),
-        (Side::Ask, true) => 92 + rng.below(12),
-        (Side::Bid, true) => 96 + rng.below(12),
+        (SideV0::Ask, false) => 98 + rng.below(12),
+        (SideV0::Bid, false) => 90 + rng.below(12),
+        (SideV0::Ask, true) => 92 + rng.below(12),
+        (SideV0::Bid, true) => 96 + rng.below(12),
     };
 
     let _ = book.place(PlaceOrderParams {
@@ -154,7 +154,7 @@ fn live_orders(book: &ClobMarketV0) -> Vec<(u32, OrderNodeV0)> {
         .collect()
 }
 
-fn best_first(book: &ClobMarketV0, side: Side) -> Vec<(u32, OrderNodeV0)> {
+fn best_first(book: &ClobMarketV0, side: SideV0) -> Vec<(u32, OrderNodeV0)> {
     let mut orders = Vec::new();
     let mut cursor = book.best(side);
     while cursor != NIL {
@@ -166,8 +166,8 @@ fn best_first(book: &ClobMarketV0, side: Side) -> Vec<(u32, OrderNodeV0)> {
     orders
 }
 
-fn order_ref(index: u32, node: &OrderNodeV0) -> OrderRefV0 {
-    OrderRefV0 {
+fn order_ref(index: u32, node: &OrderNodeV0) -> ClobOrderRefV0 {
+    ClobOrderRefV0 {
         node_index: index,
         order_id: node.order_id,
     }
@@ -175,7 +175,7 @@ fn order_ref(index: u32, node: &OrderNodeV0) -> OrderRefV0 {
 
 /// One caller's view of a side.
 struct Caller {
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     users: Vec<UserRefV0>,
     caps: UserCapsV0,
@@ -486,7 +486,7 @@ fn is_bound(book: &ClobMarketV0, node: &OrderNodeV0, slot: u64) -> bool {
 /// unclaimed that it crosses; a claim withholds at least `min_order_size`; and
 /// a taker-origin order on `cover` that a live counterparty crosses is
 /// withheld whole.
-fn reference_withheld(book: &ClobMarketV0, cover: Side, slot: u64, now: i64) -> Vec<(u32, u64)> {
+fn reference_withheld(book: &ClobMarketV0, cover: SideV0, slot: u64, now: i64) -> Vec<(u32, u64)> {
     let claiming = cover.opposite();
     let grace = book.reservation_grace_slots as u64;
     let lapsed = |node: &OrderNodeV0| slot >= node.activation_slot.saturating_add(grace);
@@ -574,7 +574,7 @@ fn the_reservation_matches_its_reference_allocation() {
 
         let read_slot = slot + rng.pick(&[0u64, 1, 4, 10, 40]);
         let now = rng.pick(&[0i64, 10, 30]);
-        for direction in [Direction::Long, Direction::Short] {
+        for direction in [DirectionV0::Long, DirectionV0::Short] {
             let expected = reference_withheld(&book, direction.side(), read_slot, now);
             let pointer = book
                 .quote_l3(direction, 0, L3_ROWS_CEILING, false, read_slot, now)

@@ -76,8 +76,7 @@ use {
             oracle_map::OracleMap,
             perp_market_map::{MarketSet, PerpMarketMap},
             prop_amm::{
-                ClobMarket, ClobOrderRefV0, ClobPlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0,
-                SideV0,
+                ClobMarket, ClobOrderRefV0, PlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0,
             },
             state::State,
             user::{MarketType, OrderBitFlag, OrderReservation, OrderType, User, UserStats},
@@ -283,10 +282,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             slot,
         )?;
 
-        let side = match reserved.direction {
-            PositionDirection::Long => SideV0::Bid,
-            PositionDirection::Short => SideV0::Ask,
-        };
+        let side = SideV0::from(reserved.direction);
 
         (
             side,
@@ -302,7 +298,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         )
     };
 
-    let order_ref = clob.place(ClobPlaceOrderArgsV0 {
+    let order_ref = clob.place(PlaceOrderArgsV0 {
         side,
         price,
         base_asset_amount,

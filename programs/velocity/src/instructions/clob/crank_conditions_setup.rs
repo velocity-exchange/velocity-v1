@@ -44,7 +44,7 @@ use {
                 ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CROSS_FALLBACK,
                 CLOB_CRANK_REFILL,
             },
-            prop_amm::{ClobCrankAccountV0, ClobCrankConditionsArgsV0, ClobCrankResolverV0},
+            prop_amm::{CrankAccountV0, CrankConditionsArgsV0, CrankResolverV0},
         },
         validate,
     },
@@ -106,16 +106,16 @@ fn disc8(disc: &[u8]) -> Result<[u8; 8]> {
 pub fn clob_crank_registration(
     keys: &ClobCrankConditionKeys,
     payments: CrankPaymentsV0,
-) -> Result<ClobCrankConditionsArgsV0> {
-    let resolver = |min_payment: u32| -> Result<ClobCrankResolverV0> {
-        Ok(ClobCrankResolverV0 {
+) -> Result<CrankConditionsArgsV0> {
+    let resolver = |min_payment: u32| -> Result<CrankResolverV0> {
+        Ok(CrankResolverV0 {
             program: crate::ID.to_bytes(),
             disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
             min_payment: u64::from(min_payment),
         })
     };
     let cross = resolver(payments.cross.min(payments.taker_origin_cross))?;
-    Ok(ClobCrankConditionsArgsV0 {
+    Ok(CrankConditionsArgsV0 {
         expiry: resolver(payments.removal)?,
         // Activation makes an order matchable with no account change. The book
         // names the slot, and the cross answer resolves it.
@@ -125,7 +125,7 @@ pub fn clob_crank_registration(
         accounts: keys
             .resolver_accounts()
             .iter()
-            .map(|account| ClobCrankAccountV0 {
+            .map(|account| CrankAccountV0 {
                 address: account.address,
                 writable: account.writable != 0,
             })

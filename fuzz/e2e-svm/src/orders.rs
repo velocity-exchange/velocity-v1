@@ -27,7 +27,7 @@ use {
         },
         state::{
             order_params::{OrderParams, PlaceAndTakeOrderSuccessCondition},
-            prop_amm::{ClobCancelSides, ClobOrderRefV0, SideV0},
+            prop_amm::{CancelSidesV0, ClobOrderRefV0, SideV0},
         },
     },
 };
@@ -251,11 +251,7 @@ impl Fixture {
         }
     }
 
-    pub(crate) fn cancel_book_side_ix(
-        &self,
-        user_idx: usize,
-        sides: ClobCancelSides,
-    ) -> Instruction {
+    pub(crate) fn cancel_book_side_ix(&self, user_idx: usize, sides: CancelSidesV0) -> Instruction {
         let user = &self.users[user_idx];
         let mut accounts = velocity::accounts::CancelOrdersV1 {
             user: user.user_pda,

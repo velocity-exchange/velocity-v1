@@ -7,8 +7,8 @@ use {
         book::{BookHeader, ClobBook, NodeArena},
         error::ClobError,
         state::{
-            ClobHeaderV0, ClobMarketV0, ClobSideExt, MarketConfigV0, OrderBitFlag, OrderRefV0,
-            PlaceOrderParams, Side, UserRefV0, NIL,
+            ClobHeaderV0, ClobMarketV0, ClobOrderRefV0, MarketConfigV0, OrderBitFlag,
+            PlaceOrderParams, SideV0, UserRefV0, NIL,
         },
     },
     anchor_lang::{
@@ -114,11 +114,11 @@ pub fn user(seed: u8) -> UserRefV0 {
 /// Place an order and assert the book is still fully consistent.
 pub fn place(
     book: &mut ClobMarketV0,
-    side: Side,
+    side: SideV0,
     price: u64,
     size: u64,
     user: UserRefV0,
-) -> OrderRefV0 {
+) -> ClobOrderRefV0 {
     let order_ref = place_raw(book, side, price, size, user).expect("placement succeeds");
     assert_consistent(book);
     order_ref
@@ -126,11 +126,11 @@ pub fn place(
 
 pub fn place_raw(
     book: &mut ClobMarketV0,
-    side: Side,
+    side: SideV0,
     price: u64,
     size: u64,
     user: UserRefV0,
-) -> Result<OrderRefV0> {
+) -> Result<ClobOrderRefV0> {
     book.place(PlaceOrderParams {
         client_order_id: client_id(book.next_order_id),
         ..params(side, price, size, user)
@@ -151,11 +151,11 @@ pub fn client_id(order_id: u64) -> u32 {
 /// set.
 pub fn place_taker_origin(
     book: &mut ClobMarketV0,
-    side: Side,
+    side: SideV0,
     price: u64,
     size: u64,
     user: UserRefV0,
-) -> OrderRefV0 {
+) -> ClobOrderRefV0 {
     let order_ref = book
         .place(PlaceOrderParams {
             taker_origin: true,
@@ -167,7 +167,7 @@ pub fn place_taker_origin(
     order_ref
 }
 
-pub fn params(side: Side, price: u64, size: u64, user: UserRefV0) -> PlaceOrderParams {
+pub fn params(side: SideV0, price: u64, size: u64, user: UserRefV0) -> PlaceOrderParams {
     PlaceOrderParams {
         side,
         price,
@@ -204,7 +204,7 @@ pub fn assert_consistent(book: &ClobMarketV0) {
     let mut seen = vec![false; capacity];
     let mut taker_origin = [0usize; 2];
 
-    for side in [Side::Bid, Side::Ask] {
+    for side in [SideV0::Bid, SideV0::Ask] {
         let mut cursor = book.best(side);
         let mut prev = NIL;
         let mut count = 0usize;
@@ -282,7 +282,7 @@ pub fn assert_consistent(book: &ClobMarketV0) {
 /// that is not on the side, or an unlisted order that is, fails the count.
 #[track_caller]
 fn assert_claimants_listed(book: &ClobMarketV0, taker_origin: [usize; 2]) {
-    for side in [Side::Bid, Side::Ask] {
+    for side in [SideV0::Bid, SideV0::Ask] {
         let list = side.tag() as usize;
         let mut cursor = book.first_claimant(side);
         let mut prev = NIL;

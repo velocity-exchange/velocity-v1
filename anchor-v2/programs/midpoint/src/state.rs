@@ -64,24 +64,6 @@ pub use quoter_spec::CancelSidesV0;
 pub use quoter_spec::DirectionV0;
 pub use quoter_spec::ZERO_ADDRESS;
 
-/// What the wire's named sides mean to a spline. The spline holds no orders,
-/// so it reads a side as the flow that consumes its rungs.
-pub trait CancelSidesExt {
-    fn directions(self) -> &'static [DirectionV0];
-}
-
-impl CancelSidesExt for CancelSidesV0 {
-    /// The taker directions that consume the named sides. A `Short` taker
-    /// hits a bid. A `Long` taker hits an ask.
-    fn directions(self) -> &'static [DirectionV0] {
-        match self {
-            CancelSidesV0::Bids => &[DirectionV0::Short],
-            CancelSidesV0::Asks => &[DirectionV0::Long],
-            CancelSidesV0::Both => &[DirectionV0::Short, DirectionV0::Long],
-        }
-    }
-}
-
 /// What a `cancel_all_v0` withdrew. It carries rung counts and nothing more.
 /// Unlike the CLOB sweep, this one reserves nothing on velocity's side, so no
 /// caller has aggregates to unwind. A total of the withdrawn intent would mean

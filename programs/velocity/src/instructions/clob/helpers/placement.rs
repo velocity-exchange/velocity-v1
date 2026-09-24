@@ -16,7 +16,7 @@ use {
         msg,
         state::{
             prop_amm::{
-                ClobMarket, ClobPlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0, UserRefV0,
+                ClobMarket, PlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0, UserRefV0,
             },
             user::{OrderReservation, ReleaseCheck, User},
         },
@@ -228,7 +228,7 @@ pub fn clob_admits_rest(
 /// [`clob_admits_rest`] after the book answers, as a decision over the rules
 /// alone.
 pub fn rest_admission(
-    rules: &crate::state::prop_amm::ClobOrderRulesV0,
+    rules: &crate::state::prop_amm::OrderRulesV0,
     direction: PositionDirection,
     price: u64,
     base_asset_amount: u64,
@@ -355,15 +355,12 @@ pub fn try_place_remainder_on_clob<'info>(
         return Ok(None);
     };
 
-    let side = match direction {
-        PositionDirection::Long => SideV0::Bid,
-        PositionDirection::Short => SideV0::Ask,
-    };
+    let side = SideV0::from(direction);
 
     // A failed CPI aborts the transaction, which unwinds the reservation with
     // it. `clob_admits_rest` caught every rejection it can, which leaves
     // `OrderWouldCross` for a post-only maker.
-    let order_ref = clob.place(ClobPlaceOrderArgsV0 {
+    let order_ref = clob.place(PlaceOrderArgsV0 {
         side,
         price,
         base_asset_amount,
@@ -569,13 +566,13 @@ mod restable_remainder_price_tests {
 mod rest_admission_tests {
     use {
         super::{rest_admission, RestAdmission, RestRefusal},
-        crate::{controller::position::PositionDirection, state::prop_amm::ClobOrderRulesV0},
+        crate::{controller::position::PositionDirection, state::prop_amm::OrderRulesV0},
     };
 
     const NOW: i64 = 1_700_000_000;
 
-    fn rules() -> ClobOrderRulesV0 {
-        ClobOrderRulesV0 {
+    fn rules() -> OrderRulesV0 {
+        OrderRulesV0 {
             min_order_size: 100,
             blocking_min_size: 0,
             default_activation_delay_slots: 2,

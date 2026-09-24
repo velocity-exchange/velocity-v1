@@ -38,9 +38,9 @@ use {
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                ClobEvictWorstArgsV0, ClobMarket, ClobReader, ClobRemoveExpiredArgsV0,
-                ClobRemovedOrderV0, DirectionV0, L3ArgsV0, L3RowV0, QuoterCpiScratch,
-                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, UserRefV0,
+                ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0, L3RowV0,
+                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType,
+                RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
             },
             state::State,
             user::{OrderReservation, ReleaseCheck, User, UserStats},
@@ -116,12 +116,12 @@ pub struct CrankClobOrderRemoval<'info> {
 /// and in what happens to a placed trigger's shadow slot. Eviction re-arms the
 /// slot in the same transaction. Expiry frees it.
 pub enum ClobRemoval {
-    Evict(ClobEvictWorstArgsV0),
-    Expire(ClobRemoveExpiredArgsV0),
+    Evict(EvictWorstArgsV0),
+    Expire(RemoveExpiredArgsV0),
 }
 
 impl ClobRemoval {
-    fn invoke(self, clob: &ClobMarket) -> Result<ClobRemovedOrderV0> {
+    fn invoke(self, clob: &ClobMarket) -> Result<RemovedOrderV0> {
         match self {
             ClobRemoval::Evict(args) => clob.evict(args),
             ClobRemoval::Expire(args) => clob.remove_expired(args),

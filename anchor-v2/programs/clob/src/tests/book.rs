@@ -14,8 +14,8 @@ use {
         book::{walk_side, BookHeader, ClobBook, NodeArena, Walk},
         error::ClobError,
         state::{
-            CancelAllOutcome, CancelSidesV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
-            PlaceOrderParams, Side, UserCapsV0, UserRefV0, BASE_PRECISION,
+            CancelAllOutcomeV0, CancelSidesV0, ClobMarketV0, DirectionV0, MarketConfigV0,
+            OrderBitFlag, PlaceOrderParams, SideV0, UserCapsV0, UserRefV0, BASE_PRECISION,
             CANCEL_ALL_ORDERS_CEILING, NIL,
         },
     },
@@ -28,15 +28,15 @@ fn place_queues_by_price_then_time() {
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));
 
-    let first_at_100 = place(&mut book, Side::Ask, 100, 5, maker_a);
-    let worse = place(&mut book, Side::Ask, 101, 10, maker_b);
-    let later_at_100 = place(&mut book, Side::Ask, 100, 7, maker_b);
-    let best = place(&mut book, Side::Ask, 99, 1, maker_a);
+    let first_at_100 = place(&mut book, SideV0::Ask, 100, 5, maker_a);
+    let worse = place(&mut book, SideV0::Ask, 101, 10, maker_b);
+    let later_at_100 = place(&mut book, SideV0::Ask, 100, 7, maker_b);
+    let best = place(&mut book, SideV0::Ask, 99, 1, maker_a);
 
-    assert_eq!(book.node_count(Side::Ask), 4);
-    assert_eq!(book.node_count(Side::Bid), 0);
-    assert_eq!(book.best(Side::Ask), best.node_index);
-    assert_eq!(book.worst(Side::Ask), worse.node_index);
+    assert_eq!(book.node_count(SideV0::Ask), 4);
+    assert_eq!(book.node_count(SideV0::Bid), 0);
+    assert_eq!(book.best(SideV0::Ask), best.node_index);
+    assert_eq!(book.worst(SideV0::Ask), worse.node_index);
     // The later order at 100 queues behind the earlier one at the same price.
     assert_eq!(
         book.read_node(first_at_100.node_index).unwrap().next,
@@ -44,10 +44,10 @@ fn place_queues_by_price_then_time() {
     );
 
     // Bids sort the other way: the highest price is the best of book.
-    let low_bid = place(&mut book, Side::Bid, 50, 1, maker_a);
-    let high_bid = place(&mut book, Side::Bid, 60, 1, maker_a);
-    assert_eq!(book.best(Side::Bid), high_bid.node_index);
-    assert_eq!(book.worst(Side::Bid), low_bid.node_index);
+    let low_bid = place(&mut book, SideV0::Bid, 50, 1, maker_a);
+    let high_bid = place(&mut book, SideV0::Bid, 60, 1, maker_a);
+    assert_eq!(book.best(SideV0::Bid), high_bid.node_index);
+    assert_eq!(book.worst(SideV0::Bid), low_bid.node_index);
 }
 
 #[test]
@@ -56,13 +56,13 @@ fn order_ids_are_issued_once_each() {
     let mut book = market.book();
     let maker = user(1);
 
-    let first = place(&mut book, Side::Bid, 100, 1, maker);
-    let second = place(&mut book, Side::Bid, 100, 1, maker);
+    let first = place(&mut book, SideV0::Bid, 100, 1, maker);
+    let second = place(&mut book, SideV0::Bid, 100, 1, maker);
     assert_eq!((first.order_id, second.order_id), (1, 2));
 
     // A recycled node gets a fresh id, so the old handle can never verify.
     book.cancel(maker, second, ACTIVE_SLOT, false).unwrap();
-    let third = place(&mut book, Side::Bid, 100, 1, maker);
+    let third = place(&mut book, SideV0::Bid, 100, 1, maker);
     assert_eq!(third.node_index, second.node_index);
     assert_eq!(third.order_id, 3);
     assert_eq!(book.next_order_id, 4);
@@ -84,7 +84,7 @@ fn consume_order_id_refuses_to_wrap() {
     assert_err(book.consume_order_id(), ClobError::MathError);
     assert_eq!(book.next_order_id, u64::MAX);
     assert_err(
-        place_raw(&mut book, Side::Bid, 100, 1, user(1)),
+        place_raw(&mut book, SideV0::Bid, 100, 1, user(1)),
         ClobError::MathError,
     );
 }
@@ -94,7 +94,7 @@ fn alloc_node_guards_the_free_list() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let maker = user(1);
-    place(&mut book, Side::Bid, 100, 1, maker);
+    place(&mut book, SideV0::Bid, 100, 1, maker);
 
     // Callers check the per-side cap before allocating; these are the
     // defense-in-depth guards for a free list that disagrees with itself.
@@ -102,27 +102,27 @@ fn alloc_node_guards_the_free_list() {
     book.free_count = 0;
     book.free_head = NIL;
     assert_err(
-        place_raw(&mut book, Side::Bid, 100, 1, maker),
+        place_raw(&mut book, SideV0::Bid, 100, 1, maker),
         ClobError::ArenaExhausted,
     );
 
     book.free_count = count;
     book.free_head = NIL;
     assert_err(
-        place_raw(&mut book, Side::Bid, 100, 1, maker),
+        place_raw(&mut book, SideV0::Bid, 100, 1, maker),
         ClobError::ArenaExhausted,
     );
 
     book.free_head = book.capacity() as u32;
     assert_err(
-        place_raw(&mut book, Side::Bid, 100, 1, maker),
+        place_raw(&mut book, SideV0::Bid, 100, 1, maker),
         ClobError::NodeIndexOutOfRange,
     );
 
     // A free head pointing at a live order would hand out an occupied slot.
-    book.free_head = book.best(Side::Bid);
+    book.free_head = book.best(SideV0::Bid);
     assert_err(
-        place_raw(&mut book, Side::Bid, 100, 1, maker),
+        place_raw(&mut book, SideV0::Bid, 100, 1, maker),
         ClobError::BookInvariantViolated,
     );
 
@@ -139,7 +139,7 @@ fn a_placement_can_refuse_to_rest_crossed() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (maker, taker) = (user(0xA), user(0xB));
-    place(&mut book, Side::Bid, 100, 5, maker);
+    place(&mut book, SideV0::Bid, 100, 5, maker);
 
     let refusing = |side, price| PlaceOrderParams {
         reject_if_crossed: true,
@@ -148,23 +148,23 @@ fn a_placement_can_refuse_to_rest_crossed() {
 
     // At the bid and through it are both crossed for an ask.
     assert_err(
-        book.place(refusing(Side::Ask, 100)),
+        book.place(refusing(SideV0::Ask, 100)),
         ClobError::OrderWouldCross,
     );
     assert_err(
-        book.place(refusing(Side::Ask, 99)),
+        book.place(refusing(SideV0::Ask, 99)),
         ClobError::OrderWouldCross,
     );
 
     // A tick above rests, and so does a crossing order that did not ask.
-    book.place(refusing(Side::Ask, 101))
+    book.place(refusing(SideV0::Ask, 101))
         .expect("uncrossed rests");
-    book.place(params(Side::Ask, 100, 5, taker))
+    book.place(params(SideV0::Ask, 100, 5, taker))
         .expect("a crossing order still rests when it did not ask otherwise");
     assert_consistent(&book);
 
     // Same-side depth is not a cross: only the opposite best is measured.
-    book.place(refusing(Side::Bid, 90))
+    book.place(refusing(SideV0::Bid, 90))
         .expect("resting behind one's own side is not crossing");
     assert_consistent(&book);
 }
@@ -183,16 +183,16 @@ fn an_expired_opposite_head_does_not_refuse_a_placement() {
     // A bid at 100 that died a second ago, and a live bid at 90 behind it.
     book.place(PlaceOrderParams {
         max_ts: 500,
-        ..params(Side::Bid, 100, 5, maker)
+        ..params(SideV0::Bid, 100, 5, maker)
     })
     .expect("placement succeeds");
-    book.place(params(Side::Bid, 90, 5, maker))
+    book.place(params(SideV0::Bid, 90, 5, maker))
         .expect("placement succeeds");
 
     let refusing = |price| PlaceOrderParams {
         reject_if_crossed: true,
         now: 900,
-        ..params(Side::Ask, price, 5, taker)
+        ..params(SideV0::Ask, price, 5, taker)
     };
 
     // 95 crosses the dead bid at 100 and not the live one at 90.
@@ -212,7 +212,7 @@ fn a_wholly_expired_opposite_side_refuses_nothing() {
     for price in [100, 99, 98] {
         book.place(PlaceOrderParams {
             max_ts: 500,
-            ..params(Side::Bid, price, 5, maker)
+            ..params(SideV0::Bid, price, 5, maker)
         })
         .expect("placement succeeds");
     }
@@ -220,7 +220,7 @@ fn a_wholly_expired_opposite_side_refuses_nothing() {
     book.place(PlaceOrderParams {
         reject_if_crossed: true,
         now: 900,
-        ..params(Side::Ask, 50, 5, taker)
+        ..params(SideV0::Ask, 50, 5, taker)
     })
     .expect("nothing live to cross");
     assert_consistent(&book);
@@ -236,13 +236,13 @@ fn an_unactivated_opposite_head_still_refuses_a_placement() {
     let (maker, taker) = (user(0xA), user(0xB));
     book.place(PlaceOrderParams {
         activation_slot: 500,
-        ..params(Side::Bid, 100, 5, maker)
+        ..params(SideV0::Bid, 100, 5, maker)
     })
     .expect("placement succeeds");
     assert_err(
         book.place(PlaceOrderParams {
             reject_if_crossed: true,
-            ..params(Side::Ask, 100, 5, taker)
+            ..params(SideV0::Ask, 100, 5, taker)
         }),
         ClobError::OrderWouldCross,
     );
@@ -256,7 +256,7 @@ fn refusing_to_cross_an_empty_side_still_places() {
     let maker = user(0xA);
     book.place(PlaceOrderParams {
         reject_if_crossed: true,
-        ..params(Side::Bid, 100, 5, maker)
+        ..params(SideV0::Bid, 100, 5, maker)
     })
     .expect("an empty opposite side crosses nothing");
     assert_consistent(&book);
@@ -354,7 +354,7 @@ fn the_wake_hints_are_never_later_than_the_book() {
         book.place(PlaceOrderParams {
             max_ts,
             activation_slot,
-            ..params(Side::Ask, price, 10, maker)
+            ..params(SideV0::Ask, price, 10, maker)
         })
         .expect("placement succeeds")
     };
@@ -400,13 +400,13 @@ fn a_good_till_cancelled_order_is_not_an_expiry() {
     let mut book = market.book();
     let maker = user(1);
 
-    place(&mut book, Side::Bid, 100, 10, maker);
+    place(&mut book, SideV0::Bid, 100, 10, maker);
     assert_eq!(book.next_expiry_ts, i64::MAX);
 
     let expiring = book
         .place(PlaceOrderParams {
             max_ts: 500,
-            ..params(Side::Bid, 99, 10, maker)
+            ..params(SideV0::Bid, 99, 10, maker)
         })
         .expect("placement succeeds");
     assert_eq!(book.next_expiry_ts, 500);
@@ -430,13 +430,13 @@ fn a_passed_activation_stops_being_pending() {
     let maker = user(1);
 
     // Activating on the slot it was placed on is not pending.
-    place(&mut book, Side::Bid, 100, 10, maker);
+    place(&mut book, SideV0::Bid, 100, 10, maker);
     assert_eq!(book.next_activation_slot, u64::MAX);
 
     book.place(PlaceOrderParams {
         activation_slot: 10,
         placed_slot: 5,
-        ..params(Side::Ask, 100, 10, maker)
+        ..params(SideV0::Ask, 100, 10, maker)
     })
     .expect("placement succeeds");
     assert_eq!(book.next_activation_slot, 10);
@@ -446,7 +446,7 @@ fn a_passed_activation_stops_being_pending() {
     book.place(PlaceOrderParams {
         activation_slot: 40,
         placed_slot: 20,
-        ..params(Side::Ask, 101, 10, maker)
+        ..params(SideV0::Ask, 101, 10, maker)
     })
     .expect("placement succeeds");
     assert_eq!(book.next_activation_slot, 40);
@@ -458,7 +458,7 @@ fn a_passed_activation_stops_being_pending() {
     book.place(PlaceOrderParams {
         activation_slot: 50,
         placed_slot: 50,
-        ..params(Side::Ask, 102, 10, maker)
+        ..params(SideV0::Ask, 102, 10, maker)
     })
     .expect("placement succeeds");
     assert_eq!(book.next_activation_slot, u64::MAX);
@@ -478,7 +478,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
     let mut book = market.book();
     let maker = user(1);
     for (price, size) in [(100, 2), (101, 2), (102, 2), (103, 2)] {
-        place(&mut book, Side::Ask, price, size, maker);
+        place(&mut book, SideV0::Ask, price, size, maker);
     }
 
     let users = [maker];
@@ -487,7 +487,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
     // 102 and 103 are not.
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             u64::MAX,
             &users,
             &UserCapsV0::EMPTY,
@@ -504,7 +504,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
     // Zero is no bound: the same walk reaches the whole side.
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             u64::MAX,
             &users,
             &UserCapsV0::EMPTY,
@@ -526,12 +526,12 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     for (price, size) in [(103, 2), (102, 2), (101, 2), (100, 2)] {
-        place(&mut book, Side::Bid, price, size, maker);
+        place(&mut book, SideV0::Bid, price, size, maker);
     }
 
     let pointer = book
         .quote(
-            Direction::Short,
+            DirectionV0::Short,
             u64::MAX,
             &users,
             &UserCapsV0::EMPTY,
@@ -553,7 +553,7 @@ fn a_quote_budget_without_a_reference_price_is_refused() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let tight = user(1);
-    place(&mut book, Side::Ask, 100, 5, tight);
+    place(&mut book, SideV0::Ask, 100, 5, tight);
 
     let users = [tight];
     let mut caps = UserCapsV0::EMPTY;
@@ -566,7 +566,7 @@ fn a_quote_budget_without_a_reference_price_is_refused() {
 
     assert_err(
         book.quote(
-            Direction::Long,
+            DirectionV0::Long,
             5,
             &users,
             &caps,
@@ -580,7 +580,7 @@ fn a_quote_budget_without_a_reference_price_is_refused() {
         ClobError::MissingReferencePrice,
     );
     assert_err(
-        book.execute(Direction::Long, 5, &users, &caps, None, None, false, 0, 0),
+        book.execute(DirectionV0::Long, 5, &users, &caps, None, None, false, 0, 0),
         ClobError::MissingReferencePrice,
     );
 }
@@ -600,8 +600,8 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     let broke = user(1);
     let healthy = user(2);
     // The one who cannot settle is at the front, best price.
-    place(&mut book, Side::Ask, 100, 5, broke);
-    place(&mut book, Side::Ask, 101, 7, healthy);
+    place(&mut book, SideV0::Ask, 100, 5, broke);
+    place(&mut book, SideV0::Ask, 101, 7, healthy);
 
     let users = [broke, healthy];
     let mut caps = UserCapsV0::EMPTY;
@@ -610,7 +610,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // Control: unconstrained, both levels quote.
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             12,
             &users,
             &UserCapsV0::EMPTY,
@@ -628,7 +628,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // truncated away with it.
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             12,
             &users,
             &caps,
@@ -649,7 +649,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // And execute spends the same budget, so the fill matches the ladder.
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             12,
             &users,
             &caps,
@@ -663,7 +663,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 7);
     assert_eq!(
-        book.node_count(Side::Ask),
+        book.node_count(SideV0::Ask),
         1,
         "the skipped maker's order is untouched, not consumed"
     );
@@ -682,8 +682,8 @@ fn a_user_with_some_room_is_filled_only_that_far() {
     let mut book = market.book();
     let tight = user(1);
     let healthy = user(2);
-    place(&mut book, Side::Ask, 100, 5 * UNIT, tight);
-    place(&mut book, Side::Ask, 101, 7 * UNIT, healthy);
+    place(&mut book, SideV0::Ask, 100, 5 * UNIT, tight);
+    place(&mut book, SideV0::Ask, 101, 7 * UNIT, healthy);
 
     let users = [tight, healthy];
     let mut caps = UserCapsV0::EMPTY;
@@ -696,7 +696,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
 
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             12 * UNIT,
             &users,
             &caps,
@@ -716,7 +716,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             12 * UNIT,
             &users,
             &caps,
@@ -746,10 +746,10 @@ fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
     let healthy = user(2);
     book.place(PlaceOrderParams {
         reduce_only: true,
-        ..params(Side::Ask, 100, 5 * UNIT, capped)
+        ..params(SideV0::Ask, 100, 5 * UNIT, capped)
     })
     .expect("placement succeeds");
-    place(&mut book, Side::Ask, 101, 7 * UNIT, healthy);
+    place(&mut book, SideV0::Ask, 101, 7 * UNIT, healthy);
 
     let users = [capped, healthy];
     let mut caps = UserCapsV0::EMPTY;
@@ -762,7 +762,7 @@ fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             12 * UNIT,
             &users,
             &caps,
@@ -792,10 +792,10 @@ fn a_reduce_only_order_with_no_cover_does_not_fill() {
     let healthy = user(2);
     book.place(PlaceOrderParams {
         reduce_only: true,
-        ..params(Side::Ask, 100, 5 * UNIT, uncovered)
+        ..params(SideV0::Ask, 100, 5 * UNIT, uncovered)
     })
     .expect("placement succeeds");
-    place(&mut book, Side::Ask, 101, 7 * UNIT, healthy);
+    place(&mut book, SideV0::Ask, 101, 7 * UNIT, healthy);
 
     let users = [uncovered, healthy];
     // No cap entry for the reduce-only maker: uncovered, so it must not fill.
@@ -803,7 +803,7 @@ fn a_reduce_only_order_with_no_cover_does_not_fill() {
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             12 * UNIT,
             &users,
             &caps,
@@ -833,8 +833,8 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let (first, second) = (user(1), user(2));
-    place(&mut book, Side::Ask, 100, 5 * UNIT, first);
-    place(&mut book, Side::Ask, 101, 5 * UNIT, second);
+    place(&mut book, SideV0::Ask, 100, 5 * UNIT, first);
+    place(&mut book, SideV0::Ask, 101, 5 * UNIT, second);
 
     // Against a reference of 102 the first order costs 2 per base and the
     // second costs 1, so these budgets buy 2 and 3 units of 5 — both truncate.
@@ -855,7 +855,7 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
 
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             12 * UNIT,
             &users,
             &caps,
@@ -875,7 +875,7 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             12 * UNIT,
             &users,
             &caps,
@@ -889,7 +889,7 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 2 * UNIT);
     // Both orders are still on the book: the first smaller, the second whole.
-    assert_eq!(book.node_count(Side::Ask), 2);
+    assert_eq!(book.node_count(SideV0::Ask), 2);
 }
 
 /// An order priced in its owner's favour draws on nothing, so a budget never
@@ -900,7 +900,7 @@ fn a_fill_that_pays_the_maker_spends_no_budget() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let maker = user(1);
-    place(&mut book, Side::Ask, 100, 5 * UNIT, maker);
+    place(&mut book, SideV0::Ask, 100, 5 * UNIT, maker);
 
     let users = [maker];
     let mut caps = UserCapsV0::EMPTY;
@@ -914,7 +914,7 @@ fn a_fill_that_pays_the_maker_spends_no_budget() {
     // Selling at 100 against a reference of 98 is a gain, not a loss.
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             5 * UNIT,
             &users,
             &caps,
@@ -951,16 +951,16 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
     let first = user(1);
     let second = user(2);
     let third = user(3);
-    place(&mut book, Side::Ask, 100, 5, first);
-    place(&mut book, Side::Ask, 101, 5, second);
-    place(&mut book, Side::Ask, 102, 5, third);
+    place(&mut book, SideV0::Ask, 100, 5, first);
+    place(&mut book, SideV0::Ask, 101, 5, second);
+    place(&mut book, SideV0::Ask, 102, 5, third);
 
     // All three named, which is one more than the cap. The old rule failed
     // the call here.
     let users = [first, second, third];
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             15,
             &users,
             &UserCapsV0::EMPTY,
@@ -981,7 +981,7 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
     // And execute delivers exactly that — the promise the cap exists to keep.
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             15,
             &users,
             &UserCapsV0::EMPTY,
@@ -1001,7 +1001,7 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
 
     // The third maker's order is untouched and still resting, so a later
     // fill that names a different set can reach it.
-    assert_eq!(book.node_count(Side::Ask), 1);
+    assert_eq!(book.node_count(SideV0::Ask), 1);
 }
 
 #[test]
@@ -1011,14 +1011,14 @@ fn a_link_out_of_the_arena_fails_every_walk() {
         let market = TestMarket::new(8);
         let mut book = market.book();
         let maker = user(1);
-        let head = place(&mut book, Side::Ask, 100, 5, maker);
-        place(&mut book, Side::Ask, 101, 5, maker);
+        let head = place(&mut book, SideV0::Ask, 100, 5, maker);
+        place(&mut book, SideV0::Ask, 101, 5, maker);
         book.update_node(head.node_index, |node| node.next = corrupt)
             .unwrap();
 
         assert_err(
             book.quote(
-                Direction::Long,
+                DirectionV0::Long,
                 10,
                 &[],
                 &UserCapsV0::EMPTY,
@@ -1033,7 +1033,7 @@ fn a_link_out_of_the_arena_fails_every_walk() {
         );
         assert_err(
             book.execute(
-                Direction::Long,
+                DirectionV0::Long,
                 10,
                 &[],
                 &UserCapsV0::EMPTY,
@@ -1048,7 +1048,7 @@ fn a_link_out_of_the_arena_fails_every_walk() {
 
         // The placement scan walks the same list.
         assert_err(
-            place_raw(&mut book, Side::Ask, 100, 5, maker),
+            place_raw(&mut book, SideV0::Ask, 100, 5, maker),
             ClobError::NodeIndexOutOfRange,
         );
     }
@@ -1059,14 +1059,14 @@ fn a_cycled_link_cannot_spin_the_walk() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let maker = user(1);
-    let head = place(&mut book, Side::Ask, 100, 1, maker);
+    let head = place(&mut book, SideV0::Ask, 100, 1, maker);
     // A list that points back at itself has no tail to stop at; the walk
     // gives up once it has taken more hops than the arena has slots.
     book.update_node(head.node_index, |node| node.next = head.node_index)
         .unwrap();
     assert_err(
         book.quote(
-            Direction::Long,
+            DirectionV0::Long,
             u64::MAX,
             &[],
             &UserCapsV0::EMPTY,
@@ -1086,9 +1086,9 @@ fn removals_free_the_slot_and_close_the_list() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let maker = user(1);
-    let low = place(&mut book, Side::Bid, 100, 3, maker);
-    let mid = place(&mut book, Side::Bid, 110, 3, maker);
-    let high = place(&mut book, Side::Bid, 120, 3, maker);
+    let low = place(&mut book, SideV0::Bid, 100, 3, maker);
+    let mid = place(&mut book, SideV0::Bid, 110, 3, maker);
+    let high = place(&mut book, SideV0::Bid, 120, 3, maker);
 
     // Cancelling the middle order relinks its neighbours around it.
     let removed = book.cancel(maker, mid, ACTIVE_SLOT, false).unwrap();
@@ -1121,7 +1121,7 @@ fn cancel_all(
     book: &mut ClobMarketV0,
     user: UserRefV0,
     sides: CancelSidesV0,
-) -> (CancelAllOutcome, Vec<u32>) {
+) -> (CancelAllOutcomeV0, Vec<u32>) {
     let mut ids = Vec::new();
     let outcome = book
         .cancel_all(user, sides, ACTIVE_SLOT, false, &mut |client_order_id| {
@@ -1146,9 +1146,9 @@ fn cancel_all_takes_one_users_side_and_leaves_the_rest() {
     // survivors rather than truncate a contiguous run.
     let mut survivors = Vec::new();
     for i in 0..4u64 {
-        place(&mut book, Side::Bid, 100 - i, 3, mine);
-        survivors.push(place(&mut book, Side::Bid, 100 - i, 7, theirs));
-        place(&mut book, Side::Ask, 200 + i, 5, mine);
+        place(&mut book, SideV0::Bid, 100 - i, 3, mine);
+        survivors.push(place(&mut book, SideV0::Bid, 100 - i, 7, theirs));
+        place(&mut book, SideV0::Ask, 200 + i, 5, mine);
     }
 
     let (outcome, ids) = cancel_all(&mut book, mine, CancelSidesV0::Both);
@@ -1160,10 +1160,10 @@ fn cancel_all_takes_one_users_side_and_leaves_the_rest() {
     assert_eq!(ids.len(), 8);
 
     // Nothing of mine is left; every one of theirs is, best-first as placed.
-    assert_eq!(book.node_count(Side::Ask), 0);
-    assert_eq!(book.node_count(Side::Bid), 4);
+    assert_eq!(book.node_count(SideV0::Ask), 0);
+    assert_eq!(book.node_count(SideV0::Bid), 4);
     let mut remaining = Vec::new();
-    walk_side(&mut book, Side::Bid, |_, _, node| {
+    walk_side(&mut book, SideV0::Bid, |_, _, node| {
         assert_eq!(node.user_ref(), theirs);
         remaining.push(node.order_id);
         Ok(Walk::Continue)
@@ -1183,26 +1183,27 @@ fn cancel_all_sweeps_only_the_named_sides() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let maker = user(1);
-    place(&mut book, Side::Bid, 100, 2, maker);
-    place(&mut book, Side::Ask, 200, 3, maker);
+    place(&mut book, SideV0::Bid, 100, 2, maker);
+    place(&mut book, SideV0::Ask, 200, 3, maker);
 
     let (bids, _) = cancel_all(&mut book, maker, CancelSidesV0::Bids);
     assert_eq!((bids.bid_orders, bids.ask_orders), (1, 0));
     assert_eq!(bids.bid_base_asset_amount, 2);
     assert_eq!(bids.ask_base_asset_amount, 0);
-    assert_eq!(book.node_count(Side::Ask), 1);
+    assert_eq!(book.node_count(SideV0::Ask), 1);
 
     let (asks, _) = cancel_all(&mut book, maker, CancelSidesV0::Asks);
     assert_eq!((asks.bid_orders, asks.ask_orders), (0, 1));
     assert_eq!(asks.ask_base_asset_amount, 3);
-    assert_eq!(book.node_count(Side::Bid), 0);
+    assert_eq!(book.node_count(SideV0::Bid), 0);
 
     // A sweep with nothing to take is not an error — it reports an empty,
     // exhaustive result, which is what makes the call idempotent.
     let (empty, ids) = cancel_all(&mut book, maker, CancelSidesV0::Both);
     assert_eq!(
         empty,
-        CancelAllOutcome {
+        CancelAllOutcomeV0 {
+            user: maker,
             exhaustive: true,
             ..Default::default()
         }
@@ -1221,7 +1222,7 @@ fn cancel_all_stops_at_the_ceiling_and_reports_it() {
     let maker = user(1);
     let total = CANCEL_ALL_ORDERS_CEILING as u64 + 4;
     for i in 0..total {
-        place(&mut book, Side::Bid, 1_000 - i, 1, maker);
+        place(&mut book, SideV0::Bid, 1_000 - i, 1, maker);
     }
 
     let (first, ids) = cancel_all(&mut book, maker, CancelSidesV0::Both);
@@ -1229,7 +1230,7 @@ fn cancel_all_stops_at_the_ceiling_and_reports_it() {
     assert_eq!(first.bid_orders, CANCEL_ALL_ORDERS_CEILING as u32);
     assert_eq!(ids.len(), CANCEL_ALL_ORDERS_CEILING as usize);
     assert_eq!(
-        book.node_count(Side::Bid),
+        book.node_count(SideV0::Bid),
         total as u32 - CANCEL_ALL_ORDERS_CEILING as u32
     );
 
@@ -1238,7 +1239,7 @@ fn cancel_all_stops_at_the_ceiling_and_reports_it() {
     assert!(second.exhaustive);
     assert_eq!(second.bid_orders, 4);
     assert_eq!(ids.len(), 4);
-    assert_eq!(book.node_count(Side::Bid), 0);
+    assert_eq!(book.node_count(SideV0::Bid), 0);
 }
 
 /// The cap is a budget for the whole call, not for each side — otherwise a
@@ -1251,8 +1252,8 @@ fn the_cancel_all_ceiling_spans_both_sides() {
     let mut book = market.book();
     let maker = user(1);
     for i in 0..per_side as u64 {
-        place(&mut book, Side::Bid, 1_000 - i, 1, maker);
-        place(&mut book, Side::Ask, 2_000 + i, 1, maker);
+        place(&mut book, SideV0::Bid, 1_000 - i, 1, maker);
+        place(&mut book, SideV0::Ask, 2_000 + i, 1, maker);
     }
 
     let (outcome, ids) = cancel_all(&mut book, maker, CancelSidesV0::Both);
@@ -1261,7 +1262,7 @@ fn the_cancel_all_ceiling_spans_both_sides() {
     assert_eq!(ids.len(), CANCEL_ALL_ORDERS_CEILING as usize);
     // Bids filled the budget, so the ask side was never touched.
     assert_eq!(outcome.ask_orders, 0);
-    assert_eq!(book.node_count(Side::Ask), per_side);
+    assert_eq!(book.node_count(SideV0::Ask), per_side);
 }
 
 /// The sweep ends by validating the book like every other mutating operation.
@@ -1270,7 +1271,7 @@ fn cancel_all_ends_by_validating_the_book() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let maker = user(1);
-    place(&mut book, Side::Bid, 100, 1, maker);
+    place(&mut book, SideV0::Bid, 100, 1, maker);
     book.free_count += 1;
     assert_err(
         book.cancel_all(maker, CancelSidesV0::Both, ACTIVE_SLOT, false, &mut |_| {
@@ -1287,7 +1288,7 @@ fn a_failing_id_sink_fails_the_sweep() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let maker = user(1);
-    place(&mut book, Side::Bid, 100, 1, maker);
+    place(&mut book, SideV0::Bid, 100, 1, maker);
     assert_err(
         book.cancel_all(maker, CancelSidesV0::Both, ACTIVE_SLOT, false, &mut |_| {
             Err(ClobError::EventTooLarge.into())
@@ -1301,13 +1302,13 @@ fn evict_worst_moves_the_tail_off_the_freed_slot() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let maker = user(1);
-    place(&mut book, Side::Bid, 120, 1, maker);
-    let tail = place(&mut book, Side::Bid, 100, 1, maker);
-    let next_tail = place(&mut book, Side::Bid, 110, 1, maker);
+    place(&mut book, SideV0::Bid, 120, 1, maker);
+    let tail = place(&mut book, SideV0::Bid, 100, 1, maker);
+    let next_tail = place(&mut book, SideV0::Bid, 110, 1, maker);
 
-    let removed = book.evict_worst(Side::Bid, ACTIVE_SLOT).unwrap();
+    let removed = book.evict_worst(SideV0::Bid, ACTIVE_SLOT).unwrap();
     assert_eq!((removed.order_id, removed.price), (tail.order_id, 100));
-    assert_eq!(book.worst(Side::Bid), next_tail.node_index);
+    assert_eq!(book.worst(SideV0::Bid), next_tail.node_index);
     assert!(!book
         .read_node(tail.node_index)
         .unwrap()
@@ -1315,12 +1316,15 @@ fn evict_worst_moves_the_tail_off_the_freed_slot() {
     assert_consistent(&book);
 
     // Evicting the last order on a side clears both endpoints.
-    book.evict_worst(Side::Bid, ACTIVE_SLOT).unwrap();
-    book.evict_worst(Side::Bid, ACTIVE_SLOT).unwrap();
-    assert_eq!(book.node_count(Side::Bid), 0);
-    assert_eq!((book.best(Side::Bid), book.worst(Side::Bid)), (NIL, NIL));
+    book.evict_worst(SideV0::Bid, ACTIVE_SLOT).unwrap();
+    book.evict_worst(SideV0::Bid, ACTIVE_SLOT).unwrap();
+    assert_eq!(book.node_count(SideV0::Bid), 0);
+    assert_eq!(
+        (book.best(SideV0::Bid), book.worst(SideV0::Bid)),
+        (NIL, NIL)
+    );
     assert_err(
-        book.evict_worst(Side::Bid, ACTIVE_SLOT),
+        book.evict_worst(SideV0::Bid, ACTIVE_SLOT),
         ClobError::BelowEvictThreshold,
     );
     assert_consistent(&book);
@@ -1334,7 +1338,7 @@ fn expired_orders_are_reclaimed_only_once_expired() {
     let order = book
         .place(PlaceOrderParams {
             max_ts: 1_000,
-            ..super::market::params(Side::Ask, 100, 5, maker)
+            ..super::market::params(SideV0::Ask, 100, 5, maker)
         })
         .unwrap();
 
@@ -1352,7 +1356,7 @@ fn expired_orders_are_reclaimed_only_once_expired() {
 fn validate_book_catches_a_tampered_header() {
     let market = TestMarket::new(8);
     let mut book = market.book();
-    let order = place(&mut book, Side::Bid, 100, 1, user(1));
+    let order = place(&mut book, SideV0::Bid, 100, 1, user(1));
     let free_head = book.free_head;
 
     // The three counts must account for the whole arena.
@@ -1364,14 +1368,14 @@ fn validate_book_catches_a_tampered_header() {
     book.bid_count -= 1;
 
     // An endpoint pointing at a freed slot.
-    book.set_best(Side::Bid, free_head);
+    book.set_best(SideV0::Bid, free_head);
     assert_err(book.validate_book(), ClobError::BookInvariantViolated);
-    book.set_best(Side::Bid, order.node_index);
+    book.set_best(SideV0::Bid, order.node_index);
 
     // Endpoints are null exactly when the side is empty.
-    book.set_worst(Side::Bid, NIL);
+    book.set_worst(SideV0::Bid, NIL);
     assert_err(book.validate_book(), ClobError::BookInvariantViolated);
-    book.set_worst(Side::Bid, order.node_index);
+    book.set_worst(SideV0::Bid, order.node_index);
 
     // A free head that disagrees with the free count.
     book.free_head = NIL;
@@ -1385,7 +1389,7 @@ fn every_mutating_operation_ends_by_validating_the_book() {
     let market = TestMarket::new(8);
     let mut book = market.book();
     let maker = user(1);
-    let order = place(&mut book, Side::Bid, 100, 1, maker);
+    let order = place(&mut book, SideV0::Bid, 100, 1, maker);
     // Nothing in cancel's own path looks at the free count; the
     // end-of-operation invariant check is what catches it.
     book.free_count += 1;
@@ -1402,17 +1406,17 @@ fn place_is_rejected_at_the_per_side_cap_before_the_arena_runs_dry() {
     let mut book = market.book();
     let maker = user(1);
     for i in 0..4 {
-        place(&mut book, Side::Bid, 100 + i, 1, maker);
+        place(&mut book, SideV0::Bid, 100 + i, 1, maker);
     }
 
     assert_eq!(book.free_count, 4);
     assert_err(
-        place_raw(&mut book, Side::Bid, 200, 1, maker),
+        place_raw(&mut book, SideV0::Bid, 200, 1, maker),
         ClobError::SideAtCapacity,
     );
 
     // The other side is unaffected.
-    place(&mut book, Side::Ask, 200, 1, maker);
+    place(&mut book, SideV0::Ask, 200, 1, maker);
 }
 
 #[test]

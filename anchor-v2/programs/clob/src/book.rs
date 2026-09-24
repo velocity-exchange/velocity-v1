@@ -68,15 +68,14 @@ use {
         error::ClobError,
         events::FillSlimV0,
         state::{
-            response_pointer, user_set_within_capacity, CancelAllOutcome, CancelSidesExt,
-            CancelSidesV0, CancelledRemainderV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0,
-            ClobSideExt, CompletedOrderV0, Direction, ExecuteOutcome, FilledOrder, L3RowV0,
-            MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, PartiallyFilledOrderV0,
-            PlaceOrderParams, PriceLevel, RemovedOrder, ResponsePointerV0, Side,
-            UserBalanceChangeV0, UserCapsV0, UserRefV0, BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING,
-            EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, L3_ROWS_CEILING, NIL,
-            QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES,
-            USER_SET_CAPACITY, ZERO_ADDRESS,
+            response_pointer, user_set_within_capacity, CancelAllOutcomeV0, CancelSidesV0,
+            CancelledRemainderV0, ClobHeaderV0, ClobMarketV0, ClobOrderRefV0, CompletedOrderV0,
+            DirectionV0, ExecuteOutcome, FilledOrderV0, L3RowV0, MarketConfigV0, OrderBitFlag,
+            OrderNodeV0, PartiallyFilledOrderV0, PlaceOrderParams, PriceLevelV0, RemovedOrderV0,
+            ResponsePointerV0, SideV0, UserBalanceChangeV0, UserCapsV0, UserRefV0, BASE_PRECISION,
+            CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING,
+            L3_ROWS_CEILING, NIL, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
+            USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
     anchor_lang::{address_eq, prelude::*},
@@ -101,14 +100,14 @@ pub trait ClobBook {
         new_place_authority: Address,
         config: MarketConfigV0,
     ) -> Result<()>;
-    fn place(&mut self, params: PlaceOrderParams) -> Result<OrderRefV0>;
+    fn place(&mut self, params: PlaceOrderParams) -> Result<ClobOrderRefV0>;
     fn cancel(
         &mut self,
         user: UserRefV0,
-        order_ref: OrderRefV0,
+        order_ref: ClobOrderRefV0,
         slot: u64,
         force: bool,
-    ) -> Result<RemovedOrder>;
+    ) -> Result<RemovedOrderV0>;
     fn cancel_all(
         &mut self,
         user: UserRefV0,
@@ -116,20 +115,20 @@ pub trait ClobBook {
         slot: u64,
         force: bool,
         removed_ids: &mut dyn FnMut(u32) -> Result<()>,
-    ) -> Result<CancelAllOutcome>;
-    fn evict_worst(&mut self, side: Side, slot: u64) -> Result<RemovedOrder>;
-    fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder>;
+    ) -> Result<CancelAllOutcomeV0>;
+    fn evict_worst(&mut self, side: SideV0, slot: u64) -> Result<RemovedOrderV0>;
+    fn remove_expired(&mut self, order_ref: ClobOrderRefV0, now: i64) -> Result<RemovedOrderV0>;
     fn fill(
         &mut self,
-        order_ref: OrderRefV0,
+        order_ref: ClobOrderRefV0,
         base_asset_amount: u64,
         slot: u64,
         now: i64,
-    ) -> Result<FilledOrder>;
+    ) -> Result<FilledOrderV0>;
     #[allow(clippy::too_many_arguments)]
     fn quote(
         &mut self,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
@@ -142,7 +141,7 @@ pub trait ClobBook {
     ) -> Result<ResponsePointerV0>;
     fn quote_l3(
         &mut self,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         max_rows: u16,
         include_taker_origin_reservations: bool,
@@ -152,7 +151,7 @@ pub trait ClobBook {
     #[allow(clippy::too_many_arguments)]
     fn execute(
         &mut self,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
@@ -165,12 +164,12 @@ pub trait ClobBook {
     fn grow_free_list(&mut self) -> Result<()>;
 
     /// Live order count on `side`.
-    fn node_count(&self, side: Side) -> u32;
+    fn node_count(&self, side: SideV0) -> u32;
     /// Head of `side`: the best-priced, oldest order. [`NIL`] when empty.
-    fn best(&self, side: Side) -> u32;
+    fn best(&self, side: SideV0) -> u32;
     /// Tail of `side`: the worst-priced, youngest order there. [`NIL`] when
     /// empty. Eviction starts its search here.
-    fn worst(&self, side: Side) -> u32;
+    fn worst(&self, side: SideV0) -> u32;
     /// O(1) invariants, re-checked after every mutating operation.
     fn validate_book(&self) -> Result<()>;
 }
@@ -178,9 +177,9 @@ pub trait ClobBook {
 /// Header fields the book mutates. Split from [`ClobBook`] so the operation
 /// surface the instruction handlers see stays free of internal setters.
 pub(crate) trait BookHeader {
-    fn set_best(&mut self, side: Side, index: u32);
-    fn set_worst(&mut self, side: Side, index: u32);
-    fn set_node_count(&mut self, side: Side, count: u32) -> Result<()>;
+    fn set_best(&mut self, side: SideV0, index: u32);
+    fn set_worst(&mut self, side: SideV0, index: u32);
+    fn set_node_count(&mut self, side: SideV0, count: u32) -> Result<()>;
     /// Hand out the next order id and advance the counter. The only place
     /// `next_order_id` is read or written, so ids can never be reused.
     fn consume_order_id(&mut self) -> Result<u64>;
@@ -196,13 +195,13 @@ pub(crate) trait BookHeader {
     fn recompute_wake_hints(&mut self, expiry: bool, activation: Option<u64>) -> Result<()>;
     /// Oldest taker-origin order resting on `side`, or [`NIL`] when the side
     /// holds none.
-    fn first_claimant(&self, side: Side) -> u32;
+    fn first_claimant(&self, side: SideV0) -> u32;
     /// Newest taker-origin order resting on `side`, or [`NIL`].
-    fn last_claimant(&self, side: Side) -> u32;
+    fn last_claimant(&self, side: SideV0) -> u32;
     /// Taker-origin orders resting on `side`.
-    fn claimant_count(&self, side: Side) -> u16;
-    fn link_claimant(&mut self, side: Side, index: u32) -> Result<()>;
-    fn unlink_claimant(&mut self, side: Side, index: u32, node: &OrderNodeV0) -> Result<()>;
+    fn claimant_count(&self, side: SideV0) -> u16;
+    fn link_claimant(&mut self, side: SideV0, index: u32) -> Result<()>;
+    fn unlink_claimant(&mut self, side: SideV0, index: u32, node: &OrderNodeV0) -> Result<()>;
 }
 
 impl BookHeader for ClobMarketV0 {
@@ -291,7 +290,7 @@ impl BookHeader for ClobMarketV0 {
         // ask_count` hops instead of the arena capacity. Every removal in
         // `cancel_all` and in a deep `execute` can land here, and a full-arena
         // walk per removal put both over the compute budget on a large market.
-        for side in [Side::Bid, Side::Ask] {
+        for side in [SideV0::Bid, SideV0::Ask] {
             walk_side_ref(self, side, |_, node| {
                 if node.max_ts != 0 && node.max_ts < min_ts {
                     min_ts = node.max_ts;
@@ -318,29 +317,29 @@ impl BookHeader for ClobMarketV0 {
         self.publish_wakes()
     }
 
-    fn set_best(&mut self, side: Side, index: u32) {
+    fn set_best(&mut self, side: SideV0, index: u32) {
         match side {
-            Side::Bid => self.best_bid = index,
-            Side::Ask => self.best_ask = index,
+            SideV0::Bid => self.best_bid = index,
+            SideV0::Ask => self.best_ask = index,
         }
     }
 
-    fn set_worst(&mut self, side: Side, index: u32) {
+    fn set_worst(&mut self, side: SideV0, index: u32) {
         match side {
-            Side::Bid => self.worst_bid = index,
-            Side::Ask => self.worst_ask = index,
+            SideV0::Bid => self.worst_bid = index,
+            SideV0::Ask => self.worst_ask = index,
         }
     }
 
-    fn set_node_count(&mut self, side: Side, count: u32) -> Result<()> {
+    fn set_node_count(&mut self, side: SideV0, count: u32) -> Result<()> {
         require!(
             count <= self.capacity() as u32,
             ClobError::BookInvariantViolated
         );
 
         match side {
-            Side::Bid => self.bid_count = count,
-            Side::Ask => self.ask_count = count,
+            SideV0::Bid => self.bid_count = count,
+            SideV0::Ask => self.ask_count = count,
         }
 
         Ok(())
@@ -352,22 +351,22 @@ impl BookHeader for ClobMarketV0 {
         Ok(order_id)
     }
 
-    fn first_claimant(&self, side: Side) -> u32 {
+    fn first_claimant(&self, side: SideV0) -> u32 {
         self.taker_origin_head[side.tag() as usize]
     }
 
-    fn last_claimant(&self, side: Side) -> u32 {
+    fn last_claimant(&self, side: SideV0) -> u32 {
         self.taker_origin_tail[side.tag() as usize]
     }
 
-    fn claimant_count(&self, side: Side) -> u16 {
+    fn claimant_count(&self, side: SideV0) -> u16 {
         self.taker_origin_count[side.tag() as usize]
     }
 
     /// Appends to the tail, which keeps the list in rest order because
     /// `next_order_id` only increases. [`CrossReservation`] serves claimants in
     /// that order, so the oldest remainder is paid first.
-    fn link_claimant(&mut self, side: Side, index: u32) -> Result<()> {
+    fn link_claimant(&mut self, side: SideV0, index: u32) -> Result<()> {
         let list = side.tag() as usize;
         let tail = self.taker_origin_tail[list];
         self.update_node(index, |node| {
@@ -395,7 +394,7 @@ impl BookHeader for ClobMarketV0 {
     /// that function. A cancel, an eviction, an expiry reclaim, a cull and a
     /// consumed order therefore all maintain the list without knowing it
     /// exists.
-    fn unlink_claimant(&mut self, side: Side, index: u32, node: &OrderNodeV0) -> Result<()> {
+    fn unlink_claimant(&mut self, side: SideV0, index: u32, node: &OrderNodeV0) -> Result<()> {
         let list = side.tag() as usize;
         let (prev, next) = (node.taker_origin_prev, node.taker_origin_next);
         if prev == NIL {
@@ -510,7 +509,7 @@ pub(crate) enum Walk {
 /// that. [`NodeArena::read_node`] bounds-validates every hop, and the walk
 /// refuses to take more hops than the arena has slots. A list corrupted into a
 /// cycle therefore errors out instead of spending the whole compute budget.
-pub(crate) fn walk_side<F>(book: &mut ClobMarketV0, side: Side, mut visit: F) -> Result<()>
+pub(crate) fn walk_side<F>(book: &mut ClobMarketV0, side: SideV0, mut visit: F) -> Result<()>
 where
     F: FnMut(&mut ClobMarketV0, u32, &OrderNodeV0) -> Result<Walk>,
 {
@@ -538,7 +537,7 @@ where
 /// visit rather than before it. The hop guard is the same, so a list
 /// corrupted into a cycle errors out instead of spending the whole compute
 /// budget.
-pub(crate) fn walk_side_ref<F>(book: &ClobMarketV0, side: Side, mut visit: F) -> Result<()>
+pub(crate) fn walk_side_ref<F>(book: &ClobMarketV0, side: SideV0, mut visit: F) -> Result<()>
 where
     F: FnMut(u32, &OrderNodeV0) -> Result<Walk>,
 {
@@ -687,7 +686,7 @@ impl ClobBook for ClobMarketV0 {
     /// [`Self::evict_worst`]), which keeps the evicted maker's margin
     /// aggregates exact. The soft-cap buffer makes the hard cap an operations
     /// failure rather than a normal state.
-    fn place(&mut self, params: PlaceOrderParams) -> Result<OrderRefV0> {
+    fn place(&mut self, params: PlaceOrderParams) -> Result<ClobOrderRefV0> {
         let PlaceOrderParams {
             side,
             price,
@@ -780,7 +779,7 @@ impl ClobBook for ClobMarketV0 {
                 taker_origin_prev: NIL,
                 taker_origin_next: NIL,
                 bit_flags: OrderBitFlag::Open as u8
-                    | side.side_bit()
+                    | OrderBitFlag::Ask.bit_if(side == SideV0::Ask)
                     | OrderBitFlag::TakerOrigin.bit_if(taker_origin)
                     | OrderBitFlag::ReduceOnly.bit_if(reduce_only),
                 padding0: 0,
@@ -834,7 +833,7 @@ impl ClobBook for ClobMarketV0 {
         self.expire_activation_hint(placed_slot)?;
         self.validate_book()?;
 
-        Ok(OrderRefV0 {
+        Ok(ClobOrderRefV0 {
             node_index: index,
             order_id,
         })
@@ -850,10 +849,10 @@ impl ClobBook for ClobMarketV0 {
     fn cancel(
         &mut self,
         user: UserRefV0,
-        order_ref: OrderRefV0,
+        order_ref: ClobOrderRefV0,
         slot: u64,
         force: bool,
-    ) -> Result<RemovedOrder> {
+    ) -> Result<RemovedOrderV0> {
         let node = live_order(self, order_ref)?;
         require!(node.user_ref() == user, ClobError::OrderUserMismatch);
         require!(
@@ -878,7 +877,7 @@ impl ClobBook for ClobMarketV0 {
     /// a fraction of one CPI round trip per hop.
     ///
     /// Removals are capped at [`CANCEL_ALL_ORDERS_CEILING`] per call, and
-    /// [`CancelAllOutcome::exhaustive`] reports whether the walk reached the end
+    /// [`CancelAllOutcomeV0::exhaustive`] reports whether the walk reached the end
     /// of every requested side. It is false only when the cap stopped the walk,
     /// which is the one case where orders of this user are still resting. The
     /// caller must repeat the call until it comes back true.
@@ -894,12 +893,13 @@ impl ClobBook for ClobMarketV0 {
         slot: u64,
         force: bool,
         removed_ids: &mut dyn FnMut(u32) -> Result<()>,
-    ) -> Result<CancelAllOutcome> {
+    ) -> Result<CancelAllOutcomeV0> {
         let ceiling = CANCEL_ALL_ORDERS_CEILING as u32;
-        let mut outcome = CancelAllOutcome {
-            exhaustive: true,
+        let mut outcome = CancelAllOutcomeV0 {
+            user,
             ..Default::default()
         };
+        let mut capped = false;
         let mut skipped_bound = false;
         // The count runs across both sides, so the cap bounds the call rather than
         // each side of it.
@@ -910,7 +910,7 @@ impl ClobBook for ClobMarketV0 {
         let mut owes_expiry_repair = false;
 
         for side in sides.sides().iter().copied() {
-            if !outcome.exhaustive {
+            if capped {
                 break;
             }
 
@@ -933,7 +933,7 @@ impl ClobBook for ClobMarketV0 {
                 }
 
                 if total_removed >= ceiling {
-                    outcome.exhaustive = false;
+                    capped = true;
                     return Ok(Walk::Stop);
                 }
 
@@ -962,12 +962,12 @@ impl ClobBook for ClobMarketV0 {
             );
 
             match side {
-                Side::Bid => {
+                SideV0::Bid => {
                     outcome.bid_base_asset_amount = base_removed;
                     outcome.bid_orders = orders_removed;
                     outcome.bid_reduce_only_orders = reduce_only_removed;
                 }
-                Side::Ask => {
+                SideV0::Ask => {
                     outcome.ask_base_asset_amount = base_removed;
                     outcome.ask_orders = orders_removed;
                     outcome.ask_reduce_only_orders = reduce_only_removed;
@@ -975,10 +975,7 @@ impl ClobBook for ClobMarketV0 {
             }
         }
 
-        if skipped_bound {
-            outcome.exhaustive = false;
-        }
-
+        outcome.exhaustive = !capped && !skipped_bound;
         if owes_expiry_repair {
             self.recompute_wake_hints(true, None)?;
         }
@@ -992,7 +989,7 @@ impl ClobBook for ClobMarketV0 {
     /// orders. The crank works the soft-cap buffer down so placements never
     /// reach the hard cap. Velocity is the caller and loads the evicted maker's
     /// `User`, so aggregates stay exact.
-    fn evict_worst(&mut self, side: Side, slot: u64) -> Result<RemovedOrder> {
+    fn evict_worst(&mut self, side: SideV0, slot: u64) -> Result<RemovedOrderV0> {
         let count = self.node_count(side);
         require!(
             count > 0 && count >= self.evict_threshold_per_side,
@@ -1023,7 +1020,7 @@ impl ClobBook for ClobMarketV0 {
     /// Expiry reclamation, run as a crank. Execute only skips an expired order.
     /// A removal without the maker's `User` loaded is the aggregate leak this
     /// design removes. Fails closed on a stale hint.
-    fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder> {
+    fn remove_expired(&mut self, order_ref: ClobOrderRefV0, now: i64) -> Result<RemovedOrderV0> {
         let node = live_order(self, order_ref)?;
         require!(node.is_expired(now), ClobError::OrderNotExpired);
         let removed = removed_order(&node);
@@ -1045,11 +1042,11 @@ impl ClobBook for ClobMarketV0 {
     /// offers such an order to anyone.
     fn fill(
         &mut self,
-        order_ref: OrderRefV0,
+        order_ref: ClobOrderRefV0,
         base_asset_amount: u64,
         slot: u64,
         now: i64,
-    ) -> Result<FilledOrder> {
+    ) -> Result<FilledOrderV0> {
         let node = live_order(self, order_ref)?;
         require!(node.is_taker_origin(), ClobError::OrderNotTakerOrigin);
         require!(is_live(&node, slot, now), ClobError::OrderNotLive);
@@ -1060,7 +1057,7 @@ impl ClobBook for ClobMarketV0 {
 
         let remainder = node.base_asset_amount - base_asset_amount;
         let culls = remainder > 0 && remainder < self.min_order_size;
-        let mut filled = FilledOrder {
+        let mut filled = FilledOrderV0 {
             order_id: node.order_id,
             client_order_id: node.client_order_id,
             base_asset_amount,
@@ -1101,7 +1098,7 @@ impl ClobBook for ClobMarketV0 {
     #[allow(clippy::too_many_arguments)]
     fn quote(
         &mut self,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
@@ -1113,7 +1110,7 @@ impl ClobBook for ClobMarketV0 {
         now: i64,
     ) -> Result<ResponsePointerV0> {
         require!(user_set_within_capacity(users), ClobError::OversizedUserSet);
-        let side = direction.book_side();
+        let side = direction.side();
 
         let max_levels = self.max_quote_levels.min(QUOTE_LEVELS_CEILING) as usize;
         // A level aggregates however many orders sit at one price, so a ladder
@@ -1122,14 +1119,14 @@ impl ClobBook for ClobMarketV0 {
         let max_execute_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
 
         let mut writer = QuoteWriter::new();
-        let mut open_level: Option<PriceLevel> = None;
+        let mut open_level: Option<PriceLevelV0> = None;
         let mut last_written_price: Option<u64> = None;
         let mut levels_written = 0usize;
 
         let mut remaining = size;
         let mut promised_fills = 0usize;
         let (mut cull_slot_used, mut partial_slot_used) = (false, false);
-        let mut unsettleable_level: Option<PriceLevel> = None;
+        let mut unsettleable_level: Option<PriceLevelV0> = None;
 
         let mut reservation =
             CrossReservation::new(self, side, slot, now, include_taker_origin_reservations);
@@ -1178,7 +1175,7 @@ impl ClobBook for ClobMarketV0 {
                 // take, which excludes what a remainder claims. `available` is
                 // nonzero here, because a wholly claimed order is passed over above.
                 Settleable::Withheld => {
-                    unsettleable_level = Some(PriceLevel {
+                    unsettleable_level = Some(PriceLevelV0 {
                         price: node.price,
                         size: available,
                     });
@@ -1225,7 +1222,7 @@ impl ClobBook for ClobMarketV0 {
             // one open level holds them all.
             match open_level {
                 Some(level) if level.price == node.price => {
-                    open_level = Some(PriceLevel {
+                    open_level = Some(PriceLevelV0 {
                         price: level.price,
                         size: level.size.checked_add(take).ok_or(ClobError::MathError)?,
                     });
@@ -1239,7 +1236,7 @@ impl ClobBook for ClobMarketV0 {
                         write_level(book, &mut writer, side, &mut last_written_price, level)?;
                     }
 
-                    open_level = Some(PriceLevel {
+                    open_level = Some(PriceLevelV0 {
                         price: node.price,
                         size: take,
                     });
@@ -1284,14 +1281,14 @@ impl ClobBook for ClobMarketV0 {
     /// who it is.
     fn quote_l3(
         &mut self,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         max_rows: u16,
         include_taker_origin_reservations: bool,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0> {
-        let side = direction.book_side();
+        let side = direction.side();
         let rows_wanted = max_rows.min(L3_ROWS_CEILING) as usize;
         let mut reservation =
             CrossReservation::new(self, side, slot, now, include_taker_origin_reservations);
@@ -1369,7 +1366,7 @@ impl ClobBook for ClobMarketV0 {
     #[allow(clippy::too_many_arguments)]
     fn execute(
         &mut self,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
@@ -1380,7 +1377,7 @@ impl ClobBook for ClobMarketV0 {
         now: i64,
     ) -> Result<ExecuteOutcome> {
         require!(user_set_within_capacity(users), ClobError::OversizedUserSet);
-        let side = direction.book_side();
+        let side = direction.side();
         let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
         let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
         let base_precision = self.base_precision.max(1) as u128;
@@ -1656,24 +1653,24 @@ impl ClobBook for ClobMarketV0 {
         self.validate_book()
     }
 
-    fn node_count(&self, side: Side) -> u32 {
+    fn node_count(&self, side: SideV0) -> u32 {
         match side {
-            Side::Bid => self.bid_count,
-            Side::Ask => self.ask_count,
+            SideV0::Bid => self.bid_count,
+            SideV0::Ask => self.ask_count,
         }
     }
 
-    fn best(&self, side: Side) -> u32 {
+    fn best(&self, side: SideV0) -> u32 {
         match side {
-            Side::Bid => self.best_bid,
-            Side::Ask => self.best_ask,
+            SideV0::Bid => self.best_bid,
+            SideV0::Ask => self.best_ask,
         }
     }
 
-    fn worst(&self, side: Side) -> u32 {
+    fn worst(&self, side: SideV0) -> u32 {
         match side {
-            Side::Bid => self.worst_bid,
-            Side::Ask => self.worst_ask,
+            SideV0::Bid => self.worst_bid,
+            SideV0::Ask => self.worst_ask,
         }
     }
 
@@ -1705,7 +1702,7 @@ impl ClobBook for ClobMarketV0 {
             );
         }
 
-        [Side::Bid, Side::Ask]
+        [SideV0::Bid, SideV0::Ask]
             .into_iter()
             .try_for_each(|side| -> Result<()> {
                 let count = self.node_count(side);
@@ -1751,7 +1748,7 @@ impl ClobBook for ClobMarketV0 {
         // The exhaustive version walks both lists and runs in the unit tests. It
         // checks that every taker-origin order on the side is listed, that ids
         // ascend, and that links are mutual.
-        [Side::Bid, Side::Ask]
+        [SideV0::Bid, SideV0::Ask]
             .into_iter()
             .try_for_each(|side| -> Result<()> {
                 let count = self.claimant_count(side);
@@ -1799,7 +1796,7 @@ impl ClobBook for ClobMarketV0 {
 /// of range, free, or reused for a different order. An out-of-range hint
 /// reports as stale rather than as arena corruption. The hint comes from the
 /// caller, and a node index that was valid before a shrink is a stale handle.
-fn live_order(book: &ClobMarketV0, order_ref: OrderRefV0) -> Result<OrderNodeV0> {
+fn live_order(book: &ClobMarketV0, order_ref: ClobOrderRefV0) -> Result<OrderNodeV0> {
     let node = book
         .read_node(order_ref.node_index)
         .map_err(|_| ClobError::StaleOrderRef)?;
@@ -1811,8 +1808,8 @@ fn live_order(book: &ClobMarketV0, order_ref: OrderRefV0) -> Result<OrderNodeV0>
     Ok(node)
 }
 
-fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
-    RemovedOrder {
+fn removed_order(node: &OrderNodeV0) -> RemovedOrderV0 {
+    RemovedOrderV0 {
         user: node.user_ref(),
         order_id: node.order_id,
         client_order_id: node.client_order_id,
@@ -1852,7 +1849,7 @@ fn is_bound(node: &OrderNodeV0, slot: u64, grace_slots: u16) -> bool {
 /// crank to pull it, and the side still frees a slot while the claim holds.
 /// The search passes only bound remainders, so the side's claimant count
 /// bounds it.
-pub(crate) fn evictable_order(book: &ClobMarketV0, side: Side, slot: u64) -> Result<u32> {
+pub(crate) fn evictable_order(book: &ClobMarketV0, side: SideV0, slot: u64) -> Result<u32> {
     let mut cursor = book.worst(side);
     let mut bound_passed = 0u16;
     while cursor != NIL {
@@ -2046,14 +2043,14 @@ struct UserBudget {
     len: usize,
     /// The side these orders rest on, which decides which way a price has to
     /// move for the fill to cost their owner anything.
-    side: Side,
+    side: SideV0,
     reference_price: u64,
 }
 
 impl UserBudget {
     /// A quote budget is spent against the reference price, so a walk that
     /// carries one needs the price. Without it the book refuses the call.
-    fn new(caps: &UserCapsV0, side: Side, reference_price: Option<u64>) -> Result<Self> {
+    fn new(caps: &UserCapsV0, side: SideV0, reference_price: Option<u64>) -> Result<Self> {
         let spends_quote = caps.as_slice().iter().any(|cap| cap.quote_cap != u64::MAX);
         require!(
             reference_price.is_some() || !spends_quote,
@@ -2092,8 +2089,8 @@ impl UserBudget {
     /// hold. A price in the owner's favour costs nothing.
     fn cost_per_base(&self, price: u64) -> u64 {
         match self.side {
-            Side::Bid => price.saturating_sub(self.reference_price),
-            Side::Ask => self.reference_price.saturating_sub(price),
+            SideV0::Bid => price.saturating_sub(self.reference_price),
+            SideV0::Ask => self.reference_price.saturating_sub(price),
         }
     }
 
@@ -2189,7 +2186,7 @@ impl UserBudget {
 pub(crate) struct CrossReservation {
     /// The side being read. A claimant rests on the other one and takes this
     /// side as its cover.
-    cover: Side,
+    cover: SideV0,
     slot: u64,
     now: i64,
     /// See [`ClobHeaderV0::reservation_grace_slots`].
@@ -2227,7 +2224,7 @@ pub(crate) struct CrossReservation {
 impl CrossReservation {
     pub(crate) fn new(
         book: &ClobMarketV0,
-        cover: Side,
+        cover: SideV0,
         slot: u64,
         now: i64,
         include_reserved: bool,
@@ -2420,7 +2417,7 @@ impl CrossReservation {
 /// auction window.
 fn best_actionable_price(
     book: &ClobMarketV0,
-    side: Side,
+    side: SideV0,
     slot: u64,
     now: i64,
 ) -> Result<Option<u64>> {
@@ -2437,7 +2434,7 @@ fn best_actionable_price(
     Ok(best)
 }
 
-/// Append one wincode `PriceLevel` to the quote response, re-checking on the way
+/// Append one wincode `PriceLevelV0` to the quote response, re-checking on the way
 /// out what the wire type promises: best-price-first, and every level fillable.
 ///
 /// The router picks a quoter by exactly these numbers, so a zero price, a zero
@@ -2447,9 +2444,9 @@ fn best_actionable_price(
 fn write_level(
     book: &mut ClobMarketV0,
     writer: &mut QuoteWriter,
-    side: Side,
+    side: SideV0,
     last_written_price: &mut Option<u64>,
-    level: PriceLevel,
+    level: PriceLevelV0,
 ) -> Result<()> {
     require!(
         level.price != 0 && level.size != 0,
@@ -2471,7 +2468,7 @@ fn write_level(
 /// on the wire, but execute values the fill as `price * base` over the same
 /// best-first walk, so the ordering still has to hold. Equal consecutive prices are
 /// expected, because one level is contiguous orders and each is its own fill.
-fn check_fill_price(side: Side, filled: Option<u64>, price: u64, take: u64) -> Result<()> {
+fn check_fill_price(side: SideV0, filled: Option<u64>, price: u64, take: u64) -> Result<()> {
     require!(price != 0 && take != 0, ClobError::InvalidResponseLevel);
     require!(
         filled.is_none_or(|before| !side.is_worse_price(before, price)),
@@ -2551,7 +2548,7 @@ fn alloc_node(book: &mut ClobMarketV0) -> Result<u32> {
 /// the placement path and a node is 104 bytes to copy.
 fn insert_order(
     book: &mut ClobMarketV0,
-    side: Side,
+    side: SideV0,
     index: u32,
     prev: u32,
     next: u32,

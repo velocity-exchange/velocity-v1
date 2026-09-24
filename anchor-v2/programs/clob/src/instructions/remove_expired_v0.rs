@@ -26,5 +26,5 @@ pub fn handle_remove_expired_v0(
 
     emit_removal!(OrderExpireRecordV0, removed, clock, market.market_index);
 
-    Ok(removed.into())
+    Ok(removed)
 }

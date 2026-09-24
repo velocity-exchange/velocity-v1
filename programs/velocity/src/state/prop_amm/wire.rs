@@ -16,7 +16,7 @@ pub use quoter_spec::{
 };
 use {
     super::{
-        get_quoter_slab_signer_seeds, AmmAccountMeta, ClobCancelAllOutcomeV0, ClobCancelSides,
+        get_quoter_slab_signer_seeds, AmmAccountMeta, CancelAllOutcomeV0, CancelSidesV0,
         QuoterSlabV0, QuoterSlotV0, QuoterType,
     },
     crate::{
@@ -233,6 +233,16 @@ impl From<SideV0> for PositionDirection {
         match side {
             SideV0::Bid => PositionDirection::Long,
             SideV0::Ask => PositionDirection::Short,
+        }
+    }
+}
+
+/// The side a resting order of this maker position direction rests on.
+impl From<PositionDirection> for SideV0 {
+    fn from(direction: PositionDirection) -> Self {
+        match direction {
+            PositionDirection::Long => SideV0::Bid,
+            PositionDirection::Short => SideV0::Ask,
         }
     }
 }
@@ -506,8 +516,8 @@ pub trait ExternalQuoterExecutor<'info> {
         &mut self,
         _index: usize,
         _user: UserRefV0,
-        _sides: ClobCancelSides,
-    ) -> VelocityResult<Option<ClobCancelAllOutcomeV0>> {
+        _sides: CancelSidesV0,
+    ) -> VelocityResult<Option<CancelAllOutcomeV0>> {
         Ok(None)
     }
 

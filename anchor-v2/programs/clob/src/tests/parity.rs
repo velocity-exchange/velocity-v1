@@ -7,8 +7,8 @@ use {
     crate::{
         book::{ClobBook, NodeArena},
         state::{
-            ClobMarketV0, Direction, ExecuteResponseV0, MarketConfigV0, PlaceOrderParams,
-            QuoteResponseV0, Side, UserCapV0, UserCapsV0, UserRefV0, BASE_PRECISION,
+            ClobMarketV0, DirectionV0, ExecuteResponseV0, MarketConfigV0, PlaceOrderParams,
+            QuoteResponseV0, SideV0, UserCapV0, UserCapsV0, UserRefV0, BASE_PRECISION,
         },
     },
     std::collections::BTreeMap,
@@ -16,7 +16,7 @@ use {
 
 /// The arguments `quote` and `execute` share.
 struct Sweep<'a> {
-    direction: Direction,
+    direction: DirectionV0,
     users: &'a [UserRefV0],
     caps: &'a UserCapsV0,
     reference_price: Option<u64>,
@@ -135,7 +135,7 @@ fn assert_execute_delivers_quote(book: &mut ClobMarketV0, sweep: &Sweep, size: u
     assert_consistent(book);
 }
 
-fn empty_sweep(direction: Direction) -> Sweep<'static> {
+fn empty_sweep(direction: DirectionV0) -> Sweep<'static> {
     Sweep {
         direction,
         users: &[],
@@ -160,17 +160,17 @@ fn an_empty_set_quote_counts_owners_as_execute_does() {
     assert!(config.max_execute_fills as u8 > max_users + 2);
 
     let repeat = user(1);
-    place(&mut book, Side::Ask, 99, 5, repeat);
+    place(&mut book, SideV0::Ask, 99, 5, repeat);
     for seed in 2..=max_users {
-        place(&mut book, Side::Ask, 100, 5, user(seed));
+        place(&mut book, SideV0::Ask, 100, 5, user(seed));
     }
 
-    place(&mut book, Side::Ask, 100, 5, repeat);
+    place(&mut book, SideV0::Ask, 100, 5, repeat);
     for seed in max_users + 1..=max_users + 2 {
-        place(&mut book, Side::Ask, 100, 5, user(seed));
+        place(&mut book, SideV0::Ask, 100, 5, user(seed));
     }
 
-    let sweep = empty_sweep(Direction::Long);
+    let sweep = empty_sweep(DirectionV0::Long);
     let quoted = quote_levels(&mut book, &sweep, u64::MAX, 0);
     assert_eq!(quoted, vec![(99, 5), (100, 5 * max_users as u64)]);
 
@@ -215,7 +215,11 @@ fn random_config(rng: &mut Rng) -> MarketConfigV0 {
 }
 
 fn place_random_order(book: &mut ClobMarketV0, rng: &mut Rng) {
-    let side = if rng.chance(50) { Side::Bid } else { Side::Ask };
+    let side = if rng.chance(50) {
+        SideV0::Bid
+    } else {
+        SideV0::Ask
+    };
     let price = 95 + rng.below(11);
     let size = BASE_PRECISION / 10 * (1 + rng.below(40));
     let activation_slot = if rng.chance(30) { rng.below(20) } else { 0 };
@@ -290,9 +294,9 @@ fn random_books_execute_exactly_what_they_quote() {
         let taker = owners[rng.below(OWNERS as u64) as usize];
         let sweep = Sweep {
             direction: if rng.chance(50) {
-                Direction::Long
+                DirectionV0::Long
             } else {
-                Direction::Short
+                DirectionV0::Short
             },
             users: &users,
             caps: &caps,

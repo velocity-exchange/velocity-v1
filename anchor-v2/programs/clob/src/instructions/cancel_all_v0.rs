@@ -56,15 +56,5 @@ pub fn handle_cancel_all_v0(
     // already reached is dropped here.
     market.expire_activation_hint(clock.slot)?;
     record.finish(&outcome)?;
-
-    Ok(CancelAllOutcomeV0 {
-        user: args.user,
-        bid_base_asset_amount: outcome.bid_base_asset_amount,
-        ask_base_asset_amount: outcome.ask_base_asset_amount,
-        bid_orders: outcome.bid_orders,
-        ask_orders: outcome.ask_orders,
-        bid_reduce_only_orders: outcome.bid_reduce_only_orders,
-        ask_reduce_only_orders: outcome.ask_reduce_only_orders,
-        exhaustive: outcome.exhaustive,
-    })
+    Ok(outcome)
 }

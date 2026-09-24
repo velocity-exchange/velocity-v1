@@ -18,14 +18,13 @@ use {
         book::{ClobBook, NodeArena},
         error::ClobError,
         state::{
-            CancelledRemainderV0, ClobMarketV0, CompletedOrderV0, Direction, ExecuteResponseV0,
-            MarketConfigV0, PartiallyFilledOrderV0, PriceLevel, QuoteResponseV0, RemovedOrderV0,
-            ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0, CANCELLED_BYTES,
+            CancelledRemainderV0, ClobMarketV0, CompletedOrderV0, DirectionV0, ExecuteResponseV0,
+            MarketConfigV0, PartiallyFilledOrderV0, PriceLevelV0, QuoteResponseV0, RemovedOrderV0,
+            ResponsePointerV0, SideV0, UserBalanceChangeV0, UserCapsV0, UserRefV0, CANCELLED_BYTES,
             CHANGE_BYTES, COMPLETED_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
-            EXECUTE_USERS_CEILING, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES,
-            RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES, RESPONSE_OFFSET, USER_CAPS_BYTES,
-            USER_CAPS_CAPACITY, USER_REF_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
-            WITHHELD_REPORT_BYTES,
+            EXECUTE_USERS_CEILING, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, RESPONSE_BUFFER_BYTES,
+            RESPONSE_LEN_BYTES, RESPONSE_OFFSET, USER_CAPS_BYTES, USER_CAPS_CAPACITY,
+            USER_REF_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES, WITHHELD_REPORT_BYTES,
         },
     },
 };
@@ -48,10 +47,10 @@ where
     bytes
 }
 
-pub(super) fn encode_quote(levels: &[PriceLevel]) -> Vec<u8> {
+pub(super) fn encode_quote(levels: &[PriceLevelV0]) -> Vec<u8> {
     wincode::serialize(&QuoteResponseV0 {
         levels,
-        withheld: PriceLevel::default(),
+        withheld: PriceLevelV0::default(),
     })
     .unwrap()
 }
@@ -130,14 +129,14 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));
-    place(&mut book, Side::Ask, 100, 5, maker_a);
+    place(&mut book, SideV0::Ask, 100, 5, maker_a);
     // Same level, later — aggregates into the first level's size.
-    place(&mut book, Side::Ask, 100, 7, maker_b);
-    place(&mut book, Side::Ask, 101, 10, maker_b);
+    place(&mut book, SideV0::Ask, 100, 7, maker_b);
+    place(&mut book, SideV0::Ask, 101, 10, maker_b);
 
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             100,
             &[],
             &UserCapsV0::EMPTY,
@@ -152,11 +151,11 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
     assert_eq!(
         streamed(&book, pointer),
         encode_quote(&[
-            PriceLevel {
+            PriceLevelV0 {
                 price: 100,
                 size: 12
             },
-            PriceLevel {
+            PriceLevelV0 {
                 price: 101,
                 size: 10
             },
@@ -166,7 +165,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
     // Capped at the requested size, and an empty book is an empty vec.
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             6,
             &[],
             &UserCapsV0::EMPTY,
@@ -180,7 +179,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
         .unwrap();
     assert_eq!(
         streamed(&book, pointer),
-        encode_quote(&[PriceLevel {
+        encode_quote(&[PriceLevelV0 {
             price: 100,
             size: 6
         }])
@@ -188,7 +187,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
 
     let pointer = book
         .quote(
-            Direction::Short,
+            DirectionV0::Short,
             10,
             &[],
             &UserCapsV0::EMPTY,
@@ -213,12 +212,12 @@ fn quote_stops_at_the_level_cap() {
     let mut book = market.book();
     let maker = user(1);
     for price in [100, 101, 102] {
-        place(&mut book, Side::Ask, price, 1, maker);
+        place(&mut book, SideV0::Ask, price, 1, maker);
     }
 
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             u64::MAX,
             &[],
             &UserCapsV0::EMPTY,
@@ -233,11 +232,11 @@ fn quote_stops_at_the_level_cap() {
     assert_eq!(
         streamed(&book, pointer),
         encode_quote(&[
-            PriceLevel {
+            PriceLevelV0 {
                 price: 100,
                 size: 1
             },
-            PriceLevel {
+            PriceLevelV0 {
                 price: 101,
                 size: 1
             },
@@ -250,16 +249,16 @@ fn execute_streams_balance_changes_merged_by_user() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));
-    let first = place(&mut book, Side::Ask, 100, 5 * UNIT, maker_a);
-    let middle = place(&mut book, Side::Ask, 101, 5 * UNIT, maker_b);
+    let first = place(&mut book, SideV0::Ask, 100, 5 * UNIT, maker_a);
+    let middle = place(&mut book, SideV0::Ask, 101, 5 * UNIT, maker_b);
     // A's second fill completes after B's record is already written. The id
     // names A's change and rides the trailing section, so nothing between them
     // moves.
-    let last = place(&mut book, Side::Ask, 102, 5 * UNIT, maker_a);
+    let last = place(&mut book, SideV0::Ask, 102, 5 * UNIT, maker_a);
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
@@ -287,7 +286,7 @@ fn execute_streams_balance_changes_merged_by_user() {
             &[],
         )
     );
-    assert_eq!(book.node_count(Side::Ask), 0);
+    assert_eq!(book.node_count(SideV0::Ask), 0);
     assert_eq!(
         outcome
             .fills
@@ -312,13 +311,13 @@ fn execute_streams_a_sub_min_cull_alongside_the_fill() {
     let market = TestMarket::new_with(16, config);
     let mut book = market.book();
     let maker = user(0xA);
-    let order = place(&mut book, Side::Ask, 100, 20 * UNIT, maker);
+    let order = place(&mut book, SideV0::Ask, 100, 20 * UNIT, maker);
 
     // 15 of 20 fills; the 5 left is below min_order_size, so the order is
     // culled with the fill instead of resting as dust.
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
@@ -342,7 +341,7 @@ fn execute_streams_a_sub_min_cull_alongside_the_fill() {
         outcome.cancelled_client_order_id,
         Some(client_id(order.order_id))
     );
-    assert_eq!(book.node_count(Side::Ask), 0);
+    assert_eq!(book.node_count(SideV0::Ask), 0);
 }
 
 /// A balance change merges every order of one maker, so the partial record is
@@ -354,13 +353,13 @@ fn execute_streams_the_one_order_it_left_resting_smaller() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let maker = user(0xA);
-    let first = place(&mut book, Side::Ask, 100, 5 * UNIT, maker);
-    let second = place(&mut book, Side::Ask, 101, 20 * UNIT, maker);
+    let first = place(&mut book, SideV0::Ask, 100, 5 * UNIT, maker);
+    let second = place(&mut book, SideV0::Ask, 101, 20 * UNIT, maker);
 
     // The first order goes whole; the second gives 10 of its 20 and stays.
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
@@ -380,7 +379,7 @@ fn execute_streams_the_one_order_it_left_resting_smaller() {
             &[part(0, second.order_id, 10 * UNIT)],
         )
     );
-    assert_eq!(book.node_count(Side::Ask), 1);
+    assert_eq!(book.node_count(SideV0::Ask), 1);
 }
 
 /// A walk that ran past an order it did not finish would report two partials,
@@ -396,12 +395,12 @@ fn a_fill_reports_at_most_one_partial() {
         let market = TestMarket::new(16);
         let mut book = market.book();
         for _ in 0..4 {
-            place(&mut book, Side::Ask, 100, 10, maker);
+            place(&mut book, SideV0::Ask, 100, 10, maker);
         }
 
         let outcome = book
             .execute(
-                Direction::Long,
+                DirectionV0::Long,
                 size,
                 &[],
                 &UserCapsV0::EMPTY,
@@ -436,12 +435,12 @@ fn execute_stops_at_the_user_cap() {
     let market = TestMarket::new_with(16, config);
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));
-    let first = place(&mut book, Side::Ask, 100, 5 * UNIT, maker_a);
-    place(&mut book, Side::Ask, 101, 5 * UNIT, maker_b);
+    let first = place(&mut book, SideV0::Ask, 100, 5 * UNIT, maker_a);
+    place(&mut book, SideV0::Ask, 101, 5 * UNIT, maker_b);
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             10 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
@@ -463,7 +462,7 @@ fn execute_stops_at_the_user_cap() {
     );
 
     // B's order is untouched — a second user would need a second record.
-    assert_eq!(book.node_count(Side::Ask), 1);
+    assert_eq!(book.node_count(SideV0::Ask), 1);
 }
 
 /// The config ceilings are derived from these widths, so a field added to a
@@ -474,19 +473,20 @@ fn wire_widths_match_the_response_types() {
     let user = user(0xA);
     assert_eq!(encode(&user).len(), USER_REF_BYTES);
     assert_eq!(
-        encode(&PriceLevel { price: 1, size: 2 }).len(),
+        encode(&PriceLevelV0 { price: 1, size: 2 }).len(),
         PRICE_LEVEL_BYTES
     );
     assert_eq!(encode(&cull(user, 1, 2, 3)).len(), CANCELLED_BYTES);
-    // Return data rather than response bytes, but velocity reads it by offset,
-    // so the width and the position of the trailing flag are both pinned.
+    // Return data rather than response bytes. Velocity decodes it with borsh,
+    // so the width and the position of the trailing flags are both pinned.
+    const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES + 3 * 8 + 4 + 3 + 8;
     let removed = RemovedOrderV0 {
         user,
         order_id: 1,
         client_order_id: 5,
         price: 2,
         base_asset_amount: 3,
-        side: Side::Ask,
+        side: SideV0::Ask,
         taker_origin: true,
         reduce_only: true,
         max_ts: 4,
@@ -495,16 +495,16 @@ fn wire_widths_match_the_response_types() {
     assert_eq!(encode(&removed).len(), REMOVED_ORDER_BYTES);
     // Side, the taker-origin flag, the reduce-only flag, then the expiry.
     let tail = REMOVED_ORDER_BYTES - 3 - core::mem::size_of::<i64>();
-    assert_eq!(encode(&removed)[tail..tail + 3], [Side::Ask.tag(), 1, 1]);
+    assert_eq!(encode(&removed)[tail..tail + 3], [SideV0::Ask.tag(), 1, 1]);
     assert_eq!(encode(&removed)[tail + 3..], 4i64.to_le_bytes());
     assert_eq!(
         encode(&RemovedOrderV0 {
-            side: Side::Bid,
+            side: SideV0::Bid,
             taker_origin: false,
             reduce_only: false,
             ..removed
         })[tail..tail + 3],
-        [Side::Bid.tag(), 0, 0]
+        [SideV0::Bid.tag(), 0, 0]
     );
 
     // Every record is one fixed stride: a change carries no ids, so it cannot
@@ -555,12 +555,12 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     let mut book = market.book();
     let maker = user(0xA);
     for _ in 0..3 {
-        place(&mut book, Side::Ask, 3, 4 * TENTH, maker);
+        place(&mut book, SideV0::Ask, 3, 4 * TENTH, maker);
     }
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             12 * TENTH,
             &[],
             &UserCapsV0::EMPTY,
@@ -584,12 +584,12 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     for _ in 0..2 {
-        place(&mut book, Side::Ask, 7, 4 * TENTH, maker);
+        place(&mut book, SideV0::Ask, 7, 4 * TENTH, maker);
     }
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             8 * TENTH,
             &[],
             &UserCapsV0::EMPTY,
@@ -626,7 +626,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
     let args = QuoteArgsV0 {
         taker_served_window: true,
         include_taker_origin_reservations: false,
-        direction: crate::state::Direction::Long,
+        direction: crate::state::DirectionV0::Long,
         size: 12,
         users: &[],
         caps: UserCapsV0::EMPTY,
@@ -679,7 +679,7 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
         taker_served_window: true,
         include_taker_origin_reservations: false,
         users: &users,
-        direction: crate::state::Direction::Long,
+        direction: crate::state::DirectionV0::Long,
         size: 7,
         caps: UserCapsV0::EMPTY,
         reference_price: None,
@@ -757,7 +757,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
         .map(|i| {
             place(
                 &mut book,
-                Side::Ask,
+                SideV0::Ask,
                 100 + i as u64,
                 UNIT,
                 makers[i % users],
@@ -767,7 +767,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             fills as u64 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
@@ -795,7 +795,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let expected = encode_execute(&changes, &[], &completed, &[]);
     assert_eq!(streamed(&book, outcome.response), expected);
     assert_eq!(outcome.fills.len(), fills);
-    assert_eq!(book.node_count(Side::Ask), 0);
+    assert_eq!(book.node_count(SideV0::Ask), 0);
 
     let widest = 4 * RESPONSE_LEN_BYTES + users * CHANGE_BYTES + fills * COMPLETED_BYTES;
     assert_eq!(outcome.response.len as usize, widest);
@@ -813,8 +813,8 @@ fn corrupted_ask_book(prices: [u64; 2]) -> TestMarket {
     {
         let mut book = market.book();
         let maker = user(0xA);
-        let first = place(&mut book, Side::Ask, 100, 5, maker);
-        let second = place(&mut book, Side::Ask, 101, 5, maker);
+        let first = place(&mut book, SideV0::Ask, 100, 5, maker);
+        let second = place(&mut book, SideV0::Ask, 101, 5, maker);
         book.update_node(first.node_index, |node| node.price = prices[0])
             .unwrap();
         book.update_node(second.node_index, |node| node.price = prices[1])
@@ -832,7 +832,7 @@ fn a_corrupt_book_cannot_produce_a_response() {
     for prices in [[100, 99], [0, 101]] {
         assert_err(
             corrupted_ask_book(prices).book().quote(
-                Direction::Long,
+                DirectionV0::Long,
                 10,
                 &[],
                 &UserCapsV0::EMPTY,
@@ -850,7 +850,7 @@ fn a_corrupt_book_cannot_produce_a_response() {
         // market: the failed sweep leaves the book part-consumed.
         assert_err(
             corrupted_ask_book(prices).book().execute(
-                Direction::Long,
+                DirectionV0::Long,
                 10,
                 &[],
                 &UserCapsV0::EMPTY,
@@ -872,13 +872,13 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let maker = user(0xA);
-    place(&mut book, Side::Bid, 100, 5, maker);
-    place(&mut book, Side::Bid, 100, 5, maker);
-    place(&mut book, Side::Bid, 99, 5, maker);
+    place(&mut book, SideV0::Bid, 100, 5, maker);
+    place(&mut book, SideV0::Bid, 100, 5, maker);
+    place(&mut book, SideV0::Bid, 99, 5, maker);
 
     let pointer = book
         .quote(
-            Direction::Short,
+            DirectionV0::Short,
             15,
             &[],
             &UserCapsV0::EMPTY,
@@ -893,16 +893,16 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
     assert_eq!(
         streamed(&book, pointer),
         encode_quote(&[
-            PriceLevel {
+            PriceLevelV0 {
                 price: 100,
                 size: 10
             },
-            PriceLevel { price: 99, size: 5 },
+            PriceLevelV0 { price: 99, size: 5 },
         ])
     );
 
     book.execute(
-        Direction::Short,
+        DirectionV0::Short,
         15,
         &[],
         &UserCapsV0::EMPTY,
@@ -952,13 +952,13 @@ fn the_streamed_response_parses_back() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));
-    let first = place(&mut book, Side::Ask, 100, 5, maker_a);
-    let middle = place(&mut book, Side::Ask, 101, 5, maker_b);
-    let last = place(&mut book, Side::Ask, 102, 5, maker_a);
+    let first = place(&mut book, SideV0::Ask, 100, 5, maker_a);
+    let middle = place(&mut book, SideV0::Ask, 101, 5, maker_b);
+    let last = place(&mut book, SideV0::Ask, 102, 5, maker_a);
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             15,
             &[],
             &UserCapsV0::EMPTY,
@@ -1008,10 +1008,10 @@ fn a_consumed_order_reports_its_reduce_only_flag() {
     let (reducer, maker) = (user(0xA), user(0xB));
     book.place(crate::state::PlaceOrderParams {
         reduce_only: true,
-        ..super::market::params(Side::Ask, 100, 5, reducer)
+        ..super::market::params(SideV0::Ask, 100, 5, reducer)
     })
     .expect("placement succeeds");
-    place(&mut book, Side::Ask, 101, 5, maker);
+    place(&mut book, SideV0::Ask, 101, 5, maker);
 
     let mut caps = UserCapsV0::EMPTY;
     caps.len = 1;
@@ -1023,7 +1023,7 @@ fn a_consumed_order_reports_its_reduce_only_flag() {
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             10,
             &[reducer, maker],
             &caps,
@@ -1062,12 +1062,12 @@ fn a_quote_promises_no_more_depth_than_execute_can_deliver() {
     let maker = user(0xA);
     // Five orders at one price: one level, five fills.
     for _ in 0..5 {
-        place(&mut book, Side::Ask, 100, 1, maker);
+        place(&mut book, SideV0::Ask, 100, 1, maker);
     }
 
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             100,
             &[],
             &UserCapsV0::EMPTY,
@@ -1087,7 +1087,7 @@ fn a_quote_promises_no_more_depth_than_execute_can_deliver() {
     // And the promise holds: executing the whole quoted size fills all of it.
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             promised,
             &[],
             &UserCapsV0::EMPTY,

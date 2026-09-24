@@ -63,7 +63,7 @@ pub mod clob {
 
     pub fn update_market_v0(
         ctx: &mut Context<UpdateMarketV0>,
-        args: UpdateMarketArgsV0,
+        args: ClobUpdateMarketArgsV0,
     ) -> Result<()> {
         instructions::update_market_v0::handle_update_market_v0(ctx, args)
     }
@@ -84,7 +84,7 @@ pub mod clob {
     pub fn place_order_v0(
         ctx: &mut Context<GatedMarketV0>,
         args: PlaceOrderArgsV0,
-    ) -> Result<state::OrderRefV0> {
+    ) -> Result<state::ClobOrderRefV0> {
         instructions::place_order_v0::handle_place_order_v0(ctx, args)
     }
 

@@ -1,6 +1,6 @@
 /// Declared by `clob-wire`, because velocity sends it by CPI when velocity is
 /// the market's authority.
-pub use clob_wire::ClobUpdateMarketArgsV0 as UpdateMarketArgsV0;
+pub use clob_wire::ClobUpdateMarketArgsV0;
 use {
     crate::{
         config::validate_market_config,
@@ -27,13 +27,13 @@ pub struct UpdateMarketV0 {
 /// user.
 pub fn handle_update_market_v0(
     ctx: &mut Context<UpdateMarketV0>,
-    args: UpdateMarketArgsV0,
+    args: ClobUpdateMarketArgsV0,
 ) -> Result<()> {
     let market_address = *ctx.accounts.market.address();
     let authority = *ctx.accounts.authority.address();
     let market = &mut ctx.accounts.market;
     let before = MarketSettingsV0::of(market);
-    let UpdateMarketArgsV0 {
+    let ClobUpdateMarketArgsV0 {
         order_tick_size,
         order_step_size,
         min_order_size,

@@ -269,6 +269,39 @@ impl SideV0 {
             SideV0::Ask => 1,
         }
     }
+
+    pub const fn opposite(self) -> SideV0 {
+        match self {
+            SideV0::Bid => SideV0::Ask,
+            SideV0::Ask => SideV0::Bid,
+        }
+    }
+
+    /// The taker direction that consumes this side.
+    pub const fn taker_direction(self) -> DirectionV0 {
+        match self {
+            SideV0::Bid => DirectionV0::Short,
+            SideV0::Ask => DirectionV0::Long,
+        }
+    }
+
+    /// Whether `resting` is a worse price for this side's makers than
+    /// `candidate`. Bids rank high to low and asks rank low to high.
+    pub const fn is_worse_price(self, resting: u64, candidate: u64) -> bool {
+        match self {
+            SideV0::Bid => resting < candidate,
+            SideV0::Ask => resting > candidate,
+        }
+    }
+
+    /// Whether an order of this side resting at `price` is crossed by an order
+    /// on the opposite side at `opposite`. A match at equal prices crosses.
+    pub const fn is_crossed_by(self, price: u64, opposite: u64) -> bool {
+        match self {
+            SideV0::Bid => opposite <= price,
+            SideV0::Ask => opposite >= price,
+        }
+    }
 }
 
 /// Which sides a `cancel_all_v0` withdraws. The wire cannot express "neither",
@@ -302,5 +335,21 @@ impl CancelSidesV0 {
 
     pub const fn has_asks(self) -> bool {
         matches!(self, Self::Asks | Self::Both)
+    }
+
+    /// The named sides, bids first.
+    pub const fn sides(self) -> &'static [SideV0] {
+        match self {
+            CancelSidesV0::Bids => &[SideV0::Bid],
+            CancelSidesV0::Asks => &[SideV0::Ask],
+            CancelSidesV0::Both => &[SideV0::Bid, SideV0::Ask],
+        }
+    }
+
+    pub const fn includes(self, side: SideV0) -> bool {
+        match side {
+            SideV0::Bid => self.has_bids(),
+            SideV0::Ask => self.has_asks(),
+        }
     }
 }

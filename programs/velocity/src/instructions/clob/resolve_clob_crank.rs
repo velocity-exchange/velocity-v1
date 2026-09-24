@@ -91,15 +91,14 @@ impl FiredConditionArgV0 {
     /// refill.
     fn work(&self, ctx: &Context<ResolveClobCrank>) -> Result<ClobCrankWork> {
         use crate::state::prop_amm::{
-            CLOB_CRANK_SLOT_ACTIVATION, CLOB_CRANK_SLOT_CAPACITY, CLOB_CRANK_SLOT_CROSS,
-            CLOB_CRANK_SLOT_EXPIRY,
+            CRANK_SLOT_ACTIVATION, CRANK_SLOT_CAPACITY, CRANK_SLOT_CROSS, CRANK_SLOT_EXPIRY,
         };
 
         if self.target == ctx.accounts.clob_market.key() {
             return match self.index {
-                CLOB_CRANK_SLOT_EXPIRY => Ok(ClobCrankWork::Removal(Removal::Expired)),
-                CLOB_CRANK_SLOT_CAPACITY => Ok(ClobCrankWork::Removal(Removal::Evictable)),
-                CLOB_CRANK_SLOT_CROSS | CLOB_CRANK_SLOT_ACTIVATION => Ok(ClobCrankWork::Cross),
+                CRANK_SLOT_EXPIRY => Ok(ClobCrankWork::Removal(Removal::Expired)),
+                CRANK_SLOT_CAPACITY => Ok(ClobCrankWork::Removal(Removal::Evictable)),
+                CRANK_SLOT_CROSS | CRANK_SLOT_ACTIVATION => Ok(ClobCrankWork::Cross),
                 other => {
                     msg!(
                         "book condition slot {} is not a crank velocity serves",

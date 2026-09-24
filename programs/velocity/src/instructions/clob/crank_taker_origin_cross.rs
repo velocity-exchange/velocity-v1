@@ -58,9 +58,7 @@ use {
             order_params::NO_ROUTE_DIGEST,
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
-            prop_amm::{
-                ClobFillArgsV0, ClobFillRequestV0, ClobMarket, QuoterSlabExt, SideV0, UserRefV0,
-            },
+            prop_amm::{ClobMarket, FillArgsV0, FillRequestV0, QuoterSlabExt, SideV0, UserRefV0},
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
             state::State,
@@ -713,8 +711,8 @@ fn report_fill_to_book<'info>(
             &cx.accounts.clob_program,
         )?;
 
-        clob.fill(ClobFillArgsV0 {
-            fills: vec![ClobFillRequestV0 {
+        clob.fill(FillArgsV0 {
+            fills: vec![FillRequestV0 {
                 order_ref: subject_order.order_ref,
                 base_asset_amount: base_filled,
             }],
@@ -1324,13 +1322,13 @@ fn report_pair_fill_to_book<'info>(
             &cx.accounts.clob_program,
         )?;
 
-        clob.fill(ClobFillArgsV0 {
+        clob.fill(FillArgsV0 {
             fills: vec![
-                ClobFillRequestV0 {
+                FillRequestV0 {
                     order_ref: pair.aggressor.order_ref,
                     base_asset_amount: pair.base_filled,
                 },
-                ClobFillRequestV0 {
+                FillRequestV0 {
                     order_ref: pair.counterparty.order_ref,
                     base_asset_amount: pair.base_filled,
                 },

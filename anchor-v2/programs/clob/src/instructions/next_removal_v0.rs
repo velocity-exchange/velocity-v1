@@ -21,7 +21,7 @@ use {
     crate::{
         book::{evictable_order, ClobBook, NodeArena},
         instructions::MarketViewV0,
-        state::{ClobMarketV0, OrderBitFlag, Side, NIL},
+        state::{ClobMarketV0, OrderBitFlag, SideV0, NIL},
     },
     anchor_lang::prelude::*,
 };
@@ -67,10 +67,10 @@ fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
 /// caller that had to know them would re-decide, from numbers it read out of
 /// the header, what the book already decides for itself.
 fn evictable(market: &ClobMarketV0, slot: u64) -> Result<OrderViewV0> {
-    let preference = if market.node_count(Side::Ask) > market.node_count(Side::Bid) {
-        [Side::Ask, Side::Bid]
+    let preference = if market.node_count(SideV0::Ask) > market.node_count(SideV0::Bid) {
+        [SideV0::Ask, SideV0::Bid]
     } else {
-        [Side::Bid, Side::Ask]
+        [SideV0::Bid, SideV0::Ask]
     };
 
     let over_threshold = preference.into_iter().filter(|side| {

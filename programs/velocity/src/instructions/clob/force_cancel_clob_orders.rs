@@ -47,9 +47,8 @@ use {
             events::OrderActionExplanation,
             perp_market_map::MarketSet,
             prop_amm::{
-                ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelOrderArgsV0,
-                ClobCancelSides, ClobCancelSidesExt, ClobMarket, ClobOrderRefV0,
-                ClobRemovedOrderV0, QuoterSlabV0, SideV0, UserRefV0,
+                CancelAllArgsV0, CancelAllOutcomeV0, CancelOrderArgsV0, CancelSidesV0, ClobMarket,
+                ClobOrderRefV0, QuoterSlabV0, RemovedOrderV0, SideV0, UserRefV0,
             },
             spot_market_map::{get_writable_spot_market_set, SpotMarketMap},
             state::State,
@@ -62,10 +61,9 @@ use {
 };
 
 /// Refs per call, bounding CPI count and compute. The book answers about at
-/// most `CLOB_ORDER_VIEW_CEILING` refs in one call, so this cannot exceed it.
+/// most `ORDER_VIEW_CEILING` refs in one call, so this cannot exceed it.
 pub const MAX_FORCE_CANCEL_CLOB_ORDERS: usize = 8;
-const _: () =
-    assert!(MAX_FORCE_CANCEL_CLOB_ORDERS <= crate::state::prop_amm::CLOB_ORDER_VIEW_CEILING,);
+const _: () = assert!(MAX_FORCE_CANCEL_CLOB_ORDERS <= crate::state::prop_amm::ORDER_VIEW_CEILING,);
 
 /// One order the caller wants reclaimed.
 ///
@@ -259,15 +257,15 @@ struct ForceCancelPlan {
     refs: Vec<ForceCancelClobRefV0>,
     /// The sides the whole-side sweep takes. `None` when neither side
     /// qualifies.
-    sweep: Option<ClobCancelSides>,
+    sweep: Option<CancelSidesV0>,
 }
 
 /// What the book gave back.
 struct ClobRemovals {
     /// One removal per ref in [`ForceCancelPlan::refs`], in the same order.
-    orders: Vec<ClobRemovedOrderV0>,
+    orders: Vec<RemovedOrderV0>,
     /// The sweep's per-side totals. `None` when no sweep ran.
-    swept: Option<ClobCancelAllOutcomeV0>,
+    swept: Option<CancelAllOutcomeV0>,
 }
 
 /// The sides the sweep takes, and the position the decision was made against.
@@ -275,7 +273,7 @@ struct SweepDecision {
     /// The user's base position in this market. Zero when it holds none.
     position_base: i64,
     /// The sides to sweep. `None` when neither side qualifies.
-    sides: Option<ClobCancelSides>,
+    sides: Option<CancelSidesV0>,
 }
 
 /// True when this market's risk-increasing orders may be reclaimed.
@@ -336,9 +334,9 @@ fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
     let bids_swept = bids_swept && position.is_some_and(|p| p.open_bids != 0);
     let asks_swept = asks_swept && position.is_some_and(|p| p.open_asks != 0);
     let sides = match (bids_swept, asks_swept) {
-        (true, true) => Some(ClobCancelSides::Both),
-        (true, false) => Some(ClobCancelSides::Bids),
-        (false, true) => Some(ClobCancelSides::Asks),
+        (true, true) => Some(CancelSidesV0::Both),
+        (true, false) => Some(CancelSidesV0::Bids),
+        (false, true) => Some(CancelSidesV0::Asks),
         (false, false) => None,
     };
 
@@ -386,7 +384,7 @@ fn select_cancellable_refs(
             // second call for work already done.
             if sweep
                 .sides
-                .is_some_and(|sides| sides.includes(PositionDirection::from(order_ref.side)))
+                .is_some_and(|sides| sides.includes(order_ref.side))
             {
                 return Ok(None);
             }
@@ -419,11 +417,11 @@ fn cancel_orders_on_book(
     clob: &ClobMarket<'_, '_>,
     plan: &ForceCancelPlan,
 ) -> Result<ClobRemovals> {
-    let orders: Vec<ClobRemovedOrderV0> = plan
+    let orders: Vec<RemovedOrderV0> = plan
         .refs
         .iter()
         .map(|order_ref| {
-            clob.cancel(ClobCancelOrderArgsV0 {
+            clob.cancel(CancelOrderArgsV0 {
                 order_ref: order_ref.order_ref,
                 user: plan.user_ref,
                 force: true,
@@ -433,7 +431,7 @@ fn cancel_orders_on_book(
     let swept = plan
         .sweep
         .map(|sides| {
-            clob.cancel_all(ClobCancelAllArgsV0 {
+            clob.cancel_all(CancelAllArgsV0 {
                 user: plan.user_ref,
                 sides,
                 force: true,

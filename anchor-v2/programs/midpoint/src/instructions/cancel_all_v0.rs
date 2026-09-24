@@ -1,9 +1,10 @@
 use {
     crate::{
         error::MidpointError,
-        state::{CancelAllOutcomeV0, CancelSidesExt, CancelSidesV0, DirectionV0, MidpointQuoterV0},
+        state::{CancelAllOutcomeV0, CancelSidesV0, MidpointQuoterV0},
     },
     anchor_lang::prelude::*,
+    quoter_spec::SideV0,
 };
 
 #[derive(Accounts)]
@@ -52,11 +53,14 @@ pub fn handle_cancel_all_v0(
     );
 
     let mut outcome = CancelAllOutcomeV0::default();
-    for direction in args.sides.directions().iter().copied() {
+    // The spline holds no orders, so it reads a side as the taker flow that
+    // consumes its rungs.
+    for side in args.sides.sides().iter().copied() {
+        let direction = side.taker_direction();
         let rungs = quoter.clear_side(direction);
-        match direction {
-            DirectionV0::Long => outcome.ask_rungs = rungs,
-            DirectionV0::Short => outcome.bid_rungs = rungs,
+        match side {
+            SideV0::Ask => outcome.ask_rungs = rungs,
+            SideV0::Bid => outcome.bid_rungs = rungs,
         }
 
         quoter.validate_cleared_side(direction, rungs)?;

@@ -19,15 +19,11 @@
 
 use {
     crate::{
-        controller::position::PositionDirection,
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
         state::{
-            prop_amm::{
-                ClobCancelAllArgsV0, ClobCancelAllOutcomeExt, ClobCancelSides, ClobCancelSidesExt,
-                ClobMarket, QuoterSlabV0,
-            },
+            prop_amm::{CancelAllArgsV0, CancelSidesV0, ClobMarket, QuoterSlabV0, SideV0},
             user::User,
         },
         validate,
@@ -62,7 +58,7 @@ pub struct CancelOrdersV1<'info> {
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct CancelOrdersV1Params {
     pub market_index: u16,
-    pub sides: ClobCancelSides,
+    pub sides: CancelSidesV0,
 }
 
 pub fn handle_cancel_orders_v1(
@@ -85,7 +81,7 @@ pub fn handle_cancel_orders_v1(
         let user = crate::load!(ctx.accounts.user)?;
         user.clob_user_ref()
     };
-    let removed = clob.cancel_all(ClobCancelAllArgsV0 {
+    let removed = clob.cancel_all(CancelAllArgsV0 {
         user: user_ref,
         sides: params.sides,
         force: false,
@@ -105,13 +101,11 @@ pub fn handle_cancel_orders_v1(
     // removals on a side it was not asked to walk is a bug, so fail here rather
     // than absorb it.
     validate!(
-        [PositionDirection::Long, PositionDirection::Short]
+        [SideV0::Bid, SideV0::Ask]
             .iter()
             .copied()
-            .filter(|direction| !params.sides.includes(*direction))
-            .all(|direction| {
-                removed.base_for(direction) == 0 && removed.orders_for(direction) == 0
-            }),
+            .filter(|side| !params.sides.includes(*side))
+            .all(|side| removed.base_for(side) == 0 && removed.orders_for(side) == 0),
         ErrorCode::InvalidQuoterResponse,
         "clob reported removals on a side that was not swept"
     )?;

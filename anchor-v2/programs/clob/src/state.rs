@@ -88,19 +88,18 @@ pub const RESPONSE_BUFFER_BYTES: usize = {
 // moves them. `tests::response::wire_widths_match_the_response_types` pins
 // every width against wincode's encoding of that record.
 
-/// Byte width of a borsh-framed sequence count (a `Vec`'s length prefix).
+/// Width of the sequence count an event record carries. Event records use
+/// borsh framing, whose count is 4 bytes.
 pub const COUNT_BYTES: usize = core::mem::size_of::<u32>();
 
-/// Width of a sequence length in the response region, which is wincode's
-/// framing rather than borsh's. [`COUNT_BYTES`] is the borsh-framed count the
-/// event records carry. The two are separate constants because widening this
-/// one once changed an emitted event.
+/// Width of a sequence count in the response region. The response region uses
+/// wincode framing, whose count is 8 bytes.
 pub const RESPONSE_LEN_BYTES: usize = quoter_spec::LEN_BYTES;
 
 /// Width of a [`UserRefV0`]: 32-byte authority + u16 sub-account.
 pub const USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 
-/// Encoded width of a [`PriceLevel`].
+/// Encoded width of a [`PriceLevelV0`].
 pub const PRICE_LEVEL_BYTES: usize = quoter_spec::PRICE_LEVEL_BYTES;
 
 /// Width of an order id in an event payload. An event carries borsh framing
@@ -126,28 +125,17 @@ pub const COMPLETED_BYTES: usize = quoter_spec::COMPLETED_BYTES;
 /// so it is a flat addition to the region rather than a per-fill stride.
 pub const PARTIAL_BYTES: usize = quoter_spec::PARTIAL_BYTES;
 
-/// Width of a [`RemovedOrderV0`], the return data of `cancel_order_v0`,
-/// `evict_worst_v0` and `remove_expired_v0`. Nothing here sizes a buffer from
-/// it, because anchor serializes the value. Velocity reads those bytes by
-/// offset, so the width is pinned rather than assumed.
-pub const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES
-    + 3 * core::mem::size_of::<u64>()
-    + core::mem::size_of::<u32>()
-    // side + taker_origin + reduce_only.
-    + 3
-    + core::mem::size_of::<i64>();
-
 // Hard ceilings on the per-market response and batch config. The response
 // region and the 32KB program heap bound them, and neither varies per market.
 // The per-market operating points live on the header. Partial execution is
 // the interface contract, so the router sees smaller balance changes.
 
 /// Trailing bytes of a [`QuoteResponseV0`]. The withheld report is one
-/// [`PriceLevel`] written after the ladder.
+/// [`PriceLevelV0`] written after the ladder.
 pub const WITHHELD_REPORT_BYTES: usize = PRICE_LEVEL_BYTES;
 
 /// Ceiling on `max_quote_levels`. A [`QuoteResponseV0`] is a count, that many
-/// [`PriceLevel`]s, then the withheld report.
+/// [`PriceLevelV0`]s, then the withheld report.
 pub const QUOTE_LEVELS_CEILING: u16 =
     ((RESPONSE_BUFFER_BYTES - RESPONSE_LEN_BYTES - WITHHELD_REPORT_BYTES) / PRICE_LEVEL_BYTES)
         as u16;
@@ -171,7 +159,7 @@ pub const EXECUTE_FILLS_CEILING: u16 = 113;
 /// Hard cap on the orders one `cancel_all_v0` removes. It bounds the removal
 /// work, the id list the cancel record logs
 /// ([`crate::emit::CANCEL_ALL_RECORD_LOG_BYTES`]), and the maker aggregate
-/// unwind. [`CancelAllOutcome::exhaustive`] reports whether the call finished.
+/// unwind. [`CancelAllOutcomeV0::exhaustive`] reports whether the call finished.
 pub const CANCEL_ALL_ORDERS_CEILING: u16 = 128;
 
 /// Ceiling on `max_execute_users`. A balance change names a user the caller
@@ -194,73 +182,12 @@ const_assert!(
         <= RESPONSE_BUFFER_BYTES
 );
 
-/// Taker direction and book side, declared in `quoter-spec` with the rest of
-/// the request half of this wire.
-pub use quoter_spec::{DirectionV0 as Direction, SideV0 as Side};
-
-/// What this program reads into the wire's side beyond its shape. A foreign
-/// type takes no inherent impl, and a trait keeps every call site reading as
-/// it did.
-pub trait ClobSideExt {
-    fn is_worse_price(self, resting: u64, candidate: u64) -> bool;
-    fn side_bit(self) -> u8;
-    fn opposite(self) -> Side;
-    fn is_crossed_by(self, price: u64, opposite: u64) -> bool;
-}
-
-/// The same for the direction.
-pub trait ClobDirectionExt {
-    fn book_side(self) -> Side;
-}
-
-impl ClobDirectionExt for Direction {
-    /// The book side this taker direction consumes.
-    fn book_side(self) -> Side {
-        self.side()
-    }
-}
-
-impl ClobSideExt for Side {
-    /// Whether `resting` is a worse price for this side's makers than
-    /// `candidate`. It marks the point where a new order at `candidate` takes
-    /// priority. Bids rank high to low and asks rank low to high.
-    fn is_worse_price(self, resting: u64, candidate: u64) -> bool {
-        match self {
-            Side::Bid => resting < candidate,
-            Side::Ask => resting > candidate,
-        }
-    }
-
-    /// The node bit that marks membership of this side. A bid carries no bit,
-    /// because a clear `OrderBitFlag::Ask` means bid.
-    fn side_bit(self) -> u8 {
-        match self {
-            Side::Bid => 0,
-            Side::Ask => OrderBitFlag::Ask as u8,
-        }
-    }
-
-    fn opposite(self) -> Side {
-        match self {
-            Side::Bid => Side::Ask,
-            Side::Ask => Side::Bid,
-        }
-    }
-
-    /// Whether an order of this side resting at `price` is crossed by an order
-    /// on the opposite side at `opposite`. An ask at or below a bid crosses
-    /// that bid. A bid at or above an ask crosses that ask.
-    fn is_crossed_by(self, price: u64, opposite: u64) -> bool {
-        match self {
-            Side::Bid => opposite <= price,
-            Side::Ask => opposite >= price,
-        }
-    }
-}
-
 /// What the book requires of an order, and the one shape every read-only
 /// answer reports an order in. Declared by `clob-wire`.
 pub use clob_wire::{OrderRulesV0, OrderViewV0};
+/// Taker direction and book side, declared in `quoter-spec` with the rest of
+/// the request half of this wire.
+pub use quoter_spec::{DirectionV0, SideV0};
 
 /// Describe one order the way every read-only answer does.
 ///
@@ -368,7 +295,7 @@ pub struct ClobHeaderV0 {
     /// changing the account size, or migrating every live market. The bytes
     /// must stay zero until a field claims them.
     pub padding: [u8; 72],
-    /// Oldest taker-origin order on each side, indexed by [`Side`] (bid 0, ask
+    /// Oldest taker-origin order on each side, indexed by [`SideV0`] (bid 0, ask
     /// 1). [`NIL`] when the side holds none. The list is in rest order. A
     /// taker-origin order is a migrated taker remainder that claims depth on
     /// the other side, so a read of a side enumerates it. See [`crate::book`].
@@ -454,10 +381,24 @@ const_assert_eq!(ORDERS_OFFSET, clob_state::ORDERS_OFFSET);
 /// this account a reader outside the program is allowed to know. On chain,
 /// only this program reads it.
 pub use clob_state::{live_orders, OrderBitFlag, OrderNodeV0, NIL, NODE_BYTES};
+/// What a `cancel_all_v0` withdrew, aggregated per side. Declared by `clob-wire`.
+pub use clob_wire::CancelAllOutcomeV0;
 /// Order handle, declared by `clob-wire`. That crate owns every shape on the
 /// instruction surface, so the bytes this program reads and the bytes its
 /// caller writes come from one declaration.
-pub use clob_wire::ClobOrderRefV0 as OrderRefV0;
+pub use clob_wire::ClobOrderRefV0;
+/// Which sides a `cancel_all_v0` withdraws. Declared by `quoter-spec`.
+pub use quoter_spec::CancelSidesV0;
+/// One aggregated level of a quote. Declared by `quoter-spec`.
+pub use quoter_spec::PriceLevelV0;
+/// Where in the market account the response was written. Declared by
+/// `quoter-spec`, which owns every shape on this wire.
+pub use quoter_spec::ResponsePointerV0;
+/// One user's share of an executed fill. Mirrors velocity's quoter-interface
+/// `UserBalanceChangeV0`. `execute` writes this encoding into the response
+/// region field by field rather than serializing this struct. The type stays
+/// the schema of record, and the response unit tests pin the two together.
+pub use quoter_spec::UserBalanceChangeV0;
 /// A velocity user in derivable form: the authority wallet and the sub-account
 /// index, which derive the `User` and `UserStats` PDAs. The book stores this
 /// rather than the `User` key, so an off-chain reader reaches both from the
@@ -471,108 +412,7 @@ pub use quoter_spec::{
     user_set_within_capacity, UserCapV0, UserCapsV0, BASE_PRECISION, USER_CAPS_BYTES,
     USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
 };
-
-/// Declared by `quoter-spec`; the alias keeps this program's name for it.
-pub type PriceLevel = quoter_spec::PriceLevelV0;
-
-/// Which sides a `cancel_all_v0` withdraws. Declared by `quoter-spec`.
-/// [`CancelSidesExt`] is this program's reading of them.
-pub use quoter_spec::CancelSidesV0;
-/// Where in the market account the response was written. Declared by
-/// `quoter-spec`, which owns every shape on this wire.
-pub use quoter_spec::ResponsePointerV0;
-/// One user's share of an executed fill. Mirrors velocity's quoter-interface
-/// `UserBalanceChangeV0`. `execute` writes this encoding into the response
-/// region field by field rather than serializing this struct. The type stays
-/// the schema of record, and the response unit tests pin the two together.
-pub use quoter_spec::UserBalanceChangeV0;
 pub use quoter_spec::{ExecuteResponseV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteResponseV0};
-
-/// What the wire's named sides mean to a book. They name the lists to walk.
-pub trait CancelSidesExt {
-    fn sides(self) -> &'static [Side];
-    fn includes(self, side: Side) -> bool;
-}
-
-impl CancelSidesExt for CancelSidesV0 {
-    /// The sides to walk, in book order.
-    fn sides(self) -> &'static [Side] {
-        match (self.has_bids(), self.has_asks()) {
-            (true, true) => &[Side::Bid, Side::Ask],
-            (true, false) => &[Side::Bid],
-            (false, _) => &[Side::Ask],
-        }
-    }
-
-    fn includes(self, side: Side) -> bool {
-        match side {
-            Side::Bid => self.has_bids(),
-            Side::Ask => self.has_asks(),
-        }
-    }
-}
-
-/// What a `cancel_all_v0` withdrew, aggregated per side.
-///
-/// Velocity unwinds `open_bids` and `open_asks` by a summed base amount, so
-/// the whole sweep costs it the same two calls one cancel does. The cancel
-/// record's id list carries the per-order detail an indexer needs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CancelAllOutcome {
-    pub bid_base_asset_amount: u64,
-    pub ask_base_asset_amount: u64,
-    pub bid_orders: u32,
-    pub ask_orders: u32,
-    /// Reduce-only orders among those swept on each side. The caller disarms
-    /// its per-user reduce-only tracking by this count.
-    pub bid_reduce_only_orders: u32,
-    pub ask_reduce_only_orders: u32,
-    /// Whether the walk finished every requested side rather than stopping at
-    /// [`CANCEL_ALL_ORDERS_CEILING`]. False means orders of this user are
-    /// still resting and the caller should repeat the call.
-    pub exhaustive: bool,
-}
-
-impl CancelAllOutcome {
-    pub fn orders(&self) -> u32 {
-        self.bid_orders.saturating_add(self.ask_orders)
-    }
-}
-
-/// Wire form of [`CancelAllOutcome`] and the return data of `cancel_all_v0`.
-/// The caller unwinds the maker's aggregates in one pass per side. Declared
-/// by `clob-wire`.
-pub use clob_wire::CancelAllOutcomeV0;
-
-/// A removed order, for events (cancel/evict/expire).
-#[derive(Clone, Copy, Debug)]
-pub struct RemovedOrder {
-    pub user: UserRefV0,
-    pub order_id: u64,
-    pub client_order_id: u32,
-    pub price: u64,
-    pub base_asset_amount: u64,
-    pub side: Side,
-    pub taker_origin: bool,
-    pub reduce_only: bool,
-    pub max_ts: i64,
-}
-
-impl From<RemovedOrder> for RemovedOrderV0 {
-    fn from(removed: RemovedOrder) -> Self {
-        Self {
-            user: removed.user,
-            order_id: removed.order_id,
-            client_order_id: removed.client_order_id,
-            price: removed.price,
-            base_asset_amount: removed.base_asset_amount,
-            side: removed.side,
-            taker_origin: removed.taker_origin,
-            reduce_only: removed.reduce_only,
-            max_ts: removed.max_ts,
-        }
-    }
-}
 
 /// What `execute` hands back. It names where the wire response was written,
 /// and it carries the per-fill detail the execute event needs. The response
@@ -597,7 +437,7 @@ pub use clob_wire::RemovedOrderV0;
 /// `ORDER_VIEW_CEILING`.
 pub use clob_wire::FILL_BATCH_CEILING;
 /// What one order in a `fill_v0` came to. Declared by `clob-wire`.
-pub use clob_wire::{FillArgsV0, FillOutcomeV0, FillRequestV0, FilledOrderV0 as FilledOrder};
+pub use clob_wire::{FillArgsV0, FillOutcomeV0, FillRequestV0, FilledOrderV0};
 /// A remainder below `min_order_size` culled during execute. It travels on
 /// the wire so velocity decrements the maker's aggregates. The maker was just
 /// filled, so its `User` is always in the loaded set.
@@ -614,7 +454,7 @@ pub use quoter_spec::PartiallyFilledOrderV0;
 /// velocity policy. The CLOB trusts its `place_authority`.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaceOrderParams {
-    pub side: Side,
+    pub side: SideV0,
     pub price: u64,
     pub base_asset_amount: u64,
     pub user: UserRefV0,

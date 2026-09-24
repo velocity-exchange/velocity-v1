@@ -27,5 +27,5 @@ pub fn handle_evict_worst_v0(
 
     emit_removal!(OrderEvictRecordV0, removed, clock, market.market_index);
 
-    Ok(removed.into())
+    Ok(removed)
 }

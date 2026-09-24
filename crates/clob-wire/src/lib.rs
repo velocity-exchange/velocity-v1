@@ -255,7 +255,7 @@ wire_type! {
 }
 
 wire_type! {
-    derive(Clone, Copy, PartialEq, Eq, Debug)
+    derive(Clone, Copy, Default, PartialEq, Eq, Debug)
     /// Return data of `cancel_all_v0`. Per-side totals rather than a list of
     /// removals, because that is the shape open-order aggregates consume. The
     /// caller does one unwind per side and one count, however many orders the
@@ -275,6 +275,32 @@ wire_type! {
         /// per-call cap, which repeating the call clears, or passed over a taker-origin
         /// remainder whose claim the book still honours, which clears itself.
         pub exhaustive: bool,
+    }
+}
+
+impl CancelAllOutcomeV0 {
+    pub const fn orders(&self) -> u32 {
+        self.bid_orders.saturating_add(self.ask_orders)
+    }
+
+    pub const fn reduce_only_orders(&self) -> u32 {
+        self.bid_reduce_only_orders
+            .saturating_add(self.ask_reduce_only_orders)
+    }
+
+    /// Base amount withdrawn on `side`.
+    pub const fn base_for(&self, side: SideV0) -> u64 {
+        match side {
+            SideV0::Bid => self.bid_base_asset_amount,
+            SideV0::Ask => self.ask_base_asset_amount,
+        }
+    }
+
+    pub const fn orders_for(&self, side: SideV0) -> u32 {
+        match side {
+            SideV0::Bid => self.bid_orders,
+            SideV0::Ask => self.ask_orders,
+        }
     }
 }
 

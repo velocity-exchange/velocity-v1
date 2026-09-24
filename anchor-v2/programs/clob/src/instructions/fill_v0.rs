@@ -7,7 +7,7 @@ use {
         error::ClobError,
         events::FillEntryV0,
         instructions::GatedMarketV0,
-        state::{FillOutcomeV0, FilledOrder},
+        state::{FillOutcomeV0, FilledOrderV0},
     },
     anchor_lang::prelude::*,
 };
@@ -41,7 +41,7 @@ pub fn handle_fill_v0(ctx: &mut Context<GatedMarketV0>, args: FillArgsV0) -> Res
     // The node is read before `fill` shrinks or removes it, since the record
     // needs the remainder's own price and owner and this is the only place
     // either is stored.
-    let (fills, filled): (Vec<FillEntryV0>, Vec<FilledOrder>) = args
+    let (fills, filled): (Vec<FillEntryV0>, Vec<FilledOrderV0>) = args
         .fills
         .iter()
         .map(|request| {

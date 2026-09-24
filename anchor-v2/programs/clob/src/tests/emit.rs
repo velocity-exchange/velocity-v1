@@ -20,7 +20,8 @@ use {
             OrderPlaceRecordV0, OrdersCancelRecordV0,
         },
         state::{
-            CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, FILL_BATCH_CEILING,
+            CancelAllOutcomeV0, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING,
+            FILL_BATCH_CEILING,
         },
     },
     anchor_lang::prelude::*,
@@ -133,16 +134,16 @@ fn the_market_admin_records_emit_the_bytes_the_event_impl_would() {
 /// sides, and the id list at the per-call ceiling.
 #[test]
 fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
-    let shapes: [(CancelAllOutcome, u8); 4] = [
+    let shapes: [(CancelAllOutcomeV0, u8); 4] = [
         (
-            CancelAllOutcome {
+            CancelAllOutcomeV0 {
                 exhaustive: true,
                 ..Default::default()
             },
             2,
         ),
         (
-            CancelAllOutcome {
+            CancelAllOutcomeV0 {
                 bid_base_asset_amount: 500,
                 bid_orders: 2,
                 exhaustive: true,
@@ -151,7 +152,7 @@ fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
             0,
         ),
         (
-            CancelAllOutcome {
+            CancelAllOutcomeV0 {
                 bid_base_asset_amount: 500,
                 ask_base_asset_amount: 700,
                 bid_orders: 2,
@@ -159,11 +160,12 @@ fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
                 bid_reduce_only_orders: 1,
                 ask_reduce_only_orders: 0,
                 exhaustive: true,
+                ..Default::default()
             },
             2,
         ),
         (
-            CancelAllOutcome {
+            CancelAllOutcomeV0 {
                 bid_base_asset_amount: u64::MAX,
                 ask_base_asset_amount: 1,
                 bid_orders: CANCEL_ALL_ORDERS_CEILING as u32 - 1,
@@ -171,6 +173,7 @@ fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
                 bid_reduce_only_orders: 0,
                 ask_reduce_only_orders: 0,
                 exhaustive: false,
+                ..Default::default()
             },
             2,
         ),
@@ -213,7 +216,7 @@ fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
 fn the_cancel_all_record_refuses_a_count_that_disagrees_with_its_ids() {
     let mut record = Box::new(CancelAllRecord::new(&authority(), 0, 0, 0, 2).unwrap());
     record.push_id(1).unwrap();
-    let outcome = CancelAllOutcome {
+    let outcome = CancelAllOutcomeV0 {
         bid_orders: 2,
         exhaustive: true,
         ..Default::default()

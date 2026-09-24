@@ -46,8 +46,8 @@ use {
             market_status::MarketStatus,
             perp_market_map::{MarketSet, PerpMarketMap},
             prop_amm::{
-                ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, ClobPlaceOrderArgsV0,
-                ClobRemovedOrderV0, QuoterSlabExt, QuoterSlabV0,
+                CancelOrderArgsV0, ClobMarket, ClobOrderRefV0, PlaceOrderArgsV0, QuoterSlabExt,
+                QuoterSlabV0, RemovedOrderV0,
             },
             state::State,
             user::{Order, OrderReservation, User},
@@ -164,7 +164,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     };
 
     // Cancel first, so the margin gate below sees the net change.
-    let removed = clob.cancel(ClobCancelOrderArgsV0 {
+    let removed = clob.cancel(CancelOrderArgsV0 {
         order_ref: params.order_ref,
         user: user_ref,
         force: false,
@@ -204,7 +204,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         clock.slot,
     )?;
 
-    let order_ref = clob.place(ClobPlaceOrderArgsV0 {
+    let order_ref = clob.place(PlaceOrderArgsV0 {
         side: removed.side,
         price: terms.price,
         base_asset_amount: terms.base_asset_amount,
@@ -345,7 +345,7 @@ struct ReplacementTerms {
 /// the position its fills are capped to.
 fn resolve_replacement_terms(
     params: &ModifyOrderV1Params,
-    removed: &ClobRemovedOrderV0,
+    removed: &RemovedOrderV0,
     position_base: i64,
 ) -> Result<ReplacementTerms> {
     // The side is not modifiable. Turning a bid into an ask is a different
@@ -488,13 +488,13 @@ mod resolve_replacement_terms_tests {
         super::{resolve_replacement_terms, ModifyOrderV1Params},
         crate::{
             controller::position::PositionDirection,
-            state::prop_amm::{ClobOrderRefV0, ClobRemovedOrderV0},
+            state::prop_amm::{ClobOrderRefV0, RemovedOrderV0},
         },
         quoter_spec::{SideV0, UserRefV0},
     };
 
-    fn removed(taker_origin: bool, reduce_only: bool) -> ClobRemovedOrderV0 {
-        ClobRemovedOrderV0 {
+    fn removed(taker_origin: bool, reduce_only: bool) -> RemovedOrderV0 {
+        RemovedOrderV0 {
             user: UserRefV0 {
                 authority: Default::default(),
                 sub_account_id: 0,

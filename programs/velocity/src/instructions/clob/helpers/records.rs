@@ -66,7 +66,7 @@ impl ClobOrderFacts {
     /// `base_asset_amount_filled` is zero. The record describes what left the
     /// book rather than the order's fill history.
     pub fn from_removed(
-        removed: &crate::state::prop_amm::ClobRemovedOrderV0,
+        removed: &crate::state::prop_amm::RemovedOrderV0,
         market_index: u16,
         slot: u64,
     ) -> Self {

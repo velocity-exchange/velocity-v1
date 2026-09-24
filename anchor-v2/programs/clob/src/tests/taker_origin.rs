@@ -21,26 +21,31 @@ use {
         book::{BookHeader, ClobBook, NodeArena},
         error::ClobError,
         state::{
-            CancelSidesV0, ClobMarketV0, Direction, L3ResponseV0, MarketConfigV0, OrderBitFlag,
-            OrderRefV0, PlaceOrderParams, PriceLevel, QuoteResponseV0, Side, UserCapsV0, UserRefV0,
-            L3_ROWS_CEILING,
+            CancelSidesV0, ClobMarketV0, ClobOrderRefV0, DirectionV0, L3ResponseV0, MarketConfigV0,
+            OrderBitFlag, PlaceOrderParams, PriceLevelV0, QuoteResponseV0, SideV0, UserCapsV0,
+            UserRefV0, L3_ROWS_CEILING,
         },
     },
 };
 
 /// The levels a quote published, decoded from the response region.
-fn quoted(book: &mut ClobMarketV0, direction: Direction, size: u64, slot: u64) -> Vec<u8> {
+fn quoted(book: &mut ClobMarketV0, direction: DirectionV0, size: u64, slot: u64) -> Vec<u8> {
     quoted_with(book, direction, size, slot, false)
 }
 
 /// The same read the crank that settles a cross makes: every claim ignored.
-fn consuming_quote(book: &mut ClobMarketV0, direction: Direction, size: u64, slot: u64) -> Vec<u8> {
+fn consuming_quote(
+    book: &mut ClobMarketV0,
+    direction: DirectionV0,
+    size: u64,
+    slot: u64,
+) -> Vec<u8> {
     quoted_with(book, direction, size, slot, true)
 }
 
 fn quoted_with(
     book: &mut ClobMarketV0,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     slot: u64,
     include_taker_origin_reservations: bool,
@@ -66,13 +71,13 @@ fn quoted_with(
 /// pair inside its auction window.
 fn place_at(
     book: &mut ClobMarketV0,
-    side: Side,
+    side: SideV0,
     price: u64,
     size: u64,
     user: UserRefV0,
     activation_slot: u64,
     taker_origin: bool,
-) -> OrderRefV0 {
+) -> ClobOrderRefV0 {
     book.place(PlaceOrderParams {
         activation_slot,
         taker_origin,
@@ -87,12 +92,12 @@ fn the_flag_rides_the_node_and_every_removal_reports_it() {
     let mut book = market.book();
     let maker = user(0xA);
 
-    let remainder = place_taker_origin(&mut book, Side::Bid, 100, 5, maker);
-    let ordinary = place(&mut book, Side::Bid, 90, 5, maker);
+    let remainder = place_taker_origin(&mut book, SideV0::Bid, 100, 5, maker);
+    let ordinary = place(&mut book, SideV0::Bid, 90, 5, maker);
     let node = book.read_node(remainder.node_index).unwrap();
     assert!(node.is_taker_origin());
     assert!(node.is_bit_flag_set(OrderBitFlag::TakerOrigin));
-    assert_eq!(node.side(), Side::Bid);
+    assert_eq!(node.side(), SideV0::Bid);
     // The bit is per-order, not per-book.
     assert!(!book
         .read_node(ordinary.node_index)
@@ -116,8 +121,8 @@ fn the_flag_rides_the_node_and_every_removal_reports_it() {
     // Evict and expire report it too: a taker remainder is an ordinary resting
     // order in every other respect, so it can be the worst on its side or run
     // past its `max_ts` like any other.
-    let evictable = place_taker_origin(&mut book, Side::Ask, 100, 5, maker);
-    let evicted = book.evict_worst(Side::Ask, ACTIVE_SLOT).unwrap();
+    let evictable = place_taker_origin(&mut book, SideV0::Ask, 100, 5, maker);
+    let evicted = book.evict_worst(SideV0::Ask, ACTIVE_SLOT).unwrap();
     assert_eq!(evicted.order_id, evictable.order_id);
     assert!(evicted.taker_origin);
 
@@ -125,7 +130,7 @@ fn the_flag_rides_the_node_and_every_removal_reports_it() {
         .place(PlaceOrderParams {
             max_ts: 1_000,
             taker_origin: true,
-            ..params(Side::Ask, 100, 5, maker)
+            ..params(SideV0::Ask, 100, 5, maker)
         })
         .unwrap();
     assert!(book.remove_expired(expiring, 1_001).unwrap().taker_origin);
@@ -140,14 +145,14 @@ fn a_crossed_taker_remainder_is_passed_over() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place_taker_origin(&mut book, Side::Bid, 101, 5, taker);
-    let counterparty = place(&mut book, Side::Ask, 99, 5, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
+    let counterparty = place(&mut book, SideV0::Ask, 99, 5, maker);
 
     // Nothing else rests on the bid side, so a taker going that way finds no
     // depth at all — but the call lands, it just fills nothing.
     let outcome = book
         .execute(
-            Direction::Short,
+            DirectionV0::Short,
             5,
             &[],
             &UserCapsV0::EMPTY,
@@ -160,19 +165,19 @@ fn a_crossed_taker_remainder_is_passed_over() {
         .unwrap();
     assert!(outcome.fills.is_empty());
     assert_eq!(
-        quoted(&mut book, Direction::Short, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Short, u64::MAX, 0),
         encode_quote(&[])
     );
 
     // And it is still resting, untouched, waiting for its counterparty.
-    assert_eq!(book.node_count(Side::Bid), 1);
+    assert_eq!(book.node_count(SideV0::Bid), 1);
 
     // With the ask gone the remainder is uncrossed and takeable again.
     book.cancel(maker, counterparty, ACTIVE_SLOT, false)
         .unwrap();
     assert_eq!(
         book.execute(
-            Direction::Short,
+            DirectionV0::Short,
             5,
             &[],
             &UserCapsV0::EMPTY,
@@ -200,18 +205,18 @@ fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
     // The remainder is the best bid; an ordinary maker bid rests behind it.
-    place_taker_origin(&mut book, Side::Bid, 101, 5, taker);
-    place(&mut book, Side::Bid, 98, 7, maker);
-    place(&mut book, Side::Ask, 99, 5, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
+    place(&mut book, SideV0::Bid, 98, 7, maker);
+    place(&mut book, SideV0::Ask, 99, 5, maker);
 
     assert_eq!(
-        quoted(&mut book, Direction::Short, u64::MAX, 0),
-        encode_quote(&[PriceLevel { price: 98, size: 7 }])
+        quoted(&mut book, DirectionV0::Short, u64::MAX, 0),
+        encode_quote(&[PriceLevelV0 { price: 98, size: 7 }])
     );
 
     let outcome = book
         .execute(
-            Direction::Short,
+            DirectionV0::Short,
             7,
             &[],
             &UserCapsV0::EMPTY,
@@ -224,9 +229,9 @@ fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
         .unwrap();
     assert_eq!(outcome.fills.len(), 1);
     // The maker's bid filled; the remainder is still there.
-    assert_eq!(book.node_count(Side::Bid), 1);
+    assert_eq!(book.node_count(SideV0::Bid), 1);
     assert!(book
-        .read_node(book.best(Side::Bid))
+        .read_node(book.best(SideV0::Bid))
         .unwrap()
         .is_taker_origin());
 }
@@ -239,12 +244,12 @@ fn a_maker_only_cross_gates_nothing() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));
-    place(&mut book, Side::Bid, 101, 5, maker_a);
-    place(&mut book, Side::Ask, 99, 5, maker_b);
+    place(&mut book, SideV0::Bid, 101, 5, maker_a);
+    place(&mut book, SideV0::Ask, 99, 5, maker_b);
 
     assert_eq!(
         book.execute(
-            Direction::Short,
+            DirectionV0::Short,
             5,
             &[],
             &UserCapsV0::EMPTY,
@@ -261,7 +266,7 @@ fn a_maker_only_cross_gates_nothing() {
     );
     assert_eq!(
         book.execute(
-            Direction::Long,
+            DirectionV0::Long,
             5,
             &[],
             &UserCapsV0::EMPTY,
@@ -287,13 +292,13 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place_taker_origin(&mut book, Side::Bid, 101, 5, taker);
+    place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
     // Best ask is above the bid, so nothing crosses.
-    place(&mut book, Side::Ask, 105, 5, maker);
+    place(&mut book, SideV0::Ask, 105, 5, maker);
 
     assert_eq!(
-        quoted(&mut book, Direction::Short, u64::MAX, 0),
-        encode_quote(&[PriceLevel {
+        quoted(&mut book, DirectionV0::Short, u64::MAX, 0),
+        encode_quote(&[PriceLevelV0 {
             price: 101,
             size: 5
         }])
@@ -301,7 +306,7 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
 
     let outcome = book
         .execute(
-            Direction::Short,
+            DirectionV0::Short,
             5,
             &[],
             &UserCapsV0::EMPTY,
@@ -313,22 +318,22 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
         )
         .unwrap();
     assert_eq!(outcome.fills.len(), 1);
-    assert_eq!(book.node_count(Side::Bid), 0);
+    assert_eq!(book.node_count(SideV0::Bid), 0);
 
     // An empty other side is not a counterparty either.
     let market = TestMarket::new(16);
     let mut book = market.book();
-    place_taker_origin(&mut book, Side::Bid, 101, 5, taker);
+    place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
     assert_eq!(
-        quoted(&mut book, Direction::Short, u64::MAX, 0),
-        encode_quote(&[PriceLevel {
+        quoted(&mut book, DirectionV0::Short, u64::MAX, 0),
+        encode_quote(&[PriceLevelV0 {
             price: 101,
             size: 5
         }])
     );
     assert_eq!(
         book.execute(
-            Direction::Short,
+            DirectionV0::Short,
             5,
             &[],
             &UserCapsV0::EMPTY,
@@ -361,11 +366,11 @@ fn only_a_counterparty_that_could_match_this_slot_gates_the_fill() {
     // until the ask activates, and held back from that slot on.
     let market = TestMarket::new(16);
     let mut book = market.book();
-    place_at(&mut book, Side::Bid, 101, 5, taker, 0, true);
-    place_at(&mut book, Side::Ask, 99, 5, maker, 10, false);
+    place_at(&mut book, SideV0::Bid, 101, 5, taker, 0, true);
+    place_at(&mut book, SideV0::Ask, 99, 5, maker, 10, false);
     assert_eq!(
         book.execute(
-            Direction::Short,
+            DirectionV0::Short,
             1,
             &[],
             &UserCapsV0::EMPTY,
@@ -383,7 +388,7 @@ fn only_a_counterparty_that_could_match_this_slot_gates_the_fill() {
 
     assert!(book
         .execute(
-            Direction::Short,
+            DirectionV0::Short,
             1,
             &[],
             &UserCapsV0::EMPTY,
@@ -401,15 +406,15 @@ fn only_a_counterparty_that_could_match_this_slot_gates_the_fill() {
     // reclaiming it goes through `remove_expired_v0`.
     let market = TestMarket::new(16);
     let mut book = market.book();
-    place_at(&mut book, Side::Bid, 101, 5, taker, 0, true);
+    place_at(&mut book, SideV0::Bid, 101, 5, taker, 0, true);
     book.place(PlaceOrderParams {
         max_ts: 1_000,
-        ..params(Side::Ask, 99, 5, maker)
+        ..params(SideV0::Ask, 99, 5, maker)
     })
     .unwrap();
     assert!(book
         .execute(
-            Direction::Short,
+            DirectionV0::Short,
             1,
             &[],
             &UserCapsV0::EMPTY,
@@ -424,7 +429,7 @@ fn only_a_counterparty_that_could_match_this_slot_gates_the_fill() {
         .is_empty());
     assert_eq!(
         book.execute(
-            Direction::Short,
+            DirectionV0::Short,
             1,
             &[],
             &UserCapsV0::EMPTY,
@@ -450,25 +455,25 @@ fn the_cross_resolution_path_still_works() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    let remainder = place_taker_origin(&mut book, Side::Bid, 101, 5, taker);
-    place(&mut book, Side::Ask, 99, 5, maker);
+    let remainder = place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
+    place(&mut book, SideV0::Ask, 99, 5, maker);
 
     // The counterparty is claimed, so an ordinary caller sees no depth at all.
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
         encode_quote(&[])
     );
 
     // The crank reaches it at its own 99, which is the price the pair settles
     // at and the improvement the remainder came for.
     assert_eq!(
-        consuming_quote(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(&[PriceLevel { price: 99, size: 5 }])
+        consuming_quote(&mut book, DirectionV0::Long, u64::MAX, 0),
+        encode_quote(&[PriceLevelV0 { price: 99, size: 5 }])
     );
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             5,
             &[],
             &UserCapsV0::EMPTY,
@@ -480,13 +485,13 @@ fn the_cross_resolution_path_still_works() {
         )
         .unwrap();
     assert_eq!(outcome.fills.len(), 1);
-    assert_eq!(book.node_count(Side::Ask), 0);
+    assert_eq!(book.node_count(SideV0::Ask), 0);
 
     // Then the remainder comes off, saying it was the aggressor.
     let removed = book.cancel(taker, remainder, ACTIVE_SLOT, false).unwrap();
     assert!(removed.taker_origin);
     assert_eq!((removed.price, removed.base_asset_amount), (101, 5));
-    assert_eq!(book.node_count(Side::Bid), 0);
+    assert_eq!(book.node_count(SideV0::Bid), 0);
 }
 
 /// The reservation is scoped to the orders it names, not to the book: a sweep
@@ -499,14 +504,14 @@ fn a_sweep_fills_around_the_remainder() {
     let (taker, maker) = (user(0xA), user(0xB));
     // Asks: a maker at 99, a taker remainder at 100, a maker at 102 — the bid at
     // 101 crosses the first two.
-    place(&mut book, Side::Ask, 99, 5, maker);
-    place_taker_origin(&mut book, Side::Ask, 100, 5, taker);
-    place(&mut book, Side::Ask, 102, 5, maker);
-    place(&mut book, Side::Bid, 101, 5, user(0xC));
+    place(&mut book, SideV0::Ask, 99, 5, maker);
+    place_taker_origin(&mut book, SideV0::Ask, 100, 5, taker);
+    place(&mut book, SideV0::Ask, 102, 5, maker);
+    place(&mut book, SideV0::Bid, 101, 5, user(0xC));
 
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             15,
             &[],
             &UserCapsV0::EMPTY,
@@ -527,9 +532,9 @@ fn a_sweep_fills_around_the_remainder() {
     );
 
     // Both makers gone, the remainder still resting.
-    assert_eq!(book.node_count(Side::Ask), 1);
+    assert_eq!(book.node_count(SideV0::Ask), 1);
     assert!(book
-        .read_node(book.best(Side::Ask))
+        .read_node(book.best(SideV0::Ask))
         .unwrap()
         .is_taker_origin());
 }
@@ -543,14 +548,14 @@ fn the_gate_reads_the_book_not_the_callers_set() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place_taker_origin(&mut book, Side::Bid, 101, 5, taker);
-    place(&mut book, Side::Ask, 99, 5, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
+    place(&mut book, SideV0::Ask, 99, 5, maker);
 
     // The remainder's own owner sweeping the bid side skips it for self-trade
     // prevention, and the reservation withholds it from everyone else.
     assert!(book
         .execute(
-            Direction::Short,
+            DirectionV0::Short,
             5,
             &[],
             &UserCapsV0::EMPTY,
@@ -569,7 +574,7 @@ fn the_gate_reads_the_book_not_the_callers_set() {
     // the cross is a property of the book, not of the caller.
     assert!(book
         .execute(
-            Direction::Short,
+            DirectionV0::Short,
             5,
             &[taker],
             &UserCapsV0::EMPTY,
@@ -593,18 +598,18 @@ fn quote_and_execute_skip_the_same_order() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place(&mut book, Side::Ask, 99, 5, maker);
-    place_taker_origin(&mut book, Side::Ask, 100, 5, taker);
-    place(&mut book, Side::Ask, 102, 5, maker);
-    place(&mut book, Side::Bid, 101, 5, user(0xC));
+    place(&mut book, SideV0::Ask, 99, 5, maker);
+    place_taker_origin(&mut book, SideV0::Ask, 100, 5, taker);
+    place(&mut book, SideV0::Ask, 102, 5, maker);
+    place(&mut book, SideV0::Bid, 101, 5, user(0xC));
 
     // The remainder's level is absent; the maker levels in front of and behind
     // it are both published, because execute really can deliver them.
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
         encode_quote(&[
-            PriceLevel { price: 99, size: 5 },
-            PriceLevel {
+            PriceLevelV0 { price: 99, size: 5 },
+            PriceLevelV0 {
                 price: 102,
                 size: 5
             },
@@ -614,7 +619,7 @@ fn quote_and_execute_skip_the_same_order() {
     // And that is exactly what the fill delivers — 10 base, not 15.
     let outcome = book
         .execute(
-            Direction::Long,
+            DirectionV0::Long,
             u64::MAX,
             &[],
             &UserCapsV0::EMPTY,
@@ -634,7 +639,7 @@ fn quote_and_execute_skip_the_same_order() {
     // going the other way: the remainder claims it, so it is withheld in that
     // direction too. The two are one computation.
     assert_eq!(
-        quoted(&mut book, Direction::Short, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Short, u64::MAX, 0),
         encode_quote(&[])
     );
 }
@@ -647,16 +652,16 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker, crosser) = (user(0xA), user(0xB), user(0xC));
-    place(&mut book, Side::Ask, 99, 5, maker);
-    place_taker_origin(&mut book, Side::Ask, 100, 5, taker);
-    place(&mut book, Side::Ask, 102, 5, maker);
-    let crossing_bid = place(&mut book, Side::Bid, 101, 5, crosser);
+    place(&mut book, SideV0::Ask, 99, 5, maker);
+    place_taker_origin(&mut book, SideV0::Ask, 100, 5, taker);
+    place(&mut book, SideV0::Ask, 102, 5, maker);
+    let crossing_bid = place(&mut book, SideV0::Bid, 101, 5, crosser);
 
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
         encode_quote(&[
-            PriceLevel { price: 99, size: 5 },
-            PriceLevel {
+            PriceLevelV0 { price: 99, size: 5 },
+            PriceLevelV0 {
                 price: 102,
                 size: 5
             },
@@ -666,14 +671,14 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
     book.cancel(crosser, crossing_bid, ACTIVE_SLOT, false)
         .unwrap();
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
         encode_quote(&[
-            PriceLevel { price: 99, size: 5 },
-            PriceLevel {
+            PriceLevelV0 { price: 99, size: 5 },
+            PriceLevelV0 {
                 price: 100,
                 size: 5
             },
-            PriceLevel {
+            PriceLevelV0 {
                 price: 102,
                 size: 5
             },
@@ -683,7 +688,7 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
     // Execute agrees, which is the whole point of the two sharing a predicate.
     assert_eq!(
         book.execute(
-            Direction::Long,
+            DirectionV0::Long,
             15,
             &[],
             &UserCapsV0::EMPTY,
@@ -709,23 +714,23 @@ fn quote_follows_the_counterpartys_activation_slot() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place_at(&mut book, Side::Bid, 101, 5, taker, 0, true);
-    place_at(&mut book, Side::Bid, 98, 5, maker, 0, false);
-    place_at(&mut book, Side::Ask, 99, 5, maker, 10, false);
+    place_at(&mut book, SideV0::Bid, 101, 5, taker, 0, true);
+    place_at(&mut book, SideV0::Bid, 98, 5, maker, 0, false);
+    place_at(&mut book, SideV0::Ask, 99, 5, maker, 10, false);
 
     assert_eq!(
-        quoted(&mut book, Direction::Short, u64::MAX, 9),
+        quoted(&mut book, DirectionV0::Short, u64::MAX, 9),
         encode_quote(&[
-            PriceLevel {
+            PriceLevelV0 {
                 price: 101,
                 size: 5
             },
-            PriceLevel { price: 98, size: 5 },
+            PriceLevelV0 { price: 98, size: 5 },
         ])
     );
     assert_eq!(
-        quoted(&mut book, Direction::Short, u64::MAX, 10),
-        encode_quote(&[PriceLevel { price: 98, size: 5 }])
+        quoted(&mut book, DirectionV0::Short, u64::MAX, 10),
+        encode_quote(&[PriceLevelV0 { price: 98, size: 5 }])
     );
 }
 
@@ -740,8 +745,8 @@ fn a_bound_remainder_cannot_be_cancelled_until_its_claim_lapses() {
     let (taker, maker) = (user(0xA), user(0xB));
     assert_eq!(book.reservation_grace_slots, 32);
 
-    place(&mut book, Side::Ask, 100, 5, maker);
-    let remainder = place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
+    place(&mut book, SideV0::Ask, 100, 5, maker);
+    let remainder = place_at(&mut book, SideV0::Bid, 100, 5, taker, 10, true);
 
     for slot in [5, 10, 20, 41] {
         assert_err(
@@ -750,7 +755,7 @@ fn a_bound_remainder_cannot_be_cancelled_until_its_claim_lapses() {
         );
         // The claim still holds the maker's ask at every slot the cancel refuses.
         assert_eq!(
-            quoted(&mut book, Direction::Long, u64::MAX, slot),
+            quoted(&mut book, DirectionV0::Long, u64::MAX, slot),
             encode_quote(&[]),
             "slot {slot}"
         );
@@ -758,8 +763,8 @@ fn a_bound_remainder_cannot_be_cancelled_until_its_claim_lapses() {
 
     // The claim lapses at activation plus the grace, and the bind ends with it.
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 42),
-        encode_quote(&[PriceLevel {
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 42),
+        encode_quote(&[PriceLevelV0 {
             price: 100,
             size: 5
         }])
@@ -775,8 +780,8 @@ fn cancel_all_keeps_a_remainder_until_its_claim_lapses() {
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
 
-    place(&mut book, Side::Ask, 100, 5, maker);
-    place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
+    place(&mut book, SideV0::Ask, 100, 5, maker);
+    place_at(&mut book, SideV0::Bid, 100, 5, taker, 10, true);
 
     let bound = book
         .cancel_all(taker, CancelSidesV0::Both, 41, false, &mut |_| Ok(()))
@@ -807,21 +812,21 @@ fn eviction_passes_over_a_bound_remainder() {
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
 
-    let remainder = place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
-    place(&mut book, Side::Bid, 103, 5, maker);
-    place(&mut book, Side::Bid, 102, 5, maker);
-    let next_worst = place(&mut book, Side::Bid, 101, 5, maker);
-    assert_eq!(book.worst(Side::Bid), remainder.node_index);
+    let remainder = place_at(&mut book, SideV0::Bid, 100, 5, taker, 10, true);
+    place(&mut book, SideV0::Bid, 103, 5, maker);
+    place(&mut book, SideV0::Bid, 102, 5, maker);
+    let next_worst = place(&mut book, SideV0::Bid, 101, 5, maker);
+    assert_eq!(book.worst(SideV0::Bid), remainder.node_index);
 
-    let evicted = book.evict_worst(Side::Bid, 5).unwrap();
+    let evicted = book.evict_worst(SideV0::Bid, 5).unwrap();
     assert_eq!(evicted.order_id, next_worst.order_id);
     assert!(!evicted.taker_origin);
-    assert_eq!(book.worst(Side::Bid), remainder.node_index);
+    assert_eq!(book.worst(SideV0::Bid), remainder.node_index);
     assert_consistent(&book);
 
     // Once the claim lapses the remainder is an ordinary tail again.
-    place(&mut book, Side::Bid, 101, 5, maker);
-    let evicted = book.evict_worst(Side::Bid, 42).unwrap();
+    place(&mut book, SideV0::Bid, 101, 5, maker);
+    let evicted = book.evict_worst(SideV0::Bid, 42).unwrap();
     assert_eq!(evicted.order_id, remainder.order_id);
     assert_consistent(&book);
 }
@@ -840,12 +845,15 @@ fn eviction_refuses_a_side_of_bound_remainders() {
     let mut book = market.book();
     let taker = user(0xA);
 
-    place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
-    place_at(&mut book, Side::Bid, 101, 5, taker, 10, true);
+    place_at(&mut book, SideV0::Bid, 100, 5, taker, 10, true);
+    place_at(&mut book, SideV0::Bid, 101, 5, taker, 10, true);
 
-    assert_err(book.evict_worst(Side::Bid, 41), ClobError::TakerOriginBound);
-    assert_eq!(book.node_count(Side::Bid), 2);
-    assert!(book.evict_worst(Side::Bid, 42).unwrap().taker_origin);
+    assert_err(
+        book.evict_worst(SideV0::Bid, 41),
+        ClobError::TakerOriginBound,
+    );
+    assert_eq!(book.node_count(SideV0::Bid), 2);
+    assert!(book.evict_worst(SideV0::Bid, 42).unwrap().taker_origin);
     assert_consistent(&book);
 }
 
@@ -857,8 +865,8 @@ fn force_takes_a_bound_remainder() {
     let mut book = market.book();
     let taker = user(0xA);
 
-    place(&mut book, Side::Ask, 100, 5, user(0xB));
-    let remainder = place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
+    place(&mut book, SideV0::Ask, 100, 5, user(0xB));
+    let remainder = place_at(&mut book, SideV0::Bid, 100, 5, taker, 10, true);
     for slot in [0, 10, 41] {
         assert_err(
             book.cancel(taker, remainder, slot, false),
@@ -882,7 +890,7 @@ fn an_ordinary_order_inside_its_window_is_not_bound() {
     let mut book = market.book();
     let maker = user(0xA);
 
-    let quote = place_at(&mut book, Side::Bid, 100, 5, maker, 10, false);
+    let quote = place_at(&mut book, SideV0::Bid, 100, 5, maker, 10, false);
     assert!(book.cancel(maker, quote, 0, false).is_ok());
 }
 
@@ -895,9 +903,9 @@ fn cancel_all_passes_over_a_bound_remainder_and_says_so() {
     let mut book = market.book();
     let owner = user(0xA);
 
-    let bound = place_at(&mut book, Side::Bid, 100, 5, owner, 10, true);
-    place_at(&mut book, Side::Bid, 90, 5, owner, 0, false);
-    place_at(&mut book, Side::Ask, 110, 5, owner, 0, false);
+    let bound = place_at(&mut book, SideV0::Bid, 100, 5, owner, 10, true);
+    place_at(&mut book, SideV0::Bid, 90, 5, owner, 0, false);
+    place_at(&mut book, SideV0::Ask, 110, 5, owner, 0, false);
 
     let outcome = book
         .cancel_all(owner, CancelSidesV0::Both, 0, false, &mut |_| Ok(()))
@@ -918,13 +926,13 @@ fn cancel_all_passes_over_a_bound_remainder_and_says_so() {
 }
 
 /// The fills an execute delivered, best price first.
-fn executed(book: &mut ClobMarketV0, direction: Direction, size: u64, slot: u64) -> Vec<u64> {
+fn executed(book: &mut ClobMarketV0, direction: DirectionV0, size: u64, slot: u64) -> Vec<u64> {
     executed_with(book, direction, size, slot, false)
 }
 
 fn executed_with(
     book: &mut ClobMarketV0,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     slot: u64,
     include_taker_origin_reservations: bool,
@@ -959,20 +967,20 @@ fn a_claim_takes_the_best_priced_prefix_of_the_side() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place(&mut book, Side::Ask, 100, 3, maker);
-    place(&mut book, Side::Ask, 101, 3, maker);
-    place(&mut book, Side::Ask, 102, 3, maker);
+    place(&mut book, SideV0::Ask, 100, 3, maker);
+    place(&mut book, SideV0::Ask, 101, 3, maker);
+    place(&mut book, SideV0::Ask, 102, 3, maker);
     // Four base of demand: the whole 100 level, then one of the 101.
-    place_taker_origin(&mut book, Side::Bid, 102, 4, taker);
+    place_taker_origin(&mut book, SideV0::Bid, 102, 4, taker);
 
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
         encode_quote(&[
-            PriceLevel {
+            PriceLevelV0 {
                 price: 101,
                 size: 2
             },
-            PriceLevel {
+            PriceLevelV0 {
                 price: 102,
                 size: 3
             },
@@ -980,8 +988,8 @@ fn a_claim_takes_the_best_priced_prefix_of_the_side() {
     );
 
     // Nothing moved on the book: a claim is computed, not stored.
-    assert_eq!(book.node_count(Side::Ask), 3);
-    assert_eq!(book.read_node(book.best(Side::Ask)).unwrap().price, 100);
+    assert_eq!(book.node_count(SideV0::Ask), 3);
+    assert_eq!(book.read_node(book.best(SideV0::Ask)).unwrap().price, 100);
 }
 
 /// The hole this closes. Asks at 100 and 101 with a remainder bidding 102: a
@@ -994,35 +1002,35 @@ fn a_take_and_relist_cannot_reach_the_claimed_ask() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place(&mut book, Side::Ask, 100, 5, maker);
-    place(&mut book, Side::Ask, 101, 5, maker);
-    place_taker_origin(&mut book, Side::Bid, 102, 5, taker);
+    place(&mut book, SideV0::Ask, 100, 5, maker);
+    place(&mut book, SideV0::Ask, 101, 5, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 102, 5, taker);
 
     // The 100 level is not on offer at all; the 101 behind it still is.
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(&[PriceLevel {
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
+        encode_quote(&[PriceLevelV0 {
             price: 101,
             size: 5
         }])
     );
-    assert_eq!(executed(&mut book, Direction::Long, 10, 0), vec![5]);
-    assert_eq!(book.node_count(Side::Ask), 1);
-    assert_eq!(book.read_node(book.best(Side::Ask)).unwrap().price, 100);
+    assert_eq!(executed(&mut book, DirectionV0::Long, 10, 0), vec![5]);
+    assert_eq!(book.node_count(SideV0::Ask), 1);
+    assert_eq!(book.read_node(book.best(SideV0::Ask)).unwrap().price, 100);
 
     // And the crank reaches it, at 100.
     assert_eq!(
-        consuming_quote(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(&[PriceLevel {
+        consuming_quote(&mut book, DirectionV0::Long, u64::MAX, 0),
+        encode_quote(&[PriceLevelV0 {
             price: 100,
             size: 5
         }])
     );
     assert_eq!(
-        executed_with(&mut book, Direction::Long, 5, 0, true),
+        executed_with(&mut book, DirectionV0::Long, 5, 0, true),
         vec![5]
     );
-    assert_eq!(book.node_count(Side::Ask), 0);
+    assert_eq!(book.node_count(SideV0::Ask), 0);
 }
 
 /// A maker that improves on the claimed price inside the auction window is
@@ -1035,20 +1043,20 @@ fn a_better_priced_maker_arriving_mid_window_is_claimed() {
     let mut book = market.book();
     let (taker, maker, improver) = (user(0xA), user(0xB), user(0xC));
     // The remainder is still inside its activation window.
-    place_at(&mut book, Side::Bid, 102, 5, taker, 10, true);
-    let first = place(&mut book, Side::Ask, 101, 5, maker);
+    place_at(&mut book, SideV0::Bid, 102, 5, taker, 10, true);
+    let first = place(&mut book, SideV0::Ask, 101, 5, maker);
 
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 5),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 5),
         encode_quote(&[])
     );
 
-    let better = place(&mut book, Side::Ask, 100, 5, improver);
+    let better = place(&mut book, SideV0::Ask, 100, 5, improver);
     // The improver holds the claim now, and the maker it cut in front of is
     // ordinary depth again.
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 5),
-        encode_quote(&[PriceLevel {
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 5),
+        encode_quote(&[PriceLevelV0 {
             price: 101,
             size: 5
         }])
@@ -1078,19 +1086,19 @@ fn cancelling_the_claimed_ask_moves_the_claim_and_leaves_the_rest_alone() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    let best = place(&mut book, Side::Ask, 100, 5, maker);
-    place(&mut book, Side::Ask, 101, 5, maker);
-    let far = place(&mut book, Side::Ask, 105, 5, maker);
-    place_taker_origin(&mut book, Side::Bid, 102, 5, taker);
+    let best = place(&mut book, SideV0::Ask, 100, 5, maker);
+    place(&mut book, SideV0::Ask, 101, 5, maker);
+    let far = place(&mut book, SideV0::Ask, 105, 5, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 102, 5, taker);
 
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
         encode_quote(&[
-            PriceLevel {
+            PriceLevelV0 {
                 price: 101,
                 size: 5
             },
-            PriceLevel {
+            PriceLevelV0 {
                 price: 105,
                 size: 5
             },
@@ -1102,8 +1110,8 @@ fn cancelling_the_claimed_ask_moves_the_claim_and_leaves_the_rest_alone() {
     // The 101 is claimed because the remainder crosses it. The 105 is not,
     // because no remainder does, and it is still the order it was.
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(&[PriceLevel {
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
+        encode_quote(&[PriceLevelV0 {
             price: 105,
             size: 5
         }])
@@ -1111,7 +1119,7 @@ fn cancelling_the_claimed_ask_moves_the_claim_and_leaves_the_rest_alone() {
 
     let node = book.read_node(far.node_index).unwrap();
     assert_eq!((node.order_id, node.base_asset_amount), (far.order_id, 5));
-    assert_eq!(book.read_node(book.best(Side::Ask)).unwrap().price, 101);
+    assert_eq!(book.read_node(book.best(SideV0::Ask)).unwrap().price, 101);
 }
 
 /// Two remainders resting at once are served oldest first, because the
@@ -1127,23 +1135,23 @@ fn two_claimants_are_served_in_rest_order_and_lapse_one_at_a_time() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (older, younger, maker) = (user(0xA), user(0xB), user(0xC));
-    place(&mut book, Side::Ask, 100, 5, maker);
-    place(&mut book, Side::Ask, 101, 5, maker);
+    place(&mut book, SideV0::Ask, 100, 5, maker);
+    place(&mut book, SideV0::Ask, 101, 5, maker);
     // The younger remainder is the better-priced one, and it is still served
     // second: rest order decides, not price.
-    place_at(&mut book, Side::Bid, 102, 5, older, 10, true);
-    place_at(&mut book, Side::Bid, 103, 5, younger, 20, true);
+    place_at(&mut book, SideV0::Bid, 102, 5, older, 10, true);
+    place_at(&mut book, SideV0::Bid, 103, 5, younger, 20, true);
 
     // Between them they claim the whole side.
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 9),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 9),
         encode_quote(&[])
     );
 
     // The older one holds the 100, so a crank consuming it fills there.
     assert_eq!(
-        consuming_quote(&mut book, Direction::Long, 5, 9),
-        encode_quote(&[PriceLevel {
+        consuming_quote(&mut book, DirectionV0::Long, 5, 9),
+        encode_quote(&[PriceLevelV0 {
             price: 100,
             size: 5
         }])
@@ -1153,8 +1161,8 @@ fn two_claimants_are_served_in_rest_order_and_lapse_one_at_a_time() {
     // younger claim is untouched, and it is now the best cover it holds.
     let lapsed = 10 + book.reservation_grace_slots as u64;
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, lapsed),
-        encode_quote(&[PriceLevel {
+        quoted(&mut book, DirectionV0::Long, u64::MAX, lapsed),
+        encode_quote(&[PriceLevelV0 {
             price: 101,
             size: 5
         }])
@@ -1162,7 +1170,7 @@ fn two_claimants_are_served_in_rest_order_and_lapse_one_at_a_time() {
 
     // The slot before, both claims still stand.
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, lapsed - 1),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, lapsed - 1),
         encode_quote(&[])
     );
 }
@@ -1174,25 +1182,25 @@ fn a_remainder_that_crosses_nothing_claims_nothing() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place_taker_origin(&mut book, Side::Bid, 98, 5, taker);
-    place(&mut book, Side::Ask, 100, 5, maker);
-    place(&mut book, Side::Ask, 101, 5, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 98, 5, taker);
+    place(&mut book, SideV0::Ask, 100, 5, maker);
+    place(&mut book, SideV0::Ask, 101, 5, maker);
 
-    assert_eq!(book.claimant_count(Side::Bid), 1);
+    assert_eq!(book.claimant_count(SideV0::Bid), 1);
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
         encode_quote(&[
-            PriceLevel {
+            PriceLevelV0 {
                 price: 100,
                 size: 5
             },
-            PriceLevel {
+            PriceLevelV0 {
                 price: 101,
                 size: 5
             },
         ])
     );
-    assert_eq!(executed(&mut book, Direction::Long, 10, 0), vec![5, 5]);
+    assert_eq!(executed(&mut book, DirectionV0::Long, 10, 0), vec![5, 5]);
 }
 
 /// A router allocates from the quote and then executes against the
@@ -1203,19 +1211,19 @@ fn quote_and_execute_withhold_the_same_units() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place(&mut book, Side::Ask, 100, 3, maker);
-    place(&mut book, Side::Ask, 101, 3, maker);
-    place(&mut book, Side::Ask, 102, 3, maker);
-    place_taker_origin(&mut book, Side::Bid, 102, 4, taker);
+    place(&mut book, SideV0::Ask, 100, 3, maker);
+    place(&mut book, SideV0::Ask, 101, 3, maker);
+    place(&mut book, SideV0::Ask, 102, 3, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 102, 4, taker);
 
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
         encode_quote(&[
-            PriceLevel {
+            PriceLevelV0 {
                 price: 101,
                 size: 2
             },
-            PriceLevel {
+            PriceLevelV0 {
                 price: 102,
                 size: 3
             },
@@ -1225,11 +1233,11 @@ fn quote_and_execute_withhold_the_same_units() {
     // Five base, the same five the ladder published, and the claimed unit of
     // the 101 stays resting.
     assert_eq!(
-        executed(&mut book, Direction::Long, u64::MAX, 0),
+        executed(&mut book, DirectionV0::Long, u64::MAX, 0),
         vec![2, 3]
     );
-    assert_eq!(book.node_count(Side::Ask), 2);
-    let partial = book.read_node(book.best(Side::Ask)).unwrap();
+    assert_eq!(book.node_count(SideV0::Ask), 2);
+    let partial = book.read_node(book.best(SideV0::Ask)).unwrap();
     assert_eq!((partial.price, partial.base_asset_amount), (100, 3));
 }
 
@@ -1254,54 +1262,54 @@ fn every_removal_path_maintains_the_claimant_list() {
     let owner = user(0xA);
 
     // Place: two remainders on one side and one on the other.
-    let cancelled = place_taker_origin(&mut book, Side::Bid, 100, 5, owner);
-    let evicted = place_taker_origin(&mut book, Side::Bid, 90, 5, owner);
+    let cancelled = place_taker_origin(&mut book, SideV0::Bid, 100, 5, owner);
+    let evicted = place_taker_origin(&mut book, SideV0::Bid, 90, 5, owner);
     let expiring = book
         .place(PlaceOrderParams {
             max_ts: 1_000,
             taker_origin: true,
-            ..params(Side::Ask, 200, 5, owner)
+            ..params(SideV0::Ask, 200, 5, owner)
         })
         .unwrap();
     assert_consistent(&book);
-    assert_eq!(book.claimant_count(Side::Bid), 2);
-    assert_eq!(book.claimant_count(Side::Ask), 1);
+    assert_eq!(book.claimant_count(SideV0::Bid), 2);
+    assert_eq!(book.claimant_count(SideV0::Ask), 1);
 
     // Cancel takes the head of a list of two.
     book.cancel(owner, cancelled, ACTIVE_SLOT, false).unwrap();
     assert_consistent(&book);
-    assert_eq!(book.claimant_count(Side::Bid), 1);
+    assert_eq!(book.claimant_count(SideV0::Bid), 1);
 
     // Eviction takes the tail, which is now also the head.
     assert_eq!(
-        book.evict_worst(Side::Bid, ACTIVE_SLOT).unwrap().order_id,
+        book.evict_worst(SideV0::Bid, ACTIVE_SLOT).unwrap().order_id,
         evicted.order_id
     );
 
     assert_consistent(&book);
-    assert_eq!(book.claimant_count(Side::Bid), 0);
+    assert_eq!(book.claimant_count(SideV0::Bid), 0);
 
     // Expiry reclamation.
     book.remove_expired(expiring, 1_001).unwrap();
     assert_consistent(&book);
-    assert_eq!(book.claimant_count(Side::Ask), 0);
+    assert_eq!(book.claimant_count(SideV0::Ask), 0);
 
     // `fill_v0` shrinking a remainder in place touches no link, and culling
     // its sub-minimum leftover goes through the same unlink as the rest.
-    let filled = place_taker_origin(&mut book, Side::Ask, 200, 9, owner);
+    let filled = place_taker_origin(&mut book, SideV0::Ask, 200, 9, owner);
     assert!(!book.fill(filled, 3, ACTIVE_SLOT, 0).unwrap().removed);
     assert_consistent(&book);
-    assert_eq!(book.claimant_count(Side::Ask), 1);
+    assert_eq!(book.claimant_count(SideV0::Ask), 1);
     let outcome = book.fill(filled, 4, ACTIVE_SLOT, 0).unwrap();
     assert!(outcome.removed && outcome.culled_base_asset_amount == 2);
     assert_consistent(&book);
-    assert_eq!(book.claimant_count(Side::Ask), 0);
+    assert_eq!(book.claimant_count(SideV0::Ask), 0);
 
     // Execute culling a sub-minimum remainder of an uncrossed remainder.
-    let culled = place_taker_origin(&mut book, Side::Ask, 200, 5, owner);
-    assert_eq!(executed(&mut book, Direction::Long, 3, 0), vec![3]);
+    let culled = place_taker_origin(&mut book, SideV0::Ask, 200, 5, owner);
+    assert_eq!(executed(&mut book, DirectionV0::Long, 3, 0), vec![3]);
     assert_consistent(&book);
-    assert_eq!(book.claimant_count(Side::Ask), 0);
+    assert_eq!(book.claimant_count(SideV0::Ask), 0);
     assert!(book.read_node(culled.node_index).unwrap().order_id != culled.order_id);
 }
 
@@ -1314,12 +1322,12 @@ fn the_withheld_report_leaves_out_claimed_depth() {
     let mut book = market.book();
     let (taker, absent_maker, loaded) = (user(0xA), user(0xB), user(0xC));
 
-    place(&mut book, Side::Ask, 100, 5, absent_maker);
-    place_taker_origin(&mut book, Side::Bid, 100, 3, taker);
+    place(&mut book, SideV0::Ask, 100, 5, absent_maker);
+    place_taker_origin(&mut book, SideV0::Bid, 100, 3, taker);
 
     let pointer = book
         .quote(
-            Direction::Long,
+            DirectionV0::Long,
             u64::MAX,
             &[loaded],
             &UserCapsV0::EMPTY,
@@ -1336,7 +1344,7 @@ fn the_withheld_report_leaves_out_claimed_depth() {
     assert!(response.levels.is_empty());
     assert_eq!(
         response.withheld,
-        PriceLevel {
+        PriceLevelV0 {
             price: 100,
             size: 2
         }
@@ -1355,7 +1363,7 @@ fn fill_refuses_a_remainder_that_is_not_live() {
         .place(PlaceOrderParams {
             max_ts: 1_000,
             taker_origin: true,
-            ..params(Side::Bid, 100, 5, taker)
+            ..params(SideV0::Bid, 100, 5, taker)
         })
         .unwrap();
     assert_err(
@@ -1364,7 +1372,7 @@ fn fill_refuses_a_remainder_that_is_not_live() {
     );
     assert!(book.fill(expired, 2, ACTIVE_SLOT, 1_000).is_ok());
 
-    let unactivated = place_at(&mut book, Side::Ask, 110, 5, taker, 10, true);
+    let unactivated = place_at(&mut book, SideV0::Ask, 110, 5, taker, 10, true);
     assert_err(book.fill(unactivated, 2, 9, 0), ClobError::OrderNotLive);
     assert_eq!(
         book.read_node(unactivated.node_index)
@@ -1386,13 +1394,13 @@ fn quote_l3_reports_the_claim_on_the_row() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place(&mut book, Side::Ask, 100, 3, maker);
-    place(&mut book, Side::Ask, 101, 3, maker);
-    place_taker_origin(&mut book, Side::Bid, 102, 4, taker);
+    place(&mut book, SideV0::Ask, 100, 3, maker);
+    place(&mut book, SideV0::Ask, 101, 3, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 102, 4, taker);
 
     let rows = |book: &mut ClobMarketV0, consume: bool| -> Vec<(u64, u64, bool)> {
         let pointer = book
-            .quote_l3(Direction::Long, 0, L3_ROWS_CEILING, consume, 0, 0)
+            .quote_l3(DirectionV0::Long, 0, L3_ROWS_CEILING, consume, 0, 0)
             .unwrap();
         let bytes = streamed(book, pointer);
         L3ResponseV0::parse(&bytes)
@@ -1427,16 +1435,16 @@ fn leftover_demand_does_not_claim_cover_the_claimant_cannot_cross() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker) = (user(0xA), user(0xB));
-    place(&mut book, Side::Ask, 100, 5, maker);
-    place(&mut book, Side::Ask, 105, 5, maker);
-    place_taker_origin(&mut book, Side::Bid, 102, 10, taker);
+    place(&mut book, SideV0::Ask, 100, 5, maker);
+    place(&mut book, SideV0::Ask, 105, 5, maker);
+    place_taker_origin(&mut book, SideV0::Bid, 102, 10, taker);
 
     assert_eq!(
-        quoted(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(&[PriceLevel {
+        quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
+        encode_quote(&[PriceLevelV0 {
             price: 105,
             size: 5
         }])
     );
-    assert_eq!(executed(&mut book, Direction::Long, u64::MAX, 0), vec![5]);
+    assert_eq!(executed(&mut book, DirectionV0::Long, u64::MAX, 0), vec![5]);
 }

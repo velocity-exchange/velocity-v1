@@ -9,17 +9,17 @@ use {
         error::ClobError,
         events::OrderPlaceRecordV0,
         instructions::GatedMarketV0,
-        state::{OrderBitFlag, OrderRefV0, PlaceOrderParams},
+        state::{ClobOrderRefV0, OrderBitFlag, PlaceOrderParams},
     },
     anchor_lang::prelude::*,
 };
 
-/// Place a resting order. Returns the new order's [`OrderRefV0`] as return
+/// Place a resting order. Returns the new order's [`ClobOrderRefV0`] as return
 /// data, so the CPI caller can store the hint.
 pub fn handle_place_order_v0(
     ctx: &mut Context<GatedMarketV0>,
     args: PlaceOrderArgsV0,
-) -> Result<OrderRefV0> {
+) -> Result<ClobOrderRefV0> {
     let clock = Clock::get()?;
     let user = args.user;
     let market = &mut ctx.accounts.market;

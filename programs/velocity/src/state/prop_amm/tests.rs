@@ -578,7 +578,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     agree("OrderRefV0", &order_ref);
     agree(
         "PlaceOrderArgsV0",
-        &ClobPlaceOrderArgsV0 {
+        &PlaceOrderArgsV0 {
             side: SideV0::Ask,
             price: 0x1122_3344_5566_7788,
             base_asset_amount: 0x99AA_BBCC_DDEE_FF00,
@@ -595,7 +595,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     // The absent-option arm encodes its tag differently; both are on the wire.
     agree(
         "PlaceOrderArgsV0 (no delay)",
-        &ClobPlaceOrderArgsV0 {
+        &PlaceOrderArgsV0 {
             side: SideV0::Bid,
             price: 1,
             base_asset_amount: 2,
@@ -613,7 +613,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     // encodings of the byte, not just the zero one.
     agree(
         "CancelOrderArgsV0",
-        &ClobCancelOrderArgsV0 {
+        &CancelOrderArgsV0 {
             order_ref,
             user,
             force: true,
@@ -621,23 +621,17 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     );
     agree(
         "CancelAllArgsV0",
-        &ClobCancelAllArgsV0 {
+        &CancelAllArgsV0 {
             user,
-            sides: ClobCancelSides::Both,
+            sides: CancelSidesV0::Both,
             force: false,
         },
     );
-    agree(
-        "EvictWorstArgsV0",
-        &ClobEvictWorstArgsV0 { side: SideV0::Bid },
-    );
-    agree(
-        "RemoveExpiredArgsV0",
-        &ClobRemoveExpiredArgsV0 { order_ref },
-    );
+    agree("EvictWorstArgsV0", &EvictWorstArgsV0 { side: SideV0::Bid });
+    agree("RemoveExpiredArgsV0", &RemoveExpiredArgsV0 { order_ref });
     agree(
         "RemovedOrderV0",
-        &ClobRemovedOrderV0 {
+        &RemovedOrderV0 {
             user,
             order_id: 0x1111_2222_3333_4444,
             client_order_id: 0x0A0B_0C0D,
@@ -651,7 +645,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     );
     agree(
         "CancelAllOutcomeV0",
-        &ClobCancelAllOutcomeV0 {
+        &CancelAllOutcomeV0 {
             user,
             bid_base_asset_amount: 0x0102_0304_0506_0708,
             ask_base_asset_amount: 0x090A_0B0C_0D0E_0F10,
@@ -667,29 +661,29 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
         node_index: 0x0D0E_0F10,
         order_id: 0x1112_1314_1516_1718,
     };
-    let fill_request = ClobFillRequestV0 {
+    let fill_request = FillRequestV0 {
         order_ref,
         base_asset_amount: 0x2122_2324_2526_2728,
     };
-    let other_fill_request = ClobFillRequestV0 {
+    let other_fill_request = FillRequestV0 {
         order_ref: other_order_ref,
         base_asset_amount: 0x3132_3334_3536_3738,
     };
     agree(
         "FillArgsV0",
-        &ClobFillArgsV0 {
+        &FillArgsV0 {
             fills: vec![fill_request, other_fill_request],
         },
     );
 
-    let filled_order = ClobFilledOrderV0 {
+    let filled_order = FilledOrderV0 {
         order_id: 0x4142_4344_4546_4748,
         client_order_id: 0x4950_5152,
         base_asset_amount: 0x5354_5556_5758_595A,
         culled_base_asset_amount: 0x5B5C_5D5E_5F60_6162,
         removed: true,
     };
-    let other_filled_order = ClobFilledOrderV0 {
+    let other_filled_order = FilledOrderV0 {
         order_id: 0x6364_6566_6768_696A,
         client_order_id: 0x6B6C_6D6E,
         base_asset_amount: 0,
@@ -698,38 +692,38 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     };
     agree(
         "FillOutcomeV0",
-        &ClobFillOutcomeV0 {
+        &FillOutcomeV0 {
             filled: vec![filled_order, other_filled_order],
         },
     );
 
-    let expiry_resolver = ClobCrankResolverV0 {
+    let expiry_resolver = CrankResolverV0 {
         program: [0x70; 32],
         disc: [0x71; 8],
         min_payment: 0x7273_7475_7677_7879,
     };
-    let activation_resolver = ClobCrankResolverV0 {
+    let activation_resolver = CrankResolverV0 {
         program: [0x80; 32],
         disc: [0x81; 8],
         min_payment: 0x8283_8485_8687_8889,
     };
-    let capacity_resolver = ClobCrankResolverV0 {
+    let capacity_resolver = CrankResolverV0 {
         program: [0x90; 32],
         disc: [0x91; 8],
         min_payment: 0x9293_9495_9697_9899,
     };
-    let cross_resolver = ClobCrankResolverV0 {
+    let cross_resolver = CrankResolverV0 {
         program: [0xA0; 32],
         disc: [0xA1; 8],
         min_payment: 0xA2A3_A4A5_A6A7_A8A9,
     };
     agree("CrankResolverV0", &expiry_resolver);
 
-    let writable_account = ClobCrankAccountV0 {
+    let writable_account = CrankAccountV0 {
         address: [0xB0; 32],
         writable: true,
     };
-    let readonly_account = ClobCrankAccountV0 {
+    let readonly_account = CrankAccountV0 {
         address: [0xC0; 32],
         writable: false,
     };
@@ -738,7 +732,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
 
     agree(
         "CrankConditionsArgsV0",
-        &ClobCrankConditionsArgsV0 {
+        &CrankConditionsArgsV0 {
             expiry: expiry_resolver,
             activation: activation_resolver,
             capacity: capacity_resolver,
@@ -748,7 +742,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     );
     agree(
         "CrankBlockV0",
-        &ClobCrankBlockV0 {
+        &CrankBlockV0 {
             block_offset: 0xD0D1_D2D3,
             top_of_book_offset: 0xD4D5_D6D7,
             top_of_book_len: 0xD8D9_DADB,
@@ -757,7 +751,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
 
     agree(
         "OrderRulesV0",
-        &ClobOrderRulesV0 {
+        &OrderRulesV0 {
             min_order_size: 0xE0E1_E2E3_E4E5_E6E7,
             blocking_min_size: 0xE8E9_EAEB_ECED_EEEF,
             default_activation_delay_slots: 0xF0F1_F2F3,
@@ -786,12 +780,12 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
 
     agree(
         "ResizeMarketArgsV0",
-        &ClobResizeMarketArgsV0 {
+        &ResizeMarketArgsV0 {
             new_capacity: 0x5152_5354,
         },
     );
 
-    let bid_view = ClobOrderViewV0 {
+    let bid_view = OrderViewV0 {
         order_ref,
         client_order_id: 0x1920_2122,
         user,
@@ -802,7 +796,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
         max_ts: 0x3B3C_3D3E_3F40_4142,
         taker_origin: true,
     };
-    let ask_view = ClobOrderViewV0 {
+    let ask_view = OrderViewV0 {
         order_ref: other_order_ref,
         client_order_id: 0x4344_4546,
         user: user_ref(0xCD, 0x5678),
@@ -825,13 +819,13 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
 
     agree(
         "OrdersArgsV0",
-        &ClobOrdersArgsV0 {
+        &OrdersArgsV0 {
             refs: vec![order_ref, other_order_ref],
         },
     );
     agree(
         "OrdersV0",
-        &ClobOrdersV0 {
+        &OrdersV0 {
             orders: vec![bid_view, ask_view],
         },
     );
@@ -843,7 +837,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     );
     agree(
         "NextRemovalArgsV0",
-        &ClobNextRemovalArgsV0 {
+        &NextRemovalArgsV0 {
             kind: ClobRemovalKindV0::Evictable,
         },
     );

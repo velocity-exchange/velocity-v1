@@ -22,7 +22,7 @@ use crate::{
     error::VelocityResult,
     math::{casting::Cast, safe_math::SafeMath},
     state::{
-        prop_amm::{ClobCancelAllOutcomeExt, ClobCancelAllOutcomeV0},
+        prop_amm::{CancelAllOutcomeV0, SideV0},
         user::{Order, User},
     },
 };
@@ -97,11 +97,11 @@ impl OrderReservation {
     }
 
     /// Every order that one bulk cancel removed from a book.
-    pub fn swept(market_index: u16, swept: &ClobCancelAllOutcomeV0) -> VelocityResult<Self> {
+    pub fn swept(market_index: u16, swept: &CancelAllOutcomeV0) -> VelocityResult<Self> {
         Ok(Self {
             market_index,
-            open_bids: swept.base_for(PositionDirection::Long),
-            open_asks: swept.base_for(PositionDirection::Short),
+            open_bids: swept.base_for(SideV0::Bid),
+            open_asks: swept.base_for(SideV0::Ask),
             open_orders: swept.orders().cast()?,
             reduce_only_book_orders: swept.reduce_only_orders().cast()?,
         })

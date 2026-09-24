@@ -10,7 +10,7 @@ use {
     },
     crate::{
         instructions::relay_harness::StagedCall,
-        state::prop_amm::{ClobEvictWorstArgsV0, ClobNextRemovalArgsV0, ClobRemovalKindV0, SideV0},
+        state::prop_amm::{ClobRemovalKindV0, EvictWorstArgsV0, NextRemovalArgsV0, SideV0},
     },
     anchor_lang::prelude::*,
 };
@@ -30,7 +30,7 @@ pub fn handle_crank_clob_evict(
     crank_clob_removal(
         ctx,
         market_index,
-        ClobRemoval::Evict(ClobEvictWorstArgsV0 { side }),
+        ClobRemoval::Evict(EvictWorstArgsV0 { side }),
     )
 }
 
@@ -39,7 +39,7 @@ pub fn handle_crank_clob_evict(
 pub(super) fn stage_eviction(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
     // The book picks the side and the order. The eviction threshold and the
     // choice of which side to relieve first are the book's policy.
-    let found = clob_reader(ctx).next_removal(ClobNextRemovalArgsV0 {
+    let found = clob_reader(ctx).next_removal(NextRemovalArgsV0 {
         kind: ClobRemovalKindV0::Evictable,
     })?;
 

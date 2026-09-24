@@ -15,7 +15,7 @@ use {
         load_mut, msg,
         state::{
             perp_market::PerpMarket,
-            prop_amm::{ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterSlabV0},
+            prop_amm::{CancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterSlabV0},
             user::{OrderReservation, OrderStatus, ReleaseCheck, User},
         },
         validate,
@@ -79,7 +79,7 @@ pub fn handle_cancel_order_v1(
         let user = crate::load!(ctx.accounts.user)?;
         user.clob_user_ref()
     };
-    let removed = clob.cancel(ClobCancelOrderArgsV0 {
+    let removed = clob.cancel(CancelOrderArgsV0 {
         order_ref: params.order_ref,
         user: user_ref,
         force: false,

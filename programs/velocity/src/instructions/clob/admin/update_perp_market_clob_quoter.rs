@@ -12,7 +12,7 @@ use {
         state::{
             clob_crank::{ClobCrankConditionsV0, CrankCostUnitsV0, CrankPaymentsV0},
             perp_market::PerpMarket,
-            prop_amm::{ClobCrankBlockV0, ClobMarket, QuoterSlabExt, QuoterSlabV0, QuoterV0},
+            prop_amm::{ClobMarket, CrankBlockV0, QuoterSlabExt, QuoterSlabV0, QuoterV0},
             state::State,
         },
         validate,
@@ -317,7 +317,7 @@ fn write_market_crank_conditions(
     keys: &crate::instructions::ClobCrankConditionKeys,
     market_index: u16,
     payments: CrankPaymentsV0,
-    block: &ClobCrankBlockV0,
+    block: &CrankBlockV0,
     min_cross_surplus: u64,
     expire_fallback_slots: u64,
     refill_watermark_lamports: u64,

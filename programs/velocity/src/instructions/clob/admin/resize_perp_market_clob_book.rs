@@ -11,7 +11,7 @@ use {
         msg,
         state::{
             perp_market::PerpMarket,
-            prop_amm::{ClobMarket, ClobResizeMarketArgsV0, QuoterSlabV0},
+            prop_amm::{ClobMarket, QuoterSlabV0, ResizeMarketArgsV0},
             state::State,
         },
     },
@@ -61,6 +61,6 @@ pub fn handle_resize_perp_market_clob_book(
     .resize(
         ctx.accounts.admin.as_ref(),
         ctx.accounts.system_program.as_ref(),
-        ClobResizeMarketArgsV0 { new_capacity },
+        ResizeMarketArgsV0 { new_capacity },
     )
 }

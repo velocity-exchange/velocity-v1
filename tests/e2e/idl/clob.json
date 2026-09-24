@@ -507,7 +507,7 @@
       ],
       "returns": {
         "defined": {
-          "name": "OrderRefV0"
+          "name": "ClobOrderRefV0"
         }
       }
     },
@@ -782,7 +782,7 @@
           "name": "args",
           "type": {
             "defined": {
-              "name": "UpdateMarketArgsV0"
+              "name": "ClobUpdateMarketArgsV0"
             }
           }
         }
@@ -1541,7 +1541,7 @@
           {
             "name": "taker_origin_head",
             "docs": [
-              "Oldest taker-origin order on each side, indexed by [`Side`] (bid 0, ask",
+              "Oldest taker-origin order on each side, indexed by [`SideV0`] (bid 0, ask",
               "1). [`NIL`] when the side holds none. The list is in rest order. A",
               "taker-origin order is a migrated taker remainder that claims depth on",
               "the other side, so a read of a side enumerates it. See [`crate::book`]."

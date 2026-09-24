@@ -2211,12 +2211,12 @@ impl Fixture {
         #[range(0..NUM_USERS)] user_idx: usize,
         #[range(0..3u8)] sides_sel: u8,
     ) -> bool {
-        use velocity::state::prop_amm::ClobCancelSides;
+        use velocity::state::prop_amm::CancelSidesV0;
 
         let sides = match sides_sel {
-            0 => ClobCancelSides::Bids,
-            1 => ClobCancelSides::Asks,
-            _ => ClobCancelSides::Both,
+            0 => CancelSidesV0::Bids,
+            1 => CancelSidesV0::Asks,
+            _ => CancelSidesV0::Both,
         };
         let user = self.users[user_idx].clone();
         let ix = self.cancel_book_side_ix(user_idx, sides);

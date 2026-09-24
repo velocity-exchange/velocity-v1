@@ -19,7 +19,7 @@ use {
             FILL_ENTRY_BYTES, FILL_SLIM_BYTES,
         },
         state::{
-            CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, CLIENT_ORDER_ID_BYTES, COUNT_BYTES,
+            CancelAllOutcomeV0, CANCEL_ALL_ORDERS_CEILING, CLIENT_ORDER_ID_BYTES, COUNT_BYTES,
             EXECUTE_FILLS_CEILING, FILL_BATCH_CEILING, ORDER_ID_BYTES,
         },
     },
@@ -279,7 +279,7 @@ impl CancelAllRecord {
     }
 
     /// Patch in what the sweep settled and log the record.
-    pub fn finish(&mut self, outcome: &CancelAllOutcome) -> Result<()> {
+    pub fn finish(&mut self, outcome: &CancelAllOutcomeV0) -> Result<()> {
         self.patch_totals(outcome)?;
         self.log.emit();
         Ok(())
@@ -287,7 +287,7 @@ impl CancelAllRecord {
 
     /// The patched record's bytes, without logging them. Split out so
     /// `tests::emit` can hold this encoding against `Event::data()`.
-    pub fn log_bytes(&mut self, outcome: &CancelAllOutcome) -> Result<&[u8]> {
+    pub fn log_bytes(&mut self, outcome: &CancelAllOutcomeV0) -> Result<&[u8]> {
         self.patch_totals(outcome)?;
         Ok(self.log.as_slice())
     }
@@ -295,7 +295,7 @@ impl CancelAllRecord {
     /// Fill the four fields reserved before the walk. The id count comes from
     /// what the walk pushed. A count that disagrees with the outcome is an
     /// error, rather than a record an indexer would reconcile wrongly.
-    fn patch_totals(&mut self, outcome: &CancelAllOutcome) -> Result<()> {
+    fn patch_totals(&mut self, outcome: &CancelAllOutcomeV0) -> Result<()> {
         require!(
             self.ids == outcome.orders(),
             ClobError::BookInvariantViolated

@@ -11,7 +11,7 @@ use {
         math::casting::Cast,
         msg,
         state::prop_amm::{
-            find_account, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket,
+            find_account, CancelAllArgsV0, CancelAllOutcomeV0, CancelSidesV0, ClobMarket,
             DirectionV0, ExecuteArgsV0, ExternalQuoterExecutor, QuoterSlabExt, QuoterSlabV0,
             QuoterSlotV0, QuoterSubjects, QuoterType, ResponseLocationV0, UserRefV0,
         },
@@ -125,8 +125,8 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         &mut self,
         index: usize,
         user: UserRefV0,
-        sides: ClobCancelSides,
-    ) -> VelocityResult<Option<ClobCancelAllOutcomeV0>> {
+        sides: CancelSidesV0,
+    ) -> VelocityResult<Option<CancelAllOutcomeV0>> {
         if self.quoter_type(index) != QuoterType::Clob {
             return Ok(None);
         }
@@ -160,7 +160,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         };
         let clob = ClobMarket::from_slab(slab, self.market_index, book, program)
             .map_err(|_| ErrorCode::InvalidQuoterConfig)?;
-        clob.cancel_all(ClobCancelAllArgsV0 {
+        clob.cancel_all(CancelAllArgsV0 {
             user,
             sides,
             force: false,

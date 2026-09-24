@@ -37,7 +37,7 @@ use {
     velocity_rs::{
         market_book,
         math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_U64, QUOTE_PRECISION},
-        program::state::prop_amm::ClobCancelSides,
+        program::state::prop_amm::CancelSidesV0,
         types::{
             accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
             PositionDirection, PostOnlyParam, SpotBalanceType,
@@ -467,9 +467,9 @@ impl QuoterBot {
         // naming an order. The book removes every order this account holds on
         // that side in one CPI, whatever the depth.
         let replace_sides = match (bid_replace, ask_replace) {
-            (true, true) => Some(ClobCancelSides::Both),
-            (true, false) => Some(ClobCancelSides::Bids),
-            (false, true) => Some(ClobCancelSides::Asks),
+            (true, true) => Some(CancelSidesV0::Both),
+            (true, false) => Some(CancelSidesV0::Bids),
+            (false, true) => Some(CancelSidesV0::Asks),
             (false, false) => None,
         };
 

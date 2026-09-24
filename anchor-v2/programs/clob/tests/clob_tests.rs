@@ -16,17 +16,16 @@ use {
         },
         instruction, relay_spec,
         state::{
-            CancelSidesV0, ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
-            OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0, BASE_PRECISION,
+            CancelSidesV0, ClobHeaderV0, ClobMarketV0, ClobOrderRefV0, DirectionV0, MarketConfigV0,
+            OrderBitFlag, OrderNodeV0, SideV0, UserCapsV0, UserRefV0, BASE_PRECISION,
             CANCEL_ALL_ORDERS_CEILING, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY,
             CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING,
-            EXECUTE_USERS_CEILING, ORDERS_OFFSET, REMOVED_ORDER_BYTES,
-            RESERVATION_GRACE_SLOTS_CEILING, ZERO_ADDRESS,
+            EXECUTE_USERS_CEILING, ORDERS_OFFSET, RESERVATION_GRACE_SLOTS_CEILING, ZERO_ADDRESS,
         },
-        CancelAllArgsV0, CancelOrderArgsV0, ClobRemovalKindV0, CrankAccountV0,
-        CrankConditionsArgsV0, CrankResolverV0, EvictWorstArgsV0, ExecuteArgsV0, NextRemovalArgsV0,
-        OrderViewV0, OrdersArgsV0, PlaceOrderArgsV0, ProposeMarketAuthorityArgsV0, QuoteArgsV0,
-        RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
+        CancelAllArgsV0, CancelOrderArgsV0, ClobRemovalKindV0, ClobUpdateMarketArgsV0,
+        CrankAccountV0, CrankConditionsArgsV0, CrankResolverV0, EvictWorstArgsV0, ExecuteArgsV0,
+        NextRemovalArgsV0, OrderViewV0, OrdersArgsV0, PlaceOrderArgsV0,
+        ProposeMarketAuthorityArgsV0, QuoteArgsV0, RemoveExpiredArgsV0, ResizeMarketArgsV0,
     },
     litesvm::types::{FailedTransactionMetadata, TransactionMetadata},
     quoter_test_support::{addr, parse_u32, system_program},
@@ -185,7 +184,7 @@ fn place_ix(ctx: &Ctx, mut args: PlaceOrderArgsV0, user: Address) -> Instruction
     })
 }
 
-fn place_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
+fn place_args(side: SideV0, price: u64, size: u64) -> PlaceOrderArgsV0 {
     PlaceOrderArgsV0 {
         side,
         price,
@@ -201,7 +200,7 @@ fn place_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
 }
 
 /// A migrated taker remainder: same placement, marked taker-origin.
-fn taker_origin_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
+fn taker_origin_args(side: SideV0, price: u64, size: u64) -> PlaceOrderArgsV0 {
     PlaceOrderArgsV0 {
         taker_origin: true,
         ..place_args(side, price, size)
@@ -214,8 +213,8 @@ fn parse_u64(b: &[u8]) -> u64 {
     u64::from_le_bytes(b[..8].try_into().unwrap())
 }
 
-fn parse_order_ref(b: &[u8]) -> OrderRefV0 {
-    OrderRefV0 {
+fn parse_order_ref(b: &[u8]) -> ClobOrderRefV0 {
+    ClobOrderRefV0 {
         node_index: parse_u32(b),
         order_id: parse_u64(&b[4..]),
     }
@@ -226,7 +225,7 @@ fn read_response(ctx: &Ctx, meta: &TransactionMetadata) -> Vec<u8> {
     quoter_test_support::read_response(&ctx.svm, program_id(), ctx.market, meta).bytes
 }
 
-/// QuoteResponseV0 { levels: Vec<PriceLevel { price: u64, size: u64 }> }
+/// QuoteResponseV0 { levels: Vec<PriceLevelV0 { price: u64, size: u64 }> }
 fn parse_levels(b: &[u8]) -> Vec<(u64, u64)> {
     clob::state::QuoteResponseV0::parse(b)
         .expect("quote response")
@@ -260,7 +259,7 @@ fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
         .collect()
 }
 
-fn place(ctx: &mut Ctx, args: PlaceOrderArgsV0, user: Address) -> OrderRefV0 {
+fn place(ctx: &mut Ctx, args: PlaceOrderArgsV0, user: Address) -> ClobOrderRefV0 {
     let ix = place_ix(ctx, args, user);
     let meta = send(ctx, ix).unwrap();
     parse_order_ref(&meta.return_data.data)
@@ -277,7 +276,7 @@ fn user_set(users: Option<Vec<Address>>) -> Vec<UserRefV0> {
 
 fn quote_meta_users(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     users: Option<Vec<Address>>,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
@@ -287,7 +286,7 @@ fn quote_meta_users(
 /// A `quote_v0` argument list at the harness defaults: a served window, no
 /// caps, no reference price, no user set, no taker and no limit. Each caller
 /// overrides the fields its own test is about. `size` is in whole base units.
-fn quote_args(direction: Direction, size: u64) -> QuoteArgsV0<'static> {
+fn quote_args(direction: DirectionV0, size: u64) -> QuoteArgsV0<'static> {
     QuoteArgsV0 {
         taker_served_window: true,
         include_taker_origin_reservations: false,
@@ -302,7 +301,7 @@ fn quote_args(direction: Direction, size: u64) -> QuoteArgsV0<'static> {
 }
 
 /// The same defaults for `execute_v0`, which takes no limit price.
-fn execute_args(direction: Direction, size: u64) -> ExecuteArgsV0<'static> {
+fn execute_args(direction: DirectionV0, size: u64) -> ExecuteArgsV0<'static> {
     ExecuteArgsV0 {
         taker_served_window: true,
         include_taker_origin_reservations: false,
@@ -318,7 +317,7 @@ fn execute_args(direction: Direction, size: u64) -> ExecuteArgsV0<'static> {
 /// [`quote_meta_users`] with a worst-acceptable-price bound; zero is none.
 fn quote_meta_limited(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     users: Option<Vec<Address>>,
     limit_price: u64,
@@ -339,7 +338,7 @@ fn quote_meta_limited(
 
 fn quote_users(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     users: Option<Vec<Address>>,
 ) -> Vec<(u64, u64)> {
@@ -347,13 +346,13 @@ fn quote_users(
     parse_levels(&read_response(ctx, &meta))
 }
 
-fn quote(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
+fn quote(ctx: &mut Ctx, direction: DirectionV0, size: u64) -> Vec<(u64, u64)> {
     quote_users(ctx, direction, size, None)
 }
 
 /// A quote that reaches the depth a crossing taker remainder claims: the read
 /// the crank that settles the cross makes.
-fn quote_consuming(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
+fn quote_consuming(ctx: &mut Ctx, direction: DirectionV0, size: u64) -> Vec<(u64, u64)> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             include_taker_origin_reservations: true,
@@ -371,7 +370,7 @@ fn quote_consuming(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, 
 /// The fill half of the same read.
 fn execute_consuming(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
 ) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let ix = instruction::ExecuteV0 {
@@ -393,7 +392,7 @@ fn execute_consuming(
 /// when it reached everything it was asked for.
 fn quote_withheld(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     users: Option<Vec<Address>>,
 ) -> Option<(u64, u64)> {
@@ -406,7 +405,7 @@ fn quote_withheld(
 
 fn execute_meta_users(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     users: Option<Vec<Address>>,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
@@ -426,7 +425,7 @@ fn execute_meta_users(
 
 fn execute_meta(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     execute_meta_users(ctx, direction, size, None)
@@ -434,7 +433,7 @@ fn execute_meta(
 
 fn execute_users(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     users: Option<Vec<Address>>,
 ) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
@@ -442,13 +441,17 @@ fn execute_users(
     parse_balance_changes(&read_response(ctx, &meta))
 }
 
-fn execute(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
+fn execute(
+    ctx: &mut Ctx,
+    direction: DirectionV0,
+    size: u64,
+) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     execute_users(ctx, direction, size, None)
 }
 
 fn evict_worst(
     ctx: &mut Ctx,
-    side: Side,
+    side: SideV0,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::EvictWorstV0 {
         args: EvictWorstArgsV0 { side },
@@ -478,7 +481,7 @@ fn next_removal(ctx: &mut Ctx, kind: ClobRemovalKindV0) -> OrderViewV0 {
 
 fn remove_expired(
     ctx: &mut Ctx,
-    order_ref: OrderRefV0,
+    order_ref: ClobOrderRefV0,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::RemoveExpiredV0 {
         args: RemoveExpiredArgsV0 { order_ref },
@@ -494,6 +497,7 @@ fn remove_expired(
 /// RemovedOrderV0 return data: (user, order_id, client_order_id, price,
 /// base_asset_amount, side, taker_origin).
 fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u32, u64, u64, u8, bool) {
+    const REMOVED_ORDER_BYTES: usize = UserRefV0::SIZE + 3 * 8 + 4 + 3 + 8;
     assert_eq!(u16::from_le_bytes(b[32..34].try_into().unwrap()), 0);
     assert_eq!(b.len(), REMOVED_ORDER_BYTES);
     (
@@ -562,7 +566,7 @@ fn program_data(meta: &TransactionMetadata) -> Vec<u8> {
     bytes
 }
 
-fn cancel_ix(ctx: &Ctx, order_ref: OrderRefV0, user: Address) -> Instruction {
+fn cancel_ix(ctx: &Ctx, order_ref: ClobOrderRefV0, user: Address) -> Instruction {
     instruction::CancelOrderV0 {
         args: CancelOrderArgsV0 {
             order_ref,
@@ -670,28 +674,28 @@ fn price_time_priority_and_level_aggregation() {
     let user_a = addr(Pubkey::new_unique());
     let user_b = addr(Pubkey::new_unique());
 
-    place(&mut ctx, place_args(Side::Ask, 101, 10), user_b);
-    place(&mut ctx, place_args(Side::Ask, 100, 5), user_a); // better price
-    place(&mut ctx, place_args(Side::Ask, 100, 7), user_b); // same level, later
-    place(&mut ctx, place_args(Side::Bid, 99, 4), user_a);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 10), user_b);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), user_a); // better price
+    place(&mut ctx, place_args(SideV0::Ask, 100, 7), user_b); // same level, later
+    place(&mut ctx, place_args(SideV0::Bid, 99, 4), user_a);
     advance_slot(&mut ctx, 1); // clear the speed bump
 
     assert_eq!(
-        quote(&mut ctx, Direction::Long, 100),
+        quote(&mut ctx, DirectionV0::Long, 100),
         vec![(100, 12), (101, 10)]
     );
 
     // Quote caps at the requested size.
-    assert_eq!(quote(&mut ctx, Direction::Long, 6), vec![(100, 6)]);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, 6), vec![(100, 6)]);
 
     // Execute 8: all of A's 5 (first at the level), then 3 of B's — merged
     // into one balance change per user.
-    let changes = execute(&mut ctx, Direction::Long, 8);
+    let changes = execute(&mut ctx, DirectionV0::Long, 8);
     assert_eq!(changes.len(), 2);
     assert_eq!((changes[0].0, changes[0].1), (user_a.to_bytes(), 5));
     assert_eq!((changes[1].0, changes[1].1), (user_b.to_bytes(), 3));
     assert_eq!(
-        quote(&mut ctx, Direction::Long, 100),
+        quote(&mut ctx, DirectionV0::Long, 100),
         vec![(100, 4), (101, 10)]
     );
 
@@ -704,9 +708,9 @@ fn price_time_priority_and_level_aggregation() {
 fn cancel_verifies_hint_and_user() {
     let mut ctx = setup();
     let user = addr(Pubkey::new_unique());
-    let order_ref = place(&mut ctx, place_args(Side::Bid, 50, 1), user);
+    let order_ref = place(&mut ctx, place_args(SideV0::Bid, 50, 1), user);
 
-    let cancel = |ctx: &mut Ctx, user: Address, order_ref: OrderRefV0| {
+    let cancel = |ctx: &mut Ctx, user: Address, order_ref: ClobOrderRefV0| {
         let ix = cancel_ix(ctx, order_ref, user);
         send(ctx, ix)
     };
@@ -715,7 +719,7 @@ fn cancel_verifies_hint_and_user() {
         cancel(
             &mut ctx,
             user,
-            OrderRefV0 {
+            ClobOrderRefV0 {
                 order_id: order_ref.order_id + 1,
                 ..order_ref
             },
@@ -746,7 +750,7 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
 
     // Tighten the grid via update_market_v0.
     let ix = instruction::UpdateMarketV0 {
-        args: UpdateMarketArgsV0 {
+        args: ClobUpdateMarketArgsV0 {
             order_tick_size: Some(10),
             order_step_size: Some(5 * UNIT),
             min_order_size: Some(10 * UNIT),
@@ -761,7 +765,7 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
     send(&mut ctx, ix).unwrap();
 
     let try_place = |ctx: &mut Ctx, price: u64, size: u64| {
-        let ix = place_ix(ctx, place_args(Side::Bid, price, size), user);
+        let ix = place_ix(ctx, place_args(SideV0::Bid, price, size), user);
         send(ctx, ix)
     };
 
@@ -785,7 +789,7 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
     let ix = instruction::PlaceOrderV0 {
         args: PlaceOrderArgsV0 {
             user: uref(user),
-            ..place_args(Side::Bid, 100, 10)
+            ..place_args(SideV0::Bid, 100, 10)
         },
     }
     .to_instruction(accounts::GatedMarketV0 {
@@ -812,12 +816,12 @@ fn execute_rejects_unauthorized_caller() {
     let mut ctx = setup();
     let user = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
-    place(&mut ctx, place_args(Side::Ask, 100, 5), user);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), user);
     ctx.svm.warp_to_slot(11);
 
     let args = || ExecuteArgsV0 {
         size: 5,
-        ..execute_args(Direction::Long, 0)
+        ..execute_args(DirectionV0::Long, 0)
     };
     let execute_ix = |authority: Pubkey| {
         instruction::ExecuteV0 { args: args() }.to_instruction(accounts::GatedMarketV0 {
@@ -869,7 +873,7 @@ fn execute_rejects_unauthorized_caller() {
 
     // The order is untouched, and the real authority can still take it.
     assert_eq!(market_state(&ctx).ask_count, 1);
-    assert_eq!(execute(&mut ctx, Direction::Long, 5).len(), 1);
+    assert_eq!(execute(&mut ctx, DirectionV0::Long, 5).len(), 1);
     assert_eq!(market_state(&ctx).ask_count, 0);
 }
 
@@ -880,12 +884,12 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
 
     // Below the soft cap there is nothing to evict.
     for i in 0..5u64 {
-        let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 1), user);
+        let ix = place_ix(&ctx, place_args(SideV0::Bid, 100 + i, 1), user);
         send(&mut ctx, ix).unwrap();
     }
 
     assert_clob_err(
-        evict_worst(&mut ctx, Side::Bid),
+        evict_worst(&mut ctx, SideV0::Bid),
         err_code(clob::error::ClobError::BelowEvictThreshold),
     );
 
@@ -894,11 +898,11 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
     // At the hard cap every placement is rejected, even better-priced —
     // eviction is crank-mediated so the evicted maker's aggregates update.
     for i in 5..8u64 {
-        let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 1), user);
+        let ix = place_ix(&ctx, place_args(SideV0::Bid, 100 + i, 1), user);
         send(&mut ctx, ix).unwrap();
     }
 
-    let ix = place_ix(&ctx, place_args(Side::Bid, 200, 1), user);
+    let ix = place_ix(&ctx, place_args(SideV0::Bid, 200, 1), user);
     assert_clob_err(
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::SideAtCapacity),
@@ -908,26 +912,26 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
     // caller never reads the threshold or the counts to pick either.
     let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
     assert!(work.found());
-    assert_eq!(work.side, Side::Bid);
+    assert_eq!(work.side, SideV0::Bid);
     assert_eq!(node(&ctx, work.order_ref.node_index).price, 100);
 
     // The crank removes the tail (worst price) and reports it for velocity.
-    let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
+    let meta = evict_worst(&mut ctx, SideV0::Bid).unwrap();
     let (evicted_user, _, _, price, base, side, taker_origin) =
         parse_removed(&meta.return_data.data);
     assert_eq!(
         (evicted_user, price, base, side, taker_origin),
-        (user.to_bytes(), 100, 1, Side::Bid.tag(), false)
+        (user.to_bytes(), 100, 1, SideV0::Bid.tag(), false)
     );
 
-    place(&mut ctx, place_args(Side::Bid, 200, 1), user);
+    place(&mut ctx, place_args(SideV0::Bid, 200, 1), user);
     let state = market_state(&ctx);
     assert_eq!(state.bid_count, 8);
     assert_eq!(node(&ctx, state.best_bid).price, 200);
 
     // Sides are independent: the empty ask side has nothing to evict.
     assert_clob_err(
-        evict_worst(&mut ctx, Side::Ask),
+        evict_worst(&mut ctx, SideV0::Ask),
         err_code(clob::error::ClobError::BelowEvictThreshold),
     );
 
@@ -935,17 +939,17 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
     // names.
     assert_eq!(
         next_removal(&mut ctx, ClobRemovalKindV0::Evictable).side,
-        Side::Bid
+        SideV0::Bid
     );
 
     // Both sides over the threshold: the book relieves the fuller one.
     for i in 0..8u64 {
-        place(&mut ctx, place_args(Side::Ask, 300 + i, 1), user);
+        place(&mut ctx, place_args(SideV0::Ask, 300 + i, 1), user);
     }
 
-    evict_worst(&mut ctx, Side::Bid).unwrap();
+    evict_worst(&mut ctx, SideV0::Bid).unwrap();
     let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
-    assert_eq!(work.side, Side::Ask);
+    assert_eq!(work.side, SideV0::Ask);
     assert_eq!(node(&ctx, work.order_ref.node_index).price, 307);
 }
 
@@ -958,15 +962,15 @@ fn next_removal_and_eviction_agree_over_a_bound_remainder() {
     let (maker, taker) = (addr(Pubkey::new_unique()), addr(Pubkey::new_unique()));
 
     for i in 1..=5u64 {
-        place(&mut ctx, place_args(Side::Bid, 100 + i, 1), maker);
+        place(&mut ctx, place_args(SideV0::Bid, 100 + i, 1), maker);
     }
 
-    let remainder = place(&mut ctx, taker_origin_args(Side::Bid, 100, 1), taker);
+    let remainder = place(&mut ctx, taker_origin_args(SideV0::Bid, 100, 1), taker);
     assert_eq!(market_state(&ctx).worst_bid, remainder.node_index);
 
     let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
     assert_eq!(node(&ctx, work.order_ref.node_index).price, 101);
-    let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
+    let meta = evict_worst(&mut ctx, SideV0::Bid).unwrap();
     let (evicted_user, order_id, ..) = parse_removed(&meta.return_data.data);
     assert_eq!(
         (evicted_user, order_id),
@@ -974,14 +978,14 @@ fn next_removal_and_eviction_agree_over_a_bound_remainder() {
     );
 
     // Past the one-slot delay and the claim, both name the remainder.
-    place(&mut ctx, place_args(Side::Bid, 101, 1), maker);
+    place(&mut ctx, place_args(SideV0::Bid, 101, 1), maker);
     advance_slot(
         &mut ctx,
         1 + clob::state::DEFAULT_RESERVATION_GRACE_SLOTS as u64,
     );
     let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
     assert_eq!(work.order_ref, remainder);
-    let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
+    let meta = evict_worst(&mut ctx, SideV0::Bid).unwrap();
     assert!(parse_removed(&meta.return_data.data).6);
 }
 
@@ -990,14 +994,14 @@ fn speed_bump_gates_matching_until_activation_slot() {
     let mut ctx = setup();
     let user = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
-    place(&mut ctx, place_args(Side::Ask, 100, 5), user); // activates at 11
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), user); // activates at 11
 
-    assert!(quote(&mut ctx, Direction::Long, 5).is_empty());
-    assert!(execute(&mut ctx, Direction::Long, 5).is_empty());
+    assert!(quote(&mut ctx, DirectionV0::Long, 5).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Long, 5).is_empty());
 
     ctx.svm.warp_to_slot(11);
-    assert_eq!(quote(&mut ctx, Direction::Long, 5).len(), 1);
-    assert_eq!(execute(&mut ctx, Direction::Long, 5).len(), 1);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, 5).len(), 1);
+    assert_eq!(execute(&mut ctx, DirectionV0::Long, 5).len(), 1);
 }
 
 #[test]
@@ -1011,7 +1015,7 @@ fn auction_delay_is_clamped_to_market_bounds() {
         &ctx,
         PlaceOrderArgsV0 {
             activation_delay_slots: Some(21),
-            ..place_args(Side::Ask, 100, 5)
+            ..place_args(SideV0::Ask, 100, 5)
         },
         user,
     );
@@ -1026,16 +1030,16 @@ fn auction_delay_is_clamped_to_market_bounds() {
         &ctx,
         PlaceOrderArgsV0 {
             activation_delay_slots: Some(20),
-            ..place_args(Side::Ask, 100, 5)
+            ..place_args(SideV0::Ask, 100, 5)
         },
         user,
     );
 
     send(&mut ctx, ix).unwrap();
     ctx.svm.warp_to_slot(29);
-    assert!(quote(&mut ctx, Direction::Long, 5).is_empty());
+    assert!(quote(&mut ctx, DirectionV0::Long, 5).is_empty());
     ctx.svm.warp_to_slot(30);
-    assert_eq!(quote(&mut ctx, Direction::Long, 5).len(), 1);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, 5).len(), 1);
 }
 
 #[test]
@@ -1050,14 +1054,14 @@ fn zero_delay_activates_immediately() {
         &ctx,
         PlaceOrderArgsV0 {
             activation_delay_slots: Some(0),
-            ..place_args(Side::Ask, 100, 5)
+            ..place_args(SideV0::Ask, 100, 5)
         },
         user,
     );
 
     send(&mut ctx, ix).unwrap();
     // Active immediately, same slot.
-    assert_eq!(quote(&mut ctx, Direction::Long, 5).len(), 1);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, 5).len(), 1);
 }
 
 /// Register a resolver for every one of the book's own conditions, the way
@@ -1168,7 +1172,7 @@ fn the_book_hosts_the_conditions_that_watch_its_own_state() {
         PlaceOrderArgsV0 {
             max_ts: 1_020,
             activation_delay_slots: Some(10),
-            ..place_args(Side::Ask, 100, 5)
+            ..place_args(SideV0::Ask, 100, 5)
         },
         user,
     );
@@ -1284,7 +1288,7 @@ fn registering_a_resolver_is_place_authority_only() {
 
 /// Ask the book about a set of refs, the way a caller that holds refs but not
 /// the arena does.
-fn orders(ctx: &mut Ctx, refs: &[OrderRefV0]) -> Vec<OrderViewV0> {
+fn orders(ctx: &mut Ctx, refs: &[ClobOrderRefV0]) -> Vec<OrderViewV0> {
     let ix = instruction::OrdersV0 {
         args: OrdersArgsV0 {
             refs: refs.to_vec(),
@@ -1319,13 +1323,13 @@ fn the_book_describes_the_orders_a_caller_holds_refs_for() {
         &mut ctx,
         PlaceOrderArgsV0 {
             max_ts: 1_500,
-            ..place_args(Side::Bid, 100, 7)
+            ..place_args(SideV0::Bid, 100, 7)
         },
         user,
     );
-    let ask = place(&mut ctx, place_args(Side::Ask, 300, 4), other);
+    let ask = place(&mut ctx, place_args(SideV0::Ask, 300, 4), other);
     // Never placed: node 0 holds the bid, so this id names nothing.
-    let ghost = OrderRefV0 {
+    let ghost = ClobOrderRefV0 {
         node_index: bid.node_index,
         order_id: 999,
     };
@@ -1336,7 +1340,7 @@ fn the_book_describes_the_orders_a_caller_holds_refs_for() {
     assert!(views[0].found());
     assert_eq!(views[0].order_ref, bid);
     assert_eq!(views[0].user.authority, user);
-    assert_eq!(views[0].side, Side::Bid);
+    assert_eq!(views[0].side, SideV0::Bid);
     assert_eq!(views[0].price, 100);
     assert_eq!(views[0].base_asset_amount, 7 * UNIT);
     assert_eq!(views[0].max_ts, 1_500);
@@ -1348,7 +1352,7 @@ fn the_book_describes_the_orders_a_caller_holds_refs_for() {
 
     assert!(views[2].found());
     assert_eq!(views[2].user.authority, other);
-    assert_eq!(views[2].side, Side::Ask);
+    assert_eq!(views[2].side, SideV0::Ask);
     assert_eq!(views[2].max_ts, 0, "good-till-cancelled");
 
     // Cancel the bid: its ref stops naming an order, and the ask is
@@ -1384,7 +1388,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
         &mut ctx,
         PlaceOrderArgsV0 {
             max_ts: 1_020,
-            ..place_args(Side::Ask, 100, 5)
+            ..place_args(SideV0::Ask, 100, 5)
         },
         user,
     );
@@ -1407,12 +1411,12 @@ fn expired_orders_are_skipped_and_cranked_off() {
     assert!(work.found());
     assert_eq!(work.order_ref, order_ref);
     assert_eq!(work.user.authority, user);
-    assert_eq!(work.side, Side::Ask);
+    assert_eq!(work.side, SideV0::Ask);
 
     // Skipped by quote/execute but NOT removed — reclamation goes through
     // velocity (remove_expired) so the maker's aggregates update.
-    assert!(quote(&mut ctx, Direction::Long, 5).is_empty());
-    assert!(execute(&mut ctx, Direction::Long, 5).is_empty());
+    assert!(quote(&mut ctx, DirectionV0::Long, 5).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Long, 5).is_empty());
     let state = market_state(&ctx);
     assert_eq!(state.ask_count, 1);
     assert_eq!(state.free_count, CAPACITY as u32 - 1);
@@ -1421,7 +1425,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
     let (removed_user, _, _, _, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(
         (removed_user, base, side, taker_origin),
-        (user.to_bytes(), 5, Side::Ask.tag(), false)
+        (user.to_bytes(), 5, SideV0::Ask.tag(), false)
     );
 
     let state = market_state(&ctx);
@@ -1439,7 +1443,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
         &ctx,
         PlaceOrderArgsV0 {
             max_ts: 500,
-            ..place_args(Side::Ask, 100, 5)
+            ..place_args(SideV0::Ask, 100, 5)
         },
         user,
     );
@@ -1456,45 +1460,45 @@ fn unknown_user_grace_skips_fresh_orders_and_stops_on_aged_ones() {
     let user_a = addr(Pubkey::new_unique());
     let user_b = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
-    place(&mut ctx, place_args(Side::Ask, 100, 5), user_a);
-    place(&mut ctx, place_args(Side::Ask, 101, 7), user_b);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), user_a);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 7), user_b);
     ctx.svm.warp_to_slot(11); // both active, age 1 <= grace
 
     // A's user missing but fresh: skipped, the fill continues past it. The
     // caller could not have heard of it yet, so nothing is reported.
     assert_eq!(
-        quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        quote_users(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])),
         vec![(101, 7)]
     );
     assert_eq!(
-        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        quote_withheld(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])),
         None
     );
 
-    let changes = execute_users(&mut ctx, Direction::Long, 7, Some(vec![user_b]));
+    let changes = execute_users(&mut ctx, DirectionV0::Long, 7, Some(vec![user_b]));
     assert_eq!(changes, vec![(user_b.to_bytes(), 7, 707, vec![2])]);
     // A's order still resting, untouched.
-    assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(100, 5)]);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, 12), vec![(100, 5)]);
 
     // Past the grace window the walk ends at A rather than filling around it.
     // A is the best price, so a caller that left it out gets nothing from
     // this book — it can trade less of the book, never a better part of it.
-    place(&mut ctx, place_args(Side::Ask, 101, 7), user_b);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 7), user_b);
     ctx.svm.warp_to_slot(14); // A age 4 > grace
-    assert!(quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])).is_empty());
+    assert!(quote_users(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])).is_empty());
     assert_eq!(
-        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        quote_withheld(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])),
         Some((100, 5)),
         "the book says where it stopped and what it was holding there"
     );
 
     assert!(
-        execute_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])).is_empty(),
+        execute_users(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])).is_empty(),
         "leaving out the best maker forfeits the book, it does not reach past it"
     );
 
     // Complete user set fills both.
-    let changes = execute_users(&mut ctx, Direction::Long, 12, Some(vec![user_a, user_b]));
+    let changes = execute_users(&mut ctx, DirectionV0::Long, 12, Some(vec![user_a, user_b]));
     assert_eq!(changes.len(), 2);
 }
 
@@ -1507,32 +1511,32 @@ fn a_short_user_set_trades_less_of_the_book_not_a_worse_part() {
     let best = addr(Pubkey::new_unique());
     let rest = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
-    place(&mut ctx, place_args(Side::Ask, 100, 5), best);
-    place(&mut ctx, place_args(Side::Ask, 101, 7), rest);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), best);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 7), rest);
     ctx.svm.warp_to_slot(20); // both well past the grace window
 
     // Carrying the best maker alone: its level fills, and the book reports
     // the depth behind it as withheld.
     assert_eq!(
-        quote_users(&mut ctx, Direction::Long, 12, Some(vec![best])),
+        quote_users(&mut ctx, DirectionV0::Long, 12, Some(vec![best])),
         vec![(100, 5)]
     );
     assert_eq!(
-        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![best])),
+        quote_withheld(&mut ctx, DirectionV0::Long, 12, Some(vec![best])),
         Some((101, 7))
     );
 
-    let changes = execute_users(&mut ctx, Direction::Long, 12, Some(vec![best]));
+    let changes = execute_users(&mut ctx, DirectionV0::Long, 12, Some(vec![best]));
     assert_eq!(changes, vec![(best.to_bytes(), 5, 500, vec![1])]);
 
     // The maker behind is untouched and reachable by the next fill.
-    assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(101, 7)]);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, 12), vec![(101, 7)]);
 }
 
 /// Set the blocking floor on the test market.
 fn set_blocking_min_size(ctx: &mut Ctx, size: u64) {
     let ix = instruction::UpdateMarketV0 {
-        args: UpdateMarketArgsV0 {
+        args: ClobUpdateMarketArgsV0 {
             blocking_min_size: Some(size * UNIT),
             ..Default::default()
         },
@@ -1563,21 +1567,21 @@ fn an_order_under_the_blocking_floor_is_stepped_over_at_any_age() {
     let carried = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
     // Best price, under the floor, owner not carried.
-    place(&mut ctx, place_args(Side::Ask, 100, 5), dust);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), dust);
     // Over the floor, owner not carried: this is the one that may end a walk.
-    place(&mut ctx, place_args(Side::Ask, 101, 20), blocker);
-    place(&mut ctx, place_args(Side::Ask, 102, 9), carried);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 20), blocker);
+    place(&mut ctx, place_args(SideV0::Ask, 102, 9), carried);
     // Far past the grace window, so age is not what decides this.
     ctx.svm.warp_to_slot(10_000);
 
     // The dust order is stepped over. The walk then reaches the order over the
     // floor, which still ends it, so the carried maker behind goes untraded.
     assert_eq!(
-        quote_users(&mut ctx, Direction::Long, 40, Some(vec![carried])),
+        quote_users(&mut ctx, DirectionV0::Long, 40, Some(vec![carried])),
         vec![]
     );
     assert_eq!(
-        quote_withheld(&mut ctx, Direction::Long, 40, Some(vec![carried])),
+        quote_withheld(&mut ctx, DirectionV0::Long, 40, Some(vec![carried])),
         Some((101, 20)),
         "the order over the floor is the one that ends the walk"
     );
@@ -1585,11 +1589,21 @@ fn an_order_under_the_blocking_floor_is_stepped_over_at_any_age() {
     // Carrying the blocking maker too: only the dust is skipped now, and
     // everything behind it trades.
     assert_eq!(
-        quote_users(&mut ctx, Direction::Long, 40, Some(vec![carried, blocker])),
+        quote_users(
+            &mut ctx,
+            DirectionV0::Long,
+            40,
+            Some(vec![carried, blocker])
+        ),
         vec![(101, 20), (102, 9)]
     );
     assert_eq!(
-        quote_withheld(&mut ctx, Direction::Long, 40, Some(vec![carried, blocker])),
+        quote_withheld(
+            &mut ctx,
+            DirectionV0::Long,
+            40,
+            Some(vec![carried, blocker])
+        ),
         None,
         "nothing over the floor was left out"
     );
@@ -1599,7 +1613,7 @@ fn an_order_under_the_blocking_floor_is_stepped_over_at_any_age() {
     assert_eq!(
         quote_users(
             &mut ctx,
-            Direction::Long,
+            DirectionV0::Long,
             40,
             Some(vec![dust, blocker, carried])
         ),
@@ -1617,13 +1631,13 @@ fn the_l3_read_flags_the_orders_that_can_end_a_walk() {
     set_blocking_min_size(&mut ctx, 10);
     let maker = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
-    place(&mut ctx, place_args(Side::Ask, 100, 5), maker);
-    place(&mut ctx, place_args(Side::Ask, 101, 20), maker);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), maker);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 20), maker);
     ctx.svm.warp_to_slot(20);
 
     let ix = instruction::QuoteL3V0 {
         args: L3ArgsV0 {
-            direction: Direction::Long,
+            direction: DirectionV0::Long,
             size: 0,
             max_rows: 8,
             include_taker_origin_reservations: false,
@@ -1656,13 +1670,13 @@ fn a_zero_blocking_floor_lets_any_order_end_a_walk() {
     let mut ctx = setup();
     let dust = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
-    place(&mut ctx, place_args(Side::Ask, 100, 1), dust);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 1), dust);
     ctx.svm.warp_to_slot(10_000);
 
     assert_eq!(
         quote_withheld(
             &mut ctx,
-            Direction::Long,
+            DirectionV0::Long,
             30,
             Some(vec![addr(Pubkey::new_unique())])
         ),
@@ -1687,13 +1701,13 @@ fn the_withheld_report_covers_the_order_it_stopped_on_and_no_more() {
     let first_missing = addr(Pubkey::new_unique());
     let behind = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
-    place(&mut ctx, place_args(Side::Ask, 100, 5), carried);
-    place(&mut ctx, place_args(Side::Ask, 101, 7), first_missing);
-    place(&mut ctx, place_args(Side::Ask, 102, 900), behind);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), carried);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 7), first_missing);
+    place(&mut ctx, place_args(SideV0::Ask, 102, 900), behind);
     ctx.svm.warp_to_slot(20);
 
     assert_eq!(
-        quote_withheld(&mut ctx, Direction::Long, 1_000, Some(vec![carried])),
+        quote_withheld(&mut ctx, DirectionV0::Long, 1_000, Some(vec![carried])),
         Some((101, 7)),
         "the order the walk stopped on, not the 900 sitting behind it"
     );
@@ -1705,7 +1719,7 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
     let user = addr(Pubkey::new_unique());
 
     let ix = instruction::UpdateMarketV0 {
-        args: UpdateMarketArgsV0 {
+        args: ClobUpdateMarketArgsV0 {
             min_order_size: Some(10 * UNIT),
             ..Default::default()
         },
@@ -1720,25 +1734,28 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
     // 15 of 20 fills; the 5 remaining is below min and is culled with the
     // fill instead of resting as dust. The cull rides the wire response so
     // velocity can decrement the maker's aggregates.
-    place(&mut ctx, place_args(Side::Ask, 100, 20), user);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 20), user);
     advance_slot(&mut ctx, 1);
-    let meta = execute_meta(&mut ctx, Direction::Long, 15).unwrap();
+    let meta = execute_meta(&mut ctx, DirectionV0::Long, 15).unwrap();
     let resp = read_response(&ctx, &meta);
     assert_eq!(
         parse_balance_changes(&resp),
         vec![(user.to_bytes(), 15, 1500, vec![])]
     );
     assert_eq!(parse_cancelled(&resp), vec![(user.to_bytes(), 1, 5)]);
-    assert!(quote(&mut ctx, Direction::Long, u64::MAX).is_empty());
+    assert!(quote(&mut ctx, DirectionV0::Long, u64::MAX).is_empty());
     let state = market_state(&ctx);
     assert_eq!(state.ask_count, 0);
     assert_eq!(state.free_count, CAPACITY as u32);
 
     // A remainder at the min keeps resting.
-    place(&mut ctx, place_args(Side::Ask, 100, 20), user);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 20), user);
     advance_slot(&mut ctx, 1);
-    execute(&mut ctx, Direction::Long, 10);
-    assert_eq!(quote(&mut ctx, Direction::Long, u64::MAX), vec![(100, 10)]);
+    execute(&mut ctx, DirectionV0::Long, 10);
+    assert_eq!(
+        quote(&mut ctx, DirectionV0::Long, u64::MAX),
+        vec![(100, 10)]
+    );
     assert_eq!(market_state(&ctx).ask_count, 1);
 }
 
@@ -1770,11 +1787,11 @@ fn cancel_all_logs_every_removed_order_id_at_the_ceiling() {
             &mut ctx,
             PlaceOrderArgsV0 {
                 client_order_id: id,
-                ..place_args(Side::Bid, 1_000 - i, 10)
+                ..place_args(SideV0::Bid, 1_000 - i, 10)
             },
             user,
         );
-        place(&mut ctx, place_args(Side::Bid, 1_000 - i, 10), other);
+        place(&mut ctx, place_args(SideV0::Bid, 1_000 - i, 10), other);
     }
     for i in 0..per_side {
         let id = next_id();
@@ -1783,11 +1800,11 @@ fn cancel_all_logs_every_removed_order_id_at_the_ceiling() {
             &mut ctx,
             PlaceOrderArgsV0 {
                 client_order_id: id,
-                ..place_args(Side::Ask, 2_000 + i, 10)
+                ..place_args(SideV0::Ask, 2_000 + i, 10)
             },
             user,
         );
-        place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), other);
+        place(&mut ctx, place_args(SideV0::Ask, 2_000 + i, 10), other);
     }
 
     let ix = cancel_all_ix(&ctx, user, CancelSidesV0::Both);
@@ -1817,7 +1834,7 @@ fn cancel_all_logs_every_removed_order_id_at_the_ceiling() {
 fn cancel_all_requires_the_place_authority() {
     let mut ctx = setup();
     let user = addr(Pubkey::new_unique());
-    place(&mut ctx, place_args(Side::Bid, 100, 10), user);
+    place(&mut ctx, place_args(SideV0::Bid, 100, 10), user);
 
     // The market's own admin is the sharpest version of this: a real key with
     // real authority over the book that still must not be able to pull quotes.
@@ -1836,24 +1853,28 @@ fn cu_benchmarks() {
     let mut ctx = setup();
     let user = addr(Pubkey::new_unique());
     for i in 0..PER_SIDE as u64 - 1 {
-        let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 10), user);
+        let ix = place_ix(&ctx, place_args(SideV0::Bid, 100 + i, 10), user);
         send(&mut ctx, ix).unwrap();
     }
 
     advance_slot(&mut ctx, 1);
 
     // Place at the best of a nearly-full book (fills the side).
-    let ix = place_ix(&ctx, place_args(Side::Bid, 100 + PER_SIDE as u64, 10), user);
+    let ix = place_ix(
+        &ctx,
+        place_args(SideV0::Bid, 100 + PER_SIDE as u64, 10),
+        user,
+    );
     let place_meta = send(&mut ctx, ix).unwrap();
 
     // Crank-evict the tail of the full side.
-    let evict_meta = evict_worst(&mut ctx, Side::Bid).unwrap();
+    let evict_meta = evict_worst(&mut ctx, SideV0::Bid).unwrap();
 
     // Quote sweeping the entire side (level cap applies).
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             size: u64::MAX,
-            ..quote_args(Direction::Short, 0)
+            ..quote_args(DirectionV0::Short, 0)
         },
     }
     .to_instruction(accounts::ResponseMarketV0 {
@@ -1863,19 +1884,19 @@ fn cu_benchmarks() {
     let quote_meta = send(&mut ctx, ix).unwrap();
 
     // Execute across 50 orders (one user, so the response stays small).
-    let execute_meta = execute_meta(&mut ctx, Direction::Short, 500).unwrap();
+    let execute_meta = execute_meta(&mut ctx, DirectionV0::Short, 500).unwrap();
 
     // Cancel: place a fresh order and remove it (one order per ix).
     let mut ctx2 = setup();
     let u2 = addr(Pubkey::new_unique());
-    let oref = place(&mut ctx2, place_args(Side::Bid, 500, 10), u2);
+    let oref = place(&mut ctx2, place_args(SideV0::Bid, 500, 10), u2);
     let ix = cancel_ix(&ctx2, oref, u2);
     let cancel_empty = send(&mut ctx2, ix).unwrap().compute_units_consumed;
 
     // Cancel out of a nearly-full side (relink cost at depth).
     let mut refs = Vec::new();
     for i in 0..PER_SIDE as u64 - 1 {
-        refs.push(place(&mut ctx2, place_args(Side::Bid, 1_000 + i, 10), u2));
+        refs.push(place(&mut ctx2, place_args(SideV0::Bid, 1_000 + i, 10), u2));
     }
 
     let mid_ref = refs[refs.len() / 2];
@@ -1885,7 +1906,7 @@ fn cu_benchmarks() {
     let empty_place = {
         let mut c = setup();
         let u = addr(Pubkey::new_unique());
-        let ix = place_ix(&c, place_args(Side::Bid, 100, 10), u);
+        let ix = place_ix(&c, place_args(SideV0::Bid, 100, 10), u);
         send(&mut c, ix).unwrap().compute_units_consumed
     };
 
@@ -1923,8 +1944,8 @@ fn cu_benchmark_cancel_all() {
 
     let mut ctx = setup();
     let mine = addr(Pubkey::new_unique());
-    let refs: Vec<OrderRefV0> = (0..LADDER)
-        .map(|i| place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), mine))
+    let refs: Vec<ClobOrderRefV0> = (0..LADDER)
+        .map(|i| place(&mut ctx, place_args(SideV0::Ask, 2_000 + i, 10), mine))
         .collect();
     let per_order_cu: u64 = refs
         .iter()
@@ -1936,7 +1957,7 @@ fn cu_benchmark_cancel_all() {
 
     let mut ctx = setup();
     (0..LADDER).for_each(|i| {
-        place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), mine);
+        place(&mut ctx, place_args(SideV0::Ask, 2_000 + i, 10), mine);
     });
 
     let ix = cancel_all_ix(&ctx, mine, CancelSidesV0::Both);
@@ -1948,11 +1969,11 @@ fn cu_benchmark_cancel_all() {
     let mut ctx = setup();
     let other = addr(Pubkey::new_unique());
     (0..PER_SIDE as u64 - LADDER).for_each(|i| {
-        place(&mut ctx, place_args(Side::Ask, 1_000 + i, 10), other);
+        place(&mut ctx, place_args(SideV0::Ask, 1_000 + i, 10), other);
     });
 
     (0..LADDER).for_each(|i| {
-        place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), mine);
+        place(&mut ctx, place_args(SideV0::Ask, 2_000 + i, 10), mine);
     });
 
     let ix = cancel_all_ix(&ctx, mine, CancelSidesV0::Both);
@@ -1983,7 +2004,7 @@ fn cu_benchmark_interleaved_makers() {
     for i in 0..64u64 {
         let ix = place_ix(
             &ctx,
-            place_args(Side::Ask, 100 + i, 1),
+            place_args(SideV0::Ask, 100 + i, 1),
             makers[(i % 8) as usize],
         );
 
@@ -1994,14 +2015,14 @@ fn cu_benchmark_interleaved_makers() {
 
     // With no user set, the quote counts the eight makers by ref.
     let ix = instruction::QuoteV0 {
-        args: quote_args(Direction::Long, 64),
+        args: quote_args(DirectionV0::Long, 64),
     }
     .to_instruction(accounts::ResponseMarketV0 {
         market: addr(ctx.market),
     });
     let quote_meta = send(&mut ctx, ix).unwrap();
 
-    let meta = execute_meta_users(&mut ctx, Direction::Long, 64, Some(makers.clone())).unwrap();
+    let meta = execute_meta_users(&mut ctx, DirectionV0::Long, 64, Some(makers.clone())).unwrap();
     let changes = parse_balance_changes(&read_response(&ctx, &meta));
     assert_eq!(changes.len(), 8);
     // Every maker's eight orders are fully consumed and reported.
@@ -2029,7 +2050,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     let mut ctx = setup();
     let fills = EXECUTE_FILLS_CEILING as usize;
     let ix = instruction::UpdateMarketV0 {
-        args: UpdateMarketArgsV0 {
+        args: ClobUpdateMarketArgsV0 {
             max_execute_fills: Some(EXECUTE_FILLS_CEILING),
             max_execute_users: Some(EXECUTE_USERS_CEILING),
             ..Default::default()
@@ -2044,13 +2065,13 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
 
     let users = EXECUTE_USERS_CEILING as usize;
     let makers: Vec<_> = (0..users).map(|_| addr(Pubkey::new_unique())).collect();
-    let orders: Vec<OrderRefV0> = (0..fills)
+    let orders: Vec<ClobOrderRefV0> = (0..fills)
         .map(|i| {
             place(
                 &mut ctx,
                 PlaceOrderArgsV0 {
                     client_order_id: 1_000 + i as u32,
-                    ..place_args(Side::Ask, 100 + i as u64, 1)
+                    ..place_args(SideV0::Ask, 100 + i as u64, 1)
                 },
                 makers[i % users],
             )
@@ -2059,7 +2080,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     advance_slot(&mut ctx, 1);
 
     let ix = instruction::ExecuteV0 {
-        args: execute_args(Direction::Long, fills as u64),
+        args: execute_args(DirectionV0::Long, fills as u64),
     }
     .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
@@ -2080,7 +2101,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
         ts: clock.unix_timestamp,
         slot: clock.slot,
         market_index: 0,
-        direction: Direction::Long.tag(),
+        direction: DirectionV0::Long.tag(),
         fills: orders
             .iter()
             .enumerate()
@@ -2107,12 +2128,12 @@ fn resize_grows_arena_and_per_side_capacity() {
     let user = addr(Pubkey::new_unique());
 
     for i in 0..8u64 {
-        let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 1), user);
+        let ix = place_ix(&ctx, place_args(SideV0::Bid, 100 + i, 1), user);
         send(&mut ctx, ix).unwrap();
     }
 
     // Side full; every placement rejected until crank/resize.
-    let ix = place_ix(&ctx, place_args(Side::Bid, 100, 1), user);
+    let ix = place_ix(&ctx, place_args(SideV0::Bid, 100, 1), user);
     assert_clob_err(
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::SideAtCapacity),
@@ -2152,7 +2173,7 @@ fn resize_grows_arena_and_per_side_capacity() {
 
     // Per-side cap is now 16: worse-priced bids fit without eviction.
     for i in 0..8u64 {
-        let ix = place_ix(&ctx, place_args(Side::Bid, 90 + i, 1), user);
+        let ix = place_ix(&ctx, place_args(SideV0::Bid, 90 + i, 1), user);
         send(&mut ctx, ix).unwrap();
     }
 
@@ -2161,7 +2182,12 @@ fn resize_grows_arena_and_per_side_capacity() {
     assert_eq!(state.free_count, 32 - 16);
 }
 
-fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -> Vec<(u64, u64)> {
+fn quote_taker(
+    ctx: &mut Ctx,
+    direction: DirectionV0,
+    size: u64,
+    taker: Address,
+) -> Vec<(u64, u64)> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker: Some(uref(taker)),
@@ -2178,7 +2204,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
 
 fn execute_taker(
     ctx: &mut Ctx,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     taker: Address,
 ) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
@@ -2203,26 +2229,26 @@ fn taker_own_orders_are_skipped_for_self_trade_prevention() {
     let taker = addr(Pubkey::new_unique());
     let other = addr(Pubkey::new_unique());
     // Taker's own ask at the top of book, another maker behind it.
-    place(&mut ctx, place_args(Side::Ask, 100, 5), taker);
-    place(&mut ctx, place_args(Side::Ask, 101, 7), other);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), taker);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 7), other);
     advance_slot(&mut ctx, 1);
 
     // Quote and execute both walk past the taker's own order — no grace
     // games, no StaleUserSet — and the fills match the quote.
     assert_eq!(
-        quote_taker(&mut ctx, Direction::Long, 12, taker),
+        quote_taker(&mut ctx, DirectionV0::Long, 12, taker),
         vec![(101, 7)]
     );
 
-    let changes = execute_taker(&mut ctx, Direction::Long, 12, taker);
+    let changes = execute_taker(&mut ctx, DirectionV0::Long, 12, taker);
     assert_eq!(changes, vec![(other.to_bytes(), 7, 707, vec![2])]);
     // The taker's own order still rests.
-    assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(100, 5)]);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, 12), vec![(100, 5)]);
 }
 
 fn cancel(
     ctx: &mut Ctx,
-    order_ref: OrderRefV0,
+    order_ref: ClobOrderRefV0,
     user: Address,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = cancel_ix(ctx, order_ref, user);
@@ -2242,11 +2268,11 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
         &mut ctx,
         PlaceOrderArgsV0 {
             client_order_id: 7_777,
-            ..taker_origin_args(Side::Bid, 101, 5)
+            ..taker_origin_args(SideV0::Bid, 101, 5)
         },
         user,
     );
-    let ordinary = place(&mut ctx, place_args(Side::Bid, 90, 5), user);
+    let ordinary = place(&mut ctx, place_args(SideV0::Bid, 90, 5), user);
     assert!(node(&ctx, remainder.node_index).is_taker_origin());
     assert!(
         node(&ctx, remainder.node_index).is_bit_flag_set(OrderBitFlag::Open),
@@ -2266,7 +2292,7 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
         parse_removed(&meta.return_data.data);
     assert_eq!(
         (order_id, client_order_id, price, base, side, taker_origin),
-        (remainder.order_id, 7_777, 101, 5, Side::Bid.tag(), true)
+        (remainder.order_id, 7_777, 101, 5, SideV0::Bid.tag(), true)
     );
 
     let meta = cancel(&mut ctx, ordinary, user).unwrap();
@@ -2284,27 +2310,27 @@ fn a_crossed_taker_remainder_and_the_depth_it_crosses_are_both_withheld() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
-    let remainder = place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
-    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
+    let remainder = place(&mut ctx, taker_origin_args(SideV0::Bid, 101, 5), taker);
+    place(&mut ctx, place_args(SideV0::Ask, 99, 5), maker);
     advance_slot(&mut ctx, 1);
 
     // Nothing else rests on either side, so a taker going either way finds no
     // depth — the call lands and fills nothing, and the book is untouched.
-    assert!(quote(&mut ctx, Direction::Short, u64::MAX).is_empty());
-    assert!(execute(&mut ctx, Direction::Short, 5).is_empty());
-    assert!(quote(&mut ctx, Direction::Long, u64::MAX).is_empty());
-    assert!(execute(&mut ctx, Direction::Long, 5).is_empty());
+    assert!(quote(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Short, 5).is_empty());
+    assert!(quote(&mut ctx, DirectionV0::Long, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Long, 5).is_empty());
     let state = market_state(&ctx);
     assert_eq!((state.bid_count, state.ask_count), (1, 1));
 
     // The crank reaches the ask at its own 99, which is the price the pair
     // settles at and the improvement the remainder came for.
     assert_eq!(
-        quote_consuming(&mut ctx, Direction::Long, u64::MAX),
+        quote_consuming(&mut ctx, DirectionV0::Long, u64::MAX),
         vec![(99, 5)]
     );
 
-    let changes = execute_consuming(&mut ctx, Direction::Long, 5);
+    let changes = execute_consuming(&mut ctx, DirectionV0::Long, 5);
     assert_eq!(changes, vec![(maker.to_bytes(), 5, 495, vec![2])]);
 
     // Then the remainder comes off once its claim lapses, reporting which side
@@ -2317,7 +2343,7 @@ fn a_crossed_taker_remainder_and_the_depth_it_crosses_are_both_withheld() {
     let (_, _, _, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(
         (price, base, side, taker_origin),
-        (101, 5, Side::Bid.tag(), true)
+        (101, 5, SideV0::Bid.tag(), true)
     );
     assert_eq!(market_state(&ctx).bid_count, 0);
 }
@@ -2331,7 +2357,7 @@ fn the_reservation_grace_window_is_settable_and_bounded() {
     let mut ctx = setup();
     let set_grace = |ctx: &mut Ctx, slots: u16| {
         let ix = instruction::UpdateMarketV0 {
-            args: UpdateMarketArgsV0 {
+            args: ClobUpdateMarketArgsV0 {
                 reservation_grace_slots: Some(slots),
                 ..Default::default()
             },
@@ -2361,10 +2387,10 @@ fn the_reservation_grace_window_is_settable_and_bounded() {
     set_grace(&mut ctx, 0).unwrap();
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
-    place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
-    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
+    place(&mut ctx, taker_origin_args(SideV0::Bid, 101, 5), taker);
+    place(&mut ctx, place_args(SideV0::Ask, 99, 5), maker);
     advance_slot(&mut ctx, 1);
-    assert_eq!(quote(&mut ctx, Direction::Long, u64::MAX), vec![(99, 5)]);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, u64::MAX), vec![(99, 5)]);
 }
 
 /// Skipping rather than failing is what keeps the rest of the side alive. A
@@ -2375,13 +2401,13 @@ fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
-    place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
-    place(&mut ctx, place_args(Side::Bid, 98, 7), maker);
-    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
+    place(&mut ctx, taker_origin_args(SideV0::Bid, 101, 5), taker);
+    place(&mut ctx, place_args(SideV0::Bid, 98, 7), maker);
+    place(&mut ctx, place_args(SideV0::Ask, 99, 5), maker);
     advance_slot(&mut ctx, 1);
 
-    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(98, 7)]);
-    let changes = execute(&mut ctx, Direction::Short, 7);
+    assert_eq!(quote(&mut ctx, DirectionV0::Short, u64::MAX), vec![(98, 7)]);
+    let changes = execute(&mut ctx, DirectionV0::Short, 7);
     assert_eq!(changes, vec![(maker.to_bytes(), 7, 686, vec![2])]);
     // The maker's bid filled; the remainder is still resting.
     let state = market_state(&ctx);
@@ -2397,13 +2423,16 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
-    place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
+    place(&mut ctx, taker_origin_args(SideV0::Bid, 101, 5), taker);
     // Best ask above the bid, so nothing crosses.
-    place(&mut ctx, place_args(Side::Ask, 105, 5), maker);
+    place(&mut ctx, place_args(SideV0::Ask, 105, 5), maker);
     advance_slot(&mut ctx, 1);
 
-    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(101, 5)]);
-    let changes = execute(&mut ctx, Direction::Short, 5);
+    assert_eq!(
+        quote(&mut ctx, DirectionV0::Short, u64::MAX),
+        vec![(101, 5)]
+    );
+    let changes = execute(&mut ctx, DirectionV0::Short, 5);
     assert_eq!(changes, vec![(taker.to_bytes(), 5, 505, vec![1])]);
     assert_eq!(market_state(&ctx).bid_count, 0);
 }
@@ -2415,12 +2444,12 @@ fn a_maker_only_cross_is_not_gated() {
     let mut ctx = setup();
     let maker_a = addr(Pubkey::new_unique());
     let maker_b = addr(Pubkey::new_unique());
-    place(&mut ctx, place_args(Side::Bid, 101, 5), maker_a);
-    place(&mut ctx, place_args(Side::Ask, 99, 5), maker_b);
+    place(&mut ctx, place_args(SideV0::Bid, 101, 5), maker_a);
+    place(&mut ctx, place_args(SideV0::Ask, 99, 5), maker_b);
     advance_slot(&mut ctx, 1);
 
-    assert_eq!(execute(&mut ctx, Direction::Short, 5).len(), 1);
-    assert_eq!(execute(&mut ctx, Direction::Long, 5).len(), 1);
+    assert_eq!(execute(&mut ctx, DirectionV0::Short, 5).len(), 1);
+    assert_eq!(execute(&mut ctx, DirectionV0::Long, 5).len(), 1);
 }
 
 /// The gate turns on with the counterparty's activation slot, not with its
@@ -2440,7 +2469,7 @@ fn an_unactivated_counterparty_does_not_gate_the_fill() {
         &ctx,
         PlaceOrderArgsV0 {
             activation_delay_slots: Some(0),
-            ..taker_origin_args(Side::Bid, 101, 5)
+            ..taker_origin_args(SideV0::Bid, 101, 5)
         },
         taker,
     );
@@ -2450,7 +2479,7 @@ fn an_unactivated_counterparty_does_not_gate_the_fill() {
         &ctx,
         PlaceOrderArgsV0 {
             activation_delay_slots: Some(20),
-            ..place_args(Side::Ask, 99, 5)
+            ..place_args(SideV0::Ask, 99, 5)
         },
         maker,
     );
@@ -2458,16 +2487,19 @@ fn an_unactivated_counterparty_does_not_gate_the_fill() {
     send(&mut ctx, ix).unwrap();
 
     // Slot 10: the ask cannot match, so the remainder is ordinary depth.
-    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(101, 5)]);
-    assert_eq!(execute(&mut ctx, Direction::Short, 1).len(), 1);
+    assert_eq!(
+        quote(&mut ctx, DirectionV0::Short, u64::MAX),
+        vec![(101, 5)]
+    );
+    assert_eq!(execute(&mut ctx, DirectionV0::Short, 1).len(), 1);
 
     // Slot 30: the ask is a live counterparty and the remainder drops out of
     // both the quote and the fill.
     ctx.svm.warp_to_slot(29);
-    assert_eq!(execute(&mut ctx, Direction::Short, 1).len(), 1);
+    assert_eq!(execute(&mut ctx, DirectionV0::Short, 1).len(), 1);
     ctx.svm.warp_to_slot(30);
-    assert!(quote(&mut ctx, Direction::Short, u64::MAX).is_empty());
-    assert!(execute(&mut ctx, Direction::Short, 1).is_empty());
+    assert!(quote(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Short, 1).is_empty());
 }
 
 /// Quote and the gate on-chain: the crossed remainder's level is absent from the
@@ -2481,20 +2513,20 @@ fn quote_and_execute_skip_the_same_order() {
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
     let crosser = addr(Pubkey::new_unique());
-    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
-    place(&mut ctx, taker_origin_args(Side::Ask, 100, 5), taker);
-    place(&mut ctx, place_args(Side::Ask, 102, 5), maker);
-    let crossing_bid = place(&mut ctx, place_args(Side::Bid, 101, 5), crosser);
+    place(&mut ctx, place_args(SideV0::Ask, 99, 5), maker);
+    place(&mut ctx, taker_origin_args(SideV0::Ask, 100, 5), taker);
+    place(&mut ctx, place_args(SideV0::Ask, 102, 5), maker);
+    let crossing_bid = place(&mut ctx, place_args(SideV0::Bid, 101, 5), crosser);
     advance_slot(&mut ctx, 1);
 
     assert_eq!(
-        quote(&mut ctx, Direction::Long, u64::MAX),
+        quote(&mut ctx, DirectionV0::Long, u64::MAX),
         vec![(99, 5), (102, 5)]
     );
 
     // Execute honours exactly that: 10 base across the two makers, and the
     // remainder still resting between them.
-    let changes = execute(&mut ctx, Direction::Long, u64::MAX);
+    let changes = execute(&mut ctx, DirectionV0::Long, u64::MAX);
     assert_eq!(changes, vec![(maker.to_bytes(), 10, 1005, vec![1, 3])]);
     let state = market_state(&ctx);
     assert_eq!(state.ask_count, 1);
@@ -2502,17 +2534,17 @@ fn quote_and_execute_skip_the_same_order() {
 
     // The bid the remainder crosses is claimed, so it is not ordinary depth
     // the other way either. Only the crank settling the cross reaches it.
-    assert!(quote(&mut ctx, Direction::Short, u64::MAX).is_empty());
+    assert!(quote(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
     assert_eq!(
-        quote_consuming(&mut ctx, Direction::Short, u64::MAX),
+        quote_consuming(&mut ctx, DirectionV0::Short, u64::MAX),
         vec![(101, 5)]
     );
 
     // With the cross gone the remainder is ordinary depth again, at its own
     // price.
     cancel(&mut ctx, crossing_bid, crosser).unwrap();
-    assert_eq!(quote(&mut ctx, Direction::Long, u64::MAX), vec![(100, 5)]);
-    assert_eq!(execute(&mut ctx, Direction::Long, 5).len(), 1);
+    assert_eq!(quote(&mut ctx, DirectionV0::Long, u64::MAX), vec![(100, 5)]);
+    assert_eq!(execute(&mut ctx, DirectionV0::Long, 5).len(), 1);
 }
 
 /// The gate's cost on quote, which unlike execute walks a whole side: the worst
@@ -2523,26 +2555,26 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
     let mut ctx = setup();
     let user = addr(Pubkey::new_unique());
     for i in 0..PER_SIDE as u64 - 1 {
-        let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 10), user);
+        let ix = place_ix(&ctx, place_args(SideV0::Bid, 100 + i, 10), user);
         send(&mut ctx, ix).unwrap();
     }
 
     // Best of the bid side, with an ask far above it so nothing crosses.
     let ix = place_ix(
         &ctx,
-        taker_origin_args(Side::Bid, 100 + PER_SIDE as u64, 10),
+        taker_origin_args(SideV0::Bid, 100 + PER_SIDE as u64, 10),
         user,
     );
 
     send(&mut ctx, ix).unwrap();
-    let ix = place_ix(&ctx, place_args(Side::Ask, 100_000, 10), user);
+    let ix = place_ix(&ctx, place_args(SideV0::Ask, 100_000, 10), user);
     send(&mut ctx, ix).unwrap();
     advance_slot(&mut ctx, 1);
 
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             size: u64::MAX,
-            ..quote_args(Direction::Short, 0)
+            ..quote_args(DirectionV0::Short, 0)
         },
     }
     .to_instruction(accounts::ResponseMarketV0 {
@@ -2579,14 +2611,14 @@ fn cu_benchmark_quote_and_execute_with_claimants_resting() {
         let taker = addr(Pubkey::new_unique());
         // A full bid side of distinct levels, so the walk runs to the fill cap.
         for i in 0..PER_SIDE as u64 - 1 {
-            let ix = place_ix(&ctx, place_args(Side::Bid, 1_000 - i, SIZE), maker);
+            let ix = place_ix(&ctx, place_args(SideV0::Bid, 1_000 - i, SIZE), maker);
             send(&mut ctx, ix).unwrap();
         }
 
         // Remainders that cross the whole bid side, so every claim is tested
         // and honoured rather than skipped on price.
         for _ in 0..claimants {
-            let ix = place_ix(&ctx, taker_origin_args(Side::Ask, 1, SIZE), taker);
+            let ix = place_ix(&ctx, taker_origin_args(SideV0::Ask, 1, SIZE), taker);
             send(&mut ctx, ix).unwrap();
         }
 
@@ -2595,7 +2627,7 @@ fn cu_benchmark_quote_and_execute_with_claimants_resting() {
         let ix = instruction::QuoteV0 {
             args: QuoteArgsV0 {
                 size: u64::MAX,
-                ..quote_args(Direction::Short, 0)
+                ..quote_args(DirectionV0::Short, 0)
             },
         }
         .to_instruction(accounts::ResponseMarketV0 {
@@ -2609,7 +2641,7 @@ fn cu_benchmark_quote_and_execute_with_claimants_resting() {
         assert_eq!(levels.len(), 64);
         assert_eq!(levels[0].0, 1_000 - claimants);
 
-        let execute_meta = execute_meta(&mut ctx, Direction::Short, 64 * SIZE).unwrap();
+        let execute_meta = execute_meta(&mut ctx, DirectionV0::Short, 64 * SIZE).unwrap();
         (
             quote_meta.compute_units_consumed,
             execute_meta.compute_units_consumed,
@@ -2636,15 +2668,15 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
     let user_a = addr(Pubkey::new_unique());
     let user_b = addr(Pubkey::new_unique());
 
-    place(&mut ctx, place_args(Side::Ask, 101, 10), user_b);
-    place(&mut ctx, place_args(Side::Ask, 100, 5), user_a);
-    place(&mut ctx, place_args(Side::Ask, 100, 7), user_b);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 10), user_b);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), user_a);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 7), user_b);
     advance_slot(&mut ctx, 1);
 
     let l3 = |ctx: &mut Ctx, size: u64, max_rows: u16| {
         let ix = instruction::QuoteL3V0 {
             args: L3ArgsV0 {
-                direction: Direction::Long,
+                direction: DirectionV0::Long,
                 size: size.saturating_mul(UNIT),
                 max_rows,
                 include_taker_origin_reservations: false,
@@ -2670,7 +2702,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
     // The ladder aggregates the two orders at 100; the rows keep them apart,
     // in the order the fill would take them.
     assert_eq!(
-        quote(&mut ctx, Direction::Long, 100),
+        quote(&mut ctx, DirectionV0::Long, 100),
         vec![(100, 12), (101, 10)]
     );
 
@@ -2689,7 +2721,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
     // Order ids are the book's own, so a caller can act on a row.
     let ix = instruction::QuoteL3V0 {
         args: L3ArgsV0 {
-            direction: Direction::Long,
+            direction: DirectionV0::Long,
             size: 0,
             max_rows: L3_ROWS_CEILING,
             include_taker_origin_reservations: false,
@@ -2718,7 +2750,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
     // An order that is not matchable yet is not a row: a fresh placement is
     // behind the speed bump.
     let user_c = addr(Pubkey::new_unique());
-    place(&mut ctx, place_args(Side::Ask, 99, 3), user_c);
+    place(&mut ctx, place_args(SideV0::Ask, 99, 3), user_c);
     let (rows, _) = l3(&mut ctx, 0, L3_ROWS_CEILING);
     assert_eq!(rows.len(), 3, "the unactivated order is not reported");
     advance_slot(&mut ctx, 1);
@@ -2772,16 +2804,16 @@ fn an_order_waking_from_its_speed_bump_gets_the_grace_window() {
         &mut ctx,
         PlaceOrderArgsV0 {
             activation_delay_slots: Some(10),
-            ..place_args(Side::Ask, 100, 5)
+            ..place_args(SideV0::Ask, 100, 5)
         },
         auction,
     );
-    place(&mut ctx, place_args(Side::Ask, 101, 7), user_b);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 7), user_b);
 
     // Before it wakes it is nobody's problem: not quoted, not in the way.
     ctx.svm.warp_to_slot(12);
     assert_eq!(
-        quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        quote_users(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])),
         vec![(101, 7)]
     );
 
@@ -2790,25 +2822,25 @@ fn an_order_waking_from_its_speed_bump_gets_the_grace_window() {
     // have carried it, so the walk steps over it and keeps going.
     ctx.svm.warp_to_slot(20);
     assert_eq!(
-        quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        quote_users(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])),
         vec![(101, 7)],
         "the depth behind a just-woken order is still reachable"
     );
     assert_eq!(
-        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        quote_withheld(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])),
         None
     );
 
-    let changes = execute_users(&mut ctx, Direction::Long, 7, Some(vec![user_b]));
+    let changes = execute_users(&mut ctx, DirectionV0::Long, 7, Some(vec![user_b]));
     assert_eq!(changes.len(), 1, "the reachable maker filled");
 
     // The window still closes: once it has been awake longer than the grace,
     // a caller that leaves it out gets nothing past it.
-    place(&mut ctx, place_args(Side::Ask, 101, 7), user_b);
+    place(&mut ctx, place_args(SideV0::Ask, 101, 7), user_b);
     ctx.svm.warp_to_slot(24);
-    assert!(quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])).is_empty());
+    assert!(quote_users(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])).is_empty());
     assert_eq!(
-        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        quote_withheld(&mut ctx, DirectionV0::Long, 12, Some(vec![user_b])),
         Some((100, 5)),
         "awake and unclaimed for longer than the window: the walk stops here"
     );
@@ -2908,7 +2940,7 @@ fn close_market_ix(ctx: &Ctx, authority: Pubkey, recipient: Pubkey) -> Instructi
 fn only_the_authority_closes_an_empty_market_and_takes_the_rent() {
     let mut ctx = setup_with_capacity(16);
     let user = addr(Pubkey::new_unique());
-    let order = place(&mut ctx, place_args(Side::Ask, 100, 5), user);
+    let order = place(&mut ctx, place_args(SideV0::Ask, 100, 5), user);
 
     let recipient = Pubkey::new_unique();
     // A book with an order in it does not close.
@@ -2964,7 +2996,7 @@ fn a_config_update_logs_the_settings_before_and_after() {
     let mut ctx = setup();
     let before = MarketSettingsV0::of(&market_state(&ctx));
     let ix = instruction::UpdateMarketV0 {
-        args: UpdateMarketArgsV0 {
+        args: ClobUpdateMarketArgsV0 {
             order_tick_size: Some(2),
             ..Default::default()
         },
@@ -2990,7 +3022,7 @@ fn a_config_update_logs_the_settings_before_and_after() {
 
     // A config the book refuses changes nothing and logs nothing.
     let ix = instruction::UpdateMarketV0 {
-        args: UpdateMarketArgsV0 {
+        args: ClobUpdateMarketArgsV0 {
             order_step_size: Some(0),
             ..Default::default()
         },
@@ -3066,7 +3098,7 @@ fn an_order_that_cannot_outlive_its_activation_delay_is_refused() {
     let delayed = |max_ts: i64| PlaceOrderArgsV0 {
         activation_delay_slots: Some(20),
         max_ts,
-        ..place_args(Side::Ask, 100, 5)
+        ..place_args(SideV0::Ask, 100, 5)
     };
 
     assert_clob_err(
@@ -3090,7 +3122,7 @@ fn an_order_that_cannot_outlive_its_activation_delay_is_refused() {
         PlaceOrderArgsV0 {
             activation_delay_slots: Some(0),
             max_ts: 1_001,
-            ..place_args(Side::Ask, 100, 5)
+            ..place_args(SideV0::Ask, 100, 5)
         },
         user,
     );
@@ -3129,20 +3161,20 @@ fn the_order_rules_report_what_the_sides_hold() {
     assert_eq!(before.place_authority, ctx.place_auth.pubkey().to_bytes());
     assert_eq!(before.authority, ctx.admin.pubkey().to_bytes());
 
-    place(&mut ctx, place_args(Side::Ask, 100, 5), user);
-    place(&mut ctx, place_args(Side::Bid, 90, 5), user);
-    place(&mut ctx, place_args(Side::Bid, 89, 5), user);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 5), user);
+    place(&mut ctx, place_args(SideV0::Bid, 90, 5), user);
+    place(&mut ctx, place_args(SideV0::Bid, 89, 5), user);
     let after = rules(&mut ctx);
     assert_eq!(after.side_order_counts, [2, 1]);
 
     // Fill the ask side to its cap and watch the count reach it.
     for i in 0..7 {
-        place(&mut ctx, place_args(Side::Ask, 101 + i, 5), user);
+        place(&mut ctx, place_args(SideV0::Ask, 101 + i, 5), user);
     }
 
     let full = rules(&mut ctx);
     assert_eq!(full.side_order_counts[1], full.arena_capacity / 2);
-    let ix = place_ix(&ctx, place_args(Side::Ask, 200, 5), user);
+    let ix = place_ix(&ctx, place_args(SideV0::Ask, 200, 5), user);
     assert_clob_err(
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::SideAtCapacity),

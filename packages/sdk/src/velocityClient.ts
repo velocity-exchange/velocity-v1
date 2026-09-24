@@ -279,7 +279,7 @@ import { SignedMsgOrderParams } from './types';
 import { TakerInfo } from './types';
 import { getOracleConfidenceFromMMOracleData } from './oracles/utils';
 import { ConstituentMap } from './constituentMap/constituentMap';
-import { hasBuilder } from './math/orders';
+import { hasBuilder, signedMsgEntryOrderRefusal } from './math/orders';
 import { getMarketFeesForFeeTier, getPerpFeeTierIndex } from './math/fees';
 import { RevenueShareEscrowMap } from './userMap/revenueShareEscrowMap';
 import {
@@ -8555,6 +8555,13 @@ export class VelocityClient {
 			| SignedMsgOrderParamsDelegateMessageInput,
 		delegateSigner?: boolean
 	): SignedMsgOrderParams {
+		const refusal = signedMsgEntryOrderRefusal(
+			orderParamsMessage.signedMsgOrderParams
+		);
+		if (refusal) {
+			throw new Error(refusal);
+		}
+
 		const borshBuf = this.encodeSignedMsgOrderParamsMessage(
 			orderParamsMessage,
 			delegateSigner
@@ -8682,13 +8689,16 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Submits an off-chain-signed swift taker order and fills it in the same instruction: it verifies the
-	 * ed25519 signature through the sysvar-instructions program, records the order in the taker's
-	 * `SignedMsgUserOrders` account (see `initializeSignedMsgUserOrders`, required beforehand), routes it
-	 * through the market's quoters and books for whatever fills at or better than its auction start price,
-	 * and rests the remainder on the market's CLOB. A signed-message order never takes a `User.orders` slot.
+	 * Submits an off-chain-signed swift taker order and fills it in the same instruction. The program
+	 * verifies the ed25519 signature in-program, records the order in the taker's `SignedMsgUserOrders`
+	 * account (see `initializeSignedMsgUserOrders`, required beforehand), routes it through the market's
+	 * quoters and books for whatever fills at or better than its worst price, and rests the remainder on
+	 * the market's CLOB. A signed-message order never takes a `User.orders` slot.
 	 * The caller is a filler, not the taker: it must carry every quoter the signed message named, and it
 	 * owes the taker every maker it had room for.
+	 * The program refuses a post-only entry (`InvalidOrderPostOnly`) and a trigger entry
+	 * (`InvalidSignedMsgOrderParam`). Without `flowAttestation` on a book with a speed bump, it also
+	 * refuses an IOC entry or one that cannot rest (`UnattestedSynchronousTake`).
 	 * @param fillerInfo - The keeper's own `User`/`UserStats`, credited for the fill it lands. Defaults
 	 * to the client's own margin account.
 	 * @param clobAccounts - The market's CLOB registry entry and book accounts, where the remainder

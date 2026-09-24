@@ -10,6 +10,7 @@ import {
 	OrderBitFlag,
 	OrderType,
 	OracleValidity,
+	PostOnlyParams,
 	PerpOperation,
 	StateAccount,
 } from '../types';
@@ -422,6 +423,26 @@ export function signedMsgOrderPlaceable(
 	return elapsedMillis(state, new BN(currentSlot), order.slot).lten(
 		SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS
 	);
+}
+
+/**
+ * Why `place_signed_msg_taker_order` refuses this entry order, or `undefined`
+ * when it admits it. Mirrors `validate_entry_order_type`. A post-only entry
+ * cannot take, and a trigger entry has no slot to wait in.
+ */
+export function signedMsgEntryOrderRefusal(params: {
+	orderType: OrderType;
+	postOnly: PostOnlyParams;
+}): string | undefined {
+	if (!isVariant(params.postOnly, 'none')) {
+		return 'a signed-message entry cannot be post-only';
+	}
+
+	if (isOneOfVariant(params.orderType, ['triggerMarket', 'triggerLimit'])) {
+		return 'a signed-message entry cannot be a trigger order';
+	}
+
+	return undefined;
 }
 
 /** True if `order.orderType` is `market`, `triggerMarket`, or `oracle`. */

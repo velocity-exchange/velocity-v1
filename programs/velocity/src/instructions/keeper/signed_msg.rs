@@ -79,6 +79,10 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         market_index,
     )?;
 
+    if !synchronous_take {
+        validate_unattested_entry(&placed.order)?;
+    }
+
     let _filled = if synchronous_take {
         fill_signed_msg_taker_order(
             &ctx,
@@ -497,6 +501,8 @@ fn signed_msg_order_slot(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
+    validate_entry_order_type(params)?;
+
     // A limit order rests from placement, and its message slot is its placement deadline. A client
     // stamps it ahead by its signing budget of about 14 seconds, so the lead is bounded.
     let is_resting_limit = params.order_type == OrderType::Limit;
@@ -567,6 +573,41 @@ fn signed_msg_order_slot(
     }
 
     Ok(Some(signed_msg_order_id))
+}
+
+/// The entry must be able to take now or rest on the book. A post-only order
+/// cannot take, and a trigger order needs a `User.orders` slot that the entry
+/// never gets.
+fn validate_entry_order_type(params: &OrderParams) -> Result<()> {
+    if params.post_only != crate::state::order_params::PostOnlyParam::None {
+        msg!("a signed-message entry cannot be post-only");
+        return Err(print_error!(ErrorCode::InvalidOrderPostOnly)().into());
+    }
+
+    if params.is_trigger_order() {
+        msg!("a signed-message entry cannot be a trigger order");
+        return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
+    }
+
+    Ok(())
+}
+
+/// An unattested entry on a book with a speed bump rests whole, so it must be
+/// able to rest. An immediate-or-cancel entry has nothing to rest.
+fn validate_unattested_entry(order: &Order) -> Result<()> {
+    validate!(
+        !order.immediate_or_cancel,
+        ErrorCode::UnattestedSynchronousTake,
+        "an IOC signed-message entry needs attested flow on a book with a speed bump"
+    )?;
+
+    validate!(
+        crate::instructions::restable_remainder_price(order, None).is_some(),
+        ErrorCode::UnattestedSynchronousTake,
+        "the entry cannot rest on the book and unattested flow cannot fill synchronously"
+    )?;
+
+    Ok(())
 }
 
 /// Apply the per-position settings the message carries. Those are the margin

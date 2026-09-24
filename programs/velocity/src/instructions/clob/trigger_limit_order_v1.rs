@@ -116,8 +116,9 @@ pub struct TriggerLimitOrderV1<'info> {
     /// The owner of the armed trigger order.
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
-    /// Read for the authority-wide equity breaker in the margin gate.
-    #[account(constraint = is_stats_for_user(&user, &user_stats)?)]
+    /// Read for the authority-wide equity breaker in the margin gate. A cancel
+    /// by that gate can trip the breaker.
+    #[account(mut, constraint = is_stats_for_user(&user, &user_stats)?)]
     pub user_stats: AccountLoader<'info, UserStats>,
     /// The market's quoter slab. Placement is allowed only on the vetted book
     /// that its `Clob` slot names, as in `place_and_make_perp_order_v1`.
@@ -213,7 +214,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
 
     let (side, price, base_asset_amount, max_ts, reduce_only, user_ref, is_isolated_position) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
-        let user_stats = load!(ctx.accounts.user_stats)?;
+        let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
 
         let order_index = find_armed_trigger_limit(user, order_id, market_index)?;
 
@@ -255,7 +256,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         // per user, and the book clamps every reduce-only fill to that cover.
         let Some(reserved) = reserve_and_gate_trigger(
             user,
-            &user_stats,
+            user_stats,
             order_index,
             market_index,
             oracle_price,
@@ -547,10 +548,13 @@ struct ReservedTrigger {
 ///
 /// `None` means the gate cancelled the order instead of placing it. The order
 /// is never re-armed, so an underfunded stop cannot repeat forever.
+///
+/// The subaccount may already sit below its raw floor when a risk cancel
+/// succeeds, so that cancel trips the equity breaker inline.
 #[allow(clippy::too_many_arguments)]
 fn reserve_and_gate_trigger(
     user: &mut User,
-    user_stats: &UserStats,
+    user_stats: &mut UserStats,
     order_index: usize,
     market_index: u16,
     oracle_price: i64,
@@ -586,6 +590,11 @@ fn reserve_and_gate_trigger(
     )?;
 
     user.update_last_active_slot(slot);
+
+    if explanation == OrderActionExplanation::InsufficientFreeCollateral {
+        crate::controller::equity_floor::try_lazy_equity_breaker_trip(user, user_stats, maps)?;
+    }
+
     Ok(None)
 }
 

@@ -250,7 +250,6 @@ fn quote_one_slot<'info>(
     }
 
     let located = slot
-        .config
         .quote_in_place(
             market_index,
             QuoteArgsV0 {
@@ -496,7 +495,7 @@ fn quoter_rows<'info>(
 ) -> Result<bool> {
     let located = {
         let slots = slab_loader.slots()?;
-        slots[slot_index].config.quote_l3(
+        slots[slot_index].quote_l3(
             market_index,
             L3ArgsV0 {
                 direction,

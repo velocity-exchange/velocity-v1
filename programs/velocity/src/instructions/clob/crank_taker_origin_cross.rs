@@ -284,7 +284,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         counterparty,
     } = resolve_subject_cross(
         &ctx,
-        &book_slot.config,
+        &book_slot,
         market_index,
         cross_rows,
         taker_ref,
@@ -437,14 +437,14 @@ struct SubjectCross {
 /// order on the rows themselves.
 fn resolve_subject_cross<'info>(
     ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    book_config: &crate::state::prop_amm::QuoterConfigV0,
+    book_slot: &crate::state::prop_amm::QuoterSlotV0,
     market_index: u16,
     cross_rows: u16,
     taker_ref: ClobUserRefV0,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<SubjectCross> {
     let (bids, asks) = super::helpers::crank_common::book_l3_sides(
-        book_config,
+        book_slot,
         &ctx.accounts.quoter_slab,
         market_index,
         cross_rows.min(MAX_CROSS_ROWS),
@@ -1437,7 +1437,7 @@ pub(super) fn stage_taker_origin_cross(
     ];
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let (bids, asks) = super::helpers::crank_common::book_l3_sides(
-        &book_slot.config,
+        &book_slot,
         &ctx.accounts.quoter_slab,
         market_index,
         MAX_CROSS_ROWS,

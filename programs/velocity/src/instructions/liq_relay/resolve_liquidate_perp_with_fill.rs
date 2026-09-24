@@ -361,7 +361,7 @@ fn book_makers<'info>(
     };
     let slab = AccountLoader::<QuoterSlabV0>::try_from(slab_info)?;
     // Copied out so no slab borrow lives across the book CPI.
-    let config = {
+    let book_slot = {
         let slots = slab.slots()?;
         let Some(index) = clob_slot_index(&slots) else {
             return Ok(Vec::new());
@@ -371,11 +371,11 @@ fn book_makers<'info>(
             return Ok(Vec::new());
         }
 
-        slots[index].config
+        slots[index]
     };
     let (Some(book), Some(program)) = (
-        find_account(remaining_accounts, &config.response_account),
-        find_account(remaining_accounts, &config.program_id),
+        find_account(remaining_accounts, &book_slot.config.response_account),
+        find_account(remaining_accounts, &book_slot.config.program_id),
     ) else {
         return Ok(Vec::new());
     };
@@ -384,7 +384,7 @@ fn book_makers<'info>(
     let accounts = [book.clone(), program.clone()];
     let mut scratch = QuoterCpiScratch::new();
     let owners = crate::instructions::clob::helpers::crank_common::book_l3_side(
-        &config,
+        &book_slot,
         &slab,
         market_index,
         direction,

@@ -39,8 +39,8 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 ClobEvictWorstArgsV0, ClobMarket, ClobReader, ClobRemoveExpiredArgsV0,
-                ClobRemovedOrderV0, ClobUserRefV0, Direction, L3ArgsV0, L3RowV0, QuoterConfigV0,
-                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterType, WireDirectionExt,
+                ClobRemovedOrderV0, ClobUserRefV0, Direction, L3ArgsV0, L3RowV0, QuoterCpiScratch,
+                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, WireDirectionExt,
             },
             state::State,
             user::{OrderReservation, ReleaseCheck, User, UserStats},
@@ -597,15 +597,15 @@ pub(crate) fn book_side_rested<'info>(
     consulted
         .iter()
         .try_fold(true, |served, &slot_index| -> Result<bool> {
-            // Copy the config out so that no slab borrow lives across the book
+            // Copy the slot out so that no slab borrow lives across the book
             // CPI.
-            let config = quoter_slab.slots()?[slot_index].config;
-            match config.quoter_type {
+            let quoter_slot = quoter_slab.slots()?[slot_index];
+            match quoter_slot.config.quoter_type {
                 QuoterType::Vamm => Ok(served),
                 QuoterType::Custom => Ok(false),
                 QuoterType::Clob => {
                     let rows = book_l3_side(
-                        &config,
+                        &quoter_slot,
                         quoter_slab,
                         market_index,
                         direction,
@@ -656,7 +656,7 @@ pub(crate) fn rows_rested(rows: &[(u64, u64)], size: u64, slot: u64) -> bool {
 /// best price first and the edge truncates worse prices rather than a better
 /// counterparty. Returns `None` when the entry declares no L3 leg.
 pub(crate) fn book_l3_side<'info, T>(
-    quoter: &QuoterConfigV0,
+    quoter: &QuoterSlotV0,
     slab: &AccountLoader<'info, QuoterSlabV0>,
     market_index: u16,
     direction: Direction,
@@ -698,7 +698,7 @@ pub(crate) fn book_l3_side<'info, T>(
 /// ask side. Returns `None` when the entry declares no L3 leg.
 #[allow(clippy::type_complexity)]
 pub(crate) fn book_l3_sides<'info>(
-    quoter: &QuoterConfigV0,
+    quoter: &QuoterSlotV0,
     slab: &AccountLoader<'info, QuoterSlabV0>,
     market_index: u16,
     max_rows: u16,

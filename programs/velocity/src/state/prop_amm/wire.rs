@@ -1,6 +1,6 @@
 //! The generic quoter CPI: the one interface every source answers on.
 //!
-//! [`QuoterConfigV0::quote_in_place`] and [`QuoterConfigV0::execute`] CPI a
+//! [`QuoterSlotV0::quote_in_place`] and [`QuoterSlotV0::execute`] CPI a
 //! registered quoter program with the request shapes `quoter-spec` declares.
 //! Both read the response in place out of the quoter's response account
 //! ([`ResponseLocationV0`]). [`ExternalQuoterExecutor`] is the trait the
@@ -9,7 +9,7 @@
 use {
     super::{
         get_quoter_slab_signer_seeds, AmmAccountMeta, ClobCancelAllOutcomeV0, ClobCancelSides,
-        QuoterConfigV0, QuoterSlabV0, QuoterType,
+        QuoterSlabV0, QuoterSlotV0, QuoterType,
     },
     crate::{error::ErrorCode, msg, validate},
     anchor_lang::prelude::*,
@@ -517,7 +517,7 @@ pub trait ExternalQuoterExecutor<'info> {
 
     /// How far from oracle a fill on quoter `index` may price, in MARGIN_PRECISION
     /// units. Defaults to the market's own band, which is what an executor carrying no
-    /// registry entry can say. See [`QuoterConfigV0::oracle_band`].
+    /// registry entry can say. See [`super::QuoterConfigV0::oracle_band`].
     fn oracle_band(&self, _index: usize, market_margin_ratio_initial: u32) -> u32 {
         market_margin_ratio_initial
     }
@@ -595,22 +595,24 @@ impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
 
 pub use quoter_spec::UserBalanceChangeV0;
 
-impl QuoterConfigV0 {
+/// The CPI legs live on the slab slot. Approval is membership in the market's
+/// slab, so a staging entry's config has no way to reach a quoter.
+impl QuoterSlotV0 {
     /// Shared gate on both CPI legs. The entry takes new flow, and takes it for the
     /// market the caller is filling. Nothing about the CPI itself carries the market, so
     /// without the second check an entry vetted for one perp market could settle balance
     /// changes against positions it was never approved to touch.
     fn gate_for_market(&self, market_index: u16) -> Result<()> {
         validate!(
-            self.is_active,
+            self.config.is_active,
             ErrorCode::InvalidQuoterConfig,
             "quoter is not active"
         )?;
         validate!(
-            self.market == market_index,
+            self.config.market == market_index,
             ErrorCode::InvalidQuoterConfig,
             "quoter entry is for market {}, call is for market {}",
-            self.market,
+            self.config.market,
             market_index
         )?;
 
@@ -631,8 +633,8 @@ impl QuoterConfigV0 {
     ) -> Result<ResponseLocationV0<'info>> {
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
-            &self.quote_v0_discriminator,
-            self.quote_leg_indexes(),
+            &self.config.quote_v0_discriminator,
+            self.config.quote_leg_indexes(),
             &args,
             slab,
             accounts,
@@ -644,7 +646,7 @@ impl QuoterConfigV0 {
     ///
     /// `None` when the entry declares no leg, which is every quoter whose
     /// ladder stands on the one account the registry names for it. The
-    /// caller attributes the ladder to [`Self::user`] in that case, so a
+    /// caller attributes the ladder to [`super::QuoterConfigV0::user`] in that case, so a
     /// missing leg costs nothing but per-order detail.
     ///
     /// Carries the quote leg's accounts. The two legs read the same state, and
@@ -658,14 +660,14 @@ impl QuoterConfigV0 {
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<Option<ResponseLocationV0<'info>>> {
-        if self.quote_l3_v0_discriminator == [0u8; 8] {
+        if self.config.quote_l3_v0_discriminator == [0u8; 8] {
             return Ok(None);
         }
 
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
-            &self.quote_l3_v0_discriminator,
-            self.quote_leg_indexes(),
+            &self.config.quote_l3_v0_discriminator,
+            self.config.quote_leg_indexes(),
             &args,
             slab,
             accounts,
@@ -689,8 +691,8 @@ impl QuoterConfigV0 {
     ) -> Result<ResponseLocationV0<'info>> {
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
-            &self.execute_v0_discriminator,
-            self.execute_leg_indexes(),
+            &self.config.execute_v0_discriminator,
+            self.config.execute_leg_indexes(),
             &args,
             slab,
             accounts,
@@ -719,10 +721,10 @@ impl QuoterConfigV0 {
         let slab_bump = slab.load()?.bump;
         let slab_info: &AccountInfo<'info> = slab.as_ref();
         let QuoterCpiScratch { instruction, infos } = scratch;
-        instruction.program_id = self.program_id;
+        instruction.program_id = self.config.program_id;
         write_quoter_account_metas(
             &mut instruction.accounts,
-            self.leg_metas(leg_indexes)?,
+            self.config.leg_metas(leg_indexes)?,
             slab_info.key,
         );
 
@@ -744,7 +746,7 @@ impl QuoterConfigV0 {
         }
 
         // CPI needs the callee program's account info too.
-        let program_info = find_account(accounts, &self.program_id).ok_or_else(|| {
+        let program_info = find_account(accounts, &self.config.program_id).ok_or_else(|| {
             msg!("quoter program account missing from account map");
             ErrorCode::QuoterCpiAccountMissing
         })?;
@@ -777,7 +779,7 @@ impl QuoterConfigV0 {
         // Signed as the market's slab, the identity every quoter authenticates velocity
         // by. The seeds derive from the config's own market, so a slab for a different
         // market fails the runtime's signer check instead of signing.
-        let market = self.market.to_le_bytes();
+        let market = self.config.market.to_le_bytes();
         let seeds = get_quoter_slab_signer_seeds(&market, &slab_bump);
         invoke_quoter_signed(instruction, infos, &[&seeds])?;
 
@@ -791,7 +793,7 @@ impl QuoterConfigV0 {
         })?;
 
         validate!(
-            writer == self.program_id,
+            writer == self.config.program_id,
             ErrorCode::InvalidQuoterResponse,
             "prop amm return data written by {} instead of quoter program",
             writer
@@ -803,14 +805,15 @@ impl QuoterConfigV0 {
                 ErrorCode::InvalidQuoterResponse
             })?;
 
-        let response_info = find_account(accounts, &self.response_account).ok_or_else(|| {
-            msg!("prop amm response account missing from account map");
-            ErrorCode::QuoterCpiAccountMissing
-        })?;
+        let response_info =
+            find_account(accounts, &self.config.response_account).ok_or_else(|| {
+                msg!("prop amm response account missing from account map");
+                ErrorCode::QuoterCpiAccountMissing
+            })?;
 
         // Only the quoter program can have written an account it owns.
         validate!(
-            *response_info.owner == self.program_id,
+            *response_info.owner == self.config.program_id,
             ErrorCode::InvalidQuoterResponse,
             "prop amm response account not owned by quoter program"
         )?;

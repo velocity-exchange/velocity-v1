@@ -464,7 +464,7 @@ impl<'info> QuotedRoute<'info> {
             return Ok(None);
         }
 
-        let located = slot.config.quote_in_place(
+        let located = slot.quote_in_place(
             inputs.market_index,
             QuoteArgsV0 {
                 caps: sized.caps,

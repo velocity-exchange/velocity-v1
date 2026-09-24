@@ -5,7 +5,7 @@
 //! [`ClobReader`] only asks. Both speak the wire `clob-wire` declares, and
 //! nothing here holds a copy of the book account's layout. The registry
 //! `execute_v0` leg is absent on purpose. That leg is the interface every
-//! quoter type shares. See [`super::QuoterConfigV0::execute`].
+//! quoter type shares. See [`super::QuoterSlotV0::execute`].
 
 use {
     super::{

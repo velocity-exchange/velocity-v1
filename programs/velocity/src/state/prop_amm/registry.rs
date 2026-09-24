@@ -4,7 +4,8 @@
 //! calls it on and the declarations that bound how it fills. It lives in two
 //! places with two meanings. The [`QuoterV0`] staging entry here holds the
 //! maker's proposal. A [`super::QuoterSlabV0`] slot holds the admin-approved
-//! copy, which is the only copy a fill reads.
+//! copy. It is the only copy a fill reads and the only copy velocity can CPI a
+//! quoter through.
 
 use {
     crate::{error::ErrorCode, msg, state::traits::Size, validate},

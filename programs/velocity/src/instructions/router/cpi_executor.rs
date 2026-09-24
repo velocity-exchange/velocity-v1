@@ -183,8 +183,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             msg!("router executor failed to load the quoter slab");
             ErrorCode::InvalidQuoterConfig
         })?;
-        let config = &slots[slot].config;
-        config
+        slots[slot]
             .execute(
                 self.market_index,
                 ExecuteArgsV0 {

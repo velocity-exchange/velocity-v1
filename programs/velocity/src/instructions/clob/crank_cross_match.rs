@@ -836,7 +836,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         return Ok(cross_prefix(&[], &[]));
     }
 
-    let quoter = &book_slot.config;
+    let quoter = &*book_slot;
     let accounts = [
         ctx.accounts.clob_market.to_account_info(),
         ctx.accounts.clob_program.to_account_info(),
@@ -940,7 +940,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             return Ok(None);
         };
 
-        let quoter = &slots[quoter_slot_index].config;
+        let quoter = &slots[quoter_slot_index];
         let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
         // The resolver's own tail is searched rather than indexed. It holds a
         // handful of accounts and this reads a few of them.
@@ -983,7 +983,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
 
         let mut clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
             Ok(super::helpers::crank_common::book_l3_side(
-                &slots[book_slot].config,
+                &slots[book_slot],
                 &ctx.accounts.quoter_slab,
                 market_index,
                 direction,
@@ -1023,7 +1023,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
 
         Ok(Some(stage_quoter_cross(
             &ctx,
-            quoter,
+            &quoter.config,
             &cross,
             maker_ref,
             market_index,
@@ -1067,7 +1067,7 @@ fn cross_entry_slot(
 /// taker. The executor's taker is the protocol `User`, which quotes nothing
 /// anywhere.
 fn quote_entry_sides<'info>(
-    quoter: &crate::state::prop_amm::QuoterConfigV0,
+    quoter: &crate::state::prop_amm::QuoterSlotV0,
     quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
     market_index: u16,
     accounts: &[AccountInfo<'info>],

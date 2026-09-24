@@ -14,7 +14,7 @@
 //! - [`slab`] holds the approved set: [`QuoterSlabV0`], its slot region, and
 //!   the accessors every fill and crank resolves slots through.
 //! - [`wire`] holds the generic quoter CPI every source shares:
-//!   [`QuoterConfigV0::quote_in_place`], [`QuoterConfigV0::execute`], the
+//!   [`QuoterSlotV0::quote_in_place`], [`QuoterSlotV0::execute`], the
 //!   request and response shapes `quoter-spec` declares, and the executor the
 //!   router fill drives.
 //! - [`clob`] holds the velocity-mediated CLOB surface: [`ClobMarket`] and

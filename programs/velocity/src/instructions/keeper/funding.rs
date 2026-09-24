@@ -223,7 +223,7 @@ const TWAP_ROWS_PER_SIDE: u16 = 32;
 
 /// The market's book, bound for the two reads the estimate makes.
 struct BookSource<'a, 'info> {
-    config: crate::state::prop_amm::QuoterConfigV0,
+    slot: crate::state::prop_amm::QuoterSlotV0,
     slab: &'a AccountLoader<'info, QuoterSlabV0>,
     /// The book and its program. The entry's registered CPI list is resolved
     /// against these by address.
@@ -249,7 +249,7 @@ impl<'info> BookSource<'_, 'info> {
     ) -> Result<Vec<Level>> {
         let slot_clock = state.slot_clock();
         let rows = crate::instructions::clob::helpers::crank_common::book_l3_side(
-            &self.config,
+            &self.slot,
             self.slab,
             market_index,
             direction,
@@ -358,7 +358,7 @@ fn book_source<'a, 'info>(
     }
 
     Ok(Some(BookSource {
-        config: slot.config,
+        slot: *slot,
         slab,
         accounts: [book.to_account_info(), program.to_account_info()],
     }))

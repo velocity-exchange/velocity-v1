@@ -275,23 +275,6 @@ impl CrankPaymentsV0 {
         u64::try_from(quote).ok()
     }
 
-    /// The largest reservoir-paid crank price. The reservoir must cover this
-    /// figure for every crank on the market to run.
-    pub fn max(&self) -> u32 {
-        [
-            self.removal,
-            self.cross,
-            self.taker_origin_cross,
-            self.trigger,
-            self.liquidation,
-            self.force_cancel,
-        ]
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-    }
-
     /// True when every crank on this market is priced. A zero payment is a
     /// crank no turner takes, so it is a configuration error rather than a
     /// free crank.
@@ -339,6 +322,25 @@ pub fn sol_oracle_price(
     matches!(validity, crate::math::oracle::OracleValidity::Valid).then_some(oracle_data.price)
 }
 
+/// The SOL price a cross converts its keeper payment at. It is the live oracle
+/// when the crank carries it, else the SOL spot market's 5-minute TWAP. A relay
+/// resolver can derive the spot market but cannot name its oracle. The TWAP
+/// only sizes a floor, so a slow price costs a margin of profit and moves no
+/// value. `None` when neither is usable.
+pub fn sol_price_for_payment_floor(
+    state: &crate::state::state::State,
+    spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
+    oracle_map: &mut crate::state::oracle_map::OracleMap,
+) -> Option<i64> {
+    sol_oracle_price(state, spot_market_map, oracle_map).or_else(|| {
+        let sol_market = spot_market_map.get_ref(&state.sol_spot_market_index).ok()?;
+        let twap = sol_market
+            .historical_oracle_data
+            .last_oracle_price_twap_5min;
+        (twap > 0).then_some(twap)
+    })
+}
+
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
@@ -360,12 +362,13 @@ pub struct ClobCrankConditionsV0 {
     pub crank_payments: CrankPaymentsV0,
     /// Floor on the protocol's quote surplus from a cross-match crank, in
     /// `QUOTE_PRECISION`. The reservoir pays `crank_payments.cross` in SOL, so a cross
-    /// that clears by a cent is worth declining. In quote rather than lamports, because
-    /// the cross crank carries no SOL oracle. Zero means profitable is enough.
+    /// that clears by a cent is worth declining. The crank also holds the cross to that
+    /// payment's value in quote, so this floor only adds to it. Zero adds nothing.
     pub min_cross_surplus: u64,
     /// Where the book's own condition block sits in the market account, as it reported at
     /// attach. A market has two blocks and each needs its own relay watch, so a registrar
-    /// that watched only this account would leave the book's cranks unwoken.
+    /// that watched only this account would leave the book's cranks unwoken. The program
+    /// only writes it. The offchain registrar reads it.
     pub clob_block_offset: u32,
     /// The region of the book that changes whenever either side's best moves, as the book
     /// reported it at attach. A crossing order is a new best, so a watch here catches
@@ -430,6 +433,7 @@ impl ClobCrankConditionsV0 {
     }
 
     /// The block region, for `relay_spec::read_block`.
+    #[cfg(test)]
     pub fn block(&self) -> &[u8] {
         ConditionBlock::block(&self.relay)
     }
@@ -452,23 +456,21 @@ impl ClobCrankConditionsV0 {
             .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
+    #[cfg(test)]
     pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
         ConditionBlock::read_condition(&self.relay, index)
             .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
-    pub fn edit_condition(
-        &mut self,
-        index: usize,
-        f: impl FnOnce(&mut relay_spec::ConditionV0),
-    ) -> Result<()> {
-        ConditionBlock::update_condition(&mut self.relay, index, f)
-            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
-    }
-
-    pub fn clear_condition(&mut self, index: usize) -> Result<()> {
-        ConditionBlock::deactivate_condition(&mut self.relay, index)
-            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
+    /// Pay the keeper the figure `payment` reads off this market's crank
+    /// prices.
+    pub fn pay_crank<'info>(
+        conditions: &AccountLoader<'info, ClobCrankConditionsV0>,
+        keeper: &AccountInfo<'info>,
+        payment: impl FnOnce(&CrankPaymentsV0) -> u64,
+    ) -> Result<u64> {
+        let amount = payment(&conditions.load()?.crank_payments);
+        Self::pay_keeper(conditions, keeper, amount)
     }
 
     /// Pay `amount` out of the reservoir to the keeper.
@@ -702,7 +704,7 @@ mod tests {
         .unwrap();
         assert_eq!(flat.removal, 5_000);
         assert_eq!(flat.cross, 5_000);
-        assert_eq!(flat.max(), 5_000);
+        assert_eq!(flat.max_payment(), 5_000);
 
         // Charge for what a transaction requests and they separate.
         let rails = crate::state::state::TransactionFeeRails {
@@ -716,7 +718,7 @@ mod tests {
         assert_eq!(priced.removal, 2_500 + 15_000);
         assert_eq!(priced.cross, 2_500 + 90_000);
         assert_eq!(priced.taker_origin_cross, 2_500 + 95_000);
-        assert_eq!(priced.max(), priced.taker_origin_cross);
+        assert_eq!(priced.max_payment(), u64::from(priced.taker_origin_cross));
         assert!(priced.all_priced());
         // A removal paid the cross price costs four times too much. A cross
         // paid the removal price is a crank nobody runs.

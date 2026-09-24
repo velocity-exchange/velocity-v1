@@ -44,8 +44,11 @@ fn remainder(authority: u8, price: u64, size: u64) -> L3RowV0 {
     }
 }
 
-fn find(bids: &[L3RowV0], asks: &[L3RowV0]) -> ClobCross {
-    cross_prefix(bids, asks)
+fn find(bids: &[L3RowV0], asks: &[L3RowV0]) -> CrossPrefix {
+    clob_cross_prefix(&BookSides {
+        bids: bids.to_vec(),
+        asks: asks.to_vec(),
+    })
 }
 
 #[test]
@@ -66,6 +69,27 @@ fn the_prefix_is_the_crossed_depth_and_the_makers_it_touches() {
         find(
             &[maker(1, 99 * PRICE, UNIT)],
             &[maker(2, 101 * PRICE, UNIT)]
+        )
+        .size,
+        0
+    );
+}
+
+/// One authority on both sides of a cross ends the prefix. The executor's legs
+/// take depth in price order, so the walk cannot skip the pair and keep going.
+#[test]
+fn a_self_cross_ends_the_prefix() {
+    let cross = find(
+        &[maker(1, 102 * PRICE, UNIT / 2), maker(2, 101 * PRICE, UNIT)],
+        &[maker(3, 99 * PRICE, UNIT / 2), maker(2, 100 * PRICE, UNIT)],
+    );
+
+    assert_eq!(cross.size, UNIT / 2);
+    assert_eq!(cross.makers, vec![user(1), user(3)]);
+    assert_eq!(
+        find(
+            &[maker(4, 101 * PRICE, UNIT)],
+            &[maker(4, 99 * PRICE, UNIT)]
         )
         .size,
         0
@@ -282,6 +306,93 @@ mod leg_bound {
         assert_eq!(
             leg_limit_price(PositionDirection::Short, ORACLE, 0).unwrap(),
             ORACLE as u64
+        );
+    }
+}
+
+/// The floor a cross must clear before the reservoir pays for it.
+mod surplus_floor {
+    use {
+        super::{super::*, PRICE},
+        crate::{
+            create_anchor_account_info,
+            state::{
+                clob_crank::CrankPaymentsV0,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                spot_market::SpotMarket,
+                spot_market_map::SpotMarketMap,
+            },
+        },
+    };
+
+    const SOL_MARKET: u16 = 1;
+    const MIN_CROSS_SURPLUS: u64 = 1_000;
+
+    /// A keeper payment of 0.01 SOL. At a SOL price of 100 it is worth one
+    /// unit of quote.
+    fn floor(sol_spot_market_index: u16, sol_twap: Option<i64>) -> Result<u64> {
+        let mut conditions = ClobCrankConditionsV0 {
+            min_cross_surplus: MIN_CROSS_SURPLUS,
+            crank_payments: CrankPaymentsV0 {
+                cross: 10_000_000,
+                ..CrankPaymentsV0::default()
+            },
+            ..ClobCrankConditionsV0::default()
+        };
+        create_anchor_account_info!(conditions, ClobCrankConditionsV0, conditions_info);
+        let conditions = AccountLoader::try_from(&conditions_info).unwrap();
+
+        let mut sol_market = SpotMarket {
+            market_index: SOL_MARKET,
+            oracle: Pubkey::new_unique(),
+            oracle_source: OracleSource::PythLazer,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap_5min: sol_twap.unwrap_or(0),
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_market, SpotMarket, sol_market_info);
+        let spot_market_map = match sol_twap {
+            Some(_) => SpotMarketMap::load_one(&sol_market_info, true).unwrap(),
+            None => SpotMarketMap::empty(),
+        };
+
+        let state = State {
+            sol_spot_market_index,
+            ..State::default()
+        };
+        cross_surplus_floor(
+            &conditions,
+            &state,
+            &spot_market_map,
+            &mut OracleMap::empty(),
+        )
+    }
+
+    #[test]
+    fn a_state_with_no_sol_market_keeps_the_admin_floor() {
+        assert_eq!(floor(0, None).unwrap(), MIN_CROSS_SURPLUS);
+    }
+
+    /// A relay resolver can stage the SOL spot market but not its oracle. The
+    /// market's own TWAP then prices the payment.
+    #[test]
+    fn the_sol_market_twap_prices_the_payment_when_no_oracle_rides() {
+        assert_eq!(
+            floor(SOL_MARKET, Some(100 * PRICE as i64)).unwrap(),
+            crate::math::constants::QUOTE_PRECISION_U64
+        );
+    }
+
+    /// Anyone can call the crank and the reservoir always pays, so a call that
+    /// leaves out the SOL price cannot skip the floor.
+    #[test]
+    fn a_crank_without_a_sol_price_is_refused() {
+        assert_eq!(
+            floor(SOL_MARKET, None).unwrap_err(),
+            ErrorCode::SpotMarketNotFound.into()
         );
     }
 }

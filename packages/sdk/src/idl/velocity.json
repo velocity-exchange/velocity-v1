@@ -22641,8 +22641,8 @@
             "docs": [
               "Floor on the protocol's quote surplus from a cross-match crank, in",
               "`QUOTE_PRECISION`. The reservoir pays `crank_payments.cross` in SOL, so a cross",
-              "that clears by a cent is worth declining. In quote rather than lamports, because",
-              "the cross crank carries no SOL oracle. Zero means profitable is enough."
+              "that clears by a cent is worth declining. The crank also holds the cross to that",
+              "payment's value in quote, so this floor only adds to it. Zero adds nothing."
             ],
             "type": "u64"
           },
@@ -22651,7 +22651,8 @@
             "docs": [
               "Where the book's own condition block sits in the market account, as it reported at",
               "attach. A market has two blocks and each needs its own relay watch, so a registrar",
-              "that watched only this account would leave the book's cranks unwoken."
+              "that watched only this account would leave the book's cranks unwoken. The program",
+              "only writes it. The offchain registrar reads it."
             ],
             "type": "u32"
           },

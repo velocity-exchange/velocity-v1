@@ -414,12 +414,12 @@ impl<'a> PricingRules<'a> {
     }
 
     /// The rules for a path that only settles an already-matched pair. It
-    /// prices nothing, so it routes no external book, charges no builder fee
-    /// and pays no referral acceleration.
-    pub(crate) fn for_settlement(state: &'a State) -> Self {
+    /// prices nothing, so it routes no external book and charges no builder
+    /// fee. A referred taker keeps its referrer's rate.
+    pub(crate) fn for_settlement(state: &'a State, referrer_is_accelerated: bool) -> Self {
         Self {
             vamm_maker_rebate: false,
-            ..Self::of(state, false)
+            ..Self::of(state, referrer_is_accelerated)
         }
     }
 

@@ -29,6 +29,6 @@ pub use context::{FillConditions, OfferedLiquidity};
 pub(crate) use order::fill_perp_order_without_external_books;
 pub use {
     context::{FillAmounts, FillParties, MakerFill, MakerFills, TakerRefs},
-    order::{fill_perp_order, FillRequest, PerpFillAccounts},
+    order::{fill_perp_order, FillRequest, PerpFillAccounts, SettledMatch},
     taker_risk::{fill_within_taker_risk_limits, TakerRiskLimits},
 };

@@ -34,9 +34,40 @@
 //! `crank_cross_match` middles two crossed makers for the protocol. This crank
 //! does not. One side is the aggressor by construction, the improvement belongs
 //! to it, and the only cut anyone takes is the cranker's reward.
+//!
+//! ## Discovery
+//!
+//! The crank needs no condition slot or watch of its own. It only ever resolves
+//! the tops of the matchable book, so a taker-origin cross can appear in two
+//! ways, and both are already wired. A side's best moved, which the cross
+//! condition's 8-byte change-watch over `best_bid` and `best_ask` covers,
+//! because a crossing order is by definition a new best. Or a front-of-book
+//! order reached its `activation_slot`, which the cross-activation `AtSlot` hint
+//! names. `note_activation` min-folds every placement's activation slot,
+//! including a migrating remainder's.
+//!
+//! `min_payment` stays the market's `keeper_payment_lamports`, because relay
+//! measures lamports and `assert_paid_v0` watches the payout account's
+//! balance. The quote-denominated crank reward can be zero, because a dust or
+//! equal-price improvement resolves for free by design. Pricing the condition
+//! above the lamport payout would leave those crosses undiscoverable, and a
+//! unit of dust in front of a gated remainder would strand it for its life.
+//!
+//! Two remainders can face each other only while something crosses the earlier
+//! one, so their pair usually becomes resolvable when the blocker is removed
+//! rather than when a new order arrives. A removal moves a head u32 and fires
+//! the change-watch whenever the blocker is its side's head. It misses two
+//! shapes. A blocker behind a better-priced order that nothing can match yet
+//! rewrites an arena link, not the head. A blocker that leaves the matchable
+//! set by passing its own `max_ts` writes nothing at all. The expire
+//! condition's `AtTimestamp` hint covers the second shape, because removing
+//! the expired order then moves the head. The every-slots cross fallback is
+//! the floor under both, so a missed hint costs latency rather than liveness.
 
 use {
-    super::helpers::crank_common::ResolveClobCrank,
+    super::helpers::crank_common::{
+        book_l3_sides, program_keeper_mode, BookSides, ResolveClobCrank,
+    },
     crate::{
         controller::{
             self,
@@ -62,7 +93,10 @@ use {
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
             state::State,
-            user::{OrderReservation, OrderStatus, ReleaseCheck, User, UserStats},
+            user::{
+                OrderReservation, OrderStatus, PerpPosition, ReferrerStatus, ReleaseCheck, User,
+                UserStats,
+            },
             user_map::{load_user_maps, UserMap, UserStatsMap},
         },
         validate,
@@ -204,11 +238,10 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
-    let program_keeper_mode = load!(ctx.accounts.filler)?.is_protocol_user(&state.signer);
-    validate!(
-        !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
-        ErrorCode::CrankConditionsAccountRequired,
-        "program-keeper crank requires the market's conditions account"
+    let program_keeper_mode = program_keeper_mode(
+        &ctx.accounts.filler,
+        &ctx.accounts.state,
+        ctx.accounts.crank_conditions.is_some(),
     )?;
 
     // The settlement loads three margin accounts mutably at once. An overlap
@@ -231,19 +264,19 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
     // The taker's escrow, when the caller carries it. The referee discount and
-    // the referrer reward are keyed by market, so they bind here, and a
-    // referred taker's cross fails without the account. A builder fee does not
-    // bind, because `L3RowV0` names the book's handle and not the order id.
-    let mut rev_share_escrow = {
-        let taker_authority = crate::load!(ctx.accounts.taker)?.authority;
-        if state.builder_codes_enabled() {
-            crate::instructions::optional_accounts::get_revenue_share_escrow_account(
-                remaining_accounts_iter,
-                &taker_authority,
-            )?
-        } else {
-            None
-        }
+    // the referrer reward are keyed by market, so they bind here. A builder
+    // fee does not bind, because `L3RowV0` names the book's handle and not the
+    // order id.
+    let mut rev_share_escrow = if state.builder_codes_enabled() {
+        let taker_authority = load!(ctx.accounts.taker)?.authority;
+        let escrow = crate::instructions::optional_accounts::get_revenue_share_escrow_account(
+            remaining_accounts_iter,
+            &taker_authority,
+        )?;
+        require_referral_escrow(escrow.is_some(), &*load!(ctx.accounts.taker_stats)?)?;
+        escrow
+    } else {
+        None
     };
 
     // A referred taker earns the same accelerated rate here as on any other
@@ -358,33 +391,27 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     let fee = price_cross(&cx, &subject_order, fill_price, base_filled, &mut maps)?.fee;
     let crank_reward = pay_crank_reward(&cx, &fee, quote_filled, &mut maps)?;
 
-    let remainder_base_asset_amount = report_fill_to_book(&cx, &subject_order, base_filled)?;
+    let remainder_base_asset_amount = report_fills_to_book(
+        &cx,
+        &[BookFill {
+            order: &subject_order,
+            owner: None,
+            base_asset_amount: base_filled,
+        }],
+    )?;
 
     pay_crank_lamports(&cx)?;
-
-    emit!(TakerOriginCrossRecordV1 {
-        ts: clock.unix_timestamp,
-        slot: clock.slot,
-        market_index,
-        taker: ctx.accounts.taker.key(),
-        filler: ctx.accounts.filler.key(),
-        base_asset_amount: base_filled,
-        quote_asset_amount: quote_filled,
-        rest_price: subject_order.price,
-        fill_price,
-        improvement: fee.improvement,
-        crank_reward,
-        remainder_base_asset_amount,
-        clob_order_id: subject_order.order_ref.order_id,
-    });
-
-    msg!(
-        "taker-origin remainder routed: {} base at {} instead of {}, improvement {} quote, cranker paid {}",
-        base_filled,
-        fill_price,
-        subject_order.price,
-        fee.improvement,
-        crank_reward
+    emit_taker_origin_record(
+        &cx,
+        &TakerOriginOutcome {
+            rested: &subject_order,
+            base_filled,
+            quote_filled,
+            fill_price,
+            improvement: fee.improvement,
+            crank_reward,
+            remainder_base_asset_amount,
+        },
     );
 
     Ok(())
@@ -457,7 +484,7 @@ fn resolve_subject_cross<'info>(
     taker_ref: UserRefV0,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<SubjectCross> {
-    let (bids, asks) = super::helpers::crank_common::book_l3_sides(
+    let BookSides { bids, asks } = book_l3_sides(
         book_slot,
         &ctx.accounts.quoter_slab,
         market_index,
@@ -468,6 +495,7 @@ fn resolve_subject_cross<'info>(
         ],
         cpi_scratch,
         true,
+        RestingOrder::from_row,
     )?
     .ok_or(ErrorCode::NoTakerOriginCross)?;
     // Price priority decides which crank owns the front of a book. This
@@ -650,6 +678,38 @@ fn route_and_fill_remainder<'info>(
     Ok(filled)
 }
 
+/// Whether the cranker is paid a reward out of the improvement.
+///
+/// A cranker that shares the taker's authority earns no reward and no filler
+/// volume, as on a keeper fill. A cranker outside pool 0 cannot hold the perp
+/// quote the reward pays in, so it fails.
+fn cranker_earns_reward(filler: &User, taker_authority: &Pubkey) -> Result<bool> {
+    if filler.authority == *taker_authority {
+        return Ok(false);
+    }
+
+    validate!(
+        filler.pool_id == 0,
+        ErrorCode::InvalidPoolId,
+        "filler pool id ({}) != 0",
+        filler.pool_id
+    )?;
+
+    Ok(true)
+}
+
+/// Fail when a referred taker's escrow is missing. The referee discount and
+/// the referrer reward bind to it, and both branches settle through it.
+fn require_referral_escrow(has_escrow: bool, taker_stats: &UserStats) -> Result<()> {
+    validate!(
+        has_escrow || !ReferrerStatus::has_builder_referral(taker_stats.referrer_status),
+        ErrorCode::UnableToLoadRevenueShareAccount,
+        "the taker is referred with an escrow but no RevenueShareEscrow account was included"
+    )?;
+
+    Ok(())
+}
+
 /// The oracle pre-flight, and what the taker gained.
 ///
 /// A caller that settles the match itself must run this before it touches the
@@ -687,12 +747,19 @@ fn price_cross<'info>(
 /// The reward is paid in full or not at all, and only out of the improvement,
 /// so a crank that improves nothing earns nothing. The improvement is measured
 /// against the price the fill reached, not against one counterparty's quote.
+///
 fn pay_crank_reward<'info>(
     cx: &TakerOriginContext<'_, 'info>,
     fee: &crate::math::fees::TakerOriginCrossFee,
     quote_filled: u64,
     maps: &mut AccountMaps,
 ) -> Result<u64> {
+    if fee.crank_reward == 0
+        || !cranker_earns_reward(&*load!(cx.accounts.filler)?, &cx.taker_ref.authority)?
+    {
+        return Ok(0);
+    }
+
     Ok(controller::orders::pay_taker_origin_crank_reward(
         cx.market_index,
         fee,
@@ -705,23 +772,29 @@ fn pay_crank_reward<'info>(
     )?)
 }
 
-/// Tell the book what the fill took.
+/// One order the book is told a fill took.
+struct BookFill<'a> {
+    order: &'a RestingOrder,
+    /// The counterparty's margin account, as the user map keys it. `None` is
+    /// the taker.
+    owner: Option<Pubkey>,
+    base_asset_amount: u64,
+}
+
+/// Tell the book what each fill took, and unwind whatever it removed.
 ///
-/// The order shrinks in place and keeps its queue position and its id. A
+/// Each order shrinks in place and keeps its queue position and its id. A
 /// partial fill does not change the price the remainder wants, and re-placing
-/// it would send it to the back of its own level.
+/// it would send it to the back of its own level. The reservation and the
+/// open-order slot stay on the owner while the order rests. An order the book
+/// culls for falling under its minimum gives them back.
 ///
-/// The reservation and the open-order slot never move off the owner, so a
-/// remainder that stays on the book costs no `User` bookkeeping. A remainder
-/// the book culls for falling under its minimum gives them back.
-///
-/// Returns the base the remainder still rests at.
-fn report_fill_to_book<'info>(
+/// Returns the base the taker's order still rests at.
+fn report_fills_to_book<'info>(
     cx: &TakerOriginContext<'_, 'info>,
-    subject_order: &RestingOrder,
-    base_filled: u64,
+    fills: &[BookFill<'_>],
 ) -> Result<u64> {
-    let filled = {
+    let reported = {
         let clob = ClobMarket::from_slab(
             &cx.accounts.quoter_slab,
             cx.market_index,
@@ -730,100 +803,121 @@ fn report_fill_to_book<'info>(
         )?;
 
         clob.fill(FillArgsV0 {
-            fills: vec![FillRequestV0 {
-                order_ref: subject_order.order_ref,
-                base_asset_amount: base_filled,
-            }],
+            fills: fills
+                .iter()
+                .map(|fill| FillRequestV0 {
+                    order_ref: fill.order.order_ref,
+                    base_asset_amount: fill.base_asset_amount,
+                })
+                .collect(),
         })?
     };
-    let filled = filled
-        .filled
-        .first()
-        .copied()
-        .ok_or(ErrorCode::NoTakerOriginCross)?;
-    if filled.removed {
-        let mut taker = load_mut!(cx.accounts.taker)?;
-        taker.close_book_order(
+
+    validate!(
+        reported.filled.len() == fills.len(),
+        ErrorCode::NoTakerOriginCross,
+        "the book reported {} fills for {} requests",
+        reported.filled.len(),
+        fills.len()
+    )?;
+
+    let mut taker_remainder = 0;
+    for (fill, leg) in fills.iter().zip(reported.filled.iter()) {
+        if !leg.removed {
+            if fill.owner.is_none() {
+                taker_remainder = fill
+                    .order
+                    .base_asset_amount
+                    .saturating_sub(fill.base_asset_amount);
+            }
+
+            continue;
+        }
+
+        let (mut owner, direction) = match fill.owner {
+            None => (load_mut!(cx.accounts.taker)?, cx.taker_direction),
+            Some(key) => (
+                cx.makers_and_referrer.get_ref_mut(&key)?,
+                cx.taker_direction.opposite(),
+            ),
+        };
+        owner.close_book_order(
             &OrderReservation::book_order(
                 cx.market_index,
-                cx.taker_direction,
-                filled.culled_base_asset_amount,
-                subject_order.reduce_only,
+                direction,
+                leg.culled_base_asset_amount,
+                fill.order.reduce_only,
             ),
             ReleaseCheck::HeldToReservation,
-            subject_order.order_ref.order_id,
+            leg.order_id,
             OrderStatus::Canceled,
         )?;
 
-        drop(taker);
-        cx.release_taker_route(subject_order.order_ref.order_id);
-        return Ok(0);
+        drop(owner);
+        // The counterparty's record is not in this transaction, so only the
+        // taker's entry is released here.
+        if fill.owner.is_none() {
+            cx.release_taker_route(leg.order_id);
+        }
     }
 
-    Ok(subject_order.base_asset_amount.saturating_sub(base_filled))
+    Ok(taker_remainder)
 }
 
 /// The keeper's lamports, as every CLOB crank pays them.
 fn pay_crank_lamports<'info>(cx: &TakerOriginContext<'_, 'info>) -> Result<()> {
-    let Some(conditions_loader) = &cx.accounts.crank_conditions else {
-        return Ok(());
-    };
-    let payment = {
-        let conditions = load_mut!(conditions_loader)?;
-        u64::from(conditions.crank_payments.taker_origin_cross)
-    };
-
-    if cx.program_keeper_mode {
-        ClobCrankConditionsV0::pay_keeper(
-            conditions_loader,
+    if let (true, Some(conditions)) = (cx.program_keeper_mode, &cx.accounts.crank_conditions) {
+        ClobCrankConditionsV0::pay_crank(
+            conditions,
             &cx.accounts.authority.to_account_info(),
-            payment,
+            |payments| u64::from(payments.taker_origin_cross),
         )?;
     }
 
     Ok(())
 }
 
+/// What one crank did for the taker, as its record reports it.
+struct TakerOriginOutcome<'a> {
+    /// The taker's remainder as it rested before the crank.
+    rested: &'a RestingOrder,
+    base_filled: u64,
+    quote_filled: u64,
+    fill_price: u64,
+    improvement: u64,
+    crank_reward: u64,
+    remainder_base_asset_amount: u64,
+}
+
 /// What the taker gained and what the cranker took out of it. The fill's own
 /// `OrderActionRecord`s carry the per-source detail.
 fn emit_taker_origin_record<'info>(
     cx: &TakerOriginContext<'_, 'info>,
-    pair: &RemainderPair<'_>,
-    fill_price: u64,
-    crank_reward: u64,
-    remainder_base_asset_amount: u64,
+    outcome: &TakerOriginOutcome<'_>,
 ) {
-    let (aggressor, base_filled, quote_filled) =
-        (pair.aggressor, pair.base_filled, pair.quote_filled);
-    let improvement = quote_filled
-        .max(controller::orders::clob_notional(aggressor.price, base_filled).unwrap_or(0))
-        .saturating_sub(
-            quote_filled
-                .min(controller::orders::clob_notional(aggressor.price, base_filled).unwrap_or(0)),
-        );
     emit!(TakerOriginCrossRecordV1 {
         ts: cx.clock.unix_timestamp,
         slot: cx.clock.slot,
         market_index: cx.market_index,
         taker: cx.accounts.taker.key(),
         filler: cx.accounts.filler.key(),
-        base_asset_amount: base_filled,
-        quote_asset_amount: quote_filled,
-        rest_price: aggressor.price,
-        fill_price,
-        improvement,
-        crank_reward,
-        remainder_base_asset_amount,
-        clob_order_id: aggressor.order_ref.order_id,
+        base_asset_amount: outcome.base_filled,
+        quote_asset_amount: outcome.quote_filled,
+        rest_price: outcome.rested.price,
+        fill_price: outcome.fill_price,
+        improvement: outcome.improvement,
+        crank_reward: outcome.crank_reward,
+        remainder_base_asset_amount: outcome.remainder_base_asset_amount,
+        clob_order_id: outcome.rested.order_ref.order_id,
     });
 
     msg!(
         "taker-origin remainder routed: {} base at {} instead of {}, improvement {} quote, cranker paid {}",
-        base_filled,
-        fill_price,
-        aggressor.price,
-        improvement,
-        crank_reward
+        outcome.base_filled,
+        outcome.fill_price,
+        outcome.rested.price,
+        outcome.improvement,
+        outcome.crank_reward
     );
 }
 
@@ -839,13 +933,32 @@ struct RemainderPair<'a> {
     quote_filled: u64,
 }
 
+impl RemainderPair<'_> {
+    /// Both orders, each reduced by the size the pair settled.
+    fn book_fills(&self) -> [BookFill<'_>; 2] {
+        [
+            BookFill {
+                order: self.aggressor,
+                owner: None,
+                base_asset_amount: self.base_filled,
+            },
+            BookFill {
+                order: self.counterparty,
+                owner: Some(self.maker_key),
+                base_asset_amount: self.base_filled,
+            },
+        ]
+    }
+}
+
 /// Settle two crossed remainders against each other, and tell the book.
 ///
 /// There is no intermediary and no router. Both orders rest on the book and the
 /// price between them is already decided. The later of the two to rest
 /// aggresses, and the earlier one's price stands. What remains is an ordinary
-/// two-user match at that price. The book applies both reductions in place, so
-/// neither order loses its queue position.
+/// two-user match at that price. [`controller::orders::SettledMatch`] holds it
+/// to the order-layer steps of every fill. The book applies both reductions in
+/// place, so neither order loses its queue position.
 ///
 /// The cranker is paid out of the improvement, as on every other path here, so
 /// the settlement takes no filler and no reward comes out of the taker fee.
@@ -857,111 +970,24 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     maps: &mut AccountMaps<'info>,
     rev_share_escrow: &mut Option<RevenueShareEscrowZeroCopyMut<'info>>,
 ) -> Result<()> {
-    let taker_direction = cx.taker_direction;
-    let base_filled = cross.base_asset_amount;
-    let settled_price = counterparty.price;
-    let quote_filled = controller::orders::clob_notional(settled_price, base_filled)?;
-    let maker_key = *cx
-        .makers_and_referrer
-        .user_ref_index()?
-        .get(&(
-            counterparty.user.authority,
-            counterparty.user.sub_account_id,
-        ))
-        .ok_or_else(|| {
-            msg!(
-                "counterparty {}/{} is not loaded",
-                counterparty.user.authority,
-                counterparty.user.sub_account_id
-            );
-
-            ErrorCode::UserNotFound
-        })?;
-    let pair = RemainderPair {
-        aggressor,
-        counterparty,
-        maker_key,
-        base_filled,
-        quote_filled,
-    };
-
     let mut order =
-        controller::orders::taker_origin_order(cx.market_index, taker_direction, aggressor);
-    let (oracle_price, margin_ratio_initial) = {
-        let market = maps.perp_market_map.get_ref(&cx.market_index)?;
-        let oracle_id = market.oracle_id();
-        let margin_ratio_initial = market.margin_ratio_initial;
-        drop(market);
-        (
-            maps.oracle_map.get_price_data(&oracle_id)?.price,
-            margin_ratio_initial,
-        )
-    };
-
-    // Both the price and the size come off the book's own rows, and this path
-    // has no quote leg to hold them against. The oracle is the outside anchor,
-    // the way the router fill applies it to an external leg. A price outside
-    // the band would move value onto the resting maker that no quote offered.
-    validate!(
-        !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
-            settled_price,
-            taker_direction.opposite(),
-            oracle_price,
-            margin_ratio_initial,
-        )?,
-        ErrorCode::QuoterFillOffQuote,
-        "the book rested the counterparty at {}, outside the oracle band around {}",
-        settled_price,
-        oracle_price
-    )?;
+        controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, aggressor);
+    let pair = bind_pair(cx, cross, aggressor, counterparty, &mut order, maps)?;
 
     // The pre-flight comes first, because a refusal must leave the book as it
     // was. The facts it reports are inputs to the post-fill checks below.
-    let pricing = price_cross(cx, aggressor, settled_price, base_filled, maps)?;
-    let (fee, oracle_stale_for_margin, perp_market_oi_before) = (
-        pricing.fee,
-        pricing.oracle_stale_for_margin,
-        pricing.perp_market_oi_before,
-    );
-
-    // A row that rested while the market was `Active` carries `reduce_only`
-    // false, and the market may have flipped to `ReduceOnly` since. This path
-    // re-derives the flag the way `admit_perp_market` does for a routed fill.
-    // Without it both covers fall open and a wind-down market would grow.
-    if pricing.market_is_reduce_only {
-        order.reduce_only = true;
-    }
-
-    bind_aggressor_size(
+    let pricing = price_cross(cx, aggressor, counterparty.price, pair.base_filled, maps)?;
+    let settled = controller::orders::SettledMatch::read(
+        cx.state,
+        maps,
         &cx.accounts.taker,
-        cx.market_index,
-        taker_direction,
-        base_filled,
-        order.reduce_only,
+        &cx.accounts.taker_stats,
+        &mut order,
+        cx.clock,
     )?;
+    admit_pair_match(cx, &pair, &settled, maps)?;
 
-    bind_counterparty_size(cx, &pair, pricing.market_is_reduce_only)?;
-
-    // The margin type the post-fill checks apply depends on the position the
-    // aggressor held before the match, so both facts are read first.
-    let facts = {
-        let taker = load!(cx.accounts.taker)?;
-        PairFillFacts {
-            aggressor_order_decreasing:
-                controller::orders::determine_if_user_order_is_position_decreasing(
-                    &taker,
-                    cx.market_index,
-                    &order,
-                )?,
-            aggressor_is_isolated: taker
-                .get_perp_position(cx.market_index)
-                .map(|position| position.is_isolated())
-                .unwrap_or(false),
-            perp_market_oi_before,
-            oracle_stale_for_margin,
-        }
-    };
-
+    let facts = pair_fill_facts(cx, &order, &pricing)?;
     settle_pair_funding(cx, &pair, &maps.perp_market_map)?;
 
     // The settlement returns evidence that the shared post-fill checks ran on
@@ -970,100 +996,240 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         cx,
         &pair,
         &mut order,
-        oracle_price,
+        settled.oracle_price(),
         &facts,
         maps,
         rev_share_escrow,
     )?;
 
-    report_pair_fill_to_book(cx, &pair)?;
+    settled.apply_bookkeeping(
+        cx.state,
+        &mut order,
+        &cx.accounts.taker,
+        &cx.accounts.taker_stats,
+        &mut controller::orders::FillParties {
+            maps,
+            makers_and_referrer: cx.makers_and_referrer,
+            makers_and_referrer_stats: cx.makers_and_referrer_stats,
+        },
+        controller::orders::FillAmounts {
+            base: pair.base_filled,
+            quote: pair.quote_filled,
+        },
+    )?;
 
-    let crank_reward = pay_crank_reward(cx, &fee, quote_filled, maps)?;
+    let remainder_base_asset_amount = report_fills_to_book(cx, &pair.book_fills())?;
+    let crank_reward = pay_crank_reward(cx, &pricing.fee, pair.quote_filled, maps)?;
 
     pay_crank_lamports(cx)?;
     emit_taker_origin_record(
         cx,
-        &pair,
-        settled_price,
-        crank_reward,
-        aggressor.base_asset_amount.saturating_sub(base_filled),
+        &TakerOriginOutcome {
+            rested: aggressor,
+            base_filled: pair.base_filled,
+            quote_filled: pair.quote_filled,
+            fill_price: counterparty.price,
+            improvement: pricing.fee.improvement,
+            crank_reward,
+            remainder_base_asset_amount,
+        },
     );
 
     Ok(())
 }
 
-/// Bind the aggressor's leg to its reservation.
+/// Find the counterparty, stamp the live market's reduce-only rule on the
+/// aggressor's order, and size the match.
 ///
-/// `settle_external_match_fill` holds the counterparty's leg to its
-/// reservation, but the aggressor's leg is velocity's own order row and clamps
-/// instead. The size the book reported is bound here.
-fn bind_aggressor_size(
-    taker_loader: &AccountLoader<'_, User>,
-    market_index: u16,
-    taker_direction: PositionDirection,
-    base_filled: u64,
-    reduce_only: bool,
-) -> Result<()> {
-    let taker = load!(taker_loader)?;
-    let position_index = get_position_index(&taker.perp_positions, market_index)?;
-    let reserved = taker.perp_positions[position_index].reserved_open_base(taker_direction);
-    // A reduce-only aggressor fills only up to the position it reduces. The
-    // book clamps it to the same cover, and the bind here repeats that, so a
-    // misbehaving book cannot grow a position a reduce-only order shrinks. The
-    // cover is the position held the opposite way to the aggressor.
-    let cover = if reduce_only {
-        crate::math::orders::reduce_only_cover(
-            taker.perp_positions[position_index].base_asset_amount,
-            taker_direction,
-        )
-    } else {
-        u64::MAX
+/// A row that rested while the market was `Active` carries `reduce_only`
+/// false, and the market may have flipped to `ReduceOnly` since. The flag is
+/// re-derived the way `admit_perp_market` does for a routed fill.
+fn bind_pair<'a>(
+    cx: &TakerOriginContext<'_, '_>,
+    cross: &Cross,
+    aggressor: &'a RestingOrder,
+    counterparty: &'a RestingOrder,
+    order: &mut crate::state::user::Order,
+    maps: &AccountMaps,
+) -> Result<RemainderPair<'a>> {
+    let maker_key = counterparty_key(cx, counterparty)?;
+    let market_is_reduce_only = maps
+        .perp_market_map
+        .get_ref(&cx.market_index)?
+        .is_reduce_only()?;
+    order.reduce_only |= market_is_reduce_only;
+
+    let base_filled = {
+        let taker = load!(cx.accounts.taker)?;
+        let counterparty_user = cx.makers_and_referrer.get_ref(&maker_key)?;
+        pair_fill_size(
+            cross.base_asset_amount,
+            cx.taker_direction,
+            taker.get_perp_position(cx.market_index)?,
+            counterparty_user.get_perp_position(cx.market_index)?,
+            PairReduceOnly {
+                aggressor: order.reduce_only,
+                counterparty: counterparty.reduce_only || market_is_reduce_only,
+            },
+        )?
     };
-    let bound = reserved.min(cover);
-    validate!(
-        base_filled <= bound,
-        ErrorCode::QuoterReportExceedsReservation,
-        "the book reported a {} base cross for a taker bound to {}",
+
+    Ok(RemainderPair {
+        aggressor,
+        counterparty,
+        maker_key,
         base_filled,
-        bound
+        quote_filled: controller::orders::clob_notional(counterparty.price, base_filled)?,
+    })
+}
+
+/// The counterparty's margin account, as the user map keys it.
+fn counterparty_key(
+    cx: &TakerOriginContext<'_, '_>,
+    counterparty: &RestingOrder,
+) -> Result<Pubkey> {
+    let user = counterparty.user;
+    Ok(*cx
+        .makers_and_referrer
+        .user_ref_index()?
+        .get(&(user.authority, user.sub_account_id))
+        .ok_or_else(|| {
+            msg!(
+                "counterparty {}/{} is not loaded",
+                user.authority,
+                user.sub_account_id
+            );
+
+            ErrorCode::UserNotFound
+        })?)
+}
+
+/// Which side of a pair fills only up to the position it reduces.
+struct PairReduceOnly {
+    aggressor: bool,
+    counterparty: bool,
+}
+
+/// The base a pair of remainders settles.
+///
+/// The aggressor's reservation bounds the book's report, and a report above it
+/// fails. A reduce-only side fills only up to the position it reduces, so the
+/// size shrinks to that cover instead of failing, the way a routed fill clamps
+/// a reduce-only order. A long rests bids and reduces a short, so each cover is
+/// the position held the other way to that side's order. A pair with nothing
+/// left to settle fails.
+fn pair_fill_size(
+    cross_base: u64,
+    taker_direction: PositionDirection,
+    aggressor: &PerpPosition,
+    counterparty: &PerpPosition,
+    reduce_only: PairReduceOnly,
+) -> Result<u64> {
+    let reserved = aggressor.reserved_open_base(taker_direction);
+    validate!(
+        cross_base <= reserved,
+        ErrorCode::QuoterReportExceedsReservation,
+        "the book reported a {} base cross for a taker that reserved {}",
+        cross_base,
+        reserved
+    )?;
+
+    let cover = |reduces: bool, position: &PerpPosition, direction| {
+        if reduces {
+            crate::math::orders::reduce_only_cover(position.base_asset_amount, direction)
+        } else {
+            u64::MAX
+        }
+    };
+    let base = cross_base
+        .min(cover(reduce_only.aggressor, aggressor, taker_direction))
+        .min(cover(
+            reduce_only.counterparty,
+            counterparty,
+            taker_direction.opposite(),
+        ));
+    validate!(
+        base > 0,
+        ErrorCode::NoTakerOriginCross,
+        "a reduce-only side of the pair has no position left to reduce"
+    )?;
+
+    Ok(base)
+}
+
+/// The oracle gates a routed fill applies before it matches.
+///
+/// A fill skips while the oracle has run too far from its 5-minute TWAP. A
+/// party with an equity floor matches only while the raw exchange oracle
+/// admits a match, because that oracle values the floor. The price comes off
+/// the book's own rows, so the counterparty's price is held to the maker band
+/// the router holds an external leg to.
+fn admit_pair_match(
+    cx: &TakerOriginContext<'_, '_>,
+    pair: &RemainderPair<'_>,
+    settled: &controller::orders::SettledMatch,
+    maps: &AccountMaps,
+) -> Result<()> {
+    validate!(
+        !settled.oracle_too_divergent_with_twap(cx.state)?,
+        ErrorCode::PriceBandsBreached,
+        "the oracle is too far from its 5-minute TWAP to match"
+    )?;
+
+    let floored = load!(cx.accounts.taker)?.equity_floor != 0
+        || cx
+            .makers_and_referrer
+            .get_ref(&pair.maker_key)?
+            .equity_floor
+            != 0;
+    validate!(
+        !floored || settled.exchange_admits_match(),
+        ErrorCode::InvalidOracle,
+        "the exchange oracle does not admit a match for a floored party"
+    )?;
+
+    let margin_ratio_initial = maps
+        .perp_market_map
+        .get_ref(&cx.market_index)?
+        .margin_ratio_initial;
+    validate!(
+        !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+            pair.counterparty.price,
+            cx.taker_direction.opposite(),
+            settled.oracle_price(),
+            margin_ratio_initial,
+        )?,
+        ErrorCode::QuoterFillOffQuote,
+        "the book rested the counterparty at {}, outside the oracle band around {}",
+        pair.counterparty.price,
+        settled.oracle_price()
     )?;
 
     Ok(())
 }
 
-/// Bind a reduce-only counterparty to the position it reduces.
-///
-/// `settle_external_match_fill` binds the leg to its reservation, but a
-/// reduce-only counterparty must also stay within the position it reduces. This
-/// cross settles both legs itself, so no book clamp stands behind it and the
-/// bind here is the whole guard. A long counterparty rests bids and reduces a
-/// short. A short counterparty rests asks and reduces a long. The cover is
-/// therefore the position held the other way.
-fn bind_counterparty_size<'info>(
-    cx: &TakerOriginContext<'_, 'info>,
-    pair: &RemainderPair<'_>,
-    market_is_reduce_only: bool,
-) -> Result<()> {
-    if !pair.counterparty.reduce_only && !market_is_reduce_only {
-        return Ok(());
-    }
-
-    let counterparty_user = cx.makers_and_referrer.get_ref(&pair.maker_key)?;
-    let cp_index = get_position_index(&counterparty_user.perp_positions, cx.market_index)?;
-    let cp_cover = crate::math::orders::reduce_only_cover(
-        counterparty_user.perp_positions[cp_index].base_asset_amount,
-        cx.taker_direction.opposite(),
-    );
-
-    validate!(
-        pair.base_filled <= cp_cover,
-        ErrorCode::QuoterReportExceedsReservation,
-        "the cross filled {} base against a reduce-only counterparty covering {}",
-        pair.base_filled,
-        cp_cover
-    )?;
-
-    Ok(())
+/// What the post-fill checks need to know about the aggressor before the
+/// match moves its position.
+fn pair_fill_facts(
+    cx: &TakerOriginContext<'_, '_>,
+    order: &crate::state::user::Order,
+    pricing: &controller::orders::TakerOriginCrossPricing,
+) -> Result<PairFillFacts> {
+    let taker = load!(cx.accounts.taker)?;
+    Ok(PairFillFacts {
+        aggressor_order_decreasing:
+            controller::orders::determine_if_user_order_is_position_decreasing(
+                &taker,
+                cx.market_index,
+                order,
+            )?,
+        aggressor_is_isolated: taker
+            .get_perp_position(cx.market_index)
+            .map(|position| position.is_isolated())
+            .unwrap_or(false),
+        perp_market_oi_before: pricing.perp_market_oi_before,
+        oracle_stale_for_margin: pricing.oracle_stale_for_margin,
+    })
 }
 
 /// Settle funding for both parties before any position update.
@@ -1170,7 +1336,10 @@ fn settle_pair_match<'info>(
         },
         &mut controller::orders::SettleContext {
             market: market.deref_mut(),
-            rules: &controller::orders::PricingRules::for_settlement(cx.state),
+            rules: &controller::orders::PricingRules::for_settlement(
+                cx.state,
+                cx.referrer_is_accelerated,
+            ),
             // This crank settles a cross, never a liquidation.
             mode: crate::state::fill_mode::FillMode::Fill,
             oracle_map,
@@ -1178,6 +1347,21 @@ fn settle_pair_match<'info>(
             slot: cx.clock.slot,
             filler_reward_paid: &mut filler_reward_paid,
         },
+    )?;
+
+    // The settlement binds no filler, so a reward here would be quote nobody
+    // was debited for.
+    validate!(
+        filler_reward_paid == 0,
+        ErrorCode::DefaultError,
+        "a pair settlement paid a filler reward of {}",
+        filler_reward_paid
+    )?;
+
+    market.market_stats.update_volume_24h(
+        pair.quote_filled,
+        taker_direction,
+        cx.clock.unix_timestamp,
     )?;
 
     drop(maker_stats);
@@ -1326,125 +1510,15 @@ mod post_checks {
     }
 }
 
-/// Tell the book what the cross took, and unwind whatever it removed.
-///
-/// One call covers both sides. Each order shrinks in place, and the book culls
-/// a leftover that falls under its minimum.
-fn report_pair_fill_to_book<'info>(
-    cx: &TakerOriginContext<'_, 'info>,
-    pair: &RemainderPair<'_>,
-) -> Result<()> {
-    let filled = {
-        let clob = ClobMarket::from_slab(
-            &cx.accounts.quoter_slab,
-            cx.market_index,
-            &cx.accounts.clob_market,
-            &cx.accounts.clob_program,
-        )?;
-
-        clob.fill(FillArgsV0 {
-            fills: vec![
-                FillRequestV0 {
-                    order_ref: pair.aggressor.order_ref,
-                    base_asset_amount: pair.base_filled,
-                },
-                FillRequestV0 {
-                    order_ref: pair.counterparty.order_ref,
-                    base_asset_amount: pair.base_filled,
-                },
-            ],
-        })?
-    };
-
-    // A leg the book no longer holds returns the open-order slot and whatever
-    // the cull dropped to its owner.
-    for (leg, owner_is_taker) in filled.filled.iter().zip([true, false]) {
-        if !leg.removed {
-            continue;
-        }
-
-        let (mut owner, direction, resting) = if owner_is_taker {
-            (
-                load_mut!(cx.accounts.taker)?,
-                cx.taker_direction,
-                pair.aggressor,
-            )
-        } else {
-            (
-                cx.makers_and_referrer.get_ref_mut(&pair.maker_key)?,
-                cx.taker_direction.opposite(),
-                pair.counterparty,
-            )
-        };
-        owner.close_book_order(
-            &OrderReservation::book_order(
-                cx.market_index,
-                direction,
-                leg.culled_base_asset_amount,
-                resting.reduce_only,
-            ),
-            ReleaseCheck::HeldToReservation,
-            leg.order_id,
-            OrderStatus::Canceled,
-        )?;
-
-        drop(owner);
-        // The counterparty's record is not in this transaction, so only the
-        // taker's entry is released here.
-        if owner_is_taker {
-            cx.release_taker_route(leg.order_id);
-        }
-    }
-
-    Ok(())
-}
-
 /// Stage this crank for the book's taker-origin cross, if it has one.
 ///
 /// This is the discovery half of [`handle_crank_taker_origin_cross`]. The cross
-/// conditions' resolver (`handle_resolve_crank_cross_match`) calls it ahead of
-/// the maker-against-maker cross it stages otherwise. A `ResolvedCrankV0` names
-/// its own executor, so one resolver serves both. The order is the economics. A
-/// taker-origin cross resolves in the taker's favour before the protocol
-/// middles the same crossed book as arbitrage.
-///
-/// The crank needs no condition slot or watch of its own. It only ever resolves
-/// the tops of the matchable book, so a taker-origin cross can appear in two
-/// ways, and both are already wired. A side's best moved, which the cross
-/// condition's 8-byte change-watch over `best_bid` and `best_ask` covers,
-/// because a crossing order is by definition a new best. Or a front-of-book
-/// order reached its `activation_slot`, which the cross-activation `AtSlot` hint
-/// names. `note_activation` min-folds every placement's activation slot,
-/// including a migrating remainder's.
-///
-/// `min_payment` stays the market's `keeper_payment_lamports`, because relay
-/// measures lamports and `assert_paid_v0` watches the payout account's
-/// balance. The quote-denominated crank reward can be zero, because a dust or
-/// equal-price improvement resolves for free by design. Pricing the condition
-/// above the lamport payout would leave those crosses undiscoverable, and a
-/// unit of dust in front of a gated remainder would strand it for its life.
-///
-/// Two remainders can face each other only while something crosses the earlier
-/// one, so their pair usually becomes resolvable when the blocker is removed
-/// rather than when a new order arrives. A removal moves a head u32 and fires
-/// the change-watch whenever the blocker is its side's head. It misses two
-/// shapes. A blocker behind a better-priced order that nothing can match yet
-/// rewrites an arena link, not the head. A blocker that leaves the matchable
-/// set by passing its own `max_ts` writes nothing at all. The expire
-/// condition's `AtTimestamp` hint covers the second shape, because removing
-/// the expired order then moves the head. The every-slots cross fallback is
-/// the floor under both, so a missed hint costs latency rather than liveness.
+/// conditions' resolver calls it ahead of the maker-against-maker cross. The
+/// module doc covers the wakes that find this work and its payment floor.
 pub(super) fn stage_taker_origin_cross(
     ctx: &Context<ResolveClobCrank>,
-) -> Result<Option<StagedCall>> {
-    let (market_index, oracle, quote_spot_market_index) = {
-        let conditions = ctx.accounts.crank_conditions.load()?;
-        (
-            conditions.market_index,
-            conditions.oracle,
-            conditions.quote_spot_market_index,
-        )
-    };
+) -> Result<Option<TakerOriginStage>> {
+    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     let book_slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
     if !book_slot.quotes() {
         // The crank refuses a killed or unvetted book, so there is no work to
@@ -1460,7 +1534,7 @@ pub(super) fn stage_taker_origin_cross(
         ctx.accounts.clob_program.to_account_info(),
     ];
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let (bids, asks) = super::helpers::crank_common::book_l3_sides(
+    let BookSides { bids, asks } = book_l3_sides(
         &book_slot,
         &ctx.accounts.quoter_slab,
         market_index,
@@ -1468,6 +1542,7 @@ pub(super) fn stage_taker_origin_cross(
         &book_accounts,
         &mut cpi_scratch,
         true,
+        RestingOrder::from_row,
     )?
     .ok_or(ErrorCode::NoTakerOriginCross)?;
 
@@ -1475,59 +1550,115 @@ pub(super) fn stage_taker_origin_cross(
         return Ok(None);
     };
 
-    let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
-    let taker_ref = aggressor_of(&cross, side).user;
-    let counterparty_ref = counterparty_of(&cross, side).user;
-    let (taker, taker_stats) = pdas::user_pair(&taker_ref.authority, taker_ref.sub_account_id);
     // The protocol `User` is the filler on this path, and the crank loads each
     // margin account once, so it cannot also be a side of the cross it
     // resolves.
-    if taker == protocol_user
+    let (protocol_user, _) = pdas::protocol_user_pair();
+    let taker_ref = aggressor_of(&cross, side).user;
+    let counterparty_ref = counterparty_of(&cross, side).user;
+    if pdas::user(&taker_ref.authority, taker_ref.sub_account_id) == protocol_user
         || pdas::user(&counterparty_ref.authority, counterparty_ref.sub_account_id) == protocol_user
     {
         return Ok(None);
     }
 
-    let cross_rows = cross_read_depth(&bids, &asks, &cross);
+    Ok(Some(TakerOriginStage {
+        call: taker_origin_call(
+            ctx,
+            taker_ref,
+            counterparty_ref,
+            cross_read_depth(&bids, &asks, &cross),
+        )?,
+        stalled: cross_stalled(&cross, Clock::get()?.slot),
+    }))
+}
 
-    Ok(Some(
-        crate::staged_call!(CrankTakerOriginCross {
-            state: ctx.accounts.state.key(),
-            authority: pdas::keeper_placeholder(),
-            filler: protocol_user,
-            filler_stats: protocol_user_stats,
-            taker,
-            taker_stats,
-            quoter_slab: ctx.accounts.quoter_slab.key(),
-            clob_market: ctx.accounts.clob_market.key(),
-            clob_program: crate::ids::clob_program::id(),
-            crank_conditions: Some(ctx.accounts.crank_conditions.key()),
-            // The route the taker signed rides its own signed-message record,
-            // derived from the authority the book stores on the node.
-            signed_msg_user_orders: pdas::signed_msg_user_orders(&taker_ref.authority),
-            instructions_sysvar: IX_ID,
-        })
-        // Both `(User, UserStats)` pairs derive from the nodes' own
-        // `(authority, sub_account_id)`, which the book stores for this use.
-        .map_section(oracle, quote_spot_market_index, market_index)
-        .maker_refs([counterparty_ref])
-        // The quoter tail. The crank routes the remainder like any other fill,
-        // and every router fill carries the market's slab and consults its book.
-        // A taker-origin order rests on the CLOB and nowhere else, so the book
-        // this resolver reads is that baseline.
-        .account(ctx.accounts.quoter_slab.key(), false)
+/// Whether a cross stayed on the book past `STALLED_TAKER_ORIGIN_CROSS_SLOTS`.
+/// It formed no earlier than the later of its two rows rested.
+fn cross_stalled(cross: &Cross, slot: u64) -> bool {
+    let formed_no_earlier_than = cross.bid.placed_slot.max(cross.ask.placed_slot);
+    slot.saturating_sub(formed_no_earlier_than)
+        > super::crank_cross_match::STALLED_TAKER_ORIGIN_CROSS_SLOTS
+}
+
+/// A staged taker-origin crank, and whether its cross has stalled on the book.
+pub(super) struct TakerOriginStage {
+    pub call: StagedCall,
+    /// The later of the two rows rested more than
+    /// `STALLED_TAKER_ORIGIN_CROSS_SLOTS` ago, so a maker cross may go first.
+    pub stalled: bool,
+}
+
+/// The executor call for one taker-origin cross.
+///
+/// Both `(User, UserStats)` pairs derive from the nodes' own
+/// `(authority, sub_account_id)`, which the book stores for this use. The
+/// taker's escrow derives from its authority. A crank that needs it and lacks
+/// it fails, and a taker with no escrow leaves the account unread.
+fn taker_origin_call(
+    ctx: &Context<ResolveClobCrank>,
+    taker_ref: UserRefV0,
+    counterparty_ref: UserRefV0,
+    cross_rows: u16,
+) -> Result<StagedCall> {
+    let (market_index, oracle, quote_spot_market_index) = {
+        let conditions = ctx.accounts.crank_conditions.load()?;
+        (
+            conditions.market_index,
+            conditions.oracle,
+            conditions.quote_spot_market_index,
+        )
+    };
+    let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    let (taker, taker_stats) = pdas::user_pair(&taker_ref.authority, taker_ref.sub_account_id);
+    let call = crate::staged_call!(CrankTakerOriginCross {
+        state: ctx.accounts.state.key(),
+        authority: pdas::keeper_placeholder(),
+        filler: protocol_user,
+        filler_stats: protocol_user_stats,
+        taker,
+        taker_stats,
+        quoter_slab: ctx.accounts.quoter_slab.key(),
+        clob_market: ctx.accounts.clob_market.key(),
+        clob_program: crate::ids::clob_program::id(),
+        crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+        // The route the taker signed rides its own signed-message record,
+        // derived from the authority the book stores on the node.
+        signed_msg_user_orders: pdas::signed_msg_user_orders(&taker_ref.authority),
+        instructions_sysvar: IX_ID,
+    })
+    .map_section(oracle, quote_spot_market_index, market_index)
+    .maker_refs([counterparty_ref]);
+    let call = if ctx.accounts.state.load()?.builder_codes_enabled() {
+        call.account(revenue_share_escrow(&taker_ref.authority), true)
+    } else {
+        call
+    };
+
+    // The quoter tail. The crank routes the remainder like any other fill, and
+    // every router fill carries the market's slab and consults its book. The
+    // resolver stages no quoters of its own, so it claims no route. A keeper
+    // that wants a taker's custom quoters consulted builds the call itself.
+    call.account(ctx.accounts.quoter_slab.key(), false)
         .account(ctx.accounts.clob_market.key(), true)
         .account(crate::ids::clob_program::id(), false)
-        // The resolver stages no quoters of its own, so it claims no route. A
-        // staged crank routes through the market's baseline, the CLOB and the
-        // vAMM, which every fill carries anyway. A keeper that wants a taker's
-        // custom quoters consulted builds the call itself.
         .arg(CrankTakerOriginCrossArgs {
             market_index,
             cross_rows,
             signed_route: Vec::new(),
-        })?,
-    ))
+        })
+}
+
+/// The taker's `RevenueShareEscrow` PDA.
+fn revenue_share_escrow(authority: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            crate::state::revenue_share::REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(),
+            authority.as_ref(),
+        ],
+        &crate::ID,
+    )
+    .0
 }
 
 /// The cross a resolver may stage, if the book has one.

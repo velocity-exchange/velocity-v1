@@ -24,6 +24,9 @@
 //! order removes the need for the arb path to refuse to run while a taker cross
 //! is pending.
 //!
+//! [`crossing_prefix`] answers a second question: how much two ladders cross
+//! in price order. The protocol's two-legged cross consumes exactly that.
+//!
 //! The input is rows and the output is crosses. This module touches no account
 //! and settles nothing, so the cases that matter can be tested without a book.
 //! Those cases are several remainders that cross at once, a chain where
@@ -154,9 +157,7 @@ impl Cross {
 /// two counterparties appears twice and never over-fills.
 ///
 /// A self-cross is skipped on the owning authority rather than the full user
-/// ref. The cranker is paid out of what a cross produces. One authority resting
-/// both sides across two sub-accounts could otherwise manufacture a cross and
-/// collect for it.
+/// ref. See [`same_authority`].
 pub fn resolve_crosses(
     bids: &[RestingOrder],
     asks: &[RestingOrder],
@@ -220,12 +221,20 @@ fn next_cross(bids: &[RestingOrder], asks: &[RestingOrder]) -> Option<(usize, us
     best.map(|(bid, ask, kind, _)| (bid, ask, kind))
 }
 
+/// Whether a bid and an ask belong to one authority. Every cross walk refuses
+/// such a pair. The cranker is paid out of what a cross produces, and one
+/// authority that rests both sides across two sub-accounts could otherwise
+/// manufacture a cross and collect for it.
+pub fn same_authority(bid: &UserRefV0, ask: &UserRefV0) -> bool {
+    bid.authority == ask.authority
+}
+
 /// Whether these two cross at all, and if so how they settle.
 fn classify(bid: &RestingOrder, ask: &RestingOrder) -> Option<CrossKind> {
     if bid.base_asset_amount == 0
         || ask.base_asset_amount == 0
         || bid.price < ask.price
-        || bid.user.authority == ask.user.authority
+        || same_authority(&bid.user, &ask.user)
     {
         return None;
     }
@@ -247,4 +256,108 @@ fn classify(bid: &RestingOrder, ask: &RestingOrder) -> Option<CrossKind> {
         (false, true) => CrossKind::AskAggresses,
         (false, false) => CrossKind::ProtocolMiddles,
     })
+}
+
+/// One price level a crossing-prefix walk consumes. A book row names its
+/// owner. A quoter level names the quoter's user, which owns its whole ladder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CrossLevel {
+    pub price: u64,
+    pub size: u64,
+    pub owner: UserRefV0,
+}
+
+impl CrossLevel {
+    pub fn from_row(row: &crate::state::prop_amm::L3RowV0) -> Self {
+        Self {
+            price: row.price,
+            size: row.size,
+            owner: row.user,
+        }
+    }
+}
+
+/// The crossing prefix of two ladders: the size both legs match, the gross
+/// quote of each leg, and the owners it touches.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CrossPrefix {
+    pub size: u64,
+    pub buy_quote: u128,
+    pub sell_quote: u128,
+    pub makers: Vec<UserRefV0>,
+}
+
+impl CrossPrefix {
+    /// The surplus after both legs pay the taker fee at `fee_tier`. It is zero
+    /// inside the fee gulf. The executor measures the real figure, so this
+    /// estimate only keeps obvious losers from being staged.
+    pub fn estimated_surplus(&self, fee_tier: &crate::state::state::FeeTier) -> u128 {
+        let numerator = u128::from(fee_tier.fee_numerator);
+        let denominator = u128::from(fee_tier.fee_denominator).max(1);
+        let fees = (self.buy_quote * numerator).div_ceil(denominator)
+            + (self.sell_quote * numerator).div_ceil(denominator);
+        self.sell_quote
+            .saturating_sub(self.buy_quote.saturating_add(fees))
+    }
+
+    /// Add `owner` to the owners, or report that the cap leaves no room.
+    fn admit(&mut self, owner: UserRefV0, max_makers: usize) -> bool {
+        if self.makers.contains(&owner) {
+            return true;
+        }
+
+        if self.makers.len() == max_makers {
+            return false;
+        }
+
+        self.makers.push(owner);
+        true
+    }
+}
+
+/// Walk two ladders, best first, for as long as the bid crosses the ask.
+///
+/// The walk stops before it admits an owner past `max_makers`, so the size
+/// covers staged owners only. It also stops at a pair of one authority, see
+/// [`same_authority`]. It stops rather than skips, because the executor's legs
+/// consume the ladders in price order and would take the skipped depth too.
+pub fn crossing_prefix(bids: &[CrossLevel], asks: &[CrossLevel], max_makers: usize) -> CrossPrefix {
+    let mut prefix = CrossPrefix::default();
+    // Price times base per leg, converted to quote once after the walk. A
+    // division per level would understate each leg by up to one quote unit.
+    let (mut scaled_buy, mut scaled_sell) = (0u128, 0u128);
+    let (mut bid_index, mut ask_index) = (0usize, 0usize);
+    let mut bid_remaining = bids.first().map_or(0, |level| level.size);
+    let mut ask_remaining = asks.first().map_or(0, |level| level.size);
+    while let (Some(bid), Some(ask)) = (bids.get(bid_index), asks.get(ask_index)) {
+        if bid.price < ask.price || same_authority(&bid.owner, &ask.owner) {
+            break;
+        }
+
+        if !prefix.admit(bid.owner, max_makers) || !prefix.admit(ask.owner, max_makers) {
+            break;
+        }
+
+        let take = bid_remaining.min(ask_remaining);
+        prefix.size = prefix.size.saturating_add(take);
+        scaled_buy = scaled_buy.saturating_add(u128::from(ask.price) * u128::from(take));
+        scaled_sell = scaled_sell.saturating_add(u128::from(bid.price) * u128::from(take));
+
+        bid_remaining -= take;
+        ask_remaining -= take;
+        if bid_remaining == 0 {
+            bid_index += 1;
+            bid_remaining = bids.get(bid_index).map_or(0, |level| level.size);
+        }
+
+        if ask_remaining == 0 {
+            ask_index += 1;
+            ask_remaining = asks.get(ask_index).map_or(0, |level| level.size);
+        }
+    }
+
+    let base_precision = u128::from(crate::math::constants::BASE_PRECISION_U64);
+    prefix.buy_quote = scaled_buy / base_precision;
+    prefix.sell_quote = scaled_sell / base_precision;
+    prefix
 }

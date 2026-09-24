@@ -137,6 +137,10 @@ impl ClobRemoval {
 /// The shared crank body. It CPIs the removal, checks that the removal hit the
 /// passed maker, unwinds the aggregates, and pays the keeper. Both modes pay
 /// quote from the maker. Program-keeper mode adds reservoir lamports.
+///
+/// The removal is ungated, because a halted market still needs its orders
+/// reclaimed. The fee follows `force_cancel_clob_orders`: a full exchange halt
+/// stops the fee and not the removal.
 pub fn crank_clob_removal(
     ctx: Context<CrankClobOrderRemoval>,
     market_index: u16,
@@ -144,11 +148,10 @@ pub fn crank_clob_removal(
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
-    let program_keeper_mode = is_protocol_user(&ctx.accounts.filler, &ctx.accounts.state)?;
-    validate!(
-        !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
-        ErrorCode::CrankConditionsAccountRequired,
-        "program-keeper crank requires the market's conditions account"
+    let program_keeper_mode = program_keeper_mode(
+        &ctx.accounts.filler,
+        &ctx.accounts.state,
+        ctx.accounts.crank_conditions.is_some(),
     )?;
 
     let clob = ClobMarket::from_slab(
@@ -161,19 +164,7 @@ pub fn crank_clob_removal(
     // CPI while no user borrows are held.
     let is_evict = removal.is_evict();
     let removed = removal.invoke(&clob)?;
-    {
-        let user = crate::load!(ctx.accounts.user)?;
-        validate!(
-            removed.user.authority == user.authority
-                && removed.user.sub_account_id == user.sub_account_id,
-            ErrorCode::InvalidUserAccount,
-            "clob removed an order for {}/{} but the crank loaded {}",
-            removed.user.authority,
-            removed.user.sub_account_id,
-            ctx.accounts.user.key()
-        )?;
-    }
-
+    require_removed_for(&ctx.accounts.user, &removed.user)?;
     release_removed_remainders(ctx.remaining_accounts.first(), market_index, &[removed]);
 
     // Both removals charge the maker the flat removal reward before they
@@ -206,56 +197,23 @@ pub fn crank_clob_removal(
             market_index
         )?;
 
-        // A keeper that removes its own order is already loaded as the maker
-        // and cannot be loaded a second time as the filler. It pays itself
-        // nothing.
+        // A keeper that removes its own order is already loaded as the maker,
+        // so it is not loaded again and pays itself nothing.
         let mut filler = (ctx.accounts.filler.key() != ctx.accounts.user.key())
             .then(|| load_mut!(ctx.accounts.filler))
             .transpose()?;
-        let removal_fee = pay_keeper_flat_reward_for_perps(
+        let removal_fee = charge_removal_fee(
+            &state,
             &mut user,
             filler.as_deref_mut(),
             &mut market,
-            state.perp_fee_structure.flat_filler_fee,
             clock.slot,
         )?;
 
         drop(filler);
 
-        // The removal report is the book's, so it is held to what velocity
-        // reserved for this user rather than clamped to it. An over-report
-        // would free the margin behind orders that still rest.
-        let removed_order = OrderReservation::book_order(
-            market_index,
-            PositionDirection::from(removed.side),
-            removed.base_asset_amount,
-            removed.reduce_only,
-        );
-
-        // An evicted placed trigger re-arms with the unfilled remainder, behind
-        // an edge gate on a price recross. Its slot takes the order back.
-        let re_armed_slot = if is_evict {
-            user.find_placed_trigger_slot(market_index, removed.order_id)
-        } else {
-            None
-        };
-        let position_index = if let Some(slot_index) = re_armed_slot {
-            user.re_arm_placed_trigger_slot(
-                market_index,
-                removed.order_id,
-                removed.base_asset_amount,
-                clock.slot,
-            )?;
-            let armed = OrderReservation::of_order(&user.orders[slot_index])?;
-            user.replace_reservation(&removed_order, &armed)?
-        } else {
-            user.close_book_order(
-                &removed_order,
-                ReleaseCheck::HeldToReservation,
-                removed.order_id,
-                crate::state::user::OrderStatus::Canceled,
-            )?
-        };
+        let position_index =
+            unwind_removed_order(&mut user, &removed, market_index, is_evict, clock.slot)?;
 
         // An eviction reads differently from a cancel. The order left the book
         // because the book ran out of room, and a placed trigger re-arms rather
@@ -276,7 +234,7 @@ pub fn crank_clob_removal(
         )?;
     }
 
-    if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
+    if let (true, Some(conditions)) = (program_keeper_mode, &ctx.accounts.crank_conditions) {
         // An expiry that went unclaimed pays escalation, priced off the
         // order's own `max_ts` so a caller cannot name its own figure.
         // Eviction is a capacity limit, not a deadline, so it does not
@@ -286,15 +244,11 @@ pub fn crank_clob_removal(
         } else {
             CrankPaymentsV0::expiry_escalation(removed.max_ts, clock.unix_timestamp)
         };
-        let payment = u64::from(load_mut!(conditions_loader)?.crank_payments.removal)
-            .saturating_add(u64::from(escalation));
-        if program_keeper_mode {
-            ClobCrankConditionsV0::pay_keeper(
-                conditions_loader,
-                &ctx.accounts.authority.to_account_info(),
-                payment,
-            )?;
-        }
+        ClobCrankConditionsV0::pay_crank(
+            conditions,
+            &ctx.accounts.authority.to_account_info(),
+            |payments| u64::from(payments.removal).saturating_add(u64::from(escalation)),
+        )?;
     }
 
     msg!(
@@ -302,6 +256,119 @@ pub fn crank_clob_removal(
         removed.order_id,
         ctx.accounts.user.key()
     );
+
+    Ok(())
+}
+
+/// Charge the maker the flat removal fee, and return what the keeper got.
+///
+/// No filler earns nothing. A full exchange halt charges nothing. A filler
+/// outside pool 0 cannot hold the perp quote the fee pays in.
+fn charge_removal_fee(
+    state: &State,
+    user: &mut User,
+    filler: Option<&mut User>,
+    market: &mut PerpMarket,
+    slot: u64,
+) -> Result<u64> {
+    let Some(filler) = filler else {
+        return Ok(0);
+    };
+
+    if state.get_exchange_status()?.is_all() {
+        msg!("exchange halted; removing without the keeper fee");
+        return Ok(0);
+    }
+
+    validate!(
+        filler.pool_id == 0,
+        ErrorCode::InvalidPoolId,
+        "filler pool id ({}) != 0",
+        filler.pool_id
+    )?;
+
+    Ok(pay_keeper_flat_reward_for_perps(
+        user,
+        Some(filler),
+        market,
+        state.perp_fee_structure.flat_filler_fee,
+        slot,
+    )?)
+}
+
+/// Unwind what the book removed, and return the position it left.
+///
+/// The book's report is released the way an owner or forced cancel releases
+/// it. A strict release would let one under-reserved order fail every
+/// eviction on its side, because eviction always picks the same order. An
+/// evicted placed trigger re-arms with the unfilled remainder, behind an edge
+/// gate on a price recross. Its armed reservation is taken first, so the
+/// position keeps its index.
+fn unwind_removed_order(
+    user: &mut User,
+    removed: &RemovedOrderV0,
+    market_index: u16,
+    is_evict: bool,
+    slot: u64,
+) -> Result<usize> {
+    let removed_order = OrderReservation::book_order(
+        market_index,
+        PositionDirection::from(removed.side),
+        removed.base_asset_amount,
+        removed.reduce_only,
+    );
+    let re_arms = is_evict
+        && user
+            .find_placed_trigger_slot(market_index, removed.order_id)
+            .is_some();
+    if !re_arms {
+        return Ok(user.close_book_order(
+            &removed_order,
+            ReleaseCheck::ClampedForExit,
+            removed.order_id,
+            crate::state::user::OrderStatus::Canceled,
+        )?);
+    }
+
+    user.re_arm_placed_trigger_slot(
+        market_index,
+        removed.order_id,
+        removed.base_asset_amount,
+        slot,
+    )?;
+    user.reserve_orders(&OrderReservation::armed_trigger(market_index))?;
+    Ok(user.release_orders(&removed_order, ReleaseCheck::ClampedForExit)?)
+}
+
+/// Whether the protocol `User` cranks. That mode pays the keeper out of the
+/// market's conditions account, so it requires the account.
+pub fn program_keeper_mode(
+    filler: &AccountLoader<User>,
+    state: &AccountLoader<State>,
+    has_crank_conditions: bool,
+) -> Result<bool> {
+    let program_keeper_mode = is_protocol_user(filler, state)?;
+    validate!(
+        !program_keeper_mode || has_crank_conditions,
+        ErrorCode::CrankConditionsAccountRequired,
+        "program-keeper crank requires the market's conditions account"
+    )?;
+
+    Ok(program_keeper_mode)
+}
+
+/// Fail unless the book removed an order of `user`. A race that removed
+/// someone else's order fails the whole crank.
+pub fn require_removed_for(user: &AccountLoader<User>, removed: &UserRefV0) -> Result<()> {
+    let user_ref = crate::load!(user)?.clob_user_ref();
+    validate!(
+        user_ref == *removed,
+        ErrorCode::InvalidUserAccount,
+        "clob removed an order for {}/{} but the crank loaded {}",
+        removed.authority,
+        removed.sub_account_id,
+        user.key()
+    )?;
 
     Ok(())
 }
@@ -367,20 +434,6 @@ pub fn clob_reader<'a, 'info>(
     }
 }
 
-/// Derive the `(User, UserStats)` PDAs from a node's derivable identity. The
-/// book stores `(authority, sub_account_id)` instead of the `User` key so that
-/// this derivation is possible.
-pub fn derive_user_pdas(user: &UserRefV0) -> (Pubkey, Pubkey) {
-    pdas::user_pair(&user.authority, user.sub_account_id)
-}
-
-/// The protocol-owned `User` and its stats PDA. The `User` is the signer
-/// authority's first sub-account, created through the normal `initialize_user`
-/// path.
-pub fn derive_protocol_user_pdas(signer: &Pubkey) -> (Pubkey, Pubkey) {
-    pdas::user_pair(signer, 0)
-}
-
 /// The removal executor's call for the order `found` names.
 /// `CrankClobOrderRemoval`'s `#[derive(Accounts)]` struct is the typed account
 /// list. A taker-origin order adds its owner's signed-message record as the one
@@ -401,7 +454,7 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
         authority: pdas::keeper_placeholder(),
         filler: protocol_user,
         filler_stats: protocol_user_stats,
-        user: derive_user_pdas(&found.user).0,
+        user: pdas::user(&found.user.authority, found.user.sub_account_id),
         perp_market: pdas::perp_market(market_index),
         quoter_slab: ctx.accounts.quoter_slab.key(),
         clob_market: ctx.accounts.clob_market.key(),
@@ -447,28 +500,20 @@ pub fn finish_trigger_crank<'info>(
         conditions.release_slot(market_index, order_id);
     }
 
-    let program_keeper_mode = is_protocol_user(filler, state)?;
-    if program_keeper_mode {
-        let reservoir = crank_conditions
-            .as_ref()
-            .ok_or_else(|| -> anchor_lang::error::Error {
-                msg!("program-keeper trigger crank requires the market's conditions account");
-                ErrorCode::CrankConditionsAccountRequired.into()
-            })?;
-        let payment = {
-            let conditions = reservoir.load()?;
-            validate!(
-                conditions.market_index == market_index,
-                ErrorCode::CrankConditionsMarketMismatch,
-                "conditions are for market {}, the fired order is market {}",
-                conditions.market_index,
-                market_index
-            )?;
+    let program_keeper_mode = program_keeper_mode(filler, state, crank_conditions.is_some())?;
+    if let (true, Some(reservoir)) = (program_keeper_mode, crank_conditions) {
+        let reservoir_market_index = reservoir.load()?.market_index;
+        validate!(
+            reservoir_market_index == market_index,
+            ErrorCode::CrankConditionsMarketMismatch,
+            "conditions are for market {}, the fired order is market {}",
+            reservoir_market_index,
+            market_index
+        )?;
 
-            u64::from(conditions.crank_payments.trigger)
-        };
-
-        ClobCrankConditionsV0::pay_keeper(reservoir, &authority.to_account_info(), payment)?;
+        ClobCrankConditionsV0::pay_crank(reservoir, &authority.to_account_info(), |payments| {
+            u64::from(payments.trigger)
+        })?;
     }
 
     Ok(())
@@ -699,8 +744,13 @@ pub(crate) fn book_l3_side<'info, T>(
     ))
 }
 
-/// Both sides of a book as `(bids, asks)`, in the form a cross resolution works
-/// from.
+/// Both sides of a book, best price first.
+pub(crate) struct BookSides<T> {
+    pub bids: Vec<T>,
+    pub asks: Vec<T>,
+}
+
+/// Both sides of a book, in the form a cross resolution works from.
 ///
 /// It takes two calls, one per side, because both responses land in the same
 /// region of the book's response tail. The first is copied out before the second
@@ -708,8 +758,8 @@ pub(crate) fn book_l3_side<'info, T>(
 /// on the other side, and a reader that saw one side could not tell a resolvable
 /// cross from a stuck one. A taker of `Long` sweeps asks, so that read names the
 /// ask side. Returns `None` when the entry declares no L3 leg.
-#[allow(clippy::type_complexity)]
-pub(crate) fn book_l3_sides<'info>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn book_l3_sides<'info, T>(
     quoter: &QuoterSlotV0,
     slab: &AccountLoader<'info, QuoterSlabV0>,
     market_index: u16,
@@ -717,44 +767,141 @@ pub(crate) fn book_l3_sides<'info>(
     accounts: &[AccountInfo<'info>],
     scratch: &mut QuoterCpiScratch<'info>,
     include_taker_origin_reservations: bool,
-) -> Result<
-    Option<(
-        Vec<crate::math::crosses::RestingOrder>,
-        Vec<crate::math::crosses::RestingOrder>,
-    )>,
-> {
-    let from_row = crate::math::crosses::RestingOrder::from_row;
-    let Some(asks) = book_l3_side(
-        quoter,
-        slab,
-        market_index,
-        DirectionV0::Long,
-        max_rows,
-        accounts,
-        scratch,
-        include_taker_origin_reservations,
-        from_row,
-    )?
-    else {
+    map: impl Fn(&L3RowV0) -> T + Copy,
+) -> Result<Option<BookSides<T>>> {
+    let mut read_side = |direction: DirectionV0| {
+        book_l3_side(
+            quoter,
+            slab,
+            market_index,
+            direction,
+            max_rows,
+            accounts,
+            scratch,
+            include_taker_origin_reservations,
+            map,
+        )
+    };
+
+    let Some(asks) = read_side(DirectionV0::Long)? else {
         return Ok(None);
     };
 
-    let Some(bids) = book_l3_side(
-        quoter,
-        slab,
-        market_index,
-        DirectionV0::Short,
-        max_rows,
-        accounts,
-        scratch,
-        include_taker_origin_reservations,
-        from_row,
-    )?
-    else {
+    let Some(bids) = read_side(DirectionV0::Short)? else {
         return Ok(None);
     };
 
-    Ok(Some((bids, asks)))
+    Ok(Some(BookSides { bids, asks }))
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use {
+        super::{charge_removal_fee, unwind_removed_order},
+        crate::{
+            error::ErrorCode,
+            math::constants::BASE_PRECISION_U64,
+            state::{
+                perp_market::PerpMarket,
+                prop_amm::{RemovedOrderV0, SideV0, UserRefV0},
+                state::State,
+                user::{PerpPosition, User},
+            },
+            test_utils::get_positions,
+        },
+    };
+
+    const FEE: u64 = 10_000;
+
+    fn state(exchange_status: u8) -> State {
+        let mut state = State {
+            exchange_status,
+            ..State::default()
+        };
+        state.perp_fee_structure.flat_filler_fee = FEE;
+        state
+    }
+
+    /// A maker with one resting bid and an open quote position to pay from.
+    fn maker(open_bids: u64) -> User {
+        User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_bids: open_bids as i64,
+                open_orders: 1,
+                ..PerpPosition::default()
+            }),
+            open_orders: 1,
+            ..User::default()
+        }
+    }
+
+    fn charge(state: &State, filler: Option<&mut User>) -> Result<u64, anchor_lang::error::Error> {
+        charge_removal_fee(
+            state,
+            &mut maker(BASE_PRECISION_U64),
+            filler,
+            &mut PerpMarket::default_test(),
+            0,
+        )
+    }
+
+    #[test]
+    fn a_keeper_is_paid_the_flat_fee() {
+        assert_eq!(charge(&state(0), Some(&mut User::default())).unwrap(), FEE);
+    }
+
+    /// A full halt stops the fee and not the removal, as a forced cancel does.
+    #[test]
+    fn a_full_exchange_halt_charges_nothing() {
+        assert_eq!(
+            charge(&state(u8::MAX), Some(&mut User::default())).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_filler_outside_pool_zero_is_refused() {
+        let mut filler = User {
+            pool_id: 1,
+            ..User::default()
+        };
+        assert_eq!(
+            charge(&state(0), Some(&mut filler)).unwrap_err(),
+            ErrorCode::InvalidPoolId.into()
+        );
+    }
+
+    #[test]
+    fn a_maker_removing_its_own_order_pays_nothing() {
+        assert_eq!(charge(&state(0), None).unwrap(), 0);
+    }
+
+    /// A report above what the maker reserved releases the whole reservation
+    /// instead of failing, so the order still leaves the book.
+    #[test]
+    fn an_under_reserved_order_is_still_removed() {
+        let mut user = maker(BASE_PRECISION_U64 / 2);
+        let removed = RemovedOrderV0 {
+            user: UserRefV0 {
+                authority: user.authority,
+                sub_account_id: 0,
+            },
+            order_id: 7,
+            client_order_id: 0,
+            price: 0,
+            base_asset_amount: BASE_PRECISION_U64,
+            side: SideV0::Bid,
+            taker_origin: false,
+            reduce_only: false,
+            max_ts: 0,
+        };
+        let position_index = unwind_removed_order(&mut user, &removed, 0, true, 0).unwrap();
+        let position = &user.perp_positions[position_index];
+        assert_eq!(position.open_bids, 0);
+        assert_eq!(position.open_orders, 0);
+        assert_eq!(user.open_orders, 0);
+    }
 }
 
 #[cfg(test)]

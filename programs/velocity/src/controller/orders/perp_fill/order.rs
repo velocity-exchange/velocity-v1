@@ -5,6 +5,7 @@
 //! oracle statistics, and binds the keeper. It then applies the bookkeeping
 //! the fill leaves behind: the write-back, the fill-price band, the
 //! reduce-only cancel, the open-interest cap and the funding update.
+//! [`SettledMatch`] runs the same steps for a match its caller settles itself.
 //!
 //! [`super::taker_risk`] applies the taker's own limits around the fill.
 
@@ -482,10 +483,16 @@ impl OrderUnderFill<'_> {
         let filled = self.fill(parties, router, rev_share_escrow)?;
         self.order.write_back();
 
+        self.after_fill(filled, parties)?;
+        Ok(filled)
+    }
+
+    /// Apply the bookkeeping a fill leaves behind.
+    fn after_fill(&mut self, filled: FillAmounts, parties: &mut FillParties) -> VelocityResult {
         self.record_fill_price(filled, parties)?;
         self.cancel_dangling_trigger_orders(parties)?;
         if filled.base == 0 {
-            return Ok(filled);
+            return Ok(());
         }
 
         self.enforce_open_interest_cap(parties)?;
@@ -493,7 +500,7 @@ impl OrderUnderFill<'_> {
         self.taker
             .user
             .update_last_active_slot(self.conditions.slot);
-        Ok(filled)
+        Ok(())
     }
 
     /// Withhold every maker-priced source the oracle does not admit, and every
@@ -690,6 +697,86 @@ impl OrderUnderFill<'_> {
         )?;
 
         Ok(())
+    }
+}
+
+/// The order layer of a match that its caller settles without
+/// [`fill_perp_order`].
+pub struct SettledMatch {
+    conditions: FillConditions,
+}
+
+impl SettledMatch {
+    /// Read the conditions and refresh the market oracle statistics, as a fill
+    /// does before it moves a position. Call it once per match.
+    pub fn read(
+        state: &State,
+        maps: &mut AccountMaps,
+        user: &AccountLoader<User>,
+        user_stats: &AccountLoader<UserStats>,
+        order: &mut Order,
+        clock: &Clock,
+    ) -> VelocityResult<Self> {
+        let user_key = user.key();
+        let mut user = load_mut!(user)?;
+        let mut user_stats = load_mut!(user_stats)?;
+        let taker = Taker::new(&mut user, &mut user_stats, user_key);
+        let order = WorkingOrder::of(order, true)?;
+        Ok(Self {
+            conditions: FillConditions::read(state, maps, &taker, &order, FillMode::Fill, clock)?,
+        })
+    }
+
+    /// The safe mm oracle price the fill-price band measures against.
+    pub fn oracle_price(&self) -> i64 {
+        self.conditions.oracle_price
+    }
+
+    /// Whether the oracle has run too far from its 5-minute TWAP for any fill.
+    pub fn oracle_too_divergent_with_twap(&self, state: &State) -> VelocityResult<bool> {
+        self.conditions.oracle_too_divergent_with_twap(state)
+    }
+
+    /// Whether the raw exchange oracle admits a match fill. A party with an
+    /// equity floor matches only while it does.
+    pub fn exchange_admits_match(&self) -> bool {
+        self.conditions.exchange_match_fills_allowed
+    }
+
+    /// The fill-price band, the last fill price, the reduce-only trigger
+    /// cancel, the open-interest cap and the funding update. The user is its
+    /// own filler, because no filler reward comes out of a settled match.
+    pub fn apply_bookkeeping(
+        &self,
+        state: &State,
+        order: &mut Order,
+        user: &AccountLoader<User>,
+        user_stats: &AccountLoader<UserStats>,
+        parties: &mut FillParties,
+        filled: FillAmounts,
+    ) -> VelocityResult {
+        let user_key = user.key();
+        let mut user = load_mut!(user)?;
+        let mut user_stats = load_mut!(user_stats)?;
+        let market_index = order.market_index;
+        let mut taker = Taker::new(&mut user, &mut user_stats, user_key);
+        taker.bind_position(market_index)?;
+
+        OrderUnderFill {
+            order: WorkingOrder::of(order, true)?,
+            taker,
+            filler: Filler {
+                user: None,
+                stats: None,
+                key: user_key,
+            },
+
+            state,
+            rules: PricingRules::of(state, false),
+            conditions: self.conditions,
+            market_index,
+        }
+        .after_fill(filled, parties)
     }
 }
 

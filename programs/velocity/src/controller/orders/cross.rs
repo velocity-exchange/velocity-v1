@@ -14,10 +14,6 @@ pub(crate) struct CrankOraclePreflight {
     pub stale_for_margin: bool,
     /// Open interest before the crank. The post-fill rule measures against it.
     pub open_interest: u128,
-    /// Whether the market admits only liability-reducing fills. A crank that
-    /// settles a match itself must force this onto both legs, because a row
-    /// that rested while the market was `Active` carries its own stale flag.
-    pub market_is_reduce_only: bool,
 }
 
 /// The market gates a crossed-book crank passes.
@@ -86,7 +82,6 @@ pub(crate) fn crank_oracle_preflight(
             .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, clock.slot)
             > state.oracle_guard_rails.validity.stale_for_margin_ms(),
         open_interest: market.get_open_interest(),
-        market_is_reduce_only: market.is_reduce_only()?,
     })
 }
 
@@ -94,13 +89,9 @@ pub(crate) fn crank_oracle_preflight(
 /// checks measure against.
 pub struct TakerOriginCrossPricing {
     pub fee: fees::TakerOriginCrossFee,
-    pub oracle_price: i64,
     pub oracle_stale_for_margin: bool,
     /// Open interest before the fill.
     pub perp_market_oi_before: u128,
-    /// The caller settles the match itself, so it must force this onto both
-    /// legs. See [`CrankOraclePreflight::market_is_reduce_only`].
-    pub market_is_reduce_only: bool,
 }
 
 /// The oracle pre-flight and the pricing of one taker-origin cross, before any
@@ -172,10 +163,8 @@ pub fn price_taker_origin_cross(
 
     Ok(TakerOriginCrossPricing {
         fee,
-        oracle_price,
         oracle_stale_for_margin: preflight.stale_for_margin,
         perp_market_oi_before: preflight.open_interest,
-        market_is_reduce_only: preflight.market_is_reduce_only,
     })
 }
 
@@ -285,5 +274,16 @@ mod gate_tests {
             crank_market_gates(&market, 100).err().unwrap(),
             ErrorCode::MarketFillOrderPaused
         );
+    }
+
+    /// A pair of remainders settles without a router, and the referred taker
+    /// keeps its referrer's accelerated rate there too.
+    #[test]
+    fn a_settled_pair_keeps_the_referrer_rate() {
+        let state = crate::state::state::State::default();
+        let rules = super::super::PricingRules::for_settlement(&state, true);
+        assert!(rules.referrer_is_accelerated);
+        assert!(!rules.vamm_maker_rebate);
+        assert!(!super::super::PricingRules::for_settlement(&state, false).referrer_is_accelerated);
     }
 }

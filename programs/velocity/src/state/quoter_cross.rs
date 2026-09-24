@@ -128,7 +128,7 @@ impl QuoterCrossConditionsV0 {
         ConditionBlock::block(&self.relay)
     }
 
-    /// This method and the four below wrap
+    /// This method and the one below wrap
     /// [`relay_spec::ConditionBlock`] and return the program's own error
     /// type, so a handler can use `?`.
     pub fn init_block(&mut self) -> Result<()> {
@@ -143,25 +143,6 @@ impl QuoterCrossConditionsV0 {
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
         ConditionBlock::write_condition(&mut self.relay, index, condition)
-            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
-    }
-
-    pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
-        ConditionBlock::read_condition(&self.relay, index)
-            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
-    }
-
-    pub fn edit_condition(
-        &mut self,
-        index: usize,
-        f: impl FnOnce(&mut relay_spec::ConditionV0),
-    ) -> Result<()> {
-        ConditionBlock::update_condition(&mut self.relay, index, f)
-            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
-    }
-
-    pub fn clear_condition(&mut self, index: usize) -> Result<()> {
-        ConditionBlock::deactivate_condition(&mut self.relay, index)
             .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 }

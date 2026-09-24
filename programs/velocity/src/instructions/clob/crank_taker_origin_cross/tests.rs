@@ -270,3 +270,359 @@ fn an_isolated_counterparty_is_checked_against_its_own_collateral() {
         Ok(())
     );
 }
+
+/// The size a pair settles, before either position moves.
+mod pair_size {
+    use super::*;
+
+    const UNIT: u64 = BASE_PRECISION_U64;
+
+    /// A position holding `base` with `reserved_bids` of resting bids behind it.
+    fn position(base: i64, reserved_bids: u64) -> PerpPosition {
+        PerpPosition {
+            market_index: 0,
+            base_asset_amount: base,
+            open_bids: reserved_bids as i64,
+            ..PerpPosition::default()
+        }
+    }
+
+    fn size(
+        aggressor: PerpPosition,
+        counterparty: PerpPosition,
+        reduce_only: PairReduceOnly,
+    ) -> Result<u64> {
+        super::super::pair_fill_size(
+            UNIT,
+            PositionDirection::Long,
+            &aggressor,
+            &counterparty,
+            reduce_only,
+        )
+    }
+
+    const NEITHER: PairReduceOnly = PairReduceOnly {
+        aggressor: false,
+        counterparty: false,
+    };
+
+    #[test]
+    fn an_open_pair_settles_the_whole_cross() {
+        assert_eq!(size(position(0, UNIT), position(0, 0), NEITHER), Ok(UNIT));
+    }
+
+    #[test]
+    fn a_report_above_the_aggressor_reservation_fails() {
+        assert_eq!(
+            size(position(0, UNIT / 2), position(0, 0), NEITHER),
+            Err(ErrorCode::QuoterReportExceedsReservation.into())
+        );
+    }
+
+    /// A reduce-only bid covers only the short it closes, so the pair shrinks
+    /// to that short instead of failing.
+    #[test]
+    fn a_reduce_only_aggressor_shrinks_the_pair_to_its_cover() {
+        let reduce_only = PairReduceOnly {
+            aggressor: true,
+            ..NEITHER
+        };
+        assert_eq!(
+            size(
+                position(-(UNIT as i64) / 4, UNIT),
+                position(0, 0),
+                reduce_only
+            ),
+            Ok(UNIT / 4)
+        );
+    }
+
+    /// The counterparty sells, so its cover is the long it closes.
+    #[test]
+    fn a_reduce_only_counterparty_shrinks_the_pair_to_its_cover() {
+        let reduce_only = PairReduceOnly {
+            counterparty: true,
+            ..NEITHER
+        };
+        assert_eq!(
+            size(position(0, UNIT), position(UNIT as i64 / 2, 0), reduce_only),
+            Ok(UNIT / 2)
+        );
+    }
+
+    #[test]
+    fn a_reduce_only_side_with_nothing_to_reduce_settles_nothing() {
+        let reduce_only = PairReduceOnly {
+            aggressor: true,
+            ..NEITHER
+        };
+        assert_eq!(
+            size(position(0, UNIT), position(0, 0), reduce_only),
+            Err(ErrorCode::NoTakerOriginCross.into())
+        );
+    }
+}
+
+/// Who the crank pays, and what a referred taker must carry.
+mod cranker_rules {
+    use {super::*, crate::state::user::ReferrerStatus};
+
+    fn filler(authority: u8, pool_id: u8) -> User {
+        User {
+            authority: Pubkey::new_from_array([authority; 32]),
+            pool_id,
+            ..User::default()
+        }
+    }
+
+    const TAKER: Pubkey = Pubkey::new_from_array([7; 32]);
+
+    #[test]
+    fn a_third_party_cranker_earns_the_reward() {
+        assert_eq!(cranker_earns_reward(&filler(1, 0), &TAKER), Ok(true));
+    }
+
+    /// Another sub-account of the taker earns no reward and no filler volume.
+    #[test]
+    fn a_cranker_of_the_taker_authority_earns_nothing() {
+        assert_eq!(cranker_earns_reward(&filler(7, 0), &TAKER), Ok(false));
+    }
+
+    #[test]
+    fn a_cranker_outside_pool_zero_is_refused() {
+        assert_eq!(
+            cranker_earns_reward(&filler(1, 1), &TAKER),
+            Err(ErrorCode::InvalidPoolId.into())
+        );
+    }
+
+    #[test]
+    fn a_referred_taker_must_carry_its_escrow() {
+        let referred = UserStats {
+            referrer_status: ReferrerStatus::BuilderReferral as u8,
+            ..UserStats::default()
+        };
+        assert_eq!(
+            require_referral_escrow(false, &referred),
+            Err(ErrorCode::UnableToLoadRevenueShareAccount.into())
+        );
+        assert_eq!(require_referral_escrow(true, &referred), Ok(()));
+        assert_eq!(
+            require_referral_escrow(false, &UserStats::default()),
+            Ok(())
+        );
+    }
+}
+
+/// When a resolver lets a maker cross go ahead of a taker-origin cross.
+mod stalled_cross {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    fn cross(bid_slot: u64, ask_slot: u64) -> Cross {
+        let row = |placed_slot| RestingOrder {
+            order_ref: ClobOrderRefV0 {
+                node_index: 0,
+                order_id: 0,
+            },
+            user: UserRefV0::default(),
+            price: 100,
+            base_asset_amount: 1,
+            taker_origin: true,
+            reduce_only: false,
+            placed_slot,
+        };
+        Cross {
+            bid: row(bid_slot),
+            ask: row(ask_slot),
+            base_asset_amount: 1,
+            kind: CrossKind::BidAggresses,
+        }
+    }
+
+    #[test]
+    fn a_cross_stalls_only_once_its_later_row_is_old() {
+        let limit = super::super::super::crank_cross_match::STALLED_TAKER_ORIGIN_CROSS_SLOTS;
+        assert!(!cross_stalled(&cross(0, 10), 10 + limit));
+        assert!(cross_stalled(&cross(0, 10), 11 + limit));
+        assert!(!cross_stalled(&cross(10, 0), 10 + limit));
+    }
+}
+
+/// The order-layer steps a settled pair shares with every routed fill.
+mod settled_match {
+    use {
+        super::*,
+        crate::{controller::orders::SettledMatch, state::user::Order},
+    };
+
+    struct Case {
+        oracle_twap_5min: i64,
+        open_interest: i128,
+        max_open_interest: u128,
+        fill_price: u64,
+    }
+
+    const ORDINARY: Case = Case {
+        oracle_twap_5min: 100 * PRICE_PRECISION_I64,
+        open_interest: BASE_PRECISION_I64 as i128,
+        max_open_interest: 0,
+        fill_price: 100 * PRICE_PRECISION_I64 as u64,
+    };
+
+    fn market_at(case: &Case, oracle_key: Pubkey) -> PerpMarket {
+        PerpMarket {
+            market_index: 0,
+            oracle: oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            status: MarketStatus::Active,
+            base_asset_amount_long: case.open_interest,
+            base_asset_amount_short: -case.open_interest,
+            max_open_interest: case.max_open_interest,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: 100 * PRICE_PRECISION_I64,
+                    last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                    last_oracle_price_twap_5min: case.oracle_twap_5min,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        }
+    }
+
+    /// What one run observed.
+    #[derive(Debug, PartialEq)]
+    struct Observed {
+        too_divergent: bool,
+        /// `None` when the run stopped before the bookkeeping.
+        last_fill_price: Option<u64>,
+    }
+
+    /// Read the conditions for a one-unit match with an oracle at 100. With
+    /// `apply`, run the bookkeeping at `case.fill_price` too.
+    fn run(case: Case, apply: bool) -> VelocityResult<Observed> {
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let oracle_map =
+            OracleMap::load_one(&oracle_info, SLOT, SlotClock::baseline(), None).unwrap();
+
+        let mut market = market_at(&case, oracle_key);
+        create_anchor_account_info!(market, PerpMarket, market_info);
+        let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, SpotMarketMap::empty(), oracle_map);
+
+        let mut taker = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(taker, User, taker_info);
+        let taker_loader = AccountLoader::try_from(&taker_info).unwrap();
+        let mut taker_stats = UserStats::default();
+        create_anchor_account_info!(taker_stats, UserStats, taker_stats_info);
+        let taker_stats_loader = AccountLoader::try_from(&taker_stats_info).unwrap();
+
+        let state = State::default();
+        let clock = Clock {
+            slot: SLOT,
+            unix_timestamp: NOW,
+            ..Clock::default()
+        };
+        let mut order = Order {
+            market_index: 0,
+            status: OrderStatus::Open,
+            market_type: crate::state::user::MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64,
+            ..Order::default()
+        };
+
+        let settled = SettledMatch::read(
+            &state,
+            &mut maps,
+            &taker_loader,
+            &taker_stats_loader,
+            &mut order,
+            &clock,
+        )?;
+        let too_divergent = settled.oracle_too_divergent_with_twap(&state)?;
+        if !apply {
+            return Ok(Observed {
+                too_divergent,
+                last_fill_price: None,
+            });
+        }
+
+        settled.apply_bookkeeping(
+            &state,
+            &mut order,
+            &taker_loader,
+            &taker_stats_loader,
+            &mut controller::orders::FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
+            controller::orders::FillAmounts {
+                base: BASE_PRECISION_U64,
+                quote: case.fill_price,
+            },
+        )?;
+
+        let last_fill_price = maps.perp_market_map.get_ref(&0)?.last_fill_price;
+        Ok(Observed {
+            too_divergent,
+            last_fill_price: Some(last_fill_price),
+        })
+    }
+
+    #[test]
+    fn an_ordinary_match_records_its_price() {
+        assert_eq!(
+            run(ORDINARY, true),
+            Ok(Observed {
+                too_divergent: false,
+                last_fill_price: Some(100 * PRICE_PRECISION_I64 as u64),
+            })
+        );
+    }
+
+    #[test]
+    fn a_match_past_the_open_interest_cap_fails() {
+        let over_cap = Case {
+            max_open_interest: BASE_PRECISION_I64 as u128 / 2,
+            ..ORDINARY
+        };
+        assert_eq!(run(over_cap, true), Err(ErrorCode::MaxOpenInterest));
+    }
+
+    #[test]
+    fn a_match_outside_the_fill_price_band_fails() {
+        let off_band = Case {
+            fill_price: 150 * PRICE_PRECISION_I64 as u64,
+            ..ORDINARY
+        };
+        assert_eq!(run(off_band, true), Err(ErrorCode::PriceBandsBreached));
+    }
+
+    /// The verdict reads the TWAP as it stood before the read refreshed it.
+    #[test]
+    fn an_oracle_far_from_its_twap_is_reported() {
+        let divergent = Case {
+            oracle_twap_5min: 40 * PRICE_PRECISION_I64,
+            ..ORDINARY
+        };
+        assert_eq!(
+            run(divergent, false),
+            Ok(Observed {
+                too_divergent: true,
+                last_fill_price: None,
+            })
+        );
+    }
+}

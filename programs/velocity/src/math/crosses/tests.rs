@@ -176,3 +176,64 @@ fn the_cross_count_is_bounded() {
     let asks = [remainder(40, 98, 5, 0xD), remainder(41, 98, 5, 0xE)];
     assert_eq!(resolve_crosses(&bids, &asks, 1).len(), 1);
 }
+
+/// The crossing-prefix walk that the protocol's two-legged cross consumes.
+mod prefix {
+    use super::*;
+
+    const UNIT: u64 = crate::math::constants::BASE_PRECISION_U64;
+
+    fn level(price: u64, size: u64, owner: u8) -> CrossLevel {
+        CrossLevel {
+            price,
+            size,
+            owner: UserRefV0 {
+                authority: Pubkey::new_from_array([owner; 32]),
+                sub_account_id: 0,
+            },
+        }
+    }
+
+    /// The walk stops before an owner past the cap, so every unit it sizes has
+    /// its owner staged.
+    #[test]
+    fn the_walk_stops_at_the_owner_cap() {
+        let bids = [level(105, UNIT, 1), level(104, UNIT, 2)];
+        let asks = [level(100, UNIT, 3), level(101, UNIT, 4)];
+        let prefix = crossing_prefix(&bids, &asks, 3);
+        assert_eq!(prefix.size, UNIT);
+        assert_eq!(prefix.makers.len(), 3);
+        assert_eq!(crossing_prefix(&bids, &asks, 4).size, 2 * UNIT);
+    }
+
+    /// A quoter's ladder has one owner. Its own resting order on the other
+    /// side is a self-cross, and the walk ends there.
+    #[test]
+    fn a_quoter_does_not_cross_its_own_resting_order() {
+        let quoter_asks = [level(100, 2 * UNIT, 9)];
+        let book_bids = [level(103, UNIT, 1), level(102, UNIT, 9)];
+        let prefix = crossing_prefix(&book_bids, &quoter_asks, 8);
+        assert_eq!(prefix.size, UNIT);
+        assert_eq!(prefix.buy_quote, 100);
+        assert_eq!(prefix.sell_quote, 103);
+    }
+
+    /// Both legs pay the fee, rounded up, before the protocol keeps anything.
+    #[test]
+    fn the_estimate_is_net_of_both_legs_fees() {
+        let prefix = CrossPrefix {
+            size: UNIT,
+            buy_quote: 1_000,
+            sell_quote: 1_010,
+            makers: Vec::new(),
+        };
+        let fee = |fee_numerator| crate::state::state::FeeTier {
+            fee_numerator,
+            fee_denominator: 1_000,
+            ..crate::state::state::FeeTier::default()
+        };
+        assert_eq!(prefix.estimated_surplus(&fee(0)), 10);
+        assert_eq!(prefix.estimated_surplus(&fee(4)), 10 - 4 - 5);
+        assert_eq!(prefix.estimated_surplus(&fee(5)), 0);
+    }
+}

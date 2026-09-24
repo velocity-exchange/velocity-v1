@@ -20,7 +20,7 @@
 use {
     anyhow::{anyhow, Result},
     program::state::{
-        oracle::OraclePriceData, perp_market::PerpMarket, prop_amm::ClobUserRefV0,
+        oracle::OraclePriceData, perp_market::PerpMarket, prop_amm::UserRefV0,
         router_quote::QuotedSourceKind, state::State,
     },
     serde_json::{json, Map, Value},
@@ -530,7 +530,7 @@ pub fn best_makers_payload(slot: u64, bids: Vec<BookRow>, asks: Vec<BookRow>) ->
 mod tests {
     use {
         super::*,
-        program::state::{prop_amm::ClobUserRefV0 as UserRefV0, router_quote::QuotedLevelV0},
+        program::state::{prop_amm::UserRefV0, router_quote::QuotedLevelV0},
         velocity_router_sim::quote_view::{QuotedBook, QuotedRow},
     };
 

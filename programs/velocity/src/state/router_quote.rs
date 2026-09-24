@@ -22,7 +22,7 @@ use {
         error::{ErrorCode, VelocityResult},
         msg,
         state::{
-            prop_amm::{L3RowV0, PriceLevel},
+            prop_amm::{L3RowV0, PriceLevelV0},
             traits::Size,
         },
         validate,
@@ -88,7 +88,7 @@ pub struct QuotedSourceV0 {
 
 const_assert_eq!(std::mem::size_of::<QuotedSourceV0>(), 40);
 
-/// A quoted level in the buffer's Pod form. The wire `PriceLevel` is borsh.
+/// A quoted level in the buffer's Pod form.
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -105,11 +105,11 @@ const_assert_eq!(std::mem::size_of::<QuotedLevelV0>(), 16);
 // fields with no padding, and the asserts below keep it true: a widened or reordered field stops the compile.
 const_assert_eq!(
     std::mem::size_of::<QuotedLevelV0>(),
-    std::mem::size_of::<PriceLevel>()
+    std::mem::size_of::<PriceLevelV0>()
 );
 const_assert_eq!(
     std::mem::align_of::<QuotedLevelV0>(),
-    std::mem::align_of::<PriceLevel>()
+    std::mem::align_of::<PriceLevelV0>()
 );
 
 unsafe impl bytemuck::Pod for QuotedLevelV0 {}
@@ -182,7 +182,7 @@ pub struct RouterQuoteBufferV0 {
     /// sources carry fewer rows than their books hold. The ladders keep every
     /// level. A row is detail about a level, never the level itself.
     pub rows_truncated: bool,
-    /// Taker direction quoted, as a `Direction` cast to u8. 0 is long and 1 is
+    /// Taker direction quoted, as a `DirectionV0` cast to u8. 0 is long and 1 is
     /// short.
     pub direction: u8,
     /// Pads the header to 128 bytes. The reserve holds two more pubkeys, so
@@ -231,7 +231,7 @@ impl RouterQuoteBufferV0 {
         kind: QuotedSourceKind,
         key: Pubkey,
         priority: u8,
-        levels: &[PriceLevel],
+        levels: &[PriceLevelV0],
     ) -> VelocityResult {
         self.push_capped(kind, key, priority, levels, u64::MAX)
             .map(|_| ())
@@ -252,7 +252,7 @@ impl RouterQuoteBufferV0 {
         kind: QuotedSourceKind,
         key: Pubkey,
         priority: u8,
-        levels: &[PriceLevel],
+        levels: &[PriceLevelV0],
         cap: u64,
     ) -> VelocityResult<bool> {
         let index = self.source_count as usize;
@@ -365,8 +365,8 @@ mod tests {
         buffer
     }
 
-    fn level(price: u64, size: u64) -> PriceLevel {
-        PriceLevel { price, size }
+    fn level(price: u64, size: u64) -> PriceLevelV0 {
+        PriceLevelV0 { price, size }
     }
 
     #[test]
@@ -431,7 +431,7 @@ mod tests {
     /// much of it.
     #[test]
     fn a_book_deeper_than_the_slot_fails_only_when_the_cap_admits_it() {
-        let deep: Vec<PriceLevel> = (0..MAX_LEVELS_PER_SOURCE + 1)
+        let deep: Vec<PriceLevelV0> = (0..MAX_LEVELS_PER_SOURCE + 1)
             .map(|index| level(100 + index as u64, 1))
             .collect();
 
@@ -468,7 +468,7 @@ mod tests {
                 &[level(100, 5), level(101, 7)],
             )
             .unwrap();
-        let wire: &[PriceLevel] = bytemuck::cast_slice(buffer.levels_for(0));
+        let wire: &[PriceLevelV0] = bytemuck::cast_slice(buffer.levels_for(0));
         assert_eq!(wire, &[level(100, 5), level(101, 7)]);
     }
 }

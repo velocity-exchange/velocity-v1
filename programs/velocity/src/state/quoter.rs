@@ -6,7 +6,7 @@
 //! router splits a take across them.
 //!
 //! The interface is [`RouterQuoter`]. `quote` returns a source's book as
-//! [`PriceLevel`]s. `execute` fills an allocation against the source and
+//! [`PriceLevelV0`]s. `execute` fills an allocation against the source and
 //! settles the source's own bytes. A source is the sole authority on how its
 //! bytes change, and the router only hands it the allocation it won.
 //! `priority` places it in a tier. At a shared price, a lower priority number
@@ -244,10 +244,10 @@ pub trait RouterQuoter {
     fn quote(
         &self,
         ctx: &QuoteContext,
-        direction: crate::state::prop_amm::Direction,
+        direction: crate::state::prop_amm::DirectionV0,
         size: u64,
         rival_books: &[crate::math::router::QuoterBook],
-    ) -> VelocityResult<Vec<crate::state::prop_amm::PriceLevel>>;
+    ) -> VelocityResult<Vec<crate::state::prop_amm::PriceLevelV0>>;
 
     /// Commit a fill of up to `size`, which is the routed allocation. This is
     /// the in-program `execute_v0`. It applies the quoter's own state changes
@@ -256,7 +256,7 @@ pub trait RouterQuoter {
     fn execute(
         &mut self,
         ctx: &QuoteContext,
-        direction: crate::state::prop_amm::Direction,
+        direction: crate::state::prop_amm::DirectionV0,
         size: u64,
     ) -> VelocityResult<QuoterFill>;
 }

@@ -40,7 +40,7 @@ use {
             order_params::{OrderParams, PostOnlyParam},
             perp_market::PerpMarket,
             prop_amm::{
-                ClobCancelSides, ClobOrderRefV0, Direction, L3ArgsV0, L3ResponseV0, L3RowV0,
+                ClobCancelSides, ClobOrderRefV0, DirectionV0, L3ArgsV0, L3ResponseV0, L3RowV0,
                 QuoterType, ResponsePointerV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
             },
             pyth_lazer_oracle::PythLazerOracle,
@@ -317,7 +317,7 @@ fn ask_clob(
 
 /// The orders resting on one side, best price first, as the book reports them
 /// through `quote_l3_v0` — one row per order.
-fn clob_side(fixture: &Fixture, direction: Direction) -> Vec<L3RowV0> {
+fn clob_side(fixture: &Fixture, direction: DirectionV0) -> Vec<L3RowV0> {
     let mut args = Vec::new();
     velocity::state::prop_amm::write_l3_args(
         &mut args,
@@ -353,16 +353,16 @@ fn clob_side(fixture: &Fixture, direction: Direction) -> Vec<L3RowV0> {
 
 /// How many orders rest on a side. A buyer consumes the asks.
 fn clob_ask_count(fixture: &Fixture) -> usize {
-    clob_side(fixture, Direction::Long).len()
+    clob_side(fixture, DirectionV0::Long).len()
 }
 
 fn clob_bid_count(fixture: &Fixture) -> usize {
-    clob_side(fixture, Direction::Short).len()
+    clob_side(fixture, DirectionV0::Short).len()
 }
 
 /// The price of the best resting bid, as the book names it.
 fn clob_best_bid_price(fixture: &Fixture) -> Option<u64> {
-    clob_side(fixture, Direction::Short)
+    clob_side(fixture, DirectionV0::Short)
         .first()
         .map(|row| row.price)
 }
@@ -776,7 +776,7 @@ fn set_tripped_user_stats(svm: &mut litesvm::LiteSVM, address: Pubkey, authority
 fn ask_ref(order_ref: ClobOrderRefV0) -> velocity::instructions::ForceCancelClobRefV0 {
     velocity::instructions::ForceCancelClobRefV0 {
         order_ref,
-        side: velocity::state::prop_amm::ClobSide::Ask,
+        side: velocity::state::prop_amm::SideV0::Ask,
     }
 }
 
@@ -1906,7 +1906,7 @@ fn crank_evict_unwinds_the_tails_aggregates() {
         data: velocity::instruction::CrankClobEvict {
             args: CrankClobEvictArgs {
                 market_index: 0,
-                side: velocity::state::prop_amm::ClobSide::Ask,
+                side: velocity::state::prop_amm::SideV0::Ask,
             },
         }
         .data(),
@@ -2007,7 +2007,7 @@ fn quote_router_returns_verified_books_for_every_source() {
             args: velocity::instructions::QuoteRouterArgs {
                 taker_served_window: true,
                 market_index: 0,
-                direction: Direction::Long,
+                direction: DirectionV0::Long,
                 size: 2 * UNIT,
                 include_vamm: true,
             },
@@ -3195,7 +3195,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     // settles at the counterparty's price rather than picking it off at its
     // own, and the taker-origin crank is what carries a route to it.
     assert!(
-        clob_side(&fixture, Direction::Long)
+        clob_side(&fixture, DirectionV0::Long)
             .iter()
             .all(|row| row.flags & velocity::state::prop_amm::L3_ROW_FLAG_TAKER_ORIGIN != 0),
         "a fired trigger rests as a taker remainder, not as a maker quote"
@@ -3226,7 +3226,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
         data: velocity::instruction::CrankClobEvict {
             args: CrankClobEvictArgs {
                 market_index: 0,
-                side: velocity::state::prop_amm::ClobSide::Ask,
+                side: velocity::state::prop_amm::SideV0::Ask,
             },
         }
         .data(),
@@ -3409,7 +3409,7 @@ fn a_reduce_only_trigger_rests_at_most_the_position_it_reduces() {
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(maker.orders[0].is_placed_on_clob());
     assert_eq!(maker.perp_positions[0].open_asks, -((UNIT / 4) as i64));
-    let asks = clob_side(&fixture, Direction::Long);
+    let asks = clob_side(&fixture, DirectionV0::Long);
     assert_eq!(asks.len(), 1);
     assert_eq!(asks[0].size, UNIT / 4);
 }
@@ -3584,7 +3584,7 @@ fn a_reduce_only_modify_is_clamped_to_the_position() {
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker.perp_positions[0].open_asks, -((UNIT / 4) as i64));
     assert_eq!(maker.orders[0].base_asset_amount, UNIT / 4);
-    let asks = clob_side(&fixture, Direction::Long);
+    let asks = clob_side(&fixture, DirectionV0::Long);
     assert_eq!(asks.len(), 1);
     assert_eq!(asks[0].size, UNIT / 4);
 
@@ -3629,7 +3629,7 @@ fn a_maker_modify_rests_as_a_maker_quote() {
     );
     send(&mut fixture.svm, &authority, ix, &[]).unwrap();
 
-    let asks = clob_side(&fixture, Direction::Long);
+    let asks = clob_side(&fixture, DirectionV0::Long);
     assert_eq!(asks.len(), 1);
     assert_eq!(asks[0].size, UNIT / 4);
     assert_eq!(
@@ -3666,7 +3666,7 @@ fn a_taker_remainder_modify_keeps_its_taker_origin_flag() {
     );
     send(&mut fixture.svm, &authority, ix, &[]).unwrap();
 
-    let bids = clob_side(&fixture, Direction::Short);
+    let bids = clob_side(&fixture, DirectionV0::Short);
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].size, UNIT / 2);
     assert_ne!(
@@ -3712,7 +3712,7 @@ fn a_reduce_only_remainder_modify_keeps_both_flags() {
     );
     send(&mut fixture.svm, &authority, ix, &[]).unwrap();
 
-    let asks = clob_side(&fixture, Direction::Long);
+    let asks = clob_side(&fixture, DirectionV0::Long);
     assert_eq!(asks.len(), 1);
     assert_eq!(asks[0].size, UNIT / 4);
     assert_eq!(
@@ -4523,7 +4523,7 @@ fn force_cancel_passes_over_a_risk_reducing_order() {
             ask_ref(ask_order),
             velocity::instructions::ForceCancelClobRefV0 {
                 order_ref: bid_order,
-                side: velocity::state::prop_amm::ClobSide::Bid,
+                side: velocity::state::prop_amm::SideV0::Bid,
             },
         ],
     );
@@ -4671,7 +4671,7 @@ fn a_misdeclared_side_fails_loudly() {
         fixture.keeper.pubkey(),
         vec![velocity::instructions::ForceCancelClobRefV0 {
             order_ref,
-            side: velocity::state::prop_amm::ClobSide::Bid,
+            side: velocity::state::prop_amm::SideV0::Bid,
         }],
     );
     let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("side was declared wrong");
@@ -8754,7 +8754,7 @@ fn a_partly_filled_remainder_keeps_its_id_and_its_queue_position() {
         UNIT / 2,
     );
 
-    let before = clob_side(&fixture, Direction::Short);
+    let before = clob_side(&fixture, DirectionV0::Short);
     assert_eq!(
         before.iter().map(|row| row.order_id).collect::<Vec<_>>(),
         vec![subject.order_id, behind_ref.order_id],
@@ -8781,7 +8781,7 @@ fn a_partly_filled_remainder_keeps_its_id_and_its_queue_position() {
 
     // Half the remainder filled. What is left is the same order — same id,
     // same node — still ahead of the maker that joined after it.
-    let after = clob_side(&fixture, Direction::Short);
+    let after = clob_side(&fixture, DirectionV0::Short);
     assert_eq!(
         after.iter().map(|row| row.order_id).collect::<Vec<_>>(),
         vec![subject.order_id, behind_ref.order_id],
@@ -8922,7 +8922,7 @@ fn a_remainder_cannot_be_pulled_inside_its_window_but_force_cancel_reaches_it() 
         forced.keeper.pubkey(),
         vec![velocity::instructions::ForceCancelClobRefV0 {
             order_ref: bound,
-            side: velocity::state::prop_amm::ClobSide::Bid,
+            side: velocity::state::prop_amm::SideV0::Bid,
         }],
     );
 
@@ -8985,7 +8985,7 @@ fn a_maker_that_arrives_during_the_window_wins_on_price_at_activation() {
     // Inside the window the book does not report it, so no counterparty can
     // reach it and no cross exists to resolve.
     assert!(
-        clob_side(&fixture, Direction::Short).is_empty(),
+        clob_side(&fixture, DirectionV0::Short).is_empty(),
         "a remainder inside its window is not matchable depth"
     );
 
@@ -10224,7 +10224,7 @@ fn a_reverting_quoter_leaves_only_its_cpi_frame_in_the_logs() {
             args: velocity::instructions::QuoteRouterArgs {
                 taker_served_window: true,
                 market_index: 0,
-                direction: Direction::Long,
+                direction: DirectionV0::Long,
                 size: 2 * UNIT,
                 include_vamm: true,
             },
@@ -10356,7 +10356,7 @@ fn a_quoter_velocity_refuses_is_named_in_the_logs() {
             args: velocity::instructions::QuoteRouterArgs {
                 taker_served_window: true,
                 market_index: 0,
-                direction: Direction::Long,
+                direction: DirectionV0::Long,
                 size: 2 * UNIT,
                 include_vamm: true,
             },
@@ -10456,7 +10456,7 @@ fn a_pass_that_clears_include_vamm_returns_only_its_quoters() {
                 args: velocity::instructions::QuoteRouterArgs {
                     taker_served_window: true,
                     market_index: 0,
-                    direction: Direction::Long,
+                    direction: DirectionV0::Long,
                     size: 2 * UNIT,
                     include_vamm,
                 },
@@ -10648,7 +10648,7 @@ fn bench_quote_case(
             args: velocity::instructions::QuoteRouterArgs {
                 taker_served_window: true,
                 market_index: 0,
-                direction: Direction::Long,
+                direction: DirectionV0::Long,
                 size: 1_000 * UNIT,
                 include_vamm: !quoters_only,
             },

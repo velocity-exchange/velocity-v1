@@ -9,8 +9,8 @@
 
 use {
     super::{
-        get_quoter_slab_signer_seeds, ClobUserRefV0, QuoterConfigV0, QuoterSlabExt, QuoterSlabV0,
-        QuoterType, CLOB_USER_REF_BYTES,
+        get_quoter_slab_signer_seeds, QuoterConfigV0, QuoterSlabExt, QuoterSlabV0, QuoterType,
+        UserRefV0,
     },
     crate::{error::ErrorCode, msg, validate},
     anchor_lang::prelude::*,
@@ -24,7 +24,7 @@ use {
 /// discriminator, a side, two `u64`s, an optional delay, a timestamp, a user
 /// ref, the taker-origin flag and the reduce-only flag. One reservation avoids
 /// the intermediate buffers a growing `Vec` leaks into the bump allocator.
-pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_BYTES + 1 + 1;
+pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + UserRefV0::SIZE + 1 + 1;
 
 /// Order handle on the CLOB. It is an O(1) node hint, verified against the
 /// order id there, so a stale hint fails closed on the CLOB side.
@@ -421,8 +421,8 @@ impl crate::state::user::User {
     /// This user on the quoter wire, in its derivable form. Every CPI leg and
     /// book report names a user this way, so the construction lives here
     /// instead of at each call site.
-    pub fn clob_user_ref(&self) -> ClobUserRefV0 {
-        ClobUserRefV0 {
+    pub fn clob_user_ref(&self) -> UserRefV0 {
+        UserRefV0 {
             authority: self.authority,
             sub_account_id: self.sub_account_id.into(),
         }

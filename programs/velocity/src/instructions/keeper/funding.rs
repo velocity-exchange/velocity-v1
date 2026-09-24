@@ -242,7 +242,7 @@ impl<'info> BookSource<'_, 'info> {
     fn side(
         &self,
         market_index: u16,
-        direction: Direction,
+        direction: DirectionV0,
         state: &State,
         clock: &Clock,
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
@@ -296,8 +296,8 @@ fn estimate_book<'info>(
         // the book's response tail, so the first is copied out before the
         // second overwrites it. A taker of `Short` sweeps the bids.
         Some(book) => (
-            book.side(market_index, Direction::Short, state, clock, &mut scratch)?,
-            book.side(market_index, Direction::Long, state, clock, &mut scratch)?,
+            book.side(market_index, DirectionV0::Short, state, clock, &mut scratch)?,
+            book.side(market_index, DirectionV0::Long, state, clock, &mut scratch)?,
         ),
         None => (Vec::new(), Vec::new()),
     };

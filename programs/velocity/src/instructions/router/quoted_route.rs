@@ -31,8 +31,9 @@ use {
         state::{
             order_params::{RouteDigest, NO_ROUTE_DIGEST},
             prop_amm::{
-                slot_for_entry, usable_levels, ClobUserRefV0, Direction, PriceLevel, QuoteArgsV0,
-                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, MAX_ROUTE_QUOTERS,
+                slot_for_entry, usable_levels, DirectionV0, PriceLevelV0, QuoteArgsV0,
+                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, UserRefV0,
+                MAX_ROUTE_QUOTERS,
             },
         },
         validate,
@@ -66,7 +67,7 @@ fn is_quoter_slab(info: &AccountInfo) -> bool {
 /// ones and the pool shortens. No second list exists to disagree with this
 /// one, and no earlier quoter's run moves.
 fn trim_to_quoter_room(
-    levels: &mut Vec<PriceLevel>,
+    levels: &mut Vec<PriceLevelV0>,
     run: std::ops::Range<usize>,
     maker_direction: PositionDirection,
     band_oracle_price: i64,
@@ -93,7 +94,7 @@ fn trim_to_quoter_room(
 
         let size = level.size.min(remaining);
         remaining -= size;
-        levels[kept] = PriceLevel {
+        levels[kept] = PriceLevelV0 {
             price: level.price,
             size,
         };
@@ -323,7 +324,7 @@ pub struct QuotedRoute<'info> {
     /// indexes into this. One pool, not one list per book, because Velocity's
     /// heap is 32 KB and never reclaims. A fixed array is not an option
     /// either. Its ceiling is 16 KB, and the stack frame is 4 KB.
-    levels: Vec<PriceLevel>,
+    levels: Vec<PriceLevelV0>,
     /// The market's slab, when the transaction carried one. The mandatory
     /// baseline and the signed route are answered from it. Whether an absent
     /// quoter could have quoted is a fact about the approved set.
@@ -339,15 +340,15 @@ pub struct QuotedRoute<'info> {
 /// identities forwarded on the wire.
 pub struct QuoteInputs<'a> {
     pub market_index: u16,
-    pub direction: Direction,
+    pub direction: DirectionV0,
     pub size: u64,
     /// The loaded-user set quoters must not fill outside of.
-    pub users: &'a [ClobUserRefV0],
+    pub users: &'a [UserRefV0],
     /// The mark a quoter prices a capped maker's loss against. The quote and
     /// the execute must receive the same value. A quoter that spends budgets
     /// would otherwise skip a different set of orders than it quoted.
     pub reference_price: i64,
-    pub taker: ClobUserRefV0,
+    pub taker: UserRefV0,
     /// The worst price this fill accepts, or zero for no bound. A quoter that
     /// honours it stops its walk where the router would have discarded the
     /// rest. It is advisory. See [`QuoteArgsV0::limit_price`].
@@ -371,8 +372,8 @@ impl QuoteInputs<'_> {
     /// The side the quoters rest on: the opposite of the taker's.
     pub fn maker_direction(&self) -> PositionDirection {
         match self.direction {
-            Direction::Long => PositionDirection::Short,
-            Direction::Short => PositionDirection::Long,
+            DirectionV0::Long => PositionDirection::Short,
+            DirectionV0::Short => PositionDirection::Long,
         }
     }
 }
@@ -524,8 +525,8 @@ impl<'info> QuotedRoute<'info> {
     /// Put one quoter's levels in the pool and describe where they landed.
     fn append_ladder(
         &mut self,
-        levels: &[PriceLevel],
-        withheld: PriceLevel,
+        levels: &[PriceLevelV0],
+        withheld: PriceLevelV0,
     ) -> crate::state::prop_amm::QuotedLadderV0 {
         let start = self.levels.len();
         self.levels.extend_from_slice(levels);
@@ -564,7 +565,7 @@ impl<'info> QuotedRoute<'info> {
         let withheld = if quoter_type == QuoterType::Clob {
             ladder.withheld
         } else {
-            PriceLevel::default()
+            PriceLevelV0::default()
         };
 
         self.ladders
@@ -762,10 +763,10 @@ mod trim_tests {
     const WIDE: u32 = crate::math::constants::MARGIN_PRECISION / 10;
 
     /// One level of an earlier quoter, which no trim may reach.
-    fn pool(ladder: &[(u64, u64)]) -> (Vec<PriceLevel>, std::ops::Range<usize>) {
-        let mut levels = vec![PriceLevel { price: 1, size: 1 }];
+    fn pool(ladder: &[(u64, u64)]) -> (Vec<PriceLevelV0>, std::ops::Range<usize>) {
+        let mut levels = vec![PriceLevelV0 { price: 1, size: 1 }];
         let start = levels.len();
-        levels.extend(ladder.iter().map(|(price, size)| PriceLevel {
+        levels.extend(ladder.iter().map(|(price, size)| PriceLevelV0 {
             price: price * PRICE,
             size: size * BASE,
         }));
@@ -790,7 +791,7 @@ mod trim_tests {
             room,
         )
         .unwrap();
-        assert_eq!(levels[0], PriceLevel { price: 1, size: 1 });
+        assert_eq!(levels[0], PriceLevelV0 { price: 1, size: 1 });
         assert_eq!(kept.end, levels.len(), "the run is the tail of the pool");
         levels[kept]
             .iter()

@@ -24,7 +24,7 @@ use {
             events::OrderActionExplanation,
             oracle_map::OracleMap,
             perp_market::PerpMarket,
-            prop_amm::{ClobUserRefV0, Direction, PriceLevel, QuoterType},
+            prop_amm::{DirectionV0, PriceLevelV0, QuoterType, UserRefV0},
             quoter::{MarketQuoteInputs as QuoteInputs, QuoterFill, RouterQuoter},
             user::{OrderReservation, OrderStatus, ReleaseCheck, User, UserStats},
             user_map::{UserMap, UserStatsMap},
@@ -216,7 +216,7 @@ impl<'a, 'r, 'b, 'info> ExternalVenue<'a, 'r, 'b, 'info> {
 /// from, and the size.
 struct BookShare<'l> {
     index: usize,
-    levels: &'l [PriceLevel],
+    levels: &'l [PriceLevelV0],
     allocation: &'l QuoterAllocation,
 }
 
@@ -289,7 +289,7 @@ struct PerpFill<'a, 'o, 'm, 's> {
     /// Opposite the taker's, by construction.
     maker_direction: PositionDirection,
     /// The taker's side, as the router states it.
-    route_direction: Direction,
+    route_direction: DirectionV0,
     /// When this fill runs and what the market oracle lets it do. Held whole
     /// rather than copied field by field, so a reader can see where each of
     /// these values came from.
@@ -301,7 +301,7 @@ struct PerpFill<'a, 'o, 'm, 's> {
     /// Resolves a wire user reference against the loaded set. Empty when no
     /// external book can name one.
     user_ref_index: BTreeMap<(Pubkey, u16), Pubkey>,
-    taker_ref: ClobUserRefV0,
+    taker_ref: UserRefV0,
 }
 
 impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
@@ -333,8 +333,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             market_index: taker.order.market_index,
             maker_direction: taker.direction.opposite(),
             route_direction: match taker.direction {
-                PositionDirection::Long => Direction::Long,
-                PositionDirection::Short => Direction::Short,
+                PositionDirection::Long => DirectionV0::Long,
+                PositionDirection::Short => DirectionV0::Short,
             },
 
             taker_ref: taker.user.clob_user_ref(),
@@ -356,7 +356,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 
     /// Where a ladder stops. Levels past the taker's effective limit are
     /// outside what this fill accepts.
-    fn within_limit(&self, levels: &[PriceLevel]) -> usize {
+    fn within_limit(&self, levels: &[PriceLevelV0]) -> usize {
         let Some(limit) = self.setup.effective_taker_limit else {
             return levels.len();
         };
@@ -394,7 +394,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     }
 
     /// Resolve a wire user reference against the loaded set.
-    fn resolve_user(&self, user: &ClobUserRefV0) -> VelocityResult<Pubkey> {
+    fn resolve_user(&self, user: &UserRefV0) -> VelocityResult<Pubkey> {
         self.user_ref_index
             .get(&(user.authority, user.sub_account_id))
             .copied()
@@ -432,7 +432,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         books.push(QuoterBook {
             priority: QuoterType::Vamm.default_priority(),
             levels: &amm_levels,
-            withheld: PriceLevel::default(),
+            withheld: PriceLevelV0::default(),
         });
 
         let allocations = split_across_quoters(
@@ -478,7 +478,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         amm_quoter: &AmmQuoter,
         rivals: &[QuoterBook],
         target_size: u64,
-    ) -> VelocityResult<Vec<PriceLevel>> {
+    ) -> VelocityResult<Vec<PriceLevelV0>> {
         if !self.conditions.amm_is_available {
             return Ok(vec![]);
         }
@@ -671,7 +671,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         &self,
         venue: &ExternalVenue,
         index: usize,
-        levels: &[PriceLevel],
+        levels: &[PriceLevelV0],
         allocation: &QuoterAllocation,
     ) -> VelocityResult<(
         crate::state::prop_amm::QuoterSubjects,
@@ -1185,7 +1185,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 
         // `settled_users` and `idle_loaded_users` address loaded users by a bit in a u64,
         // so a map past 64 users would read a filled maker as idle and fail an honest
-        // fill. `MAX_QUOTER_WIRE_USERS` keeps a real fill well under that. Widen the
+        // fill. `USER_SET_CAPACITY` keeps a real fill well under that. Widen the
         // bitmap rather than miscounting if the caps grow.
         validate!(
             self.makers_and_referrer.0.len() <= u64::BITS as usize,

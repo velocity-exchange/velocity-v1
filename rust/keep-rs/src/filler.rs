@@ -44,7 +44,7 @@ use {
         priority_fee_subscriber::PriorityFeeSubscriber,
         program::{
             math::time::Millis,
-            state::prop_amm::{ClobUserRefV0, QuoterConfigV0},
+            state::prop_amm::{QuoterConfigV0, UserRefV0},
             FlowAttestationV0,
         },
         slot_clock_from_state,
@@ -671,7 +671,7 @@ async fn clob_makers(
     config: &QuoterConfigV0,
     direction: PositionDirection,
     size: u64,
-    taker: ClobUserRefV0,
+    taker: UserRefV0,
     metrics: &Metrics,
 ) -> Vec<User> {
     let source = relay_chain_source::RpcSource::new(velocity.rpc().url());
@@ -682,8 +682,8 @@ async fn clob_makers(
         &source,
         config,
         match direction {
-            PositionDirection::Long => velocity_router_sim::Direction::Long,
-            PositionDirection::Short => velocity_router_sim::Direction::Short,
+            PositionDirection::Long => velocity_router_sim::DirectionV0::Long,
+            PositionDirection::Short => velocity_router_sim::DirectionV0::Short,
         },
         size,
         usize::MAX,
@@ -697,7 +697,7 @@ async fn clob_makers(
         }
     };
 
-    let reachable: Vec<ClobUserRefV0> = reachable
+    let reachable: Vec<UserRefV0> = reachable
         .into_iter()
         .filter(|maker| *maker != taker)
         .collect();
@@ -886,7 +886,7 @@ async fn try_swift_place(
         &book.config,
         taker_params.direction,
         taker_params.base_asset_amount,
-        ClobUserRefV0 {
+        UserRefV0 {
             authority: anchor_lang::prelude::Pubkey::new_from_array(
                 swift_order.taker_authority.to_bytes(),
             ),

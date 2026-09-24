@@ -22,7 +22,7 @@ use {
         math::router::FillerObligation,
         state::{
             fill_mode::FillMode,
-            prop_amm::{quoter_wire_users, ClobUserRefV0, Direction, QuoterCpiScratch},
+            prop_amm::{quoter_wire_users, DirectionV0, QuoterCpiScratch, UserRefV0},
             revenue_share::RevenueShareEscrowZeroCopyMut,
             state::State,
             user::{Order, User},
@@ -72,12 +72,12 @@ impl<'info> RouteFillAccounts<'info> {
 }
 
 /// The loaded users a quoter may fill against, in the form the wire carries.
-pub fn loaded_wire_users(makers_and_referrer: &UserMap) -> Result<Vec<ClobUserRefV0>> {
+pub fn loaded_wire_users(makers_and_referrer: &UserMap) -> Result<Vec<UserRefV0>> {
     Ok(quoter_wire_users(
         makers_and_referrer
             .user_ref_index()?
             .into_keys()
-            .map(|(authority, sub_account_id)| ClobUserRefV0 {
+            .map(|(authority, sub_account_id)| UserRefV0 {
                 authority,
                 sub_account_id,
             }),
@@ -109,10 +109,10 @@ impl RouteMark {
 
 /// What the router needs to know about the taker order it fills.
 pub struct RoutedOrder {
-    pub direction: Direction,
+    pub direction: DirectionV0,
     /// Base the order still has to fill.
     pub unfilled: u64,
-    pub taker: ClobUserRefV0,
+    pub taker: UserRefV0,
     /// The worst price this fill accepts, or zero for no bound.
     pub limit_price: u64,
     pub mark: RouteMark,
@@ -149,10 +149,10 @@ impl RoutedOrder {
 }
 
 /// The router's name for a taker's side.
-pub fn route_direction(direction: PositionDirection) -> Direction {
+pub fn route_direction(direction: PositionDirection) -> DirectionV0 {
     match direction {
-        PositionDirection::Long => Direction::Long,
-        PositionDirection::Short => Direction::Short,
+        PositionDirection::Long => DirectionV0::Long,
+        PositionDirection::Short => DirectionV0::Short,
     }
 }
 

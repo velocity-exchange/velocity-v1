@@ -21,7 +21,7 @@
 //! aside for it. A fill there grows its owner's worst case, so the bound is
 //! initial margin on the base taken, which is a base figure. Such a quoter
 //! fills from the single `user` on its registry slot, so that user's row
-//! carries the figure as [`QuoterUserCapV0::base_cap`].
+//! carries the figure as [`UserCapV0::base_cap`].
 //!
 //! One walk prices both figures, because one user may back both kinds of
 //! depth. [`build_user_caps`] writes them onto the same cap row. It also
@@ -157,9 +157,8 @@ use {
         state::{
             margin_calculation::{MarginContext, MarginTypeConfig},
             prop_amm::{
-                clob_slot_index, find_account, ClobSide, QuoterSlabExt, QuoterSlabV0,
-                QuoterUserCapV0, QuoterUserCapsV0,
-                MAX_CONSTRAINED_WIRE_USERS as USER_CAPS_CAPACITY, MAX_ROUTE_QUOTERS,
+                clob_slot_index, find_account, QuoterSlabExt, QuoterSlabV0, SideV0, UserCapV0,
+                UserCapsV0, MAX_ROUTE_QUOTERS, USER_CAPS_CAPACITY,
             },
             user::{MarketType, OrderStatus},
             user_map::{UserMap, UserStatsMap},
@@ -198,7 +197,7 @@ pub fn build_user_caps<'info>(
     tail: &'info [AccountInfo<'info>],
     inputs: &QuoteInputs<'_>,
     ctx: &mut CapInputs<'_, 'info>,
-) -> Result<(QuoterUserCapsV0, QuoterRooms)> {
+) -> Result<(UserCapsV0, QuoterRooms)> {
     // The side a taker of this direction sweeps, which is the only side these
     // quoters will be asked for. The other side stays unconstrained.
     let resting_side = inputs.direction.side();
@@ -219,7 +218,7 @@ pub fn build_user_caps<'info>(
         rooms.push(slot, 0);
     }
 
-    let mut caps: Vec<QuoterUserCapV0> = Vec::with_capacity(USER_CAPS_CAPACITY);
+    let mut caps: Vec<UserCapV0> = Vec::with_capacity(USER_CAPS_CAPACITY);
     for (index, user_ref) in inputs.users.iter().enumerate() {
         // The taker can be loaded as a maker too. It gets no budget of its own.
         if *user_ref == inputs.taker {
@@ -290,14 +289,14 @@ pub fn build_user_caps<'info>(
             continue;
         }
 
-        caps.push(QuoterUserCapV0 {
+        caps.push(UserCapV0 {
             index: index as u8,
             quote_cap,
             base_cap,
         });
     }
 
-    Ok((QuoterUserCapsV0::from_caps(caps), rooms))
+    Ok((UserCapsV0::from_caps(caps), rooms))
 }
 
 /// The base room of every custom quoter the route consults, by slab slot.
@@ -377,7 +376,7 @@ pub struct SizedQuote<'a, 'info> {
     /// Carried here rather than on the inputs, so the quote and the execute
     /// that binds to it cannot be given different numbers. Both read this one
     /// value.
-    pub caps: QuoterUserCapsV0,
+    pub caps: UserCapsV0,
     /// The same `base_cap` these caps carry, indexed by slab slot rather than duplicated by chance.
     /// Resolving a slot's user into a cap index would mean deriving the user PDA per slot. No quote step
     /// can afford that. A cap can also be evicted from the wire list, but this copy keeps velocity's own
@@ -500,7 +499,7 @@ impl CapInputs<'_, '_> {
         &mut self,
         key: &Pubkey,
         market_index: u16,
-        resting_side: ClobSide,
+        resting_side: SideV0,
         taker_size: u64,
         reference_price: i64,
         books: u32,
@@ -533,8 +532,8 @@ impl CapInputs<'_, '_> {
         // itself reads. A fill that only reduces is exempt from the gates
         // below, so a floored maker can still deleverage through the book.
         let signed_fill = match resting_side {
-            ClobSide::Ask => resting.cast::<i64>()?.safe_mul(-1)?,
-            ClobSide::Bid => resting.cast::<i64>()?,
+            SideV0::Ask => resting.cast::<i64>()?.safe_mul(-1)?,
+            SideV0::Bid => resting.cast::<i64>()?,
         };
         let tier = crate::math::orders::maker_fill_tier(
             position.map_or(0, |position| position.base_asset_amount),
@@ -658,7 +657,7 @@ impl CapInputs<'_, '_> {
         &mut self,
         key: &Pubkey,
         market_index: u16,
-        resting_side: ClobSide,
+        resting_side: SideV0,
     ) -> Result<u64> {
         let maker = self.makers_and_referrer.get_ref(key)?;
         let Ok(position) = maker.get_perp_position(market_index) else {
@@ -671,8 +670,8 @@ impl CapInputs<'_, '_> {
 
         // An ask sells, so filling it is a short fill and it reduces a long.
         let fill_direction = match resting_side {
-            ClobSide::Ask => PositionDirection::Short,
-            ClobSide::Bid => PositionDirection::Long,
+            SideV0::Ask => PositionDirection::Short,
+            SideV0::Bid => PositionDirection::Long,
         };
 
         Ok(crate::math::orders::reduce_only_cover(
@@ -696,14 +695,14 @@ impl CapInputs<'_, '_> {
 fn clob_resting_base(
     maker: &crate::state::user::User,
     market_index: u16,
-    resting_side: ClobSide,
+    resting_side: SideV0,
 ) -> Result<u64> {
     let Ok(position) = maker.get_perp_position(market_index) else {
         return Ok(0);
     };
     let (reserved, direction) = match resting_side {
-        ClobSide::Bid => (position.open_bids.unsigned_abs(), PositionDirection::Long),
-        ClobSide::Ask => (position.open_asks.unsigned_abs(), PositionDirection::Short),
+        SideV0::Bid => (position.open_bids.unsigned_abs(), PositionDirection::Long),
+        SideV0::Ask => (position.open_asks.unsigned_abs(), PositionDirection::Short),
     };
     let in_slots = maker
         .orders

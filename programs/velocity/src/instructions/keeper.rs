@@ -94,7 +94,7 @@ use {
                 get_market_set_from_list, get_writable_perp_market_set,
                 get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
             },
-            prop_amm::{Direction, QuoterSlabExt, QuoterSlabV0},
+            prop_amm::{DirectionV0, QuoterSlabExt, QuoterSlabV0},
             revenue_share::{RevenueShareEscrowZeroCopyMut, REVENUE_SHARE_ESCROW_PDA_SEED},
             revenue_share_map::load_revenue_share_map,
             settle_pnl_mode::SettlePnlMode,

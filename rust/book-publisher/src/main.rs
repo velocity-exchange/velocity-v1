@@ -43,7 +43,7 @@ use {
             create_quote_buffer_ixs, fetch_account, fetch_maybe_account, fetch_zero_copy,
             perp_market_pda, read_zero_copy, state_pda,
         },
-        router_subscriptions, Direction,
+        router_subscriptions, DirectionV0,
     },
 };
 
@@ -465,8 +465,8 @@ async fn publish_market(
         .iter()
         .filter_map(|slot| slot.quotes().then_some(slot.entry))
         .collect();
-    let asks_quote = quote_market(source, health, &request(Direction::Long), &live).await?;
-    let bids_quote = quote_market(source, health, &request(Direction::Short), &live).await?;
+    let asks_quote = quote_market(source, health, &request(DirectionV0::Long), &live).await?;
+    let bids_quote = quote_market(source, health, &request(DirectionV0::Short), &live).await?;
     if !asks_quote.excluded.is_empty() || !bids_quote.excluded.is_empty() {
         warn!(
             market_index,

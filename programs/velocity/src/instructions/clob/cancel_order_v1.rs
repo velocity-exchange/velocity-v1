@@ -9,14 +9,13 @@
 
 use {
     crate::{
+        controller::position::PositionDirection,
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
         state::{
             perp_market::PerpMarket,
-            prop_amm::{
-                ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterSlabV0, WireDirectionExt,
-            },
+            prop_amm::{ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterSlabV0},
             user::{OrderReservation, OrderStatus, ReleaseCheck, User},
         },
         validate,
@@ -101,7 +100,7 @@ pub fn handle_cancel_order_v1(
     user.close_book_order(
         &OrderReservation::book_order(
             params.market_index,
-            removed.side.to_position_direction(),
+            PositionDirection::from(removed.side),
             removed.base_asset_amount,
             removed.reduce_only,
         ),

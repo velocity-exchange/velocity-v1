@@ -70,11 +70,10 @@ impl ClobOrderFacts {
         market_index: u16,
         slot: u64,
     ) -> Self {
-        use crate::state::prop_amm::WireDirectionExt;
         Self {
             order_id: removed.client_order_id,
             market_index,
-            direction: removed.side.to_position_direction(),
+            direction: PositionDirection::from(removed.side),
             price: removed.price,
             base_asset_amount: removed.base_asset_amount,
             base_asset_amount_filled: 0,

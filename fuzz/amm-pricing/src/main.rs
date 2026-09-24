@@ -29,7 +29,7 @@ use {
             market_status::MarketStatus,
             oracle::{MMOraclePriceData, OraclePriceData},
             perp_market::{PerpMarket, AMM},
-            prop_amm::Direction,
+            prop_amm::DirectionV0,
         },
         vlp::amm::{
             controller::SwapDirection,
@@ -331,7 +331,7 @@ fn prop_jit_clamped_bound(
         return;
     };
 
-    for direction in [Direction::Long, Direction::Short] {
+    for direction in [DirectionV0::Long, DirectionV0::Short] {
         let Ok(levels) = vamm_quote_levels(&amm, direction, size, step, &[], None) else {
             continue;
         };
@@ -339,11 +339,11 @@ fn prop_jit_clamped_bound(
         fuzz_assert_le!(quoted, size);
 
         let (position_direction, top) = match direction {
-            Direction::Long => (
+            DirectionV0::Long => (
                 PositionDirection::Long,
                 amm.ask_price(reserve_price, amm.long_spread, amm.reference_price_offset),
             ),
-            Direction::Short => (
+            DirectionV0::Short => (
                 PositionDirection::Short,
                 amm.bid_price(reserve_price, amm.short_spread, amm.reference_price_offset),
             ),
@@ -355,9 +355,9 @@ fn prop_jit_clamped_bound(
         for level in &levels {
             match direction {
                 // The taker buys: no rung may undercut the ask.
-                Direction::Long => fuzz_assert_ge!(level.price, top),
+                DirectionV0::Long => fuzz_assert_ge!(level.price, top),
                 // The taker sells: no rung may overbid the bid.
-                Direction::Short => fuzz_assert_le!(level.price, top),
+                DirectionV0::Short => fuzz_assert_le!(level.price, top),
             }
         }
 
@@ -578,7 +578,8 @@ fn regr_269_jit_available_liquidity(
 
     // The taker sells, so the vAMM quotes the bid side.
     let taker_dir = PositionDirection::Short;
-    let Ok(levels) = vamm_quote_levels(&amm, Direction::Short, taker_size, step, &[], None) else {
+    let Ok(levels) = vamm_quote_levels(&amm, DirectionV0::Short, taker_size, step, &[], None)
+    else {
         return;
     };
     let quoted: u64 = levels.iter().map(|level| level.size).sum();

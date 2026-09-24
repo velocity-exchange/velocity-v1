@@ -32,9 +32,9 @@ use {
         find_quote_buffer,
         health::{quote_market, QuoteRequest},
         quote_view::{perp_market_pda, read_zero_copy},
-        split_across_quoters, Direction, PriceLevel, QuoterBook,
+        split_across_quoters, DirectionV0, PriceLevelV0, QuoterBook,
     },
-    velocity_rs::program::state::prop_amm::ClobUserRefV0,
+    velocity_rs::program::state::prop_amm::UserRefV0,
 };
 
 /// Everything `/route` needs, independent of the rest of the server. It holds
@@ -295,8 +295,8 @@ pub async fn route_quote(
 ) -> Result<impl IntoResponse, RouteError> {
     let ctx = state.route();
     let (direction, direction_label) = match query.direction.to_lowercase().as_str() {
-        "long" | "buy" => (Direction::Long, "long"),
-        "short" | "sell" => (Direction::Short, "short"),
+        "long" | "buy" => (DirectionV0::Long, "long"),
+        "short" | "sell" => (DirectionV0::Short, "short"),
         other => {
             return Err(RouteError::BadRequest(format!(
                 "direction must be long|short, got '{other}'"
@@ -352,13 +352,13 @@ pub async fn route_quote(
 
     // The program's own split over the verified books. Nothing here mirrors
     // it, so nothing can drift from it.
-    let level_arrays: Vec<Vec<PriceLevel>> = view
+    let level_arrays: Vec<Vec<PriceLevelV0>> = view
         .books
         .iter()
         .map(|book| {
             book.levels
                 .iter()
-                .map(|level| PriceLevel {
+                .map(|level| PriceLevelV0 {
                     price: level.price,
                     size: level.size,
                 })
@@ -448,8 +448,8 @@ pub async fn route_quote(
 
 /// The taker as the wire names it, so a route never reports the caller to
 /// itself as one of its own makers.
-fn taker_ref(query: &RouteQuery) -> ClobUserRefV0 {
-    ClobUserRefV0 {
+fn taker_ref(query: &RouteQuery) -> UserRefV0 {
+    UserRefV0 {
         authority: query
             .taker_authority
             .as_deref()

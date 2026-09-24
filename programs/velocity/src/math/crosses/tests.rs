@@ -7,7 +7,7 @@ fn order(id: u64, price: u64, size: u64, owner: u8, taker_origin: bool) -> Resti
             order_id: id,
         },
 
-        user: ClobUserRefV0 {
+        user: UserRefV0 {
             authority: Pubkey::new_from_array([owner; 32]),
             sub_account_id: 0,
         },

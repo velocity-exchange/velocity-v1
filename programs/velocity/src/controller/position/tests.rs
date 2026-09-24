@@ -3,7 +3,7 @@ use crate::{
     instructions::optional_accounts::AccountMaps,
     math::time::SlotClock,
     state::{
-        prop_amm::Direction,
+        prop_amm::DirectionV0,
         quoter::{QuoteContext, RouterQuoter},
     },
     vlp::amm::{controller::SwapDirection, refresh::_update_amm, AmmQuoter},
@@ -38,8 +38,8 @@ fn run_amm_swap_for_test(
     market.amm.seed_no_spread_quote_state();
     // SwapDirection::Remove (base leaves the AMM, taker buys) ↔ taker Long.
     let direction = match swap_direction {
-        SwapDirection::Remove => Direction::Long,
-        SwapDirection::Add => Direction::Short,
+        SwapDirection::Remove => DirectionV0::Long,
+        SwapDirection::Add => DirectionV0::Short,
     };
     let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
     let fill = RouterQuoter::execute(&mut amm_quoter, &ctx, direction, base_amount).unwrap();

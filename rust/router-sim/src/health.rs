@@ -105,7 +105,7 @@ pub struct QuoteRequest<'a> {
     pub authority: Pubkey,
     pub quote_buffer: Pubkey,
     pub market_index: u16,
-    pub direction: program::state::prop_amm::Direction,
+    pub direction: program::state::prop_amm::DirectionV0,
     pub size: u64,
     /// Carry only these entries. `None` carries every live entry, which fits
     /// only while a market has few enough of them.
@@ -121,7 +121,7 @@ impl<'a> QuoteRequest<'a> {
         authority: Pubkey,
         quote_buffer: Pubkey,
         market_index: u16,
-        direction: program::state::prop_amm::Direction,
+        direction: program::state::prop_amm::DirectionV0,
         size: u64,
     ) -> Self {
         Self {

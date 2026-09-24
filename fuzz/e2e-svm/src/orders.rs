@@ -27,7 +27,7 @@ use {
         },
         state::{
             order_params::{OrderParams, PlaceAndTakeOrderSuccessCondition},
-            prop_amm::{ClobCancelSides, ClobOrderRefV0, ClobSide},
+            prop_amm::{ClobCancelSides, ClobOrderRefV0, SideV0},
         },
     },
 };
@@ -42,7 +42,7 @@ const MAX_TRACKED_BOOK_ORDERS: usize = 32;
 #[derive(Clone, Copy)]
 pub struct Placement {
     pub owner_idx: usize,
-    pub side: ClobSide,
+    pub side: SideV0,
 }
 
 /// An order resting on the book, as its placement reported it.
@@ -50,7 +50,7 @@ pub struct Placement {
 pub struct BookOrder {
     pub owner_idx: usize,
     pub order_ref: ClobOrderRefV0,
-    pub side: ClobSide,
+    pub side: SideV0,
 }
 
 impl Fixture {
@@ -350,7 +350,7 @@ impl Fixture {
         &self,
         filler_idx: usize,
         owner_idx: usize,
-        side: ClobSide,
+        side: SideV0,
     ) -> Instruction {
         let filler = &self.users[filler_idx];
         let mut accounts = velocity::accounts::CrankClobOrderRemoval {

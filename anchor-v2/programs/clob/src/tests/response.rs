@@ -654,7 +654,7 @@ fn the_cap_list_is_fixed_width_on_the_wire() {
 /// The user set is the one wire type velocity *sends* rather than reads, and
 /// this program reads it in place: `users` is a slice into the instruction
 /// data, not a copy lifted out of it. The literals here are what velocity's
-/// `QUOTER_USER_SET_MAX_BYTES` / `MAX_QUOTER_WIRE_USERS` say (that crate is a
+/// `USER_SET_MAX_BYTES` / `USER_SET_CAPACITY` say (that crate is a
 /// separate workspace, so the agreement can only be pinned as numbers): a
 /// four-byte count, then that many 34-byte refs, at most 48 of them.
 ///

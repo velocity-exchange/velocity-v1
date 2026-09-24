@@ -194,7 +194,7 @@ impl User {
     /// so anyone may create sub-account 1 under that PDA. Testing the
     /// authority alone admits the impostor.
     pub fn is_protocol_user(&self, protocol_authority: &Pubkey) -> bool {
-        self.sub_account_id == 0 && self.authority.eq(protocol_authority)
+        is_protocol_user_seeds(&self.authority, self.sub_account_id, protocol_authority)
     }
 
     /// True when this User is owned by a Strategy Vault (see
@@ -960,6 +960,16 @@ impl User {
 
         Ok(())
     }
+}
+
+/// [`User::is_protocol_user`] for a user named by its derivation seeds rather than
+/// loaded, such as a user on the quoter wire.
+pub fn is_protocol_user_seeds(
+    authority: &Pubkey,
+    sub_account_id: u16,
+    protocol_authority: &Pubkey,
+) -> bool {
+    sub_account_id == 0 && authority == protocol_authority
 }
 
 pub fn derive_user_account(authority: &Pubkey, sub_account_id: u16) -> Pubkey {

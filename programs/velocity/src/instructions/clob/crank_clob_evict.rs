@@ -10,9 +10,7 @@ use {
     },
     crate::{
         instructions::relay_harness::StagedCall,
-        state::prop_amm::{
-            ClobEvictWorstArgsV0, ClobNextRemovalArgsV0, ClobRemovalKindV0, ClobSide,
-        },
+        state::prop_amm::{ClobEvictWorstArgsV0, ClobNextRemovalArgsV0, ClobRemovalKindV0, SideV0},
     },
     anchor_lang::prelude::*,
 };
@@ -21,7 +19,7 @@ use {
 pub struct CrankClobEvictArgs {
     pub market_index: u16,
     /// The side past its soft cap. The CLOB re-checks the threshold.
-    pub side: ClobSide,
+    pub side: SideV0,
 }
 
 pub fn handle_crank_clob_evict(

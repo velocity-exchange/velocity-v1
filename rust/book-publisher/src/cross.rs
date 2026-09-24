@@ -25,7 +25,7 @@ use {
     program::{
         instructions::CrankCrossMatchArgs,
         state::{
-            prop_amm::{ClobUserRefV0, QuoterSlotV0},
+            prop_amm::{QuoterSlotV0, UserRefV0},
             router_quote::QuotedSourceKind,
             state::State,
         },
@@ -103,7 +103,7 @@ fn cross_levels(bids: &QuotedBook, asks: &QuotedBook, base_precision: u128) -> L
 /// depth belongs to. A book says so per order. A quoter that fills from one
 /// account says so against that account. Nothing here decodes a book, because
 /// the same simulation that priced the cross also named the accounts it needs.
-fn makers_from_rows(book: &QuotedBook, size: u64, makers: &mut Vec<ClobUserRefV0>) -> u64 {
+fn makers_from_rows(book: &QuotedBook, size: u64, makers: &mut Vec<UserRefV0>) -> u64 {
     let mut covered = 0u64;
     for row in &book.rows {
         if !makers.contains(&row.user) {
@@ -227,7 +227,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     // Maker pairs per leg, capped. The cross size shrinks to what the staged
     // makers cover. Both legs answer the same way, because the view describes
     // every source the same way.
-    let mut makers: Vec<ClobUserRefV0> = Vec::new();
+    let mut makers: Vec<UserRefV0> = Vec::new();
     let mut size = cross.size;
     for book in [ask_book, bid_book] {
         size = size.min(makers_from_rows(book, size, &mut makers));

@@ -55,7 +55,7 @@ use {
                 },
                 time::{Millis, SlotClock, SlotDuration},
             },
-            state::prop_amm::{ClobOrderRefV0, ClobSide, ClobUserRefV0, QuoterConfigV0},
+            state::prop_amm::{ClobOrderRefV0, QuoterConfigV0, SideV0, UserRefV0},
         },
         titan::{self, TitanSwapApi},
         types::{
@@ -2665,9 +2665,9 @@ impl PrimaryLiquidationStrategy {
     ) -> Vec<User> {
         let direction = if Self::liquidation_makers_are_bids(base_asset_amount) {
             // The liquidation sells the position, and a seller sweeps the bids.
-            velocity_router_sim::Direction::Short
+            velocity_router_sim::DirectionV0::Short
         } else {
-            velocity_router_sim::Direction::Long
+            velocity_router_sim::DirectionV0::Long
         };
         let source = relay_chain_source::RpcSource::new(velocity.rpc().url());
         let reachable = match velocity_router_sim::l3::resting_makers(
@@ -2686,7 +2686,7 @@ impl PrimaryLiquidationStrategy {
             }
         };
 
-        let liquidatee_ref = ClobUserRefV0 {
+        let liquidatee_ref = UserRefV0 {
             authority: liquidatee.authority,
             sub_account_id: liquidatee.sub_account_id,
         };
@@ -4639,9 +4639,9 @@ async fn fetch_clob_force_cancel_refs(
             let node_index = u32::try_from(json_u64(&row.node_index)?).ok()?;
             let order_id = json_u64(&row.clob_order_id)?;
             let side = if row.direction == "long" {
-                ClobSide::Bid
+                SideV0::Bid
             } else {
-                ClobSide::Ask
+                SideV0::Ask
             };
 
             Some(ForceCancelClobRefV0 {

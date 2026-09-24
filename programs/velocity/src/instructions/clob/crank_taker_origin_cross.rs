@@ -59,8 +59,7 @@ use {
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             prop_amm::{
-                ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide, ClobUserRefV0,
-                QuoterSlabExt, WireDirectionExt,
+                ClobFillArgsV0, ClobFillRequestV0, ClobMarket, QuoterSlabExt, SideV0, UserRefV0,
             },
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
@@ -169,18 +168,18 @@ pub struct CrankTakerOriginCross<'info> {
 const MAX_CROSSES_PER_CRANK: usize = 8;
 
 /// The side of a cross that demanded liquidity.
-fn aggressor_of(cross: &Cross, side: ClobSide) -> RestingOrder {
+fn aggressor_of(cross: &Cross, side: SideV0) -> RestingOrder {
     match side {
-        ClobSide::Bid => cross.bid,
-        ClobSide::Ask => cross.ask,
+        SideV0::Bid => cross.bid,
+        SideV0::Ask => cross.ask,
     }
 }
 
 /// The other side: the one whose price the match settles at.
-fn counterparty_of(cross: &Cross, aggressor_side: ClobSide) -> RestingOrder {
+fn counterparty_of(cross: &Cross, aggressor_side: SideV0) -> RestingOrder {
     match aggressor_side {
-        ClobSide::Bid => cross.ask,
-        ClobSide::Ask => cross.bid,
+        SideV0::Bid => cross.ask,
+        SideV0::Ask => cross.bid,
     }
 }
 
@@ -293,7 +292,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
 
     drop(book_slot);
 
-    let taker_direction = aggressor_side.to_position_direction();
+    let taker_direction = PositionDirection::from(aggressor_side);
     let cx = TakerOriginContext {
         accounts: &*ctx.accounts,
         market_index,
@@ -398,7 +397,7 @@ struct TakerOriginContext<'a, 'info> {
     accounts: &'a CrankTakerOriginCross<'info>,
     market_index: u16,
     /// The taker's identity as the book reports it on its own rows.
-    taker_ref: ClobUserRefV0,
+    taker_ref: UserRefV0,
     /// The side the taker's remainder demanded liquidity on.
     taker_direction: PositionDirection,
     state: &'a State,
@@ -415,7 +414,7 @@ struct TakerOriginContext<'a, 'info> {
 /// The cross this crank settles, and its two rows.
 struct SubjectCross {
     /// The side that demanded liquidity.
-    aggressor_side: ClobSide,
+    aggressor_side: SideV0,
     /// The matched pair, which carries the size the two rows share.
     cross: Cross,
     /// The taker's own resting remainder.
@@ -440,7 +439,7 @@ fn resolve_subject_cross<'info>(
     book_slot: &crate::state::prop_amm::QuoterSlotV0,
     market_index: u16,
     cross_rows: u16,
-    taker_ref: ClobUserRefV0,
+    taker_ref: UserRefV0,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<SubjectCross> {
     let (bids, asks) = super::helpers::crank_common::book_l3_sides(
@@ -1512,7 +1511,7 @@ pub(super) fn stage_taker_origin_cross(
 /// maker-against-maker cross ahead of a remainder is `crank_cross_match`'s work,
 /// and clearing it brings the remainder to the front. The two cranks therefore
 /// run in turn instead of competing for the same book.
-fn stageable_cross(bids: &[RestingOrder], asks: &[RestingOrder]) -> Option<(Cross, ClobSide)> {
+fn stageable_cross(bids: &[RestingOrder], asks: &[RestingOrder]) -> Option<(Cross, SideV0)> {
     let (Some(best_bid), Some(best_ask)) = (bids.first(), asks.first()) else {
         return None;
     };

@@ -274,7 +274,7 @@ mod tests {
 /// Evaluating subsets by simulated fill is impractical, so selection reuses
 /// this: the same `split_across_quoters` the chain runs, with no port to drift.
 pub use program::math::router::{split_across_quoters, QuoterAllocation, QuoterBook};
-pub use program::state::prop_amm::{Direction, PriceLevel};
+pub use program::state::prop_amm::{DirectionV0, PriceLevelV0};
 
 /// Ask a book which makers rest on it.
 ///
@@ -294,7 +294,7 @@ pub mod l3 {
         super::*,
         anyhow::{anyhow, bail},
         program::state::prop_amm::{
-            ClobUserRefV0, Direction, L3ArgsV0, L3ResponseV0, QuoterConfigV0, ResponsePointerV0,
+            DirectionV0, L3ArgsV0, L3ResponseV0, QuoterConfigV0, ResponsePointerV0, UserRefV0,
         },
         solana_sdk::{
             instruction::{AccountMeta, Instruction},
@@ -317,10 +317,10 @@ pub mod l3 {
     pub async fn resting_makers<S: ChainSource + ?Sized>(
         source: &S,
         config: &QuoterConfigV0,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         limit: usize,
-    ) -> Result<Vec<ClobUserRefV0>> {
+    ) -> Result<Vec<UserRefV0>> {
         if config.quote_l3_v0_discriminator == [0u8; 8] {
             return Ok(Vec::new());
         }
@@ -388,7 +388,7 @@ pub mod l3 {
         let response =
             L3ResponseV0::parse(bytes).map_err(|_| anyhow!("undecodable l3 response"))?;
 
-        let mut makers: Vec<ClobUserRefV0> = Vec::new();
+        let mut makers: Vec<UserRefV0> = Vec::new();
         for row in response.rows {
             if makers.len() == limit {
                 break;

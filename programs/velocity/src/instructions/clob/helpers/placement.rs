@@ -16,8 +16,7 @@ use {
         msg,
         state::{
             prop_amm::{
-                ClobMarket, ClobPlaceOrderArgsV0, ClobSide, ClobUserRefV0, QuoterSlabExt,
-                QuoterSlabV0,
+                ClobMarket, ClobPlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0, UserRefV0,
             },
             user::{OrderReservation, ReleaseCheck, User},
         },
@@ -349,8 +348,8 @@ pub fn try_place_remainder_on_clob<'info>(
     };
 
     let side = match direction {
-        PositionDirection::Long => ClobSide::Bid,
-        PositionDirection::Short => ClobSide::Ask,
+        PositionDirection::Long => SideV0::Bid,
+        PositionDirection::Short => SideV0::Ask,
     };
 
     // A failed CPI aborts the transaction, which unwinds the reservation with
@@ -397,7 +396,7 @@ pub fn try_place_remainder_on_clob<'info>(
 
 /// What a remainder's owner holds once its reservation is taken.
 struct ReservedRemainder {
-    user_ref: ClobUserRefV0,
+    user_ref: UserRefV0,
     /// The order holds `open_orders` on the position, so its margin regime
     /// cannot change while it rests. The place record states it.
     is_isolated_position: bool,

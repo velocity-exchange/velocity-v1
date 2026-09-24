@@ -30,7 +30,7 @@
 //! resolving one pair frees the next, and a maker cross behind a taker one.
 
 use crate::state::prop_amm::{
-    ClobOrderRefV0, ClobSide, ClobUserRefV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
+    ClobOrderRefV0, SideV0, UserRefV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
 };
 
 #[cfg(test)]
@@ -59,7 +59,7 @@ pub fn served_window(placed_slot: u64, slot: u64) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RestingOrder {
     pub order_ref: ClobOrderRefV0,
-    pub user: ClobUserRefV0,
+    pub user: UserRefV0,
     pub price: u64,
     pub base_asset_amount: u64,
     pub taker_origin: bool,
@@ -109,10 +109,10 @@ pub enum CrossKind {
 
 impl CrossKind {
     /// The side that demanded liquidity, if either did.
-    pub fn aggressor_side(&self) -> Option<ClobSide> {
+    pub fn aggressor_side(&self) -> Option<SideV0> {
         match self {
-            Self::BidAggresses => Some(ClobSide::Bid),
-            Self::AskAggresses => Some(ClobSide::Ask),
+            Self::BidAggresses => Some(SideV0::Bid),
+            Self::AskAggresses => Some(SideV0::Ask),
             Self::ProtocolMiddles => None,
         }
     }

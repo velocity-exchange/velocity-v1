@@ -17,7 +17,7 @@ use crate::{
     error::{ErrorCode, VelocityResult},
     math::{casting::Cast, constants::BASE_PRECISION, safe_math::SafeMath},
     msg,
-    state::prop_amm::{Direction, PriceLevel},
+    state::prop_amm::{DirectionV0, PriceLevelV0},
     validate,
 };
 
@@ -31,12 +31,12 @@ pub struct QuoterBook<'a> {
     pub priority: u8,
     /// Best price first. Asks ascend for a long taker. Bids descend for a
     /// short taker.
-    pub levels: &'a [PriceLevel],
+    pub levels: &'a [PriceLevelV0],
     /// Depth this book holds at a better price than it quoted but could not offer,
     /// because the owner's accounts are not in this transaction. A zero price means none.
     /// Nobody can fill it, so it never appears in `levels`. It marks the fill as one that
     /// withheld depth, which [`withheld_obligation`] answers for.
-    pub withheld: PriceLevel,
+    pub withheld: PriceLevelV0,
 }
 
 /// Writable and signer locks a full transaction holds, so a filler cannot fit one more
@@ -157,7 +157,7 @@ pub struct QuoterAllocation {
 /// One book's sanitized read cursor.
 struct Cursor<'a> {
     priority: u8,
-    levels: &'a [PriceLevel],
+    levels: &'a [PriceLevelV0],
     index: usize,
     /// Consumed within `levels[index]`.
     consumed: u64,
@@ -173,7 +173,7 @@ impl Cursor<'_> {
     /// level with a zero price or with nothing left above the step. Stop at the
     /// first level that breaks the price order, and at `MAX_LEVELS_PER_BOOK`.
     /// Return `None` once the book is exhausted.
-    fn peek(&mut self, direction: Direction) -> Option<(u64, u64)> {
+    fn peek(&mut self, direction: DirectionV0) -> Option<(u64, u64)> {
         while self.index < self.levels.len().min(MAX_LEVELS_PER_BOOK) {
             let level = self.levels[self.index];
             let available = level.size.saturating_sub(self.consumed);
@@ -182,8 +182,8 @@ impl Cursor<'_> {
             let out_of_order = self.index > 0 && {
                 let prev = self.levels[self.index - 1].price;
                 match direction {
-                    Direction::Long => level.price < prev,
-                    Direction::Short => level.price > prev,
+                    DirectionV0::Long => level.price < prev,
+                    DirectionV0::Short => level.price > prev,
                 }
             };
 
@@ -213,18 +213,18 @@ impl Cursor<'_> {
 /// at-or-better bar execution is held to, so it must never be tighter than a level's true
 /// notional. A long taker pays at most the quote, so the division rounds up, and a short
 /// receives at least it, so it rounds down.
-fn quote_notional(direction: Direction, price: u64, base: u64) -> VelocityResult<u64> {
+fn quote_notional(direction: DirectionV0, price: u64, base: u64) -> VelocityResult<u64> {
     let exact = (price as u128).safe_mul(base as u128)?;
     match direction {
-        Direction::Long => exact.safe_div_ceil(BASE_PRECISION)?.cast::<u64>(),
-        Direction::Short => exact.safe_div(BASE_PRECISION)?.cast::<u64>(),
+        DirectionV0::Long => exact.safe_div_ceil(BASE_PRECISION)?.cast::<u64>(),
+        DirectionV0::Short => exact.safe_div(BASE_PRECISION)?.cast::<u64>(),
     }
 }
 
 /// Consume `amount` at `price` from one book. Advance its cursor, shrink its
 /// cached top, and accrue the allocation.
 fn take(
-    direction: Direction,
+    direction: DirectionV0,
     cursor: &mut Cursor,
     top: &mut Option<(u64, u64)>,
     allocation: &mut QuoterAllocation,
@@ -265,7 +265,7 @@ fn available_at(top: Option<(u64, u64)>, priority: u8, tier: u8, price: u64) -> 
 /// should have carried that owner is a separate question, and
 /// [`withheld_obligation`] answers it.
 pub fn split_across_quoters(
-    direction: Direction,
+    direction: DirectionV0,
     taker_size: u64,
     books: &[QuoterBook],
     step_size: u64,
@@ -304,8 +304,8 @@ pub fn split_across_quoters(
 
         let live = tops.iter().flatten().map(|&(price, _)| price);
         let Some(price) = (match direction {
-            Direction::Long => live.min(),
-            Direction::Short => live.max(),
+            DirectionV0::Long => live.min(),
+            DirectionV0::Short => live.max(),
         }) else {
             break;
         };
@@ -423,7 +423,10 @@ pub fn split_across_quoters(
 ///
 /// A quoter that trips this fails the fill, which is no new exposure, because an approved
 /// quoter can fail the CPI itself.
-pub fn validate_quoted_levels(direction: Direction, levels: &[PriceLevel]) -> VelocityResult<()> {
+pub fn validate_quoted_levels(
+    direction: DirectionV0,
+    levels: &[PriceLevelV0],
+) -> VelocityResult<()> {
     let mut previous: Option<u64> = None;
     for level in levels {
         validate!(
@@ -436,8 +439,8 @@ pub fn validate_quoted_levels(direction: Direction, levels: &[PriceLevel]) -> Ve
 
         if let Some(previous) = previous {
             let ordered = match direction {
-                Direction::Long => level.price >= previous,
-                Direction::Short => level.price <= previous,
+                DirectionV0::Long => level.price >= previous,
+                DirectionV0::Short => level.price <= previous,
             };
 
             validate!(
@@ -473,7 +476,7 @@ pub struct QuotedPrefix {
 /// levels. The walk mirrors the step quantization in [`Cursor::peek`], so the
 /// prefix is the one [`split_across_quoters`] allocated from.
 pub fn quoted_prefix(
-    levels: &[PriceLevel],
+    levels: &[PriceLevelV0],
     step_size: u64,
     base: u64,
 ) -> VelocityResult<QuotedPrefix> {
@@ -574,8 +577,8 @@ pub fn validate_change_notional(
 mod tests {
     use super::*;
 
-    fn level(price: u64, size: u64) -> PriceLevel {
-        PriceLevel { price, size }
+    fn level(price: u64, size: u64) -> PriceLevelV0 {
+        PriceLevelV0 { price, size }
     }
 
     const VAMM: u8 = 0;
@@ -583,16 +586,16 @@ mod tests {
     const CUSTOM: u8 = 20;
 
     fn split(
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
-        books: &[(u8, Vec<PriceLevel>)],
+        books: &[(u8, Vec<PriceLevelV0>)],
     ) -> Vec<QuoterAllocation> {
         let books: Vec<QuoterBook> = books
             .iter()
             .map(|(priority, levels)| QuoterBook {
                 priority: *priority,
                 levels,
-                withheld: PriceLevel::default(),
+                withheld: PriceLevelV0::default(),
             })
             .collect();
         split_across_quoters(direction, size, &books, 1).unwrap()
@@ -611,11 +614,11 @@ mod tests {
     fn withheld_depth_takes_no_size() {
         // The book quotes 1 @ 100 and reports 2 more @ 101 that it cannot
         // reach. The vAMM offers 5 @ 102, worse than the report.
-        let quoted = vec![PriceLevel {
+        let quoted = vec![PriceLevelV0 {
             price: 100,
             size: B,
         }];
-        let amm = vec![PriceLevel {
+        let amm = vec![PriceLevelV0 {
             price: 102,
             size: 5 * B,
         }];
@@ -623,7 +626,7 @@ mod tests {
             QuoterBook {
                 priority: CLOB,
                 levels: &quoted,
-                withheld: PriceLevel {
+                withheld: PriceLevelV0 {
                     price: 101,
                     size: 2 * B,
                 },
@@ -631,11 +634,11 @@ mod tests {
             QuoterBook {
                 priority: VAMM,
                 levels: &amm,
-                withheld: PriceLevel::default(),
+                withheld: PriceLevelV0::default(),
             },
         ];
 
-        let out = split_across_quoters(Direction::Long, 5 * B, &books, 1).unwrap();
+        let out = split_across_quoters(DirectionV0::Long, 5 * B, &books, 1).unwrap();
         assert_eq!(out[0].base, B, "the book fills what it quoted");
         assert_eq!(out[1].base, 4 * B, "the vAMM fills the rest");
         assert_eq!(
@@ -769,7 +772,7 @@ mod tests {
     #[test]
     fn single_book_partial_and_full() {
         let out = split(
-            Direction::Long,
+            DirectionV0::Long,
             3 * B,
             &[(CLOB, vec![level(100, 2 * B), level(101, 2 * B)])],
         );
@@ -778,14 +781,18 @@ mod tests {
         // 2 @ 100 + 1 @ 101, prices are per base unit at BASE_PRECISION.
         assert_eq!(out[0].quote, 2 * 100 + 101);
 
-        let out = split(Direction::Long, 10 * B, &[(CLOB, vec![level(100, 2 * B)])]);
+        let out = split(
+            DirectionV0::Long,
+            10 * B,
+            &[(CLOB, vec![level(100, 2 * B)])],
+        );
         assert_eq!(out[0].base, 2 * B); // capped at depth
     }
 
     #[test]
     fn tiers_fill_in_priority_order_at_a_shared_price() {
         let out = split(
-            Direction::Long,
+            DirectionV0::Long,
             3 * B,
             &[
                 (CUSTOM, vec![level(100, 4 * B)]),
@@ -799,7 +806,7 @@ mod tests {
 
         // The vAMM tier outranks both.
         let out = split(
-            Direction::Long,
+            DirectionV0::Long,
             2 * B,
             &[
                 (CUSTOM, vec![level(100, 4 * B)]),
@@ -816,7 +823,7 @@ mod tests {
     #[test]
     fn pro_rata_within_a_tier_with_dust() {
         let out = split(
-            Direction::Long,
+            DirectionV0::Long,
             3 * B,
             &[
                 (CUSTOM, vec![level(100, 2 * B)]),
@@ -831,7 +838,7 @@ mod tests {
 
         // Indivisible demand: floors + dust to the first with spare depth.
         let out = split(
-            Direction::Long,
+            DirectionV0::Long,
             5,
             &[(CUSTOM, vec![level(100, 3)]), (CUSTOM, vec![level(100, 3)])],
         );
@@ -842,7 +849,7 @@ mod tests {
     #[test]
     fn walks_prices_best_first_across_books() {
         let out = split(
-            Direction::Long,
+            DirectionV0::Long,
             3 * B,
             &[
                 (CLOB, vec![level(101, 2 * B)]),
@@ -857,7 +864,7 @@ mod tests {
 
         // Short: best is the highest bid.
         let out = split(
-            Direction::Short,
+            DirectionV0::Short,
             2 * B,
             &[
                 (CLOB, vec![level(99, B)]),
@@ -872,7 +879,7 @@ mod tests {
     #[test]
     fn garbage_books_only_hurt_themselves() {
         let out = split(
-            Direction::Long,
+            DirectionV0::Long,
             4 * B,
             &[
                 // Non-monotone: truncated after the first level.
@@ -890,9 +897,9 @@ mod tests {
 
     #[test]
     fn empty_books_and_zero_size() {
-        let out = split(Direction::Long, B, &[(CLOB, vec![])]);
+        let out = split(DirectionV0::Long, B, &[(CLOB, vec![])]);
         assert_eq!(out[0], QuoterAllocation::default());
-        let out = split(Direction::Long, 0, &[(CLOB, vec![level(100, B)])]);
+        let out = split(DirectionV0::Long, 0, &[(CLOB, vec![level(100, B)])]);
         assert_eq!(out[0], QuoterAllocation::default());
     }
 
@@ -901,20 +908,25 @@ mod tests {
         // Not merely truncated: the raw levels reach the taker-limit cut, the
         // margin clamp and the vAMM's last look, where an unfillable level
         // still moves the outcome.
-        assert!(validate_quoted_levels(Direction::Long, &[level(0, B)]).is_err());
-        assert!(validate_quoted_levels(Direction::Long, &[level(100, 0)]).is_err());
+        assert!(validate_quoted_levels(DirectionV0::Long, &[level(0, B)]).is_err());
+        assert!(validate_quoted_levels(DirectionV0::Long, &[level(100, 0)]).is_err());
         assert!(
-            validate_quoted_levels(Direction::Long, &[level(100, B), level(0, u64::MAX)]).is_err()
+            validate_quoted_levels(DirectionV0::Long, &[level(100, B), level(0, u64::MAX)])
+                .is_err()
         );
-        assert!(validate_quoted_levels(Direction::Long, &[level(100, B)]).is_ok());
+        assert!(validate_quoted_levels(DirectionV0::Long, &[level(100, B)]).is_ok());
     }
 
     #[test]
     fn levels_must_run_best_price_first() {
-        assert!(validate_quoted_levels(Direction::Long, &[level(100, B), level(99, B)]).is_err());
-        assert!(validate_quoted_levels(Direction::Short, &[level(100, B), level(101, B)]).is_err());
-        assert!(validate_quoted_levels(Direction::Long, &[level(100, B), level(101, B)]).is_ok());
-        assert!(validate_quoted_levels(Direction::Short, &[level(101, B), level(100, B)]).is_ok());
+        assert!(validate_quoted_levels(DirectionV0::Long, &[level(100, B), level(99, B)]).is_err());
+        assert!(
+            validate_quoted_levels(DirectionV0::Short, &[level(100, B), level(101, B)]).is_err()
+        );
+        assert!(validate_quoted_levels(DirectionV0::Long, &[level(100, B), level(101, B)]).is_ok());
+        assert!(
+            validate_quoted_levels(DirectionV0::Short, &[level(101, B), level(100, B)]).is_ok()
+        );
     }
 
     /// A ladder's rungs come from distinct offsets that can round to the same
@@ -922,12 +934,12 @@ mod tests {
     #[test]
     fn equal_consecutive_prices_are_legal() {
         assert!(validate_quoted_levels(
-            Direction::Long,
+            DirectionV0::Long,
             &[level(100, B), level(100, B), level(101, B)]
         )
         .is_ok());
         assert!(validate_quoted_levels(
-            Direction::Short,
+            DirectionV0::Short,
             &[level(100, B), level(100, B), level(99, B)]
         )
         .is_ok());
@@ -956,7 +968,7 @@ mod tests {
 
     const PRICE: u64 = BASE_PRECISION as u64;
 
-    fn ladder() -> [PriceLevel; 2] {
+    fn ladder() -> [PriceLevelV0; 2] {
         [level(100 * PRICE, B), level(102 * PRICE, B)]
     }
 

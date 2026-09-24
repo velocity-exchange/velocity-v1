@@ -11,8 +11,8 @@ use {
         msg,
         state::prop_amm::{
             find_account, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket,
-            ClobUserRefV0, Direction, ExecuteArgsV0, ExternalQuoterExecutor, QuoterSlabExt,
-            QuoterSlabV0, QuoterSlotV0, QuoterSubjects, QuoterType, ResponseLocationV0,
+            DirectionV0, ExecuteArgsV0, ExternalQuoterExecutor, QuoterSlabExt, QuoterSlabV0,
+            QuoterSlotV0, QuoterSubjects, QuoterType, ResponseLocationV0, UserRefV0,
         },
     },
     anchor_lang::prelude::*,
@@ -45,16 +45,16 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     pub include_taker_origin_reservations: bool,
     /// The loaded-user set, in the wire's derivable form. It is forwarded on
     /// every execute, and a quoter must not fill anyone outside it.
-    pub users: &'a [ClobUserRefV0],
+    pub users: &'a [UserRefV0],
     /// The same caps the quote was taken with.
-    pub caps: crate::state::prop_amm::QuoterUserCapsV0,
+    pub caps: crate::state::prop_amm::UserCapsV0,
     /// The mark those caps were priced against, which is the same mark the
     /// quote carried. A quoter that spends budgets skips a different set of
     /// orders under a different mark.
     pub reference_price: i64,
     /// The taker. It is forwarded so that a quoter skips the taker's own
     /// resting liquidity, which prevents a self trade.
-    pub taker: ClobUserRefV0,
+    pub taker: UserRefV0,
     pub slot: u64,
     pub now: i64,
 }
@@ -110,7 +110,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
     fn subjects(
         &self,
         index: usize,
-        _direction: Direction,
+        _direction: DirectionV0,
         _size: u64,
     ) -> VelocityResult<QuoterSubjects> {
         Ok(if self.quoter_type(index) == QuoterType::Clob {
@@ -123,7 +123,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
     fn cancel_all(
         &mut self,
         index: usize,
-        user: ClobUserRefV0,
+        user: UserRefV0,
         sides: ClobCancelSides,
     ) -> VelocityResult<Option<ClobCancelAllOutcomeV0>> {
         if self.quoter_type(index) != QuoterType::Clob {
@@ -174,7 +174,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
     fn execute(
         &mut self,
         index: usize,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
     ) -> VelocityResult<ResponseLocationV0<'info>> {
         let slab = self.slab()?;

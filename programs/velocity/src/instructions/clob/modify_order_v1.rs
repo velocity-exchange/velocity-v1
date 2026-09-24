@@ -47,7 +47,7 @@ use {
             perp_market_map::{MarketSet, PerpMarketMap},
             prop_amm::{
                 ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, ClobPlaceOrderArgsV0,
-                ClobRemovedOrderV0, QuoterSlabExt, QuoterSlabV0, WireDirectionExt,
+                ClobRemovedOrderV0, QuoterSlabExt, QuoterSlabV0,
             },
             state::State,
             user::{Order, OrderReservation, User},
@@ -239,7 +239,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         super::ClobOrderFacts {
             order_id: removed.client_order_id,
             market_index: params.market_index,
-            direction: removed.side.to_position_direction(),
+            direction: PositionDirection::from(removed.side),
             price: terms.price,
             base_asset_amount: terms.base_asset_amount,
             base_asset_amount_filled: 0,
@@ -352,7 +352,7 @@ fn resolve_replacement_terms(
     // order and a different risk decision, so it goes through a cancel and a
     // place. Carrying the removed order's side also stops a stale hint from
     // putting the replacement on the wrong book side.
-    let direction = removed.side.to_position_direction();
+    let direction = PositionDirection::from(removed.side);
     let price = params.price.unwrap_or(removed.price);
     let requested_base_asset_amount = params
         .base_asset_amount
@@ -486,7 +486,10 @@ fn restamp_placed_trigger_shadow<'info>(
 mod resolve_replacement_terms_tests {
     use {
         super::{resolve_replacement_terms, ModifyOrderV1Params},
-        crate::state::prop_amm::{ClobOrderRefV0, ClobRemovedOrderV0, WireDirectionExt},
+        crate::{
+            controller::position::PositionDirection,
+            state::prop_amm::{ClobOrderRefV0, ClobRemovedOrderV0},
+        },
         quoter_spec::{SideV0, UserRefV0},
     };
 
@@ -549,6 +552,6 @@ mod resolve_replacement_terms_tests {
     #[test]
     fn side_still_carries_the_removed_orders_direction() {
         let terms = resolve_replacement_terms(&params(), &removed(true, false), 0).unwrap();
-        assert_eq!(terms.direction, SideV0::Bid.to_position_direction());
+        assert_eq!(terms.direction, PositionDirection::from(SideV0::Bid));
     }
 }

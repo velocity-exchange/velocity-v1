@@ -48,8 +48,8 @@ use {
         state::{
             perp_market_map::MarketSet,
             prop_amm::{
-                find_account, occupied_slots, ClobUserRefV0, Direction, L3ArgsV0, QuoteArgsV0,
-                QuoterSlabExt, QuoterSlabV0, QuoterType, WireDirectionExt,
+                find_account, occupied_slots, DirectionV0, L3ArgsV0, QuoteArgsV0, QuoterSlabExt,
+                QuoterSlabV0, QuoterType, UserRefV0,
             },
             quoter::MarketQuoteInputs,
             router_quote::{QuotedRowV0, QuotedSourceKind, RouterQuoteBufferV0},
@@ -78,7 +78,7 @@ pub struct QuoteRouter<'info> {
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct QuoteRouterArgs {
     pub market_index: u16,
-    pub direction: Direction,
+    pub direction: DirectionV0,
     /// Size to quote up to. The books returned are what a taker of this size
     /// can get. A resting source is truncated by it. The vAMM and the
     /// PropAMMs price against it.
@@ -255,7 +255,7 @@ fn quote_one_slot<'info>(
             QuoteArgsV0 {
                 // The view settles nothing, so it constrains nothing. It
                 // reports the book as it stands.
-                caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+                caps: crate::state::prop_amm::UserCapsV0::EMPTY,
                 // No budgets to price, so nothing reads this.
                 reference_price: 0,
                 direction: args.direction,
@@ -306,7 +306,7 @@ fn quote_externals<'info>(
         return Ok(());
     };
     let market_index = args.market_index;
-    let taker_direction = args.direction.to_position_direction();
+    let taker_direction = PositionDirection::from(args.direction);
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let consulted: Vec<usize> = {
         let slots = slab_loader.slots()?;
@@ -443,7 +443,7 @@ fn quote_vamm(
         // the buffer's Pod form, which is what makes the cast free.
         let rivals: Vec<QuoterBook> = (0..buffer.source_count as usize)
             .map(|index| QuoterBook {
-                withheld: crate::state::prop_amm::PriceLevel::default(),
+                withheld: crate::state::prop_amm::PriceLevelV0::default(),
                 priority: buffer.sources[index].priority,
                 levels: bytemuck::cast_slice(buffer.levels_for(index)),
             })
@@ -482,7 +482,7 @@ fn quoter_rows<'info>(
     slab_loader: &AccountLoader<'info, QuoterSlabV0>,
     slot_index: usize,
     market_index: u16,
-    direction: Direction,
+    direction: DirectionV0,
     admitted: u64,
     rows_wanted: usize,
     entry: &Pubkey,
@@ -490,7 +490,7 @@ fn quoter_rows<'info>(
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     // The one user a Custom entry may name, `None` for a book. This is the
     // rule settlement applies, applied to what the entry says about itself.
-    bound_to: Option<ClobUserRefV0>,
+    bound_to: Option<UserRefV0>,
     buffer: &mut RouterQuoteBufferV0,
 ) -> Result<bool> {
     let located = {
@@ -559,7 +559,7 @@ fn quoter_rows<'info>(
 
 /// The loaded user's identity in derivable form, `None` when the call did not
 /// carry its account.
-fn user_ref(makers: &crate::state::user_map::UserMap, user: &Pubkey) -> Option<ClobUserRefV0> {
+fn user_ref(makers: &crate::state::user_map::UserMap, user: &Pubkey) -> Option<UserRefV0> {
     let maker = makers.get_ref(user).ok()?;
     Some(maker.clob_user_ref())
 }

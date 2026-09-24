@@ -955,10 +955,10 @@ fn placement(
     owner_idx: usize,
     direction: velocity::controller::position::PositionDirection,
 ) -> orders::Placement {
-    use velocity::{controller::position::PositionDirection, state::prop_amm::ClobSide};
+    use velocity::{controller::position::PositionDirection, state::prop_amm::SideV0};
     let side = match direction {
-        PositionDirection::Long => ClobSide::Bid,
-        PositionDirection::Short => ClobSide::Ask,
+        PositionDirection::Long => SideV0::Bid,
+        PositionDirection::Short => SideV0::Ask,
     };
 
     orders::Placement { owner_idx, side }
@@ -2232,15 +2232,15 @@ impl Fixture {
         #[range(0..2u8)] with_base: u8,
         #[range(1..1_000_000_000u64)] base: u64,
     ) -> bool {
-        use velocity::{controller::position::PositionDirection, state::prop_amm::ClobSide};
+        use velocity::{controller::position::PositionDirection, state::prop_amm::SideV0};
 
         let Some(order) = self.pick_book_order(nth) else {
             return false;
         };
 
         let direction = match order.side {
-            ClobSide::Bid => PositionDirection::Long,
-            ClobSide::Ask => PositionDirection::Short,
+            SideV0::Bid => PositionDirection::Long,
+            SideV0::Ask => PositionDirection::Short,
         };
         let price = (with_price == 1).then(|| order_price(direction, cross == 1));
         let base = (with_base == 1).then_some(base);
@@ -2278,13 +2278,9 @@ impl Fixture {
         #[range(0..NUM_USERS)] owner_idx: usize,
         #[range(0..2u8)] ask: u8,
     ) -> bool {
-        use velocity::state::prop_amm::ClobSide;
+        use velocity::state::prop_amm::SideV0;
 
-        let side = if ask == 1 {
-            ClobSide::Ask
-        } else {
-            ClobSide::Bid
-        };
+        let side = if ask == 1 { SideV0::Ask } else { SideV0::Bid };
         let filler = self.users[filler_idx].clone();
         let ix = self.evict_ix(filler_idx, owner_idx, side);
         self.send_order_ixs(vec![ix], &filler.keypair, None)

@@ -1,5 +1,5 @@
 //! vAMM leg of the router's quoter interface. It turns the AMM curve into
-//! discrete [`PriceLevel`]s for the router split.
+//! discrete [`PriceLevelV0`]s for the router split.
 //!
 //! The vAMM runs in this program and never goes through a CPI leg, which is
 //! what makes last look possible. The router quotes every CPI book first and
@@ -46,7 +46,7 @@ use {
             safe_math::SafeMath,
         },
         state::{
-            prop_amm::{Direction, PriceLevel, QuoterType, WireDirectionExt},
+            prop_amm::{DirectionV0, PriceLevelV0, QuoterType},
             quoter::{QuoteContext, QuoterFill, RouterQuoter},
         },
     },
@@ -77,15 +77,15 @@ pub const LAST_LOOK_BAND: u64 = PERCENTAGE_PRECISION_U64 / 20;
 /// cost the taker liquidity they can afford.
 pub fn vamm_quote_levels(
     amm: &AMM,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     step_size: u64,
     rival_books: &[QuoterBook],
     taker_limit: Option<u64>,
-) -> VelocityResult<Vec<PriceLevel>> {
+) -> VelocityResult<Vec<PriceLevelV0>> {
     let (position_direction, swap_direction) = match direction {
-        Direction::Long => (PositionDirection::Long, SwapDirection::Remove),
-        Direction::Short => (PositionDirection::Short, SwapDirection::Add),
+        DirectionV0::Long => (PositionDirection::Long, SwapDirection::Remove),
+        DirectionV0::Short => (PositionDirection::Short, SwapDirection::Add),
     };
     let available = calculate_amm_available_liquidity(amm, &position_direction, step_size)?;
     let mut total = size.min(available);
@@ -95,18 +95,18 @@ pub fn vamm_quote_levels(
 
     let reserve_price = amm.reserve_price()?;
     let top = match direction {
-        Direction::Long => {
+        DirectionV0::Long => {
             amm.ask_price(reserve_price, amm.long_spread, amm.reference_price_offset)?
         }
-        Direction::Short => {
+        DirectionV0::Short => {
             amm.bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)?
         }
     };
 
     if let Some(limit) = taker_limit {
         let crossed_at_top = match direction {
-            Direction::Long => limit < top,
-            Direction::Short => limit > top,
+            DirectionV0::Long => limit < top,
+            DirectionV0::Short => limit > top,
         };
 
         if crossed_at_top {
@@ -128,8 +128,8 @@ pub fn vamm_quote_levels(
             .safe_mul(LAST_LOOK_BAND as u128)?
             .safe_div(PERCENTAGE_PRECISION_U64 as u128)? as u64;
         match direction {
-            Direction::Long => top.safe_add(band)?,
-            Direction::Short => top.safe_sub(band)?,
+            DirectionV0::Long => top.safe_add(band)?,
+            DirectionV0::Short => top.safe_sub(band)?,
         }
     };
 
@@ -138,8 +138,8 @@ pub fn vamm_quote_levels(
     // already wins by price priority, so shading to that price is LP surplus
     // at no maker's cost. A rung past the limit is dropped here as unfillable.
     let rung_edge = match (taker_limit, direction) {
-        (Some(limit), Direction::Long) => band_edge.min(limit),
-        (Some(limit), Direction::Short) => band_edge.max(limit),
+        (Some(limit), DirectionV0::Long) => band_edge.min(limit),
+        (Some(limit), DirectionV0::Short) => band_edge.max(limit),
         (None, _) => band_edge,
     };
 
@@ -147,18 +147,18 @@ pub fn vamm_quote_levels(
     // each carrying the rivals' depth at its price. An insert sort keeps this
     // a fixed array instead of a collect-and-truncate, whose doubling buffers
     // the allocator never reclaims; the insert sort is linear in rungs kept.
-    let mut rival_rungs = [PriceLevel::default(); VAMM_QUOTE_CHECKPOINTS];
+    let mut rival_rungs = [PriceLevelV0::default(); VAMM_QUOTE_CHECKPOINTS];
     let mut rung_count = 0usize;
     let ranks_before = |a: u64, b: u64| match direction {
-        Direction::Long => a < b,
-        Direction::Short => a > b,
+        DirectionV0::Long => a < b,
+        DirectionV0::Short => a > b,
     };
 
     for level in rival_books.iter().flat_map(|book| book.levels.iter()) {
         let price = level.price;
         let in_band = match direction {
-            Direction::Long => price > top && price <= rung_edge,
-            Direction::Short => price < top && price >= rung_edge && price > 0,
+            DirectionV0::Long => price > top && price <= rung_edge,
+            DirectionV0::Short => price < top && price >= rung_edge && price > 0,
         };
 
         if !in_band || level.size == 0 {
@@ -190,7 +190,7 @@ pub fn vamm_quote_levels(
             rival_rungs.copy_within(at..end, at + 1);
         }
 
-        rival_rungs[at] = PriceLevel {
+        rival_rungs[at] = PriceLevelV0 {
             price,
             size: level.size,
         };
@@ -276,13 +276,13 @@ pub fn vamm_quote_levels(
         let slice_notional = notional.safe_sub(previous_notional)?;
         let exact = (slice_notional as u128).safe_mul(BASE_PRECISION_U64 as u128)?;
         let honest = match direction {
-            Direction::Long => exact.safe_div_ceil(size as u128)?,
-            Direction::Short => exact.safe_div(size as u128)?,
+            DirectionV0::Long => exact.safe_div_ceil(size as u128)?,
+            DirectionV0::Short => exact.safe_div(size as u128)?,
         }
         .cast::<u64>()?;
         let price = match direction {
-            Direction::Long => shade.unwrap_or(0).max(honest).max(bound.unwrap_or(0)),
-            Direction::Short => shade
+            DirectionV0::Long => shade.unwrap_or(0).max(honest).max(bound.unwrap_or(0)),
+            DirectionV0::Short => shade
                 .unwrap_or(u64::MAX)
                 .min(honest)
                 .min(bound.unwrap_or(u64::MAX)),
@@ -293,7 +293,7 @@ pub fn vamm_quote_levels(
         }
 
         bound = Some(price);
-        levels.push(PriceLevel { price, size });
+        levels.push(PriceLevelV0 { price, size });
         previous = cumulative;
         previous_notional = notional;
     }
@@ -312,20 +312,20 @@ impl RouterQuoter for AmmQuoter<'_> {
     fn quote(
         &self,
         ctx: &QuoteContext,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
         rival_books: &[QuoterBook],
-    ) -> VelocityResult<Vec<PriceLevel>> {
+    ) -> VelocityResult<Vec<PriceLevelV0>> {
         vamm_quote_levels(self.amm, direction, size, ctx.step_size, rival_books, None)
     }
 
     fn execute(
         &mut self,
         ctx: &QuoteContext,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
     ) -> VelocityResult<QuoterFill> {
-        let side = direction.to_position_direction();
+        let side = PositionDirection::from(direction);
         let fill = self
             .try_fill_solo(ctx, side, size)?
             .unwrap_or(QuoterFill::ZERO);
@@ -365,16 +365,16 @@ mod tests {
         amm
     }
 
-    fn rival_book(levels: &[PriceLevel]) -> Vec<QuoterBook<'_>> {
+    fn rival_book(levels: &[PriceLevelV0]) -> Vec<QuoterBook<'_>> {
         vec![QuoterBook {
             priority: 10,
             levels,
-            withheld: PriceLevel::default(),
+            withheld: PriceLevelV0::default(),
         }]
     }
 
     /// The split's floored per-level notional, as `math::router` computes it.
-    fn split_notional(levels: &[PriceLevel]) -> u64 {
+    fn split_notional(levels: &[PriceLevelV0]) -> u64 {
         levels
             .iter()
             .map(|l| ((l.price as u128) * (l.size as u128) / BASE_PRECISION_U64 as u128) as u64)
@@ -387,7 +387,7 @@ mod tests {
     fn long_ladder_is_monotone_and_at_or_better() {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
-        let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], None).unwrap();
+        let levels = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], None).unwrap();
 
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), size);
         assert!(levels.windows(2).all(|w| w[0].price <= w[1].price));
@@ -405,7 +405,7 @@ mod tests {
     fn short_ladder_is_monotone_and_at_or_better() {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
-        let levels = vamm_quote_levels(&amm, Direction::Short, size, 1, &[], None).unwrap();
+        let levels = vamm_quote_levels(&amm, DirectionV0::Short, size, 1, &[], None).unwrap();
 
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), size);
         assert!(levels.windows(2).all(|w| w[0].price >= w[1].price));
@@ -422,13 +422,13 @@ mod tests {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
         let rival_price = TOP + TOP / 100; // +1%, inside the 5% band
-        let rival_levels = [PriceLevel {
+        let rival_levels = [PriceLevelV0 {
             price: rival_price,
             size: BASE_PRECISION_U64,
         }];
         let levels = vamm_quote_levels(
             &amm,
-            Direction::Long,
+            DirectionV0::Long,
             size,
             1,
             &rival_book(&rival_levels),
@@ -458,19 +458,19 @@ mod tests {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
         let rival_price = TOP + TOP / 100; // +1%, inside the 5% band
-        let dust = [PriceLevel {
+        let dust = [PriceLevelV0 {
             price: rival_price,
             size: BASE_PRECISION_U64 / 1000,
         }];
-        let deep = [PriceLevel {
+        let deep = [PriceLevelV0 {
             price: rival_price,
             size,
         }];
         let shaded_by_dust =
-            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&dust), None).unwrap();
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &rival_book(&dust), None).unwrap();
         let shaded_by_depth =
-            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&deep), None).unwrap();
-        let honest = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], None).unwrap();
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &rival_book(&deep), None).unwrap();
+        let honest = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], None).unwrap();
 
         assert_eq!(shaded_by_dust[0].price, rival_price);
         assert_eq!(shaded_by_dust[0].size, dust[0].size);
@@ -494,7 +494,7 @@ mod tests {
         let size = 10 * BASE_PRECISION_U64;
         // +0.5%, far tighter than the curve impact of a 10-unit take.
         let limit = TOP + TOP / 200;
-        let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], Some(limit)).unwrap();
+        let levels = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], Some(limit)).unwrap();
 
         // The ladder quotes the reachable slice: nonzero, smaller than the
         // request, every rung within the limit. Each rung prices at its
@@ -520,7 +520,7 @@ mod tests {
         // Below the ask top. The vAMM cannot fill a buyer within this limit.
         let limit = TOP - TOP / 100;
         assert!(
-            vamm_quote_levels(&amm, Direction::Long, size, 1, &[], Some(limit))
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], Some(limit))
                 .unwrap()
                 .is_empty()
         );
@@ -531,13 +531,13 @@ mod tests {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
         let limit = TOP + TOP / 100; // +1%
-        let rival_levels = [PriceLevel {
+        let rival_levels = [PriceLevelV0 {
             price: TOP + TOP / 50, // +2%, in band but past the limit
             size: BASE_PRECISION_U64,
         }];
         let levels = vamm_quote_levels(
             &amm,
-            Direction::Long,
+            DirectionV0::Long,
             size,
             1,
             &rival_book(&rival_levels),
@@ -556,26 +556,33 @@ mod tests {
         let size = 10 * BASE_PRECISION_U64;
         let garbage = [
             // 10x the top, outside the band. It must not inflate the book.
-            PriceLevel {
+            PriceLevelV0 {
                 price: TOP * 10,
                 size: BASE_PRECISION_U64,
             },
             // Below the vAMM's top, so it crosses and is not a shading target.
-            PriceLevel {
+            PriceLevelV0 {
                 price: TOP - TOP / 100,
                 size: BASE_PRECISION_U64,
             },
         ];
-        let shaded =
-            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&garbage), None).unwrap();
-        let honest = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], None).unwrap();
+        let shaded = vamm_quote_levels(
+            &amm,
+            DirectionV0::Long,
+            size,
+            1,
+            &rival_book(&garbage),
+            None,
+        )
+        .unwrap();
+        let honest = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], None).unwrap();
         assert_eq!(shaded, honest);
     }
 
     #[test]
     fn size_caps_at_available_liquidity() {
         let amm = amm_fixture();
-        let levels = vamm_quote_levels(&amm, Direction::Long, u64::MAX, 1, &[], None).unwrap();
+        let levels = vamm_quote_levels(&amm, DirectionV0::Long, u64::MAX, 1, &[], None).unwrap();
         let available =
             calculate_amm_available_liquidity(&amm, &PositionDirection::Long, 1).unwrap();
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), available);
@@ -584,7 +591,7 @@ mod tests {
     #[test]
     fn zero_size_is_empty() {
         let amm = amm_fixture();
-        assert!(vamm_quote_levels(&amm, Direction::Long, 0, 1, &[], None)
+        assert!(vamm_quote_levels(&amm, DirectionV0::Long, 0, 1, &[], None)
             .unwrap()
             .is_empty());
     }
@@ -622,7 +629,7 @@ mod ts_mirror_fixture {
         };
 
         amm.seed_no_spread_quote_state();
-        for (label, direction) in [("long", Direction::Long), ("short", Direction::Short)] {
+        for (label, direction) in [("long", DirectionV0::Long), ("short", DirectionV0::Short)] {
             let levels =
                 vamm_quote_levels(&amm, direction, 10 * BASE_PRECISION_U64, 1, &[], None).unwrap();
             let encoded: Vec<String> = levels
@@ -637,8 +644,8 @@ mod ts_mirror_fixture {
         // this is the case that catches a mirror which quotes the room to the
         // hard reserve bound instead.
         for (label, direction) in [
-            ("long_capped", Direction::Long),
-            ("short_capped", Direction::Short),
+            ("long_capped", DirectionV0::Long),
+            ("short_capped", DirectionV0::Short),
         ] {
             let levels =
                 vamm_quote_levels(&amm, direction, 40 * BASE_PRECISION_U64, 1, &[], None).unwrap();

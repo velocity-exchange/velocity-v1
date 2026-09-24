@@ -28,7 +28,7 @@
 
 use {
     crate::{
-        controller::orders::pay_keeper_flat_reward_for_perps,
+        controller::{orders::pay_keeper_flat_reward_for_perps, position::PositionDirection},
         error::ErrorCode,
         instructions::{constraints::*, relay_harness::StagedCall},
         load_mut, msg,
@@ -39,8 +39,8 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 ClobEvictWorstArgsV0, ClobMarket, ClobReader, ClobRemoveExpiredArgsV0,
-                ClobRemovedOrderV0, ClobUserRefV0, Direction, L3ArgsV0, L3RowV0, QuoterCpiScratch,
-                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, WireDirectionExt,
+                ClobRemovedOrderV0, DirectionV0, L3ArgsV0, L3RowV0, QuoterCpiScratch,
+                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, UserRefV0,
             },
             state::State,
             user::{OrderReservation, ReleaseCheck, User, UserStats},
@@ -224,7 +224,7 @@ pub fn crank_clob_removal(
         // would free the margin behind orders that still rest.
         let removed_order = OrderReservation::book_order(
             market_index,
-            removed.side.to_position_direction(),
+            PositionDirection::from(removed.side),
             removed.base_asset_amount,
             removed.reduce_only,
         );
@@ -368,7 +368,7 @@ pub fn clob_reader<'a, 'info>(
 /// Derive the `(User, UserStats)` PDAs from a node's derivable identity. The
 /// book stores `(authority, sub_account_id)` instead of the `User` key so that
 /// this derivation is possible.
-pub fn derive_user_pdas(user: &ClobUserRefV0) -> (Pubkey, Pubkey) {
+pub fn derive_user_pdas(user: &UserRefV0) -> (Pubkey, Pubkey) {
     pdas::user_pair(&user.authority, user.sub_account_id)
 }
 
@@ -588,7 +588,7 @@ pub(crate) fn book_side_rested<'info>(
     quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
     tail: &'info [AccountInfo<'info>],
     market_index: u16,
-    direction: Direction,
+    direction: DirectionV0,
     size: u64,
     slot: u64,
     cpi_scratch: &mut QuoterCpiScratch<'info>,
@@ -659,7 +659,7 @@ pub(crate) fn book_l3_side<'info, T>(
     quoter: &QuoterSlotV0,
     slab: &AccountLoader<'info, QuoterSlabV0>,
     market_index: u16,
-    direction: Direction,
+    direction: DirectionV0,
     max_rows: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut QuoterCpiScratch<'info>,
@@ -716,7 +716,7 @@ pub(crate) fn book_l3_sides<'info>(
         quoter,
         slab,
         market_index,
-        Direction::Long,
+        DirectionV0::Long,
         max_rows,
         accounts,
         scratch,
@@ -731,7 +731,7 @@ pub(crate) fn book_l3_sides<'info>(
         quoter,
         slab,
         market_index,
-        Direction::Short,
+        DirectionV0::Short,
         max_rows,
         accounts,
         scratch,

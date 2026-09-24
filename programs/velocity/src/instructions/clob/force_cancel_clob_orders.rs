@@ -27,7 +27,10 @@
 
 use {
     crate::{
-        controller::{orders::pay_keeper_flat_reward_for_spot, position::get_position_index},
+        controller::{
+            orders::pay_keeper_flat_reward_for_spot,
+            position::{get_position_index, PositionDirection},
+        },
         error::ErrorCode,
         instructions::{
             constraints::*,
@@ -46,7 +49,7 @@ use {
             prop_amm::{
                 ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelOrderArgsV0,
                 ClobCancelSides, ClobCancelSidesExt, ClobMarket, ClobOrderRefV0,
-                ClobRemovedOrderV0, ClobSide, ClobUserRefV0, QuoterSlabV0, WireDirectionExt,
+                ClobRemovedOrderV0, QuoterSlabV0, SideV0, UserRefV0,
             },
             spot_market_map::{get_writable_spot_market_set, SpotMarketMap},
             state::State,
@@ -71,7 +74,7 @@ const _: () =
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct ForceCancelClobRefV0 {
     pub order_ref: ClobOrderRefV0,
-    pub side: ClobSide,
+    pub side: SideV0,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
@@ -250,7 +253,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
 /// What the gate authorized this crank to reclaim.
 struct ForceCancelPlan {
     /// The account the orders belong to, as the book names it.
-    user_ref: ClobUserRefV0,
+    user_ref: UserRefV0,
     /// The refs to cancel one at a time. Each ref is this user's, and the
     /// declared side makes the order risk-increasing.
     refs: Vec<ForceCancelClobRefV0>,
@@ -359,7 +362,7 @@ fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
 fn select_cancellable_refs(
     clob: &ClobMarket<'_, '_>,
     order_refs: &[ForceCancelClobRefV0],
-    user_ref: ClobUserRefV0,
+    user_ref: UserRefV0,
     sweep: &SweepDecision,
 ) -> Result<Vec<ForceCancelClobRefV0>> {
     let views = clob
@@ -383,13 +386,13 @@ fn select_cancellable_refs(
             // second call for work already done.
             if sweep
                 .sides
-                .is_some_and(|sides| sides.includes(order_ref.side.to_position_direction()))
+                .is_some_and(|sides| sides.includes(PositionDirection::from(order_ref.side)))
             {
                 return Ok(None);
             }
 
             let reducing = is_order_position_reducing(
-                &order_ref.side.to_position_direction(),
+                &PositionDirection::from(order_ref.side),
                 view.base_asset_amount,
                 sweep.position_base,
             )?;
@@ -484,7 +487,7 @@ fn unwind_cancelled_orders(
         user.close_book_order(
             &OrderReservation::book_order(
                 market_index,
-                removed.side.to_position_direction(),
+                PositionDirection::from(removed.side),
                 removed.base_asset_amount,
                 removed.reduce_only,
             ),

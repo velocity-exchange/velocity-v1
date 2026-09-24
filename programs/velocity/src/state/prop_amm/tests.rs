@@ -142,8 +142,8 @@ fn designation_refuses_a_book_an_approved_list_names() {
     ));
 }
 
-fn user_ref(byte: u8, sub_account_id: u16) -> ClobUserRefV0 {
-    ClobUserRefV0 {
+fn user_ref(byte: u8, sub_account_id: u16) -> UserRefV0 {
+    UserRefV0 {
         authority: Pubkey::new_from_array([byte; 32]),
         sub_account_id,
     }
@@ -195,7 +195,7 @@ fn a_book_may_move_any_loaded_user_but_the_taker() {
     // ...nor the protocol `User`, which is the inventory-free taker the cross
     // and liquidation cranks fill through. A book that could name it would
     // move a position onto protocol funds at a price of its own choosing.
-    let protocol_user = ClobUserRefV0 {
+    let protocol_user = UserRefV0 {
         authority: protocol(),
         sub_account_id: 0,
     };
@@ -203,7 +203,7 @@ fn a_book_may_move_any_loaded_user_but_the_taker() {
     assert!(!QuoterSubjects::Book.permits(&protocol_user, &key(3), &taker, &protocol()));
     // A different sub-account of the protocol authority is an ordinary user.
     assert!(QuoterSubjects::Book.permits(
-        &ClobUserRefV0 {
+        &UserRefV0 {
             authority: protocol(),
             sub_account_id: 1,
         },
@@ -247,60 +247,57 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
         bytes
     }
 
-    assert_eq!(MAX_CONSTRAINED_WIRE_USERS, 8);
+    assert_eq!(USER_CAPS_CAPACITY, 8);
     assert_eq!(USER_EXCLUSION_BITMAP_BYTES, 6);
-    assert_eq!(QUOTER_USER_CAPS_BYTES, 143);
-    assert_eq!(
-        encode(&QuoterUserCapsV0::EMPTY).len(),
-        QUOTER_USER_CAPS_BYTES
-    );
+    assert_eq!(USER_CAPS_BYTES, 143);
+    assert_eq!(encode(&UserCapsV0::EMPTY).len(), USER_CAPS_BYTES);
 
     // A user with no room takes a bit, not one of the scarce slots.
-    let partial = QuoterUserCapV0 {
+    let partial = UserCapV0 {
         index: 0,
         quote_cap: 500,
         base_cap: u64::MAX,
     };
-    let excluded = QuoterUserCapV0 {
+    let excluded = UserCapV0 {
         index: 1,
         quote_cap: 0,
         base_cap: u64::MAX,
     };
-    let caps = QuoterUserCapsV0::from_caps(vec![partial, excluded]);
+    let caps = UserCapsV0::from_caps(vec![partial, excluded]);
     assert_eq!(caps.len, 1, "only the partial spends a slot");
     assert_eq!(caps.as_slice()[0], partial);
     assert!(caps.is_excluded(1));
     assert!(!caps.is_excluded(0));
-    assert_eq!(encode(&caps).len(), QUOTER_USER_CAPS_BYTES);
+    assert_eq!(encode(&caps).len(), USER_CAPS_BYTES);
 
     // The case that scales: every user in the set can be excluded at once,
     // which is what a sharp move produces. None of them touches the slots.
-    let all: Vec<QuoterUserCapV0> = (0..MAX_QUOTER_WIRE_USERS as u8)
-        .map(|index| QuoterUserCapV0 {
+    let all: Vec<UserCapV0> = (0..USER_SET_CAPACITY as u8)
+        .map(|index| UserCapV0 {
             index,
             quote_cap: 0,
             base_cap: u64::MAX,
         })
         .collect();
-    let caps = QuoterUserCapsV0::from_caps(all);
+    let caps = UserCapsV0::from_caps(all);
     assert_eq!(caps.len, 0);
-    assert!((0..MAX_QUOTER_WIRE_USERS).all(|i| caps.is_excluded(i)));
-    assert_eq!(encode(&caps).len(), QUOTER_USER_CAPS_BYTES);
+    assert!((0..USER_SET_CAPACITY).all(|i| caps.is_excluded(i)));
+    assert_eq!(encode(&caps).len(), USER_CAPS_BYTES);
 
     // Budgets past the ceiling drop the roomiest, keeping the tightest, and
     // the dropped ones fall back to an exclusion rather than to nothing.
-    let many: Vec<QuoterUserCapV0> = (0..MAX_CONSTRAINED_WIRE_USERS as u8 + 4)
-        .map(|index| QuoterUserCapV0 {
+    let many: Vec<UserCapV0> = (0..USER_CAPS_CAPACITY as u8 + 4)
+        .map(|index| UserCapV0 {
             index,
             quote_cap: 1_000 * (index as u64 + 1),
             base_cap: u64::MAX,
         })
         .collect();
-    let caps = QuoterUserCapsV0::from_caps(many);
-    assert_eq!(caps.len as usize, MAX_CONSTRAINED_WIRE_USERS);
+    let caps = UserCapsV0::from_caps(many);
+    assert_eq!(caps.len as usize, USER_CAPS_CAPACITY);
     assert_eq!(caps.as_slice()[0].quote_cap, 1_000, "the tightest is kept");
     assert!(
-        caps.is_excluded(MAX_CONSTRAINED_WIRE_USERS + 3),
+        caps.is_excluded(USER_CAPS_CAPACITY + 3),
         "the roomiest is excluded, never left unconstrained"
     );
 }
@@ -314,18 +311,18 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
 /// the CLOB pins the same ones from its side.
 #[test]
 fn the_user_set_encodes_to_what_it_carries() {
-    assert_eq!(MAX_QUOTER_WIRE_USERS, 48);
-    assert_eq!(QUOTER_USER_SET_MAX_BYTES, 4 + 48 * CLOB_USER_REF_BYTES);
-    assert_eq!(quoter_user_set_bytes(0), 4);
+    assert_eq!(USER_SET_CAPACITY, 48);
+    assert_eq!(USER_SET_MAX_BYTES, 4 + 48 * UserRefV0::SIZE);
+    assert_eq!(user_set_bytes(0), 4);
 
     let live = [user_ref(1, 0), user_ref(2, 7)];
     let args = QuoteArgsV0 {
         taker_served_window: true,
         include_taker_origin_reservations: false,
         users: &live,
-        direction: Direction::Long,
+        direction: DirectionV0::Long,
         size: 1,
-        caps: QuoterUserCapsV0::EMPTY,
+        caps: UserCapsV0::EMPTY,
         reference_price: 0,
         taker: None,
         limit_price: 0,
@@ -335,9 +332,9 @@ fn the_user_set_encodes_to_what_it_carries() {
 
     // The set leads, counted in four bytes, and its refs follow in order.
     assert_eq!(bytes[..4], 2u32.to_le_bytes());
-    assert_eq!(bytes[4..4 + CLOB_USER_REF_BYTES], user_ref(1, 0).to_bytes());
+    assert_eq!(bytes[4..4 + UserRefV0::SIZE], user_ref(1, 0).to_bytes());
     assert_eq!(
-        bytes[4 + CLOB_USER_REF_BYTES..quoter_user_set_bytes(live.len())],
+        bytes[4 + UserRefV0::SIZE..user_set_bytes(live.len())],
         user_ref(2, 7).to_bytes()
     );
 
@@ -361,13 +358,10 @@ fn the_user_set_encodes_to_what_it_carries() {
 /// not a silently truncated set a quoter would match against.
 #[test]
 fn the_user_set_refuses_to_truncate() {
-    let full = (0..MAX_QUOTER_WIRE_USERS).map(|i| user_ref(1, i as u16));
-    assert_eq!(
-        quoter_wire_users(full).unwrap().len(),
-        MAX_QUOTER_WIRE_USERS
-    );
+    let full = (0..USER_SET_CAPACITY).map(|i| user_ref(1, i as u16));
+    assert_eq!(quoter_wire_users(full).unwrap().len(), USER_SET_CAPACITY);
 
-    let over = (0..MAX_QUOTER_WIRE_USERS + 1).map(|i| user_ref(1, i as u16));
+    let over = (0..USER_SET_CAPACITY + 1).map(|i| user_ref(1, i as u16));
     assert_eq!(
         quoter_wire_users(over).map(|_| ()),
         Err(ErrorCode::TooManyQuoterWireUsers)
@@ -386,7 +380,7 @@ fn the_reader_agrees_with_the_specs_writer() {
         quoter_spec::UserBalanceChangeV0 {
             base_size: 1_000_000_000,
             quote_size: 101_000_000,
-            user: ClobUserRefV0 {
+            user: UserRefV0 {
                 authority,
                 sub_account_id: 3,
             },
@@ -396,7 +390,7 @@ fn the_reader_agrees_with_the_specs_writer() {
         quoter_spec::UserBalanceChangeV0 {
             base_size: 5,
             quote_size: 6,
-            user: ClobUserRefV0 {
+            user: UserRefV0 {
                 authority: other,
                 sub_account_id: 0,
             },
@@ -409,7 +403,7 @@ fn the_reader_agrees_with_the_specs_writer() {
         base_asset_amount: 17,
         price: 1_700,
         client_order_id: 420,
-        user: ClobUserRefV0 {
+        user: UserRefV0 {
             authority,
             sub_account_id: 1,
         },
@@ -469,7 +463,7 @@ fn the_reader_agrees_with_the_specs_writer() {
 /// the same schema, so the two are pinned to each other here.
 #[test]
 fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
-    let all: Vec<ClobUserRefV0> = (0..MAX_QUOTER_WIRE_USERS)
+    let all: Vec<UserRefV0> = (0..USER_SET_CAPACITY)
         .map(|index| user_ref(index as u8, 0))
         .collect();
 
@@ -478,9 +472,9 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         taker_served_window: true,
         include_taker_origin_reservations: false,
         users: &all,
-        direction: Direction::Long,
+        direction: DirectionV0::Long,
         size: u64::MAX,
-        caps: QuoterUserCapsV0::EMPTY,
+        caps: UserCapsV0::EMPTY,
         reference_price: i64::MAX,
         taker: Some(user_ref(0xFF, 0)),
         limit_price: u64::MAX,
@@ -489,9 +483,9 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         taker_served_window: true,
         include_taker_origin_reservations: false,
         users: &all,
-        direction: Direction::Long,
+        direction: DirectionV0::Long,
         size: u64::MAX,
-        caps: QuoterUserCapsV0::EMPTY,
+        caps: UserCapsV0::EMPTY,
         reference_price: i64::MAX,
         taker: Some(user_ref(0xFF, 0)),
     };
@@ -504,16 +498,16 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
     );
     assert_eq!(
         quoter_spec::args_size(&execute).unwrap() + 8,
-        quoter_cpi_data_len(MAX_QUOTER_WIRE_USERS, true)
+        quoter_cpi_data_len(USER_SET_CAPACITY, true)
     );
     assert_eq!(
         QUOTER_CPI_DATA_MAX,
-        quoter_cpi_data_len(MAX_QUOTER_WIRE_USERS, true) + 8
+        quoter_cpi_data_len(USER_SET_CAPACITY, true) + 8
     );
 
     // And a call that carries fewer users costs less, exactly. A quote view
     // carries none.
-    for count in [0, 1, MAX_QUOTER_WIRE_USERS] {
+    for count in [0, 1, USER_SET_CAPACITY] {
         for taker in [None, Some(user_ref(0xFF, 0))] {
             let args = QuoteArgsV0 {
                 taker_served_window: true,
@@ -565,7 +559,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     agree(
         "PlaceOrderArgsV0",
         &ClobPlaceOrderArgsV0 {
-            side: ClobSide::Ask,
+            side: SideV0::Ask,
             price: 0x1122_3344_5566_7788,
             base_asset_amount: 0x99AA_BBCC_DDEE_FF00,
             activation_delay_slots: Some(0x0A0B_0C0D),
@@ -582,7 +576,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     agree(
         "PlaceOrderArgsV0 (no delay)",
         &ClobPlaceOrderArgsV0 {
-            side: ClobSide::Bid,
+            side: SideV0::Bid,
             price: 1,
             base_asset_amount: 2,
             activation_delay_slots: None,
@@ -615,9 +609,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
     );
     agree(
         "EvictWorstArgsV0",
-        &ClobEvictWorstArgsV0 {
-            side: ClobSide::Bid,
-        },
+        &ClobEvictWorstArgsV0 { side: SideV0::Bid },
     );
     agree(
         "RemoveExpiredArgsV0",
@@ -631,7 +623,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             client_order_id: 0x0A0B_0C0D,
             price: 0x5555_6666_7777_8888,
             base_asset_amount: 0x9999_AAAA_BBBB_CCCC,
-            side: ClobSide::Ask,
+            side: SideV0::Ask,
             taker_origin: true,
             reduce_only: true,
             max_ts: 0x0102_0304_0506_0708,

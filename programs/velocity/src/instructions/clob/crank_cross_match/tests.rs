@@ -9,14 +9,14 @@
 
 use {
     super::*,
-    crate::state::prop_amm::{ClobUserRefV0, L3RowV0, L3_ROW_FLAG_TAKER_ORIGIN},
+    crate::state::prop_amm::{L3RowV0, UserRefV0, L3_ROW_FLAG_TAKER_ORIGIN},
 };
 
 const UNIT: u64 = crate::math::constants::BASE_PRECISION_U64;
 const PRICE: u64 = crate::math::constants::PRICE_PRECISION_U64;
 
-fn user(authority: u8) -> ClobUserRefV0 {
-    ClobUserRefV0 {
+fn user(authority: u8) -> UserRefV0 {
+    UserRefV0 {
         authority: Pubkey::new_from_array([authority; 32]),
         sub_account_id: 0,
     }

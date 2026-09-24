@@ -347,7 +347,7 @@ fn book_makers<'info>(
     user_loader: &AccountLoader<'info, User>,
     remaining_accounts: &'info [AccountInfo<'info>],
     market_index: u16,
-) -> Result<Vec<crate::state::prop_amm::ClobUserRefV0>> {
+) -> Result<Vec<crate::state::prop_amm::UserRefV0>> {
     use crate::state::prop_amm::{
         clob_slot_index, find_account, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
     };
@@ -415,7 +415,7 @@ fn book_makers<'info>(
 fn sweep_direction(
     user_loader: &AccountLoader<'_, User>,
     market_index: u16,
-) -> Result<Option<crate::state::prop_amm::Direction>> {
+) -> Result<Option<crate::state::prop_amm::DirectionV0>> {
     let user = crate::load!(user_loader)?;
     let Ok(position) = user.get_perp_position(market_index) else {
         return Ok(None);
@@ -424,7 +424,7 @@ fn sweep_direction(
     Ok(match position.base_asset_amount {
         0 => None,
         // Closing a long means selling, and a seller sweeps the bids.
-        base if base > 0 => Some(crate::state::prop_amm::Direction::Short),
-        _ => Some(crate::state::prop_amm::Direction::Long),
+        base if base > 0 => Some(crate::state::prop_amm::DirectionV0::Short),
+        _ => Some(crate::state::prop_amm::DirectionV0::Long),
     })
 }

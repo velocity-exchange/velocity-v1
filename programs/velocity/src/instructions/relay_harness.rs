@@ -133,7 +133,7 @@ impl StagedCall {
     /// makes the derivation possible.
     pub fn maker_refs(
         self,
-        makers: impl IntoIterator<Item = crate::state::prop_amm::ClobUserRefV0>,
+        makers: impl IntoIterator<Item = crate::state::prop_amm::UserRefV0>,
     ) -> Self {
         makers.into_iter().fold(self, |call, maker| {
             let (user, stats) = pdas::user_pair(&maker.authority, maker.sub_account_id);

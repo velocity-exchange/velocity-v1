@@ -70,7 +70,8 @@ use {
             pdas,
             perp_market_map::MarketSet,
             prop_amm::{
-                Direction, PriceLevel, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterType,
+                DirectionV0, PriceLevelV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
+                QuoterType,
             },
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
@@ -409,7 +410,7 @@ fn run_cross_leg<'info>(
     } else {
         // Since this is not servicing taker-origin trades, both sides must have served the window
         // to get the `taker_served_window` set.
-        [Direction::Long, Direction::Short]
+        [DirectionV0::Long, DirectionV0::Short]
             .iter()
             .copied()
             .try_fold(true, |served, side| -> Result<bool> {
@@ -727,7 +728,7 @@ struct ClobCross {
     size: u64,
     buy_quote: u128,
     sell_quote: u128,
-    makers: Vec<crate::state::prop_amm::ClobUserRefV0>,
+    makers: Vec<crate::state::prop_amm::UserRefV0>,
 }
 
 /// How deep either side of the crossing prefix is read.
@@ -784,8 +785,8 @@ fn cross_prefix(
 
         // Admit both makers before taking. The walk stops at the cap rather
         // than take size whose maker is not staged.
-        let admit = |user: crate::state::prop_amm::ClobUserRefV0,
-                     makers: &mut Vec<crate::state::prop_amm::ClobUserRefV0>| {
+        let admit = |user: crate::state::prop_amm::UserRefV0,
+                     makers: &mut Vec<crate::state::prop_amm::UserRefV0>| {
             if makers.contains(&user) {
                 true
             } else if makers.len() < MAX_CROSS_MAKERS {
@@ -849,7 +850,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         quoter,
         &ctx.accounts.quoter_slab,
         market_index,
-        crate::state::prop_amm::Direction::Long,
+        crate::state::prop_amm::DirectionV0::Long,
         CROSS_ROWS_PER_SIDE,
         &accounts,
         &mut cpi_scratch,
@@ -861,7 +862,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         quoter,
         &ctx.accounts.quoter_slab,
         market_index,
-        crate::state::prop_amm::Direction::Short,
+        crate::state::prop_amm::DirectionV0::Short,
         CROSS_ROWS_PER_SIDE,
         &accounts,
         &mut cpi_scratch,
@@ -981,7 +982,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             return Ok(None);
         }
 
-        let mut clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
+        let mut clob_book = |direction: crate::state::prop_amm::DirectionV0| -> Result<Vec<_>> {
             Ok(super::helpers::crank_common::book_l3_side(
                 &slots[book_slot],
                 &ctx.accounts.quoter_slab,
@@ -997,12 +998,12 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         };
 
         let a = find_quoter_clob_cross(
-            &clob_book(crate::state::prop_amm::Direction::Short)?,
+            &clob_book(crate::state::prop_amm::DirectionV0::Short)?,
             &quoter_asks,
             true,
         )?;
         let b = find_quoter_clob_cross(
-            &clob_book(crate::state::prop_amm::Direction::Long)?,
+            &clob_book(crate::state::prop_amm::DirectionV0::Long)?,
             &quoter_bids,
             false,
         )?;
@@ -1072,14 +1073,14 @@ fn quote_entry_sides<'info>(
     market_index: u16,
     accounts: &[AccountInfo<'info>],
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<(Vec<PriceLevel>, Vec<PriceLevel>)> {
-    let mut quote = |direction: crate::state::prop_amm::Direction| -> Result<Vec<PriceLevel>> {
+) -> Result<(Vec<PriceLevelV0>, Vec<PriceLevelV0>)> {
+    let mut quote = |direction: crate::state::prop_amm::DirectionV0| -> Result<Vec<PriceLevelV0>> {
         let located = quoter.quote_in_place(
             market_index,
             crate::state::prop_amm::QuoteArgsV0 {
                 // The crank's taker is the protocol `User` and the legs it
                 // matches are the book's own, so it constrains nobody.
-                caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+                caps: crate::state::prop_amm::UserCapsV0::EMPTY,
                 // No budgets to price, so nothing reads this.
                 reference_price: 0,
                 direction,
@@ -1111,8 +1112,8 @@ fn quote_entry_sides<'info>(
         let response = located.checked_quote_response(&data, direction)?;
         Ok(crate::state::prop_amm::usable_levels(response.levels).to_vec())
     };
-    let quoter_asks = quote(crate::state::prop_amm::Direction::Long)?;
-    let quoter_bids = quote(crate::state::prop_amm::Direction::Short)?;
+    let quoter_asks = quote(crate::state::prop_amm::DirectionV0::Long)?;
+    let quoter_bids = quote(crate::state::prop_amm::DirectionV0::Short)?;
     Ok((quoter_asks, quoter_bids))
 }
 
@@ -1122,7 +1123,7 @@ fn stage_quoter_cross<'info>(
     ctx: &Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
     quoter: &crate::state::prop_amm::QuoterConfigV0,
     cross: &QuoterCross,
-    maker_ref: crate::state::prop_amm::ClobUserRefV0,
+    maker_ref: crate::state::prop_amm::UserRefV0,
     market_index: u16,
 ) -> Result<StagedCall> {
     let (oracle, quote_spot_market_index, clob_program) = {
@@ -1186,7 +1187,7 @@ struct QuoterCross {
     size: u64,
     buy_quote: u128,
     sell_quote: u128,
-    makers: Vec<crate::state::prop_amm::ClobUserRefV0>,
+    makers: Vec<crate::state::prop_amm::UserRefV0>,
 }
 
 impl QuoterCross {
@@ -1220,7 +1221,7 @@ impl QuoterCross {
 /// with quoter bids.
 fn find_quoter_clob_cross(
     clob_rows: &[crate::state::prop_amm::L3RowV0],
-    quoter_levels: &[PriceLevel],
+    quoter_levels: &[PriceLevelV0],
     quoter_is_ask_side: bool,
 ) -> Result<QuoterCross> {
     let base_precision = crate::math::constants::BASE_PRECISION_U64 as u128;

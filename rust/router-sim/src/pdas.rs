@@ -9,7 +9,7 @@
 use {
     program::state::{
         clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
-        prop_amm::{ClobUserRefV0, QUOTER_SLAB_PDA_SEED},
+        prop_amm::{UserRefV0, QUOTER_SLAB_PDA_SEED},
     },
     solana_sdk::pubkey::Pubkey,
 };
@@ -46,7 +46,7 @@ pub fn user(velocity: &Pubkey, authority: &Pubkey, sub_account_id: u16) -> Pubke
 
 /// The `User` a wire identity derives to. The CLOB and the quote view both
 /// name a maker this way.
-pub fn user_of(velocity: &Pubkey, identity: &ClobUserRefV0) -> Pubkey {
+pub fn user_of(velocity: &Pubkey, identity: &UserRefV0) -> Pubkey {
     Pubkey::find_program_address(
         &[
             b"user",
@@ -146,7 +146,7 @@ mod pin {
 
     #[test]
     fn user_of_matches_the_program() {
-        let identity = ClobUserRefV0 {
+        let identity = UserRefV0 {
             authority: authority(),
             sub_account_id: 3,
         };

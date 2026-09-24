@@ -39,14 +39,14 @@ fn response_account(
         Box::leak(Box::new(anchor_lang::prelude::Pubkey::new_unique()));
     let owner: &'static anchor_lang::prelude::Pubkey = Box::leak(Box::new(crate::ID));
     let lamports: &'static mut u64 = Box::leak(Box::new(0u64));
-    crate::state::prop_amm::ResponseLocationV0 {
-        account: anchor_lang::prelude::AccountInfo::new(
-            key, false, true, lamports, data, owner, false,
-        ),
-
-        start: 0,
-        end: len,
-    }
+    crate::state::prop_amm::ResponseLocationV0::new(
+        anchor_lang::prelude::AccountInfo::new(key, false, true, lamports, data, owner, false),
+        &quoter_spec::ResponsePointerV0 {
+            offset: 0,
+            len: len as u32,
+        },
+    )
+    .unwrap()
 }
 
 fn get_fee_structure() -> FeeStructure {
@@ -177,12 +177,12 @@ pub mod amm_jit {
     #[test]
     fn router_pass_settles_a_custom_book_at_the_depth_it_was_quoted() {
         use crate::state::prop_amm::{
-            Direction, ExternalQuoterExecutor, PriceLevel, QuoterType, UserBalanceChangeV0,
+            DirectionV0, ExternalQuoterExecutor, PriceLevelV0, QuoterType, UserBalanceChangeV0,
         };
 
         struct MockCustomExecutor {
             user: Pubkey,
-            user_ref: crate::state::prop_amm::ClobUserRefV0,
+            user_ref: crate::state::prop_amm::UserRefV0,
             price: u64,
             requested: u64,
         }
@@ -200,7 +200,7 @@ pub mod amm_jit {
             fn subjects(
                 &self,
                 _index: usize,
-                _direction: Direction,
+                _direction: DirectionV0,
                 _size: u64,
             ) -> crate::error::VelocityResult<crate::state::prop_amm::QuoterSubjects> {
                 Ok(crate::state::prop_amm::QuoterSubjects::Account(self.user))
@@ -208,7 +208,7 @@ pub mod amm_jit {
             fn execute(
                 &mut self,
                 _index: usize,
-                _direction: Direction,
+                _direction: DirectionV0,
                 size: u64,
             ) -> crate::error::VelocityResult<crate::state::prop_amm::ResponseLocationV0<'static>>
             {
@@ -360,18 +360,18 @@ pub mod amm_jit {
         let maker_and_referrer_stats = UserStatsMap::load_one(&custom_maker_stats_info).unwrap();
         let mut filler_stats = UserStats::default();
 
-        let external_levels = [PriceLevel {
+        let external_levels = [PriceLevelV0 {
             price: 99 * PRICE_PRECISION_U64,
             size: BASE_PRECISION_U64 / 4,
         }];
         let external_books = [crate::math::router::QuoterBook {
             priority: QuoterType::Custom.default_priority(),
             levels: &external_levels,
-            withheld: PriceLevel::default(),
+            withheld: PriceLevelV0::default(),
         }];
         let mut executor = MockCustomExecutor {
             user: custom_maker_key,
-            user_ref: crate::state::prop_amm::ClobUserRefV0 {
+            user_ref: crate::state::prop_amm::UserRefV0 {
                 authority: custom_maker_authority,
                 sub_account_id: 0,
             },
@@ -479,15 +479,15 @@ pub mod amm_jit {
     #[test]
     fn a_clob_and_a_custom_book_fill_one_pass_and_the_worst_price_spans_both() {
         use crate::state::prop_amm::{
-            ClobUserRefV0, CompletedOrderV0, Direction, ExternalQuoterExecutor, PriceLevel,
-            QuoterType, UserBalanceChangeV0,
+            CompletedOrderV0, DirectionV0, ExternalQuoterExecutor, PriceLevelV0, QuoterType,
+            UserBalanceChangeV0, UserRefV0,
         };
 
         /// Book 0 is a CLOB, book 1 a Custom PropAMM. Each answers for its
         /// own maker at its own price.
         struct MockTwoBookExecutor {
             users: [Pubkey; 2],
-            user_refs: [ClobUserRefV0; 2],
+            user_refs: [UserRefV0; 2],
             prices: [u64; 2],
             requested: [u64; 2],
         }
@@ -509,7 +509,7 @@ pub mod amm_jit {
             fn subjects(
                 &self,
                 index: usize,
-                _direction: Direction,
+                _direction: DirectionV0,
                 _size: u64,
             ) -> crate::error::VelocityResult<crate::state::prop_amm::QuoterSubjects> {
                 Ok(if index == 0 {
@@ -521,7 +521,7 @@ pub mod amm_jit {
             fn execute(
                 &mut self,
                 index: usize,
-                _direction: Direction,
+                _direction: DirectionV0,
                 size: u64,
             ) -> crate::error::VelocityResult<crate::state::prop_amm::ResponseLocationV0<'static>>
             {
@@ -733,11 +733,11 @@ pub mod amm_jit {
         // The CLOB at 99 and the PropAMM at 100. The split is price-first, so
         // the book's half goes first and the PropAMM's half sets the worst
         // price of the pass.
-        let clob_levels = [PriceLevel {
+        let clob_levels = [PriceLevelV0 {
             price: 99 * PRICE_PRECISION_U64,
             size: BASE_PRECISION_U64 / 2,
         }];
-        let custom_levels = [PriceLevel {
+        let custom_levels = [PriceLevelV0 {
             price: 100 * PRICE_PRECISION_U64,
             size: BASE_PRECISION_U64 / 2,
         }];
@@ -745,22 +745,22 @@ pub mod amm_jit {
             crate::math::router::QuoterBook {
                 priority: QuoterType::Clob.default_priority(),
                 levels: &clob_levels,
-                withheld: PriceLevel::default(),
+                withheld: PriceLevelV0::default(),
             },
             crate::math::router::QuoterBook {
                 priority: QuoterType::Custom.default_priority(),
                 levels: &custom_levels,
-                withheld: PriceLevel::default(),
+                withheld: PriceLevelV0::default(),
             },
         ];
         let mut executor = MockTwoBookExecutor {
             users: [clob_maker_key, custom_maker_key],
             user_refs: [
-                ClobUserRefV0 {
+                UserRefV0 {
                     authority: clob_maker_authority,
                     sub_account_id: 0,
                 },
-                ClobUserRefV0 {
+                UserRefV0 {
                     authority: custom_maker_authority,
                     sub_account_id: 0,
                 },

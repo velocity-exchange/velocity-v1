@@ -28,10 +28,7 @@ use {
         instructions::{InitializeRouterQuoteBufferArgs, QuoteRouterArgs},
         state::{
             perp_market::PerpMarket,
-            prop_amm::{
-                ClobUserRefV0 as UserRefV0, Direction, QuoterSlotV0, QuoterType,
-                L3_ROW_FLAG_BLOCKS_WALK,
-            },
+            prop_amm::{DirectionV0, QuoterSlotV0, QuoterType, UserRefV0, L3_ROW_FLAG_BLOCKS_WALK},
             router_quote::{QuotedLevelV0, QuotedSourceKind, RouterQuoteBufferV0},
             traits::Size,
             user::User,
@@ -387,7 +384,7 @@ pub struct QuoteRouterParams<'a> {
     pub authority: &'a Pubkey,
     pub quote_buffer: &'a Pubkey,
     pub market_index: u16,
-    pub direction: Direction,
+    pub direction: DirectionV0,
     pub size: u64,
     /// Quoters to leave out, by staging-entry address. A quoter proven to
     /// break this market's simulation is dropped here, so the rest of the
@@ -713,8 +710,8 @@ mod tests {
                 quoter,
                 10,
                 &[
-                    program::state::prop_amm::PriceLevel { price: 99, size: 5 },
-                    program::state::prop_amm::PriceLevel { price: 98, size: 7 },
+                    program::state::prop_amm::PriceLevelV0 { price: 99, size: 5 },
+                    program::state::prop_amm::PriceLevelV0 { price: 98, size: 7 },
                 ],
                 11,
             )

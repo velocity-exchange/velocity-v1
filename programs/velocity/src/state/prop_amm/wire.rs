@@ -6,18 +6,33 @@
 //! ([`ResponseLocationV0`]). [`ExternalQuoterExecutor`] is the trait the
 //! router fill drives those legs through.
 
+// The wire's shapes. `quoter-spec` declares them, and every quoter builds against that crate.
+pub use quoter_spec::{
+    user_set_bytes, CancelledRemainderV0, CompletedOrderV0, DirectionV0, ExecuteArgsV0,
+    ExecuteResponseV0, L3ArgsV0, L3ResponseV0, L3RowV0, PriceLevelV0, QuoteArgsV0, QuoteResponseV0,
+    ResponsePointerV0, SideV0, UserBalanceChangeV0, UserCapV0, UserCapsV0, UserRefV0,
+    L3_ROW_FLAG_BLOCKS_WALK, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN, USER_CAPS_BYTES,
+    USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
+};
 use {
     super::{
         get_quoter_slab_signer_seeds, AmmAccountMeta, ClobCancelAllOutcomeV0, ClobCancelSides,
         QuoterSlabV0, QuoterSlotV0, QuoterType,
     },
-    crate::{error::ErrorCode, msg, validate},
+    crate::{
+        controller::position::PositionDirection,
+        error::{ErrorCode, VelocityResult},
+        math::router::{validate_quoted_levels, MAX_LEVELS_PER_BOOK},
+        msg,
+        state::user::is_protocol_user_seeds,
+        validate,
+    },
     anchor_lang::prelude::*,
+    quoter_spec::{wincode::SchemaWrite, ArgsConfig},
     solana_program::{
         instruction::{AccountMeta, Instruction},
         program::{get_return_data, invoke_signed},
     },
-    static_assertions::const_assert_eq,
 };
 
 /// Account metas for one quoter CPI leg.
@@ -158,7 +173,7 @@ fn invoke_quoter_signed(
 
         match result {
             0 => Ok(()),
-            _ => Err(anchor_lang::solana_program::program_error::ProgramError::from(result).into()),
+            _ => Err(ProgramError::from(result).into()),
         }
     }
 
@@ -203,59 +218,24 @@ impl<'info> QuoterCpiScratch<'info> {
     }
 }
 
-/// Declared by `quoter-spec`, the same crate that declares the responses.
-/// Velocity writes these bytes and a quoter reads them, so a second
-/// declaration here would be a second thing to keep in step. The aliases keep
-/// velocity's names.
-pub use quoter_spec::{DirectionV0 as Direction, SideV0 as ClobSide};
-
-/// What velocity reads into the wire's direction and side beyond their shape.
-///
-/// A foreign type takes no inherent impl. A trait keeps every call site
-/// reading as it did.
-pub trait WireDirectionExt {
-    fn to_position_direction(self) -> crate::controller::position::PositionDirection;
-}
-
-impl WireDirectionExt for Direction {
-    fn to_position_direction(self) -> crate::controller::position::PositionDirection {
-        match self {
-            Direction::Long => crate::controller::position::PositionDirection::Long,
-            Direction::Short => crate::controller::position::PositionDirection::Short,
+impl From<DirectionV0> for PositionDirection {
+    fn from(direction: DirectionV0) -> Self {
+        match direction {
+            DirectionV0::Long => PositionDirection::Long,
+            DirectionV0::Short => PositionDirection::Short,
         }
     }
 }
 
-impl WireDirectionExt for ClobSide {
-    /// The maker position direction a resting order on this side represents.
-    fn to_position_direction(self) -> crate::controller::position::PositionDirection {
-        match self {
-            ClobSide::Bid => crate::controller::position::PositionDirection::Long,
-            ClobSide::Ask => crate::controller::position::PositionDirection::Short,
+/// The maker position direction a resting order on this side represents.
+impl From<SideV0> for PositionDirection {
+    fn from(side: SideV0) -> Self {
+        match side {
+            SideV0::Bid => PositionDirection::Long,
+            SideV0::Ask => PositionDirection::Short,
         }
     }
 }
-
-/// A velocity user on the quoter wire, in its derivable form: an authority wallet and a
-/// sub-account index. Both the `User` and `UserStats` PDAs derive from those, so an
-/// off-chain reader reaches every user-derived account from a quoter's state alone.
-/// Declared by `quoter-spec`, and this alias keeps velocity's name for it.
-pub type ClobUserRefV0 = quoter_spec::UserRefV0;
-
-/// Borsh width of a [`ClobUserRefV0`].
-pub const CLOB_USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
-const_assert_eq!(std::mem::size_of::<ClobUserRefV0>(), CLOB_USER_REF_BYTES);
-
-/// The loaded-user set on the quoter wire: a length prefix and that many entries. An
-/// empty set means unrestricted, which only callers that settle nothing send. A quoter
-/// must skip liquidity whose owner is absent from a non-empty set, because velocity
-/// cannot settle a balance change for a `User` it did not load.
-pub use quoter_spec::{
-    user_set_bytes as quoter_user_set_bytes, UserCapV0 as QuoterUserCapV0,
-    UserCapsV0 as QuoterUserCapsV0, USER_CAPS_BYTES as QUOTER_USER_CAPS_BYTES,
-    USER_CAPS_CAPACITY as MAX_CONSTRAINED_WIRE_USERS, USER_EXCLUSION_BITMAP_BYTES,
-    USER_SET_CAPACITY as MAX_QUOTER_WIRE_USERS, USER_SET_MAX_BYTES as QUOTER_USER_SET_MAX_BYTES,
-};
 
 /// Bytes an execute CPI's instruction data takes: the discriminator, the user set, the
 /// direction, the size, the caps, the reference price, the taker behind its option tag,
@@ -265,11 +245,11 @@ pub use quoter_spec::{
 pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
     8 + 1
         + 8
-        + quoter_user_set_bytes(users)
-        + QUOTER_USER_CAPS_BYTES
+        + user_set_bytes(users)
+        + USER_CAPS_BYTES
         + 8
         + 1
-        + if taker { CLOB_USER_REF_BYTES } else { 0 }
+        + if taker { UserRefV0::SIZE } else { 0 }
         + 2
 }
 
@@ -281,33 +261,30 @@ pub const fn quote_cpi_data_len(users: usize, taker: bool) -> usize {
 }
 
 /// Widest either leg can be: a quote with a full user set and a taker.
-pub const QUOTER_CPI_DATA_MAX: usize = quote_cpi_data_len(MAX_QUOTER_WIRE_USERS, true);
+pub const QUOTER_CPI_DATA_MAX: usize = quote_cpi_data_len(USER_SET_CAPACITY, true);
 
 /// The loaded-user set as velocity holds it: a heap slice, capped at the wire's
-/// capacity. Never held by value. A full set of [`MAX_QUOTER_WIRE_USERS`] entries
+/// capacity. Never held by value. A full set of [`USER_SET_CAPACITY`] entries
 /// overflows the 4 KB SBF frame on the fill and cross-match entrypoints, which the
 /// linker reports as "overflows the maximum allowed frame space".
 pub fn quoter_wire_users(
-    refs: impl IntoIterator<Item = ClobUserRefV0>,
-) -> crate::error::VelocityResult<Vec<ClobUserRefV0>> {
-    let users: Vec<ClobUserRefV0> = refs.into_iter().collect();
+    refs: impl IntoIterator<Item = UserRefV0>,
+) -> VelocityResult<Vec<UserRefV0>> {
+    let users: Vec<UserRefV0> = refs.into_iter().collect();
     validate!(
-        users.len() <= MAX_QUOTER_WIRE_USERS,
+        users.len() <= USER_SET_CAPACITY,
         ErrorCode::TooManyQuoterWireUsers,
         "{} loaded users to forward to a quoter exceeds the wire's {}",
         users.len(),
-        MAX_QUOTER_WIRE_USERS
+        USER_SET_CAPACITY
     )?;
 
     Ok(users)
 }
 
-/// The quote response, read in place for the same reason
-/// [`ExecuteResponseV0`] is.
-pub use quoter_spec::QuoteResponseV0;
 /// Write `quote_l3_v0` args in the framing the wire declares, for an
 /// off-chain caller that asks a book directly rather than through the router.
-pub fn write_l3_args(dst: &mut Vec<u8>, args: &L3ArgsV0) -> crate::error::VelocityResult<()> {
+pub fn write_l3_args(dst: &mut Vec<u8>, args: &L3ArgsV0) -> VelocityResult<()> {
     quoter_spec::write_args(dst, args).map_err(|_| {
         msg!("could not serialize l3 args");
         ErrorCode::PropAmmArgsEncodeFailed
@@ -315,18 +292,6 @@ pub fn write_l3_args(dst: &mut Vec<u8>, args: &L3ArgsV0) -> crate::error::Veloci
 
     Ok(())
 }
-
-/// The request half of the quoter wire, declared by `quoter-spec` beside the responses.
-/// The user set is a borrowed slice. Owning one put a copy in this frame per quoter and
-/// another in the CPI leg, which overflowed the 4 KB SBF frame at runtime while every
-/// host-side test passed.
-pub use quoter_spec::{
-    ExecuteArgsV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteArgsV0, L3_ROW_FLAG_BLOCKS_WALK,
-    L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
-};
-
-/// Declared by `quoter-spec`; the alias keeps velocity's name for it.
-pub type PriceLevel = quoter_spec::PriceLevelV0;
 
 /// What one quoter answered: the ladder it stands behind, and the depth it
 /// says it holds at a better price but cannot reach in this transaction.
@@ -337,23 +302,8 @@ pub struct QuotedLadderV0 {
     /// allocation rather than one per book.
     pub levels: core::ops::Range<usize>,
     /// `price == 0` when the quoter reached everything it was asked for.
-    pub withheld: PriceLevel,
+    pub withheld: PriceLevelV0,
 }
-
-/// One order a CLOB removed as a sub-min remainder of a fill. Velocity holds every
-/// removal report to [`PerpPosition::reserved_open_base`], so a book may only free size
-/// a user really placed. A removal the owner signed for clamps and logs instead of
-/// failing, because a maker must be able to leave a book that reports garbage.
-pub use quoter_spec::CancelledRemainderV0;
-pub use quoter_spec::CompletedOrderV0;
-/// The execute response, read in place out of the quoter's account. Borrows rather than
-/// owns, because one fill CPIs every registered quoter and copying the records out would
-/// spend heap per quoter that nothing gives back. See [`ResponseLocationV0`].
-pub use quoter_spec::ExecuteResponseV0;
-/// Returned via return data by `quote_v0` and `execute_v0`. It says where in
-/// the quoter's `response_account` the borsh response was written. Declared by
-/// `quoter-spec`, which owns every shape on this wire.
-pub use quoter_spec::ResponsePointerV0;
 
 /// Who a quoter's `execute_v0` response is allowed to move balances for.
 pub enum QuoterSubjects {
@@ -378,15 +328,16 @@ impl QuoterSubjects {
     /// cross cranks load the protocol user on purpose.
     pub fn permits(
         &self,
-        user: &ClobUserRefV0,
+        user: &UserRefV0,
         key: &Pubkey,
-        taker: &ClobUserRefV0,
+        taker: &UserRefV0,
         protocol_authority: &Pubkey,
     ) -> bool {
         if user == taker {
             return false;
         }
-        if user.sub_account_id == 0 && user.authority == *protocol_authority {
+
+        if is_protocol_user_seeds(&user.authority, user.sub_account_id, protocol_authority) {
             return false;
         }
 
@@ -412,15 +363,39 @@ pub fn find_account<'a, 'info>(
 /// a location and the fill holds the guard for as long as it reads. Returning the
 /// records would copy them onto a 32 KB heap that never reclaims.
 pub struct ResponseLocationV0<'info> {
-    pub account: AccountInfo<'info>,
-    pub start: usize,
-    pub end: usize,
+    account: AccountInfo<'info>,
+    start: usize,
+    end: usize,
 }
 
 impl<'info> ResponseLocationV0<'info> {
+    /// The response `pointer` names in `account`. The quoter reports the pointer, so
+    /// a range past the end of the account is an error here rather than at the read.
+    pub fn new(account: AccountInfo<'info>, pointer: &ResponsePointerV0) -> VelocityResult<Self> {
+        let start = pointer.offset as usize;
+        let end = start
+            .checked_add(pointer.len as usize)
+            .ok_or(ErrorCode::MathError)?;
+        let account_len = account
+            .try_borrow_data()
+            .map_err(|_| ErrorCode::PropAmmResponseAccountBorrowConflict)?
+            .len();
+        validate!(
+            end <= account_len,
+            ErrorCode::InvalidQuoterResponse,
+            "prop amm response pointer out of bounds"
+        )?;
+
+        Ok(Self {
+            account,
+            start,
+            end,
+        })
+    }
+
     /// Borrow the response account. The guard lives in the caller's scope,
     /// which is what makes the borrowed view below sound.
-    pub fn borrow(&self) -> crate::error::VelocityResult<std::cell::Ref<'_, &'_ mut [u8]>> {
+    pub fn borrow(&self) -> VelocityResult<core::cell::Ref<'_, &'_ mut [u8]>> {
         self.account.try_borrow_data().map_err(|_| {
             msg!("prop amm response account is already borrowed");
             ErrorCode::PropAmmResponseAccountBorrowConflict
@@ -430,7 +405,7 @@ impl<'info> ResponseLocationV0<'info> {
     /// The response bytes the quoter wrote, checked against the account length.
     /// The quoter reports the pointer, so a length past the end is an error
     /// rather than a panic.
-    fn bytes<'a>(&self, data: &'a [u8]) -> crate::error::VelocityResult<&'a [u8]> {
+    fn bytes<'a>(&self, data: &'a [u8]) -> VelocityResult<&'a [u8]> {
         data.get(self.start..self.end).ok_or_else(|| {
             msg!("prop amm response pointer out of bounds");
             ErrorCode::InvalidQuoterResponse
@@ -439,10 +414,7 @@ impl<'info> ResponseLocationV0<'info> {
 
     /// Read the execute response in place out of a guard taken by
     /// [`Self::borrow`].
-    pub fn execute_response<'a>(
-        &self,
-        data: &'a [u8],
-    ) -> crate::error::VelocityResult<ExecuteResponseV0<'a>> {
+    pub fn execute_response<'a>(&self, data: &'a [u8]) -> VelocityResult<ExecuteResponseV0<'a>> {
         ExecuteResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable execute response");
             ErrorCode::InvalidQuoterResponse
@@ -450,10 +422,7 @@ impl<'info> ResponseLocationV0<'info> {
     }
 
     /// Read the quote response in place.
-    pub fn quote_response<'a>(
-        &self,
-        data: &'a [u8],
-    ) -> crate::error::VelocityResult<QuoteResponseV0<'a>> {
+    pub fn quote_response<'a>(&self, data: &'a [u8]) -> VelocityResult<QuoteResponseV0<'a>> {
         QuoteResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable quote response");
             ErrorCode::InvalidQuoterResponse
@@ -462,10 +431,7 @@ impl<'info> ResponseLocationV0<'info> {
 
     /// The rows behind a ladder, read in place out of a guard taken by
     /// [`Self::borrow`].
-    pub fn l3_response<'a>(
-        &self,
-        data: &'a [u8],
-    ) -> crate::error::VelocityResult<L3ResponseV0<'a>> {
+    pub fn l3_response<'a>(&self, data: &'a [u8]) -> VelocityResult<L3ResponseV0<'a>> {
         L3ResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable l3 response");
             ErrorCode::InvalidQuoterResponse
@@ -479,19 +445,19 @@ impl<'info> ResponseLocationV0<'info> {
     pub fn checked_quote_response<'a>(
         &self,
         data: &'a [u8],
-        direction: Direction,
-    ) -> crate::error::VelocityResult<QuoteResponseV0<'a>> {
+        direction: DirectionV0,
+    ) -> VelocityResult<QuoteResponseV0<'a>> {
         let response = self.quote_response(data)?;
-        crate::math::router::validate_quoted_levels(direction, response.levels)?;
+        validate_quoted_levels(direction, response.levels)?;
         Ok(response)
     }
 }
 
 /// The part of a quoted ladder a reader can use. The router's cursor and its level
-/// validation both stop at [`crate::math::router::MAX_LEVELS_PER_BOOK`], and a market
+/// validation both stop at [`MAX_LEVELS_PER_BOOK`], and a market
 /// may set `max_quote_levels` high enough that the discarded tail is kilobytes.
-pub fn usable_levels(levels: &[PriceLevel]) -> &[PriceLevel] {
-    &levels[..levels.len().min(crate::math::router::MAX_LEVELS_PER_BOOK)]
+pub fn usable_levels(levels: &[PriceLevelV0]) -> &[PriceLevelV0] {
+    &levels[..levels.len().min(MAX_LEVELS_PER_BOOK)]
 }
 
 /// The quoter legs of a router fill, supplied by the fill entrypoint.
@@ -503,16 +469,19 @@ pub fn usable_levels(levels: &[PriceLevel]) -> &[PriceLevel] {
 pub trait ExternalQuoterExecutor<'info> {
     /// Registry type of quoter `index`. It decides whether the quoter's fills
     /// carry velocity-side resting-order aggregates to unwind. A CLOB order is
-    /// margin-reserved at placement. Custom PropAMM depth is not.
+    /// margin-reserved at placement. Custom PropAMM depth is not. `Custom` for an
+    /// index with no entry.
     fn quoter_type(&self, index: usize) -> QuoterType;
 
     /// The `User` quoter `index` quotes for, which is `QuoterV0::user`. The
     /// pre-execute clamp sizes Custom books against that margin account.
+    /// `Pubkey::default()` for an index with no entry, which the idle-maker count relies on.
     fn quoter_user(&self, index: usize) -> Pubkey;
 
     /// The registry entry of quoter `index`. Failure messages name this rather than the
     /// index, because one quoter program serves many entries and only the entry key says
-    /// which maker to hold responsible.
+    /// which maker to hold responsible. `Pubkey::default()` for an index with no entry,
+    /// which the account-lock count relies on.
     fn quoter_key(&self, index: usize) -> Pubkey;
 
     /// How far from oracle a fill on quoter `index` may price, in MARGIN_PRECISION
@@ -526,9 +495,9 @@ pub trait ExternalQuoterExecutor<'info> {
     fn subjects(
         &self,
         index: usize,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
-    ) -> crate::error::VelocityResult<QuoterSubjects>;
+    ) -> VelocityResult<QuoterSubjects>;
 
     /// CPI a whole-side cancel on quoter `index` for one of its makers. Only book-backed
     /// entries honour it, and a `Custom` quoter answers `None`. The caller clears a maker
@@ -536,9 +505,9 @@ pub trait ExternalQuoterExecutor<'info> {
     fn cancel_all(
         &mut self,
         _index: usize,
-        _user: ClobUserRefV0,
+        _user: UserRefV0,
         _sides: ClobCancelSides,
-    ) -> crate::error::VelocityResult<Option<ClobCancelAllOutcomeV0>> {
+    ) -> VelocityResult<Option<ClobCancelAllOutcomeV0>> {
         Ok(None)
     }
 
@@ -549,15 +518,16 @@ pub trait ExternalQuoterExecutor<'info> {
     fn execute(
         &mut self,
         index: usize,
-        direction: Direction,
+        direction: DirectionV0,
         size: u64,
-    ) -> crate::error::VelocityResult<ResponseLocationV0<'info>>;
+    ) -> VelocityResult<ResponseLocationV0<'info>>;
 }
 
 /// Executor for a router fill that carries no external quoter accounts.
 ///
-/// Quoting produced no external books, so no external allocation is reachable.
-/// Executing one is an error rather than a skip.
+/// It holds no entry at any index, so each read gives the no-entry answer the trait
+/// declares. Quoting produced no external books, so a leg is never reachable, and
+/// `subjects` and `execute` are errors rather than a skip.
 pub struct NoExternalQuoters;
 
 impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
@@ -576,24 +546,23 @@ impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
     fn subjects(
         &self,
         _index: usize,
-        _direction: Direction,
+        _direction: DirectionV0,
         _size: u64,
-    ) -> crate::error::VelocityResult<QuoterSubjects> {
-        Ok(QuoterSubjects::Book)
+    ) -> VelocityResult<QuoterSubjects> {
+        msg!("router fill has no external quoter to name subjects for");
+        Err(ErrorCode::ImpossibleFill)
     }
 
     fn execute(
         &mut self,
         _index: usize,
-        _direction: Direction,
+        _direction: DirectionV0,
         _size: u64,
-    ) -> crate::error::VelocityResult<ResponseLocationV0<'info>> {
+    ) -> VelocityResult<ResponseLocationV0<'info>> {
         msg!("router fill has no external quoter accounts to execute against");
         Err(ErrorCode::ImpossibleFill)
     }
 }
-
-pub use quoter_spec::UserBalanceChangeV0;
 
 /// The CPI legs live on the slab slot. Approval is membership in the market's
 /// slab, so a staging entry's config has no way to reach a quoter.
@@ -633,8 +602,10 @@ impl QuoterSlotV0 {
     ) -> Result<ResponseLocationV0<'info>> {
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
-            &self.config.quote_v0_discriminator,
-            self.config.quote_leg_indexes(),
+            QuoterLeg {
+                discriminator: &self.config.quote_v0_discriminator,
+                account_indexes: self.config.quote_leg_indexes(),
+            },
             &args,
             slab,
             accounts,
@@ -666,8 +637,10 @@ impl QuoterSlotV0 {
 
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
-            &self.config.quote_l3_v0_discriminator,
-            self.config.quote_leg_indexes(),
+            QuoterLeg {
+                discriminator: &self.config.quote_l3_v0_discriminator,
+                account_indexes: self.config.quote_leg_indexes(),
+            },
             &args,
             slab,
             accounts,
@@ -691,8 +664,10 @@ impl QuoterSlotV0 {
     ) -> Result<ResponseLocationV0<'info>> {
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
-            &self.config.execute_v0_discriminator,
-            self.config.execute_leg_indexes(),
+            QuoterLeg {
+                discriminator: &self.config.execute_v0_discriminator,
+                account_indexes: self.config.execute_leg_indexes(),
+            },
             &args,
             slab,
             accounts,
@@ -700,31 +675,44 @@ impl QuoterSlotV0 {
         )
     }
 
-    /// Shared CPI leg. It forwards the registered accounts, sends the
-    /// discriminator followed by the borsh args, and locates the borsh response
-    /// in the quoter's response account at the pointer returned via return
-    /// data.
-    fn invoke_quoter<
-        'info,
-        A: quoter_spec::wincode::SchemaWrite<quoter_spec::ArgsConfig, Src = A>,
-    >(
+    /// Shared CPI leg: build the instruction, CPI it signed as the slab, and
+    /// locate the response the quoter wrote.
+    fn invoke_quoter<'info, A: SchemaWrite<ArgsConfig, Src = A>>(
         &self,
-        discriminator: &[u8; 8],
-        leg_indexes: &[u8],
+        leg: QuoterLeg<'_>,
         args: &A,
         slab: &AccountLoader<'info, QuoterSlabV0>,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
-        // The bump is in the slab's own header, so no caller plumbs it. A
-        // read borrow, so a caller may hold the slot region while this runs.
+        // A read borrow, so a caller may hold the slot region while this runs.
         let slab_bump = slab.load()?.bump;
-        let slab_info: &AccountInfo<'info> = slab.as_ref();
+        self.write_leg_accounts(leg.account_indexes, slab.as_ref(), accounts, scratch)?;
+        write_leg_data(leg.discriminator, args, &mut scratch.instruction.data)?;
+
+        // Signed as the market's slab, the identity every quoter authenticates velocity
+        // by. The seeds derive from the config's own market, so a slab for a different
+        // market fails the runtime's signer check instead of signing.
+        let market = self.config.market.to_le_bytes();
+        let seeds = get_quoter_slab_signer_seeds(&market, &slab_bump);
+        invoke_quoter_signed(&scratch.instruction, &scratch.infos, &[&seeds])?;
+
+        self.locate_response(accounts)
+    }
+
+    /// Write the leg's program id, account metas and account infos into `scratch`.
+    fn write_leg_accounts<'info>(
+        &self,
+        account_indexes: &[u8],
+        slab_info: &AccountInfo<'info>,
+        accounts: &[AccountInfo<'info>],
+        scratch: &mut QuoterCpiScratch<'info>,
+    ) -> Result<()> {
         let QuoterCpiScratch { instruction, infos } = scratch;
         instruction.program_id = self.config.program_id;
         write_quoter_account_metas(
             &mut instruction.accounts,
-            self.config.leg_metas(leg_indexes)?,
+            self.config.leg_metas(account_indexes)?,
             slab_info.key,
         );
 
@@ -752,41 +740,19 @@ impl QuoterSlotV0 {
         })?;
 
         infos.push(program_info.clone());
+        Ok(())
+    }
 
-        // `QUOTER_CPI_DATA_MAX` counts every byte the args serializer writes,
-        // so a leg that does not fit means that constant is wrong. Fail here
-        // rather than let the `Vec` double and leak the buffer it grew out of.
-        let args_len = quoter_spec::args_size(args).map_err(|_| {
-            msg!("prop amm failed to size cpi args");
-            ErrorCode::PropAmmArgsEncodeFailed
-        })?;
-        let data_len = discriminator.len().saturating_add(args_len);
-        validate!(
-            data_len <= QUOTER_CPI_DATA_MAX,
-            ErrorCode::QuoterCpiArgsTooLarge,
-            "prop amm cpi args are {} bytes, above the {} the wire allows",
-            data_len,
-            QUOTER_CPI_DATA_MAX
-        )?;
-
-        instruction.data.clear();
-        instruction.data.extend_from_slice(discriminator);
-        quoter_spec::write_args(&mut instruction.data, args).map_err(|_| {
-            msg!("prop amm failed to serialize cpi args");
-            ErrorCode::PropAmmArgsEncodeFailed
-        })?;
-
-        // Signed as the market's slab, the identity every quoter authenticates velocity
-        // by. The seeds derive from the config's own market, so a slab for a different
-        // market fails the runtime's signer check instead of signing.
-        let market = self.config.market.to_le_bytes();
-        let seeds = get_quoter_slab_signer_seeds(&market, &slab_bump);
-        invoke_quoter_signed(instruction, infos, &[&seeds])?;
-
-        // The payload lives in the quoter's response account and return data carries
-        // only a pointer, so a response is not bound by the 1024-byte cap. Return data is
-        // last-writer-wins, so requiring the writer to be `program_id` stops a read of a
-        // pointer set by a program the quoter called.
+    /// Where the quoter wrote its response, read from the pointer it returned.
+    ///
+    /// The payload lives in the quoter's response account and return data carries
+    /// only a pointer, so a response is not bound by the 1024-byte cap. Return data is
+    /// last-writer-wins, so requiring the writer to be `program_id` stops a read of a
+    /// pointer set by a program the quoter called.
+    fn locate_response<'info>(
+        &self,
+        accounts: &[AccountInfo<'info>],
+    ) -> Result<ResponseLocationV0<'info>> {
         let (writer, pointer_data) = get_return_data().ok_or_else(|| {
             msg!("prop amm quoter set no return data");
             ErrorCode::InvalidQuoterResponse
@@ -818,24 +784,46 @@ impl QuoterSlotV0 {
             "prop amm response account not owned by quoter program"
         )?;
 
-        let data = response_info
-            .try_borrow_data()
-            .map_err(|_| ErrorCode::PropAmmResponseAccountBorrowConflict)?;
-        let start = pointer.offset as usize;
-        let end = start
-            .checked_add(pointer.len as usize)
-            .ok_or(ErrorCode::MathError)?;
-        validate!(
-            end <= data.len(),
-            ErrorCode::InvalidQuoterResponse,
-            "prop amm response pointer out of bounds"
-        )?;
-
-        drop(data);
-        Ok(ResponseLocationV0 {
-            account: response_info.clone(),
-            start,
-            end,
-        })
+        Ok(ResponseLocationV0::new(response_info.clone(), &pointer)?)
     }
+}
+
+/// One CPI leg's surface on the quoter program: the instruction it calls and
+/// the registered accounts it forwards.
+struct QuoterLeg<'a> {
+    discriminator: &'a [u8; 8],
+    account_indexes: &'a [u8],
+}
+
+/// Write the discriminator and then the wincode args into the reused `data` buffer.
+///
+/// `QUOTER_CPI_DATA_MAX` counts every byte the args serializer writes, so a leg that
+/// does not fit means that constant is wrong. Fail here rather than let the `Vec`
+/// double and leak the buffer it grew out of.
+fn write_leg_data<A: SchemaWrite<ArgsConfig, Src = A>>(
+    discriminator: &[u8; 8],
+    args: &A,
+    data: &mut Vec<u8>,
+) -> Result<()> {
+    let args_len = quoter_spec::args_size(args).map_err(|_| {
+        msg!("prop amm failed to size cpi args");
+        ErrorCode::PropAmmArgsEncodeFailed
+    })?;
+    let data_len = discriminator.len().saturating_add(args_len);
+    validate!(
+        data_len <= QUOTER_CPI_DATA_MAX,
+        ErrorCode::QuoterCpiArgsTooLarge,
+        "prop amm cpi args are {} bytes, above the {} the wire allows",
+        data_len,
+        QUOTER_CPI_DATA_MAX
+    )?;
+
+    data.clear();
+    data.extend_from_slice(discriminator);
+    quoter_spec::write_args(data, args).map_err(|_| {
+        msg!("prop amm failed to serialize cpi args");
+        ErrorCode::PropAmmArgsEncodeFailed
+    })?;
+
+    Ok(())
 }

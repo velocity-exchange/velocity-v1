@@ -245,7 +245,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
 
     match measure {
         Measure::Budget => inputs
-            .maker_budget(&maker_key, 0, ClobSide::Bid, taker_size, ORACLE, books)
+            .maker_budget(&maker_key, 0, SideV0::Bid, taker_size, ORACLE, books)
             .unwrap(),
         // A taker sweeping the bid side leaves the quoter long.
         Measure::QuoterRoom => inputs

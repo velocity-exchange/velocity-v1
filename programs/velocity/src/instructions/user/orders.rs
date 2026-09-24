@@ -78,14 +78,12 @@ pub fn handle_cancel_orders_by_ids<'c: 'info, 'info>(
         clock.slot,
     )?;
 
-    for order_id in order_ids {
-        controller::orders::cancel_order_by_order_id(
-            order_id,
-            &ctx.accounts.user,
-            &mut maps,
-            clock,
-        )?;
-    }
+    controller::orders::cancel_orders_by_order_ids(
+        &order_ids,
+        &ctx.accounts.user,
+        &mut maps,
+        clock,
+    )?;
 
     Ok(())
 }

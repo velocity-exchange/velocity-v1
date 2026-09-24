@@ -6639,7 +6639,10 @@ export class VelocityClient {
 	 * on the CLOB, which has no such slot and is cancelled by its book handle instead.
 	 * @param orderId - Program-assigned order ID to cancel. Omit it to cancel the most recently placed
 	 * order, which the program resolves through `get_last_order_id`. That is safe in a composed
-	 * transaction where a place instruction runs first and the assigned id is not yet known.
+	 * transaction where a trigger placement runs first and the assigned id is not yet known. An id
+	 * the user already minted that is not an open slot order fails with `OrderDoesNotExist`. A book
+	 * order draws its id from the same counter, so this includes the id of a resting CLOB order.
+	 * An id not minted yet cancels nothing.
 	 * @param subAccountId - Sub-account the order belongs to; defaults to the active sub-account.
 	 * @param overrides.withdrawIsolatedDepositAmount - If set and > 0, appends an isolated-margin
 	 * withdrawal (token-mint precision) for the cancelled order's market in the same transaction. It
@@ -6791,8 +6794,7 @@ export class VelocityClient {
 	/**
 	 * Sends a transaction to cancel the provided order ids.
 	 *
-	 * @param orderIds - Program-assigned order IDs to cancel; an order ID that no longer exists is
-	 * silently skipped. `undefined` sends an empty list on-chain, i.e. cancels nothing.
+	 * @param orderIds - Program-assigned order IDs to cancel. See `getCancelOrdersByIdsIx`.
 	 * @param txParams - The transaction parameters.
 	 * @param subAccountId - The sub account id to cancel the orders for.
 	 * @param user - The user to cancel the orders for. If provided, it will be prioritized over the subAccountId.
@@ -6827,8 +6829,12 @@ export class VelocityClient {
 	/**
 	 * Returns the transaction instruction to cancel the provided order ids.
 	 *
-	 * @param orderIds - Program-assigned order IDs to cancel; an order ID that no longer exists is
-	 * silently skipped. `undefined` sends an empty list on-chain, i.e. cancels nothing.
+	 * allow-verbose: states the per-id outcomes a caller must predict to know whether the batch lands.
+	 *
+	 * @param orderIds - Program-assigned order IDs to cancel. An id the user already minted that is not
+	 * an open slot order fails the transaction with `OrderDoesNotExist`. An id not minted yet is
+	 * skipped. A placed trigger's id is skipped; cancel its live order with `cancelOrderV1`.
+	 * `undefined` sends an empty list on-chain, i.e. cancels nothing.
 	 * @param subAccountId - The sub account id to cancel the orders for.
 	 * @param user - The user to cancel the orders for. If provided, it will be prioritized over the subAccountId.
 	 * @param overrides.authority - Signing authority to use instead of `this.wallet.publicKey`.
@@ -8463,16 +8469,13 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Places a resting maker order and, in the same instruction, fills a specific counterparty
-	 * taker order (`takerInfo.order`) against it. `orderParams` must be an immediate-or-cancel,
-	 * post only (not `PostOnlyParams.NONE`) limit order — the onchain handler rejects any other
-	 * shape with `InvalidOrderIOCPostOnly`.
+	 * Places a maker `Limit` order that rests on the market's CLOB. See
+	 * `buildPlaceAndMakePerpOrderInstruction` for the rules the program applies.
 	 * @param orderParams - Maker order to place; `baseAssetAmount` is BASE_PRECISION (1e9), `price`
-	 * is PRICE_PRECISION (1e6). Must have `orderType: LIMIT`, `postOnly` set, and be IOC.
-	 * @param takerInfo - The taker account/order to fill against (`takerInfo.order.orderId` must be open).
+	 * is PRICE_PRECISION (1e6). Must have `orderType: LIMIT` and must not be IOC.
+	 * @param clobAccounts - The market's CLOB accounts.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param subAccountId - Sub-account placing the maker order; defaults to the active sub-account.
-	 * @param takerEscrow - Optional decoded escrow used to avoid automatic UserStats lookup.
 	 * @returns The transaction signature.
 	 */
 	public async placeAndMakePerpOrder(
@@ -8502,9 +8505,9 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `placeAndMakePerpOrderV1` instruction: a post-only maker order that rests straight
-	 * on the market's CLOB. See `placeAndMakePerpOrder` for semantics.
-	 * @param orderParams - Maker order to place, a post-only `Limit`.
+	 * Builds the `placeAndMakePerpOrderV1` instruction: a maker order that rests straight on the
+	 * market's CLOB. See `buildPlaceAndMakePerpOrderInstruction` for semantics.
+	 * @param orderParams - Maker order to place, a `Limit` that is not IOC.
 	 * @param subAccountId - Sub-account placing the maker order; defaults to the active sub-account.
 	 */
 	public async getPlaceAndMakePerpOrderIx(

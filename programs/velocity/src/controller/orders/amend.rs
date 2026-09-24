@@ -114,12 +114,8 @@ pub fn cancel_order_by_order_id(
 ) -> VelocityResult {
     let user_key = user.key();
     let user = &mut load_mut!(user)?;
-    let order_index = match user.get_order_index(order_id) {
-        Ok(order_index) => order_index,
-        Err(_) => {
-            msg!("could not find order id {}", order_id);
-            return Ok(());
-        }
+    let Some(order_index) = slot_order_to_cancel(user, order_id)? else {
+        return Ok(());
     };
 
     cancel_order(
@@ -138,6 +134,68 @@ pub fn cancel_order_by_order_id(
     user.update_last_active_slot(clock.slot);
 
     Ok(())
+}
+
+/// Cancel each slot order `order_ids` names. A placed trigger's slot is
+/// skipped, as a bulk sweep skips it, so one such id does not fail the batch.
+/// Its live order cancels through `cancel_order_v1`.
+pub fn cancel_orders_by_order_ids(
+    order_ids: &[u32],
+    user: &AccountLoader<User>,
+    maps: &mut AccountMaps,
+    clock: &Clock,
+) -> VelocityResult {
+    let user_key = user.key();
+    let user = &mut load_mut!(user)?;
+    for order_id in order_ids {
+        let Some(order_index) = slot_order_to_cancel(user, *order_id)? else {
+            continue;
+        };
+
+        if user.orders[order_index].is_placed_on_clob() {
+            msg!("order {} is placed on the CLOB; skipping", order_id);
+            continue;
+        }
+
+        cancel_order(
+            order_index,
+            user,
+            &user_key,
+            maps,
+            clock.unix_timestamp,
+            clock.slot,
+            OrderActionExplanation::None,
+            None,
+            0,
+            false,
+        )?;
+    }
+
+    user.update_last_active_slot(clock.slot);
+    Ok(())
+}
+
+/// The slot of the open order `order_id` names. `None` is an id this user has
+/// not minted yet, which is nothing to cancel.
+///
+/// A minted id with no open slot is an error. A live book order draws its id
+/// from the same counter, so a slot cancel that succeeded here would leave
+/// that order resting. It cancels through `cancel_order_v1`.
+fn slot_order_to_cancel(user: &User, order_id: u32) -> VelocityResult<Option<usize>> {
+    if let Ok(order_index) = user.get_order_index(order_id) {
+        return Ok(Some(order_index));
+    }
+
+    if order_id != 0 && order_id < user.next_order_id {
+        msg!(
+            "order id {} is not an open slot order; a book order cancels through cancel_order_v1",
+            order_id
+        );
+        return Err(ErrorCode::OrderDoesNotExist);
+    }
+
+    msg!("could not find order id {}", order_id);
+    Ok(None)
 }
 
 pub fn cancel_order_by_user_order_id(
@@ -408,11 +466,9 @@ pub fn modify_order(
     Ok(())
 }
 
-/// Preserve the recross gate across a modify. A triggered order that must see
-/// the price recross before it re-arms carries `AwaitingTriggerRecross`.
-/// Without the carry, a user could re-arm the order by modifying it while the
-/// price never recrosses. `order_id` is the id the re-place minted. A skipped
-/// re-place left no order under it, so nothing is carried.
+/// Keep `AwaitingTriggerRecross` on the re-placed order, so a modify cannot
+/// re-arm a trigger while the price never recrosses. `order_id` is the id the
+/// re-place minted. A skipped re-place left no order under it.
 fn carry_trigger_recross(user: &mut User, existing_order: &Order, order_id: u32) {
     if !existing_order.is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross) {
         return;
@@ -542,8 +598,11 @@ fn merged_trigger_condition(
 #[cfg(test)]
 mod tests {
     use {
-        super::carry_trigger_recross,
-        crate::state::user::{MarketType, Order, OrderBitFlag, OrderStatus, OrderType, User},
+        super::{carry_trigger_recross, slot_order_to_cancel},
+        crate::{
+            error::ErrorCode,
+            state::user::{MarketType, Order, OrderBitFlag, OrderStatus, OrderType, User},
+        },
     };
 
     fn trigger(order_id: u32, bit_flags: u8) -> Order {
@@ -585,5 +644,37 @@ mod tests {
 
         carry_trigger_recross(&mut user, &existing, 4);
         assert!(!user.orders[1].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
+    }
+
+    fn user_with_next_order_id(next_order_id: u32) -> User {
+        let mut user = User {
+            next_order_id,
+            ..User::default()
+        };
+        user.orders[2] = trigger(5, 0);
+        user
+    }
+
+    #[test]
+    fn a_cancel_finds_an_open_slot_order() {
+        assert_eq!(
+            slot_order_to_cancel(&user_with_next_order_id(9), 5),
+            Ok(Some(2))
+        );
+    }
+
+    #[test]
+    fn a_cancel_of_a_minted_id_with_no_slot_is_an_error() {
+        assert_eq!(
+            slot_order_to_cancel(&user_with_next_order_id(9), 7),
+            Err(ErrorCode::OrderDoesNotExist)
+        );
+    }
+
+    #[test]
+    fn a_cancel_of_an_id_not_minted_yet_is_a_no_op() {
+        let user = user_with_next_order_id(9);
+        assert_eq!(slot_order_to_cancel(&user, 9), Ok(None));
+        assert_eq!(slot_order_to_cancel(&user, 0), Ok(None));
     }
 }

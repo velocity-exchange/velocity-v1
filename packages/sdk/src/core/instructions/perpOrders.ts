@@ -87,14 +87,24 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 }
 
 /**
- * allow-verbose: enumerates the maker-side invariants (post-only gate, activationDelaySlots
- * default/attestation rule) a caller must reproduce exactly.
+ * allow-verbose: enumerates the maker-side invariants (order shape, post-only modes,
+ * refusals, activationDelaySlots default/attestation rule) a caller must reproduce exactly.
  *
- * Builds a `placeAndMakePerpOrderV1` instruction. It posts a post-only `Limit` maker
- * order for `user` that rests straight on the market's CLOB. It names no taker and
- * matches nothing on placement. The program returns `InvalidOrderIOCPostOnly` when
- * `orderParams` is not a post-only `Limit`. The maker never occupies a `User.orders`
- * slot.
+ * Builds a `placeAndMakePerpOrderV1` instruction. It posts a `Limit` maker order for
+ * `user` that rests straight on the market's CLOB. It names no taker and matches
+ * nothing on placement. The maker never occupies a `User.orders` slot.
+ * The program refuses a non-`Limit` order with `InvalidOrderIOCPostOnly`, an IOC order
+ * with `InvalidOrderIOC`, and a builder code with `InvalidOrder`. A `userOrderId` that a
+ * live slot order holds fails with `UserOrderIdAlreadyInUse`.
+ * A post-only order refuses to rest crossed. `TryPostOnly` skips the order without an
+ * error when it would cross the vAMM or the book's best opposite order. `Slide` moves
+ * it one tick behind the vAMM and then behind the book's best opposite order.
+ * A reduce-only order rests at most the position it reduces. With no position to
+ * reduce it fails with `InvalidOrderNotRiskReducing`.
+ * An order the book or the margin gate refuses fails the instruction, for example with
+ * `InvalidOrderMinOrderSize`, `InvalidOrderMaxTs`, `MaxNumberOfOrders` or
+ * `InsufficientCollateral`. The instruction emits an `OrderActionRecord` with
+ * `OrderAction.PLACE` and an `OrderRecord` for the resting order.
  * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price` is PRICE_PRECISION (1e6).
  * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`.
@@ -132,18 +142,15 @@ export async function buildPlaceAndMakePerpOrderInstruction(args: {
 }
 
 /**
- * Build a raw `cancelOrder` instruction.
+ * allow-verbose: a public builder whose body delegates; the id rules decide whether it lands.
  *
- * Pass `orderId: null` to cancel the user's most recently placed order. The program
- * resolves a `null` ID on-chain via `get_last_order_id`, which makes this safe to use
- * in a multi-instruction transaction where a place instruction precedes the cancel and
- * the program-assigned order ID is not yet known at build time — e.g.:
- *
- *   [placePerpOrder] → [cancelOrder(orderId: null)]
- *
- * The on-chain `order_id` counter is a monotonically incrementing u32 on the user
- * account, so `get_last_order_id` reliably points to the order placed in the preceding
- * instruction of the same transaction.
+ * Build a raw `cancelOrder` instruction. It cancels an order in a `User.orders` slot.
+ * Pass `orderId: null` to cancel the user's most recently placed order, which the
+ * program resolves through `get_last_order_id`. That is safe after a trigger placement
+ * in the same transaction: `[placeTriggerOrders] → [cancelOrder(orderId: null)]`.
+ * An id the user already minted that is not an open slot order fails with
+ * `OrderDoesNotExist`. A resting CLOB order draws its id from the same counter, so its
+ * id fails here too. Cancel it with `cancelOrderV1`.
  *
  * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
  * @param args.orderId - the order to cancel, or `null` per the above.

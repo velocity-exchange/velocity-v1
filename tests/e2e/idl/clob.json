@@ -8,6 +8,33 @@
   },
   "instructions": [
     {
+      "name": "accept_market_authority_v0",
+      "discriminator": [
+        69,
+        180,
+        147,
+        52,
+        126,
+        212,
+        85,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "pending_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "cancel_all_v0",
       "discriminator": [
         212,
@@ -264,27 +291,34 @@
       "accounts": [
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "Registered as the market's config authority. It need not sign, because",
+            "the market's own signature below already binds initialization to the",
+            "account's creator. A program PDA can therefore hold the role from the",
+            "start."
+          ]
         },
         {
           "name": "place_authority",
           "docs": [
-            "Registered as the market's place authority (accounts, not args:",
-            "duplicated accounts cost one index byte in the tx)."
+            "Registered as the market's place authority. It is an account rather",
+            "than an argument, because a duplicated account costs one index byte in",
+            "the transaction."
           ]
         },
         {
           "name": "market",
           "docs": [
-            "Pre-created zeroed account of [`ClobMarketV0::space_for`] the wanted",
-            "capacity (~98KB — larger than CPI alloc limits, so the client creates",
-            "it). [`crate::instructions::resize_market_v0`] grows it later.",
+            "Pre-created zeroed account, sized by [`ClobMarketV0::space_for`] for the",
+            "wanted capacity. That is about 98KB, which is above the CPI allocation",
+            "limit, so the client creates the account.",
+            "[`crate::instructions::resize_market_v0`] grows it later.",
             "",
-            "It signs, which is what binds initialization to the account's creator.",
-            "The client creates the account with a keypair, and the System program",
+            "It signs, which binds initialization to the account's creator. The",
+            "client creates the account with a keypair, and the System program",
             "already requires that keypair to sign the allocation, so the signature",
             "costs an honest caller nothing. Without it, creation and initialization",
-            "may land in different transactions and anyone may initialize the",
+            "may land in different transactions. Anyone may then initialize the",
             "account first and name themselves `authority`. The operator's own call",
             "then fails and the rent is stranded."
           ],
@@ -306,8 +340,9 @@
     {
       "name": "next_cross_v0",
       "docs": [
-        "Read-only: the best matchable order on each side — what any cross",
-        "settles between. Meant to be simulated, like `next_removal_v0`."
+        "Read-only. Reports the best matchable order on each side. Any cross",
+        "settles between those two orders. A caller simulates it, like",
+        "`next_removal_v0`."
       ],
       "discriminator": [
         234,
@@ -334,9 +369,8 @@
     {
       "name": "next_removal_v0",
       "docs": [
-        "Read-only: which order the book would let a caller remove next. Meant",
-        "to be simulated — a caller runs it to find work, then sends the",
-        "removal it names."
+        "Read-only. Names the order the book lets a caller remove next. A caller",
+        "simulates it to find work, then sends the removal it names."
       ],
       "discriminator": [
         132,
@@ -372,9 +406,9 @@
     {
       "name": "order_rules_v0",
       "docs": [
-        "Read-only: what the book requires of an order before it will hold",
-        "one — a caller builds against these rather than finding out by",
-        "rejection."
+        "Read-only. Reports what the book requires of an order before it holds",
+        "one. A caller builds against these rules instead of learning them from",
+        "a rejection."
       ],
       "discriminator": [
         201,
@@ -401,8 +435,8 @@
     {
       "name": "orders_v0",
       "docs": [
-        "Read-only: what the book holds for a set of refs, one answer per ref.",
-        "A ref that no longer names a live order comes back as",
+        "Read-only. Reports what the book holds for a set of refs, one answer",
+        "per ref. A ref that no longer names a live order comes back as",
         "`OrderViewV0::NONE`."
       ],
       "discriminator": [
@@ -478,6 +512,46 @@
       }
     },
     {
+      "name": "propose_market_authority_v0",
+      "docs": [
+        "Name the key that may take over this market's config. It takes over",
+        "only when it signs `accept_market_authority_v0`."
+      ],
+      "discriminator": [
+        16,
+        227,
+        252,
+        138,
+        3,
+        116,
+        145,
+        224
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeMarketAuthorityArgsV0"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "quote_l3_v0",
       "discriminator": [
         144,
@@ -492,9 +566,6 @@
       "accounts": [
         {
           "name": "market",
-          "docs": [
-            "mut only for the response tail — the book itself is not touched."
-          ],
           "writable": true
         }
       ],
@@ -529,9 +600,6 @@
       "accounts": [
         {
           "name": "market",
-          "docs": [
-            "mut only for the response tail — the book itself is not touched."
-          ],
           "writable": true
         }
       ],
@@ -640,10 +708,10 @@
     {
       "name": "set_crank_conditions_v0",
       "docs": [
-        "Register who resolves this book's own crank conditions. The wakes are",
-        "the book's; the answers belong to the program that owns its flow.",
-        "Returns the account offset the block sits at, for the watch",
-        "registration."
+        "Register the resolvers for this book's own crank conditions. The book",
+        "states when a turner must wake. The program that owns the flow states",
+        "what to do. Returns the account offset the condition block sits at, for",
+        "the watch registration."
       ],
       "discriminator": [
         34,
@@ -748,6 +816,32 @@
         68,
         106,
         34
+      ]
+    },
+    {
+      "name": "MarketAuthorityAcceptedRecordV0",
+      "discriminator": [
+        175,
+        197,
+        222,
+        29,
+        28,
+        103,
+        21,
+        166
+      ]
+    },
+    {
+      "name": "MarketAuthorityProposedRecordV0",
+      "discriminator": [
+        46,
+        90,
+        190,
+        99,
+        167,
+        165,
+        187,
+        104
       ]
     },
     {
@@ -1006,8 +1100,8 @@
             "docs": [
               "Sweep taker-origin remainders that have not reached their activation",
               "slot as well. Liquidation sets this flag. Every other caller leaves it",
-              "clear, and the sweep then passes such an order over and reports the",
-              "call as not exhaustive."
+              "clear, and the sweep then skips such an order and reports the call as",
+              "not exhaustive."
             ],
             "type": "bool"
           }
@@ -1017,9 +1111,10 @@
     {
       "name": "CancelAllOutcomeV0",
       "docs": [
-        "Return data of `cancel_all_v0`: per-side totals rather than a list of",
-        "removals, which is the shape open-order aggregates consume — one unwind",
-        "per side and one count, however many orders the sweep took."
+        "Return data of `cancel_all_v0`. Per-side totals rather than a list of",
+        "removals, because that is the shape open-order aggregates consume. The",
+        "caller does one unwind per side and one count, however many orders the",
+        "sweep took."
       ],
       "type": {
         "kind": "struct",
@@ -1052,7 +1147,7 @@
             "name": "bid_reduce_only_orders",
             "docs": [
               "How many of the swept orders on each side were reduce-only. The caller",
-              "tracks reduce-only resting orders per user, so it disarms exactly this",
+              "tracks reduce-only resting orders per user. It disarms exactly this",
               "many when the sweep removes them, without a per-order report."
             ],
             "type": "u32"
@@ -1064,11 +1159,9 @@
           {
             "name": "exhaustive",
             "docs": [
-              "The sweep took every order it was asked for. False means the user still",
-              "has resting orders, for one of two reasons: the book stopped at its",
-              "per-call cap, or it passed over a taker-origin remainder still inside",
-              "its activation window. Repeating the call clears the first. The second",
-              "clears itself once the order activates."
+              "The sweep took every order it was asked for. False means the book stopped at its",
+              "per-call cap, which repeating the call clears, or passed over a taker-origin",
+              "remainder inside its activation window, which clears itself."
             ],
             "type": "bool"
           }
@@ -1118,16 +1211,10 @@
     {
       "name": "CancelSidesV0",
       "docs": [
-        "Which sides a `cancel_all_v0` withdraws.",
-        "",
-        "Named sides rather than a pair of bools, because the wire must not be able",
-        "to express \"neither\" — that is a maker believing their quotes are gone",
-        "when nothing happened.",
-        "",
-        "What the sides *mean* differs by who is reading: a book walks them as book",
-        "sides, a caller unwinds them as position directions, a spline reads them as",
-        "taker directions. Each program adds that reading itself; the tags are the",
-        "part that has to agree."
+        "Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of bools,",
+        "because the wire must not express \"neither\" and leave a maker believing its quotes",
+        "are gone. What a side means differs by reader. A book walks it as a book side and a",
+        "caller unwinds it as a position direction. The tags are the part that has to agree."
       ],
       "type": {
         "kind": "enum",
@@ -1163,18 +1250,19 @@
           {
             "name": "place_authority",
             "docs": [
-              "Only signer allowed to place/cancel/execute (velocity's quoter CPI",
-              "signer PDA; velocity verifies `User` authority and flow-attestation",
-              "policy — including zero-delay activation — before CPI'ing here)."
+              "The only signer allowed to place, cancel or execute. It is velocity's",
+              "quoter CPI signer PDA. Velocity verifies the `User` authority and the",
+              "flow-attestation policy, including zero-delay activation, before it",
+              "CPIs here."
             ],
             "type": "pubkey"
           },
           {
             "name": "order_tick_size",
             "docs": [
-              "Prices must be a multiple of this (PRICE_PRECISION). Enforced at",
-              "placement, not baked into the stored representation, so it can be",
-              "changed without repricing the resting book."
+              "Prices must be a multiple of this, in PRICE_PRECISION. The check runs",
+              "at placement and the stored price does not encode it. It can therefore",
+              "change without repricing the resting book."
             ],
             "type": "u64"
           },
@@ -1195,40 +1283,19 @@
           {
             "name": "blocking_min_size",
             "docs": [
-              "Floor on the size of an order that may end a walk.",
+              "Floor on the size of an order that may end a walk. Zero disables it.",
               "",
-              "An order whose owner the caller did not carry ends the walk once it is",
-              "past `unknown_user_grace_slots`, and the depth behind it goes untraded.",
-              "That is what stops a caller filling around the maker who would have won.",
-              "It is also a blocking right, and a right that costs only",
-              "`min_order_size` can be bought in bulk: a caller can carry at most 48",
-              "users, so 49 orders at the top of book on 49 fresh sub-accounts make the",
-              "depth behind them unreachable for everyone, for rent.",
-              "",
-              "An order below this floor is stepped over instead, at any age, exactly",
-              "as a too-fresh order is. So the right now costs 49 times this size,",
-              "posted at the top of book and exposed to being filled, which is market",
-              "making rather than rent.",
-              "",
-              "What a maker gives up below the floor is stated and bounded: price",
-              "priority against a caller that did not carry it. At or above the floor",
-              "that priority is guaranteed; below it, a maker relies on being carried,",
-              "and a maker that is carried fills normally either way.",
-              "",
-              "Zero disables the floor, which is what every market reads out of",
-              "reserved bytes, so the behaviour is unchanged until an admin sets it.",
-              "There is no upper bound: raising it is the response to someone buying",
-              "blocking rights in bulk. Set it above the real book and no order can",
-              "end a walk, which hands every caller the freedom to fill around any",
-              "maker it left out."
+              "A caller carries at most 48 users, so 49 orders at the top of book can",
+              "block the depth behind them. The walk steps over a smaller order."
             ],
             "type": "u64"
           },
           {
             "name": "base_precision",
             "docs": [
-              "Base units per whole unit (velocity perps: 1e9; spot varies).",
-              "Immutable after init — resting order sizes are denominated in it."
+              "Base units per whole unit. Velocity perps use 1e9 and spot varies.",
+              "Immutable after init, because resting order sizes are denominated in",
+              "it."
             ],
             "type": "u64"
           },
@@ -1277,8 +1344,8 @@
           {
             "name": "default_activation_delay_slots",
             "docs": [
-              "Default taker speed bump: slots added to the placement slot to get",
-              "`activation_slot` when the caller doesn't choose a delay."
+              "Default taker speed bump. These slots are added to the placement slot",
+              "to get `activation_slot` when the caller does not choose a delay."
             ],
             "type": "u32"
           },
@@ -1292,36 +1359,20 @@
           {
             "name": "unknown_user_grace_slots",
             "docs": [
-              "Fills race the tx's fixed account set: quote and execute take the set",
-              "of users the caller can settle, and an order whose owner is absent is",
-              "skipped while younger than this many slots — the caller cannot be",
-              "expected to have heard of it yet — and ends the walk once older. Age",
-              "runs from `activation_slot`, the slot the order first became visible",
-              "to any reader of this book, not from when it was placed.",
+              "How far the caller's account set is allowed to lag the book.",
               "",
-              "So this is how far the caller's account set is allowed to lag the",
-              "book. Below that age a new maker costs the caller nothing; above it,",
-              "a maker the caller did not bring is where its fill stops, and the book",
-              "reports the depth behind as withheld.",
-              "",
-              "Sizing it is a question about how the callers of this market build",
-              "their account sets. A set assembled from a live subscription can lag",
-              "by a slot or two; one assembled from an address lookup table cannot",
-              "name a maker until the table has been extended and that extension has",
-              "landed, which is longer. Too small and every fresh quote stops fills",
-              "at the top of book; too large and a caller can leave out a maker it",
-              "did know about, and the depth behind that maker goes untraded rather",
-              "than to a worse price."
+              "The walk skips an order whose owner is absent while its age, measured",
+              "from `activation_slot`, is at most this. Past that the order ends the walk."
             ],
             "type": "u32"
           },
           {
             "name": "evict_threshold_per_side",
             "docs": [
-              "Soft cap: `evict_worst` is allowed once a side holds at least this",
-              "many orders. Eviction is crank-mediated through velocity (so the",
-              "evicted maker's margin aggregates stay exact); the buffer up to the",
-              "per-side hard cap is what the crank has to work with."
+              "Soft cap. `evict_worst` is allowed once a side holds at least this",
+              "many orders. Eviction runs through a velocity crank, which keeps the",
+              "evicted maker's margin aggregates exact. The buffer up to the per-side",
+              "hard cap is what the crank has to work with."
             ],
             "type": "u32"
           },
@@ -1351,15 +1402,9 @@
             "name": "next_expiry_ts",
             "docs": [
               "The earliest `max_ts` any live order carries, or [`i64::MAX`] when no",
-              "live order expires.",
-              "",
-              "The book keeps it so a caller does not have to walk the arena to learn",
-              "when its next expiry crank is due. Maintained conservatively: a",
-              "placement folds its own expiry in, and a removal recomputes only when",
-              "it took the order that held the minimum. It may therefore be *earlier*",
-              "than the truth for as long as it takes the next removal to notice,",
-              "which costs a caller a simulation that finds nothing. It is never",
-              "later, which would be work nobody is woken for."
+              "live order expires. A removal recomputes it only when it took the order",
+              "that held the minimum, so the field may be earlier than the truth. It is",
+              "never later, because that would leave work nobody is woken for."
             ],
             "type": "i64"
           },
@@ -1367,13 +1412,9 @@
             "name": "next_activation_slot",
             "docs": [
               "The earliest `activation_slot` any live order carries that has not yet",
-              "arrived, or [`u64::MAX`] when none is pending.",
-              "",
-              "Unlike the expiry this one goes stale on its own: a slot the chain",
-              "passes turns a pending activation into an arrived one with nothing",
-              "writing to the book. Every mutation therefore recomputes it if the",
-              "stored slot is no longer in the future, and a book nothing writes to",
-              "is covered by its caller's fallback poll rather than by this field."
+              "arrived, or [`u64::MAX`] when none is pending. A passing slot makes the",
+              "field stale without any write, so every mutation recomputes it when the",
+              "stored slot is no longer in the future."
             ],
             "type": "u64"
           },
@@ -1382,18 +1423,8 @@
             "docs": [
               "The relay conditions that wake a turner for this book's own work.",
               "",
-              "Expiry, activation, a side at its soft cap and a crossed book are all",
-              "facts about this account, so the wakes that watch for them live on it",
-              "and the book maintains them as it places and removes. Nothing else has",
-              "to be passed a second account to keep them fresh, and a hint cannot go",
-              "stale because a caller omitted one.",
-              "",
-              "What the book does *not* decide is who resolves them: each condition",
-              "carries a [`relay_spec::CrankSpecV0`] naming the resolver program, its",
-              "discriminator and the payment floor, written by",
-              "`set_crank_conditions_v0`. Removing an order has consequences the book",
-              "does not hold — a maker's margin, a reward, a trigger slot — so the",
-              "program that owns the flow says what runs."
+              "The book maintains them as it places and removes orders, so no caller",
+              "passes a second account. `set_crank_conditions_v0` names the resolvers."
             ],
             "type": {
               "defined": {
@@ -1402,35 +1433,36 @@
             }
           },
           {
+            "name": "pending_authority",
+            "docs": [
+              "The authority `propose_market_authority_v0` named, which",
+              "`accept_market_authority_v0` installs once it signs. Zero when no",
+              "rotation is open."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "docs": [
-              "Growth room: reserved bytes so a later field (a fee destination, a",
-              "second authority, a paused-operations bitmap) can be added without",
-              "moving `response`, changing the account size, or migrating every live",
-              "market. Must stay zero until claimed."
+              "Reserved bytes. A later field, such as a fee destination or a",
+              "paused-operations bitmap, can claim them without moving `response`,",
+              "changing the account size, or migrating every live market. The bytes",
+              "must stay zero until a field claims them."
             ],
             "type": {
               "array": [
                 "u8",
-                104
+                72
               ]
             }
           },
           {
             "name": "taker_origin_head",
             "docs": [
-              "Oldest taker-origin order on each side, indexed by [`Side`] (bid 0,",
-              "ask 1). [`NIL`] when the side holds none.",
-              "",
-              "A taker-origin order is a migrated taker remainder, and it claims the",
-              "depth it crosses on the other side (see `crate::book`'s reservation).",
-              "Every read of a side therefore has to enumerate the remainders resting",
-              "on the opposite one, so they are threaded on their own list rather than",
-              "found by walking a price-sorted side.",
-              "",
-              "The list is in rest order, which costs nothing to keep: `next_order_id`",
-              "only increases, so the newest taker-origin order always has the highest",
-              "id and appending it at the tail is both O(1) and already sorted."
+              "Oldest taker-origin order on each side, indexed by [`Side`] (bid 0, ask",
+              "1). [`NIL`] when the side holds none. The list is in rest order. A",
+              "taker-origin order is a migrated taker remainder that claims depth on",
+              "the other side, so a read of a side enumerates it. See [`crate::book`]."
             ],
             "type": {
               "array": [
@@ -1468,17 +1500,9 @@
             "name": "reservation_grace_slots",
             "docs": [
               "Slots past its activation slot for which a taker remainder's claim on",
-              "the depth it crosses is still honoured.",
-              "",
-              "The claim hides that depth from every caller but the crank that owes",
-              "the taker its improvement, so a crank that never lands would hold the",
-              "top of book indefinitely. Past this window the claim stops being",
-              "honoured and the depth is ordinary again. Zero means a claim ends the",
-              "slot the remainder activates.",
-              "",
-              "`update_market_v0` writes it, bounded by",
-              "[`RESERVATION_GRACE_SLOTS_CEILING`]. A fresh market starts at",
-              "[`DEFAULT_RESERVATION_GRACE_SLOTS`]."
+              "the depth it crosses is still honoured. Past the window the depth is",
+              "ordinary again, so a crank that never lands cannot hold the top of book",
+              "for ever. Zero ends the claim at activation."
             ],
             "type": "u16"
           },
@@ -1497,13 +1521,10 @@
           {
             "name": "response",
             "docs": [
-              "Scratch region `quote_v0`/`execute_v0` stream their response into;",
-              "return data carries a [`ResponsePointerV0`] locating it. Last field, so",
-              "[`RESPONSE_OFFSET`] is the header size minus its length.",
-              "",
-              "Its size carries the region's 8-byte start (see",
-              "[`RESPONSE_BUFFER_BYTES`]), which is what lets both programs cast the",
-              "records in place instead of copying them field by field."
+              "Scratch region that `quote_v0` and `execute_v0` stream their response",
+              "into. Return data carries a [`ResponsePointerV0`] that locates it. It is",
+              "the last field, so [`RESPONSE_OFFSET`] is the header size minus its",
+              "length. Its size holds the region's 8-byte start, so records cast in place."
             ],
             "type": {
               "array": [
@@ -1518,15 +1539,11 @@
     {
       "name": "ClobOrderRefV0",
       "docs": [
-        "Order handle: an O(1) node hint verified against the order id, so a stale",
-        "hint (node freed or reused) fails closed rather than acting on whichever",
-        "order took the slot.",
-        "",
-        "The `Clob` prefix is load-bearing and stutters here on purpose. This is the",
-        "one type on this wire that reaches velocity's *instruction* arguments, so",
-        "it is the one that lands in velocity's IDL — beside `Order`, `OrderType`",
-        "and `OrderParams`, where a bare `OrderRefV0` names no program. Anchor takes",
-        "the declared name, not the alias, so renaming it here renames it there."
+        "Order handle. The node index is an O(1) hint the book verifies against the order",
+        "id, so a stale hint fails closed rather than acting on whichever order took the",
+        "slot. The `Clob` prefix is deliberate: this is the one type here that lands in",
+        "velocity's IDL, beside `Order` and `OrderParams`, where `OrderRefV0` names no",
+        "program."
       ],
       "type": {
         "kind": "struct",
@@ -1545,12 +1562,10 @@
     {
       "name": "ClobRemovalKindV0",
       "docs": [
-        "Which of the book's own removal cranks a caller is asking about.",
-        "",
-        "Both are the book's business rather than the quoter interface's: a source",
-        "with no resting orders has neither. What the caller owns is the",
-        "*consequence* of a removal — a maker's margin reservation, a reward, a",
-        "trigger slot — which is why it asks rather than the book acting alone."
+        "Which of the book's own removal cranks a caller is asking about. Both belong to the",
+        "book rather than the quoter interface, and a source with no resting orders has",
+        "neither. The caller asks rather than the book acting alone, because the caller owns",
+        "the consequence: a maker's margin, a reward, and a trigger slot."
       ],
       "type": {
         "kind": "enum",
@@ -1560,6 +1575,92 @@
           },
           {
             "name": "Evictable"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClobUpdateMarketArgsV0",
+      "docs": [
+        "`update_market_v0` arguments. `None` leaves a setting unchanged. The book",
+        "checks the whole config after it applies every field, so one call can move",
+        "the step and the minimum together. The `Clob` prefix is there because this",
+        "type lands in velocity's IDL, as [`ClobOrderRefV0`] does."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_tick_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "order_step_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_order_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "blocking_min_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "default_activation_delay_slots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "max_activation_delay_slots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "unknown_user_grace_slots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "evict_threshold_per_side",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "max_quote_levels",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "max_execute_fills",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "max_execute_users",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "reservation_grace_slots",
+            "type": {
+              "option": "u16"
+            }
           }
         ]
       }
@@ -1595,12 +1696,9 @@
     {
       "name": "CrankBlockV0",
       "docs": [
-        "Return data of `set_crank_conditions_v0`: the two regions of the market",
-        "account a registrant has to point relay at.",
-        "",
-        "A watch registration names an account, an offset and a length. Reporting",
-        "them here is what lets a registrant register one without knowing this",
-        "account's layout — the same reason every other answer on this wire exists."
+        "Return data of `set_crank_conditions_v0`: the two regions of the market account a",
+        "registrant has to point relay at. A watch names an account, an offset and a length,",
+        "so reporting them lets a registrant watch without knowing this account's layout."
       ],
       "type": {
         "kind": "struct",
@@ -1615,12 +1713,10 @@
           {
             "name": "top_of_book_offset",
             "docs": [
-              "The region that changes whenever either side's best moves.",
-              "",
-              "A crossing order is by definition a new best, so a watch here catches",
-              "every cross the moment it appears. The book registers its own on this",
-              "region; a caller crossing something *else* against this book — whose",
-              "own repricing writes nothing here — registers a second one."
+              "The region that changes whenever either side's best moves. A crossing order is",
+              "always a new best, so a watch here catches every cross. A caller that crosses",
+              "another source against this book needs a second watch, because repricing that",
+              "source writes nothing here."
             ],
             "type": "u32"
           },
@@ -1634,23 +1730,12 @@
     {
       "name": "CrankConditionsArgsV0",
       "docs": [
-        "`set_crank_conditions_v0` arguments: who resolves each of the book's own",
-        "conditions, and the accounts they all take.",
+        "`set_crank_conditions_v0` arguments: who resolves each of the book's own conditions,",
+        "and the accounts they all take.",
         "",
-        "The book owns the *wakes* — when an order expires, when one activates,",
-        "when a side reaches its cap, when the two sides cross are all facts about",
-        "its own account, and it keeps them current as it places and removes. It",
-        "owns none of the *answers*: removing an order releases a maker's margin",
-        "reservation, pays a reward and frees a trigger slot, none of which the",
-        "book holds. So the program that owns the flow registers what runs, and",
-        "each condition wakes into that program's resolver.",
-        "",
-        "One account list serves every condition — the resolvers are that one",
-        "program's, and they read the same state.",
-        "",
-        "Re-running replaces the registration in place, which is how a re-priced",
-        "crank or a rotated resolver lands. Zeroing a resolver's `program`",
-        "deactivates its condition."
+        "The book owns the wakes but none of the answers, so the program that owns the flow",
+        "registers what runs. One account list serves every condition. A second call replaces",
+        "the registration, and a zero `program` deactivates a condition."
       ],
       "type": {
         "kind": "struct",
@@ -1704,11 +1789,9 @@
       "name": "CrankResolverV0",
       "docs": [
         "One resolver registration: which program answers a condition, with which",
-        "instruction, and what it must pay the keeper that lands the answer.",
-        "",
-        "The same three fields relay's own `CrankSpecV0` carries. Restated here",
-        "because they travel as instruction arguments, and this wire is the one",
-        "declaration velocity and the book share."
+        "instruction, and what it must pay the keeper that lands the answer. The same three",
+        "fields relay's `CrankSpecV0` carries, restated because they travel as instruction",
+        "arguments on the one wire velocity and the book share."
       ],
       "type": {
         "kind": "struct",
@@ -1744,8 +1827,8 @@
         "Taker direction, from the taker's perspective.",
         "",
         "Encoded as its discriminant, `Long = 0`, and every program on this wire",
-        "reads the same declaration — a taker direction inverted across the",
-        "boundary would fill the wrong side of a book."
+        "reads the same declaration. A taker direction inverted across the boundary",
+        "would fill the wrong side of a book."
       ],
       "type": {
         "kind": "enum",
@@ -1781,13 +1864,10 @@
     {
       "name": "ExecuteArgsV0",
       "docs": [
-        "Arguments to `execute_v0`: commit a fill.",
-        "",
-        "[`QuoteArgsV0`] without the price bound, because it answers the same",
-        "question having committed to it: `size` is already only the depth the",
-        "caller chose off the ladder, so the walk that fills it visits no level a",
-        "bound would have cut. A quoter may fill less than `size`; what it actually",
-        "filled is whatever its returned balance changes sum to."
+        "Arguments to `execute_v0`: commit a fill. [`QuoteArgsV0`] without the price bound,",
+        "because `size` is only the depth the caller chose off the ladder, so the walk visits",
+        "no level a bound would have cut. A quoter may fill less than `size`, and what it",
+        "filled is whatever its balance changes sum to."
       ],
       "type": {
         "kind": "struct",
@@ -1868,9 +1948,10 @@
     {
       "name": "ExecuteRecordV0",
       "docs": [
-        "One per execute — the hot path stays cheap by referencing orders by id",
-        "only. `user`/`price` resolve against the indexer's order table (built",
-        "from place records); quote amounts derive from price × base."
+        "One per execute. The record names orders by id only, which keeps the hot",
+        "path cheap. A reader resolves user and price against the indexer's order",
+        "table, which it builds from place records. Quote amounts come from price",
+        "times base."
       ],
       "type": {
         "kind": "struct",
@@ -1918,16 +1999,10 @@
     {
       "name": "FillArgsV0",
       "docs": [
-        "`fill_v0` arguments.",
-        "",
-        "A taker remainder resting here can be the *aggressor* of a match, and the",
-        "sources it aggresses against are not all on this book — a quoter or the",
-        "vAMM may be the better price, and this program cannot see either. So",
-        "velocity does that matching and reports the result back: these orders",
-        "filled this much, take it off them.",
-        "",
-        "A list rather than one, because a transaction that resolves several",
-        "remainders should pay for one call."
+        "`fill_v0` arguments. A taker remainder resting here can aggress against sources",
+        "this program cannot see, such as a quoter or the vAMM, so velocity does that",
+        "matching and reports back. A list rather than a single fill, so a transaction that",
+        "resolves several remainders pays for one call."
       ],
       "type": {
         "kind": "struct",
@@ -2005,10 +2080,9 @@
           {
             "name": "client_order_id",
             "docs": [
-              "The placing caller's own id for this order. Carried so a reader that",
-              "files orders under the caller's ids — which every reader downstream of",
-              "velocity does — joins a fill to an order without holding a map between",
-              "the two id spaces."
+              "The placing caller's own id for this order. Every reader downstream of",
+              "velocity files orders under the caller's ids. The field lets such a",
+              "reader join a fill to an order without a map between the two id spaces."
             ],
             "type": "u32"
           }
@@ -2042,16 +2116,16 @@
           {
             "name": "culled_base_asset_amount",
             "docs": [
-              "Size dropped because what was left fell under `min_order_size`. The",
-              "caller unwinds this from the owner's reservation; the book will not",
-              "hold it."
+              "Size dropped because the remainder fell under `min_order_size`. The",
+              "book will not hold it, so the caller unwinds it from the owner's",
+              "reservation."
             ],
             "type": "u64"
           },
           {
             "name": "removed",
             "docs": [
-              "The order left the book — filled out, or culled by the line above."
+              "The order left the book, either filled out or culled."
             ],
             "type": "bool"
           }
@@ -2061,12 +2135,9 @@
     {
       "name": "L3ArgsV0",
       "docs": [
-        "Arguments to `quote_l3_v0`: how much of a side to describe.",
-        "",
-        "No user set and no caps. The question is what rests on the book, not what",
-        "this caller may settle — a caller asks it precisely because it does not",
-        "know yet whose accounts to bring — so the filtering a quote applies is the",
-        "reader's to apply here."
+        "Arguments to `quote_l3_v0`: how much of a side to describe. No user set and no caps,",
+        "because the question is what rests on the book rather than what this caller may",
+        "settle. The filtering a quote applies is the reader's to apply here."
       ],
       "type": {
         "kind": "struct",
@@ -2107,11 +2178,74 @@
       }
     },
     {
+      "name": "MarketAuthorityAcceptedRecordV0",
+      "docs": [
+        "`accept_market_authority_v0` installed the proposed authority."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "previous_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketAuthorityProposedRecordV0",
+      "docs": [
+        "`propose_market_authority_v0` named a successor. A zero `proposed_authority`",
+        "withdraws the open proposal."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
       "name": "MarketConfigV0",
       "docs": [
-        "Per-market configuration, set at init (also the init wire args).",
-        "`base_precision` and `market_index` are immutable afterwards; the rest",
-        "are updatable via `update_market_v0`."
+        "Per-market configuration, set at init. It is also the init wire args.",
+        "`base_precision` and `market_index` are immutable afterwards.",
+        "`update_market_v0` updates the rest."
       ],
       "type": {
         "kind": "struct",
@@ -2177,17 +2311,10 @@
     {
       "name": "NextCrossV0",
       "docs": [
-        "Return data of `next_cross_v0`: the best matchable order on each side.",
-        "",
-        "\"Matchable\" is the book's own predicate — open, activated, and unexpired —",
-        "so a caller comparing the two heads never re-derives it, and never has to",
-        "know how a node stores an activation slot or an expiry.",
-        "",
-        "The two heads are what any cross settles between. A caller compares their",
-        "prices to see whether the book crosses itself at all, and reads",
-        "[`OrderViewV0::taker_origin`] to see which side came to trade — which is",
-        "the whole of what it needs to price the match. Depth behind the heads is a",
-        "separate question, and `quote_l3_v0` already answers it."
+        "Return data of `next_cross_v0`: the best matchable order on each side. Matchable is",
+        "the book's own predicate, meaning open, activated and unexpired, so a caller never",
+        "re-derives it. Any cross settles between these two heads. A caller compares their",
+        "prices and reads [`OrderViewV0::taker_origin`] to see which side came to trade."
       ],
       "type": {
         "kind": "struct",
@@ -2277,8 +2404,9 @@
     {
       "name": "OrderEvictRecordV0",
       "docs": [
-        "Crank eviction at the soft cap. Distinct from cancel: the UI shows",
-        "\"re-armed\"/\"evicted\", and velocity re-arms triggers in the same tx."
+        "Crank eviction at the soft cap. It is a separate record from a cancel,",
+        "because the UI shows an order as evicted or re-armed, and velocity re-arms",
+        "triggers in the same transaction."
       ],
       "serialization": "bytemuck",
       "repr": {
@@ -2325,7 +2453,8 @@
     {
       "name": "OrderExpireRecordV0",
       "docs": [
-        "Crank reclamation of an expired order (execute only skips expired)."
+        "Crank reclamation of an expired order. An execute only skips an expired",
+        "order."
       ],
       "serialization": "bytemuck",
       "repr": {
@@ -2454,8 +2583,8 @@
         "it will hold one.",
         "",
         "A caller that builds orders has to satisfy these, and finding out by",
-        "rejection costs it the transaction. Asking is what replaces reading them",
-        "out of the market account's header."
+        "rejection costs it the transaction. Asking replaces reading them out of",
+        "the market account's header."
       ],
       "type": {
         "kind": "struct",
@@ -2463,27 +2592,20 @@
           {
             "name": "min_order_size",
             "docs": [
-              "Floor on a resting order's size. A remainder below it cannot rest —",
-              "the book culls one on its own fills — so a caller re-placing a",
-              "partially-filled remainder drops it instead of offering the book a",
-              "placement it will reject."
+              "Floor on a resting order's size. A remainder below it cannot rest, and",
+              "the book culls one on its own fills. A caller re-placing a partially",
+              "filled remainder drops it instead of offering a placement the book",
+              "rejects."
             ],
             "type": "u64"
           },
           {
             "name": "blocking_min_size",
             "docs": [
-              "Floor on the size of an order that may end a fill walk when its owner",
-              "is not in the caller's user set. Below it the order is stepped over at",
-              "any age, exactly as a too-fresh one is.",
-              "",
-              "A maker sizing a quote needs it: this is what it costs to keep price",
-              "priority against a caller that leaves the maker out. A reader deciding",
-              "which owners to carry does not — `quote_l3_v0` flags the orders that can",
-              "end a walk per row, so nothing has to apply this floor itself.",
-              "",
-              "Zero disables the floor, which is what a market that has never set one",
-              "reports."
+              "Floor on the size of an order that may end a fill walk when its owner is not in",
+              "the caller's user set. The book skips a smaller order at any age. A maker sizing",
+              "a quote needs this, because it is what keeping price priority costs against a",
+              "caller that leaves the maker out. Zero disables the floor."
             ],
             "type": "u64"
           },
@@ -2491,8 +2613,8 @@
             "name": "default_activation_delay_slots",
             "docs": [
               "Slots added to the placement slot to get `activation_slot` when the",
-              "caller chooses no delay. A caller that gates on going faster than the",
-              "book's own speed bump compares against this."
+              "caller chooses no delay. A caller that compares its own delay against",
+              "the book's own reads this value."
             ],
             "type": "u32"
           },
@@ -2506,12 +2628,9 @@
           {
             "name": "place_authority",
             "docs": [
-              "The key the book requires to sign a placement, cancel, evict, expire, or",
-              "execute — the book's whole trust root. A caller that settles fills for",
-              "whoever the book names as a maker (velocity, via `QuoterSubjects::Book`)",
-              "pins this to its own signing PDA, so the book only ever acts under a key",
-              "the caller controls. Reported here rather than read from the header, so",
-              "the caller does not depend on where the book stores it."
+              "The key the book requires to sign a placement, cancel, evict, expire or execute,",
+              "and the book's whole trust root. A caller pins it to its own signing PDA, so the",
+              "book only ever acts under a key the caller controls."
             ],
             "type": {
               "array": [
@@ -2523,10 +2642,9 @@
           {
             "name": "tick_size",
             "docs": [
-              "The book's price and size grid. A caller that migrates an order onto the",
-              "book pins these to its market's grid at attach, so a remainder aligned",
-              "to the market can always rest and is never rejected off-tick or",
-              "off-step (which would revert the whole fill that carried it)."
+              "The book's price and size grid. A caller that migrates an order pins these to",
+              "its market's grid at attach, so an aligned remainder always rests. An off-tick",
+              "rejection would revert the whole fill that carried it."
             ],
             "type": "u64"
           },
@@ -2537,17 +2655,10 @@
           {
             "name": "side_order_counts",
             "docs": [
-              "Resting orders on each side right now, bids first.",
-              "",
-              "A side is full at `arena_capacity / 2`, and a placement onto a full",
-              "side is refused. A caller that rests a taker's remainder has to know",
-              "that before it commits the fill the remainder came out of, because the",
-              "refusal takes the whole fill with it. With these two numbers the caller",
-              "predicts the refusal and fills without resting instead.",
-              "",
-              "The counts move with every placement and removal, so they are a fact",
-              "about the slot this call ran in, not a rule. They are reported here",
-              "because this is the call a caller already makes before it rests."
+              "Resting orders on each side right now, bids first. A side is full at",
+              "`arena_capacity / 2` and the book refuses a placement onto a full side, so a",
+              "caller predicts the refusal and fills without resting. The counts are a fact",
+              "about the slot this call ran in, not a rule."
             ],
             "type": {
               "array": [
@@ -2571,6 +2682,19 @@
               "it back down."
             ],
             "type": "u32"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "The key that may change these rules. A caller that mirrors them pins it",
+              "to its own signing PDA, so no rule changes without the caller."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }
@@ -2578,23 +2702,14 @@
     {
       "name": "OrderViewV0",
       "docs": [
-        "One order, as the book describes it to a caller.",
+        "One order, as the book describes it to a caller. `next_removal_v0`, `next_cross_v0`",
+        "and `orders_v0` all answer with this shape, which is the only way the three stay in",
+        "step. Every field is stated rather than derived, because deriving one means knowing",
+        "how a node is laid out.",
         "",
-        "The single shape every read-only answer uses — `next_removal_v0`,",
-        "`next_cross_v0`, `orders_v0`. They ask different questions and get back the",
-        "same thing, because what a caller needs about an order does not depend on",
-        "why it asked: the handle to act on it, whose it is, and the fields it has",
-        "to price or size a decision with. One declaration is also the only way the",
-        "three stay in step.",
-        "",
-        "Every field is stated rather than derived, because deriving any of them",
-        "means knowing how a node is laid out — which is what calling the book",
-        "instead of reading it exists to avoid.",
-        "",
-        "**`order_ref.order_id == 0` means there is no such order.** Ids are handed",
-        "out from one and never reused, so zero is a value no live order carries.",
-        "A sentinel rather than an absent value because these answers travel as",
-        "return data, where a caller reads a fixed width or nothing at all."
+        "`order_ref.order_id == 0` means there is no such order. Ids start at one and are",
+        "never reused, and return data is a fixed width, so an absent order needs a",
+        "sentinel."
       ],
       "type": {
         "kind": "struct",
@@ -2649,7 +2764,7 @@
           {
             "name": "max_ts",
             "docs": [
-              "The expiry the order carries, zero for good-till-cancelled."
+              "The expiry the order carries, zero for good until cancelled."
             ],
             "type": "i64"
           },
@@ -2668,12 +2783,9 @@
     {
       "name": "OrdersArgsV0",
       "docs": [
-        "`orders_v0` arguments: which orders to describe.",
-        "",
-        "A caller holding refs — from its own records, or from a client that read",
-        "the book off chain — cannot tell which of them still name a live order, or",
-        "what those orders hold, without the book's memory. Asking is what replaces",
-        "reading the arena for it."
+        "`orders_v0` arguments: which orders to describe. A caller holds refs from its own",
+        "records or from a client that read the book off chain, and cannot tell which still",
+        "name a live order. Asking replaces reading the arena."
       ],
       "type": {
         "kind": "struct",
@@ -2697,18 +2809,18 @@
     {
       "name": "OrdersCancelRecordV0",
       "docs": [
-        "One per `cancel_all_v0` — a maker withdrawing a whole side (or both) in one",
-        "instruction, rather than one [`OrderCancelRecordV0`] per order.",
+        "One per `cancel_all_v0`. A maker withdraws a whole side, or both sides, in",
+        "one instruction, rather than one [`OrderCancelRecordV0`] per order.",
         "",
-        "Orders are referenced by id only, the same contract [`ExecuteRecordV0`]",
-        "uses: an indexer resolves price and size against the order table it built",
-        "from place records, so the sweep's log stays ~8 bytes per order instead of",
-        "re-stating what the reader already has. Ids come in book order, bids before",
-        "asks.",
+        "The record names orders by id only, under the same contract",
+        "[`ExecuteRecordV0`] uses. An indexer resolves price and size against the",
+        "order table it built from place records. The sweep's log therefore stays",
+        "four bytes per order instead of restating what the reader already holds.",
+        "Ids come in book order, bids before asks.",
         "",
         "`exhaustive` false means the call stopped at",
         "[`crate::state::CANCEL_ALL_ORDERS_CEILING`] and this user still has resting",
-        "orders — a reader must not treat the side as empty."
+        "orders. A reader must not treat the side as empty."
       ],
       "type": {
         "kind": "struct",
@@ -2767,13 +2879,10 @@
     {
       "name": "OrdersV0",
       "docs": [
-        "Return data of `orders_v0`: one [`OrderViewV0`] per requested ref, in the",
-        "order they were asked for.",
-        "",
-        "A ref that no longer names a live order comes back as [`OrderViewV0::NONE`]",
-        "rather than being dropped, so a caller reads the answers straight against",
-        "its own list. That is the expected outcome of a race with a fill or a",
-        "crank, not an error."
+        "Return data of `orders_v0`: one [`OrderViewV0`] per requested ref, in the order they",
+        "were asked for. A ref that no longer names a live order comes back as",
+        "[`OrderViewV0::NONE`] rather than being dropped, so a caller reads the answers by",
+        "position. A race with a fill or a crank produces this, and it is not an error."
       ],
       "type": {
         "kind": "struct",
@@ -2818,9 +2927,9 @@
           {
             "name": "activation_delay_slots",
             "docs": [
-              "`None` = the market's default activation delay. A value must be at or",
-              "under the market's maximum. Zero is allowed — the caller owns",
-              "attestation policy, the book only clamps."
+              "`None` takes the market's default activation delay. A value must be at",
+              "or under the market's maximum. Zero is allowed. The caller owns",
+              "attestation policy, and the book only clamps."
             ],
             "type": {
               "option": "u32"
@@ -2829,7 +2938,7 @@
           {
             "name": "max_ts",
             "docs": [
-              "Zero = good until cancelled."
+              "Zero means good until cancelled."
             ],
             "type": "i64"
           },
@@ -2837,7 +2946,7 @@
             "name": "user",
             "docs": [
               "The user the order settles against, in derivable form. The book trusts",
-              "its `place_authority` for identity; the caller verified control before",
+              "its `place_authority` for identity. The caller verified control before",
               "the CPI."
             ],
             "type": {
@@ -2849,12 +2958,9 @@
           {
             "name": "taker_origin",
             "docs": [
-              "The order is an unfilled taker remainder the caller migrated onto the",
-              "book, not a quote its owner chose to post. Only the caller can know",
-              "that, so it is an argument rather than something the book infers. It",
-              "changes two things: the order cannot be taken while a live",
-              "counterparty crosses it, and a cross involving it settles at the",
-              "counterparty's price."
+              "The order is an unfilled taker remainder the caller migrated onto the book,",
+              "which only the caller can know. The order cannot be taken while a live",
+              "counterparty crosses it, and a cross settles at the counterparty's price."
             ],
             "type": "bool"
           },
@@ -2863,32 +2969,28 @@
             "docs": [
               "The caller's own id for this order. The book stores it and reports it",
               "back on every answer that names the order, so the caller never holds a",
-              "map from the book's ids to its own. Opaque to the book: it neither",
-              "orders nor identifies an order here. Zero means the caller keeps no id."
+              "map from the book's ids to its own. The book neither sorts nor",
+              "identifies orders by it. Zero means the caller keeps no id."
             ],
             "type": "u32"
           },
           {
             "name": "reject_if_crossed",
             "docs": [
-              "Refuse the placement when the order would cross the opposite best",
-              "price, instead of resting it crossed.",
-              "",
-              "A crossed order still fills at its own price — the cross crank matches",
-              "it as a maker — so this is not about the fee it pays. It is about the",
-              "order resting at all: a maker that quotes through the other side has",
-              "mispriced, and would rather place nothing than hold a position it did",
-              "not intend to take."
+              "Refuse the placement when the order would cross the opposite best price, rather",
+              "than resting it crossed. A crossed order still fills at its own price, so this",
+              "is about whether the order rests at all. A maker that quotes through the other",
+              "side has mispriced and would rather place nothing."
             ],
             "type": "bool"
           },
           {
             "name": "reduce_only",
             "docs": [
-              "The order only reduces its owner's position. The book is position-blind",
-              "and cannot know that, so it is the caller's to declare. A fill against a",
-              "reduce-only order is clamped at match time to the owner's `base_cover`",
-              "cap from the execute call's user set."
+              "The order only reduces its owner's position. The book does not see",
+              "positions, so the caller declares this. At match time the book clamps a",
+              "fill against a reduce-only order to the owner's `base_cover` cap from",
+              "the execute call's user set."
             ],
             "type": "bool"
           }
@@ -2896,22 +2998,28 @@
       }
     },
     {
+      "name": "ProposeMarketAuthorityArgsV0",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "proposed_authority",
+            "docs": [
+              "The zero address withdraws an open proposal."
+            ],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "QuoteArgsV0",
       "docs": [
-        "Arguments to `quote_v0`: what a taker wants, and who the caller can settle",
-        "against.",
-        "",
-        "A quote is a promise about what `execute_v0` will deliver, so it is given",
-        "the same `users` and `caps` and must spend them the same way. A ladder",
-        "standing on liquidity the matching execute would decline is a ladder its",
-        "reader cannot route against.",
-        "",
-        "Read in place, like the responses: `users` is a slice into the caller's",
-        "instruction data, so a quoter walks the set without allocating and without",
-        "standing a copy of it in a 4 KB frame. It leads the struct for that to be",
-        "sound — the count puts the refs four bytes in, which is the two-byte",
-        "alignment a [`UserRefV0`] reference needs. A field added ahead of it must",
-        "keep that offset even."
+        "Arguments to `quote_v0`: what a taker wants, and who the caller can settle against. A",
+        "quote promises what `execute_v0` will deliver, so it takes the same `users` and `caps`",
+        "and spends them the same way. `users` is a slice into the caller's instruction data,",
+        "so a quoter walks it without standing a copy in a 4 KB frame. It leads the struct to",
+        "keep its offset even, and a field added ahead of it must preserve that."
       ],
       "type": {
         "kind": "struct",
@@ -2919,8 +3027,8 @@
           {
             "name": "users",
             "docs": [
-              "The loaded-user set, at most [`USER_SET_CAPACITY`] entries — which a",
-              "reader checks with [`user_set_within_capacity`], since the count comes",
+              "The loaded-user set, at most [`USER_SET_CAPACITY`] entries. A reader",
+              "checks that with [`user_set_within_capacity`], because the count comes",
               "off the wire."
             ],
             "type": {
@@ -2958,8 +3066,8 @@
             "name": "reference_price",
             "docs": [
               "The price the caller marks a filled position at, in PRICE_PRECISION.",
-              "Only [`UserCapV0`] budgets are spent against it; it does not bound",
-              "what a quoter may fill at."
+              "Only [`UserCapV0`] budgets are spent against it. It does not bound what a",
+              "quoter may fill at."
             ],
             "type": "i64"
           },
@@ -2980,50 +3088,30 @@
           {
             "name": "limit_price",
             "docs": [
-              "The worst price the caller will fill at, in PRICE_PRECISION. Zero",
-              "means no bound.",
-              "",
-              "A ladder is walked best price first, so a quoter may stop as soon as a",
-              "level is worse than this: the caller discards those levels anyway. The",
-              "walk is what a quoter is charged for, and a transaction is charged for",
-              "the compute limit it requests, so a bound the quoter ignores is paid",
-              "for by whoever sent the transaction.",
-              "",
-              "**Not a trust boundary**, like the caps above. Honouring it saves the",
-              "caller compute; ignoring it wastes the caller's compute and returns",
-              "levels the caller drops. It never widens what a quoter may fill."
+              "The worst price the caller will fill at, in PRICE_PRECISION. Zero means no",
+              "bound. A ladder is walked best price first, so a quoter may stop as soon as a",
+              "level is worse. Not a trust boundary. Ignoring it wastes the caller's compute and",
+              "returns levels it drops, and never widens what a quoter may fill."
             ],
             "type": "u64"
           },
           {
             "name": "taker_served_window",
             "docs": [
-              "Whether the taker's flow served a protection window before this call:",
-              "the swift hold (an attested transaction), or the book's activation",
-              "delay (a protocol crank that fills an order which rested through it).",
-              "The caller asserts it, like `users` and `caps` — a quoter already",
-              "authenticates the caller, and the caller is the settlement engine. A",
-              "quoter that only serves protected flow (the midpoint's",
-              "`require_attested_flow`) refuses when this is false."
+              "Whether the taker's flow served a protection window before this call: the swift",
+              "hold, or the book's activation delay. The caller asserts it, like `users` and",
+              "`caps`. A quoter that only serves protected flow refuses when this is false, as",
+              "the midpoint does under `require_attested_flow`."
             ],
             "type": "bool"
           },
           {
             "name": "include_taker_origin_reservations",
             "docs": [
-              "Fill the depth that a taker-origin order reserves.",
-              "",
-              "A taker-origin order is an unfilled taker remainder that rests on the",
-              "book. The book withholds the depth that order crosses, so the",
-              "improvement over its resting price reaches the taker and not whoever",
-              "lands a transaction first. The crank that settles the cross is the one",
-              "caller that may take that depth, and it says so here.",
-              "",
-              "This is unrelated to the margin a maker reserves at placement.",
-              "",
-              "The caller asserts it, like `users` and `caps`. The quoter",
-              "authenticates the caller, and the caller is the settlement engine. A",
-              "quoter that reserves no depth ignores it."
+              "Fill the depth that a taker-origin order reserves. The crank that settles the",
+              "cross is the one caller that may take it, and it says so here. Unrelated to the",
+              "margin a maker reserves at placement. A quoter that reserves no depth ignores",
+              "it."
             ],
             "type": "bool"
           }
@@ -3062,8 +3150,8 @@
         "Return data of `cancel_order_v0`, `evict_worst_v0` and",
         "`remove_expired_v0`: the order that left the book.",
         "",
-        "`side` is what tells the caller whether the remaining size unwinds its",
-        "bid-side or ask-side reservation."
+        "`side` tells the caller whether the remaining size unwinds its bid-side or",
+        "ask-side reservation."
       ],
       "type": {
         "kind": "struct",
@@ -3106,33 +3194,27 @@
           {
             "name": "taker_origin",
             "docs": [
-              "The order was taker-origin.",
-              "",
-              "The only place the book reports the flag, and what tells a caller",
-              "which side of a cross it is resolving was demanding liquidity — hence",
-              "which side's price the match settles at."
+              "The order was taker-origin. The flag tells a caller which side of the",
+              "cross it is resolving demanded liquidity, and therefore which side's",
+              "price the match settles at."
             ],
             "type": "bool"
           },
           {
             "name": "reduce_only",
             "docs": [
-              "The order was reduce-only. Reported for the same reason as",
-              "`taker_origin`: a modify removes the order and rests an equivalent one,",
-              "and must carry the flag across or the replacement rests uncapped."
+              "The order was reduce-only. A modify removes the order and rests an",
+              "equivalent one, and must carry the flag across. Otherwise the",
+              "replacement rests uncapped."
             ],
             "type": "bool"
           },
           {
             "name": "max_ts",
             "docs": [
-              "The expiry the order carried, zero for good-till-cancelled.",
-              "",
-              "Reported so a caller that removes an order to put an equivalent one",
-              "back — a modify — can carry the expiry across without reading the",
-              "book. The removal is the only moment the value is still knowable, and",
-              "reading it off the node beforehand means knowing where a node keeps",
-              "it."
+              "The expiry the order carried, zero for good until cancelled. A modify removes an",
+              "order and rests an equivalent one, and this lets the caller carry the expiry",
+              "across without reading the book. Removal is the last moment it is knowable."
             ],
             "type": "i64"
           }
@@ -3141,6 +3223,9 @@
     },
     {
       "name": "ResizeMarketArgsV0",
+      "docs": [
+        "`resize_market_v0` arguments."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -3154,13 +3239,9 @@
     {
       "name": "ResponsePointerV0",
       "docs": [
-        "Where in the quoter's response account it wrote the response. Return data",
-        "of `quote_v0` and `execute_v0`.",
-        "",
-        "The one shape a caller reads back from every quoter, whatever it is: the",
-        "response itself lives in an account the caller then borrows, and this says",
-        "where to look. Declared here rather than per program for the same reason",
-        "the rest of the wire is — three copies of two `u32`s are three chances to",
+        "Where in the quoter's response account it wrote the response. Return data of",
+        "`quote_v0` and `execute_v0`. Every quoter answers with this one shape, declared here",
+        "rather than per program, because three copies of two `u32`s are three chances to",
         "disagree about which comes first."
       ],
       "type": {
@@ -3195,118 +3276,14 @@
       }
     },
     {
-      "name": "UpdateMarketArgsV0",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "order_tick_size",
-            "type": {
-              "option": "u64"
-            }
-          },
-          {
-            "name": "order_step_size",
-            "type": {
-              "option": "u64"
-            }
-          },
-          {
-            "name": "min_order_size",
-            "type": {
-              "option": "u64"
-            }
-          },
-          {
-            "name": "blocking_min_size",
-            "type": {
-              "option": "u64"
-            }
-          },
-          {
-            "name": "default_activation_delay_slots",
-            "type": {
-              "option": "u32"
-            }
-          },
-          {
-            "name": "max_activation_delay_slots",
-            "type": {
-              "option": "u32"
-            }
-          },
-          {
-            "name": "unknown_user_grace_slots",
-            "type": {
-              "option": "u32"
-            }
-          },
-          {
-            "name": "evict_threshold_per_side",
-            "type": {
-              "option": "u32"
-            }
-          },
-          {
-            "name": "max_quote_levels",
-            "type": {
-              "option": "u16"
-            }
-          },
-          {
-            "name": "max_execute_fills",
-            "type": {
-              "option": "u16"
-            }
-          },
-          {
-            "name": "max_execute_users",
-            "type": {
-              "option": "u16"
-            }
-          },
-          {
-            "name": "reservation_grace_slots",
-            "type": {
-              "option": "u16"
-            }
-          }
-        ]
-      }
-    },
-    {
       "name": "UserCapV0",
       "docs": [
         "What one named user may still lose on the side this call sweeps, in quote.",
         "",
-        "A quote_cap rather than a base amount, because the caller cannot convert the",
-        "one into the other. What a fill costs a maker is collateral, and the",
-        "conversion needs the price each order fills at — which the caller does not",
-        "have and the quoter does. So the caller sends what it knows and the quoter",
-        "spends it:",
-        "",
-        "```text",
-        "cost = base * |price - reference_price| / BASE_PRECISION",
-        "```",
-        "",
-        "counted only where the fill moves against the owner: an order resting on",
-        "the bid side costs its owner when it fills *above* the reference, an ask",
-        "when it fills *below*. An order priced in the owner's favour costs nothing",
-        "and is filled whole. Once the quote_cap is spent, that user's remaining",
-        "orders are passed over and the depth behind them is still filled.",
-        "",
-        "Why this is the cost that matters: a resting order is normally already",
-        "collateralized against the position it would become, priced at the",
-        "reference. Filling it converts that reservation into the position it stood",
-        "for. What the reservation does not price is the owner paying its own limit",
-        "price for a position marked at the reference, and that difference scales",
-        "with size.",
-        "",
-        "One number, not one per side, because a call sweeps one side of the book:",
-        "[`QuoteArgsV0::direction`] says which, and the quote_cap is for that side.",
-        "",
-        "`u64::MAX` means unbounded. Zero means the user is excluded outright, and",
-        "belongs in the bitmap rather than here."
+        "A quote amount, not base, because the conversion needs the price each order fills",
+        "at, which the quoter has and the caller does not. The quoter charges",
+        "`base * |price - reference_price| / BASE_PRECISION` where the fill moves against the",
+        "owner. `u64::MAX` is unbounded, and zero belongs in the exclusion bitmap."
       ],
       "type": {
         "kind": "struct",
@@ -3314,40 +3291,20 @@
           {
             "name": "quote_cap",
             "docs": [
-              "Quote this user may lose filling on the swept side. `u64::MAX` means",
-              "unbounded.",
-              "",
-              "The bound for depth that was margin-reserved before the fill, which",
-              "is a book's resting orders. The base behind such an order was priced",
-              "into its owner's worst case at placement, so filling it does not grow",
-              "that worst case — what moves is collateral, by the gap between the",
-              "order's price and the mark. Base cannot express it: at a price in the",
-              "owner's favour the cost per base is zero and any size is affordable."
+              "Quote this user may lose filling on the swept side. `u64::MAX` is unbounded.",
+              "This bounds depth that was margin-reserved at placement, so filling it moves",
+              "collateral rather than the worst case. Base cannot express that bound, because",
+              "at a price in the owner's favour the cost per base is zero."
             ],
             "type": "u64"
           },
           {
             "name": "base_cap",
             "docs": [
-              "The most base this user may give up on the swept side. `u64::MAX`",
-              "means unbounded.",
-              "",
-              "One axis, two readers, and the caller sends the tighter of what each",
-              "needs — which in all but one shape is exactly one of them, because the",
-              "other is unbounded:",
-              "",
-              "- A **book** holds its owner's **reduce-only** orders to it. The book",
-              "  is position-blind, so a reduce-only order is safe only if the caller",
-              "  bounds its fill to the position it may reduce. Here that makes this",
-              "  **a trust boundary**, unlike [`Self::quote_cap`]: the book enforces",
-              "  it at match time, and a reduce-only order whose owner carries no cap",
-              "  here is not filled at all.",
-              "- Every **other quoter** holds its own depth to it, reading the entry",
-              "  for the user on its registry slot. That depth was never reserved, so",
-              "  a fill grows its owner's worst case and pays initial margin on the",
-              "  base taken. Quote cannot express that, which is why this figure is",
-              "  in base. Advisory there, like the quote cap: the caller trims the",
-              "  returned ladder to it either way."
+              "The most base this user may give up on the swept side. `u64::MAX` is unbounded.",
+              "A book is position-blind, so it enforces this at match time and will not fill a",
+              "reduce-only order whose owner carries no cap here. That makes the field a trust",
+              "boundary, unlike [`Self::quote_cap`]. Every other quoter reads it as advisory."
             ],
             "type": "u64"
           },
@@ -3364,24 +3321,12 @@
     {
       "name": "UserCapsV0",
       "docs": [
-        "Per-user room, parallel to the caller's user set.",
+        "Per-user room, parallel to the caller's user set. A user absent from all of this is",
+        "unconstrained. The quoter skips an excluded user's orders, because depth standing on",
+        "them would be depth the fill declines. An exclusion never fails the call, unlike",
+        "absence from the user set.",
         "",
-        "A user absent from all of this is unconstrained. An excluded user has",
-        "their orders passed over entirely — the caller has said it cannot settle a",
-        "fill against them, so quoting depth standing on their orders would promise",
-        "depth the fill declines.",
-        "",
-        "Distinct from membership of the user set: absent from *that* means the",
-        "caller's account set is stale and, past the grace window, the whole call",
-        "fails. An exclusion is a deliberate constraint, not a mistake, and never",
-        "fails the call.",
-        "",
-        "**Not a trust boundary.** A quoter that ignores these leaves its caller",
-        "exactly where it stands without them — the caller's own post-fill checks",
-        "still refuse the fill. What honouring them buys is that the honest case",
-        "stops reverting. The exclusions are firmer than the budgets: a caller may",
-        "also refuse a response that names an excluded user, while a quote_cap it",
-        "cannot reprice is left to those post-fill checks."
+        "Not a trust boundary. A caller's own post-fill checks still refuse the fill."
       ],
       "type": {
         "kind": "struct",
@@ -3402,7 +3347,7 @@
           {
             "name": "len",
             "docs": [
-              "Live entries at the head of `caps`; the tail is undefined."
+              "Live entries at the head of `caps`. The tail is undefined."
             ],
             "type": "u8"
           },
@@ -3425,15 +3370,10 @@
     {
       "name": "UserRefV0",
       "docs": [
-        "A velocity user in derivable form: the wallet and sub-account index that",
-        "both the `User` and `UserStats` PDAs derive from.",
-        "",
-        "Stored rather than the `User` key so an off-chain reader — a relay resolver",
-        "staging a crank — can reach every user-derived account from a quoter's",
-        "state alone. A stored `User` key is a dead end, because its authority lives",
-        "inside account data the reader cannot load. Velocity matches refs against",
-        "its loaded users by field, never by derivation, so the hot path pays",
-        "nothing for this."
+        "A velocity user in derivable form: the wallet and sub-account index that both",
+        "the `User` and `UserStats` PDAs derive from. An off-chain reader can reach every",
+        "user-derived account from a quoter's state alone. A stored `User` key cannot,",
+        "because its authority lives in account data the reader cannot load."
       ],
       "type": {
         "kind": "struct",

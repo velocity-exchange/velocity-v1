@@ -733,9 +733,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						maxExecuteUsers: 32,
 					})
 					.accountsStrict({
-						authority: payer.publicKey,
 						// The market's slab is the identity velocity signs every
-						// external quoter CPI as, the book's included.
+						// external quoter CPI as, the book's included. It holds the
+						// config authority too, which the attach requires.
+						authority: quoterSlab,
 						placeAuthority: quoterSlab,
 						market: clobBook.publicKey,
 					})

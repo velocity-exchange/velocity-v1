@@ -553,13 +553,16 @@ New endpoints take a single args struct (`PlaceAndTakePerpOrderV1Args`, `Trigger
 `PlaceTriggerOrdersV1Args`, `UpdateQuoterApprovedArgs` and the rest).
 
 `AdminClient` gains the quoter registry builders the CLI needs: `getInitializeQuoterIx`,
-`getInitializeQuoterSlabIx`, `getUpdateQuoterAccountsIx`, `getUpdateQuoterApprovedIx` and
-`getUpdatePerpMarketClobQuoterIx`. `getInitializeProtocolUserIxs(name, payer)` creates the protocol
+`getInitializeQuoterSlabIx`, `getUpdateQuoterAccountsIx`, `getUpdateQuoterApprovedIx`,
+`getUpdatePerpMarketClobQuoterIx`, `getUpdatePerpMarketClobBookConfigIx` and
+`getResizePerpMarketClobBookIx`. The market's quoter slab is the config authority of every book
+velocity attaches, so the last two are the only way to change a book's rules or grow its arena. `getInitializeProtocolUserIxs(name, payer)` creates the protocol
 `User` and its `UserStats` under the velocity signer PDA. New PDA helpers:
 `getQuoterCrossConditionsPublicKey` and `getProgramDataAddress`, beside the exported
 `BPF_LOADER_UPGRADEABLE_ID`.
 
 The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`.
-`clob-market update-config` retunes a live book's mutable config. The CLI creates a market's slab
+`clob-market update-config` retunes a live book's mutable config through velocity, and
+`clob-market resize` grows its arena. The CLI creates a market's slab
 before it registers that market's book, and passes the registry's accounts on register, approve,
 set-active, set-config, set-accounts and set-watch.

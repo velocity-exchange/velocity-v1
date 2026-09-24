@@ -1196,6 +1196,14 @@ the current ones.
 
 ### 5.5 New instructions with layout or account implications
 
+- `update_perp_market_clob_book_config` and `resize_perp_market_clob_book` (velocity,
+  feat/propamm, warm/cold admin) are the only paths that change an attached book's rules or
+  grow its arena, because the market's quoter slab is the book's config authority. Accounts
+  for the config path: `admin`, `state`, `perp_market`, `quoter` (writable), `quoter_slab`
+  (writable), `clob_market` (writable), `clob_program`. The resize path drops `quoter`, takes
+  `quoter_slab` read-only and adds `system_program`, and `admin` is writable because it pays
+  the rent.
+
 - `refresh_spot_market_interest` (velocity) books the lending interest of up to sixteen spot
   markets in one call. Accounts: `state`, plus writable spot markets in `remaining_accounts`.
   Argument: `market_indexes: Vec<u16>`. It is permissionless, like the single-market
@@ -1591,7 +1599,7 @@ long carry a one-line summary here and a link into §6.2.
 | equity-floor-oracle-validity | Fix three OtterSec findings (#131, #139, #142) where an equity-floor decision was taken off an oracle price the program had already judged invalid. Introduced a two-sided equity bound, later replaced by `equity-floor-fail-closed`. [Details](#equity-floor-oracle-validity) |
 | expiry-price-conservation | Fix three Medium audit findings (OtterSec #116, #125, #147) on opposite sides of the same expiry-settlement conservation equation, where aggregate user claims must fit the value that backs them. [Details](#expiry-price-conservation) |
 | expiry-settlement-guards | Fix two High audit findings (OtterSec #149, #133). #149: a time-expired perp position could still be liquidated at the live oracle before its fixed settlement price existed. Every ordinary user path already refuses past `expiry_ts` via `is_in_settlement(now)`, so placing, filling, triggering, transferring and settling all gate on it, but `liquidate_perp` and `liquidate_perp_with_fill` did not. For the whole window between `expiry_ts` and a warm admin flipping the status to `Settlement`, a liquidator could take the position at a live price the committed `expiry_price` then supersedes, while the owner had no way to act. Both now reject with `InvalidLiquidation` when the market has expired but is not yet `Settlement` or `Delisted`. They are deliberately not gated on `is_in_settlement` itself, because that is also true once the status is `Settlement` or `Delisted`, by which point `expiry_price` is committed and liquidating during the wind-down is a legitimate way to resolve bad debt. An existing delisting test caught the over-broad first attempt. `resolve_perp_bankruptcy` is likewise untouched, so bad debt on an expired market can always still be cleared. Integrator-visible: liquidating a perp market between `expiry_ts` and its `Settlement` flip now reverts, so run `settle_expired_market` first, then close positions via `settle_expired_position`. #133: a negative committed `expiry_price` was clipped out of margin and equity. `calculate_base_asset_value_and_pnl_with_oracle_price` clamps a non-positive price to zero, which is correct for a live oracle where a negative print is nonsense, but margin reused it for the `Settlement` valuation, so a long's signed base loss was clipped to zero and the position read as merely worthless instead of underwater, letting the owner withdraw collateral. `settle_expired_position` values the same position through `calculate_base_asset_value_with_expiry_price`, which never clamped, and later booked the real negative value as an unsecured quote borrow, and that divergence was the bug. The new `calculate_base_asset_value_and_pnl_with_expiry_price` keeps the sign, and both `Settlement` branches in `math/margin.rs` use it. The live-oracle clamp is deliberately left intact, since it is a real guard against a bogus oracle print and only the expiry-price path is legitimately allowed to be negative. No account-layout, IDL, error-code or SDK-API change, since it reuses `InvalidLiquidation` |
-| feat/propamm | PropAMM order flow. Perps fill through one router across the vAMM, an on-chain CLOB book and external quoter programs. The DLOB, order auctions, AMM JIT and jit-proxy are removed, and every live order is ephemeral: only its unfilled remainder rests, on the book. New accounts `QuoterV0`, `QuoterSlabV0`, `ClobCrankConditionsV0`, `UserConditionsV0` and `CrankTreasuryV0`, new error codes 6375 to 6458, and relay cranks for expiry, eviction, crosses, triggers and liquidations. §2, §3, §4 and §5 carry the surface. [Details](#propamm-order-flow) |
+| feat/propamm | PropAMM order flow. Perps fill through one router across the vAMM, an on-chain CLOB book and external quoter programs. The DLOB, order auctions, AMM JIT and jit-proxy are removed, and every live order is ephemeral: only its unfilled remainder rests, on the book. New accounts `QuoterV0`, `QuoterSlabV0`, `ClobCrankConditionsV0`, `UserConditionsV0` and `CrankTreasuryV0`, new error codes 6375 to 6458, and relay cranks for expiry, eviction, crosses, triggers and liquidations. Velocity holds every attached book's config authority, and `update_perp_market_clob_book_config` / `resize_perp_market_clob_book` are the only paths that change it. §2, §3, §4 and §5 carry the surface. [Details](#propamm-order-flow) |
 | fee-tier-vip3 | Adds a fourth perp fee tier, VIP 3, at $200M trailing-30d volume (§3). `PERP_FEE_TIER_MAX_INDEX` goes from 2 to 3, `VOLUME_THRESHOLDS` gains `TWO_HUNDRED_MILLION_QUOTE`, `FeeStructure::perps_default` seeds `fee_tiers[3]`, and `update_promo_fee_tier` accepts 3. No ix, layout, IDL or error-code change, since the slot already existed in the 10-wide array. SDK mirror: `VIP_FEE_TIER_THREE_VOLUME_QUOTE` in `PERP_FEE_TIER_VOLUME_THRESHOLDS`, so `getPerpFeeTierIndex`, `getUserFeeTier` and `getMarketFees` pick tier 3 above $200M. Admin CLI `fees set-schedule` takes four tier fees |
 | fill-stale-margin-bad-debt | Fix four High audit findings (OtterSec #143, #144 on oracle validity, and #135, #148 on unaccrued interest) in the perp-fill path's post-fill margin checks. Adds the new error `SpotMarketInterestStaleForMargin` (6371). [Details](#fill-stale-margin-bad-debt) |
 | if-add-exact-share-pricing | Follow-up to #253 on the same High finding. Rejecting only the zero-share case still let a deposit be partly captured. Shares are indivisible, so a request worth 1.5 shares minted 1 and donated the remaining half to existing shareholders, and with a donation-inflated share price the forfeited fraction approaches 100%, so the zero-share guard bounded the loss rather than removing it. `add_insurance_fund_stake` now transfers only the portion of the requested amount that prices to whole shares, via `deposit_amount_and_shares_for_if_stake`, which floors the shares and ceils their cost so the fund never sells a share below price, and leaves the remainder, always less than one share price, in the depositor's token account. `IFDepositMintsZeroShares` (6360) now means the request is below the price of one share. `InsuranceFundStakeRecord.amount`, `InsuranceFundStake.cost_basis`, `UserStats.if_staked_quote_asset_amount` and `SpotMarket.if_last_settle_vault_amount` all track the accepted amount rather than the request. Integrators must treat the `amount` argument as an upper bound and read the staked amount from `InsuranceFundStakeRecord`, since the SDK's `fromSubaccount` path leaves any remainder in the wallet's token account. The `vaults` program's `add_insurance_fund_stake` stakes the whole balance of `vault_if_token_account` rather than the requested `amount`, so a remainder left by an earlier add folds into the next one. That account holds nothing else and no instruction sweeps it, so the amount staked can exceed the manager's transfer. No layout, IDL or error-code change |
@@ -2741,8 +2749,25 @@ from a bumped book or a protected quoter, exactly as the fill's route would. `Qu
 the book's placement rules: the attach mirrors them onto the entry (`book_tick_size`,
 `book_min_order_size`, `book_default_activation_delay_slots`), so the take gate, the route's
 maker-priority skip, and the remainder rest read a loaded field instead of CPI'ing
-`order_rules_v0`. Re-run `update_perp_market_clob_quoter` after changing a book's rules, and
-the attach's `quoter` account is now writable.
+`order_rules_v0`. The attach's `quoter` account is writable.
+
+Velocity is the config authority of every book it attaches. The market's quoter slab holds
+both the book's `place_authority` and its `authority`, and the attach refuses a book whose
+`authority` is anything else, so the mirror cannot go stale. `initialize_market_v0` no longer
+requires `authority` to sign, which lets a book be created with the slab as its authority.
+Two warm/cold-admin instructions reach the book: `update_perp_market_clob_book_config(args:
+ClobUpdateMarketArgsV0)` CPIs `update_market_v0` and rewrites the mirror in the same
+instruction, and `resize_perp_market_clob_book(new_capacity: u32)` CPIs `resize_market_v0` with
+the admin paying the rent. The book validates every config at init and update: tick, step and
+minimum order size are nonzero and the minimum is a multiple of the step,
+`unknown_user_grace_slots` is at most 150, `max_activation_delay_slots` at most 1500, and
+`max_execute_users` at most 48, the user-set capacity. `order_rules_v0` reports the book's
+`authority`. The book rotates its authority in two steps (`propose_market_authority_v0`, then
+`accept_market_authority_v0` signed by the proposed key), and each step emits a record. A book
+attached to velocity has no velocity path that proposes a rotation. SDK:
+`AdminClient.getUpdatePerpMarketClobBookConfigIx`, `getResizePerpMarketClobBookIx` and the
+`ClobUpdateMarketArgsV0` type. Admin CLI: `clob-market update-config` goes through velocity, and
+`clob-market resize` is new.
 
 The registry moves into a per-market slab. The quoter registry's approved set moves into one
 `QuoterSlabV0` per market (§2 quoter registry, §5 ABI). A router fill carries the slab instead

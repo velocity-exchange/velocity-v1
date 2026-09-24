@@ -140,7 +140,9 @@ pub use clob_wire::discriminator::{
     ORDERS_V0 as CLOB_ORDERS_V0_DISCRIMINATOR, ORDER_RULES_V0 as CLOB_ORDER_RULES_V0_DISCRIMINATOR,
     PLACE_ORDER_V0 as CLOB_PLACE_ORDER_V0_DISCRIMINATOR,
     REMOVE_EXPIRED_V0 as CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
+    RESIZE_MARKET_V0 as CLOB_RESIZE_MARKET_V0_DISCRIMINATOR,
     SET_CRANK_CONDITIONS_V0 as CLOB_SET_CRANK_CONDITIONS_V0_DISCRIMINATOR,
+    UPDATE_MARKET_V0 as CLOB_UPDATE_MARKET_V0_DISCRIMINATOR,
 };
 /// `evict_worst_v0` args on the CLOB wire.
 pub use clob_wire::EvictWorstArgsV0 as ClobEvictWorstArgsV0;
@@ -154,6 +156,10 @@ pub use clob_wire::RemoveExpiredArgsV0 as ClobRemoveExpiredArgsV0;
 /// reclaim, and why. The book decides both. Velocity supplies the removal's
 /// consequences rather than the search.
 pub use clob_wire::{ClobRemovalKindV0, NextRemovalArgsV0 as ClobNextRemovalArgsV0};
+/// `update_market_v0` and `resize_market_v0` args on the CLOB wire. Velocity
+/// sends them because the slab is the config authority of every book it
+/// attaches.
+pub use clob_wire::{ClobUpdateMarketArgsV0, ResizeMarketArgsV0 as ClobResizeMarketArgsV0};
 /// `set_crank_conditions_v0` args: who resolves each of the book's own
 /// conditions. The book owns the wakes and velocity registers the answers.
 pub use clob_wire::{
@@ -178,8 +184,9 @@ pub use clob_wire::{
 
 /// The velocity-mediated CLOB CPI surface, bound to one book. It holds the
 /// three accounts every call takes and the seeds that let velocity sign as the
-/// book's `place_authority`, which is the market's quoter slab. The return-data
-/// decode checks the writer, so a program the CLOB called cannot spoof it.
+/// book's `place_authority` and `authority`. The market's quoter slab holds both
+/// roles. The return-data decode checks the writer, so a program the CLOB
+/// called cannot spoof it.
 pub struct ClobMarket<'a, 'info> {
     /// The book account, passed writable.
     pub market: &'a AccountInfo<'info>,
@@ -281,6 +288,49 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         self.invoke(&CLOB_EVICT_WORST_V0_DISCRIMINATOR, &args, "evict")
     }
 
+    /// Change the book's config. The slab signs as the book's `authority`.
+    /// The call returns nothing, so there is no response to decode.
+    pub fn update_market(&self, args: ClobUpdateMarketArgsV0) -> Result<()> {
+        self.invoke_signed(&CLOB_UPDATE_MARKET_V0_DISCRIMINATOR, &args, "update market")
+    }
+
+    /// Grow the book's arena. `payer` funds the extra rent, and the slab signs
+    /// as the book's `authority`.
+    pub fn resize(
+        &self,
+        payer: &AccountInfo<'info>,
+        system_program: &AccountInfo<'info>,
+        args: ClobResizeMarketArgsV0,
+    ) -> Result<()> {
+        let data = self.instruction_data(&CLOB_RESIZE_MARKET_V0_DISCRIMINATOR, &args, "resize")?;
+        invoke_signed(
+            &Instruction {
+                program_id: self.program.key(),
+                accounts: vec![
+                    AccountMeta::new(payer.key(), true),
+                    AccountMeta::new(self.market.key(), false),
+                    AccountMeta::new_readonly(self.slab.key(), true),
+                    AccountMeta::new_readonly(system_program.key(), false),
+                ],
+
+                data,
+            },
+            &[
+                payer.clone(),
+                self.market.clone(),
+                self.slab.clone(),
+                system_program.clone(),
+                self.program.clone(),
+            ],
+            &[&get_quoter_slab_signer_seeds(
+                &self.market_index_le,
+                &self.bump,
+            )],
+        )?;
+
+        Ok(())
+    }
+
     /// The read-only half of the same wire, for the questions this call site
     /// asks the book about its own memory rather than telling it to change.
     pub fn reader(&self) -> ClobReader<'a, 'info> {
@@ -300,6 +350,16 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         args: &A,
         what: &str,
     ) -> Result<R> {
+        self.invoke_signed(discriminator, args, what)?;
+        clob_response(&self.program.key(), what)
+    }
+
+    fn instruction_data<A: AnchorSerialize>(
+        &self,
+        discriminator: &[u8; 8],
+        args: &A,
+        what: &str,
+    ) -> Result<Vec<u8>> {
         let mut data = Vec::with_capacity(CLOB_CPI_DATA_CAPACITY);
         data.extend_from_slice(discriminator);
         args.serialize(&mut data).map_err(|_| {
@@ -307,6 +367,17 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
             ErrorCode::PropAmmArgsEncodeFailed
         })?;
 
+        Ok(data)
+    }
+
+    /// The CPI half of [`Self::invoke`], for a call that returns nothing.
+    fn invoke_signed<A: AnchorSerialize>(
+        &self,
+        discriminator: &[u8; 8],
+        args: &A,
+        what: &str,
+    ) -> Result<()> {
+        let data = self.instruction_data(discriminator, args, what)?;
         invoke_signed(
             &Instruction {
                 program_id: self.program.key(),
@@ -324,7 +395,7 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
             )],
         )?;
 
-        clob_response(&self.program.key(), what)
+        Ok(())
     }
 }
 

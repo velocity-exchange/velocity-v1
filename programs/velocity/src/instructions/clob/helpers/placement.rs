@@ -203,8 +203,8 @@ pub enum RestAdmission {
 
 /// Ask the book for its placement rules, by one read-only `order_rules_v0` CPI,
 /// and test the remainder against each. The slab's mirror is not used, because
-/// the book's authority can change the rules after the attach. `OrderWouldCross`
-/// is not tested. Only a post-only maker place can hit it.
+/// it does not hold the side counts or the delay ceiling. `OrderWouldCross` is
+/// not tested. Only a post-only maker place can hit it.
 pub fn clob_admits_rest(
     clob: &ClobMarket<'_, '_>,
     direction: PositionDirection,
@@ -588,6 +588,7 @@ mod rest_admission_tests {
             side_order_counts: [0, 0],
             arena_capacity: 512,
             evict_threshold_per_side: 200,
+            authority: [0; 32],
         }
     }
 
@@ -745,10 +746,7 @@ mod rest_admission_tests {
     }
 
     #[test]
-    fn a_stale_mirror_cannot_admit_an_off_tick_price() {
-        // The book's authority may raise its tick after the attach mirrored
-        // it. The rules come from the book, so the raised tick is what the
-        // remainder answers to.
+    fn the_books_own_tick_decides_the_rest_price() {
         let mut rules = rules();
         rules.tick_size = 10_000;
         let admission = rest_admission(

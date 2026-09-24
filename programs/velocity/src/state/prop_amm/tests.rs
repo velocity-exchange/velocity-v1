@@ -768,6 +768,26 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             side_order_counts: [0x090A_0B0C, 0x0D0E_0F10],
             arena_capacity: 0x1112_1314,
             evict_threshold_per_side: 0x1516_1718,
+            authority: [0x19; 32],
+        },
+    );
+
+    agree(
+        "ClobUpdateMarketArgsV0",
+        &ClobUpdateMarketArgsV0 {
+            order_tick_size: Some(0x0102_0304_0506_0708),
+            min_order_size: Some(0x1112_1314_1516_1718),
+            default_activation_delay_slots: Some(0x2122_2324),
+            max_execute_users: Some(0x3132),
+            reservation_grace_slots: Some(0x4142),
+            ..Default::default()
+        },
+    );
+
+    agree(
+        "ResizeMarketArgsV0",
+        &ClobResizeMarketArgsV0 {
+            new_capacity: 0x5152_5354,
         },
     );
 

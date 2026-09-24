@@ -1076,6 +1076,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResetPerpMarketAmmOracleTwap {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResizePerpMarketClobBook {
+        pub new_capacity: u32,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResizePerpMarketClobBook {
+        const DISCRIMINATOR: &[u8] = &[84, 238, 84, 1, 161, 232, 88, 76];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResizePerpMarketClobBook {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ResizeRevenueShareEscrowOrders {
         pub num_orders: u16,
     }
@@ -1846,6 +1856,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdatePerpMarketBaseSpread {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdatePerpMarketClobBookConfig {
+        pub args: ClobUpdateMarketArgsV0,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdatePerpMarketClobBookConfig {
+        const DISCRIMINATOR: &[u8] = &[30, 117, 158, 153, 195, 32, 216, 241];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdatePerpMarketClobBookConfig {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdatePerpMarketClobQuoter {
         pub args: UpdatePerpMarketClobQuoterArgs,
@@ -3517,6 +3537,33 @@ pub mod types {
     pub struct ClobOrderRefV0 {
         pub node_index: u32,
         pub order_id: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct ClobUpdateMarketArgsV0 {
+        pub order_tick_size: Option<u64>,
+        pub order_step_size: Option<u64>,
+        pub min_order_size: Option<u64>,
+        pub blocking_min_size: Option<u64>,
+        pub default_activation_delay_slots: Option<u32>,
+        pub max_activation_delay_slots: Option<u32>,
+        pub unknown_user_grace_slots: Option<u32>,
+        pub evict_threshold_per_side: Option<u32>,
+        pub max_quote_levels: Option<u16>,
+        pub max_execute_fills: Option<u16>,
+        pub max_execute_users: Option<u16>,
+        pub reservation_grace_slots: Option<u16>,
     }
     #[repr(C)]
     #[derive(
@@ -17710,6 +17757,100 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResizePerpMarketClobBook {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub perp_market: Pubkey,
+        pub quoter_slab: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub system_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResizePerpMarketClobBook {
+        const DISCRIMINATOR: &[u8] = &[33, 121, 153, 107, 127, 243, 122, 146];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResizePerpMarketClobBook {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResizePerpMarketClobBook {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResizePerpMarketClobBook {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResizePerpMarketClobBook {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResizePerpMarketClobBook {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResizePerpMarketClobBook {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResizePerpMarketClobBook {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct ResizeRevenueShareEscrowOrders {
         pub escrow: Pubkey,
         pub authority: Pubkey,
@@ -23793,6 +23934,100 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for UpdatePerpMarketBaseSpread {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdatePerpMarketClobBookConfig {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub perp_market: Pubkey,
+        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdatePerpMarketClobBookConfig {
+        const DISCRIMINATOR: &[u8] = &[241, 68, 144, 193, 25, 251, 112, 66];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdatePerpMarketClobBookConfig {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdatePerpMarketClobBookConfig {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdatePerpMarketClobBookConfig {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdatePerpMarketClobBookConfig {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdatePerpMarketClobBookConfig {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdatePerpMarketClobBookConfig {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdatePerpMarketClobBookConfig {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

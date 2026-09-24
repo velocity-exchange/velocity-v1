@@ -191,7 +191,7 @@ pub fn handle_update_perp_market_clob_quoter(
 /// `ClobMarket::from_slab` leaves out. The slab's book slot must hold the
 /// passed entry, and that entry must name the passed CLOB program. Returns the
 /// bound book and the program id the entry registered.
-fn bind_book_slot<'a, 'info>(
+pub(super) fn bind_book_slot<'a, 'info>(
     quoter_slab: &'a AccountLoader<'info, QuoterSlabV0>,
     quoter: &AccountLoader<'info, QuoterV0>,
     clob_market: &'a AccountInfo<'info>,
@@ -230,7 +230,7 @@ fn bind_book_slot<'a, 'info>(
 /// maker's open-order aggregate, and the book reports the size of that release.
 /// The fill path bounds the release by the market's minimum, which is a bound
 /// only while the book cannot cull something larger.
-fn mirror_book_placement_rules(
+pub(super) fn mirror_book_placement_rules(
     clob: &ClobMarket<'_, '_>,
     perp_market: &PerpMarket,
     quoter_slab: &AccountLoader<QuoterSlabV0>,
@@ -258,6 +258,15 @@ fn mirror_book_placement_rules(
         rules.place_authority == quoter_slab.key().to_bytes(),
         ErrorCode::InvalidQuoterConfig,
         "book place authority is not the market's quoter slab"
+    )?;
+
+    // The slab must also hold the book's config authority. Every rule change
+    // then runs through `update_perp_market_clob_book_config`, which refreshes
+    // the mirror below in the same instruction.
+    validate!(
+        rules.authority == quoter_slab.key().to_bytes(),
+        ErrorCode::InvalidQuoterConfig,
+        "book config authority is not the market's quoter slab"
     )?;
 
     // The book's grid must match the market's grid. A remainder aligned to the

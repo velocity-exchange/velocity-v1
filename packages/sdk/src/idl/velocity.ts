@@ -8523,6 +8523,68 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "resizePerpMarketClobBook",
+      "discriminator": [
+        84,
+        238,
+        84,
+        1,
+        161,
+        232,
+        88,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "docs": [
+            "Pays the rent the larger arena needs."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket"
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "Signs the CPI as the book's config authority."
+          ],
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designated."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "newCapacity",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "resizeRevenueShareEscrowOrders",
       "discriminator": [
         32,
@@ -13336,6 +13398,74 @@ export type Velocity = {
         {
           "name": "baseSpread",
           "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "updatePerpMarketClobBookConfig",
+      "discriminator": [
+        30,
+        117,
+        158,
+        153,
+        195,
+        32,
+        216,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket"
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "Writable, because the staging entry carries the mirror forward to a",
+            "later re-approval."
+          ],
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "Writable, because the book's slot holds the mirror the hot paths read.",
+            "The slab also signs the CPI as the book's config authority."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designated."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "clobUpdateMarketArgsV0"
+            }
+          }
         }
       ]
     },
@@ -22439,10 +22569,9 @@ export type Velocity = {
     {
       "name": "cancelSidesV0",
       "docs": [
-        "Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of bools,",
-        "because the wire must not express \"neither\" and leave a maker believing its quotes",
-        "are gone. What a side means differs by reader. A book walks it as a book side and a",
-        "caller unwinds it as a position direction. The tags are the part that has to agree."
+        "Which sides a `cancel_all_v0` withdraws. The wire cannot express \"neither\",",
+        "which would leave a maker believing its quotes are gone. A book reads a side",
+        "as a book side and a caller as a position direction. Only the tags must agree."
       ],
       "type": {
         "kind": "enum",
@@ -22608,6 +22737,92 @@ export type Velocity = {
           {
             "name": "orderId",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "clobUpdateMarketArgsV0",
+      "docs": [
+        "`update_market_v0` arguments. `None` leaves a setting unchanged. The book",
+        "checks the whole config after it applies every field, so one call can move",
+        "the step and the minimum together. The `Clob` prefix is there because this",
+        "type lands in velocity's IDL, as [`ClobOrderRefV0`] does."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "orderTickSize",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "orderStepSize",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "minOrderSize",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "blockingMinSize",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "defaultActivationDelaySlots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "maxActivationDelaySlots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "unknownUserGraceSlots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "evictThresholdPerSide",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "maxQuoteLevels",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "maxExecuteFills",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "maxExecuteUsers",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "reservationGraceSlots",
+            "type": {
+              "option": "u16"
+            }
           }
         ]
       }
@@ -23542,11 +23757,8 @@ export type Velocity = {
     {
       "name": "directionV0",
       "docs": [
-        "Taker direction, from the taker's perspective.",
-        "",
-        "Encoded as its discriminant, `Long = 0`, and every program on this wire",
-        "reads the same declaration. A taker direction inverted across the boundary",
-        "would fill the wrong side of a book."
+        "Taker direction, from the taker's perspective. Encoded as its discriminant,",
+        "`Long = 0`. A direction inverted across the boundary fills the wrong side."
       ],
       "type": {
         "kind": "enum",
@@ -28324,7 +28536,7 @@ export type Velocity = {
     {
       "name": "quotedLevelV0",
       "docs": [
-        "A quoted level in the buffer's Pod form. The wire `PriceLevel` is borsh."
+        "A quoted level in the buffer's Pod form."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -28575,10 +28787,10 @@ export type Velocity = {
           {
             "name": "bookTickSize",
             "docs": [
-              "The book's placement rules, mirrored here by the attach",
-              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded field.",
-              "Zero for a non-`Clob` entry and for a book no market has attached. A",
-              "stale mirror degrades the remainder handling rather than failing a fill."
+              "The book's placement rules, mirrored so the hot paths read a loaded",
+              "field. The slab is the book's only config authority, and every path that",
+              "changes the rules rewrites this copy in the same instruction. Zero for a",
+              "non-`Clob` entry and for a book no market has attached."
             ],
             "type": "u64"
           },
@@ -29446,7 +29658,7 @@ export type Velocity = {
           {
             "name": "direction",
             "docs": [
-              "Taker direction quoted, as a `Direction` cast to u8. 0 is long and 1 is",
+              "Taker direction quoted, as a `DirectionV0` cast to u8. 0 is long and 1 is",
               "short."
             ],
             "type": "u8"

@@ -9,6 +9,8 @@ import {
 } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import {
+	ClobUpdateMarketArgsV0,
+	decodeQuoterSlab,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
 	getQuoterPublicKey,
@@ -22,7 +24,11 @@ import {
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 
 import { buildAdminClient, buildProvider } from '../lib/provider';
-import { reportDispatch, sendOrPropose } from '../lib/squads';
+import {
+	reportDispatch,
+	resolveAdminAuthority,
+	sendOrPropose,
+} from '../lib/squads';
 
 /** Anchor default instruction discriminator: sha256("global:<name>")[..8]. */
 function ixDiscriminator(name: string): Buffer {
@@ -233,40 +239,34 @@ type ClobUpdateFlags = {
 };
 
 /**
- * Borsh wire of the CLOB's `UpdateMarketArgsV0`. It holds twelve options in
- * the order the book declares them. Each option is a presence byte, followed
- * by the value when present. An absent field leaves the book's current setting
- * unchanged.
+ * The CLOB's `UpdateMarketArgsV0` in the shape velocity's
+ * `updatePerpMarketClobBookConfig` takes. An absent flag leaves the book's
+ * current setting unchanged.
  *
  * Returns `undefined` when no field is set, because that call would write
  * nothing and still pay for a transaction.
  */
-function clobUpdateMarketArgs(flags: ClobUpdateFlags): Buffer | undefined {
-	const opt = (width: number, value?: string) => {
-		if (value === undefined) {
-			return Buffer.from([0]);
-		}
-
-		const b = Buffer.alloc(1 + width);
-		b.writeUInt8(1, 0);
-		new BN(value).toArrayLike(Buffer, 'le', width).copy(b, 1);
-		return b;
+function clobUpdateMarketArgs(
+	flags: ClobUpdateFlags
+): ClobUpdateMarketArgsV0 | undefined {
+	const big = (value?: string) => (value === undefined ? null : new BN(value));
+	const num = (value?: string) =>
+		value === undefined ? null : Number.parseInt(value, 10);
+	const args: ClobUpdateMarketArgsV0 = {
+		orderTickSize: big(flags.tickSize),
+		orderStepSize: big(flags.stepSize),
+		minOrderSize: big(flags.minOrderSize),
+		blockingMinSize: big(flags.blockingMinSize),
+		defaultActivationDelaySlots: num(flags.defaultActivationDelay),
+		maxActivationDelaySlots: num(flags.maxActivationDelay),
+		unknownUserGraceSlots: num(flags.unknownUserGraceSlots),
+		evictThresholdPerSide: num(flags.evictThreshold),
+		maxQuoteLevels: num(flags.maxQuoteLevels),
+		maxExecuteFills: num(flags.maxExecuteFills),
+		maxExecuteUsers: num(flags.maxExecuteUsers),
+		reservationGraceSlots: num(flags.reservationGraceSlots),
 	};
-	const fields: Buffer[] = [
-		opt(8, flags.tickSize),
-		opt(8, flags.stepSize),
-		opt(8, flags.minOrderSize),
-		opt(8, flags.blockingMinSize),
-		opt(4, flags.defaultActivationDelay),
-		opt(4, flags.maxActivationDelay),
-		opt(4, flags.unknownUserGraceSlots),
-		opt(4, flags.evictThreshold),
-		opt(2, flags.maxQuoteLevels),
-		opt(2, flags.maxExecuteFills),
-		opt(2, flags.maxExecuteUsers),
-		opt(2, flags.reservationGraceSlots),
-	];
-	return fields.some((f) => f.length > 1) ? Buffer.concat(fields) : undefined;
+	return Object.values(args).some((v) => v !== null) ? args : undefined;
 }
 
 /**
@@ -281,7 +281,7 @@ async function marketBook(
 	connection: RpcConnection,
 	perpMarket: PublicKey,
 	marketIndex: number
-): Promise<{ book: PublicKey; program: PublicKey; authority: PublicKey }> {
+): Promise<{ book: PublicKey; program: PublicKey }> {
 	const marketInfo = await connection.getAccountInfo(perpMarket);
 	if (!marketInfo) {
 		throw new Error(`perp market ${marketIndex} not found`);
@@ -304,13 +304,23 @@ async function marketBook(
 		throw new Error(`book ${book.toBase58()} not found`);
 	}
 
-	// `ClobHeaderV0.authority` is the header's first field, after the 8-byte
-	// discriminator. It is the one signer `update_market_v0` accepts.
-	return {
-		book,
-		program: bookInfo.owner,
-		authority: new PublicKey(bookInfo.data.subarray(8, 40)),
-	};
+	return { book, program: bookInfo.owner };
+}
+
+/**
+ * The quoter entry the market's slab holds in the book's slot. Slot 0 is the
+ * book by convention.
+ */
+async function bookQuoterEntry(
+	connection: RpcConnection,
+	quoterSlab: PublicKey
+): Promise<PublicKey> {
+	const info = await connection.getAccountInfo(quoterSlab);
+	if (!info) {
+		throw new Error(`quoter slab ${quoterSlab.toBase58()} not found`);
+	}
+
+	return decodeQuoterSlab(info.data).slots[0].entry;
 }
 
 /**
@@ -338,7 +348,7 @@ export function registerClobMarket(parent: Command): void {
 			clobMarket
 				.command('init <market>')
 				.description(
-					"Create a perp market's CLOB in one command. It creates the book account and initializes it on the CLOB program with the market's quoter slab as the place authority. It creates the market's quoter slab when that is missing, registers the quoter entry and approves it into the slab, then attaches it as the market's canonical CLOB, which also creates the crank conditions and the reservoir. It can also register the relay watch and fund the reservoir. The signer must hold the warm or cold admin role, which the approval and the attach require. This command sends directly and rejects --multisig, because fresh account keypairs must co-sign."
+					"Create a perp market's CLOB in one command. It creates the book account and initializes it on the CLOB program with the market's quoter slab as both the place authority and the config authority. It creates the market's quoter slab when that is missing, registers the quoter entry and approves it into the slab, then attaches it as the market's canonical CLOB, which also creates the crank conditions and the reservoir. It can also register the relay watch and fund the reservoir. The signer must hold the warm or cold admin role, which the approval and the attach require. This command sends directly and rejects --multisig, because fresh account keypairs must co-sign."
 				)
 		)
 			.requiredOption('--clob-program <pubkey>', 'deployed CLOB program id')
@@ -437,10 +447,11 @@ export function registerClobMarket(parent: Command): void {
 				const wallet = provider.wallet.publicKey;
 
 				// The book is a fresh account on the CLOB program. Its place
-				// authority is the market's quoter slab, the one identity velocity
-				// signs every external quoter CPI as. The vault authority is not
-				// used here, because a callee inherits signer privilege and the
-				// vault authority moves funds.
+				// authority and its config authority are both the market's quoter
+				// slab, the one identity velocity signs every external quoter CPI
+				// as. The attach refuses a book with any other config authority.
+				// The vault authority is not used here, because a callee inherits
+				// signer privilege and the vault authority moves funds.
 				const book = Keypair.generate();
 				const space = clobMarketSpace(Number.parseInt(flags.capacity, 10));
 				const bookRent =
@@ -455,9 +466,9 @@ export function registerClobMarket(parent: Command): void {
 				const initBook = new TransactionInstruction({
 					programId: clobProgram,
 					keys: [
-						{ pubkey: wallet, isSigner: true, isWritable: false },
 						{ pubkey: quoterSlab, isSigner: false, isWritable: false },
-						{ pubkey: book.publicKey, isSigner: false, isWritable: true },
+						{ pubkey: quoterSlab, isSigner: false, isWritable: false },
+						{ pubkey: book.publicKey, isSigner: true, isWritable: true },
 					],
 
 					data: Buffer.concat([
@@ -683,7 +694,7 @@ export function registerClobMarket(parent: Command): void {
 		clobMarket
 			.command('update-config <market>')
 			.description(
-				"Change an existing book's mutable config through the CLOB's update_market_v0. The book's authority signs. Only the flags passed are written, and the rest keep their current setting. base_precision, market_index and place_authority are immutable, so this command does not offer them. The book and its program come from the perp market, so no program id is needed."
+				"Change an existing book's mutable config through velocity's update_perp_market_clob_book_config, which CPIs the CLOB's update_market_v0 as the book's config authority and rewrites velocity's copy of the book's rules in the same instruction. The signer must hold the warm or cold admin role. Only the flags passed are written, and the rest keep their current setting. base_precision, market_index and place_authority are immutable, so this command does not offer them. The book, its program and its quoter entry come from chain, so no program id is needed."
 			)
 			.option('--tick-size <n>', 'price tick (PRICE_PRECISION)')
 			.option('--step-size <n>', 'size step (base precision)')
@@ -722,21 +733,28 @@ export function registerClobMarket(parent: Command): void {
 		const provider = buildProvider(opts);
 		const client = await buildAdminClient(opts, false);
 		try {
-			const { book, program, authority } = await marketBook(
+			const { book, program } = await marketBook(
 				client,
 				provider.connection,
 				getPerpMarketPublicKeySync(client.program.programId, marketIndex),
 				marketIndex
 			);
-			const ix = new TransactionInstruction({
-				programId: program,
-				keys: [
-					{ pubkey: book, isSigner: false, isWritable: true },
-					{ pubkey: authority, isSigner: true, isWritable: false },
-				],
-
-				data: Buffer.concat([ixDiscriminator('update_market_v0'), args]),
-			});
+			const quoter = await bookQuoterEntry(
+				provider.connection,
+				getQuoterSlabPublicKey(client.program.programId, marketIndex)
+			);
+			const admin = resolveAdminAuthority(
+				provider,
+				opts.multisig ? new PublicKey(opts.multisig) : undefined
+			);
+			const ix = await client.getUpdatePerpMarketClobBookConfigIx(
+				marketIndex,
+				quoter,
+				book,
+				program,
+				args,
+				admin
+			);
 			const result = await sendOrPropose(
 				provider,
 				[ix],
@@ -744,14 +762,60 @@ export function registerClobMarket(parent: Command): void {
 				'velocity-admin clob-market update-config'
 			);
 
-			reportDispatch(
-				`book ${book.toBase58()} config updated (authority ${authority.toBase58()})`,
-				result
-			);
+			reportDispatch(`book ${book.toBase58()} config updated`, result);
 		} finally {
 			if ((client as any).isSubscribed) {
 				await client.unsubscribe();
 			}
 		}
 	});
+
+	withGlobalOptions(
+		clobMarket
+			.command('resize <market> <newCapacity>')
+			.description(
+				"Grow an existing book's order arena through velocity's resize_perp_market_clob_book, which CPIs the CLOB's resize_market_v0 as the book's config authority. The signer must hold the warm or cold admin role and pays the extra rent. One call grows the arena by at most 10KB, about 116 orders, so a large target takes repeated calls. The arena never shrinks."
+			)
+	).action(
+		async (market: string, newCapacity: string, _flags, cmd: Command) => {
+			const marketIndex = Number.parseInt(market, 10);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts, false);
+			try {
+				const { book, program } = await marketBook(
+					client,
+					provider.connection,
+					getPerpMarketPublicKeySync(client.program.programId, marketIndex),
+					marketIndex
+				);
+				const admin = resolveAdminAuthority(
+					provider,
+					opts.multisig ? new PublicKey(opts.multisig) : undefined
+				);
+				const ix = await client.getResizePerpMarketClobBookIx(
+					marketIndex,
+					book,
+					program,
+					Number.parseInt(newCapacity, 10),
+					admin
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin clob-market resize'
+				);
+
+				reportDispatch(
+					`book ${book.toBase58()} resized to ${newCapacity}`,
+					result
+				);
+			} finally {
+				if ((client as any).isSubscribed) {
+					await client.unsubscribe();
+				}
+			}
+		}
+	);
 }

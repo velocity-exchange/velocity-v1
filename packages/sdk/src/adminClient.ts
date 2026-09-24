@@ -44,6 +44,7 @@ import {
 	MarketType,
 	SpotMarketAccount,
 	UserAccount,
+	ClobUpdateMarketArgsV0,
 	CrankCostUnitsV0,
 	QuoterType,
 } from './types';
@@ -5746,6 +5747,69 @@ export class AdminClient extends VelocityClient {
 				systemProgram: SystemProgram.programId,
 			},
 		});
+	}
+
+	/**
+	 * Builds the `updatePerpMarketClobBookConfig` instruction. The market's quoter slab is the
+	 * book's config authority, so velocity sends the CLOB's `update_market_v0` by CPI and
+	 * rewrites its copy of the book's rules in the same instruction.
+	 */
+	public async getUpdatePerpMarketClobBookConfigIx(
+		marketIndex: number,
+		quoter: PublicKey,
+		clobMarket: PublicKey,
+		clobProgram: PublicKey,
+		args: ClobUpdateMarketArgsV0,
+		admin?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updatePerpMarketClobBookConfig(args, {
+			accounts: {
+				admin: admin ?? this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+				perpMarket: await getPerpMarketPublicKey(
+					this.program.programId,
+					marketIndex
+				),
+				quoter,
+				quoterSlab: getQuoterSlabPublicKey(this.program.programId, marketIndex),
+				clobMarket,
+				clobProgram,
+			},
+		});
+	}
+
+	/**
+	 * Builds the `resizePerpMarketClobBook` instruction, which grows the market's book to
+	 * `newCapacity` orders. The admin pays the extra rent. The CLOB caps one realloc at 10KB,
+	 * so a large target takes repeated calls.
+	 */
+	public async getResizePerpMarketClobBookIx(
+		marketIndex: number,
+		clobMarket: PublicKey,
+		clobProgram: PublicKey,
+		newCapacity: number,
+		admin?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.resizePerpMarketClobBook(
+			newCapacity,
+			{
+				accounts: {
+					admin: admin ?? this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+					quoterSlab: getQuoterSlabPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+					clobMarket,
+					clobProgram,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
 	}
 
 	/**

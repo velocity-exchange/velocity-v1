@@ -278,7 +278,7 @@ fn clob_market_config(market_index: u16) -> Vec<u8> {
     v.extend_from_slice(&UNIT.to_le_bytes()); // base_precision
     v.extend_from_slice(&1u64.to_le_bytes()); // order_tick_size
     v.extend_from_slice(&1000u64.to_le_bytes()); // order_step_size (matches the perp market step)
-    v.extend_from_slice(&1u64.to_le_bytes()); // min_order_size
+    v.extend_from_slice(&1000u64.to_le_bytes()); // min_order_size (one step)
     v.extend_from_slice(&0u64.to_le_bytes()); // blocking_min_size (0 disables the floor)
     v.extend_from_slice(&0u32.to_le_bytes()); // default_activation_delay
     v.extend_from_slice(&20u32.to_le_bytes()); // max_activation_delay
@@ -367,9 +367,10 @@ fn clob_best_bid_price(fixture: &Fixture) -> Option<u64> {
         .map(|row| row.price)
 }
 
-/// Init a CLOB book with `place_authority` = the market's quoter slab, so
-/// every placement must come through velocity.
-fn init_clob_book(svm: &mut litesvm::LiteSVM, clob_admin: &Keypair) -> Pubkey {
+/// Init a CLOB book with the market's quoter slab as both `authority` and
+/// `place_authority`, so every placement and every config change comes
+/// through velocity.
+fn init_clob_book(svm: &mut litesvm::LiteSVM, payer: &Keypair) -> Pubkey {
     // The book signs its own creation, so the account cannot be initialized by
     // whoever sees it created. The harness holds the keypair only long enough
     // to sign; the book is named by its address everywhere after that.
@@ -390,13 +391,13 @@ fn init_clob_book(svm: &mut litesvm::LiteSVM, clob_admin: &Keypair) -> Pubkey {
         "initialize_market_v0",
         clob_market_config(0),
         vec![
-            AccountMeta::new_readonly(clob_admin.pubkey(), true),
+            AccountMeta::new_readonly(quoter_slab_pda(0), false),
             AccountMeta::new_readonly(quoter_slab_pda(0), false),
             AccountMeta::new(market, true),
         ],
     );
 
-    send(svm, clob_admin, ix, &[&market_kp]).unwrap();
+    send(svm, payer, ix, &[&market_kp]).unwrap();
     market
 }
 
@@ -591,8 +592,6 @@ struct Fixture {
     quoter_slab: Pubkey,
     clob_maker_user: Pubkey,
     clob_maker_authority: Keypair,
-    /// The book's own admin, for the cases that reconfigure it.
-    clob_admin: Keypair,
     /// Where the book's condition block sits, as the attach reported it. A
     /// turner learns it the same way — from the registration — rather than by
     /// knowing the market account's layout.
@@ -603,9 +602,8 @@ fn setup() -> Fixture {
     let mut svm = svm();
     let admin = Keypair::new();
     let keeper = Keypair::new();
-    let clob_admin = Keypair::new();
     let clob_maker_authority = Keypair::new();
-    for kp in [&admin, &keeper, &clob_admin, &clob_maker_authority] {
+    for kp in [&admin, &keeper, &clob_maker_authority] {
         svm.airdrop(&kp.pubkey(), 10_000_000_000).unwrap();
     }
 
@@ -632,7 +630,7 @@ fn setup() -> Fixture {
     set_trading_perp_market(&mut svm, oracle);
     set_quote_spot_market(&mut svm);
 
-    let clob_market = init_clob_book(&mut svm, &clob_admin);
+    let clob_market = init_clob_book(&mut svm, &admin);
     set_user_account(
         &mut svm,
         clob_maker_user,
@@ -664,7 +662,6 @@ fn setup() -> Fixture {
         quoter_slab: quoter_slab_pda(0),
         clob_maker_user,
         clob_maker_authority,
-        clob_admin,
         crank_block_offset: 0,
     }
 }
@@ -843,54 +840,38 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
     }
 }
 
-/// `UpdateMarketArgsV0` setting only `default_activation_delay_slots`:
-/// twelve `Option`s, each a presence byte, in the order the book declares them.
+/// Change the book's default speed bump the way production does: through
+/// velocity, which is the book's config authority and rewrites the slab's
+/// mirror of the rules in the same instruction.
 fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
-    let mut args = Vec::new();
-    for _ in 0..4 {
-        args.push(0u8); // tick size, step size, min order size, blocking min size
-    }
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::AdminUpdatePerpMarketClobBookConfig {
+            admin: fixture.admin.pubkey(),
+            state: state_pda(),
+            perp_market: perp_market_pda(0),
+            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdatePerpMarketClobBookConfig {
+            args: velocity::state::prop_amm::ClobUpdateMarketArgsV0 {
+                default_activation_delay_slots: Some(slots),
+                ..Default::default()
+            },
+        }
+        .data(),
+    };
 
-    args.push(1u8);
-    args.extend_from_slice(&slots.to_le_bytes());
-    for _ in 0..7 {
-        args.push(0u8); // max activation delay, grace, evict threshold, ceilings,
-                        // reservation grace
-    }
-
-    let admin = fixture.clob_admin.insecure_clone();
-    let ix = clob_ix(
-        "update_market_v0",
-        args,
-        vec![
-            AccountMeta::new(fixture.clob_market, false),
-            AccountMeta::new_readonly(admin.pubkey(), true),
-            // The optional new place authority, absent: encoded as the
-            // program id.
-            AccountMeta::new_readonly(clob_id(), false),
-        ],
-    );
-
+    let admin = fixture.admin.insecure_clone();
     send(&mut fixture.svm, &admin, ix, &[]).unwrap();
 
-    // Velocity's gates read the attach-written mirror in the slab's book
-    // slot, not the book. Production re-runs `update_perp_market_clob_quoter`
-    // after a rules change; the fixture writes the mirror directly, on the
-    // staging entry and on the live copy.
-    let mut quoter: velocity::state::prop_amm::QuoterV0 =
-        read_zero_copy(&fixture.svm, &fixture.quoter);
-    quoter.config.book_default_activation_delay_slots = slots;
-    set_zero_copy_account(
-        &mut fixture.svm,
-        fixture.quoter,
-        velocity::state::prop_amm::QuoterV0::DISCRIMINATOR,
-        &quoter,
-        velocity::state::prop_amm::QuoterV0::SIZE,
-    );
-
-    let mut slot = read_slab_slot(&fixture.svm, 0, 0);
-    slot.config.book_default_activation_delay_slots = slots;
-    write_slab_slot(&mut fixture.svm, 0, 0, &slot);
+    let quoter: velocity::state::prop_amm::QuoterV0 = read_zero_copy(&fixture.svm, &fixture.quoter);
+    assert_eq!(quoter.config.book_default_activation_delay_slots, slots);
+    let slot = read_slab_slot(&fixture.svm, 0, 0);
+    assert_eq!(slot.config.book_default_activation_delay_slots, slots);
 }
 
 /// The speed bump replaced JIT, and only a signed-message order can carry the
@@ -2188,7 +2169,38 @@ fn attach_clob(
     min_cross_surplus: u64,
 ) -> Pubkey {
     let conditions = crank_conditions_pda();
-    let ix = Instruction {
+    let ix = attach_clob_ix(fixture, crank_cost_units, min_cross_surplus);
+    let admin = fixture.admin.insecure_clone();
+    let meta = send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+    // The book reports where its block sits; the registrant does not derive it.
+    fixture.crank_block_offset = u32::from_le_bytes(meta.return_data.data[..4].try_into().unwrap());
+    // The attach mirrors the book's placement rules onto the staging entry
+    // and the live copy in the slab — the values `clob_market_config`
+    // configured.
+    let quoter: velocity::state::prop_amm::QuoterV0 = read_zero_copy(&fixture.svm, &fixture.quoter);
+    assert_eq!(quoter.config.book_tick_size, 1, "attach mirrors the tick");
+    assert_eq!(
+        quoter.config.book_min_order_size, 1000,
+        "attach mirrors the minimum"
+    );
+
+    let live = read_slab_slot(&fixture.svm, 0, 0);
+    assert_eq!(live.config.book_tick_size, 1, "the live copy gets the tick");
+    assert_eq!(
+        live.config.book_min_order_size, 1000,
+        "the live copy gets the minimum"
+    );
+
+    conditions
+}
+
+fn attach_clob_ix(
+    fixture: &Fixture,
+    crank_cost_units: CrankCostUnitsV0,
+    min_cross_surplus: u64,
+) -> Instruction {
+    let conditions = crank_conditions_pda();
+    Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::AdminUpdatePerpMarketClobQuoter {
             admin: fixture.admin.pubkey(),
@@ -2214,29 +2226,63 @@ fn attach_clob(
             },
         }
         .data(),
-    };
+    }
+}
+
+/// The attach refuses a book whose config authority is not the market's quoter
+/// slab. Any other authority could change the rules under velocity's mirror.
+#[test]
+fn the_attach_refuses_a_book_velocity_does_not_configure() {
+    let mut fixture = setup();
+    let mut book = fixture.svm.get_account(&fixture.clob_market).unwrap();
+    // `ClobHeaderV0.authority` is the header's first field.
+    book.data[8..40].copy_from_slice(Pubkey::new_unique().as_ref());
+    fixture.svm.set_account(fixture.clob_market, book).unwrap();
+
+    let ix = attach_clob_ix(&fixture, ANY_CRANK_COST_UNITS, 1);
     let admin = fixture.admin.insecure_clone();
-    let meta = send(&mut fixture.svm, &admin, ix, &[]).unwrap();
-    // The book reports where its block sits; the registrant does not derive it.
-    fixture.crank_block_offset = u32::from_le_bytes(meta.return_data.data[..4].try_into().unwrap());
-    // The attach mirrors the book's placement rules onto the staging entry
-    // and the live copy in the slab — the values `clob_market_config`
-    // configured.
-    let quoter: velocity::state::prop_amm::QuoterV0 = read_zero_copy(&fixture.svm, &fixture.quoter);
-    assert_eq!(quoter.config.book_tick_size, 1, "attach mirrors the tick");
-    assert_eq!(
-        quoter.config.book_min_order_size, 1,
-        "attach mirrors the minimum"
-    );
+    assert!(send(&mut fixture.svm, &admin, ix, &[]).is_err());
+}
 
-    let live = read_slab_slot(&fixture.svm, 0, 0);
-    assert_eq!(live.config.book_tick_size, 1, "the live copy gets the tick");
-    assert_eq!(
-        live.config.book_min_order_size, 1,
-        "the live copy gets the minimum"
-    );
+/// The slab holds the book's config authority, so velocity is the only path
+/// that grows the arena. The fixture book holds about 300 orders, so 380 is
+/// one realloc of growth.
+#[test]
+fn velocity_grows_the_book_it_configures() {
+    let mut fixture = setup();
+    let before = fixture
+        .svm
+        .get_account(&fixture.clob_market)
+        .unwrap()
+        .data
+        .len();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::AdminResizePerpMarketClobBook {
+            admin: fixture.admin.pubkey(),
+            state: state_pda(),
+            perp_market: perp_market_pda(0),
+            quoter_slab: fixture.quoter_slab,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::ResizePerpMarketClobBook { new_capacity: 380 }.data(),
+    };
 
-    conditions
+    let admin = fixture.admin.insecure_clone();
+    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+    let after = fixture
+        .svm
+        .get_account(&fixture.clob_market)
+        .unwrap()
+        .data
+        .len();
+    assert!(
+        after > before,
+        "the arena grew from {before} to {after} bytes"
+    );
 }
 
 /// The book's condition slots, in the order the CLOB program declares them.

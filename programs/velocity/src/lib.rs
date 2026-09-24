@@ -1331,6 +1331,20 @@ pub mod velocity {
         handle_update_perp_market_clob_quoter(ctx, args)
     }
 
+    pub fn update_perp_market_clob_book_config(
+        ctx: Context<AdminUpdatePerpMarketClobBookConfig>,
+        args: crate::state::prop_amm::ClobUpdateMarketArgsV0,
+    ) -> Result<()> {
+        handle_update_perp_market_clob_book_config(ctx, args)
+    }
+
+    pub fn resize_perp_market_clob_book(
+        ctx: Context<AdminResizePerpMarketClobBook>,
+        new_capacity: u32,
+    ) -> Result<()> {
+        handle_resize_perp_market_clob_book(ctx, new_capacity)
+    }
+
     pub fn update_perp_market_contract_tier(
         ctx: Context<AdminUpdatePerpMarket>,
         contract_tier: ContractTier,

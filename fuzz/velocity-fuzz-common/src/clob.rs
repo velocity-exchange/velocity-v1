@@ -188,11 +188,18 @@ fn create_book(
         .expect("book account");
 
     let mut data = discriminator("initialize_market_v0").to_vec();
-    data.extend_from_slice(&book_config(order_step_size, min_order_size));
+    // The book refuses a zero minimum. A market with no minimum of its own
+    // bounds nothing, so one step serves.
+    let book_min_order_size = if min_order_size == 0 {
+        order_step_size
+    } else {
+        min_order_size
+    };
+    data.extend_from_slice(&book_config(order_step_size, book_min_order_size));
     let ix = Instruction {
         program_id: clob_program_id(),
         accounts: vec![
-            AccountMeta::new_readonly(admin.pubkey(), true),
+            AccountMeta::new_readonly(quoter_slab_pda(), false),
             AccountMeta::new_readonly(quoter_slab_pda(), false),
             AccountMeta::new(book.pubkey(), true),
         ],

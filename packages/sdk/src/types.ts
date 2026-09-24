@@ -571,6 +571,26 @@ export type CrankPaymentsV0 = {
 export type CrankCostUnitsV0 = Omit<CrankPaymentsV0, 'padding'>;
 
 /**
+ * Arguments of `updatePerpMarketClobBookConfig`, the CLOB's `update_market_v0` wire. A null
+ * field leaves that book setting unchanged. The book checks the whole config after it applies
+ * every field.
+ */
+export type ClobUpdateMarketArgsV0 = {
+	orderTickSize: BN | null;
+	orderStepSize: BN | null;
+	minOrderSize: BN | null;
+	blockingMinSize: BN | null;
+	defaultActivationDelaySlots: number | null;
+	maxActivationDelaySlots: number | null;
+	unknownUserGraceSlots: number | null;
+	evictThresholdPerSide: number | null;
+	maxQuoteLevels: number | null;
+	maxExecuteFills: number | null;
+	maxExecuteUsers: number | null;
+	reservationGraceSlots: number | null;
+};
+
+/**
  * Per-market relay conditions that watch a Custom quoter for a cross against the market's CLOB,
  * created by `initializeQuoterCrossConditions`. The account has the same shape as
  * `ClobCrankConditionsV0Account`. Its own lamport balance pays the cross crank.

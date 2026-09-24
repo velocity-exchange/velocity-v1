@@ -65,6 +65,12 @@
 //! - [`initialize_quoter_cross_conditions`]: create or re-price a Custom
 //!   quoter's cross-discovery conditions. The instruction is permissionless.
 //!
+//! The admin endpoints live in `admin`. The market's quoter slab is the
+//! book's config authority, so `update_perp_market_clob_book_config` and
+//! `resize_perp_market_clob_book` are the only paths that change the book's
+//! rules or grow its arena. The config path rewrites the slab's copy of the
+//! rules in the same instruction.
+//!
 //! Shared plumbing lives in [`helpers`]. A file directly in this directory is
 //! an endpoint. A file in `helpers/` is not.
 //! - [`helpers::placement`]: the placement helpers. They run the margin gate

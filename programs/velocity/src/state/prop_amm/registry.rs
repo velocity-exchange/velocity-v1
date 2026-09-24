@@ -86,10 +86,10 @@ pub struct QuoterConfigV0 {
     /// program. Approval does not freeze the program, so an off-chain reader
     /// compares this to the live slot to know the code changed.
     pub approved_program_slot: u64,
-    /// The book's placement rules, mirrored here by the attach
-    /// (`update_perp_market_clob_quoter`) so the hot paths read a loaded field.
-    /// Zero for a non-`Clob` entry and for a book no market has attached. A
-    /// stale mirror degrades the remainder handling rather than failing a fill.
+    /// The book's placement rules, mirrored so the hot paths read a loaded
+    /// field. The slab is the book's only config authority, and every path that
+    /// changes the rules rewrites this copy in the same instruction. Zero for a
+    /// non-`Clob` entry and for a book no market has attached.
     pub book_tick_size: u64,
     pub book_min_order_size: u64,
     /// For a Custom quoter, the User this quoter may quote for. That user's

@@ -33,7 +33,14 @@ Read-only, open to any caller for simulation: `next_removal_v0`, `order_rules_v0
 `next_cross_v0`, `quote_v0`, `quote_l3_v0`.
 
 Market admin: `initialize_market_v0`, `close_market_v0`, `update_market_v0`, `resize_market_v0`,
-`set_crank_conditions_v0` (registers the resolvers for this book's own relay crank conditions).
+`set_crank_conditions_v0` (registers the resolvers for this book's own relay crank conditions),
+`propose_market_authority_v0` and `accept_market_authority_v0` (a two-step handover of the market
+authority: the current authority names a successor, and the successor signs to accept).
+
+When velocity attaches a book to a perp market, the book's authority is velocity's quoter slab PDA
+for that market. The admin instructions above then take velocity's signature, so a config change
+goes through velocity's `update_perp_market_clob_book_config` and a resize through velocity's
+`resize_perp_market_clob_book`.
 
 ## Design
 

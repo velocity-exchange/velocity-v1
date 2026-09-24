@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 
+/// Numeric codes are the on-chain identity of these errors. Add a new variant
+/// at the bottom. Never reorder or reuse one.
 #[error_code]
 pub enum ClobError {
     #[msg("Order price/size is zero or user is default")]
@@ -10,7 +12,10 @@ pub enum ClobError {
     SizeNotStepAligned,
     #[msg("Order size is below min_order_size")]
     OrderTooSmall,
-    #[msg("Book side is at capacity and the order does not beat the tail")]
+    /// A side holds at most half the arena. `place` refuses every order onto a
+    /// full side, whatever its price, until the eviction crank or a resize
+    /// frees a slot.
+    #[msg("Book side is at capacity, so every placement onto it is refused")]
     SideAtCapacity,
     #[msg("Order ref is stale: node is free or holds a different order")]
     StaleOrderRef,
@@ -46,8 +51,6 @@ pub enum ClobError {
     BelowEvictThreshold,
     #[msg("Order is not expired")]
     OrderNotExpired,
-    // Numeric codes are the on-chain identity of these errors. Add a new
-    // variant at the bottom. Never reorder or reuse one.
     #[msg("Node index is outside the order arena")]
     NodeIndexOutOfRange,
     #[msg("Order arena has no free node")]
@@ -97,6 +100,10 @@ pub enum ClobError {
     /// against.
     #[msg("A quote budget needs a reference price")]
     MissingReferencePrice,
+    /// The relay block refused a wake the book tried to write into one of its
+    /// crank conditions.
+    #[msg("A crank condition's wake could not be written")]
+    WakeWriteFailed,
 }
 
 impl From<quoter_spec::SpecError> for ClobError {

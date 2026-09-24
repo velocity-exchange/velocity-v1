@@ -1,7 +1,8 @@
 //! Velocity CLOB quoter program, built on Anchor v2. The book rests orders in
 //! price-time priority. Velocity reaches it through the quoter interface.
-//! `quote_v0` and `execute_v0` write wincode responses into the market's
-//! response-buffer PDA and return a `ResponsePointerV0` as return data.
+//! `quote_v0` and `execute_v0` write wincode responses into the response
+//! region, the last field of the market account's header, and return a
+//! `ResponsePointerV0` as return data.
 //!
 //! Placement policy lives in velocity. `place_authority` is velocity's quoter
 //! CPI signer PDA, and the only signer that can place, cancel or execute.

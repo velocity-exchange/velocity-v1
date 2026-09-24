@@ -238,7 +238,7 @@ impl BookHeader for ClobMarketV0 {
         let mut write = |index: usize, wake: relay_spec::WakeView| {
             self.crank
                 .update_condition(index, |condition| condition.set_wake(wake))
-                .map_err(|_| ClobError::InvalidConfig)
+                .map_err(|_| ClobError::WakeWriteFailed)
         };
 
         write(
@@ -2033,10 +2033,10 @@ impl DistinctUsers {
 /// is quote the user may lose, not base it may take, because only this walk knows
 /// the price each order fills at. `quote` and `execute` spend it in the same
 /// place, so a ladder never promises depth the fill would decline.
-struct UserBudget {
-    /// Indices into the caller's set, not copies of the refs. A ref is 34 bytes,
-    /// and copies overflowed the 4 KB SBF stack this walk's frame sits in.
-    excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
+struct UserBudget<'a> {
+    /// Borrowed, and its exclusions name users by set index. Copies of the
+    /// 34-byte refs overflowed the 4 KB SBF stack this walk's frame sits in.
+    caps: &'a UserCapsV0,
     any_excluded: bool,
     /// Per-user room for the users that have some room.
     entries: [UserRoom; USER_CAPS_CAPACITY],
@@ -2047,10 +2047,10 @@ struct UserBudget {
     reference_price: u64,
 }
 
-impl UserBudget {
+impl<'a> UserBudget<'a> {
     /// A quote budget is spent against the reference price, so a walk that
     /// carries one needs the price. Without it the book refuses the call.
-    fn new(caps: &UserCapsV0, side: SideV0, reference_price: Option<u64>) -> Result<Self> {
+    fn new(caps: &'a UserCapsV0, side: SideV0, reference_price: Option<u64>) -> Result<Self> {
         let spends_quote = caps.as_slice().iter().any(|cap| cap.quote_cap != u64::MAX);
         require!(
             reference_price.is_some() || !spends_quote,
@@ -2058,7 +2058,7 @@ impl UserBudget {
         );
 
         let mut budget = UserBudget {
-            excluded: caps.excluded,
+            caps,
             any_excluded: caps.any_excluded(),
             entries: [UserRoom {
                 index: 0,
@@ -2117,7 +2117,7 @@ impl UserBudget {
             return if reduce_only { 0 } else { want };
         };
 
-        if index < USER_SET_CAPACITY && self.excluded[index / 8] & (1 << (index % 8)) != 0 {
+        if self.caps.is_excluded(index) {
             return 0;
         }
 

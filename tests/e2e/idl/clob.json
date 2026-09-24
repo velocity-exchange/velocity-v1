@@ -1012,7 +1012,7 @@
     {
       "code": 6004,
       "name": "SideAtCapacity",
-      "msg": "Book side is at capacity and the order does not beat the tail"
+      "msg": "Book side is at capacity, so every placement onto it is refused"
     },
     {
       "code": 6005,
@@ -1148,6 +1148,11 @@
       "code": 6031,
       "name": "MissingReferencePrice",
       "msg": "A quote budget needs a reference price"
+    },
+    {
+      "code": 6032,
+      "name": "WakeWriteFailed",
+      "msg": "A crank condition's wake could not be written"
     }
   ],
   "types": [

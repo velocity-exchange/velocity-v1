@@ -10,7 +10,7 @@
 
 use {
     super::{
-        market::{assert_consistent, test_config, user, TestMarket},
+        market::{assert_consistent, execute_args, quote_args, test_config, user, TestMarket},
         response::streamed,
     },
     crate::{
@@ -21,7 +21,7 @@ use {
             QuoteResponseV0, SideV0, UserCapV0, UserCapsV0, UserRefV0, L3_ROWS_CEILING, NIL,
         },
     },
-    quoter_spec::L3_ROW_FLAG_RESERVED,
+    quoter_spec::{ExecuteArgsV0, QuoteArgsV0, L3_ROW_FLAG_RESERVED},
 };
 
 /// A tenth of a base unit, so sizes are large enough for per-user budgets to
@@ -223,14 +223,14 @@ fn quote_then_execute(
 ) -> Option<Delivery> {
     let pointer = book
         .quote(
-            caller.direction,
-            caller.size,
-            &caller.users,
-            &caller.caps,
-            caller.reference_price,
-            caller.taker.as_ref(),
-            0,
-            caller.include_reserved,
+            &QuoteArgsV0 {
+                users: &caller.users,
+                caps: caller.caps,
+                reference_price: caller.reference_price,
+                taker: caller.taker.as_ref().copied(),
+                include_taker_origin_reservations: caller.include_reserved,
+                ..quote_args(caller.direction, caller.size)
+            },
             slot,
             now,
         )
@@ -248,13 +248,14 @@ fn quote_then_execute(
         .sum();
     let outcome = book
         .execute(
-            caller.direction,
-            quoted_base,
-            &caller.users,
-            &caller.caps,
-            caller.reference_price,
-            caller.taker.as_ref(),
-            caller.include_reserved,
+            &ExecuteArgsV0 {
+                users: &caller.users,
+                caps: caller.caps,
+                reference_price: caller.reference_price,
+                taker: caller.taker.as_ref().copied(),
+                include_taker_origin_reservations: caller.include_reserved,
+                ..execute_args(caller.direction, quoted_base)
+            },
             slot,
             now,
         )
@@ -646,14 +647,15 @@ fn quotes_write_only_the_response_buffer() {
         let caller = Caller::random(&mut rng, &pool, true);
         let (slot, now) = (rng.below(40), rng.pick(&[0i64, 30]));
         book.quote(
-            caller.direction,
-            caller.size,
-            &caller.users,
-            &caller.caps,
-            caller.reference_price,
-            caller.taker.as_ref(),
-            rng.pick(&[0u64, 100]),
-            caller.include_reserved,
+            &QuoteArgsV0 {
+                users: &caller.users,
+                caps: caller.caps,
+                reference_price: caller.reference_price,
+                taker: caller.taker.as_ref().copied(),
+                limit_price: rng.pick(&[0u64, 100]),
+                include_taker_origin_reservations: caller.include_reserved,
+                ..quote_args(caller.direction, caller.size)
+            },
             slot,
             now,
         )

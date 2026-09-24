@@ -20,17 +20,7 @@ pub fn handle_execute_v0(
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let market_index = market.market_index;
-    let outcome = market.execute(
-        args.direction,
-        args.size,
-        args.users,
-        &args.caps,
-        args.reference_price,
-        args.taker.as_ref(),
-        args.include_taker_origin_reservations,
-        clock.slot,
-        clock.unix_timestamp,
-    )?;
+    let outcome = market.execute(&args, clock.slot, clock.unix_timestamp)?;
 
     emit_execute_record(
         clock.unix_timestamp,

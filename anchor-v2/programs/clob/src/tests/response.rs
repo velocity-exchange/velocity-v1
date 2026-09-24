@@ -13,7 +13,9 @@
 //! region shaped to hold them.
 
 use {
-    super::market::{assert_err, client_id, place, test_config, user, TestMarket},
+    super::market::{
+        assert_err, client_id, execute_args, place, quote_args, test_config, user, TestMarket,
+    },
     crate::{
         book::{ClobBook, NodeArena},
         error::ClobError,
@@ -27,6 +29,7 @@ use {
             USER_REF_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES, WITHHELD_REPORT_BYTES,
         },
     },
+    quoter_spec::ExecuteArgsV0,
 };
 
 /// One whole base unit, which is the denominator every market carries.
@@ -135,18 +138,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
     place(&mut book, SideV0::Ask, 101, 10, maker_b);
 
     let pointer = book
-        .quote(
-            DirectionV0::Long,
-            100,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
-            0,
-            0,
-        )
+        .quote(&quote_args(DirectionV0::Long, 100), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, pointer),
@@ -163,20 +155,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
     );
 
     // Capped at the requested size, and an empty book is an empty vec.
-    let pointer = book
-        .quote(
-            DirectionV0::Long,
-            6,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
-            0,
-            0,
-        )
-        .unwrap();
+    let pointer = book.quote(&quote_args(DirectionV0::Long, 6), 0, 0).unwrap();
     assert_eq!(
         streamed(&book, pointer),
         encode_quote(&[PriceLevelV0 {
@@ -186,18 +165,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
     );
 
     let pointer = book
-        .quote(
-            DirectionV0::Short,
-            10,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
-            0,
-            0,
-        )
+        .quote(&quote_args(DirectionV0::Short, 10), 0, 0)
         .unwrap();
     assert_eq!(streamed(&book, pointer), encode_quote(&[]));
 }
@@ -216,18 +184,7 @@ fn quote_stops_at_the_level_cap() {
     }
 
     let pointer = book
-        .quote(
-            DirectionV0::Long,
-            u64::MAX,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
-            0,
-            0,
-        )
+        .quote(&quote_args(DirectionV0::Long, u64::MAX), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, pointer),
@@ -257,17 +214,7 @@ fn execute_streams_balance_changes_merged_by_user() {
     let last = place(&mut book, SideV0::Ask, 102, 5 * UNIT, maker_a);
 
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            15 * UNIT,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, 15 * UNIT), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
@@ -316,17 +263,7 @@ fn execute_streams_a_sub_min_cull_alongside_the_fill() {
     // 15 of 20 fills; the 5 left is below min_order_size, so the order is
     // culled with the fill instead of resting as dust.
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            15 * UNIT,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, 15 * UNIT), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
@@ -358,17 +295,7 @@ fn execute_streams_the_one_order_it_left_resting_smaller() {
 
     // The first order goes whole; the second gives 10 of its 20 and stays.
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            15 * UNIT,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, 15 * UNIT), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
@@ -399,17 +326,7 @@ fn a_fill_reports_at_most_one_partial() {
         }
 
         let outcome = book
-            .execute(
-                DirectionV0::Long,
-                size,
-                &[],
-                &UserCapsV0::EMPTY,
-                None,
-                None,
-                false,
-                0,
-                0,
-            )
+            .execute(&execute_args(DirectionV0::Long, size), 0, 0)
             .unwrap();
         let bytes = streamed(&book, outcome.response);
         let response = ExecuteResponseV0::parse(&bytes).expect("parses");
@@ -439,17 +356,7 @@ fn execute_stops_at_the_user_cap() {
     place(&mut book, SideV0::Ask, 101, 5 * UNIT, maker_b);
 
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            10 * UNIT,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, 10 * UNIT), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
@@ -559,17 +466,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     }
 
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            12 * TENTH,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, 12 * TENTH), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
@@ -588,17 +485,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     }
 
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            8 * TENTH,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, 8 * TENTH), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
@@ -766,17 +653,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
         .collect();
 
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            fills as u64 * UNIT,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, fills as u64 * UNIT), 0, 0)
         .unwrap();
     let changes: Vec<_> = makers
         .iter()
@@ -831,35 +708,18 @@ fn corrupted_ask_book(prices: [u64; 2]) -> TestMarket {
 fn a_corrupt_book_cannot_produce_a_response() {
     for prices in [[100, 99], [0, 101]] {
         assert_err(
-            corrupted_ask_book(prices).book().quote(
-                DirectionV0::Long,
-                10,
-                &[],
-                &UserCapsV0::EMPTY,
-                None,
-                None,
-                0,
-                false,
-                0,
-                0,
-            ),
+            corrupted_ask_book(prices)
+                .book()
+                .quote(&quote_args(DirectionV0::Long, 10), 0, 0),
             ClobError::InvalidResponseLevel,
         );
 
         // Execute sweeps the same list and rejects the same shapes. Fresh
         // market: the failed sweep leaves the book part-consumed.
         assert_err(
-            corrupted_ask_book(prices).book().execute(
-                DirectionV0::Long,
-                10,
-                &[],
-                &UserCapsV0::EMPTY,
-                None,
-                None,
-                false,
-                0,
-                0,
-            ),
+            corrupted_ask_book(prices)
+                .book()
+                .execute(&execute_args(DirectionV0::Long, 10), 0, 0),
             ClobError::InvalidResponseLevel,
         );
     }
@@ -877,18 +737,7 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
     place(&mut book, SideV0::Bid, 99, 5, maker);
 
     let pointer = book
-        .quote(
-            DirectionV0::Short,
-            15,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
-            0,
-            0,
-        )
+        .quote(&quote_args(DirectionV0::Short, 15), 0, 0)
         .unwrap();
     assert_eq!(
         streamed(&book, pointer),
@@ -901,18 +750,8 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
         ])
     );
 
-    book.execute(
-        DirectionV0::Short,
-        15,
-        &[],
-        &UserCapsV0::EMPTY,
-        None,
-        None,
-        false,
-        0,
-        0,
-    )
-    .unwrap();
+    book.execute(&execute_args(DirectionV0::Short, 15), 0, 0)
+        .unwrap();
 }
 
 /// The quote ceiling is the level count that fits the region, so the widest
@@ -957,17 +796,7 @@ fn the_streamed_response_parses_back() {
     let last = place(&mut book, SideV0::Ask, 102, 5, maker_a);
 
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            15,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, 15), 0, 0)
         .unwrap();
     let bytes = streamed(&book, outcome.response);
     let response = ExecuteResponseV0::parse(&bytes).unwrap();
@@ -1023,13 +852,12 @@ fn a_consumed_order_reports_its_reduce_only_flag() {
 
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            10,
-            &[reducer, maker],
-            &caps,
-            Some(0),
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &[reducer, maker],
+                caps,
+                reference_price: Some(0),
+                ..execute_args(DirectionV0::Long, 10)
+            },
             0,
             0,
         )
@@ -1066,18 +894,7 @@ fn a_quote_promises_no_more_depth_than_execute_can_deliver() {
     }
 
     let pointer = book
-        .quote(
-            DirectionV0::Long,
-            100,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
-            0,
-            0,
-        )
+        .quote(&quote_args(DirectionV0::Long, 100), 0, 0)
         .unwrap();
     let quote_bytes = streamed(&book, pointer);
     let quoted = QuoteResponseV0::parse(&quote_bytes).unwrap();
@@ -1086,17 +903,7 @@ fn a_quote_promises_no_more_depth_than_execute_can_deliver() {
 
     // And the promise holds: executing the whole quoted size fills all of it.
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            promised,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, promised), 0, 0)
         .unwrap();
     let execute_bytes = streamed(&book, outcome.response);
     let executed = ExecuteResponseV0::parse(&execute_bytes).unwrap();

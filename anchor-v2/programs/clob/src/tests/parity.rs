@@ -3,7 +3,9 @@
 //! arguments.
 
 use {
-    super::market::{assert_consistent, params, place, test_config, user, TestMarket},
+    super::market::{
+        assert_consistent, execute_args, params, place, quote_args, test_config, user, TestMarket,
+    },
     crate::{
         book::{ClobBook, NodeArena},
         state::{
@@ -11,6 +13,7 @@ use {
             QuoteResponseV0, SideV0, UserCapV0, UserCapsV0, UserRefV0, BASE_PRECISION,
         },
     },
+    quoter_spec::{ExecuteArgsV0, QuoteArgsV0},
     std::collections::BTreeMap,
 };
 
@@ -32,14 +35,15 @@ type Levels = Vec<(u64, u64)>;
 fn quote_levels(book: &mut ClobMarketV0, sweep: &Sweep, size: u64, limit_price: u64) -> Levels {
     let pointer = book
         .quote(
-            sweep.direction,
-            size,
-            sweep.users,
-            sweep.caps,
-            sweep.reference_price,
-            sweep.taker,
-            limit_price,
-            sweep.include_taker_origin_reservations,
+            &QuoteArgsV0 {
+                users: sweep.users,
+                caps: *sweep.caps,
+                reference_price: sweep.reference_price,
+                taker: sweep.taker.copied(),
+                limit_price,
+                include_taker_origin_reservations: sweep.include_taker_origin_reservations,
+                ..quote_args(sweep.direction, size)
+            },
             sweep.slot,
             sweep.now,
         )
@@ -69,13 +73,14 @@ fn execute_levels(book: &mut ClobMarketV0, sweep: &Sweep, size: u64) -> Executed
 
     let outcome = book
         .execute(
-            sweep.direction,
-            size,
-            sweep.users,
-            sweep.caps,
-            sweep.reference_price,
-            sweep.taker,
-            sweep.include_taker_origin_reservations,
+            &ExecuteArgsV0 {
+                users: sweep.users,
+                caps: *sweep.caps,
+                reference_price: sweep.reference_price,
+                taker: sweep.taker.copied(),
+                include_taker_origin_reservations: sweep.include_taker_origin_reservations,
+                ..execute_args(sweep.direction, size)
+            },
             sweep.slot,
             sweep.now,
         )

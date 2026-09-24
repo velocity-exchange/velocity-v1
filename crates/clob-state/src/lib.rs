@@ -130,6 +130,11 @@ impl OrderNodeV0 {
         }
     }
 
+    /// `self.user_ref() == *user`, without building the ref.
+    pub fn is_owned_by(&self, user: &UserRefV0) -> bool {
+        self.authority == user.authority && self.sub_account_id == user.sub_account_id
+    }
+
     pub fn is_bit_flag_set(&self, flag: OrderBitFlag) -> bool {
         self.bit_flags & flag as u8 != 0
     }

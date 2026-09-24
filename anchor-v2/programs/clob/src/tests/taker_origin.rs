@@ -11,8 +11,8 @@
 use {
     super::{
         market::{
-            assert_consistent, assert_err, params, place, place_taker_origin,
-            test_config as test_market_config, user, TestMarket,
+            assert_consistent, assert_err, execute_args, params, place, place_taker_origin,
+            quote_args, test_config as test_market_config, user, TestMarket,
         },
         response::{encode_quote, streamed},
         ACTIVE_SLOT,
@@ -22,10 +22,11 @@ use {
         error::ClobError,
         state::{
             CancelSidesV0, ClobMarketV0, ClobOrderRefV0, DirectionV0, L3ResponseV0, MarketConfigV0,
-            OrderBitFlag, PlaceOrderParams, PriceLevelV0, QuoteResponseV0, SideV0, UserCapsV0,
-            UserRefV0, L3_ROWS_CEILING,
+            OrderBitFlag, PlaceOrderParams, PriceLevelV0, QuoteResponseV0, SideV0, UserRefV0,
+            L3_ROWS_CEILING,
         },
     },
+    quoter_spec::{ExecuteArgsV0, QuoteArgsV0},
 };
 
 /// The levels a quote published, decoded from the response region.
@@ -52,14 +53,10 @@ fn quoted_with(
 ) -> Vec<u8> {
     let pointer = book
         .quote(
-            direction,
-            size,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            include_taker_origin_reservations,
+            &QuoteArgsV0 {
+                include_taker_origin_reservations,
+                ..quote_args(direction, size)
+            },
             slot,
             0,
         )
@@ -151,17 +148,7 @@ fn a_crossed_taker_remainder_is_passed_over() {
     // Nothing else rests on the bid side, so a taker going that way finds no
     // depth at all — but the call lands, it just fills nothing.
     let outcome = book
-        .execute(
-            DirectionV0::Short,
-            5,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Short, 5), 0, 0)
         .unwrap();
     assert!(outcome.fills.is_empty());
     assert_eq!(
@@ -176,20 +163,10 @@ fn a_crossed_taker_remainder_is_passed_over() {
     book.cancel(maker, counterparty, ACTIVE_SLOT, false)
         .unwrap();
     assert_eq!(
-        book.execute(
-            DirectionV0::Short,
-            5,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0
-        )
-        .unwrap()
-        .fills
-        .len(),
+        book.execute(&execute_args(DirectionV0::Short, 5), 0, 0)
+            .unwrap()
+            .fills
+            .len(),
         1
     );
 }
@@ -215,17 +192,7 @@ fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
     );
 
     let outcome = book
-        .execute(
-            DirectionV0::Short,
-            7,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Short, 7), 0, 0)
         .unwrap();
     assert_eq!(outcome.fills.len(), 1);
     // The maker's bid filled; the remainder is still there.
@@ -248,37 +215,17 @@ fn a_maker_only_cross_gates_nothing() {
     place(&mut book, SideV0::Ask, 99, 5, maker_b);
 
     assert_eq!(
-        book.execute(
-            DirectionV0::Short,
-            5,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0
-        )
-        .unwrap()
-        .fills
-        .len(),
+        book.execute(&execute_args(DirectionV0::Short, 5), 0, 0)
+            .unwrap()
+            .fills
+            .len(),
         1
     );
     assert_eq!(
-        book.execute(
-            DirectionV0::Long,
-            5,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0
-        )
-        .unwrap()
-        .fills
-        .len(),
+        book.execute(&execute_args(DirectionV0::Long, 5), 0, 0)
+            .unwrap()
+            .fills
+            .len(),
         1
     );
 }
@@ -305,17 +252,7 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
     );
 
     let outcome = book
-        .execute(
-            DirectionV0::Short,
-            5,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Short, 5), 0, 0)
         .unwrap();
     assert_eq!(outcome.fills.len(), 1);
     assert_eq!(book.node_count(SideV0::Bid), 0);
@@ -332,20 +269,10 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
         }])
     );
     assert_eq!(
-        book.execute(
-            DirectionV0::Short,
-            5,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0
-        )
-        .unwrap()
-        .fills
-        .len(),
+        book.execute(&execute_args(DirectionV0::Short, 5), 0, 0)
+            .unwrap()
+            .fills
+            .len(),
         1
     );
 }
@@ -369,35 +296,15 @@ fn only_a_counterparty_that_could_match_this_slot_gates_the_fill() {
     place_at(&mut book, SideV0::Bid, 101, 5, taker, 0, true);
     place_at(&mut book, SideV0::Ask, 99, 5, maker, 10, false);
     assert_eq!(
-        book.execute(
-            DirectionV0::Short,
-            1,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            9,
-            0
-        )
-        .unwrap()
-        .fills
-        .len(),
+        book.execute(&execute_args(DirectionV0::Short, 1), 9, 0)
+            .unwrap()
+            .fills
+            .len(),
         1
     );
 
     assert!(book
-        .execute(
-            DirectionV0::Short,
-            1,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            10,
-            0
-        )
+        .execute(&execute_args(DirectionV0::Short, 1), 10, 0)
         .unwrap()
         .fills
         .is_empty());
@@ -413,35 +320,15 @@ fn only_a_counterparty_that_could_match_this_slot_gates_the_fill() {
     })
     .unwrap();
     assert!(book
-        .execute(
-            DirectionV0::Short,
-            1,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            1_000
-        )
+        .execute(&execute_args(DirectionV0::Short, 1), 0, 1_000)
         .unwrap()
         .fills
         .is_empty());
     assert_eq!(
-        book.execute(
-            DirectionV0::Short,
-            1,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            1_001
-        )
-        .unwrap()
-        .fills
-        .len(),
+        book.execute(&execute_args(DirectionV0::Short, 1), 0, 1_001)
+            .unwrap()
+            .fills
+            .len(),
         1
     );
 }
@@ -473,13 +360,10 @@ fn the_cross_resolution_path_still_works() {
 
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            5,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            true,
+            &ExecuteArgsV0 {
+                include_taker_origin_reservations: true,
+                ..execute_args(DirectionV0::Long, 5)
+            },
             0,
             0,
         )
@@ -510,17 +394,7 @@ fn a_sweep_fills_around_the_remainder() {
     place(&mut book, SideV0::Bid, 101, 5, user(0xC));
 
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            15,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, 15), 0, 0)
         .unwrap();
     assert_eq!(
         outcome
@@ -555,13 +429,10 @@ fn the_gate_reads_the_book_not_the_callers_set() {
     // prevention, and the reservation withholds it from everyone else.
     assert!(book
         .execute(
-            DirectionV0::Short,
-            5,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            Some(&taker),
-            false,
+            &ExecuteArgsV0 {
+                taker: Some(taker),
+                ..execute_args(DirectionV0::Short, 5)
+            },
             0,
             0
         )
@@ -574,13 +445,10 @@ fn the_gate_reads_the_book_not_the_callers_set() {
     // the cross is a property of the book, not of the caller.
     assert!(book
         .execute(
-            DirectionV0::Short,
-            5,
-            &[taker],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &[taker],
+                ..execute_args(DirectionV0::Short, 5)
+            },
             0,
             0
         )
@@ -618,17 +486,7 @@ fn quote_and_execute_skip_the_same_order() {
 
     // And that is exactly what the fill delivers — 10 base, not 15.
     let outcome = book
-        .execute(
-            DirectionV0::Long,
-            u64::MAX,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0,
-        )
+        .execute(&execute_args(DirectionV0::Long, u64::MAX), 0, 0)
         .unwrap();
     assert_eq!(
         outcome.fills.iter().map(|fill| fill.base_size).sum::<u64>(),
@@ -687,20 +545,10 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
 
     // Execute agrees, which is the whole point of the two sharing a predicate.
     assert_eq!(
-        book.execute(
-            DirectionV0::Long,
-            15,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
-            0,
-            0
-        )
-        .unwrap()
-        .fills
-        .len(),
+        book.execute(&execute_args(DirectionV0::Long, 15), 0, 0)
+            .unwrap()
+            .fills
+            .len(),
         3
     );
 }
@@ -938,13 +786,10 @@ fn executed_with(
     include_taker_origin_reservations: bool,
 ) -> Vec<u64> {
     book.execute(
-        direction,
-        size,
-        &[],
-        &UserCapsV0::EMPTY,
-        None,
-        None,
-        include_taker_origin_reservations,
+        &ExecuteArgsV0 {
+            include_taker_origin_reservations,
+            ..execute_args(direction, size)
+        },
         slot,
         0,
     )
@@ -1327,14 +1172,10 @@ fn the_withheld_report_leaves_out_claimed_depth() {
 
     let pointer = book
         .quote(
-            DirectionV0::Long,
-            u64::MAX,
-            &[loaded],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
+            &QuoteArgsV0 {
+                users: &[loaded],
+                ..quote_args(DirectionV0::Long, u64::MAX)
+            },
             5,
             0,
         )

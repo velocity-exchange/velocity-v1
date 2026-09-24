@@ -6,7 +6,8 @@
 use {
     super::{
         market::{
-            assert_consistent, assert_err, params, place, place_raw, test_config, user, TestMarket,
+            assert_consistent, assert_err, execute_args, params, place, place_raw, quote_args,
+            test_config, user, TestMarket,
         },
         ACTIVE_SLOT,
     },
@@ -20,6 +21,7 @@ use {
         },
     },
     anchor_lang::prelude::*,
+    quoter_spec::{ExecuteArgsV0, QuoteArgsV0},
 };
 
 #[test]
@@ -487,14 +489,11 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
     // 102 and 103 are not.
     let pointer = book
         .quote(
-            DirectionV0::Long,
-            u64::MAX,
-            &users,
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            101,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                limit_price: 101,
+                ..quote_args(DirectionV0::Long, u64::MAX)
+            },
             0,
             0,
         )
@@ -504,14 +503,10 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
     // Zero is no bound: the same walk reaches the whole side.
     let pointer = book
         .quote(
-            DirectionV0::Long,
-            u64::MAX,
-            &users,
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                ..quote_args(DirectionV0::Long, u64::MAX)
+            },
             0,
             0,
         )
@@ -531,14 +526,11 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
 
     let pointer = book
         .quote(
-            DirectionV0::Short,
-            u64::MAX,
-            &users,
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            102,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                limit_price: 102,
+                ..quote_args(DirectionV0::Short, u64::MAX)
+            },
             0,
             0,
         )
@@ -566,21 +558,26 @@ fn a_quote_budget_without_a_reference_price_is_refused() {
 
     assert_err(
         book.quote(
-            DirectionV0::Long,
-            5,
-            &users,
-            &caps,
-            None,
-            None,
-            0,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                caps,
+                ..quote_args(DirectionV0::Long, 5)
+            },
             0,
             0,
         ),
         ClobError::MissingReferencePrice,
     );
     assert_err(
-        book.execute(DirectionV0::Long, 5, &users, &caps, None, None, false, 0, 0),
+        book.execute(
+            &ExecuteArgsV0 {
+                users: &users,
+                caps,
+                ..execute_args(DirectionV0::Long, 5)
+            },
+            0,
+            0,
+        ),
         ClobError::MissingReferencePrice,
     );
 }
@@ -610,14 +607,10 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // Control: unconstrained, both levels quote.
     let pointer = book
         .quote(
-            DirectionV0::Long,
-            12,
-            &users,
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                ..quote_args(DirectionV0::Long, 12)
+            },
             0,
             0,
         )
@@ -628,14 +621,12 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // truncated away with it.
     let pointer = book
         .quote(
-            DirectionV0::Long,
-            12,
-            &users,
-            &caps,
-            Some(0),
-            None,
-            0,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(0),
+                ..quote_args(DirectionV0::Long, 12)
+            },
             0,
             0,
         )
@@ -649,13 +640,12 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // And execute spends the same budget, so the fill matches the ladder.
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            12,
-            &users,
-            &caps,
-            Some(0),
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(0),
+                ..execute_args(DirectionV0::Long, 12)
+            },
             0,
             0,
         )
@@ -696,14 +686,12 @@ fn a_user_with_some_room_is_filled_only_that_far() {
 
     let pointer = book
         .quote(
-            DirectionV0::Long,
-            12 * UNIT,
-            &users,
-            &caps,
-            Some(102),
-            None,
-            0,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(102),
+                ..quote_args(DirectionV0::Long, 12 * UNIT)
+            },
             0,
             0,
         )
@@ -716,13 +704,12 @@ fn a_user_with_some_room_is_filled_only_that_far() {
 
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            12 * UNIT,
-            &users,
-            &caps,
-            Some(102),
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(102),
+                ..execute_args(DirectionV0::Long, 12 * UNIT)
+            },
             0,
             0,
         )
@@ -762,13 +749,12 @@ fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
 
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            12 * UNIT,
-            &users,
-            &caps,
-            Some(100),
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(100),
+                ..execute_args(DirectionV0::Long, 12 * UNIT)
+            },
             0,
             0,
         )
@@ -803,13 +789,12 @@ fn a_reduce_only_order_with_no_cover_does_not_fill() {
 
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            12 * UNIT,
-            &users,
-            &caps,
-            Some(100),
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(100),
+                ..execute_args(DirectionV0::Long, 12 * UNIT)
+            },
             0,
             0,
         )
@@ -855,14 +840,12 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
 
     let pointer = book
         .quote(
-            DirectionV0::Long,
-            12 * UNIT,
-            &users,
-            &caps,
-            Some(102),
-            None,
-            0,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(102),
+                ..quote_args(DirectionV0::Long, 12 * UNIT)
+            },
             0,
             0,
         )
@@ -875,13 +858,12 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
 
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            12 * UNIT,
-            &users,
-            &caps,
-            Some(102),
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(102),
+                ..execute_args(DirectionV0::Long, 12 * UNIT)
+            },
             0,
             0,
         )
@@ -914,13 +896,12 @@ fn a_fill_that_pays_the_maker_spends_no_budget() {
     // Selling at 100 against a reference of 98 is a gain, not a loss.
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            5 * UNIT,
-            &users,
-            &caps,
-            Some(98),
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &users,
+                caps,
+                reference_price: Some(98),
+                ..execute_args(DirectionV0::Long, 5 * UNIT)
+            },
             0,
             0,
         )
@@ -960,14 +941,10 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
     let users = [first, second, third];
     let pointer = book
         .quote(
-            DirectionV0::Long,
-            15,
-            &users,
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
+            &QuoteArgsV0 {
+                users: &users,
+                ..quote_args(DirectionV0::Long, 15)
+            },
             0,
             0,
         )
@@ -981,13 +958,10 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
     // And execute delivers exactly that — the promise the cap exists to keep.
     let outcome = book
         .execute(
-            DirectionV0::Long,
-            15,
-            &users,
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            false,
+            &ExecuteArgsV0 {
+                users: &users,
+                ..execute_args(DirectionV0::Long, 15)
+            },
             0,
             0,
         )
@@ -1017,32 +991,11 @@ fn a_link_out_of_the_arena_fails_every_walk() {
             .unwrap();
 
         assert_err(
-            book.quote(
-                DirectionV0::Long,
-                10,
-                &[],
-                &UserCapsV0::EMPTY,
-                None,
-                None,
-                0,
-                false,
-                0,
-                0,
-            ),
+            book.quote(&quote_args(DirectionV0::Long, 10), 0, 0),
             ClobError::NodeIndexOutOfRange,
         );
         assert_err(
-            book.execute(
-                DirectionV0::Long,
-                10,
-                &[],
-                &UserCapsV0::EMPTY,
-                None,
-                None,
-                false,
-                0,
-                0,
-            ),
+            book.execute(&execute_args(DirectionV0::Long, 10), 0, 0),
             ClobError::NodeIndexOutOfRange,
         );
 
@@ -1065,18 +1018,7 @@ fn a_cycled_link_cannot_spin_the_walk() {
     book.update_node(head.node_index, |node| node.next = head.node_index)
         .unwrap();
     assert_err(
-        book.quote(
-            DirectionV0::Long,
-            u64::MAX,
-            &[],
-            &UserCapsV0::EMPTY,
-            None,
-            None,
-            0,
-            false,
-            0,
-            0,
-        ),
+        book.quote(&quote_args(DirectionV0::Long, u64::MAX), 0, 0),
         ClobError::BookInvariantViolated,
     );
 }

@@ -14,16 +14,7 @@ pub fn handle_quote_v0(
     args: QuoteArgsV0,
 ) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
-    ctx.accounts.market.quote(
-        args.direction,
-        args.size,
-        args.users,
-        &args.caps,
-        args.reference_price,
-        args.taker.as_ref(),
-        args.limit_price,
-        args.include_taker_origin_reservations,
-        clock.slot,
-        clock.unix_timestamp,
-    )
+    ctx.accounts
+        .market
+        .quote(&args, clock.slot, clock.unix_timestamp)
 }

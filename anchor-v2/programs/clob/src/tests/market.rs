@@ -7,8 +7,8 @@ use {
         book::{BookHeader, ClobBook, NodeArena},
         error::ClobError,
         state::{
-            ClobHeaderV0, ClobMarketV0, ClobOrderRefV0, MarketConfigV0, OrderBitFlag,
-            PlaceOrderParams, SideV0, UserRefV0, NIL,
+            ClobHeaderV0, ClobMarketV0, ClobOrderRefV0, DirectionV0, MarketConfigV0, OrderBitFlag,
+            PlaceOrderParams, SideV0, UserCapsV0, UserRefV0, NIL,
         },
     },
     anchor_lang::{
@@ -16,6 +16,7 @@ use {
         testing::{AccountBuffer, MIN_ACCOUNT_BUF},
         AnchorAccount,
     },
+    quoter_spec::{ExecuteArgsV0, QuoteArgsV0},
 };
 
 /// Arena capacity: a side is half, sized for the widest fills a market can produce.
@@ -181,6 +182,36 @@ pub fn params(side: SideV0, price: u64, size: u64, user: UserRefV0) -> PlaceOrde
         client_order_id: 0,
         reject_if_crossed: false,
         reduce_only: false,
+    }
+}
+
+/// A quote with no user set, no caps, no taker and no price bound. A test
+/// overrides the fields it needs with struct update syntax.
+pub fn quote_args(direction: DirectionV0, size: u64) -> QuoteArgsV0<'static> {
+    QuoteArgsV0 {
+        users: &[],
+        direction,
+        size,
+        caps: UserCapsV0::EMPTY,
+        reference_price: None,
+        taker: None,
+        limit_price: 0,
+        taker_served_window: false,
+        include_taker_origin_reservations: false,
+    }
+}
+
+/// The execute counterpart of [`quote_args`].
+pub fn execute_args(direction: DirectionV0, size: u64) -> ExecuteArgsV0<'static> {
+    ExecuteArgsV0 {
+        users: &[],
+        direction,
+        size,
+        caps: UserCapsV0::EMPTY,
+        reference_price: None,
+        taker: None,
+        taker_served_window: false,
+        include_taker_origin_reservations: false,
     }
 }
 

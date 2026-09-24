@@ -37,16 +37,11 @@ pub fn handle_next_cross_v0(ctx: &mut Context<MarketViewV0>) -> Result<NextCross
 }
 
 /// Walk one side from its best price to the first order a match may consume.
-///
-/// A speed-bumped order is skipped rather than treated as a stop. The depth
-/// behind it is matchable now, and skipping it excludes no taker.
-///
-/// An order a crossing taker remainder claims whole is skipped too, because
-/// only the crank settling that remainder may take it. The walk still returns
-/// the crossing order itself, since hiding it would hide the cross.
-///
-/// A corrupt list fails the call. An empty answer would read as a book with
-/// no cross.
+/// A speed-bumped order is skipped, because the depth behind it is matchable
+/// now. An order that a crossing taker remainder claims whole is skipped too,
+/// because only the crank that settles the remainder may take it. The walk
+/// still returns the crossing order. A corrupt list fails the call, because an
+/// empty answer reads as a book with no cross.
 fn head(market: &ClobMarketV0, side: SideV0, slot: u64, now: i64) -> Result<OrderViewV0> {
     let mut reservation = CrossReservation::new(market, side, slot, now, false);
     let mut found = OrderViewV0::NONE;

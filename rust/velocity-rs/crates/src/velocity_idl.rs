@@ -12282,7 +12282,6 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub filler: Pubkey,
-        pub filler_stats: Pubkey,
         pub user: Pubkey,
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
@@ -12317,11 +12316,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.filler,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.filler_stats,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -32686,7 +32680,7 @@ pub mod errors {
         FillerCarriedUnroutedQuoter,
         # [msg ("A reduce-only order cannot rest on the CLOB; the book cannot clamp its fill to the position")]
         ReduceOnlyOrderCannotRestOnClob,
-        # [msg ("User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation")]
+        #[msg("Orders in the liquidation's scope still rest on a CLOB book")]
         LiquidationConflictsWithClobOrders,
         # [msg ("A quoter reported more base or more retired orders than velocity reserved for that user")]
         QuoterReportExceedsReservation,

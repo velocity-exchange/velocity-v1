@@ -2062,6 +2062,59 @@ pub async fn market_book(velocity: &VelocityClient, market_index: u16) -> Option
     })
 }
 
+/// The books a liquidation of `liquidatee` sweeps: every market where the
+/// account rests book orders. A market whose slab holds no book is left out.
+pub async fn liquidation_books(
+    velocity: &VelocityClient,
+    liquidatee: &User,
+) -> Vec<ClobFillAccounts> {
+    let mut books = Vec::new();
+    for position in liquidatee.perp_positions.iter() {
+        if clob_resident_open_orders(liquidatee, position.market_index) == 0 {
+            continue;
+        }
+
+        if let Some(book) = market_book(velocity, position.market_index).await {
+            books.push(book.accounts);
+        }
+    }
+
+    books
+}
+
+/// How many of the account's open orders in `market_index` rest on a CLOB book
+/// rather than in a `User.orders` slot. Mirrors `User::clob_resident_open_orders`.
+/// A placed-trigger shadow row counts as book-resident.
+pub fn clob_resident_open_orders(user: &User, market_index: u16) -> u8 {
+    let placed_on_clob = program::state::user::OrderBitFlag::PlacedOnClob as u8;
+    let listed = user
+        .orders
+        .iter()
+        .filter(|order| {
+            order.status == OrderStatus::Open
+                && order.market_type == MarketType::Perp
+                && order.market_index == market_index
+                && order.bit_flags & placed_on_clob == 0
+        })
+        .count()
+        .min(u8::MAX as usize) as u8;
+
+    user.perp_positions
+        .iter()
+        .find(|position| position.market_index == market_index && position.open_orders > 0)
+        .map_or(0, |position| position.open_orders.saturating_sub(listed))
+}
+
+/// The `(slab, book)` metas of `books`, in the order the program reads them.
+fn liquidation_book_pairs(books: &[ClobFillAccounts]) -> impl Iterator<Item = AccountMeta> + '_ {
+    books.iter().flat_map(|book| {
+        [
+            AccountMeta::new_readonly(book.quoter_slab, false),
+            AccountMeta::new(book.clob_market, false),
+        ]
+    })
+}
+
 impl ForceMarkets {
     /// Set given `markets` as readable, enforcing there inclusion in a final Tx
     pub fn with_readable(&mut self, markets: &[MarketId]) -> &mut Self {
@@ -2238,6 +2291,20 @@ impl<'a> TransactionBuilder<'a> {
     /// Set ix at index
     pub fn set_ix(mut self, idx: usize, ix: Instruction) -> Self {
         self.ixs[idx] = ix;
+        self
+    }
+
+    /// Append the books a liquidation sweeps to the last instruction, after
+    /// its margin map. See [`liquidation_books`]. Every liquidation builder
+    /// takes them this way except `liquidate_perp_with_fill`, which takes them
+    /// as an argument.
+    pub fn with_liquidation_books(mut self, books: &[ClobFillAccounts]) -> Self {
+        if let (Some(ix), Some(book)) = (self.ixs.last_mut(), books.first()) {
+            ix.accounts.extend(liquidation_book_pairs(books));
+            ix.accounts
+                .push(AccountMeta::new_readonly(book.clob_program, false));
+        }
+
         self
     }
 
@@ -2493,10 +2560,10 @@ impl<'a> TransactionBuilder<'a> {
     }
 
     /// Force-cancel a deteriorated account's resting CLOB orders. This is the
-    /// CLOB arm of `force_cancel_orders`. A perp liquidation of an account
-    /// that holds book orders must run it first. The caller cranks it as its
-    /// own filler, and earns the flat per-order fee from the user's quote
-    /// deposit.
+    /// CLOB arm of `force_cancel_orders`. A liquidation does not need it,
+    /// because the liquidation cancels the orders in its scope itself. The
+    /// caller cranks it as its own filler, and earns the flat per-order fee
+    /// from the user's quote deposit.
     ///
     /// * `user_account` - the deteriorated account whose orders are cancelled
     /// * `order_refs` - the account's resting CLOB orders, read off the book feed
@@ -2513,7 +2580,6 @@ impl<'a> TransactionBuilder<'a> {
                 state: *state_account(),
                 authority: self.authority,
                 filler: self.sub_account,
-                filler_stats: Wallet::derive_stats_account(&self.owner()),
                 user: Wallet::derive_user_account(
                     &user_account.authority,
                     user_account.sub_account_id,
@@ -3249,6 +3315,7 @@ impl<'a> TransactionBuilder<'a> {
     /// * `asset_market_index` - Market index of the asset (collateral)
     /// * `liability_market_index` - Market index of the liability (borrow)
     /// * `user_account` - The user account being liquidated
+    /// * `books` - The books the liquidation sweeps, from [`liquidation_books`]
     pub fn jupiter_swap_liquidate(
         mut self,
         jupiter_swap_info: JupiterSwapInfo,
@@ -3259,6 +3326,7 @@ impl<'a> TransactionBuilder<'a> {
         asset_market_index: u16,
         liability_market_index: u16,
         user_account: &User,
+        books: &[ClobFillAccounts],
     ) -> Self {
         let JupiterSwapInstructions {
             account_creation_instructions,
@@ -3281,6 +3349,8 @@ impl<'a> TransactionBuilder<'a> {
             in_amount,
             user_account,
         );
+        // Begin and end must carry the same accounts, so both carry the books.
+        self = self.with_liquidation_books(books);
         self.ixs.push(swap_instruction);
         if let Some(cleanup_ix) = cleanup_instruction {
             self.ixs.push(cleanup_ix);
@@ -3290,6 +3360,7 @@ impl<'a> TransactionBuilder<'a> {
             liability_market_index,
             user_account,
         );
+        self = self.with_liquidation_books(books);
 
         self.lookup_tables(&luts)
     }
@@ -3419,6 +3490,7 @@ impl<'a> TransactionBuilder<'a> {
     /// * `asset_market_index` - Market index of the asset (collateral)
     /// * `liability_market_index` - Market index of the liability (borrow)
     /// * `user_account` - The user account being liquidated
+    /// * `books` - The books the liquidation sweeps, from [`liquidation_books`]
     pub fn titan_swap_liquidate(
         mut self,
         jupiter_swap_info: TitanSwapInfo,
@@ -3429,6 +3501,7 @@ impl<'a> TransactionBuilder<'a> {
         asset_market_index: u16,
         liability_market_index: u16,
         user_account: &User,
+        books: &[ClobFillAccounts],
     ) -> Self {
         let TitanSwapInstructions {
             account_creation_instructions,
@@ -3450,12 +3523,15 @@ impl<'a> TransactionBuilder<'a> {
             in_amount,
             user_account,
         );
+        // Begin and end must carry the same accounts, so both carry the books.
+        self = self.with_liquidation_books(books);
         self.ixs.extend(swap_instructions);
         self = self.liquidate_spot_with_swap_end(
             asset_market_index,
             liability_market_index,
             user_account,
         );
+        self = self.with_liquidation_books(books);
 
         self.lookup_tables(&luts)
     }
@@ -4018,6 +4094,7 @@ impl<'a> TransactionBuilder<'a> {
         market_index: u16,
         liquidatee: &User,
         makers: &[User],
+        books: &[ClobFillAccounts],
     ) -> Self {
         let mut accounts = build_accounts(
             self.program_data,
@@ -4038,6 +4115,15 @@ impl<'a> TransactionBuilder<'a> {
             std::iter::once(&MarketId::perp(market_index)),
         );
 
+        // The books of other markets come before the makers, because the
+        // route refuses a slab of another market in the quoter section.
+        let other_books: Vec<ClobFillAccounts> = books
+            .iter()
+            .filter(|book| book.market_index != market_index)
+            .copied()
+            .collect();
+        accounts.extend(liquidation_book_pairs(&other_books));
+
         for maker in makers {
             accounts.extend([
                 AccountMeta::new(
@@ -4046,6 +4132,10 @@ impl<'a> TransactionBuilder<'a> {
                 ),
                 AccountMeta::new(Wallet::derive_stats_account(&maker.authority), false),
             ]);
+        }
+
+        if let Some(book) = other_books.first() {
+            accounts.push(AccountMeta::new_readonly(book.clob_program, false));
         }
 
         let liquidate_ix = Instruction {

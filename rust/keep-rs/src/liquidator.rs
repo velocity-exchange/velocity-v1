@@ -47,7 +47,6 @@ use {
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
         program::{
-            instructions::ForceCancelClobRefV0,
             math::{
                 oracle::{
                     is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
@@ -55,7 +54,7 @@ use {
                 },
                 time::{Millis, SlotClock, SlotDuration},
             },
-            state::prop_amm::{ClobOrderRefV0, QuoterConfigV0, SideV0, UserRefV0},
+            state::prop_amm::{QuoterConfigV0, UserRefV0},
         },
         titan::{self, TitanSwapApi},
         types::{
@@ -65,8 +64,7 @@ use {
             SpotPosition,
         },
         utils::{clob_slot_config, quoter_cpi_section},
-        ClobFillAccounts, GrpcSubscribeOpts, MarketState, Pubkey, TransactionBuilder,
-        VelocityClient, Wallet,
+        GrpcSubscribeOpts, MarketState, Pubkey, TransactionBuilder, VelocityClient, Wallet,
     },
 };
 
@@ -696,7 +694,6 @@ impl LiquidatorBot {
                 subaccounts: subaccounts.clone(),
                 metrics: Arc::clone(&metrics),
                 use_spot_liquidation: config.use_spot_liquidation,
-                dlob_url: config.dlob_url.clone(),
                 txs_in_flight: Arc::clone(&txs_in_flight),
                 tx_sig_to_collateral: Arc::clone(&tx_sig_to_collateral),
                 free_collateral_per_subaccount: Arc::clone(&free_collateral_per_subaccount),
@@ -1999,9 +1996,6 @@ pub struct PrimaryLiquidationStrategy {
     pub subaccounts: Vec<Pubkey>,
     pub metrics: Arc<Metrics>,
     pub use_spot_liquidation: bool,
-    /// Base URL of the dlob-server, source of a liquidatee's resting CLOB
-    /// orders for force-cancel before a perp liquidation.
-    pub dlob_url: String,
     pub txs_in_flight: Arc<DashMap<Pubkey, HashSet<Signature>>>,
     // Map(Signature,(collateral, ts))
     pub tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>>,
@@ -2784,7 +2778,6 @@ impl PrimaryLiquidationStrategy {
         cu_limit: u32,
         slot: u64,
         pyth_price_update: Option<PythPriceUpdate>,
-        dlob_url: &str,
     ) -> LiquidationOutcome {
         let top_makers = route.makers.as_slice();
         if top_makers.is_empty() && route.quoter_metas.is_empty() {
@@ -2818,28 +2811,11 @@ impl PrimaryLiquidationStrategy {
 
         let liquidatee_data = liquidatee_subaccount_data.unwrap();
 
-        // A perp liquidation reverts if the account holds resting CLOB orders.
-        // Force-cancel them first, in the same transaction. On a feed failure
-        // the account may still hold orders, so skip this attempt and retry.
-        match resolve_clob_force_cancel(
-            velocity,
-            dlob_url,
-            liquidatee_subaccount,
-            &liquidatee_data,
-            market_index,
-        )
-        .await
-        {
-            Ok(Some((order_refs, clob_fill))) => {
-                tx_builder =
-                    tx_builder.force_cancel_clob_orders(&liquidatee_data, order_refs, clob_fill);
-            }
-            Ok(None) => {}
-            Err(()) => return LiquidationOutcome::Skipped("clob_force_cancel_unavailable"),
-        }
-
+        // The liquidation cancels the account's resting CLOB orders itself. It
+        // needs the book of every market that holds them.
+        let books = velocity_rs::liquidation_books(velocity, &liquidatee_data).await;
         tx_builder =
-            tx_builder.liquidate_perp_with_fill(market_index, &liquidatee_data, top_makers);
+            tx_builder.liquidate_perp_with_fill(market_index, &liquidatee_data, top_makers, &books);
 
         // The quoter section rides the liquidation's remaining accounts. The program
         // reads everything past the map and user sections as registry entries plus
@@ -2904,7 +2880,6 @@ impl PrimaryLiquidationStrategy {
         cu_limit: u32,
         slot: u64,
         pyth_price_update: Option<PythPriceUpdate>,
-        dlob_url: &str,
     ) -> LiquidationOutcome {
         let keeper_account_data = velocity.try_get_account::<User>(&subaccount);
         if keeper_account_data.is_err() {
@@ -2932,28 +2907,12 @@ impl PrimaryLiquidationStrategy {
 
         let liquidatee_data = liquidatee_subaccount_data.unwrap();
 
-        // A perp liquidation reverts if the account holds resting CLOB orders.
-        // Force-cancel them first, in the same transaction. On a feed failure
-        // the account may still hold orders, so skip this attempt and retry.
-        match resolve_clob_force_cancel(
-            velocity,
-            dlob_url,
-            liquidatee_subaccount,
-            &liquidatee_data,
-            market_index,
-        )
-        .await
-        {
-            Ok(Some((order_refs, clob_fill))) => {
-                tx_builder =
-                    tx_builder.force_cancel_clob_orders(&liquidatee_data, order_refs, clob_fill);
-            }
-            Ok(None) => {}
-            Err(()) => return LiquidationOutcome::Skipped("clob_force_cancel_unavailable"),
-        }
-
-        tx_builder =
-            tx_builder.liquidate_perp(market_index, &liquidatee_data, base_asset_amount, None);
+        // The liquidation cancels the account's resting CLOB orders itself. It
+        // needs the book of every market that holds them.
+        let books = velocity_rs::liquidation_books(velocity, &liquidatee_data).await;
+        tx_builder = tx_builder
+            .liquidate_perp(market_index, &liquidatee_data, base_asset_amount, None)
+            .with_liquidation_books(&books);
 
         // Ask for the ceiling here and let the send path size it down. The send
         // path simulates before it signs, so the limit it signs comes from what
@@ -3104,7 +3063,6 @@ impl PrimaryLiquidationStrategy {
                     cu_limit,
                     slot,
                     pyth_update,
-                    &self.dlob_url,
                 )
                 .await
             }
@@ -3131,7 +3089,6 @@ impl PrimaryLiquidationStrategy {
                     cu_limit,
                     slot,
                     pyth_update,
-                    &self.dlob_url,
                 )
                 .await
             }
@@ -3421,6 +3378,7 @@ impl PrimaryLiquidationStrategy {
                 _ => unreachable!(),
             };
 
+            let books = velocity_rs::liquidation_books(&velocity, &liquidatee_account_data).await;
             let tx = if use_titan {
                 TransactionBuilder::new(
                     velocity.program_data(),
@@ -3438,6 +3396,7 @@ impl PrimaryLiquidationStrategy {
                     asset_market_index,
                     liability_market_index,
                     &liquidatee_account_data,
+                    &books,
                 )
                 .build()
             } else {
@@ -3457,6 +3416,7 @@ impl PrimaryLiquidationStrategy {
                     asset_market_index,
                     liability_market_index,
                     &liquidatee_account_data,
+                    &books,
                 )
                 .build()
             };
@@ -3540,13 +3500,16 @@ impl PrimaryLiquidationStrategy {
                 tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
         }
 
-        tx_builder = tx_builder.liquidate_perp_pnl_for_deposit(
-            &liquidatee_account,
-            liability.market_index,
-            asset.market_index,
-            u128::from(liq_amount),
-            None,
-        );
+        let books = velocity_rs::liquidation_books(velocity, &liquidatee_account).await;
+        tx_builder = tx_builder
+            .liquidate_perp_pnl_for_deposit(
+                &liquidatee_account,
+                liability.market_index,
+                asset.market_index,
+                u128::from(liq_amount),
+                None,
+            )
+            .with_liquidation_books(&books);
 
         let tx = tx_builder.build();
 
@@ -3714,13 +3677,16 @@ impl PrimaryLiquidationStrategy {
                 tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
         }
 
-        tx_builder = tx_builder.liquidate_borrow_for_perp_pnl(
-            &liquidatee_account,
-            asset.market_index,
-            liability.market_index,
-            u128::from(liq_amount),
-            None,
-        );
+        let books = velocity_rs::liquidation_books(velocity, &liquidatee_account).await;
+        tx_builder = tx_builder
+            .liquidate_borrow_for_perp_pnl(
+                &liquidatee_account,
+                asset.market_index,
+                liability.market_index,
+                u128::from(liq_amount),
+                None,
+            )
+            .with_liquidation_books(&books);
 
         let tx = tx_builder.build();
 
@@ -4591,115 +4557,4 @@ mod tests {
         assert!(tx_sig_to_collateral.is_empty());
         assert!(txs_in_flight.get(&subaccount).unwrap().is_empty());
     }
-}
-
-/// The dlob-server `/userOrders` row, narrowed to the fields a force-cancel needs.
-/// Those are the book node the order rests at, its book id, and its side. The
-/// numeric fields arrive as JSON numbers or strings, so they stay untyped here.
-#[derive(serde::Deserialize)]
-struct UserClobOrderRow {
-    #[serde(rename = "nodeIndex")]
-    node_index: serde_json::Value,
-    #[serde(rename = "clobOrderId")]
-    clob_order_id: serde_json::Value,
-    direction: String,
-}
-
-#[derive(serde::Deserialize)]
-struct UserOrdersResponse {
-    orders: Vec<UserClobOrderRow>,
-}
-
-/// Read a JSON value that may be a number or a decimal string into a `u64`.
-fn json_u64(value: &serde_json::Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
-}
-
-/// Read a liquidatee's resting CLOB orders in one market from the dlob-server
-/// feed and turn them into force-cancel refs. The book id is the CLOB's own
-/// `clobOrderId`, not velocity's client order id.
-async fn fetch_clob_force_cancel_refs(
-    dlob_url: &str,
-    liquidatee: &Pubkey,
-    market_index: u16,
-) -> reqwest::Result<Vec<ForceCancelClobRefV0>> {
-    let url = format!(
-        "{}/userOrders?userPubkey={}&marketIndexes={}",
-        dlob_url.trim_end_matches('/'),
-        liquidatee,
-        market_index,
-    );
-    let response: UserOrdersResponse = reqwest::get(&url).await?.json().await?;
-    Ok(response
-        .orders
-        .iter()
-        .filter_map(|row| {
-            let node_index = u32::try_from(json_u64(&row.node_index)?).ok()?;
-            let order_id = json_u64(&row.clob_order_id)?;
-            let side = if row.direction == "long" {
-                SideV0::Bid
-            } else {
-                SideV0::Ask
-            };
-
-            Some(ForceCancelClobRefV0 {
-                order_ref: ClobOrderRefV0 {
-                    node_index,
-                    order_id,
-                },
-
-                side,
-            })
-        })
-        .collect())
-}
-
-/// Resolve a liquidatee's resting CLOB orders in `market_index` into a
-/// force-cancel. The result holds the order refs to cancel and the book accounts
-/// to cancel them with. `Ok(None)` means the account has no CLOB orders to clear,
-/// so a plain liquidation runs. `Err(())` means the account may hold book orders
-/// and the feed was unreachable. A perp liquidation then reverts, so the caller
-/// skips the attempt and retries later.
-async fn resolve_clob_force_cancel(
-    velocity: &VelocityClient,
-    dlob_url: &str,
-    liquidatee: Pubkey,
-    liquidatee_user: &User,
-    market_index: u16,
-) -> Result<Option<(Vec<ForceCancelClobRefV0>, ClobFillAccounts)>, ()> {
-    // An account with no resting perp exposure in the market has no resting CLOB
-    // orders there. This gate skips the feed round trip in the common case.
-    let has_resting_exposure = liquidatee_user.perp_positions.iter().any(|position| {
-        position.market_index == market_index
-            && (position.open_bids != 0 || position.open_asks != 0)
-    });
-
-    if !has_resting_exposure {
-        return Ok(None);
-    }
-
-    let order_refs = fetch_clob_force_cancel_refs(dlob_url, &liquidatee, market_index)
-        .await
-        .map_err(|error| {
-            log::warn!(
-                target: TARGET,
-                "userOrders fetch for {liquidatee} market {market_index} failed: {error}; \
-                 skip liquidation attempt (perp liquidation reverts on resting CLOB orders)"
-            );
-        })?;
-    if order_refs.is_empty() {
-        return Ok(None);
-    }
-
-    // Book accounts for the force-cancel, read from the market's quoter
-    // slab. The book slot keeps its config while suspended, so a
-    // force-cancel still works on a killed book.
-    let Some(book) = velocity_rs::market_book(velocity, market_index).await else {
-        log::warn!(target: TARGET, "quoter slab for market {market_index} holds no book for force-cancel");
-        return Err(());
-    };
-
-    Ok(Some((order_refs, book.accounts.with_crank_conditions())))
 }

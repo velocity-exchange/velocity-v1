@@ -4,12 +4,14 @@
 //! shadows, because their live orders rest on the book.
 //!
 //! The gates are the gates of `force_cancel_orders`. The account must fail
-//! initial margin or sit below its equity floor, which is the cleanup before a
-//! liquidation. Risk-reducing orders are skipped, because cancelling one would
-//! only make the account worse. The keeper reads the user's orders off the book
-//! and passes their `OrderRef`s. The CLOB rejects a hint that no longer belongs
-//! to this user. The keeper earns the same flat fee per cancelled order, and
-//! one transfer at the end charges the user's quote deposit.
+//! initial margin or sit below its equity floor. Risk-reducing orders are
+//! skipped, because cancelling one would only make the account worse. A
+//! reduce-only order is judged at the size it can still close. A liquidation
+//! does not need this crank first, because it cancels the orders in its scope
+//! itself. The keeper reads the user's orders off the book and passes their
+//! `OrderRef`s. The CLOB rejects a hint that no longer belongs to this user.
+//! The keeper earns the same flat fee per cancelled order, and one transfer at
+//! the end charges the user's quote deposit.
 //!
 //! The handler is not gated on the quoter entry's active and approved flags. A
 //! dead book still needs a failing maker's orders reclaimed.
@@ -52,12 +54,12 @@ use {
             perp_market_map::MarketSet,
             prop_amm::{
                 CancelAllArgsV0, CancelAllOutcomeV0, CancelOrderArgsV0, CancelSidesV0, ClobMarket,
-                ClobOrderRefV0, QuoterSlabV0, RemovedOrderV0, SideV0, UserRefV0,
+                ClobOrderRefV0, OrderViewV0, QuoterSlabV0, RemovedOrderV0, SideV0, UserRefV0,
             },
             signed_msg_user::release_removed_remainders,
             spot_market_map::{get_writable_spot_market_set, SpotMarketMap},
             state::State,
-            user::{OrderReservation, OrderStatus, ReleaseCheck, User, UserStats},
+            user::{OrderReservation, OrderStatus, ReleaseCheck, User},
         },
         validate,
     },
@@ -103,11 +105,6 @@ pub struct ForceCancelClobOrders<'info> {
         constraint = can_crank_for_filler(&filler, &authority, &state)?
     )]
     pub filler: AccountLoader<'info, User>,
-    #[account(
-        mut,
-        constraint = is_stats_for_user(&filler, &filler_stats)?
-    )]
-    pub filler_stats: AccountLoader<'info, UserStats>,
     /// The deteriorated account whose CLOB orders are being reclaimed.
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
@@ -354,6 +351,11 @@ fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
     }
 }
 
+/// True when a sweep of `market_index` can reclaim a risk-increasing side.
+pub(crate) fn sweep_has_work(user: &User, market_index: u16) -> bool {
+    decide_sweep(user, market_index).sides.is_some()
+}
+
 /// Ask the book what each hinted ref still holds. A ref that no longer names a
 /// live order comes back empty, because relay or a fill reached it first. That
 /// is the expected outcome of the race rather than an error. A ref that names
@@ -397,9 +399,10 @@ fn select_cancellable_refs(
                 return Ok(None);
             }
 
+            let direction = PositionDirection::from(order_ref.side);
             let reducing = is_order_position_reducing(
-                &PositionDirection::from(order_ref.side),
-                view.base_asset_amount,
+                &direction,
+                reduce_only_clamped_base(view, &direction, sweep.position_base),
                 sweep.position_base,
             )?;
 
@@ -409,6 +412,30 @@ fn select_cancellable_refs(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>())
+}
+
+/// The base an order can still add to the position. A reduce-only order is
+/// clamped to what it can close, as `Order::get_base_asset_amount_unfilled`
+/// clamps a slot order.
+fn reduce_only_clamped_base(
+    view: &OrderViewV0,
+    direction: &PositionDirection,
+    position_base: i64,
+) -> u64 {
+    if !view.reduce_only {
+        return view.base_asset_amount;
+    }
+
+    let faces_position = match direction {
+        PositionDirection::Long => position_base < 0,
+        PositionDirection::Short => position_base > 0,
+    };
+
+    if faces_position {
+        view.base_asset_amount.min(position_base.unsigned_abs())
+    } else {
+        0
+    }
 }
 
 /// Take the planned orders off the book. The caller holds no user borrow,
@@ -589,4 +616,30 @@ fn pay_crank_reward<'info>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::reduce_only_clamped_base,
+        crate::{controller::position::PositionDirection, state::prop_amm::OrderViewV0},
+    };
+
+    fn ask(base_asset_amount: u64, reduce_only: bool) -> OrderViewV0 {
+        OrderViewV0 {
+            base_asset_amount,
+            reduce_only,
+            ..OrderViewV0::NONE
+        }
+    }
+
+    #[test]
+    fn a_reduce_only_order_is_judged_at_the_size_it_can_close() {
+        let short = PositionDirection::Short;
+
+        assert_eq!(reduce_only_clamped_base(&ask(10, true), &short, 5), 5);
+        assert_eq!(reduce_only_clamped_base(&ask(10, false), &short, 5), 10);
+        assert_eq!(reduce_only_clamped_base(&ask(10, true), &short, -5), 0);
+        assert_eq!(reduce_only_clamped_base(&ask(10, true), &short, 0), 0);
+    }
 }

@@ -1,22 +1,16 @@
 //! Resolver for a distress threshold. It works out which stage of the ladder
 //! the account is in now, and stages the call that matches.
 //!
-//! A cancel comes before a liquidation. `force_cancel_clob_orders` answers to
-//! the initial margin requirement and a liquidation answers to the maintenance
-//! one, so anything liquidatable was already cancellable. The two are stages
-//! of one ladder, and one watch drives both. The sync prices the threshold at
-//! the stage the account is in. This resolver picks the matching executor, and
-//! relay's level-triggered wake brings the account back for the next stage.
+//! A force cancel comes first when it has work. It answers to the initial
+//! margin requirement, so it reaches a failing account before a liquidation
+//! does, and it takes only the side of a book that adds risk. A latched account
+//! skips it, because each liquidation call cancels the orders in its own scope.
 //!
-//! Orders come first. A liquidation that leaves risk-increasing orders resting
-//! on a book hands the liquidated account new exposure the moment one fills.
-//!
-//! The threshold that woke this is a conservative single-oracle estimate. The
-//! resolver computes the real answer. It runs the full maintenance-margin
-//! calculation over every position and deposit, with the same code the
-//! executor runs. An account that is not liquidatable yet returns NoWork. The
-//! wake stays level-triggered, so the turner's backoff rechecks the account on
-//! the next ticks.
+//! The liquidation stage runs the full maintenance-margin calculation with the
+//! code the executor runs. It stages the largest position in a scope that
+//! fails, because the executor liquidates the scope of the market it is given.
+//! An account that is not liquidatable returns NoWork, and the poll wakes the
+//! resolver again later.
 
 use {
     crate::{
@@ -108,21 +102,14 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             }
         }
 
-        // Stage two of the ladder. No orders are left in the way, so the
-        // question is whether the account is liquidatable.
-        let liquidatable = is_liquidatable(
+        let Some(market_index) = failing_perp_market(
             &ctx.accounts.user,
             &mut maps,
             state.liquidation_margin_buffer_ratio,
-        )?;
-
-        if !liquidatable {
-            return Ok(None);
-        }
-
-        let Some(market_index) = largest_perp_position(&ctx.accounts.user)? else {
-            // Spot-only distress. The account is liquidatable and the check above proved it, but no
-            // crank can act on it. `liquidate_spot` gives the liquidator the borrow and the
+        )?
+        else {
+            // No failing scope holds a perp position. The account is healthy, or its distress is
+            // spot-only, which no crank can act on. `liquidate_spot` gives the liquidator the borrow and the
             // collateral behind it, so a protocol keeper would hold spot inventory and its price
             // risk. The perp path avoids that by routing the fill through the book. Spot has no
             // such flavor without an external swap venue, and nothing here wires one. A real
@@ -149,10 +136,9 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
     })
 }
 
-/// Stage one of the ladder. Finds a book this account may no longer rest
-/// risk-increasing orders on. The grounds are recomputed here, from the
-/// initial margin requirement and a provable floor breach, so the wake's
-/// conservative single-oracle estimate is never what acts. The executor
+/// Stage one of the ladder. Finds a book that still holds a risk-increasing
+/// side this account may no longer rest. The grounds are recomputed here, from
+/// the initial margin requirement and a provable floor breach. The executor
 /// accepts a third ground, the authority-wide equity breaker, which this
 /// resolver does not read.
 fn find_cancel_target(
@@ -160,17 +146,28 @@ fn find_cancel_target(
     maps: &mut AccountMaps,
 ) -> Result<Option<u16>> {
     let user = crate::load!(user_loader)?;
+    if user.is_being_liquidated() || user.is_bankrupt() {
+        return Ok(None);
+    }
+
     let grounds = crate::controller::orders::ForceCancelGrounds::measure(&user, maps)?;
-    Ok(if !grounds.any() {
-        None
-    } else {
-        // One market per wake. Relay comes back for the rest while
-        // the account still qualifies.
-        user.perp_positions
-            .iter()
-            .map(|position| position.market_index)
-            .find(|market_index| user.clob_resident_open_orders(*market_index) > 0)
-    })
+    if !grounds.any() {
+        return Ok(None);
+    }
+
+    // One market per wake. Relay comes back for the rest while the account
+    // still qualifies.
+    for position in user.perp_positions.iter().filter(|p| !p.is_available()) {
+        let market_index = position.market_index;
+        if user.clob_resident_open_orders(market_index) > 0
+            && crate::instructions::clob::sweep_has_work(&user, market_index)
+            && !grounds.market_recoverable(&user, market_index)?
+        {
+            return Ok(Some(market_index));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Stage the cancel of the account's resting orders on `market_index`.
@@ -186,7 +183,7 @@ fn stage_force_cancel<'info>(
     market_index: u16,
     stored: Vec<relay_spec::AccountRefV0>,
 ) -> Result<Option<crate::instructions::StagedCall>> {
-    let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
+    let (protocol_user, _) = crate::state::pdas::protocol_user_pair();
     let quoter_slab = crate::state::pdas::quoter_slab(market_index);
     let Some(slab_info) = crate::state::prop_amm::find_account(remaining_accounts, &quoter_slab)
     else {
@@ -218,7 +215,6 @@ fn stage_force_cancel<'info>(
                 state: state_key,
                 authority: crate::state::pdas::keeper_placeholder(),
                 filler: protocol_user,
-                filler_stats: protocol_user_stats,
                 user: user_loader.key(),
                 quoter_slab,
                 clob_market,
@@ -236,13 +232,14 @@ fn stage_force_cancel<'info>(
     ))
 }
 
-/// The full maintenance-margin calculation, the same code the executor
-/// runs.
-fn is_liquidatable(
+/// The market to liquidate: the largest perp position in a scope that fails
+/// the maintenance calculation the executor runs. A latched scope fails until
+/// it clears the buffer the executor exits at.
+fn failing_perp_market(
     user_loader: &AccountLoader<'_, User>,
     maps: &mut AccountMaps,
     liquidation_margin_buffer_ratio: u32,
-) -> Result<bool> {
+) -> Result<Option<u16>> {
     let user = crate::load!(user_loader)?;
     let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user,
@@ -250,18 +247,34 @@ fn is_liquidatable(
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
-    Ok(!calculation.meets_margin_requirement())
-}
+    let cross_fails = if user.is_cross_margin_being_liquidated() {
+        !calculation.can_exit_cross_margin_liquidation()?
+    } else {
+        !calculation.meets_cross_margin_requirement()
+    };
 
-/// Which market to liquidate: the user's largest live perp position.
-fn largest_perp_position(user_loader: &AccountLoader<'_, User>) -> Result<Option<u16>> {
-    let user = crate::load!(user_loader)?;
-    Ok(user
+    let mut largest_failing: Option<(u64, u16)> = None;
+    for position in user
         .perp_positions
         .iter()
         .filter(|p| p.base_asset_amount != 0)
-        .max_by_key(|p| (p.base_asset_amount as i128).abs())
-        .map(|p| p.market_index))
+    {
+        let market_index = position.market_index;
+        let scope_fails = if !position.is_isolated() {
+            cross_fails
+        } else if user.is_isolated_margin_being_liquidated(market_index)? {
+            !calculation.can_exit_isolated_margin_liquidation(market_index)?
+        } else {
+            !calculation.meets_isolated_margin_requirement(market_index)?
+        };
+
+        let size = position.base_asset_amount.unsigned_abs();
+        if scope_fails && largest_failing.is_none_or(|(largest, _)| size > largest) {
+            largest_failing = Some((size, market_index));
+        }
+    }
+
+    Ok(largest_failing.map(|(_, market_index)| market_index))
 }
 
 /// Whether a liquidation of this position can pay the crank that runs it.
@@ -307,10 +320,15 @@ fn stage_liquidate_perp<'info>(
     let user_stats = crate::state::pdas::user_stats(&crate::load!(user_loader)?.authority);
     let makers = book_makers(user_loader, remaining_accounts, market_index)?;
     // The executor parses its leftover accounts in order: the margin map, the
-    // `(User, UserStats)` pairs it may settle against, then the quoter tail.
-    // The stored list holds the first section and the last, so the makers go
-    // between them rather than after.
-    let (map_refs, tail_refs) = stored.split_at(map_section.min(stored.len()));
+    // books of other markets it sweeps, the `(User, UserStats)` pairs it may
+    // settle against, then the quoter tail.
+    let map_section = map_section.min(stored.len());
+    let tail = split_stored_tail(
+        &*crate::load!(user_loader)?,
+        &remaining_accounts[map_section.min(remaining_accounts.len())..],
+        &stored[map_section..],
+        market_index,
+    )?;
     crate::instructions::StagedCall::new::<crate::instruction::LiquidatePerpWithFill>(
         crate::accounts::LiquidatePerp {
             state: state_key,
@@ -325,10 +343,69 @@ fn stage_liquidate_perp<'info>(
             instructions_sysvar: Some(solana_program::sysvar::instructions::ID),
         },
     )
-    .refs(map_refs.iter().copied())
+    .refs(stored[..map_section].iter().copied())
+    .refs(tail.foreign_books)
     .maker_refs(makers)
-    .refs(tail_refs.iter().copied())
+    .refs(tail.route)
     .arg(market_index)
+}
+
+/// The stored list's tail, split for a liquidation of one market.
+struct LiquidationTail {
+    /// The `(slab, book)` pairs of the other markets in the liquidation's
+    /// scope where the account rests book orders.
+    foreign_books: Vec<relay_spec::AccountRefV0>,
+    /// Everything else. The route refuses a slab of another market, so no
+    /// such slab stays here.
+    route: Vec<relay_spec::AccountRefV0>,
+}
+
+/// Split the stored tail. The sync stores each slab with its book right after
+/// it, and `tail_accounts` holds the same accounts as `tail_refs`, in order.
+fn split_stored_tail<'info>(
+    user: &User,
+    tail_accounts: &'info [AccountInfo<'info>],
+    tail_refs: &[relay_spec::AccountRefV0],
+    market_index: u16,
+) -> Result<LiquidationTail> {
+    let isolated = user.get_perp_position(market_index)?.is_isolated();
+    let swept_with_this_market = |other: u16| {
+        !isolated
+            && user.clob_resident_open_orders(other) > 0
+            && user
+                .get_perp_position(other)
+                .is_ok_and(|position| !position.is_isolated())
+    };
+
+    let mut tail = LiquidationTail {
+        foreign_books: Vec::new(),
+        route: Vec::new(),
+    };
+    let mut index = 0;
+    while index < tail_refs.len() {
+        let foreign_market = tail_accounts.get(index).and_then(|info| {
+            let slab =
+                AccountLoader::<crate::state::prop_amm::QuoterSlabV0>::try_from(info).ok()?;
+            let market = slab.load().ok()?.market;
+            (market != market_index).then_some(market)
+        });
+
+        let Some(other) = foreign_market else {
+            tail.route.push(tail_refs[index]);
+            index += 1;
+            continue;
+        };
+
+        let pair_end = (index + 2).min(tail_refs.len());
+        if swept_with_this_market(other) {
+            tail.foreign_books
+                .extend_from_slice(&tail_refs[index..pair_end]);
+        }
+
+        index = pair_end;
+    }
+
+    Ok(tail)
 }
 
 /// The book makers a liquidation of `market_index` would settle against.
@@ -427,4 +504,45 @@ fn sweep_direction(
         base if base > 0 => Some(crate::state::prop_amm::DirectionV0::Short),
         _ => Some(crate::state::prop_amm::DirectionV0::Long),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::find_cancel_target,
+        crate::{
+            create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
+            state::{
+                oracle_map::OracleMap,
+                perp_market_map::PerpMarketMap,
+                spot_market_map::SpotMarketMap,
+                user::{PerpPosition, User, UserStatus},
+            },
+        },
+        anchor_lang::prelude::AccountLoader,
+    };
+
+    /// A latched account has no cancel stage. Its measure refuses it, so the
+    /// resolver must not ask, or relay never stages the next step.
+    #[test]
+    fn a_latched_account_continues_to_the_liquidation_stage() {
+        let mut user = User::default();
+        user.add_user_status(UserStatus::BeingLiquidated);
+        user.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            open_orders: 1,
+            open_bids: 1,
+            ..PerpPosition::default()
+        };
+        create_anchor_account_info!(user, User, user_account_info);
+        let user_loader = AccountLoader::<User>::try_from(&user_account_info).unwrap();
+        let mut maps = AccountMaps::new(
+            PerpMarketMap::empty(),
+            SpotMarketMap::empty(),
+            OracleMap::empty(),
+        );
+
+        assert_eq!(find_cancel_target(&user_loader, &mut maps).unwrap(), None);
+    }
 }

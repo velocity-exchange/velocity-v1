@@ -15,6 +15,7 @@ use {
         math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
         state::{
+            events::OrderActionExplanation,
             prop_amm::{
                 ClobMarket, PlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0, UserRefV0,
             },
@@ -167,10 +168,10 @@ pub fn synchronous_take_allowed(
         == 0)
 }
 
-/// Why the book would refuse to hold a remainder. Each variant names one
-/// rule `place_order_v0` enforces. Velocity tests them itself because a
-/// failed CPI aborts the whole transaction, and a rejection the caller
-/// could have predicted would otherwise fail the fill that carried it.
+/// Why the book or the owner's account would refuse to hold a rest. Each
+/// book variant names one rule `place_order_v0` enforces. Velocity tests them
+/// itself because a failed CPI aborts the whole transaction, and a rejection the
+/// caller could have predicted would otherwise fail the fill that carried it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RestRefusal {
     /// The market's book slot is inactive, unapproved, or suspended.
@@ -190,6 +191,43 @@ pub enum RestRefusal {
     ExpiresBeforeActivation,
     /// The side the remainder would rest on holds every order it can.
     SideAtCapacity,
+    /// The owner is bankrupt.
+    OwnerBankrupt,
+    /// The position holds as many orders as its `open_orders` counter holds.
+    PositionAtOrderLimit,
+    /// The rest increases risk, and the account cannot carry it.
+    FailsMarginGate,
+}
+
+impl RestRefusal {
+    /// The error of a placement that must rest, such as a maker quote.
+    pub fn error_code(self) -> ErrorCode {
+        match self {
+            RestRefusal::BookClosed => ErrorCode::ClobQuoterNotActive,
+            RestRefusal::SizeBelowMinimum => ErrorCode::InvalidOrderMinOrderSize,
+            RestRefusal::SizeOffStep => ErrorCode::InvalidOrderNotStepSizeMultiple,
+            RestRefusal::PriceOffTick => ErrorCode::InvalidOrderLimitPrice,
+            RestRefusal::ExpiryPassed | RestRefusal::ExpiresBeforeActivation => {
+                ErrorCode::InvalidOrderMaxTs
+            }
+            RestRefusal::DelayAboveMaximum => ErrorCode::InvalidOrder,
+            RestRefusal::SideAtCapacity | RestRefusal::PositionAtOrderLimit => {
+                ErrorCode::MaxNumberOfOrders
+            }
+            RestRefusal::OwnerBankrupt => ErrorCode::UserBankrupt,
+            RestRefusal::FailsMarginGate => ErrorCode::InsufficientCollateral,
+        }
+    }
+
+    /// The explanation of the cancel record for a taker remainder that the
+    /// book refused.
+    pub fn cancel_explanation(self) -> OrderActionExplanation {
+        match self {
+            RestRefusal::SizeBelowMinimum => OrderActionExplanation::ClobRemainderCulled,
+            RestRefusal::FailsMarginGate => OrderActionExplanation::InsufficientFreeCollateral,
+            _ => OrderActionExplanation::None,
+        }
+    }
 }
 
 /// What the book would do with a remainder at these terms.
@@ -279,11 +317,177 @@ pub fn rest_admission(
     RestAdmission::Admitted { price }
 }
 
-/// Rest an order's unfilled remainder on the CLOB, a taker's or a maker's.
-/// Returns the CLOB order id, which a signed-message taker records so the fill
-/// at the activation slot can find its route. A dead book slot, a failed margin
-/// check, or a remainder the book's rules refuse returns `Ok(None)` rather than
-/// reverting, because a taker's fill has already landed.
+/// The accounts one rest on the book reads.
+pub struct ClobRestAccounts<'a, 'info> {
+    pub user: &'a AccountLoader<'info, User>,
+    pub quoter_slab: &'a AccountLoader<'info, QuoterSlabV0>,
+    pub clob_market: &'a AccountInfo<'info>,
+    pub clob_program: &'a AccountInfo<'info>,
+}
+
+/// One order to rest on the book.
+#[derive(Clone, Copy, Debug)]
+pub struct ClobRestOrder {
+    pub market_index: u16,
+    pub direction: PositionDirection,
+    pub price: u64,
+    pub base_asset_amount: u64,
+    pub max_ts: i64,
+    /// The id of the order this rest came off, so it keeps one identity
+    /// through the migration.
+    pub client_order_id: u32,
+    /// A taker remainder rests taker-origin, so a counterparty crosses it at
+    /// the counterparty's price. A maker quote does not.
+    pub taker_origin: bool,
+    /// A post-only maker refuses to rest crossed. A taker remainder rests
+    /// crossed, and the cross crank matches it.
+    pub reject_if_crossed: bool,
+    /// The book clamps a fill against a reduce-only order to the owner's
+    /// `base_cover` cap. A reduce-only `base_asset_amount` must already be
+    /// clamped to the position, as `restable_remainder` does.
+    pub reduce_only: bool,
+    /// `None` takes the book's default speed bump. The caller attests a
+    /// below-default value before it reaches here.
+    pub activation_delay_slots: Option<u32>,
+}
+
+/// An order the book now holds.
+#[derive(Clone, Copy, Debug)]
+pub struct PlacedRest {
+    pub clob_order_id: u64,
+    /// The rest price, snapped to the book's tick.
+    pub price: u64,
+    /// The order holds `open_orders` on the position, so its margin regime
+    /// cannot change while it rests.
+    pub is_isolated_position: bool,
+}
+
+/// What one attempt to rest an order did.
+#[derive(Clone, Copy, Debug)]
+pub enum RestOutcome {
+    Placed(PlacedRest),
+    Refused(RestRefusal),
+}
+
+/// Rest one order on the book, or report why the book or the account refuses
+/// it. A refusal leaves the account as it was. The caller decides whether a
+/// refusal is an error, and writes the records.
+pub fn rest_on_clob<'info>(
+    accounts: &ClobRestAccounts<'_, 'info>,
+    maps: &mut AccountMaps,
+    order: &ClobRestOrder,
+    clock: &Clock,
+) -> Result<RestOutcome> {
+    if !accounts.quoter_slab.clob_slot(order.market_index)?.quotes() {
+        return Ok(RestOutcome::Refused(RestRefusal::BookClosed));
+    }
+
+    let clob = ClobMarket::from_slab(
+        accounts.quoter_slab,
+        order.market_index,
+        accounts.clob_market,
+        accounts.clob_program,
+    )?;
+
+    // A partial fill often leaves a remainder the book refuses, so the rules
+    // are tested before the CPI that would revert the fill.
+    let price = match clob_admits_rest(
+        &clob,
+        order.direction,
+        order.price,
+        order.base_asset_amount,
+        order.max_ts,
+        order.activation_delay_slots,
+        clock.unix_timestamp,
+    )? {
+        RestAdmission::Admitted { price } => price,
+        RestAdmission::Refused(reason) => return Ok(RestOutcome::Refused(reason)),
+    };
+
+    let reserved = match reserve_remainder(
+        accounts.user,
+        maps,
+        &OrderReservation::book_order(
+            order.market_index,
+            order.direction,
+            order.base_asset_amount,
+            order.reduce_only,
+        ),
+        order.direction,
+        order.base_asset_amount,
+        clock.slot,
+    )? {
+        RemainderReservation::Held(reserved) => reserved,
+        RemainderReservation::Refused(reason) => return Ok(RestOutcome::Refused(reason)),
+    };
+
+    // A failed CPI aborts the transaction, which unwinds the reservation with
+    // it. `clob_admits_rest` caught every rejection it can, which leaves
+    // `OrderWouldCross` for a post-only maker.
+    let order_ref = clob.place(PlaceOrderArgsV0 {
+        side: SideV0::from(order.direction),
+        price,
+        base_asset_amount: order.base_asset_amount,
+        activation_delay_slots: order.activation_delay_slots,
+        max_ts: order.max_ts,
+        user: reserved.user_ref,
+        taker_origin: order.taker_origin,
+        client_order_id: order.client_order_id,
+        reject_if_crossed: order.reject_if_crossed,
+        reduce_only: order.reduce_only,
+    })?;
+
+    msg!(
+        "placed clob order {} (node {})",
+        order_ref.order_id,
+        order_ref.node_index
+    );
+
+    Ok(RestOutcome::Placed(PlacedRest {
+        clob_order_id: order_ref.order_id,
+        price,
+        is_isolated_position: reserved.is_isolated_position,
+    }))
+}
+
+/// Rest an order's unfilled remainder on the CLOB and record it. A refusal is
+/// not an error, because a taker's fill has already landed. The caller reads
+/// the refusal and records the cancel.
+pub fn rest_remainder_on_clob<'info>(
+    accounts: &ClobRestAccounts<'_, 'info>,
+    maps: &mut AccountMaps,
+    order: &ClobRestOrder,
+    clock: &Clock,
+) -> Result<RestOutcome> {
+    let outcome = rest_on_clob(accounts, maps, order, clock)?;
+    match outcome {
+        RestOutcome::Placed(placed) => super::emit_clob_place_record(
+            clock.unix_timestamp,
+            &accounts.user.key(),
+            super::ClobOrderFacts {
+                order_id: order.client_order_id,
+                market_index: order.market_index,
+                direction: order.direction,
+                price: placed.price,
+                base_asset_amount: order.base_asset_amount,
+                base_asset_amount_filled: 0,
+                max_ts: order.max_ts,
+                slot: clock.slot,
+                taker_origin: order.taker_origin,
+            },
+            placed.is_isolated_position,
+        )?,
+        RestOutcome::Refused(reason) => {
+            msg!("book refuses the remainder ({:?}); stays cancelled", reason);
+        }
+    }
+
+    Ok(outcome)
+}
+
+/// [`rest_remainder_on_clob`] for a caller that needs only the CLOB order id.
+/// A signed-message taker records the id, so the fill at the activation slot
+/// can find its route. `None` is a refusal.
 #[allow(clippy::too_many_arguments)]
 pub fn try_place_remainder_on_clob<'info>(
     user_loader: &AccountLoader<'info, User>,
@@ -296,124 +500,60 @@ pub fn try_place_remainder_on_clob<'info>(
     price: u64,
     base_asset_amount: u64,
     max_ts: i64,
-    // The id of the order this remainder came off, so it keeps one identity
-    // through the migration.
     client_order_id: u32,
-    // A taker remainder rests taker-origin, so a counterparty crosses it at
-    // the counterparty's price. A maker remainder does not.
     taker_origin: bool,
-    // A post-only maker refuses to rest crossed. A taker remainder rests
-    // crossed, and the cross crank matches it.
     reject_if_crossed: bool,
-    // The book clamps a fill against a reduce-only order to the owner's
-    // `base_cover` cap. A reduce-only `base_asset_amount` must already be
-    // clamped to the position, as `restable_remainder` does.
     reduce_only: bool,
-    // `None` takes the book's default speed bump. The caller attests a
-    // below-default value before it reaches here.
     activation_delay_slots: Option<u32>,
     clock: &Clock,
 ) -> Result<Option<u64>> {
-    if !quoter_slab.clob_slot(market_index)?.quotes() {
-        msg!(
-            "book refuses the remainder ({:?}); stays cancelled",
-            RestRefusal::BookClosed
-        );
-
-        return Ok(None);
-    }
-
-    let clob = ClobMarket::from_slab(quoter_slab, market_index, clob_market, clob_program)?;
-
-    // A partial fill often leaves a remainder the book refuses, so the rules
-    // are tested before the CPI that would revert the fill.
-    let price = match clob_admits_rest(
-        &clob,
-        direction,
-        price,
-        base_asset_amount,
-        max_ts,
-        activation_delay_slots,
-        clock.unix_timestamp,
-    )? {
-        RestAdmission::Admitted { price } => price,
-        RestAdmission::Refused(reason) => {
-            msg!("book refuses the remainder ({:?}); stays cancelled", reason);
-            return Ok(None);
-        }
-    };
-
-    let Some(reserved) = reserve_remainder(
-        user_loader,
+    let outcome = rest_remainder_on_clob(
+        &ClobRestAccounts {
+            user: user_loader,
+            quoter_slab,
+            clob_market,
+            clob_program,
+        },
         maps,
-        &OrderReservation::book_order(market_index, direction, base_asset_amount, reduce_only),
-        direction,
-        base_asset_amount,
-        clock.slot,
-    )?
-    else {
-        return Ok(None);
-    };
-
-    let side = SideV0::from(direction);
-
-    // A failed CPI aborts the transaction, which unwinds the reservation with
-    // it. `clob_admits_rest` caught every rejection it can, which leaves
-    // `OrderWouldCross` for a post-only maker.
-    let order_ref = clob.place(PlaceOrderArgsV0 {
-        side,
-        price,
-        base_asset_amount,
-        activation_delay_slots,
-        max_ts,
-        user: reserved.user_ref,
-        taker_origin,
-        client_order_id,
-        reject_if_crossed,
-        reduce_only,
-    })?;
-
-    super::emit_clob_place_record(
-        clock.unix_timestamp,
-        &user_loader.key(),
-        super::ClobOrderFacts {
-            order_id: client_order_id,
+        &ClobRestOrder {
             market_index,
             direction,
             price,
             base_asset_amount,
-            base_asset_amount_filled: 0,
             max_ts,
-            slot: clock.slot,
+            client_order_id,
             taker_origin,
+            reject_if_crossed,
+            reduce_only,
+            activation_delay_slots,
         },
-        reserved.is_isolated_position,
+        clock,
     )?;
 
-    msg!(
-        "placed remainder as clob order {} (node {})",
-        order_ref.order_id,
-        order_ref.node_index
-    );
-
-    Ok(Some(order_ref.order_id))
+    Ok(match outcome {
+        RestOutcome::Placed(placed) => Some(placed.clob_order_id),
+        RestOutcome::Refused(_) => None,
+    })
 }
 
 /// What a remainder's owner holds once its reservation is taken.
 struct ReservedRemainder {
     user_ref: UserRefV0,
-    /// The order holds `open_orders` on the position, so its margin regime
-    /// cannot change while it rests. The place record states it.
     is_isolated_position: bool,
+}
+
+/// Whether the owner's account holds the rest's reservation.
+enum RemainderReservation {
+    Held(ReservedRemainder),
+    Refused(RestRefusal),
 }
 
 /// Reserve a remainder on its owner's account before it goes to the book,
 /// and gate margin the way a placement does.
 ///
-/// `None` leaves the account as it was. That happens to a bankrupt owner, to a
-/// position at its order limit, and to a risk-increasing remainder the account
-/// cannot carry. A reducing remainder skips the margin gate, because refusing
-/// it would remove the order that shrinks the position.
+/// A refusal leaves the account as it was. A reducing remainder skips the
+/// margin gate, because refusing it would remove the order that shrinks the
+/// position.
 fn reserve_remainder(
     user_loader: &AccountLoader<User>,
     maps: &mut AccountMaps,
@@ -421,11 +561,17 @@ fn reserve_remainder(
     direction: PositionDirection,
     base_asset_amount: u64,
     slot: u64,
-) -> Result<Option<ReservedRemainder>> {
+) -> Result<RemainderReservation> {
     let mut user = load_mut!(user_loader)?;
+    if user.is_bankrupt() {
+        return Ok(RemainderReservation::Refused(RestRefusal::OwnerBankrupt));
+    }
+
     let position = user.get_perp_position(reservation.market_index).ok();
-    if user.is_bankrupt() || position.is_some_and(|position| position.open_orders == u8::MAX) {
-        return Ok(None);
+    if position.is_some_and(|position| position.open_orders == u8::MAX) {
+        return Ok(RemainderReservation::Refused(
+            RestRefusal::PositionAtOrderLimit,
+        ));
     }
 
     let risk_increasing = !is_order_position_reducing(
@@ -441,13 +587,12 @@ fn reserve_remainder(
         let isolated_market_index = is_isolated_position.then_some(reservation.market_index);
         if meets_place_order_margin_requirement(&user, maps, true, isolated_market_index).is_err() {
             user.release_orders(reservation, ReleaseCheck::HeldToReservation)?;
-            msg!("remainder fails the placement margin gate; stays cancelled");
-            return Ok(None);
+            return Ok(RemainderReservation::Refused(RestRefusal::FailsMarginGate));
         }
     }
 
     user.update_last_active_slot(slot);
-    Ok(Some(ReservedRemainder {
+    Ok(RemainderReservation::Held(ReservedRemainder {
         user_ref: user.clob_user_ref(),
         is_isolated_position,
     }))

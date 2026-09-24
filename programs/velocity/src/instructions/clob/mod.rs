@@ -75,9 +75,10 @@
 //! an endpoint. A file in `helpers/` is not.
 //! - [`helpers::placement`]: the placement helpers. They run the margin gate
 //!   and the aggregate reserve, then CPI to the CLOB as its `place_authority`,
-//!   which is the CLOB place authority PDA. Every route that rests a remainder
-//!   calls [`try_place_remainder_on_clob`]. The trigger-limit crank runs its
-//!   own placement CPI.
+//!   which is the CLOB place authority PDA. Every route that rests an order
+//!   calls [`rest_on_clob`]. A maker makes a refusal an error, and a taker
+//!   remainder drops the order. The trigger-limit crank runs its own
+//!   placement CPI.
 //! - [`helpers::crank_common`]: the cranks' shared dual-mode plumbing. Each
 //!   crank lives in its own file with its simulation-only relay resolver, named
 //!   `Resolve<EndpointName>`.
@@ -88,7 +89,8 @@
 //! A book order has no `User.orders` slot, so nothing in the order-history
 //! stream would name it unless velocity says so. [`helpers::records`] emits the
 //! two records that stream already carries. `OrderRecord` marks an order that
-//! starts resting, and `OrderActionRecord` marks one that stops. Every path
+//! starts resting, and `OrderActionRecord` marks one that stops. A maker quote
+//! also emits the `OrderActionRecord` of its placement. Every path
 //! here that places or removes an order emits them. `cancel_orders_v1` is the
 //! exception. A sweep takes up to 128 orders and a record is 480 bytes, which
 //! no transaction's log budget holds, so its per-order detail goes in the

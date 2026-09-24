@@ -73,9 +73,10 @@ pub use clob_wire::{ClobUpdateMarketArgsV0, ResizeMarketArgsV0};
 /// conditions. The book owns the wakes and velocity registers the answers.
 pub use clob_wire::{CrankAccountV0, CrankBlockV0, CrankConditionsArgsV0, CrankResolverV0};
 /// The one shape every read-only CLOB answer describes an order in, and the
-/// answer built from it: one view per requested ref. Velocity finds crosses
-/// itself from `quote_l3_v0` rows, so it never calls `next_cross_v0`.
-pub use clob_wire::{OrderViewV0, OrdersArgsV0, OrdersV0, ORDER_VIEW_CEILING};
+/// answers built from it: one view per requested ref, and the best matchable
+/// order on each side. The cross cranks find crosses from `quote_l3_v0` rows.
+/// A post-only maker reads `next_cross_v0` to test the best opposite price.
+pub use clob_wire::{NextCrossV0, OrderViewV0, OrdersArgsV0, OrdersV0, ORDER_VIEW_CEILING};
 /// Which slot of the book's block each registered resolver lands in. Relay
 /// names the fired condition by slot, so one resolver serving several of them
 /// reads the mapping from here rather than from the book's own numbering.
@@ -349,6 +350,12 @@ impl ClobReader<'_, '_> {
     /// rule velocity still gets right.
     pub fn order_rules(&self) -> Result<OrderRulesV0> {
         self.ask(discriminator::ORDER_RULES_V0.to_vec(), "order rules")
+    }
+
+    /// The best matchable order on each side. Matchable means open, activated
+    /// and unexpired, and not claimed whole by a crossing taker remainder.
+    pub fn next_cross(&self) -> Result<NextCrossV0> {
+        self.ask(discriminator::NEXT_CROSS_V0.to_vec(), "next cross")
     }
 
     /// What the book holds for each of `refs`, in the order given. A ref that

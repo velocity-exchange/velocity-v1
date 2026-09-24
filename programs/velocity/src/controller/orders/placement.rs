@@ -574,9 +574,6 @@ fn validate_placement_preconditions(
 }
 
 /// The free slot of `user.orders` the new order takes.
-///
-/// A non-zero `user_order_id` is the caller's own handle on the order, so it
-/// must not name two live orders at once.
 fn next_order_slot(user: &User, user_order_id: u8) -> VelocityResult<usize> {
     let new_order_index = user
         .orders
@@ -584,6 +581,14 @@ fn next_order_slot(user: &User, user_order_id: u8) -> VelocityResult<usize> {
         .position(|order| order.is_available())
         .ok_or(ErrorCode::MaxNumberOfOrders)?;
 
+    validate_user_order_id_unused(user, user_order_id)?;
+    Ok(new_order_index)
+}
+
+/// A non-zero `user_order_id` is the caller's own handle on the order, so it
+/// must not name two live slot orders at once. A book order does not keep the
+/// id, so only slot orders can hold it.
+pub fn validate_user_order_id_unused(user: &User, user_order_id: u8) -> VelocityResult {
     if user_order_id > 0
         && user
             .orders
@@ -594,7 +599,7 @@ fn next_order_slot(user: &User, user_order_id: u8) -> VelocityResult<usize> {
         return Err(ErrorCode::UserOrderIdAlreadyInUse);
     }
 
-    Ok(new_order_index)
+    Ok(())
 }
 
 /// Write the order into its slot and reserve what it holds open.
@@ -739,7 +744,7 @@ fn clear_placed_builder_order(rev_share_order: &mut Option<&mut RevenueShareOrde
 #[cfg(test)]
 mod gate_tests {
     use {
-        super::next_order_slot,
+        super::{next_order_slot, validate_user_order_id_unused},
         crate::{
             error::ErrorCode,
             state::user::{MarketType, Order, OrderStatus, OrderType, User},
@@ -773,6 +778,17 @@ mod gate_tests {
             next_order_slot(&user, 7),
             Err(ErrorCode::UserOrderIdAlreadyInUse)
         );
+    }
+
+    /// A maker order takes no slot, yet its id must not name a live slot order.
+    #[test]
+    fn a_maker_user_order_id_is_checked_against_slot_orders() {
+        let user = user_with_live_order(7);
+        assert_eq!(
+            validate_user_order_id_unused(&user, 7),
+            Err(ErrorCode::UserOrderIdAlreadyInUse)
+        );
+        assert_eq!(validate_user_order_id_unused(&user, 8), Ok(()));
     }
 
     /// `user_order_id` zero means the caller did not name the order, so the

@@ -609,6 +609,7 @@ pub mod discriminator {
     pub const NEXT_REMOVAL_V0: [u8; 8] = [132, 65, 9, 126, 135, 115, 177, 92];
     pub const SET_CRANK_CONDITIONS_V0: [u8; 8] = [34, 160, 120, 93, 84, 133, 8, 95];
     pub const ORDERS_V0: [u8; 8] = [124, 117, 208, 33, 202, 209, 58, 199];
+    pub const NEXT_CROSS_V0: [u8; 8] = [234, 191, 102, 36, 183, 233, 127, 48];
     pub const ORDER_RULES_V0: [u8; 8] = [201, 129, 212, 105, 18, 69, 149, 252];
     pub const UPDATE_MARKET_V0: [u8; 8] = [180, 2, 86, 43, 47, 149, 218, 246];
     pub const RESIZE_MARKET_V0: [u8; 8] = [33, 41, 148, 240, 254, 155, 147, 193];

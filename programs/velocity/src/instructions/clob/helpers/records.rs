@@ -6,6 +6,11 @@
 //! starts resting. `OrderActionRecord` with `OrderAction::Cancel` marks one
 //! that stops. Both are built from an `Order` value made out of the placement.
 //!
+//! A maker quote is the exception. It emits the `OrderActionRecord` with
+//! `OrderAction::Place` as well, and its `Order` is the built order with the
+//! owner's own `user_order_id`, `post_only` and `reduce_only`. The rest of this
+//! doc describes the synthesized `Order` of every other book order.
+//!
 //! The `Order` is synthesized, not stored. Every field in it is a fact about
 //! the placement that velocity already holds, and the record is the only reader
 //! of it. Three fields carry meaning worth stating.
@@ -130,6 +135,68 @@ pub fn emit_clob_place_record(
     })
 }
 
+/// The built maker order at the terms the book holds it at. It keeps the
+/// owner's `user_order_id`, `post_only` and `reduce_only`, and adds
+/// `OrderBitFlag::PlacedOnClob`.
+pub fn resting_maker_order(order: &Order, price: u64, base_asset_amount: u64) -> Order {
+    Order {
+        price,
+        base_asset_amount,
+        bit_flags: order.bit_flags | OrderBitFlag::PlacedOnClob as u8,
+        ..*order
+    }
+}
+
+/// Record a maker quote that started resting on a book.
+///
+/// A maker quote is a placement its owner chose, so it emits the
+/// `OrderActionRecord` with `OrderAction::Place` that a slot placement emits,
+/// then the `OrderRecord`. The quote is standing liquidity, so it fills the
+/// maker half of the action record whatever its `post_only` says.
+pub fn emit_clob_maker_place_records(
+    now: i64,
+    oracle_price: i64,
+    user_key: &Pubkey,
+    order: &Order,
+) -> VelocityResult {
+    let record = get_order_action_record(
+        now,
+        OrderAction::Place,
+        OrderActionExplanation::None,
+        order.market_index,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(*user_key),
+        Some(*order),
+        oracle_price,
+        order.bit_flags,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+
+    emit_stack::<_, { OrderActionRecord::SIZE }>(record)?;
+    emit_stack::<_, { OrderRecord::SIZE }>(OrderRecord {
+        ts: now,
+        user: *user_key,
+        order: *order,
+    })
+}
+
 /// Record an order that stopped resting on a book.
 ///
 /// `explanation` says what removed it. The causes are the owner asking, an
@@ -189,4 +256,35 @@ pub fn emit_clob_cancel_record(
     )?;
 
     emit_stack::<_, { OrderActionRecord::SIZE }>(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::resting_maker_order,
+        crate::state::user::{Order, OrderBitFlag, OrderType},
+    };
+
+    #[test]
+    fn a_resting_maker_order_keeps_the_owners_fields() {
+        let built = Order {
+            order_type: OrderType::Limit,
+            user_order_id: 9,
+            post_only: false,
+            reduce_only: true,
+            price: 101,
+            base_asset_amount: 10,
+            bit_flags: OrderBitFlag::IsIsolatedPosition as u8,
+            ..Order::default()
+        };
+
+        let resting = resting_maker_order(&built, 100, 4);
+        assert_eq!(resting.user_order_id, 9);
+        assert!(!resting.post_only);
+        assert!(resting.reduce_only);
+        assert_eq!(resting.price, 100);
+        assert_eq!(resting.base_asset_amount, 4);
+        assert!(resting.is_bit_flag_set(OrderBitFlag::PlacedOnClob));
+        assert!(resting.is_bit_flag_set(OrderBitFlag::IsIsolatedPosition));
+    }
 }

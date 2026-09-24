@@ -869,6 +869,7 @@ pub enum ErrorCode {
     QuoterFilledShort,
     #[msg("A book withheld depth and the transaction carries a quoter outside the signed route")]
     FillerCarriedUnroutedQuoter,
+    /// @deprecated A reduce-only maker order rests on the CLOB. No path produces this.
     #[msg("A reduce-only order cannot rest on the CLOB; the book cannot clamp its fill to the position")]
     ReduceOnlyOrderCannotRestOnClob,
     #[msg(

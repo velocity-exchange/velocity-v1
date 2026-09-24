@@ -6,7 +6,7 @@
 
 use {
     crate::instruction::{
-        CancelAllV0, CancelOrderV0, EvictWorstV0, FillV0, NextRemovalV0, OrderRulesV0, OrdersV0,
+        CancelAllV0, CancelOrderV0, EvictWorstV0, FillV0, NextCrossV0, NextRemovalV0, OrderRulesV0, OrdersV0,
         PlaceOrderV0, RemoveExpiredV0, SetCrankConditionsV0,
     },
     anchor_lang::Discriminator,
@@ -30,5 +30,6 @@ fn the_published_discriminators_are_the_ones_anchor_derives() {
         SetCrankConditionsV0::DISCRIMINATOR
     );
     assert_eq!(discriminator::ORDERS_V0, OrdersV0::DISCRIMINATOR);
+    assert_eq!(discriminator::NEXT_CROSS_V0, NextCrossV0::DISCRIMINATOR);
     assert_eq!(discriminator::ORDER_RULES_V0, OrderRulesV0::DISCRIMINATOR);
 }

@@ -45,7 +45,10 @@ export async function buildPlaceTriggerOrdersInstruction(args: {
  * taker against the market's book, its quoters and the AMM.
  * `orderParams.postOnly` must be `PostOnlyParam.None` (`InvalidOrderPostOnly` otherwise).
  * A restable remainder rests on the book. Any portion left unfilled is auto-cancelled
- * when the order is immediate-or-cancel.
+ * when the order is immediate-or-cancel. A part that does not rest emits an
+ * `OrderActionRecord` with `OrderAction.CANCEL`. A reduce-only order with less than one
+ * step left to reduce counts as filled. A remainder that can never rest, such as an
+ * `OrderType.ORACLE` one, fails the instruction with `InvalidOrder`.
  * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
  * @param args.successCondition - a `PlaceAndTakeOrderSuccessCondition`. The instruction reverts unless the take fills at least partially or fully. `null` for no check.
  * @param args.authority - signer that must own or be a registered delegate of `user`.

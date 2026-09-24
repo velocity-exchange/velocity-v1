@@ -282,13 +282,57 @@ fn fill_detached_take(
     Ok(filled.amounts.base)
 }
 
+/// What becomes of the part of a take that did not fill.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TakeRemainder {
+    /// The order filled whole.
+    Filled,
+    /// A reduce-only order has less than one step of position left to reduce.
+    /// It counts as filled, and the rest is cancelled.
+    ReduceOnlySpent,
+    /// An immediate-or-cancel order cancels what it did not fill.
+    ImmediateOrCancel,
+    /// The rest goes to the book.
+    Rest,
+}
+
+impl TakeRemainder {
+    fn of(
+        order: &Order,
+        position_base: i64,
+        step_size: u64,
+        is_ioc: bool,
+    ) -> crate::error::VelocityResult<Self> {
+        if order.get_base_asset_amount_unfilled(None)? == 0 {
+            return Ok(TakeRemainder::Filled);
+        }
+
+        if order.reduce_only
+            && order.get_base_asset_amount_unfilled(Some(position_base))? < step_size
+        {
+            return Ok(TakeRemainder::ReduceOnlySpent);
+        }
+
+        Ok(if is_ioc {
+            TakeRemainder::ImmediateOrCancel
+        } else {
+            TakeRemainder::Rest
+        })
+    }
+
+    /// Whether the success condition reads the order as not filled.
+    fn order_unfilled(self) -> bool {
+        matches!(self, TakeRemainder::ImmediateOrCancel | TakeRemainder::Rest)
+    }
+}
+
 /// Rest what the take did not fill, then hold the caller's success condition
 /// against the result.
 ///
-/// An unfilled IOC is dropped, because the detached order was never persisted.
-/// A remainder that cannot rest is dropped too, rather than reverting the fill
-/// that already landed. The CLOB's `OrderRef` is left as the transaction's
-/// return data for the client to keep as its cancel handle.
+/// A part that does not rest emits a cancel record. That covers an unfilled
+/// IOC, a spent reduce-only order, and a remainder the book refuses, which is
+/// dropped rather than reverting the fill that already landed. A remainder
+/// that can never rest, such as an `OrderType::Oracle` one, fails the take.
 fn settle_take_remainder<'info>(
     accounts: &PlaceAndTakeAccounts<'_, 'info>,
     clob: &ClobRemainderRoute<'_, 'info>,
@@ -296,52 +340,146 @@ fn settle_take_remainder<'info>(
     order: &Order,
     outcome: &TakeOutcome,
 ) -> Result<()> {
-    let order_unfilled = {
-        let user = load!(accounts.user)?;
-        let position_base = user
+    let remainder = {
+        let position_base = load!(accounts.user)?
             .get_perp_position(order.market_index)
-            .map(|position| position.base_asset_amount)
-            .unwrap_or(0);
-        order
-            .get_base_asset_amount_unfilled(Some(position_base))
-            .unwrap_or(0)
-            > 0
+            .map_or(0, |position| position.base_asset_amount);
+        let step_size = maps
+            .perp_market_map
+            .get_ref(&order.market_index)?
+            .order_step_size;
+        TakeRemainder::of(
+            order,
+            position_base,
+            step_size,
+            outcome.is_immediate_or_cancel,
+        )?
     };
 
-    if !outcome.is_immediate_or_cancel && order_unfilled {
-        let remainder = load!(accounts.user).ok().and_then(|user| {
-            crate::instructions::restable_remainder(&user, order, order.market_index, None)
-        });
-
-        if let Some(remainder) = remainder {
-            if remainder.unfilled > 0 {
-                crate::instructions::try_place_remainder_on_clob(
-                    accounts.user,
-                    clob.quoter_slab,
-                    clob.clob_market,
-                    clob.clob_program,
-                    maps,
-                    order.market_index,
-                    remainder.direction,
-                    remainder.price,
-                    remainder.unfilled,
-                    remainder.max_ts,
-                    order.order_id,
-                    true,
-                    false,
-                    remainder.reduce_only,
-                    outcome.activation_delay_slots,
-                    &Clock::get()?,
-                )?;
-            }
+    let cancel_explanation = match remainder {
+        TakeRemainder::Filled => None,
+        TakeRemainder::ReduceOnlySpent => {
+            Some(OrderActionExplanation::ReduceOnlyOrderIncreasedPosition)
         }
+        TakeRemainder::ImmediateOrCancel => Some(OrderActionExplanation::None),
+        TakeRemainder::Rest => rest_take_remainder(accounts, clob, maps, order, outcome)?,
+    };
+
+    if let Some(explanation) = cancel_explanation {
+        controller::orders::emit_detached_cancel_record(
+            &*load!(accounts.user)?,
+            &accounts.user.key(),
+            order,
+            maps,
+            Clock::get()?.unix_timestamp,
+            explanation,
+        )?;
     }
 
     validate_place_and_take_success_condition(
         outcome.success_condition,
         outcome.base_asset_amount_filled,
-        order_unfilled,
+        remainder.order_unfilled(),
     )
+}
+
+/// Rest the remainder on the book. Returns the explanation of its cancel
+/// record when the book refuses it, and `None` when it rests.
+fn rest_take_remainder<'info>(
+    accounts: &PlaceAndTakeAccounts<'_, 'info>,
+    clob: &ClobRemainderRoute<'_, 'info>,
+    maps: &mut AccountMaps,
+    order: &Order,
+    outcome: &TakeOutcome,
+) -> Result<Option<OrderActionExplanation>> {
+    let remainder = crate::instructions::restable_remainder(
+        &*load!(accounts.user)?,
+        order,
+        order.market_index,
+        None,
+    );
+    let Some(remainder) = remainder else {
+        msg!("the unfilled part of the order cannot rest on the book");
+        return Err(print_error!(ErrorCode::InvalidOrder)().into());
+    };
+
+    let rest = crate::instructions::rest_remainder_on_clob(
+        &crate::instructions::ClobRestAccounts {
+            user: accounts.user,
+            quoter_slab: clob.quoter_slab,
+            clob_market: clob.clob_market,
+            clob_program: clob.clob_program,
+        },
+        maps,
+        &crate::instructions::ClobRestOrder {
+            market_index: order.market_index,
+            direction: remainder.direction,
+            price: remainder.price,
+            base_asset_amount: remainder.unfilled,
+            max_ts: remainder.max_ts,
+            client_order_id: order.order_id,
+            taker_origin: true,
+            reject_if_crossed: false,
+            reduce_only: remainder.reduce_only,
+            activation_delay_slots: outcome.activation_delay_slots,
+        },
+        &Clock::get()?,
+    )?;
+
+    Ok(match rest {
+        crate::instructions::RestOutcome::Placed(_) => None,
+        crate::instructions::RestOutcome::Refused(reason) => Some(reason.cancel_explanation()),
+    })
+}
+
+#[cfg(test)]
+mod take_remainder_tests {
+    use {
+        super::TakeRemainder,
+        crate::{
+            controller::position::PositionDirection,
+            state::user::{Order, OrderType},
+        },
+    };
+
+    fn sell(base_asset_amount: u64, filled: u64, reduce_only: bool) -> Order {
+        Order {
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount,
+            base_asset_amount_filled: filled,
+            reduce_only,
+            ..Order::default()
+        }
+    }
+
+    #[test]
+    fn a_whole_fill_leaves_nothing() {
+        let remainder = TakeRemainder::of(&sell(10, 10, false), 0, 1, false).unwrap();
+        assert_eq!(remainder, TakeRemainder::Filled);
+        assert!(!remainder.order_unfilled());
+    }
+
+    #[test]
+    fn a_reduce_only_rest_below_one_step_counts_as_filled() {
+        let remainder = TakeRemainder::of(&sell(10, 6, true), 3, 5, false).unwrap();
+        assert_eq!(remainder, TakeRemainder::ReduceOnlySpent);
+        assert!(!remainder.order_unfilled());
+    }
+
+    #[test]
+    fn a_reduce_only_rest_of_one_step_rests() {
+        let remainder = TakeRemainder::of(&sell(10, 5, true), 5, 5, false).unwrap();
+        assert_eq!(remainder, TakeRemainder::Rest);
+        assert!(remainder.order_unfilled());
+    }
+
+    #[test]
+    fn an_unfilled_ioc_is_cancelled() {
+        let remainder = TakeRemainder::of(&sell(10, 4, false), 0, 1, true).unwrap();
+        assert_eq!(remainder, TakeRemainder::ImmediateOrCancel);
+        assert!(remainder.order_unfilled());
+    }
 }
 
 /// The v1 `place_and_take` body. The taker order is detached: it is built on

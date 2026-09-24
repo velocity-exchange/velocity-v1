@@ -307,6 +307,38 @@ pub fn cancel_order(
     release_order_reservation(user, order_index, is_perp_order)
 }
 
+/// Record the cancel of an order that holds no slot, such as the unfilled part
+/// of a detached take. The order releases nothing, because it reserved nothing.
+pub fn emit_detached_cancel_record(
+    user: &User,
+    user_key: &Pubkey,
+    order: &Order,
+    maps: &mut AccountMaps,
+    now: i64,
+    explanation: OrderActionExplanation,
+) -> VelocityResult {
+    let is_isolated = user
+        .get_perp_position(order.market_index)
+        .is_ok_and(|position| position.is_isolated());
+    let oracle_id = maps
+        .perp_market_map
+        .get_ref(&order.market_index)?
+        .oracle_id();
+
+    emit_cancel_record(
+        order,
+        &CancelRecord {
+            user_key,
+            filler_key: None,
+            filler_reward: 0,
+            explanation,
+            bit_flags: set_order_bit_flag(0, is_isolated, OrderBitFlag::IsIsolatedPosition),
+        },
+        maps.oracle_map.get_price_data(&oracle_id)?.price,
+        now,
+    )
+}
+
 /// What one cancel record says beyond the order itself.
 struct CancelRecord<'a> {
     user_key: &'a Pubkey,

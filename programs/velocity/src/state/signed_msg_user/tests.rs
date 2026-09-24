@@ -371,14 +371,14 @@ mod resting_route {
             data: data.borrow_mut(),
         };
 
-        orders
+        let index = orders
             .add_signed_msg_order_id(
                 SignedMsgOrderId::new([1; 8], 10, 1),
                 10,
                 SlotClock::default(),
             )
             .unwrap();
-        assert!(orders.set_resting_route([1; 8], MARKET, 77, DIGEST));
+        orders.set_resting_route(index, MARKET, 77, DIGEST);
 
         // Far past the eviction buffer, but the order still rests.
         let probe = SignedMsgOrderId::new([2; 8], 10_000, 2);
@@ -404,19 +404,62 @@ mod resting_route {
         assert_eq!(orders.get(0), &SignedMsgOrderId::default());
     }
 
+    /// A retained entry keeps its uuid after its message expires, so a later
+    /// message can reuse the uuid. The route goes onto the entry just added.
+    #[test]
+    fn a_reused_uuid_routes_the_new_entry() {
+        let fixed = RefCell::new(SignedMsgUserOrdersFixed {
+            user_pubkey: Pubkey::default(),
+            padding: 0,
+            len: LEN,
+        });
+        let data = RefCell::new([0u8; 1280]);
+        let mut orders = SignedMsgUserOrdersZeroCopyMut {
+            fixed: fixed.borrow_mut(),
+            data: data.borrow_mut(),
+        };
+
+        let old = orders
+            .add_signed_msg_order_id(
+                SignedMsgOrderId::new([1; 8], 10, 1),
+                10,
+                SlotClock::default(),
+            )
+            .unwrap();
+        orders.set_resting_route(old, MARKET, 77, DIGEST);
+
+        let reused = SignedMsgOrderId::new([1; 8], 20_000, 2);
+        assert!(!orders.check_exists_and_prune_stale_signed_msg_order_ids(
+            reused,
+            10_000,
+            SlotClock::default(),
+        ));
+
+        let new = orders
+            .add_signed_msg_order_id(reused, 10_000, SlotClock::default())
+            .unwrap();
+        orders.set_resting_route(new, MARKET, 88, [3; 8]);
+
+        assert_ne!(old, new);
+        assert_eq!(orders.get(old).clob_order_id, 77);
+        assert_eq!(orders.get(old).route_digest, DIGEST);
+        assert_eq!(orders.get(new).clob_order_id, 88);
+        assert_eq!(orders.get(new).route_digest, [3; 8]);
+    }
+
     /// Fill every slot with a resting entry whose `max_slot` is `base_slot`
     /// plus ten times its index, so index 0 holds the oldest message.
     fn full_of_resting_entries(orders: &mut SignedMsgUserOrdersZeroCopyMut<'_>, base_slot: u64) {
         for i in 1..=LEN {
             let max_slot = base_slot + u64::from(i) * 10;
-            orders
+            let index = orders
                 .add_signed_msg_order_id(
                     SignedMsgOrderId::new([i as u8; 8], max_slot, i),
                     base_slot,
                     SlotClock::default(),
                 )
                 .unwrap();
-            assert!(orders.set_resting_route([i as u8; 8], MARKET, u64::from(i), DIGEST));
+            orders.set_resting_route(index, MARKET, u64::from(i), DIGEST);
         }
     }
 
@@ -518,18 +561,19 @@ mod resting_route {
 
         // Slot 41 puts the first two entries, at `max_slot` 10 and 20, past
         // the ten-slot buffer. The reclaim takes the older of the two.
-        orders
+        let reclaimed = orders
             .add_signed_msg_order_id(
                 SignedMsgOrderId::new([0xEE; 8], 10_000, 99),
                 41,
                 SlotClock::default(),
             )
             .unwrap();
+        assert_eq!(reclaimed, 0);
         assert_eq!(orders.get(0).uuid, [0xEE; 8]);
 
         // The new entry rests nothing, so the next add takes it as a free
         // slot only after it is itself resting. Mark it, then reclaim again.
-        assert!(orders.set_resting_route([0xEE; 8], MARKET, 99, DIGEST));
+        orders.set_resting_route(reclaimed, MARKET, 99, DIGEST);
         orders
             .add_signed_msg_order_id(
                 SignedMsgOrderId::new([0xEF; 8], 10_000, 100),
@@ -603,14 +647,14 @@ mod market_scoped_route {
 
         fn rest(&self, uuid: [u8; 8], market_index: u16, clob_order_id: u64, digest: [u8; 8]) {
             let mut orders = self.orders_mut();
-            orders
+            let index = orders
                 .add_signed_msg_order_id(
                     SignedMsgOrderId::new(uuid, 10, u32::from(uuid[0])),
                     10,
                     SlotClock::default(),
                 )
                 .unwrap();
-            assert!(orders.set_resting_route(uuid, market_index, clob_order_id, digest));
+            orders.set_resting_route(index, market_index, clob_order_id, digest);
         }
     }
 

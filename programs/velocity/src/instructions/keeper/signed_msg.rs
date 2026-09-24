@@ -326,7 +326,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         .signed_msg_user_orders
         .load_mut()?
         .set_resting_route(
-            placed.uuid,
+            placed.record_index,
             market_index,
             clob_order_id,
             placed.route_digest,
@@ -760,9 +760,10 @@ fn place_entry_order(
         .as_deref()
         .map(crate::state::order_params::route_digest)
         .unwrap_or(crate::state::order_params::NO_ROUTE_DIGEST);
-    taker
-        .orders
-        .add_signed_msg_order_id(*order_id, env.clock.slot, env.state.slot_clock())?;
+    let record_index =
+        taker
+            .orders
+            .add_signed_msg_order_id(*order_id, env.clock.slot, env.state.slot_clock())?;
 
     let mut builder_order = add_builder_order(
         builder.escrow,
@@ -819,7 +820,7 @@ fn place_entry_order(
     Ok(PlacedSignedMsgOrder {
         order_id: order_id.order_id,
         order,
-        uuid: order_id.uuid,
+        record_index,
         market_index: entry.market_index,
         route_digest: order_id.route_digest,
         route: message.route.take().unwrap_or_default(),
@@ -838,7 +839,8 @@ pub struct PlacedSignedMsgOrder {
     /// routes it detached and mutates its filled amounts here. The rest leg
     /// reads its remainder from here to migrate onto the CLOB.
     pub order: crate::state::user::Order,
-    pub uuid: [u8; 8],
+    /// The index of the message's entry in `SignedMsgUserOrders`.
+    pub record_index: u32,
     pub market_index: u16,
     /// The custom quoters the taker's message named. The fill must carry every
     /// one of them. The CLOB and the vAMM are the baseline, so the list omits

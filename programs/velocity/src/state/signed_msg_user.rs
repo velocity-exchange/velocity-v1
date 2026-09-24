@@ -258,12 +258,15 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     /// message whose `max_slot` is behind the current slot. Releasing such an
     /// entry costs its resting order the route, and the fill then treats the
     /// order as unrouted. The taker's own limit price still bounds that fill.
+    ///
+    /// Returns the index of the entry written. A retained entry can hold the
+    /// same uuid, so a later write must use this index and not the uuid.
     pub fn add_signed_msg_order_id(
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
         current_slot: u64,
         slot_clock: SlotClock,
-    ) -> VelocityResult {
+    ) -> VelocityResult<u32> {
         if signed_msg_order_id.max_slot == 0
             || signed_msg_order_id.order_id == 0
             || signed_msg_order_id.uuid == [0; 8]
@@ -271,11 +274,9 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
             return Err(ErrorCode::InvalidSignedMsgOrderId);
         }
 
-        for i in 0..self.len() {
-            if self.get_mut(i).max_slot == 0 {
-                *self.get_mut(i) = signed_msg_order_id;
-                return Ok(());
-            }
+        if let Some(free) = (0..self.len()).find(|&i| self.get(i).max_slot == 0) {
+            *self.get_mut(free) = signed_msg_order_id;
+            return Ok(free);
         }
 
         let stalest = (0..self.len())
@@ -294,33 +295,26 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
                 );
 
                 *self.get_mut(index) = signed_msg_order_id;
-                Ok(())
+                Ok(index)
             }
             None => Err(ErrorCode::SignedMsgUserOrdersAccountFull),
         }
     }
 
-    /// Record that this message's remainder now rests on the book, with the
-    /// route the fill that resolves it must carry.
-    ///
-    /// Returns false when the uuid is not held, which happens once the entry
-    /// was reclaimed. The caller places the order either way. A remainder
-    /// without a route is an unrouted order rather than a failed one.
+    /// Record that the message at `index` now rests on the book, with the
+    /// route the fill that resolves it must carry. `index` is the one
+    /// `add_signed_msg_order_id` returned for the message.
     pub fn set_resting_route(
         &mut self,
-        uuid: [u8; 8],
+        index: u32,
         market_index: u16,
         clob_order_id: u64,
         route_digest: crate::state::order_params::RouteDigest,
-    ) -> bool {
-        let Some(entry) = self.find_entry_mut(|entry| entry.uuid == uuid) else {
-            return false;
-        };
-
+    ) {
+        let entry = self.get_mut(index);
         entry.market_index = market_index;
         entry.clob_order_id = clob_order_id;
         entry.route_digest = route_digest;
-        true
     }
 
     /// Point the entry of a replaced order at its replacement, so the route

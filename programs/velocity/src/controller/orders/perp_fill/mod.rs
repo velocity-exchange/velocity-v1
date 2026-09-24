@@ -19,6 +19,9 @@ mod liquidity;
 mod order;
 mod taker_risk;
 
+#[cfg(test)]
+mod tests;
+
 /// A test that drives the taker layer directly builds these itself.
 #[cfg(test)]
 pub use context::{FillConditions, OfferedLiquidity};

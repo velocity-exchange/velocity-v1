@@ -480,6 +480,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             return Ok(vec![]);
         }
 
+        amm_quoter.validate_for_fill(self.taker.direction)?;
+
         vamm_quote_levels(
             &*amm_quoter.amm,
             self.route_direction,
@@ -566,8 +568,10 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 
     /// Settle the vAMM's fill against the house.
     ///
-    /// Runs after the external book legs, which have released their borrows by
-    /// here.
+    /// Runs before the external book legs, so no maker has filled yet. A maker
+    /// that cranked this fill earns the filler reward on this slice whether or
+    /// not it fills later. It arrives as `filler: None` naming itself, because
+    /// it is already in the maker map and cannot be loaded twice.
     fn settle_vamm_allocation(
         &mut self,
         market: &mut PerpMarket,
@@ -575,23 +579,13 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         fill: &QuoterFill,
         allocation: &QuoterAllocation,
     ) -> VelocityResult {
-        // A maker that cranked this fill earns the reward on the vAMM slice too. It
-        // arrives as `filler: None` naming itself, because it is already in the maker map
-        // and cannot be loaded twice. The reward requires it to have filled.
-        let cranking_maker_key = (filler.user.is_none()
-            && self.tally.maker_fills.contains_key(&filler.key))
-        .then_some(filler.key)
-        .filter(|key| self.makers_and_referrer.0.contains_key(key));
-        let mut cranking_maker = match cranking_maker_key {
-            Some(key) => Some(self.makers_and_referrer.get_ref_mut(&key)?),
-            None => None,
-        };
+        let mut cranking_maker = self.cranking_maker(filler)?;
         let mut cranking_maker_stats = match cranking_maker.as_deref() {
-            Some(maker) if maker.authority != self.taker.user.authority => Some(
+            Some(maker) => Some(
                 self.makers_and_referrer_stats
                     .get_ref_mut(&maker.authority)?,
             ),
-            _ => None,
+            None => None,
         };
         let mut cranking_maker_opt: Option<&mut User> = cranking_maker.as_deref_mut();
         let mut cranking_maker_stats_opt: Option<&mut UserStats> =
@@ -629,6 +623,23 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         )?;
 
         self.note_fill(base_filled, quote_filled)
+    }
+
+    /// The loaded maker that cranked this fill, when one did.
+    ///
+    /// A maker of the taker's own authority is left out, as `bind_filler`
+    /// leaves out any filler of that authority. Its stats are the taker's, so
+    /// it has no seat to take the reward on.
+    fn cranking_maker(&self, filler: &FillerSide) -> VelocityResult<Option<RefMut<'a, User>>> {
+        if filler.user.is_some()
+            || filler.key == self.taker.key
+            || !self.makers_and_referrer.0.contains_key(&filler.key)
+        {
+            return Ok(None);
+        }
+
+        let maker = self.makers_and_referrer.get_ref_mut(&filler.key)?;
+        Ok((maker.authority != self.taker.user.authority).then_some(maker))
     }
 
     /// Execute and settle every external book's allocation through its CPI
@@ -908,7 +919,9 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         self.mark_settled(&maker_key);
         self.check_external_change(leg, change, &maker_key, orders.completed)?;
         let mut maker = self.makers_and_referrer.get_ref_mut(&maker_key)?;
+        self.bind_reduce_only_maker(market, &maker, &maker_key, change.base_size)?;
         self.settle_maker_funding(&mut maker, &maker_key, market)?;
+        maker.update_last_active_slot(self.conditions.slot);
         let mut maker_stats = maker_stats_for(
             self.makers_and_referrer_stats,
             self.taker.user.authority,
@@ -954,6 +967,38 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if leg.maker_aggregates_tracked {
             self.release_completed_book_orders(&mut maker, response.completed_for(change_index))?;
         }
+
+        Ok(())
+    }
+
+    /// Hold a maker in a `ReduceOnly` market to the position it reduces.
+    ///
+    /// The book does not know the market status, so it can fill an order
+    /// placed while the market was `Active`. The route excludes such a maker
+    /// before it quotes. This check stops a book that fills one anyway.
+    fn bind_reduce_only_maker(
+        &self,
+        market: &PerpMarket,
+        maker: &User,
+        maker_key: &Pubkey,
+        base_filled: u64,
+    ) -> VelocityResult {
+        if !market.is_reduce_only()? {
+            return Ok(());
+        }
+
+        let position_base = maker
+            .get_perp_position(self.market_index)
+            .map_or(0, |position| position.base_asset_amount);
+        let cover = crate::math::orders::reduce_only_cover(position_base, self.maker_direction);
+        validate!(
+            base_filled <= cover,
+            ErrorCode::QuoterReportExceedsReservation,
+            "reduce-only market: user {} filled {} base against a cover of {}",
+            maker_key,
+            base_filled,
+            cover
+        )?;
 
         Ok(())
     }
@@ -1115,11 +1160,16 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 
     /// The deferred mark TWAP and the 24-hour volume. Both are gated on a
     /// real fill.
+    ///
+    /// The trade price is the average price of the whole fill, over every
+    /// source. A fill that trades only on a book then records the book's
+    /// price, not the vAMM quote it never took.
     fn update_mark_twap_and_volume(&self, market: &mut PerpMarket) -> VelocityResult {
-        let twap_trade_price = match self.taker.direction {
-            PositionDirection::Long => self.setup.amm_ask_price,
-            PositionDirection::Short => self.setup.amm_bid_price,
-        };
+        let twap_trade_price = calculate_fill_price(
+            self.tally.quote_filled,
+            self.tally.base_filled,
+            BASE_PRECISION_U64,
+        )?;
 
         market.market_stats.update_mark_twap_with_amm_bid_ask(
             self.setup.amm_bid_price,

@@ -155,8 +155,8 @@ impl<'a> Taker<'a> {
 
 /// The filler that runs a fill, and the flat reward it is owed. Both
 /// accounts are absent when the filler is the taker, a maker, or another
-/// subaccount of the taker's authority: such a filler earns no reward and
-/// is never loaded twice.
+/// subaccount of the taker's authority, so no account is loaded twice. A
+/// maker that fills is paid on its maker seat. The other two earn nothing.
 pub(super) struct Filler<'a> {
     pub user: Option<&'a mut User>,
     pub stats: Option<&'a mut UserStats>,
@@ -496,7 +496,8 @@ impl OrderUnderFill<'_> {
         Ok(filled)
     }
 
-    /// Withhold every maker-priced source the oracle does not admit.
+    /// Withhold every maker-priced source the oracle does not admit, and every
+    /// one from a post-only order, which never takes maker liquidity.
     ///
     /// An external quoter book executes at its maker's price with no oracle
     /// band of its own, so a NonPositive, TooVolatile or TooUncertain oracle blocks
@@ -504,6 +505,11 @@ impl OrderUnderFill<'_> {
     /// weaker and only decides whether an oracle-relative limit resolves. The
     /// vAMM keeps its own inclusion gate.
     fn gate_match_fills(&mut self, router: &mut RouterLeg) {
+        if self.order.order.post_only {
+            router.books = &[];
+            return;
+        }
+
         let taker_can_match = self.taker_admits_match();
         if self.conditions.safe_match_fills_allowed && taker_can_match {
             return;

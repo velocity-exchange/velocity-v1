@@ -968,6 +968,34 @@ mod amm_house_capture {
     }
 
     #[test]
+    fn a_curve_that_meets_the_limit_books_no_rounding_loss() {
+        // Half a base at a limit of 49.500001 is 24.7500005 quote. The curve
+        // charges the rounded-up 24.750001, which is at the limit.
+        let fill = QuoterFill {
+            side: PositionDirection::Long,
+            base_filled: BASE_PRECISION_U64 / 2,
+            quote_filled: 24_750_001,
+            quote_asset_amount_surplus: 0,
+        };
+        let (quote, surplus) =
+            settle_amm_house_normal_quote(&fill, PositionDirection::Long, Some(49_500_001), 0, 0)
+                .unwrap();
+        assert_eq!((quote, surplus), (24_750_001, 0));
+
+        // A short at 50.500001 is owed 25.2500005, and the curve pays the
+        // rounded-down 25.25.
+        let fill = QuoterFill {
+            side: PositionDirection::Short,
+            quote_filled: 25_250_000,
+            ..fill
+        };
+        let (quote, surplus) =
+            settle_amm_house_normal_quote(&fill, PositionDirection::Short, Some(50_500_001), 0, 0)
+                .unwrap();
+        assert_eq!((quote, surplus), (25_250_000, 0));
+    }
+
+    #[test]
     fn the_limit_caps_the_shade() {
         // Shade would push to 51, but the limit caps at 50.5.
         let fill = curve_fill(PositionDirection::Long, 50_000_000, 100_000);

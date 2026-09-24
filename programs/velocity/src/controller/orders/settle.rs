@@ -193,13 +193,15 @@ pub(super) fn settle_amm_house_normal_quote(
         };
     }
 
-    // Limit cap: never charge worse than the taker's own limit.
+    // Limit cap: never charge worse than the taker's own limit. The limit
+    // quote rounds for the house as the maker, as a maker order's quote does,
+    // so a curve that meets the limit exactly books no rounding loss.
     if let Some(limit) = taker_limit_price {
         let limit_quote = crate::math::orders::calculate_quote_asset_amount_for_maker_order(
             fill.base_filled,
             limit,
             crate::math::constants::PERP_DECIMALS,
-            taker_direction,
+            taker_direction.opposite(),
         )?;
 
         taker_quote = match taker_direction {
@@ -1154,15 +1156,8 @@ fn price_matched_fill(
     let market_index = cx.market.market_index;
     let reward_referrer =
         can_reward_user_with_referral_reward(market_index, filler.rev_share_escrow);
-    // A maker that cranks its own fill arrives as `filler: None` with the
-    // filler key naming itself. It is already loaded in the maker map, and the
-    // same account cannot be loaded mutably twice. It did the keeper's work on
-    // a slice it actually filled, so it earns the reward for that slice. The
-    // reward of a multi-maker fill then spreads pro rata. A taker that fills
-    // its own order names itself, so this stays false and no reward is
-    // charged.
-    let maker_is_filler = filler.key == maker.key;
-    let reward_filler = can_reward_user_with_perp_pnl(filler.user, market_index) || maker_is_filler;
+    let reward_filler = can_reward_user_with_perp_pnl(filler.user, market_index)
+        || maker_cranked_fill(maker, filler);
     let escrow = cx
         .rules
         .builder_escrow(filler, taker, market_index, taker.order.order_id);
@@ -1215,6 +1210,12 @@ fn settle_matched_fill(
     advance_taker_order(taker, filler, settled, filled)
 }
 
+/// Whether this leg's maker cranked the fill and earns the filler reward. A
+/// maker of the taker's authority has no stats loaded, so it earns nothing.
+fn maker_cranked_fill(maker: &MakerSide, filler: &FillerSide) -> bool {
+    filler.user.is_none() && filler.key == maker.key && maker.stats.is_some()
+}
+
 /// Pay the keeper that turned a matched fill.
 ///
 /// A maker that cranked its own fill is paid on its own seat, because it is
@@ -1238,7 +1239,7 @@ fn pay_matched_keeper(
             cx.slot,
         );
     }
-    if filler.key != maker.key {
+    if !maker_cranked_fill(maker, filler) {
         return Ok(());
     }
 

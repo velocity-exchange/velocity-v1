@@ -268,11 +268,8 @@ pub fn verify_and_decode_signed_msg(
     let payload_size = usize::from(LE::read_u16(
         &message_bytes[SIGNATURE_LEN + PUBKEY_LEN..PAYLOAD_OFFSET],
     ));
-    let payload_end = PAYLOAD_OFFSET
-        .checked_add(payload_size)
-        .ok_or(SignatureVerificationError::MessageOffsetOverflow)?;
     let payload = message_bytes
-        .get(PAYLOAD_OFFSET..payload_end)
+        .get(PAYLOAD_OFFSET..PAYLOAD_OFFSET + payload_size)
         .ok_or(SignatureVerificationError::InvalidMessageDataSize)?;
 
     // Bind the key to the taker before the crypto. A valid signature under a key
@@ -307,6 +304,8 @@ pub fn verify_and_decode_signed_msg(
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SignatureVerificationError {
     InvalidMessageDataSize,
+    /// @deprecated Nothing raises it. It stays so that `InvalidMessageHex`
+    /// keeps its code.
     MessageOffsetOverflow,
     InvalidMessageHex,
 }

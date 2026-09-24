@@ -656,6 +656,7 @@ pub enum ErrorCode {
     #[msg("SignedMsgUserAccount has too many active orders")]
     SignedMsgUserOrdersAccountFull,
     // --- index 300 (error 0x18FC / 6300) ---
+    /// @deprecated Nothing raises it since `place_and_make_signed_msg_perp_order` was removed.
     #[msg("Order with SignedMsg uuid does not exist")]
     SignedMsgOrderDoesNotExist,
     #[msg("SignedMsg order id cannot be 0s")]

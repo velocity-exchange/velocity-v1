@@ -325,14 +325,12 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
         market_index: u16,
         clob_order_id: u64,
         new_clob_order_id: u64,
-    ) -> bool {
-        let Some(entry) = self.find_entry_mut(|entry| entry.rests_as(market_index, clob_order_id))
-        else {
-            return false;
-        };
-
-        entry.clob_order_id = new_clob_order_id;
-        true
+    ) {
+        if let Some(entry) =
+            self.find_entry_mut(|entry| entry.rests_as(market_index, clob_order_id))
+        {
+            entry.clob_order_id = new_clob_order_id;
+        }
     }
 
     fn find_entry_mut(
@@ -347,15 +345,13 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     /// Release the entry's hold once its order leaves the book, so the stale
     /// sweep can reclaim the slot the ordinary way. Reclaim safety in
     /// `add_signed_msg_order_id` rests on the eviction buffer, not on this.
-    pub fn clear_resting_route(&mut self, market_index: u16, clob_order_id: u64) -> bool {
-        let Some(entry) = self.find_entry_mut(|entry| entry.rests_as(market_index, clob_order_id))
-        else {
-            return false;
-        };
-
-        entry.clob_order_id = 0;
-        entry.route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
-        true
+    pub fn clear_resting_route(&mut self, market_index: u16, clob_order_id: u64) {
+        if let Some(entry) =
+            self.find_entry_mut(|entry| entry.rests_as(market_index, clob_order_id))
+        {
+            entry.clob_order_id = 0;
+            entry.route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
+        }
     }
 }
 
@@ -456,14 +452,6 @@ pub fn release_removed_remainders(
     remainders.for_each(|order| {
         record.clear_resting_route(market_index, order.order_id);
     });
-}
-
-pub fn derive_signed_msg_user_pda(user_account_pubkey: &Pubkey) -> VelocityResult<Pubkey> {
-    let (signed_msg_pubkey, _) = Pubkey::find_program_address(
-        &[SIGNED_MSG_PDA_SEED.as_bytes(), user_account_pubkey.as_ref()],
-        &ID,
-    );
-    Ok(signed_msg_pubkey)
 }
 
 /**

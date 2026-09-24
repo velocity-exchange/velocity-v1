@@ -393,7 +393,8 @@ mod resting_route {
 
         // Once the order leaves the book the hold is released and the next
         // sweep reclaims the slot.
-        assert!(orders.clear_resting_route(MARKET, 77));
+        orders.clear_resting_route(MARKET, 77);
+        assert!(!orders.get(0).rests_on_clob());
         assert_eq!(orders.get(0).route_digest, NO_ROUTE_DIGEST);
         orders.check_exists_and_prune_stale_signed_msg_order_ids(
             probe,
@@ -533,7 +534,7 @@ mod resting_route {
         assert_eq!(orders.get(0).clob_order_id, 0);
         // Clob order 1 lost its entry, so its fill reads as unrouted. Every
         // other order keeps its route.
-        assert!(!orders.clear_resting_route(MARKET, 1));
+        assert!((0..LEN).all(|i| !orders.get(i).rests_as(MARKET, 1)));
         assert_eq!(orders.get(1).clob_order_id, 2);
         assert_eq!(orders.get(1).route_digest, DIGEST);
 
@@ -691,8 +692,8 @@ mod market_scoped_route {
         }
 
         let mut orders = record.orders_mut();
-        assert!(orders.clear_resting_route(MARKET_B, SHARED_ID));
-        assert!(!orders.clear_resting_route(MARKET_B, SHARED_ID));
+        orders.clear_resting_route(MARKET_B, SHARED_ID);
+        orders.clear_resting_route(MARKET_B, SHARED_ID);
         assert!(!orders.get(1).rests_on_clob());
         assert_eq!(orders.get(1).route_digest, NO_ROUTE_DIGEST);
         assert!(orders.get(0).rests_on_clob());
@@ -707,8 +708,9 @@ mod market_scoped_route {
 
         {
             let mut orders = record.orders_mut();
-            assert!(!orders.move_resting_route(MARKET_B, SHARED_ID, 9));
-            assert!(orders.move_resting_route(MARKET_A, SHARED_ID, 9));
+            orders.move_resting_route(MARKET_B, SHARED_ID, 9);
+            assert!(orders.get(0).rests_as(MARKET_A, SHARED_ID));
+            orders.move_resting_route(MARKET_A, SHARED_ID, 9);
         }
 
         let orders = record.orders();

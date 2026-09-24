@@ -188,7 +188,8 @@ pub struct SignedMsgOrderParamsMessage {
     /// The route the taker signed for: the `QuoterV0` entries of the custom
     /// quoters (PropAMMs) the taker wants used. The CLOB and vAMM are the
     /// mandatory baseline of every router fill, so they are implicit and
-    /// never named here. The field is advisory today. Swift forwards it to keepers, which is what makes a routed order reach the quoters the taker chose.
+    /// never named here. The keeper that places the order must carry every
+    /// quoter it names, and the order's record keeps its digest for a later fill.
     pub route: Option<Vec<Pubkey>>,
 }
 

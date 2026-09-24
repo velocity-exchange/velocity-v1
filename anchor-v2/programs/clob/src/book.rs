@@ -1185,10 +1185,13 @@ impl ClobBook for ClobMarketV0 {
             ) {
                 Settleable::Yes => {}
                 Settleable::SteppedOver => return Ok(Walk::Continue),
+                // The report is the depth a caller that loads this owner could
+                // take, which excludes what a remainder claims. `available` is
+                // nonzero here, because a wholly claimed order is passed over above.
                 Settleable::Withheld => {
                     unsettleable_level = Some(PriceLevel {
                         price: node.price,
-                        size: node.base_asset_amount,
+                        size: available,
                     });
 
                     return Ok(Walk::Stop);

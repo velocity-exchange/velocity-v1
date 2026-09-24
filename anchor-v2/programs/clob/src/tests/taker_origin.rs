@@ -22,7 +22,8 @@ use {
         error::ClobError,
         state::{
             CancelSidesV0, ClobMarketV0, Direction, L3ResponseV0, MarketConfigV0, OrderBitFlag,
-            OrderRefV0, PlaceOrderParams, PriceLevel, Side, UserCapsV0, UserRefV0, L3_ROWS_CEILING,
+            OrderRefV0, PlaceOrderParams, PriceLevel, QuoteResponseV0, Side, UserCapsV0, UserRefV0,
+            L3_ROWS_CEILING,
         },
     },
 };
@@ -1302,6 +1303,44 @@ fn every_removal_path_maintains_the_claimant_list() {
     assert_consistent(&book);
     assert_eq!(book.claimant_count(Side::Ask), 0);
     assert!(book.read_node(culled.node_index).unwrap().order_id != culled.order_id);
+}
+
+/// The withheld report says how much depth a caller would reach by loading the
+/// absent owner. Units a remainder claims stay out of reach either way, so the
+/// report leaves them out.
+#[test]
+fn the_withheld_report_leaves_out_claimed_depth() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (taker, absent_maker, loaded) = (user(0xA), user(0xB), user(0xC));
+
+    place(&mut book, Side::Ask, 100, 5, absent_maker);
+    place_taker_origin(&mut book, Side::Bid, 100, 3, taker);
+
+    let pointer = book
+        .quote(
+            Direction::Long,
+            u64::MAX,
+            &[loaded],
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            false,
+            5,
+            0,
+        )
+        .unwrap();
+    let bytes = streamed(&book, pointer);
+    let response = QuoteResponseV0::parse(&bytes).unwrap();
+    assert!(response.levels.is_empty());
+    assert_eq!(
+        response.withheld,
+        PriceLevel {
+            price: 100,
+            size: 2
+        }
+    );
 }
 
 /// Velocity reports a fill only against a remainder the book offers to someone,

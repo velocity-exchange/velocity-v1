@@ -545,13 +545,6 @@ pub fn validate_allocated_notional(
     Ok(quote as u128 == allocation.scaled_quote.safe_div(BASE_PRECISION)?)
 }
 
-pub fn validate_executed_notional(prefix: &QuotedPrefix, quote: u64) -> VelocityResult<bool> {
-    // Exact, not a band. A quoter's book cannot change inside one transaction, so the
-    // ladder fixes the notional of any prefix of itself. The single division into quote
-    // units is the only rounding, and the quoter's encoder must carry the same one.
-    Ok(quote as u128 == prefix.scaled_quote.safe_div(BASE_PRECISION)?)
-}
-
 /// Hold one balance change to the quoted prefix's price range. A bound on the response
 /// total alone would let a quoter overpay one maker out of another's pocket. `orders` is
 /// how many of the quoter's orders the change merges: a merged record cannot be exact,
@@ -579,6 +572,12 @@ mod tests {
 
     fn level(price: u64, size: u64) -> PriceLevelV0 {
         PriceLevelV0 { price, size }
+    }
+
+    /// Whether `quote` is the prefix's notional, with the one division into
+    /// quote units that `validate_allocated_notional` applies to an allocation.
+    fn validate_executed_notional(prefix: &QuotedPrefix, quote: u64) -> VelocityResult<bool> {
+        Ok(quote as u128 == prefix.scaled_quote.safe_div(BASE_PRECISION)?)
     }
 
     const VAMM: u8 = 0;

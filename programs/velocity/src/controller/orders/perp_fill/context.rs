@@ -136,11 +136,11 @@ pub struct FillAmounts {
 
 /// What one maker filled: signed base, and whether the position it landed in
 /// is isolated.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MakerFill {
     pub base: i64,
     pub is_isolated: bool,
 }
 
-/// Signed base each maker filled, and whether that maker is isolated.
-pub type MakerFills = BTreeMap<Pubkey, (i64, bool)>;
+/// What each maker filled, by maker key.
+pub type MakerFills = BTreeMap<Pubkey, MakerFill>;

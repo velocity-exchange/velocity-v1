@@ -3,17 +3,17 @@ use crate::{error::VelocityResult, state::user::Order};
 #[cfg(test)]
 mod tests;
 
+/// How a fill was asked to fill. A liquidation answers differently in the fee
+/// record, the margin gate and the AMM gate. Every other fill is `Fill`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FillMode {
     Fill,
-    PlaceAndTake,
     Liquidation,
 }
 
 impl FillMode {
     /// The worst price the fill is held to. Every mode reads the order's own
-    /// bound. The modes differed only while an order auctioned, where
-    /// place-and-take asked to be priced at a fraction of the ramp.
+    /// bound.
     pub fn get_limit_price(
         &self,
         order: &Order,

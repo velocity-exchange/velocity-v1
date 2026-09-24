@@ -60,7 +60,7 @@ struct FillMarketSetup {
     amm_taker_limit: Option<u64>,
     /// The one ceiling every maker book is cut at. A market order falls back
     /// to the AMM fallback price, so a router sweep stays price-bounded.
-    effective_taker_limit: Option<u64>,
+    effective_taker_limit: u64,
     /// The price the taker's own order holds the fill to, as the fill mode
     /// resolves it. `None` for a market order, which has no limit of its own.
     /// The settle legs charge against it.
@@ -102,8 +102,8 @@ impl FillMarketSetup {
         )?;
 
         let effective_taker_limit = match taker_limit_price {
-            Some(price) => Some(price),
-            None => Some(market_order_limit(amm_quoter, &quote_inputs, taker, now)?),
+            Some(price) => price,
+            None => market_order_limit(amm_quoter, &quote_inputs, taker, now)?,
         };
 
         Ok(Self {
@@ -245,7 +245,7 @@ struct ExternalLeg {
 /// One quote-and-split pass: what the split gave every source, and what the vAMM leg
 /// already executed. The allocations are in book order, external books first.
 /// `externals_end` says where that run ends, so it is also the vAMM's own index.
-struct RoutedFill {
+struct SplitAllocations {
     /// One allocation per book.
     allocations: Vec<QuoterAllocation>,
     /// What the vAMM leg executed, when it won an allocation.
@@ -254,7 +254,7 @@ struct RoutedFill {
     externals_end: usize,
 }
 
-impl RoutedFill {
+impl SplitAllocations {
     /// What the split gave the external books.
     fn external_allocations(&self) -> &[QuoterAllocation] {
         &self.allocations[..self.externals_end]
@@ -357,10 +357,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     /// Where a ladder stops. Levels past the taker's effective limit are
     /// outside what this fill accepts.
     fn within_limit(&self, levels: &[PriceLevelV0]) -> usize {
-        let Some(limit) = self.setup.effective_taker_limit else {
-            return levels.len();
-        };
-
+        let limit = self.setup.effective_taker_limit;
         levels
             .iter()
             .position(|level| match self.taker.direction {
@@ -420,7 +417,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         venue: &ExternalVenue,
         amm_quoter: &mut AmmQuoter,
         target_size: u64,
-    ) -> VelocityResult<RoutedFill> {
+    ) -> VelocityResult<SplitAllocations> {
         let rivals = self.rival_books(venue);
         let amm_levels = self.quote_vamm(amm_quoter, &rivals, target_size)?;
 
@@ -444,7 +441,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         let externals_end = self.external_book_count;
         let amm_fill = self.execute_vamm(amm_quoter, &allocations[externals_end])?;
 
-        Ok(RoutedFill {
+        Ok(SplitAllocations {
             allocations,
             amm_fill,
             externals_end,
@@ -489,11 +486,13 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             target_size,
             self.setup.quote_inputs.step_size,
             rivals,
-            // Fall back to the shared limit when the order has no limit of
-            // its own. A market order has no `amm_taker_limit`.
-            self.setup
-                .amm_taker_limit
-                .or(self.setup.effective_taker_limit),
+            // A market order has no `amm_taker_limit`, so it falls back to
+            // the shared limit.
+            Some(
+                self.setup
+                    .amm_taker_limit
+                    .unwrap_or(self.setup.effective_taker_limit),
+            ),
         )
     }
 
@@ -549,7 +548,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         market: &mut PerpMarket,
         filler: &mut FillerSide,
         venue: &mut ExternalVenue,
-        routed: &RoutedFill,
+        routed: &SplitAllocations,
     ) -> VelocityResult {
         if let Some(amm_fill) = routed.amm_fill.as_ref() {
             self.settle_vamm_allocation(market, filler, amm_fill, routed.amm_allocation())?;
@@ -1179,7 +1178,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         venue: &ExternalVenue,
         filler_key: &Pubkey,
     ) -> VelocityResult {
-        if !self.withheld_depth {
+        if !self.withheld_depth || venue.router.standing.obligation.taker_signed {
             return Ok(());
         }
 
@@ -1285,11 +1284,11 @@ pub(super) fn fill_from_liquidity_sources(
     parties: &mut FillParties,
     liquidity: &mut OfferedLiquidity,
     filler: &mut FillerSide,
-) -> VelocityResult<(u64, u64, MakerFills)> {
+) -> VelocityResult<LiquidityFill> {
     let market_index = taker.order.market_index;
     let target_size = taker.unfilled_target()?;
     if target_size == 0 {
-        return Ok((0, 0, MakerFills::new()));
+        return Ok(LiquidityFill::default());
     }
 
     // ---- The market snapshot every source quotes against. ----
@@ -1324,7 +1323,18 @@ pub(super) fn fill_from_liquidity_sources(
     fill.settle_routed_fill(market.deref_mut(), filler, &mut venue, &routed)?;
 
     let filled = fill.close_out(market.deref_mut(), &mut venue, &filler.key)?;
-    Ok((filled.base, filled.quote, fill.tally.maker_fills))
+    Ok(LiquidityFill {
+        filled,
+        maker_fills: fill.tally.maker_fills,
+    })
+}
+
+/// What one liquidity pass moved, in total and per maker.
+#[derive(Default)]
+pub(super) struct LiquidityFill {
+    pub filled: FillAmounts,
+    /// The post-fill checks read it.
+    pub maker_fills: MakerFills,
 }
 
 /// Refresh the vAMM and read the snapshot every source quotes against.

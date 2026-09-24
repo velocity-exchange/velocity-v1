@@ -239,12 +239,6 @@ pub(crate) struct TakerSide<'a> {
 
 impl<'a> TakerSide<'a> {
     /// Bind the taker to the position this fill settles into.
-    ///
-    /// A detached taker holds only the empty position `build_perp_order`
-    /// added, which `get_position_index` skips as available.
-    /// `add_new_position` reuses that same slot, so the fill settles into it.
-    /// A slot order always has a findable position from its placement, so the
-    /// fallback never fires for one.
     pub(crate) fn bind(
         user: &'a mut User,
         stats: &'a mut UserStats,
@@ -253,9 +247,7 @@ impl<'a> TakerSide<'a> {
         reserved: bool,
     ) -> VelocityResult<Self> {
         let direction = order.direction;
-        let market_index = order.market_index;
-        let position_index = get_position_index(&user.perp_positions, market_index)
-            .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
+        let position_index = fill_position_index(user, order.market_index)?;
         let existing_position_params_before = user.perp_positions[position_index]
             .get_existing_position_params_for_order_action(direction);
         Ok(Self {
@@ -294,6 +286,13 @@ impl<'a> TakerSide<'a> {
             self.user.perp_positions[self.position_index].base_asset_amount,
         ))
     }
+}
+
+/// The position a fill settles into. A detached taker holds only the empty
+/// position `build_perp_order` added, and `add_new_position` reuses that slot.
+pub(crate) fn fill_position_index(user: &mut User, market_index: u16) -> VelocityResult<usize> {
+    get_position_index(&user.perp_positions, market_index)
+        .or_else(|_| add_new_position(&mut user.perp_positions, market_index))
 }
 
 /// The maker side of one external fill: whose liquidity filled it, and where
@@ -345,8 +344,7 @@ impl<'a, 'stats> MakerSide<'a, 'stats> {
         order_id: Option<u32>,
     ) -> VelocityResult<Self> {
         let direction = taker_direction.opposite();
-        let position_index = get_position_index(&user.perp_positions, market_index)
-            .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
+        let position_index = fill_position_index(user, market_index)?;
         let existing_position_params = user.perp_positions[position_index]
             .get_existing_position_params_for_order_action(direction);
         Ok(Self {
@@ -769,11 +767,14 @@ fn charge_taker(
     settled: &SettledFees,
     cx: &mut SettleContext,
 ) -> VelocityResult {
-    controller::position::update_quote_asset_and_break_even_amount(
-        &mut taker.user.perp_positions[taker.position_index],
-        cx.market,
-        -settled.taker_debit()?.cast::<i64>()?,
-    )?;
+    let taker_debit = settled.taker_debit()?;
+    if taker_debit != 0 {
+        controller::position::update_quote_asset_and_break_even_amount(
+            &mut taker.user.perp_positions[taker.position_index],
+            cx.market,
+            -taker_debit.cast::<i64>()?,
+        )?;
+    }
 
     taker.stats.increment_total_fees(settled.fees.user_fee)?;
     taker
@@ -1125,8 +1126,8 @@ fn emit_amm_house_record(
 /// There is no maker price here. The route already bound the quoter's response
 /// per unit against its own quoted levels, which is the maker-side contract.
 pub(crate) struct ExternalMatch {
-    /// The taker's effective limit, when the order carries one.
-    pub effective_taker_limit: Option<u64>,
+    /// The worst price the taker accepts on this leg.
+    pub effective_taker_limit: u64,
     /// The oracle price the filler-reward tier is measured against.
     pub oracle_price: i64,
 }
@@ -1271,16 +1272,14 @@ pub(crate) fn settle_external_match_fill(
     filler: &mut FillerSide,
     cx: &mut SettleContext,
 ) -> VelocityResult<(u64, u64)> {
-    if let Some(limit) = prices.effective_taker_limit {
-        validate_fill_price(
-            filled.quote,
-            filled.base,
-            BASE_PRECISION_U64,
-            taker.direction,
-            limit,
-            true,
-        )?;
-    }
+    validate_fill_price(
+        filled.quote,
+        filled.base,
+        BASE_PRECISION_U64,
+        taker.direction,
+        prices.effective_taker_limit,
+        true,
+    )?;
 
     move_maker_position(maker, taker, filled, cx)?;
     move_taker_position(taker, filled, cx)?;

@@ -20,13 +20,10 @@
 //!
 //! [`QuoteContext`] is the snapshot every source quotes against. A quote
 //! method reads from it, and `execute` reads it again, so a source reaches the
-//! same conclusion at execute time as it did at quote time. Refresh cost, such
-//! as an AMM repeg, comes back through [`QuoterFill::refresh_cost`] for the
-//! fill controller to apply to the `PerpMarket`.
+//! same conclusion at execute time as it did at quote time.
 //!
-//! Each source picks its own fee handling. [`FillFeePolicy`] selects the
-//! schedule a fill settles on. A resting maker order uses `MakerMatch` and the
-//! vAMM uses `AmmHouse`. The vAMM is exempt from the maker schedule, because it
+//! The vAMM settles on the house fee schedule and an external quoter on the
+//! match schedule. The vAMM is exempt from the maker schedule, because it
 //! earns from the spread it quotes rather than from a rebate.
 //!
 //! See `docs/amm-decoupling-and-maker-interface.md` for the full design,
@@ -114,22 +111,6 @@ pub struct QuoterFill {
     pub base_filled: u64,
     /// Quote asset amount this maker filled.
     pub quote_filled: u64,
-    /// The clearing price for this maker's portion (the marginal tick the
-    /// matcher decided on, or the analytical inverse for sole-maker fills).
-    pub clearing_price: u64,
-    /// Cost the maker incurred to produce this fill. For the AMM this is the
-    /// cost of a conditional repeg or k-update the quote triggered. The fill
-    /// controller sums it across the match and deducts it. Zero for a maker
-    /// with no such cost.
-    pub refresh_cost: u64,
-    /// Maker's fee-exempt flag at fill time, copied from `Quoter::is_fee_exempt`.
-    /// The fill controller reads this to decide whether to apply the
-    /// protocol's maker-fee schedule. AMM = true; a maker order = false.
-    pub is_fee_exempt: bool,
-    /// Per-fill fee schedule selector, copied from the maker's fee policy.
-    /// The fulfill orchestrator uses it to pick the AMM-house or match fee
-    /// calculation without inspecting the quoter's concrete type.
-    pub fee_policy: FillFeePolicy,
     /// Maker-specific quote surplus, or deficit if negative. For the AMM
     /// this is the gap between the spread-adjusted and no-spread swap
     /// result: the spread profit or loss on this fill. Zero for a maker
@@ -142,28 +123,8 @@ impl QuoterFill {
         side: PositionDirection::Long,
         base_filled: 0,
         quote_filled: 0,
-        clearing_price: 0,
-        refresh_cost: 0,
-        is_fee_exempt: false,
-        fee_policy: FillFeePolicy::MakerMatch,
         quote_asset_amount_surplus: 0,
     };
-}
-
-/// Per-fill fee schedule, returned by the maker's fee policy and copied
-/// into each `QuoterFill` so the fulfill orchestrator can pick a fee path
-/// without knowing the concrete quoter type. See each variant for the fee
-/// and rebate it selects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FillFeePolicy {
-    /// AMM is the counterparty. Taker pays the AmmHouse fee schedule and
-    /// no maker rebate applies. Fees credit through
-    /// `AmmContract::apply_fill_fees`.
-    AmmHouse,
-    /// A resting maker order is the counterparty. Taker pays the match
-    /// fee schedule and the maker receives a rebate. AMM fee counters are
-    /// not touched.
-    MakerMatch,
 }
 
 /// A market-level signal a maker may want to react to.

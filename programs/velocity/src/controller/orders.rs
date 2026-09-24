@@ -82,7 +82,7 @@ use {
         },
     },
     anchor_lang::prelude::*,
-    std::{collections::BTreeMap, ops::DerefMut},
+    std::ops::DerefMut,
 };
 
 mod amend;
@@ -106,7 +106,10 @@ pub use {
     trigger::*,
 };
 pub(crate) use {
-    perp_fill::{fill_within_taker_risk_limits, FillAmounts, TakerRefs, TakerRiskLimits},
+    perp_fill::{
+        fill_within_taker_risk_limits, FillAmounts, MakerFill, MakerFills, TakerRefs,
+        TakerRiskLimits,
+    },
     settle::*,
 };
 
@@ -180,7 +183,7 @@ pub fn validate_market_within_price_band(
 
 #[inline(always)]
 pub(crate) fn update_maker_fills_map(
-    map: &mut BTreeMap<Pubkey, (i64, bool)>,
+    map: &mut MakerFills,
     maker_key: &Pubkey,
     maker_direction: PositionDirection,
     fill: u64,
@@ -192,9 +195,18 @@ pub(crate) fn update_maker_fills_map(
     };
 
     if let Some(maker_filled) = map.get_mut(maker_key) {
-        *maker_filled = (maker_filled.0.safe_add(signed_fill)?, is_isolated_position);
+        *maker_filled = MakerFill {
+            base: maker_filled.base.safe_add(signed_fill)?,
+            is_isolated: is_isolated_position,
+        };
     } else {
-        map.insert(*maker_key, (signed_fill, is_isolated_position));
+        map.insert(
+            *maker_key,
+            MakerFill {
+                base: signed_fill,
+                is_isolated: is_isolated_position,
+            },
+        );
     }
 
     Ok(())

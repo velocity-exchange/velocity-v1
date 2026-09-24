@@ -6,8 +6,7 @@ use crate::{
     PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
 };
 
-/// Every mode reads the order's own worst price. The modes differed only while
-/// an order auctioned, where place-and-take priced at a fraction of the ramp.
+/// Every mode reads the order's own worst price.
 #[test]
 fn every_mode_reads_the_orders_own_worst_price() {
     let market_order = Order {
@@ -20,11 +19,7 @@ fn every_mode_reads_the_orders_own_worst_price() {
     let oracle_price = Some(100 * PRICE_PRECISION_I64);
     let tick_size = 1;
 
-    for mode in [
-        FillMode::Fill,
-        FillMode::PlaceAndTake,
-        FillMode::Liquidation,
-    ] {
+    for mode in [FillMode::Fill, FillMode::Liquidation] {
         let limit_price = mode
             .get_limit_price(&market_order, oracle_price, tick_size)
             .unwrap();

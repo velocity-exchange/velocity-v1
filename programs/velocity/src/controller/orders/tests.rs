@@ -2626,46 +2626,46 @@ mod update_maker_fills_map {
     };
     #[test]
     fn test() {
-        let mut map: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
+        let mut map: crate::controller::orders::MakerFills = BTreeMap::new();
         let maker_key = Pubkey::new_unique();
         let fill = 100;
         let direction = PositionDirection::Long;
         update_maker_fills_map(&mut map, &maker_key, direction, fill, false).unwrap();
-        assert_eq!(map.get(&maker_key).unwrap().0, fill as i64);
-        assert_eq!(map.get(&maker_key).unwrap().1, false);
+        assert_eq!(map.get(&maker_key).unwrap().base, fill as i64);
+        assert_eq!(map.get(&maker_key).unwrap().is_isolated, false);
         update_maker_fills_map(&mut map, &maker_key, direction, fill, false).unwrap();
-        assert_eq!(map.get(&maker_key).unwrap().0, 2 * fill as i64);
-        assert_eq!(map.get(&maker_key).unwrap().1, false);
+        assert_eq!(map.get(&maker_key).unwrap().base, 2 * fill as i64);
+        assert_eq!(map.get(&maker_key).unwrap().is_isolated, false);
         let maker_key = Pubkey::new_unique();
         let direction = PositionDirection::Short;
         update_maker_fills_map(&mut map, &maker_key, direction, fill, false).unwrap();
-        assert_eq!(map.get(&maker_key).unwrap().0, -(fill as i64));
-        assert_eq!(map.get(&maker_key).unwrap().1, false);
+        assert_eq!(map.get(&maker_key).unwrap().base, -(fill as i64));
+        assert_eq!(map.get(&maker_key).unwrap().is_isolated, false);
         update_maker_fills_map(&mut map, &maker_key, direction, fill, false).unwrap();
-        assert_eq!(map.get(&maker_key).unwrap().0, -2 * fill as i64);
-        assert_eq!(map.get(&maker_key).unwrap().1, false);
+        assert_eq!(map.get(&maker_key).unwrap().base, -2 * fill as i64);
+        assert_eq!(map.get(&maker_key).unwrap().is_isolated, false);
     }
     #[test]
     fn test_isolated_position_true() {
-        let mut map: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
+        let mut map: crate::controller::orders::MakerFills = BTreeMap::new();
         let fill = 100;
         // Single insert with isolated_position true
         let maker_key = Pubkey::new_unique();
         update_maker_fills_map(&mut map, &maker_key, PositionDirection::Long, fill, true).unwrap();
-        assert_eq!(map.get(&maker_key).unwrap().0, fill as i64);
-        assert_eq!(map.get(&maker_key).unwrap().1, true);
+        assert_eq!(map.get(&maker_key).unwrap().base, fill as i64);
+        assert_eq!(map.get(&maker_key).unwrap().is_isolated, true);
         // Merge: same maker_key, two updates both with true
         update_maker_fills_map(&mut map, &maker_key, PositionDirection::Long, fill, true).unwrap();
-        assert_eq!(map.get(&maker_key).unwrap().0, 2 * fill as i64);
-        assert_eq!(map.get(&maker_key).unwrap().1, true);
+        assert_eq!(map.get(&maker_key).unwrap().base, 2 * fill as i64);
+        assert_eq!(map.get(&maker_key).unwrap().is_isolated, true);
         // Last write wins: first false, then true -> final .1 is true
         let maker_key2 = Pubkey::new_unique();
         update_maker_fills_map(&mut map, &maker_key2, PositionDirection::Short, fill, false)
             .unwrap();
         update_maker_fills_map(&mut map, &maker_key2, PositionDirection::Short, fill, true)
             .unwrap();
-        assert_eq!(map.get(&maker_key2).unwrap().0, -2 * fill as i64);
-        assert_eq!(map.get(&maker_key2).unwrap().1, true);
+        assert_eq!(map.get(&maker_key2).unwrap().base, -2 * fill as i64);
+        assert_eq!(map.get(&maker_key2).unwrap().is_isolated, true);
     }
 }
 mod order_is_low_risk_for_amm {

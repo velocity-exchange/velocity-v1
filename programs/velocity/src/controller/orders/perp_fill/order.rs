@@ -11,10 +11,7 @@
 use {
     super::{super::*, context::*},
     crate::{
-        controller::{
-            funding::settle_funding_payment,
-            position::{add_new_position, get_position_index},
-        },
+        controller::funding::settle_funding_payment,
         error::{ErrorCode, VelocityResult},
         instructions::optional_accounts::AccountMaps,
         load_mut,
@@ -37,11 +34,8 @@ use {
     std::cell::RefMut,
 };
 
-/// [`fill_perp_order`] with no external quoter books.
-///
-/// The route still runs over the vAMM ladder and the quoter books. The
-/// split has no CPI book to price in. Every fill entrypoint that carries no
-/// quoter accounts arrives here.
+/// [`fill_perp_order`] with no external quoter books, so only the vAMM can
+/// fill. Unit tests use it to drive the order layer without a quoter.
 #[cfg(test)]
 pub(crate) fn fill_perp_order_without_external_books<'info>(
     order: &mut Order,
@@ -147,14 +141,9 @@ impl<'a> Taker<'a> {
         }
     }
 
-    /// A detached taker's empty position, added by `build_perp_order`, is
-    /// skipped by `get_position_index` and reused by `add_new_position`. A
-    /// slot order always finds its position, so the fallback never fires.
     /// Binding can add a position, so it runs only after the fill is admitted.
     fn bind_position(&mut self, market_index: u16) -> VelocityResult {
-        let index = get_position_index(&self.user.perp_positions, market_index)
-            .or_else(|_| add_new_position(&mut self.user.perp_positions, market_index))?;
-        self.position_index = Some(index);
+        self.position_index = Some(fill_position_index(self.user, market_index)?);
         Ok(())
     }
 
@@ -239,8 +228,6 @@ pub fn fill_perp_order(
     let rules = PricingRules::of(state, request.referrer_is_accelerated);
 
     let mut order = WorkingOrder::of(request.order, request.reserved)?;
-    let market_index = order.order.market_index;
-
     admit_perp_market(&mut order, &mut taker, parties.maps, clock.unix_timestamp)?;
     let rev_share_escrow = accounts.rev_share_escrow;
     if admit_taker(
@@ -257,7 +244,7 @@ pub fn fill_perp_order(
 
     let conditions =
         FillConditions::read(state, parties.maps, &taker, &order, request.mode, clock)?;
-    let (mut filler, mut filler_stats) = bind_filler(
+    let mut keeper = bind_filler(
         accounts.filler,
         accounts.filler_stats,
         parties.makers_and_referrer,
@@ -269,15 +256,14 @@ pub fn fill_perp_order(
         order,
         taker,
         filler: Filler {
-            user: filler.as_deref_mut(),
-            stats: filler_stats.as_deref_mut(),
+            user: keeper.user.as_deref_mut(),
+            stats: keeper.stats.as_deref_mut(),
             key: filler_key,
         },
 
         state,
         rules,
         conditions,
-        market_index,
     }
     .run(parties, router, rev_share_escrow)
 }
@@ -411,14 +397,18 @@ fn require_revenue_share_escrow(
 
 /// The keeper's two loaded accounts. Both are absent when the filler earns no
 /// reward.
-type BoundKeeper<'a> = (Option<RefMut<'a, User>>, Option<RefMut<'a, UserStats>>);
+#[derive(Default)]
+struct BoundKeeper<'a> {
+    user: Option<RefMut<'a, User>>,
+    stats: Option<RefMut<'a, UserStats>>,
+}
 
 /// Load the keeper that runs the fill, when it is a third party.
 ///
 /// A filler that is the taker, one of the makers, or another subaccount of the
-/// taker's authority earns no reward and is not loaded: the taker and the
-/// makers are already loaded, and loading one of them twice would alias the
-/// account.
+/// taker's authority is not loaded. The taker and the makers are already
+/// loaded, and loading one of them twice would alias the account. A maker is
+/// paid on its maker seat instead, and the other two earn no reward.
 fn bind_filler<'f, 'info>(
     filler: &'f AccountLoader<'info, User>,
     filler_stats: &'f AccountLoader<'info, UserStats>,
@@ -427,7 +417,7 @@ fn bind_filler<'f, 'info>(
     filler_key: &Pubkey,
 ) -> VelocityResult<BoundKeeper<'f>> {
     if taker.key == *filler_key || makers_and_referrer.0.contains_key(filler_key) {
-        return Ok((None, None));
+        return Ok(BoundKeeper::default());
     }
 
     let filler = load_mut!(filler)?;
@@ -439,10 +429,13 @@ fn bind_filler<'f, 'info>(
     )?;
 
     if filler.authority == taker.user.authority {
-        return Ok((None, None));
+        return Ok(BoundKeeper::default());
     }
 
-    Ok((Some(filler), Some(load_mut!(filler_stats)?)))
+    Ok(BoundKeeper {
+        user: Some(filler),
+        stats: Some(load_mut!(filler_stats)?),
+    })
 }
 
 /// One perp order, as the fill works on it. The account maps, router leg
@@ -456,10 +449,13 @@ struct OrderUnderFill<'a> {
     state: &'a State,
     rules: PricingRules<'a>,
     conditions: FillConditions,
-    market_index: u16,
 }
 
 impl OrderUnderFill<'_> {
+    fn market_index(&self) -> u16 {
+        self.order.order.market_index
+    }
+
     /// Fill the order, then apply the bookkeeping the fill leaves behind.
     fn run(
         &mut self,
@@ -478,7 +474,7 @@ impl OrderUnderFill<'_> {
             return Ok(FillAmounts::default());
         }
 
-        self.taker.bind_position(self.market_index)?;
+        self.taker.bind_position(self.market_index())?;
         if self.expire_or_cancel(parties)? == Admission::Skip {
             return Ok(FillAmounts::default());
         }
@@ -515,7 +511,7 @@ impl OrderUnderFill<'_> {
         if !router.books.is_empty() {
             msg!(
                 "Perp market = {} oracle not valid for match fills (safe={}, taker_exchange={})",
-                self.market_index,
+                self.market_index(),
                 self.conditions.safe_match_fills_allowed,
                 taker_can_match,
             );
@@ -552,7 +548,7 @@ impl OrderUnderFill<'_> {
         let step_size = parties
             .maps
             .perp_market_map
-            .get_ref(&self.market_index)?
+            .get_ref(&self.market_index())?
             .order_step_size;
         should_cancel_reduce_only_order(
             &self.order.order,
@@ -576,7 +572,7 @@ impl OrderUnderFill<'_> {
         let mut market = parties
             .maps
             .perp_market_map
-            .get_ref_mut(&self.market_index)?;
+            .get_ref_mut(&self.market_index())?;
         validate_fill_price_within_price_bands(
             fill_price,
             self.conditions.oracle_price,
@@ -640,13 +636,13 @@ impl OrderUnderFill<'_> {
             parties.maps,
             self.conditions.now,
             self.conditions.slot,
-            self.market_index,
+            self.market_index(),
         )
     }
 
     /// The market's open-interest cap holds after the fill.
     fn enforce_open_interest_cap(&self, parties: &FillParties) -> VelocityResult {
-        let market = parties.maps.perp_market_map.get_ref(&self.market_index)?;
+        let market = parties.maps.perp_market_map.get_ref(&self.market_index())?;
         let open_interest = market.get_open_interest();
         let max_open_interest = market.max_open_interest;
         validate!(
@@ -673,11 +669,11 @@ impl OrderUnderFill<'_> {
         let market = &mut parties
             .maps
             .perp_market_map
-            .get_ref_mut(&self.market_index)?;
+            .get_ref_mut(&self.market_index())?;
         let funding_paused = self.state.funding_paused()?
             || market.is_operation_paused(PerpOperation::UpdateFunding);
         controller::funding::update_funding_rate(
-            self.market_index,
+            self.market_index(),
             market,
             &mut parties.maps.oracle_map,
             self.conditions.now,

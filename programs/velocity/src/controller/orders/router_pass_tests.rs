@@ -891,7 +891,6 @@ mod amm_house_capture {
             base_filled: BASE_PRECISION_U64,
             quote_filled: quote,
             quote_asset_amount_surplus: surplus,
-            ..QuoterFill::ZERO
         }
     }
 
@@ -993,7 +992,6 @@ mod amm_house_capture {
             base_filled: BASE_PRECISION_U64 / 2,
             quote_filled: 25_000_000,
             quote_asset_amount_surplus: 0,
-            ..QuoterFill::ZERO
         };
         let (quote, surplus) = settle_amm_house_normal_quote(
             &fill,

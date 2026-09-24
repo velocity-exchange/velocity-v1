@@ -500,7 +500,7 @@ pub fn place_and_take_perp_order_v1<'info>(
             },
             &state,
             &clock,
-            FillMode::PlaceAndTake,
+            FillMode::Fill,
             request.taker_served_window,
             referrer_is_accelerated,
         )?

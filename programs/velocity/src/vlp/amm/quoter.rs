@@ -18,11 +18,9 @@ use crate::{
     math::{casting::Cast, safe_math::SafeMath},
     state::{
         oracle::OraclePriceData,
-        quoter::{FillFeePolicy, MarketEvent, QuoteContext, QuoterFill},
+        quoter::{MarketEvent, QuoteContext, QuoterFill},
     },
-    vlp::amm::{
-        controller as amm_controller, controller::SwapDirection, math::amm as amm_math, AMM,
-    },
+    vlp::amm::{controller as amm_controller, controller::SwapDirection, AMM},
 };
 
 /// Module boundary between general logic and the AMM: general logic mutates AMM state only through
@@ -287,9 +285,9 @@ impl<'a> AmmQuoter<'a> {
         AmmQuoter { amm }
     }
 
-    /// Pre-fill `validate_for_fill` on the underlying AMM. The orchestrator
-    /// calls it before the router quotes when the AMM will participate. It is a
-    /// separate entrypoint so quoter construction stays free of side effects.
+    /// Pre-fill `validate_for_fill` on the underlying AMM. The liquidity pass
+    /// calls it before it quotes the vAMM. It is a separate entrypoint so
+    /// quoter construction stays free of side effects.
     pub fn validate_for_fill(&self, side: PositionDirection) -> VelocityResult {
         self.amm.validate_for_fill(side)
     }
@@ -316,10 +314,9 @@ impl<'a> AmmQuoter<'a> {
 
     /// Base the AMM can fill before its marginal price reaches `price`. It is
     /// the analytical inverse of the constant-product curve, clamped to the
-    /// reserve bounds and standardised to `ctx.step_size`. The sole-vAMM fill
-    /// path uses it to cap a take at the taker's limit price. It stays inherent
-    /// to the AMM, because continuous-curve depth is not part of the generic
-    /// discrete router-quoter interface.
+    /// reserve bounds and standardised to `ctx.step_size`. Tests use it to
+    /// check the swap math against the curve.
+    #[cfg(test)]
     pub fn cumulative_size(
         &self,
         ctx: &QuoteContext,
@@ -418,6 +415,7 @@ impl<'a> AmmQuoter<'a> {
 }
 
 impl<'a> AmmQuoter<'a> {
+    #[cfg(test)]
     pub fn best_price(&self, _ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64> {
         let reserve_price = self.amm.reserve_price()?;
         match side {
@@ -434,29 +432,6 @@ impl<'a> AmmQuoter<'a> {
         }
     }
 
-    /// The AMM is the sole continuous maker and fills through the dedicated
-    /// sole-vAMM path, never the discrete level walk. This method exists to
-    /// satisfy the trait. It reports the reserve-bounded maximum fillable.
-    pub fn level_capacity(
-        &self,
-        _ctx: &QuoteContext,
-        side: PositionDirection,
-    ) -> VelocityResult<u64> {
-        self.max_fillable(side)
-    }
-
-    pub fn is_prio(&self) -> bool {
-        true
-    }
-
-    pub fn is_fee_exempt(&self) -> bool {
-        true
-    }
-
-    pub fn fee_policy(&self) -> FillFeePolicy {
-        FillFeePolicy::AmmHouse
-    }
-
     pub fn try_fill_solo(
         &self,
         _ctx: &QuoteContext,
@@ -471,25 +446,10 @@ impl<'a> AmmQuoter<'a> {
         let direction = Self::swap_direction(side);
         let swap = amm_controller::calculate_base_swap_output(self.amm, base, direction)?;
 
-        // For try_fill_solo's clearing_price we use the marginal *reserve*
-        // price after the swap (no spread). This is the price the AMM's
-        // curve sees post-swap, useful for verifying `cumulative_size`
-        // inverts to the same target. Note this is NOT directly comparable
-        // to `best_price` (which includes spread) — semantics differ.
-        let marginal_price = amm_math::calculate_price(
-            swap.new_quote_asset_reserve,
-            swap.new_base_asset_reserve,
-            self.amm.peg_multiplier,
-        )?;
-
         Ok(Some(QuoterFill {
             side,
             base_filled: base,
             quote_filled: swap.quote_asset_amount,
-            clearing_price: marginal_price,
-            refresh_cost: 0,
-            is_fee_exempt: true,
-            fee_policy: FillFeePolicy::AmmHouse,
             quote_asset_amount_surplus: swap.quote_asset_amount_surplus as i64,
         }))
     }
@@ -742,7 +702,7 @@ mod amm_maker_tests {
                 constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
                 time::SlotClock,
             },
-            vlp::amm::AMM,
+            vlp::amm::{math::amm as amm_math, AMM},
         },
     };
 
@@ -790,14 +750,6 @@ mod amm_maker_tests {
         let ask = maker.best_price(&ctx, PositionDirection::Long).unwrap();
         let bid = maker.best_price(&ctx, PositionDirection::Short).unwrap();
         assert!(ask > bid, "ask {} should exceed bid {}", ask, bid);
-    }
-
-    #[test]
-    fn amm_is_prio_and_fee_exempt() {
-        let mut amm = make_amm();
-        let maker = AmmQuoter::new_no_spread(&mut amm);
-        assert!(maker.is_prio());
-        assert!(maker.is_fee_exempt());
     }
 
     #[test]
@@ -858,12 +810,27 @@ mod amm_maker_tests {
             .unwrap();
         assert_eq!(fill.base_filled, target);
 
+        // The marginal reserve price after the swap, with no spread. It is the
+        // price the curve sees once the fill lands.
+        let swap = amm_controller::calculate_base_swap_output(
+            maker.amm,
+            target,
+            AmmQuoter::swap_direction(PositionDirection::Long),
+        )
+        .unwrap();
+        let marginal_price = amm_math::calculate_price(
+            swap.new_quote_asset_reserve,
+            swap.new_base_asset_reserve,
+            maker.amm.peg_multiplier,
+        )
+        .unwrap();
+
         // cumulative_size at the marginal price should agree with target
         // within integer-sqrt rounding. The swap math and the inverse helper
         // use slightly different precision paths; tolerance of ~1e-7 (100 bps
         // relative) covers typical velocity.
         let cum_at_marginal = maker
-            .cumulative_size(&ctx, PositionDirection::Long, fill.clearing_price)
+            .cumulative_size(&ctx, PositionDirection::Long, marginal_price)
             .unwrap();
         let tolerance = target / 1_000_000 + 100; // ~1 ppm + 100 base units
         let diff = cum_at_marginal.abs_diff(target);
@@ -893,7 +860,6 @@ mod amm_maker_tests {
         let fill = result.unwrap();
         assert_eq!(fill.base_filled, AMM_RESERVE_PRECISION as u64);
         assert!(fill.quote_filled > 0);
-        assert!(fill.clearing_price > 0);
     }
 
     #[test]
@@ -940,7 +906,6 @@ mod amm_maker_tests {
 
         assert_eq!(result.base_filled, AMM_RESERVE_PRECISION as u64);
         assert!(result.quote_filled > 0);
-        assert!(result.is_fee_exempt);
         assert_eq!(result.side, PositionDirection::Short);
         // Reserves haven't changed yet — try_fill_solo is read-only.
         assert_eq!(amm.base_asset_reserve, starting_base);

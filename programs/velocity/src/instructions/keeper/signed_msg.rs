@@ -191,7 +191,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     taker_served_window: bool,
     clock: &Clock,
 ) -> Result<u64> {
-    let mode = FillMode::PlaceAndTake;
+    let mode = FillMode::Fill;
     let order = RoutedOrder::read(
         &*load!(ctx.accounts.user)?,
         &placed.order,

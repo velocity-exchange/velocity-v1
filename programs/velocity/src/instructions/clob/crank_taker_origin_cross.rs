@@ -1159,7 +1159,7 @@ fn settle_pair_match<'info>(
         },
         &mut maker_side,
         &controller::orders::ExternalMatch {
-            effective_taker_limit: Some(pair.aggressor.price),
+            effective_taker_limit: pair.aggressor.price,
             oracle_price,
         },
         &mut controller::orders::FillerSide {

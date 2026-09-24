@@ -25,7 +25,7 @@ pub use context::{FillConditions, OfferedLiquidity};
 #[cfg(test)]
 pub(crate) use order::fill_perp_order_without_external_books;
 pub use {
-    context::{FillAmounts, FillParties, TakerRefs},
+    context::{FillAmounts, FillParties, MakerFill, MakerFills, TakerRefs},
     order::{fill_perp_order, FillRequest, PerpFillAccounts},
     taker_risk::{fill_within_taker_risk_limits, TakerRiskLimits},
 };

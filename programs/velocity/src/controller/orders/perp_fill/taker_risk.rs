@@ -9,7 +9,11 @@
 //! [`super::liquidity`] draws the liquidity in between.
 
 use {
-    super::{super::*, context::*, liquidity::fill_from_liquidity_sources},
+    super::{
+        super::*,
+        context::*,
+        liquidity::{fill_from_liquidity_sources, LiquidityFill},
+    },
     crate::{
         controller,
         error::{ErrorCode, VelocityResult},
@@ -78,12 +82,10 @@ pub fn fill_within_taker_risk_limits(
 
     let rules = rules.allow_builder_fee(builder_fee_allowed(taker, &limits, parties, filler)?);
 
-    let (base_asset_amount, quote_asset_amount, maker_fills) =
-        fill_from_liquidity_sources(taker, &rules, conditions, parties, liquidity, filler)?;
-    let filled = FillAmounts {
-        base: base_asset_amount,
-        quote: quote_asset_amount,
-    };
+    let LiquidityFill {
+        filled,
+        maker_fills,
+    } = fill_from_liquidity_sources(taker, &rules, conditions, parties, liquidity, filler)?;
 
     limits.check_after_fill(
         &mut TakerRefs {
@@ -282,17 +284,8 @@ impl TakerRiskLimits {
     ) -> VelocityResult {
         check_fill_amounts_coherent(filled, maker_fills)?;
         self.check_taker(taker, parties, now)?;
-        for (maker_key, (base, is_isolated)) in maker_fills {
-            self.check_maker(
-                maker_key,
-                MakerFill {
-                    base: *base,
-                    is_isolated: *is_isolated,
-                },
-                taker,
-                parties,
-                now,
-            )?;
+        for (maker_key, fill) in maker_fills {
+            self.check_maker(maker_key, *fill, taker, parties, now)?;
         }
 
         // On a liquidation fill the taker seat is the liquidatee, who did not
@@ -564,7 +557,7 @@ fn check_fill_amounts_coherent(filled: FillAmounts, maker_fills: &MakerFills) ->
         filled.quote
     )?;
 
-    let total_maker_fill = maker_fills.values().map(|(base, _)| base).sum::<i64>();
+    let total_maker_fill = maker_fills.values().map(|fill| fill.base).sum::<i64>();
     validate!(
         total_maker_fill.unsigned_abs() <= filled.base,
         ErrorCode::ImpossibleFill,

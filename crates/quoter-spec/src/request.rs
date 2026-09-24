@@ -114,9 +114,8 @@ impl UserCapsV0 {
     }
 
     /// Build from per-user budgets. No room becomes a bitmap bit, which never
-    /// overflows. The rest take the slots, tightest first. A cap that does not
-    /// fit becomes an exclusion, because a drop would offer the user's whole
-    /// resting depth, which is the reading the cap exists to correct.
+    /// overflows. The rest take the slots, tightest first, and a cap that does
+    /// not fit is spilled. See [`Self::spill`].
     ///
     /// Refuses an index past [`USER_SET_CAPACITY`] or an index named twice.
     /// Neither names one user, so no bound can be applied to it.
@@ -152,14 +151,24 @@ impl UserCapsV0 {
                 let evicted = set.caps[USER_CAPS_CAPACITY - 1];
                 set.caps.copy_within(slot..USER_CAPS_CAPACITY - 1, slot + 1);
                 set.caps[slot] = cap;
-                set.exclude(evicted.index as usize);
+                set.spill(evicted);
             } else {
-                set.exclude(index);
+                set.spill(cap);
             }
         }
 
         set.len = len as u8;
         Ok(set)
+    }
+
+    /// Carry a cap that lost its slot. A finite budget becomes an exclusion,
+    /// because a drop would offer the user's whole resting depth. An unbounded
+    /// budget is dropped. A book then fills the owner's ordinary orders, which
+    /// ignore `base_cap`, and refuses a reduce-only order that has no cap entry.
+    fn spill(&mut self, cap: UserCapV0) {
+        if cap.quote_cap != u64::MAX {
+            self.exclude(cap.index as usize);
+        }
     }
 }
 

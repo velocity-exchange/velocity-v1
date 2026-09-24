@@ -760,3 +760,32 @@ fn args_whose_user_set_is_misaligned_are_refused() {
         Err(SpecError::Read)
     );
 }
+
+/// A maker with an unbounded budget holds a slot only for its reduce-only
+/// `base_cap`. When eight budgets crowd it out, it is dropped rather than
+/// excluded, so its ordinary orders still fill. It sorts loosest, so it loses
+/// the slot whether it arrives first or last.
+#[test]
+fn an_unbounded_budget_that_does_not_fit_is_dropped_not_excluded() {
+    let budgeted = (0..USER_CAPS_CAPACITY as u8).map(|index| UserCapV0 {
+        index,
+        quote_cap: 100 + index as u64,
+        base_cap: u64::MAX,
+    });
+    let unbounded = UserCapV0 {
+        index: USER_CAPS_CAPACITY as u8,
+        quote_cap: u64::MAX,
+        base_cap: 5,
+    };
+
+    let last = UserCapsV0::from_caps(budgeted.clone().chain([unbounded])).unwrap();
+    let first = UserCapsV0::from_caps([unbounded].into_iter().chain(budgeted)).unwrap();
+    for set in [last, first] {
+        assert_eq!(set.len as usize, USER_CAPS_CAPACITY);
+        assert!(!set.any_excluded(), "nobody is excluded");
+        assert!(set
+            .as_slice()
+            .iter()
+            .all(|cap| cap.index != unbounded.index));
+    }
+}

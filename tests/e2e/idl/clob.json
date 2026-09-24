@@ -966,6 +966,11 @@
       "code": 6029,
       "name": "MarketNotEmpty",
       "msg": "Market still holds orders and cannot be closed"
+    },
+    {
+      "code": 6030,
+      "name": "OrderNotLive",
+      "msg": "Order is expired or has not reached its activation slot"
     }
   ],
   "types": [

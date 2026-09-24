@@ -1288,10 +1288,10 @@ fn every_removal_path_maintains_the_claimant_list() {
     // `fill_v0` shrinking a remainder in place touches no link, and culling
     // its sub-minimum leftover goes through the same unlink as the rest.
     let filled = place_taker_origin(&mut book, Side::Ask, 200, 9, owner);
-    assert!(!book.fill(filled, 3).unwrap().removed);
+    assert!(!book.fill(filled, 3, ACTIVE_SLOT, 0).unwrap().removed);
     assert_consistent(&book);
     assert_eq!(book.claimant_count(Side::Ask), 1);
-    let outcome = book.fill(filled, 4).unwrap();
+    let outcome = book.fill(filled, 4, ACTIVE_SLOT, 0).unwrap();
     assert!(outcome.removed && outcome.culled_base_asset_amount == 2);
     assert_consistent(&book);
     assert_eq!(book.claimant_count(Side::Ask), 0);
@@ -1302,6 +1302,39 @@ fn every_removal_path_maintains_the_claimant_list() {
     assert_consistent(&book);
     assert_eq!(book.claimant_count(Side::Ask), 0);
     assert!(book.read_node(culled.node_index).unwrap().order_id != culled.order_id);
+}
+
+/// Velocity reports a fill only against a remainder the book offers to someone,
+/// so an expired or unactivated remainder refuses it and stays untouched.
+#[test]
+fn fill_refuses_a_remainder_that_is_not_live() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let taker = user(0xA);
+
+    let expired = book
+        .place(PlaceOrderParams {
+            max_ts: 1_000,
+            taker_origin: true,
+            ..params(Side::Bid, 100, 5, taker)
+        })
+        .unwrap();
+    assert_err(
+        book.fill(expired, 2, ACTIVE_SLOT, 1_001),
+        ClobError::OrderNotLive,
+    );
+    assert!(book.fill(expired, 2, ACTIVE_SLOT, 1_000).is_ok());
+
+    let unactivated = place_at(&mut book, Side::Ask, 110, 5, taker, 10, true);
+    assert_err(book.fill(unactivated, 2, 9, 0), ClobError::OrderNotLive);
+    assert_eq!(
+        book.read_node(unactivated.node_index)
+            .unwrap()
+            .base_asset_amount,
+        5
+    );
+    assert!(book.fill(unactivated, 2, 10, 0).is_ok());
+    assert_consistent(&book);
 }
 
 /// The order-by-order view reports the claim rather than hiding it. The row's

@@ -46,7 +46,12 @@ pub fn handle_fill_v0(ctx: &mut Context<GatedMarketV0>, args: FillArgsV0) -> Res
         .iter()
         .map(|request| {
             let node = market.read_node(request.order_ref.node_index)?;
-            let outcome = market.fill(request.order_ref, request.base_asset_amount)?;
+            let outcome = market.fill(
+                request.order_ref,
+                request.base_asset_amount,
+                clock.slot,
+                clock.unix_timestamp,
+            )?;
             Ok((
                 FillEntryV0 {
                     order_id: outcome.order_id,

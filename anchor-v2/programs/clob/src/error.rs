@@ -91,6 +91,8 @@ pub enum ClobError {
     MaxTsBeforeActivation,
     #[msg("Market still holds orders and cannot be closed")]
     MarketNotEmpty,
+    #[msg("Order is expired or has not reached its activation slot")]
+    OrderNotLive,
 }
 
 impl From<quoter_spec::SpecError> for ClobError {

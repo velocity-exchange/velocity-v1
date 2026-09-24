@@ -119,7 +119,13 @@ pub trait ClobBook {
     ) -> Result<CancelAllOutcome>;
     fn evict_worst(&mut self, side: Side, slot: u64) -> Result<RemovedOrder>;
     fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder>;
-    fn fill(&mut self, order_ref: OrderRefV0, base_asset_amount: u64) -> Result<FilledOrder>;
+    fn fill(
+        &mut self,
+        order_ref: OrderRefV0,
+        base_asset_amount: u64,
+        slot: u64,
+        now: i64,
+    ) -> Result<FilledOrder>;
     #[allow(clippy::too_many_arguments)]
     fn quote(
         &mut self,
@@ -1049,9 +1055,19 @@ impl ClobBook for ClobMarketV0 {
     /// The order keeps its queue place and its id, which a cancel and a fresh
     /// placement would lose. A leftover under `min_order_size` is culled and
     /// reported, so the caller can unwind the reservation it holds for it.
-    fn fill(&mut self, order_ref: OrderRefV0, base_asset_amount: u64) -> Result<FilledOrder> {
+    ///
+    /// An expired or unactivated order is refused, because no read of the book
+    /// offers such an order to anyone.
+    fn fill(
+        &mut self,
+        order_ref: OrderRefV0,
+        base_asset_amount: u64,
+        slot: u64,
+        now: i64,
+    ) -> Result<FilledOrder> {
         let node = live_order(self, order_ref)?;
         require!(node.is_taker_origin(), ClobError::OrderNotTakerOrigin);
+        require!(is_live(&node, slot, now), ClobError::OrderNotLive);
         require!(
             base_asset_amount > 0 && base_asset_amount <= node.base_asset_amount,
             ClobError::FillExceedsOrder

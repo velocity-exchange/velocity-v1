@@ -945,6 +945,42 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
     assert_eq!(node(&ctx, work.order_ref.node_index).price, 307);
 }
 
+/// A resolver stages the eviction `next_removal_v0` names, and velocity checks
+/// the removal against the maker it loaded. The two must pass over a bound
+/// remainder the same way, or every such crank fails.
+#[test]
+fn next_removal_and_eviction_agree_over_a_bound_remainder() {
+    let mut ctx = setup_with_capacity(16); // 8 per side, evict threshold 6
+    let (maker, taker) = (addr(Pubkey::new_unique()), addr(Pubkey::new_unique()));
+
+    for i in 1..=5u64 {
+        place(&mut ctx, place_args(Side::Bid, 100 + i, 1), maker);
+    }
+
+    let remainder = place(&mut ctx, taker_origin_args(Side::Bid, 100, 1), taker);
+    assert_eq!(market_state(&ctx).worst_bid, remainder.node_index);
+
+    let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
+    assert_eq!(node(&ctx, work.order_ref.node_index).price, 101);
+    let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
+    let (evicted_user, order_id, ..) = parse_removed(&meta.return_data.data);
+    assert_eq!(
+        (evicted_user, order_id),
+        (maker.to_bytes(), work.order_ref.order_id)
+    );
+
+    // Past the one-slot delay and the claim, both name the remainder.
+    place(&mut ctx, place_args(Side::Bid, 101, 1), maker);
+    advance_slot(
+        &mut ctx,
+        1 + clob::state::DEFAULT_RESERVATION_GRACE_SLOTS as u64,
+    );
+    let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
+    assert_eq!(work.order_ref, remainder);
+    let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
+    assert!(parse_removed(&meta.return_data.data).6);
+}
+
 #[test]
 fn speed_bump_gates_matching_until_activation_slot() {
     let mut ctx = setup();

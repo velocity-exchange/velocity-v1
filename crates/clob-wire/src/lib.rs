@@ -563,10 +563,10 @@ pub enum ClobRemovalKindV0 {
     /// An order past its `max_ts`. Quote and execute already skip these. The
     /// order still holds a node and its owner's reservation until removed.
     Expired,
-    /// The worst-priced order on the side that has reached the book's own
-    /// eviction threshold. Both the threshold and which side to relieve first
-    /// are the book's policy, so a caller asking this never has to know
-    /// either. The answer names the side it chose.
+    /// The worst-priced order, other than a bound taker remainder, on the side
+    /// that has reached the book's own eviction threshold. Both the threshold
+    /// and which side to relieve first are the book's policy, so a caller
+    /// asking this never has to know either. The answer names the side it chose.
     Evictable,
 }
 

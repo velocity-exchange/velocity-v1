@@ -187,8 +187,9 @@ pub fn crank_clob_removal(
     // caller. A free eviction also left an honest signed keeper no reason to
     // clear a full side.
     //
-    // The book evicts the worst-priced order on its side, so the fee falls on a
-    // quote that no longer competes and whose slot the book needs back. Pushing
+    // The book evicts the worst-priced order on its side that is not a bound
+    // taker remainder, so the fee falls on a quote that no longer competes and
+    // whose slot the book needs back. Pushing
     // an honest maker to that tail costs an attacker a full side of
     // better-priced, takeable quotes, each holding real margin.
     {

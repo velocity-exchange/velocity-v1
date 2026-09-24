@@ -1245,7 +1245,7 @@ fn evict_worst_moves_the_tail_off_the_freed_slot() {
     let tail = place(&mut book, Side::Bid, 100, 1, maker);
     let next_tail = place(&mut book, Side::Bid, 110, 1, maker);
 
-    let removed = book.evict_worst(Side::Bid).unwrap();
+    let removed = book.evict_worst(Side::Bid, ACTIVE_SLOT).unwrap();
     assert_eq!((removed.order_id, removed.price), (tail.order_id, 100));
     assert_eq!(book.worst(Side::Bid), next_tail.node_index);
     assert!(!book
@@ -1255,11 +1255,14 @@ fn evict_worst_moves_the_tail_off_the_freed_slot() {
     assert_consistent(&book);
 
     // Evicting the last order on a side clears both endpoints.
-    book.evict_worst(Side::Bid).unwrap();
-    book.evict_worst(Side::Bid).unwrap();
+    book.evict_worst(Side::Bid, ACTIVE_SLOT).unwrap();
+    book.evict_worst(Side::Bid, ACTIVE_SLOT).unwrap();
     assert_eq!(book.node_count(Side::Bid), 0);
     assert_eq!((book.best(Side::Bid), book.worst(Side::Bid)), (NIL, NIL));
-    assert_err(book.evict_worst(Side::Bid), ClobError::BelowEvictThreshold);
+    assert_err(
+        book.evict_worst(Side::Bid, ACTIVE_SLOT),
+        ClobError::BelowEvictThreshold,
+    );
     assert_consistent(&book);
 }
 

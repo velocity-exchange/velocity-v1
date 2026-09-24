@@ -116,7 +116,7 @@ fn the_flag_rides_the_node_and_every_removal_reports_it() {
     // order in every other respect, so it can be the worst on its side or run
     // past its `max_ts` like any other.
     let evictable = place_taker_origin(&mut book, Side::Ask, 100, 5, maker);
-    let evicted = book.evict_worst(Side::Ask).unwrap();
+    let evicted = book.evict_worst(Side::Ask, ACTIVE_SLOT).unwrap();
     assert_eq!(evicted.order_id, evictable.order_id);
     assert!(evicted.taker_origin);
 
@@ -791,6 +791,63 @@ fn cancel_all_keeps_a_remainder_until_its_claim_lapses() {
     assert_consistent(&book);
 }
 
+/// Eviction is a permissionless crank, so it must not be a way for the owner
+/// to pull a bound remainder. It passes over the remainder and takes the
+/// worst order behind it, which still frees a slot on the side.
+#[test]
+fn eviction_passes_over_a_bound_remainder() {
+    let market = TestMarket::new_with(
+        16,
+        MarketConfigV0 {
+            evict_threshold_per_side: 4,
+            ..test_market_config()
+        },
+    );
+    let mut book = market.book();
+    let (taker, maker) = (user(0xA), user(0xB));
+
+    let remainder = place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
+    place(&mut book, Side::Bid, 103, 5, maker);
+    place(&mut book, Side::Bid, 102, 5, maker);
+    let next_worst = place(&mut book, Side::Bid, 101, 5, maker);
+    assert_eq!(book.worst(Side::Bid), remainder.node_index);
+
+    let evicted = book.evict_worst(Side::Bid, 5).unwrap();
+    assert_eq!(evicted.order_id, next_worst.order_id);
+    assert!(!evicted.taker_origin);
+    assert_eq!(book.worst(Side::Bid), remainder.node_index);
+    assert_consistent(&book);
+
+    // Once the claim lapses the remainder is an ordinary tail again.
+    place(&mut book, Side::Bid, 101, 5, maker);
+    let evicted = book.evict_worst(Side::Bid, 42).unwrap();
+    assert_eq!(evicted.order_id, remainder.order_id);
+    assert_consistent(&book);
+}
+
+/// A side of nothing but bound remainders has nothing to evict until a claim
+/// lapses.
+#[test]
+fn eviction_refuses_a_side_of_bound_remainders() {
+    let market = TestMarket::new_with(
+        16,
+        MarketConfigV0 {
+            evict_threshold_per_side: 2,
+            ..test_market_config()
+        },
+    );
+    let mut book = market.book();
+    let taker = user(0xA);
+
+    place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
+    place_at(&mut book, Side::Bid, 101, 5, taker, 10, true);
+
+    assert_err(book.evict_worst(Side::Bid, 41), ClobError::TakerOriginBound);
+    assert_eq!(book.node_count(Side::Bid), 2);
+    assert!(book.evict_worst(Side::Bid, 42).unwrap().taker_origin);
+    assert_consistent(&book);
+}
+
 /// Liquidation must be able to clear a bound remainder: it is an open order
 /// consuming margin like any other.
 #[test]
@@ -1216,7 +1273,7 @@ fn every_removal_path_maintains_the_claimant_list() {
 
     // Eviction takes the tail, which is now also the head.
     assert_eq!(
-        book.evict_worst(Side::Bid).unwrap().order_id,
+        book.evict_worst(Side::Bid, ACTIVE_SLOT).unwrap().order_id,
         evicted.order_id
     );
 

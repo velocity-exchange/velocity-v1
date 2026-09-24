@@ -19,9 +19,9 @@
 pub use clob_wire::{ClobRemovalKindV0, NextRemovalArgsV0, OrderViewV0};
 use {
     crate::{
-        book::{ClobBook, NodeArena},
+        book::{evictable_order, ClobBook, NodeArena},
         instructions::MarketViewV0,
-        state::{ClobMarketV0, OrderBitFlag, Side},
+        state::{ClobMarketV0, OrderBitFlag, Side, NIL},
     },
     anchor_lang::prelude::*,
 };
@@ -36,7 +36,7 @@ pub fn handle_next_removal_v0(
     let market = &ctx.accounts.market;
     match args.kind {
         ClobRemovalKindV0::Expired => expired(market, clock.unix_timestamp),
-        ClobRemovalKindV0::Evictable => Ok(evictable(market)),
+        ClobRemovalKindV0::Evictable => evictable(market, clock.slot),
     }
 }
 
@@ -58,28 +58,31 @@ fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
     Ok(OrderViewV0::NONE)
 }
 
-/// The worst-priced order on the side that has reached the eviction threshold.
-/// When both sides have reached it, the fuller side is relieved first.
+/// The order `evict_worst_v0` would take on a side that has reached the
+/// eviction threshold. When both sides have reached it, the fuller side is
+/// relieved first. A side whose every order is a bound remainder is passed
+/// over, the same way [`evictable_order`] passes over each such order.
 ///
 /// The threshold and the choice of side are the book's policy and stay here. A
 /// caller that had to know them would re-decide, from numbers it read out of
 /// the header, what the book already decides for itself.
-fn evictable(market: &ClobMarketV0) -> OrderViewV0 {
-    let bids = market.node_count(Side::Bid);
-    let asks = market.node_count(Side::Ask);
-    let threshold = market.evict_threshold_per_side;
-    let side = match (bids >= threshold, asks >= threshold) {
-        (true, true) if asks > bids => Side::Ask,
-        (true, _) => Side::Bid,
-        (_, true) => Side::Ask,
-        _ => return OrderViewV0::NONE,
+fn evictable(market: &ClobMarketV0, slot: u64) -> Result<OrderViewV0> {
+    let preference = if market.node_count(Side::Ask) > market.node_count(Side::Bid) {
+        [Side::Ask, Side::Bid]
+    } else {
+        [Side::Bid, Side::Ask]
     };
-    let worst = market.worst(side);
-    market
-        .read_node(worst)
-        .ok()
-        .filter(|node| node.is_bit_flag_set(OrderBitFlag::Open))
-        .map_or(OrderViewV0::NONE, |node| {
-            crate::state::order_view(&node, worst)
-        })
+
+    let over_threshold = preference.into_iter().filter(|side| {
+        let count = market.node_count(*side);
+        count > 0 && count >= market.evict_threshold_per_side
+    });
+    for side in over_threshold {
+        let index = evictable_order(market, side, slot)?;
+        if index != NIL {
+            return Ok(crate::state::order_view(&market.read_node(index)?, index));
+        }
+    }
+
+    Ok(OrderViewV0::NONE)
 }

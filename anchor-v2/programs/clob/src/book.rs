@@ -117,7 +117,7 @@ pub trait ClobBook {
         force: bool,
         removed_ids: &mut dyn FnMut(u32) -> Result<()>,
     ) -> Result<CancelAllOutcome>;
-    fn evict_worst(&mut self, side: Side) -> Result<RemovedOrder>;
+    fn evict_worst(&mut self, side: Side, slot: u64) -> Result<RemovedOrder>;
     fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder>;
     fn fill(&mut self, order_ref: OrderRefV0, base_asset_amount: u64) -> Result<FilledOrder>;
     #[allow(clippy::too_many_arguments)]
@@ -163,7 +163,7 @@ pub trait ClobBook {
     /// Head of `side`: the best-priced, oldest order. [`NIL`] when empty.
     fn best(&self, side: Side) -> u32;
     /// Tail of `side`: the worst-priced, youngest order there. [`NIL`] when
-    /// empty. Kept so eviction of the worst order is O(1).
+    /// empty. Eviction starts its search here.
     fn worst(&self, side: Side) -> u32;
     /// O(1) invariants, re-checked after every mutating operation.
     fn validate_book(&self) -> Result<()>;
@@ -996,40 +996,35 @@ impl ClobBook for ClobMarketV0 {
         Ok(outcome)
     }
 
-    /// Eviction, run as a crank. It takes only the side's tail, which is the
-    /// worst-priced and youngest order there, and only while the side holds at
-    /// least `evict_threshold_per_side` orders. The crank works the soft-cap
-    /// buffer down so placements never reach the hard cap. Velocity is the
-    /// caller and loads the evicted maker's `User`, so aggregates stay exact.
-    fn evict_worst(&mut self, side: Side) -> Result<RemovedOrder> {
+    /// Eviction, run as a crank. It takes the order [`evictable_order`] names,
+    /// and only while the side holds at least `evict_threshold_per_side`
+    /// orders. The crank works the soft-cap buffer down so placements never
+    /// reach the hard cap. Velocity is the caller and loads the evicted maker's
+    /// `User`, so aggregates stay exact.
+    fn evict_worst(&mut self, side: Side, slot: u64) -> Result<RemovedOrder> {
         let count = self.node_count(side);
         require!(
             count > 0 && count >= self.evict_threshold_per_side,
             ClobError::BelowEvictThreshold
         );
 
-        let tail = self.worst(side);
-        let node = self.read_node(tail)?;
+        let index = evictable_order(self, side, slot)?;
+        require!(index != NIL, ClobError::TakerOriginBound);
+
+        let node = self.read_node(index)?;
         require!(
             node.is_bit_flag_set(OrderBitFlag::Open) && node.side() == side,
             ClobError::BookInvariantViolated
         );
 
         let removed = removed_order(&node);
-        remove_order(self, tail)?;
-
-        // The tail moved off the evicted slot, to the previous order or to
-        // `NIL` when that was the last one, and the slot is free.
-        require!(
-            self.worst(side) != tail && self.worst(side) == node.prev,
-            ClobError::BookInvariantViolated
-        );
+        remove_order(self, index)?;
         require!(
             self.node_count(side) == count - 1,
             ClobError::BookInvariantViolated
         );
 
-        validate_single_removal(self, &node, tail)?;
+        validate_single_removal(self, &node, index)?;
         self.validate_book()?;
         Ok(removed)
     }
@@ -1840,6 +1835,33 @@ fn is_claim_lapsed(claimant: &OrderNodeV0, slot: u64, grace_slots: u64) -> bool 
 /// cancel it without `force`. The bind ends exactly when the claim lapses.
 fn is_bound(node: &OrderNodeV0, slot: u64, grace_slots: u16) -> bool {
     node.is_taker_origin() && !is_claim_lapsed(node, slot, grace_slots as u64)
+}
+
+/// The worst-priced order on `side` that eviction may take, or [`NIL`] when
+/// every order there is a bound remainder. A bound remainder is passed over
+/// rather than refusing the eviction, so its owner cannot use a permissionless
+/// crank to pull it, and the side still frees a slot while the claim holds.
+/// The search passes only bound remainders, so the side's claimant count
+/// bounds it.
+pub(crate) fn evictable_order(book: &ClobMarketV0, side: Side, slot: u64) -> Result<u32> {
+    let mut cursor = book.worst(side);
+    let mut bound_passed = 0u16;
+    while cursor != NIL {
+        let node = book.read_node(cursor)?;
+        if !is_bound(&node, slot, book.reservation_grace_slots) {
+            return Ok(cursor);
+        }
+
+        require!(
+            bound_passed < book.claimant_count(side),
+            ClobError::BookInvariantViolated
+        );
+
+        bound_passed += 1;
+        cursor = node.prev;
+    }
+
+    Ok(NIL)
 }
 
 /// The caller's own resting order. No read of a side offers such an order back

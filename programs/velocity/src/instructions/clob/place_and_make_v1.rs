@@ -131,23 +131,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         return Ok(());
     };
 
-    let rest = ClobRestOrder {
-        market_index: params.market_index,
-        direction: order.direction,
-        price,
-        base_asset_amount,
-        max_ts: order.max_ts,
-        client_order_id: order.order_id,
-        // A maker quote rests as maker-origin, so a later order takes it at
-        // its own price.
-        taker_origin: false,
-        // A plain limit rests crossed, and the cross crank matches it at the
-        // counterparty's price. `post_only` does not choose the fee schedule.
-        reject_if_crossed: params.post_only != PostOnlyParam::None,
-        reduce_only: order.reduce_only,
-        activation_delay_slots: params.activation_delay_slots,
-    };
-
+    let rest = maker_rest(&params, &order, price, base_asset_amount);
     let placed = match rest_on_clob(&clob_rest_accounts(&ctx), &mut maps, &rest, &clock)? {
         RestOutcome::Placed(placed) => placed,
         RestOutcome::Refused(reason) => {
@@ -325,6 +309,31 @@ fn post_only_book_price(
             PositionDirection::Long => opposite_best.saturating_sub(tick_size.max(1)),
             PositionDirection::Short => opposite_best.saturating_add(tick_size.max(1)),
         }),
+    }
+}
+
+/// The maker order in the terms the book takes.
+fn maker_rest(
+    params: &OrderParams,
+    order: &Order,
+    price: u64,
+    base_asset_amount: u64,
+) -> ClobRestOrder {
+    ClobRestOrder {
+        market_index: params.market_index,
+        direction: order.direction,
+        price,
+        base_asset_amount,
+        max_ts: order.max_ts,
+        client_order_id: order.order_id,
+        // A maker quote rests as maker-origin, so a later order takes it at
+        // its own price.
+        taker_origin: false,
+        // A plain limit rests crossed, and the cross crank matches it at the
+        // counterparty's price. `post_only` does not choose the fee schedule.
+        reject_if_crossed: params.post_only != PostOnlyParam::None,
+        reduce_only: order.reduce_only,
+        activation_delay_slots: params.activation_delay_slots,
     }
 }
 

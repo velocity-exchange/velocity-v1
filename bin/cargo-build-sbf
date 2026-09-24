@@ -15,8 +15,9 @@ if [ -z "$real" ]; then
   exit 1
 fi
 # Strip legacy 'build-sbf' first arg (passed by some anchor versions for compat)
-# and strip any existing --tools-version (anchor passes one; we need to override it
-# to v1.54 so the bundled cargo can parse Cargo.lock v4).
+# and strip any existing --tools-version. Anchor passes one that has no sbpfv3
+# sysroot. The version must match deploy-scripts/build-sbf.sh, because an older
+# one cannot compile velocity and installing it unlinks the pinned toolchain.
 args=()
 skip_next=0
 for arg in "$@"; do
@@ -26,4 +27,4 @@ for arg in "$@"; do
   if [[ "$arg" == --tools-version=* ]]; then continue; fi
   args+=("$arg")
 done
-exec "$real" --tools-version v1.54 "${args[@]}"
+exec "$real" --tools-version "${PLATFORM_TOOLS_VERSION:-v1.57}" "${args[@]}"

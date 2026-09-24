@@ -152,6 +152,7 @@ test_files=(
   decodeUser.ts
   scaleOrders.ts
   admin.ts
+  bidAskTwapCrank.ts
   accountExtension.ts
   assetTier.ts
   cancelAllOrders.ts

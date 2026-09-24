@@ -776,7 +776,6 @@ fn amm_ref_price_decay_tail_test() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -867,7 +866,6 @@ fn amm_ref_price_decay_tail_test() {
             &mm_oracle_price_data,
             r,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -951,7 +949,6 @@ fn amm_ref_price_offset_decay_logic() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -1047,7 +1044,6 @@ fn amm_ref_price_offset_decay_logic() {
             &mm_oracle_price_data,
             r,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -1134,7 +1130,6 @@ fn amm_negative_ref_price_offset_decay_logic() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -1230,7 +1225,6 @@ fn amm_negative_ref_price_offset_decay_logic() {
             &mm_oracle_price_data,
             r,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -1323,7 +1317,6 @@ fn amm_perp_ref_offset() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -1385,7 +1378,6 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price_data,
             r,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -1398,8 +1390,8 @@ fn amm_perp_ref_offset() {
             perp_market.amm.reference_price_offset,
         )
         .unwrap();
-    assert_eq!(b, 7103317);
-    assert_eq!(a, 7110447);
+    assert_eq!(b, 7098190);
+    assert_eq!(a, 7105320);
     assert_eq!(
         perp_market
             .market_stats
@@ -1407,7 +1399,9 @@ fn amm_perp_ref_offset() {
             .last_oracle_price,
         7101600
     );
-    assert_eq!(perp_market.amm.reference_price_offset, 742);
+    // 40 base of inventory is a tiny share of the average open liquidity, so
+    // the inventory ramp gives a small offset (the full max needs 10%).
+    assert_eq!(perp_market.amm.reference_price_offset, 20);
     assert_eq!(perp_market.amm.max_spread, 90000);
 
     assert_eq!(r, 7101599);
@@ -1444,7 +1438,6 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price_data,
             reserve_price_mm_offset,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -1457,10 +1450,10 @@ fn amm_perp_ref_offset() {
             perp_market.amm.reference_price_offset,
         )
         .unwrap();
-    assert_eq!(perp_market.amm.reference_price_offset, 742);
+    assert_eq!(perp_market.amm.reference_price_offset, 20);
     assert_eq!(reserve_price_mm_offset, 7137107);
-    assert_eq!(b2, 7105896);
-    assert_eq!(a2, 7178937);
+    assert_eq!(b2, 7113197);
+    assert_eq!(a2, 7161330);
 
     // Uses the original oracle if the slot is old, ignoring MM oracle
     perp_market.market_stats.mm_oracle_price = mm_oracle_price_data.get_price() * 995 / 1000;
@@ -1486,7 +1479,6 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price,
             reserve_price_mm_offset_3,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -1500,8 +1492,8 @@ fn amm_perp_ref_offset() {
         )
         .unwrap();
     assert_eq!(reserve_price_mm_offset_3, r);
-    assert_eq!(b3, 7070543);
-    assert_eq!(a3, 7143221);
+    assert_eq!(b3, 7077808);
+    assert_eq!(a3, 7125701);
 }
 
 #[test]

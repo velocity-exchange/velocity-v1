@@ -148,12 +148,13 @@ export const MARGIN_PRECISION = TEN_THOUSAND;
 export const BPS_PRECISION = TEN_THOUSAND; // 1 unit = 1bp
 /** 1e6; precision for AMM bid/ask spread fields (`baseSpread`, `maxSpread`, `longSpread`, `shortSpread`, `lastOracleReservePriceSpreadPct`). */
 export const BID_ASK_SPREAD_PRECISION = new BN(1000000); // 10^6
-/** `PERCENTAGE_PRECISION / 400` = 2500 ppm (25 bp); oracle confidence at or above this carries full weight in the vol spread. Below it the weight ramps continuously from `1 / SPREAD_CONF_DISCOUNT_DIVISOR` to full. Mirrors the program's `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. */
-export const SPREAD_CONF_FULL_WEIGHT_THRESHOLD = PERCENTAGE_PRECISION.div(
-	new BN(400)
-);
-/** Denominator (20) of the confidence contribution's starting weight below `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. Mirrors the program's `SPREAD_CONF_DISCOUNT_DIVISOR`. */
+/** `PERCENTAGE_PRECISION / 500` = 2000 ppm (20 bp); the floor Pyth Lazer confidence is posted at. Confidence at or below it carries no market information, so the vol spread counts only the excess over it at full weight. Mirrors the program's `LAZER_CONF_FLOOR_PCT`. */
+export const LAZER_CONF_FLOOR_PCT = PERCENTAGE_PRECISION.div(new BN(500));
+/** Denominator (20): the vol spread counts the whole confidence at `1 / SPREAD_CONF_DISCOUNT_DIVISOR` weight, plus the excess over `LAZER_CONF_FLOOR_PCT` at full weight. Mirrors the program's `SPREAD_CONF_DISCOUNT_DIVISOR`. */
 export const SPREAD_CONF_DISCOUNT_DIVISOR = new BN(20);
+/** `PERCENTAGE_PRECISION / 10` (10%); inventory, as a fraction of the AMM's open liquidity, at which the reference price offset reaches its maximum. Below it the offset grows linearly with inventory. Mirrors the program's `REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT`. */
+export const REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT =
+	PERCENTAGE_PRECISION.div(new BN(10));
 
 /** 1e4; precision for `StateAccount.initialPctToLiquidate`, the fraction of a position liquidated per partial-liquidation pass. */
 export const LIQUIDATION_PCT_PRECISION = TEN_THOUSAND;

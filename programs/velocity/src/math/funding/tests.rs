@@ -526,13 +526,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     // very same oracle now passes the very same gate.
     let mut unfixed = market;
     unfixed
-        .update_oracle_derived_stats(
-            &mm_oracle_price_data,
-            validity,
-            now,
-            slot,
-            SlotClock::baseline(),
-        )
+        .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
         .unwrap();
     assert_eq!(
         unfixed
@@ -559,7 +553,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     // too-volatile oracle stays blocked.
     let mut fixed = market;
     fixed
-        .refresh_amm_quote_state(&mm_oracle_price_data, validity, slot, SlotClock::baseline())
+        .refresh_amm_quote_state(&mm_oracle_price_data, validity, slot)
         .unwrap();
     let historical = fixed.market_stats.historical_oracle_data;
     assert_eq!(

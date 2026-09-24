@@ -4,8 +4,8 @@ mod test {
         error::VelocityResult,
         math::constants::{
             AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BID_ASK_SPREAD_PRECISION,
-            BID_ASK_SPREAD_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION,
-            QUOTE_PRECISION_I128,
+            BID_ASK_SPREAD_PRECISION_I64, LAZER_CONF_FLOOR_PCT, PRICE_PRECISION_U64,
+            QUOTE_PRECISION, QUOTE_PRECISION_I128, REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT,
         },
         state::perp_market::{PerpMarket, AMM},
         vlp::amm::math::{amm::calculate_price, spread::*},
@@ -254,85 +254,59 @@ mod test {
     fn calculate_reference_price_offset_tests() {
         let rev_price = 4216 * 10000;
         let max_offset: i64 = 2500; // 25 bps
+                                    // liquidity fractions are PERCENTAGE_PRECISION; the ramp saturates at 10%
+        let full = REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT;
+        assert_eq!(full, 100_000);
+
+        // mark above oracle on both twaps with positive funding: positive premium
+        let positive_premium = |liquidity_fraction: i128| {
+            calculate_reference_price_offset(
+                rev_price,
+                1,
+                liquidity_fraction,
+                4216 * 10000,
+                4217 * 10000,
+                4216 * 10000,
+                4217 * 10000,
+                max_offset,
+            )
+            .unwrap()
+        };
+        // mark below oracle with negative funding: negative premium
+        let negative_premium = |liquidity_fraction: i128| {
+            calculate_reference_price_offset(
+                rev_price,
+                -43_000_000,
+                liquidity_fraction,
+                4216 * 10000,
+                4214 * 10000,
+                4216 * 10000,
+                4214 * 10000,
+                max_offset,
+            )
+            .unwrap()
+        };
 
         let res =
-            calculate_reference_price_offset(rev_price, 0, 0, 0, 0, 0, 0, 0, max_offset).unwrap();
+            calculate_reference_price_offset(rev_price, 0, 0, 0, 0, 0, 0, max_offset).unwrap();
         assert_eq!(res, 0);
 
-        let res = calculate_reference_price_offset(
-            rev_price,
-            1,
-            10,
-            1,
-            4216 * 10000,
-            4217 * 10000,
-            4216 * 10000,
-            4217 * 10000,
-            max_offset,
-        )
-        .unwrap();
-        assert_eq!(res, 290); // 1 penny divergence
-        let res = calculate_reference_price_offset(
-            rev_price,
-            1,
-            10,
-            1,
-            4216 * 10000,
-            4219 * 10000,
-            4216 * 10000,
-            4219 * 10000,
-            max_offset,
-        )
-        .unwrap();
-        assert_eq!(res, 1870);
+        // size comes from inventory alone: linear up to 10% of liquidity
+        assert_eq!(positive_premium(10), 0); // 0.001%: the old formula gave 290
+        assert_eq!(positive_premium(full / 100), 25); // 0.1%
+        assert_eq!(positive_premium(full / 10), 250); // 1%
+        assert_eq!(positive_premium(full / 2), 1250); // 5%
+        assert_eq!(positive_premium(full), 2500); // 10%
+        assert_eq!(positive_premium(full * 5), 2500); // capped past 10%
+        assert_eq!(negative_premium(-full / 10), -250);
+        assert_eq!(negative_premium(-full), -2500);
+        assert_eq!(negative_premium(-full * 5), -2500);
 
-        let res = calculate_reference_price_offset(
-            rev_price,
-            -43_000_000,
-            10,
-            1,
-            4216 * 10000,
-            4218 * 10000,
-            4216 * 10000,
-            4218 * 10000,
-            max_offset,
-        )
-        .unwrap();
-        assert_eq!(res, 0); // disregard 24h_avg sign
-
-        let res = calculate_reference_price_offset(
-            rev_price,
-            -43_000_000,
-            -10000,
-            1,
-            4216 * 10000,
-            4218 * 10000,
-            4216 * 10000,
-            4218 * 10000,
-            max_offset,
-        )
-        .unwrap();
-        assert_eq!(res, -2500); // counteracting 24h_avg / base inventory sign
-
-        let res = calculate_reference_price_offset(
-            rev_price,
-            -43_000_000,
-            -10,
-            1,
-            4216 * 10000,
-            4214 * 10000,
-            4216 * 10000,
-            4214 * 10000,
-            max_offset,
-        )
-        .unwrap();
-        assert_eq!(res, -2500); // flipped
-
-        let res = calculate_reference_price_offset(
+        // the premium magnitude does not size the offset
+        let wider_premium = calculate_reference_price_offset(
             rev_price,
             1,
-            10,
-            1,
+            full / 2,
             4216 * 10000,
             4223 * 10000,
             4216 * 10000,
@@ -340,42 +314,29 @@ mod test {
             max_offset,
         )
         .unwrap();
-        assert_eq!(res, 2500); // 7 penny divergence
+        assert_eq!(wider_premium, positive_premium(full / 2));
 
+        // premium and inventory disagree: no offset
+        assert_eq!(negative_premium(full / 2), 0);
+        assert_eq!(positive_premium(-full / 2), 0);
         let res = calculate_reference_price_offset(
             rev_price,
-            10_000_000,
-            10,
-            1,
+            -43_000_000,
+            full / 2,
             4216 * 10000,
-            4233 * 10000,
+            4218 * 10000,
             4216 * 10000,
-            4233 * 10000,
+            4218 * 10000,
             max_offset,
         )
         .unwrap();
-        assert_eq!(res, 2500); // upper bound
-
-        let res = calculate_reference_price_offset(
-            rev_price,
-            -10_000_000,
-            -10,
-            1,
-            4216 * 10000,
-            4123 * 10000,
-            4216 * 10000,
-            4123 * 10000,
-            max_offset,
-        )
-        .unwrap();
-        assert_eq!(res, -2500); // lower bound
+        assert_eq!(res, 0); // funding leg outweighs the twap legs
 
         // max offset = 0
         let res = calculate_reference_price_offset(
             rev_price,
             -10_000_000,
-            -10,
-            1,
+            -full,
             4216 * 10000,
             4123 * 10000,
             6 * 10000,
@@ -383,14 +344,13 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(res, 0); // zero bound
+        assert_eq!(res, 0);
 
-        // counteracting fast/slow twaps to 0
+        // counteracting fast/slow twaps net to a zero premium: no offset
         let res = calculate_reference_price_offset(
             rev_price,
             -1,
-            1,
-            1,
+            full,
             4216 * 10000,
             4123 * 10000,
             4123 * 10000,
@@ -527,15 +487,15 @@ mod test {
         )
         .unwrap();
 
-        // 1000/2 * (1+(34562000-34000000)/QUOTE_PRECISION) -> 781
-        // assert_eq!(long_spread3, 31246);
-        assert_eq!(long_spread3, 46869);
+        // a 1% confidence counts as 1% / 20 + (1% - 20bp) = 8500 (the Lazer
+        // floor is discounted), which the inventory and leverage scales
+        // then widen on the long side
+        assert_eq!(long_spread3, 44524);
 
-        // last_oracle_reserve_price_spread_pct + conf retreat
-        // assert_eq!(short_spread3, 1010000);
-        assert_eq!(short_spread3, 60000);
+        // last_oracle_reserve_price_spread_pct + conf retreat: 50000 + 8500
+        assert_eq!(short_spread3, 58500);
         assert!(short_spread3 > long_spread3);
-        assert_eq!(short_spread3 + long_spread3, 106869);
+        assert_eq!(short_spread3 + long_spread3, 103024);
 
         last_oracle_reserve_price_spread_pct = -BID_ASK_SPREAD_PRECISION_I64 / 777;
         last_oracle_conf_pct = 1;
@@ -772,7 +732,7 @@ mod test {
         .unwrap();
 
         assert_eq!(long_spread_btc, 250);
-        assert_eq!(short_spread_btc, 74194);
+        assert_eq!(short_spread_btc, 74117);
 
         let (long_spread_btc1, short_spread_btc1) = calculate_spread(
             500,
@@ -1345,28 +1305,34 @@ mod test {
     }
 
     #[test]
-    fn confidence_component_ramps_continuously() {
-        let threshold = SPREAD_CONF_FULL_WEIGHT_THRESHOLD;
-        assert_eq!(threshold, 2500);
+    fn confidence_component_discounts_the_lazer_floor() {
+        let floor = LAZER_CONF_FLOOR_PCT;
+        assert_eq!(floor, 2000);
         assert_eq!(calculate_spread_conf_component(0).unwrap(), 0);
-        assert_eq!(calculate_spread_conf_component(threshold / 2).unwrap(), 656);
+        // below the floor: 1/20 weight, as upstream Drift
+        assert_eq!(calculate_spread_conf_component(1000).unwrap(), 50);
+        // at the floor, where Lazer confidence sits in practice: 1bp
+        assert_eq!(calculate_spread_conf_component(floor).unwrap(), 100);
+        // above it the excess counts at full weight
+        assert_eq!(calculate_spread_conf_component(floor + 1).unwrap(), 101);
+        assert_eq!(calculate_spread_conf_component(2500).unwrap(), 625);
+        assert_eq!(calculate_spread_conf_component(4000).unwrap(), 2200);
+        assert_eq!(calculate_spread_conf_component(10000).unwrap(), 8500);
+        // meets the raw confidence at 4% and follows it from there
+        assert_eq!(calculate_spread_conf_component(40000).unwrap(), 40000);
+        assert_eq!(calculate_spread_conf_component(50000).unwrap(), 50000);
         assert_eq!(
-            calculate_spread_conf_component(threshold - 1).unwrap(),
-            2498
-        );
-        assert_eq!(
-            calculate_spread_conf_component(threshold).unwrap(),
-            threshold
-        );
-        assert_eq!(
-            calculate_spread_conf_component(threshold + 1).unwrap(),
-            threshold + 1
+            calculate_spread_conf_component(BID_ASK_SPREAD_PRECISION).unwrap(),
+            BID_ASK_SPREAD_PRECISION
         );
 
+        // continuous and monotone everywhere, never above the confidence,
+        // and no step: one unit of confidence moves it by at most two units
         let mut previous = 0;
-        for confidence in 0..=threshold + 1 {
+        for confidence in 0..=60_000 {
             let component = calculate_spread_conf_component(confidence).unwrap();
             assert!(component >= previous);
+            assert!(component - previous <= 2);
             assert!(component <= confidence);
             previous = component;
         }
@@ -2156,8 +2122,7 @@ mod test {
             };
             let mm =
                 MMOraclePriceData::new(oracle_price, 0, 0, OracleValidity::Valid, opd).unwrap();
-            update_amm_quote_state(amm, stats, &mm, reserve_price, slot, SlotClock::baseline())
-                .unwrap();
+            update_amm_quote_state(amm, stats, &mm, reserve_price, slot).unwrap();
             assert_eq!(amm.last_spread_update_slot, slot);
             (
                 amm.long_spread,
@@ -2362,27 +2327,16 @@ mod test {
         }
 
         #[test]
-        fn golden_conf_threshold() {
-            // 25 bp threshold: PERCENTAGE_PRECISION_U64 / 400 == 2500.
+        fn golden_conf_above_lazer_floor() {
+            // 25bp confidence: 2500 / 20 + (2500 - 2000) = 625 on each side
+            // before the inventory scale widens the long side.
             let mut amm_at = base_amm();
             let stats_at = MarketStats {
                 last_oracle_conf_pct: 2500,
                 ..base_stats()
             };
             let out_at = refresh(&mut amm_at, &stats_at, 0, 100);
-            assert_eq!(
-                out_at,
-                (
-                    2777,
-                    2500,
-                    0,
-                    0,
-                    99861342525,
-                    100138850000,
-                    100125156445,
-                    99875000000
-                )
-            );
+            assert_eq!((out_at.0, out_at.1), (729, 625));
 
             let mut amm_above = base_amm();
             let stats_above = MarketStats {
@@ -2390,60 +2344,67 @@ mod test {
                 ..base_stats()
             };
             let out_above = refresh(&mut amm_above, &stats_above, 0, 100);
-            // Crossing the threshold changes the quote by only the one-unit
-            // confidence increase; there is no full-weight cliff.
-            assert_eq!(
-                out_above,
-                (
-                    2778,
-                    2501,
-                    0,
-                    0,
-                    99861292664,
-                    100138900000,
-                    100125206570,
-                    99874950000
-                )
-            );
+            // One more unit of confidence moves the quote by one unit; there
+            // is no threshold and no cliff.
+            assert_eq!(out_above.1, out_at.1 + 1);
+            assert!(out_above.0 - out_at.0 <= 2);
         }
 
         #[test]
-        fn golden_offset_sign_transition_smoothing() {
-            // prior offset negative, fresh offset positive, intensity > 100:
-            // the smoothing branch runs and widens both sides asymmetrically.
-            let mut amm = AMM {
-                curve_update_intensity: 110,
-                ..base_amm()
-            };
-            let reserve_price = amm.reserve_price().unwrap();
-            let premium = (reserve_price / 100) as u64;
-            let stats = MarketStats {
-                last_reference_price_offset: -500,
-                last_24h_avg_funding_rate: 100_000,
-                last_funding_oracle_twap: reserve_price as i64,
-                last_mark_price_twap_5min: reserve_price + premium,
-                last_mark_price_twap: reserve_price + premium,
-                historical_oracle_data: crate::state::oracle::HistoricalOracleData {
-                    last_oracle_price_twap_5min: reserve_price as i64,
-                    last_oracle_price_twap: reserve_price as i64,
-                    ..Default::default()
-                },
-                ..base_stats()
-            };
-            let out = refresh(&mut amm, &stats, 0, 100);
-            assert_eq!(
-                out,
-                (
-                    674,
-                    175,
-                    -450,
-                    0,
-                    99988801254,
-                    100011200000,
-                    100031259768,
-                    99968750000
+        fn golden_offset_follows_inventory_without_smoothing() {
+            // +1% premium with positive inventory: the offset applies, sized
+            // by inventory over the average open liquidity (10 base each
+            // side here) and capped at max_offset (intensity 110: 10bp).
+            let quote = |base_asset_amount_with_amm: i128, prior_offset: i32| {
+                let mut amm = AMM {
+                    curve_update_intensity: 110,
+                    base_asset_amount_with_amm,
+                    min_base_asset_reserve: 90 * AMM_RESERVE_PRECISION,
+                    max_base_asset_reserve: 110 * AMM_RESERVE_PRECISION,
+                    ..base_amm()
+                };
+                let reserve_price = amm.reserve_price().unwrap();
+                let premium = reserve_price / 100;
+                let stats = MarketStats {
+                    last_reference_price_offset: prior_offset,
+                    last_24h_avg_funding_rate: 100_000,
+                    last_funding_oracle_twap: reserve_price as i64,
+                    last_mark_price_twap_5min: reserve_price + premium,
+                    last_mark_price_twap: reserve_price + premium,
+                    historical_oracle_data: crate::state::oracle::HistoricalOracleData {
+                        last_oracle_price_twap_5min: reserve_price as i64,
+                        last_oracle_price_twap: reserve_price as i64,
+                        ..Default::default()
+                    },
+                    ..base_stats()
+                };
+                let out = refresh(&mut amm, &stats, 0, 100);
+                let bid_price = calculate_price(
+                    amm.bid_quote_asset_reserve,
+                    amm.bid_base_asset_reserve,
+                    amm.peg_multiplier,
                 )
-            );
+                .unwrap();
+                (out, bid_price, reserve_price)
+            };
+
+            // 1 base of inventory = 10% of liquidity: full 10bp offset
+            let (full, bid_price, oracle_price) = quote(AMM_RESERVE_PRECISION as i128, 0);
+            assert_eq!(full.2, 1000);
+            // the offset lifts the bid, and the guard holds it at the oracle
+            assert!(full.1 > 1000);
+            assert!(bid_price <= oracle_price);
+
+            // 0.5 base = 5%: half the offset
+            let (half, _, _) = quote(AMM_RESERVE_PRECISION as i128 / 2, 0);
+            assert_eq!(half.2, 500);
+
+            // the previous offset no longer changes anything, even across a
+            // sign flip
+            let (after_negative, _, _) = quote(AMM_RESERVE_PRECISION as i128, -1000);
+            let (after_positive, _, _) = quote(AMM_RESERVE_PRECISION as i128, 1000);
+            assert_eq!(after_negative, full);
+            assert_eq!(after_positive, full);
         }
 
         #[test]
@@ -2523,22 +2484,27 @@ mod test {
                 )
             );
 
-            // oracle below reserve: positive pct, short retreat arm
+            // oracle below reserve: positive pct, short retreat arm. A 20000
+            // short spread would put the bid at reserve * 0.99^2 = 0.9801,
+            // above the 0.98 oracle; the oracle guard widens it to
+            // 2 * (1 - sqrt(0.98)) plus its rounding margin.
             let mut amm_pos = base_amm();
             let out_pos = refresh(&mut amm_pos, &stats, -((rp / 50) as i64), 100);
             assert_eq!(
                 out_pos,
                 (
                     0,
-                    20000,
+                    20103,
                     0,
                     20000,
                     100000000000,
                     100000000000,
-                    101010101010,
-                    99000000000
+                    101015355849,
+                    98994850000
                 )
             );
+            let bid_price = calculate_price(out_pos.7, out_pos.6, amm_pos.peg_multiplier).unwrap();
+            assert!(bid_price as i64 <= rp as i64 - (rp / 50) as i64);
         }
 
         #[test]
@@ -2654,6 +2620,523 @@ mod test {
                     99993750000
                 )
             );
+        }
+    }
+
+    /// Tests that pin the intended behavior of each spread mechanism, so a
+    /// later change that breaks the intent fails here rather than on chain.
+    mod intent {
+        use {
+            super::*,
+            crate::{
+                math::{bn::U192, constants::PEG_PRECISION, oracle::OracleValidity},
+                state::{
+                    oracle::{MMOraclePriceData, OraclePriceData},
+                    perp_market::MarketStats,
+                },
+            },
+        };
+
+        /// Deterministic pseudo-random numbers for the property tests.
+        struct Lcg(u64);
+        impl Lcg {
+            fn next(&mut self) -> u64 {
+                self.0 = self
+                    .0
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                self.0 >> 11
+            }
+            fn range(&mut self, lo: u64, hi: u64) -> u64 {
+                lo + self.next() % (hi - lo + 1)
+            }
+        }
+
+        /// A curve with base/quote reserves and a consistent k.
+        fn curve(base: u128, quote: u128, peg: u128) -> AMM {
+            let sqrt_k = U192::from(base)
+                .safe_mul(U192::from(quote))
+                .unwrap()
+                .integer_sqrt()
+                .try_to_u128()
+                .unwrap();
+            AMM {
+                base_asset_reserve: base,
+                quote_asset_reserve: quote,
+                sqrt_k,
+                peg_multiplier: peg,
+                ..AMM::default()
+            }
+        }
+
+        /// The bid and ask prices the curve actually quotes for the given
+        /// spreads and offset, through the same reserve path fills use.
+        fn quoted_prices(amm: &AMM, long: u32, short: u32, offset: i32) -> (u64, u64) {
+            let (ask_base, ask_quote) =
+                compute_spread_reserves_for_direction(amm, long, offset, PositionDirection::Long)
+                    .unwrap();
+            let (bid_base, bid_quote) =
+                compute_spread_reserves_for_direction(amm, short, offset, PositionDirection::Short)
+                    .unwrap();
+            (
+                calculate_price(bid_quote, bid_base, amm.peg_multiplier).unwrap(),
+                calculate_price(ask_quote, ask_base, amm.peg_multiplier).unwrap(),
+            )
+        }
+
+        #[test]
+        fn oracle_guard_never_quotes_through_the_oracle() {
+            let mut rng = Lcg(7);
+            let mut widened = 0;
+            for _ in 0..2000 {
+                let base = rng.range(1_000_000_000, 1_000_000_000_000_000) as u128;
+                let quote = base * rng.range(500, 2000) as u128 / 1000;
+                let peg = rng.range(1_000, 100_000_000_000) as u128;
+                let amm = curve(base, quote, peg);
+                let reserve_price = amm.reserve_price().unwrap();
+                if reserve_price < 1_000 {
+                    continue;
+                }
+                // oracle within +-20% of the curve
+                let oracle = (reserve_price as u128 * rng.range(800_000, 1_200_000) as u128
+                    / 1_000_000) as i64;
+                let long = rng.range(0, 30_000) as u32;
+                let short = rng.range(0, 30_000) as u32;
+                let offset = rng.range(0, 10_000) as i32 - 5_000;
+
+                let (g_long, g_short) =
+                    apply_oracle_guard(long, short, offset, reserve_price, oracle).unwrap();
+
+                // only ever widens, and stays a legal pair
+                assert!(g_long >= long && g_short >= short);
+                assert!(g_long as u64 + g_short as u64 <= BID_ASK_SPREAD_PRECISION);
+
+                // the quotes the curve actually produces sit on the right side
+                let (bid, ask) = quoted_prices(&amm, g_long, g_short, offset);
+                // and so does the linear reading routing and the mark TWAP use
+                let (read_bid, read_ask) = amm
+                    .bid_ask_price(reserve_price, g_long, g_short, offset)
+                    .unwrap();
+                assert!(
+                    read_bid as i64 <= oracle,
+                    "read bid {read_bid} above oracle {oracle}"
+                );
+                assert!(
+                    read_ask as i64 >= oracle,
+                    "read ask {read_ask} below oracle {oracle}"
+                );
+                assert!(
+                    bid as i64 <= oracle,
+                    "bid {bid} above oracle {oracle} (reserve {reserve_price}, long {long}, \
+                     short {short}, offset {offset})"
+                );
+                assert!(
+                    ask as i64 >= oracle,
+                    "ask {ask} below oracle {oracle} (reserve {reserve_price}, long {long}, \
+                     short {short}, offset {offset})"
+                );
+
+                // and a widened side is widened by no more than a few units of
+                // rounding: four units less would cross the oracle again in the
+                // executed or the read price
+                if g_short > short && g_short - 4 > short {
+                    let (bid_less, _) = quoted_prices(&amm, g_long, g_short - 4, offset);
+                    let (read_less, _) = amm
+                        .bid_ask_price(reserve_price, g_long, g_short - 4, offset)
+                        .unwrap();
+                    assert!(
+                        bid_less as i64 > oracle || read_less as i64 > oracle,
+                        "short widened more than needed"
+                    );
+                }
+                if g_long > long && g_long - 4 > long {
+                    let (_, ask_less) = quoted_prices(&amm, g_long - 4, g_short, offset);
+                    let (_, read_less) = amm
+                        .bid_ask_price(reserve_price, g_long - 4, g_short, offset)
+                        .unwrap();
+                    assert!(
+                        (ask_less as i64) < oracle || (read_less as i64) < oracle,
+                        "long widened more than needed"
+                    );
+                }
+                if g_long > long || g_short > short {
+                    widened += 1;
+                }
+            }
+            // the sample exercises both the binding and the non-binding case
+            assert!(widened > 200 && widened < 1900, "widened {widened}");
+        }
+
+        #[test]
+        fn oracle_guard_leaves_a_safe_quote_alone() {
+            // curve at the oracle, no offset: nothing binds, not even zero spreads
+            assert_eq!(
+                apply_oracle_guard(0, 0, 0, PRICE_PRECISION_U64, PRICE_PRECISION_U64 as i64)
+                    .unwrap(),
+                (0, 0)
+            );
+            assert_eq!(
+                apply_oracle_guard(250, 400, 0, PRICE_PRECISION_U64, PRICE_PRECISION_U64 as i64)
+                    .unwrap(),
+                (250, 400)
+            );
+            // curve 1% above the oracle with a 2% bid spread: already safe
+            assert_eq!(
+                apply_oracle_guard(100, 20_000, 0, 1_010_000, 1_000_000).unwrap(),
+                (100, 20_000)
+            );
+        }
+
+        #[test]
+        fn oracle_guard_widens_the_ask_when_the_curve_is_below_the_oracle() {
+            // curve 2% below the oracle: the ask needs 2 * (sqrt(1/0.98) - 1)
+            let (long, short) = apply_oracle_guard(100, 100, 0, 980_000, 1_000_000).unwrap();
+            assert_eq!(short, 100);
+            assert!(long > 20_000, "long {long}");
+            let amm = curve(
+                100 * AMM_RESERVE_PRECISION,
+                98 * AMM_RESERVE_PRECISION,
+                PEG_PRECISION,
+            );
+            let (_, ask) = quoted_prices(&amm, long, short, 0);
+            assert!(ask >= 1_000_000, "ask {ask}");
+        }
+
+        #[test]
+        fn oracle_guard_covers_the_linear_quote_readers() {
+            // Curve 2% below the oracle. The executed ask needs 19_903 units,
+            // but `bid_ask_price` (routing, mark TWAP) reads the ask linearly and
+            // needs 20_000; with only 19_903 it would read 1_019_903, below the
+            // 1_020_000 oracle.
+            let (long, _) = apply_oracle_guard(100, 100, 0, 1_000_000, 1_020_000).unwrap();
+            assert_eq!(long, 20_000);
+            let amm = AMM::default();
+            let (_, read_ask) = amm.bid_ask_price(1_000_000, long, 100, 0).unwrap();
+            assert!(read_ask >= 1_020_000, "read ask {read_ask}");
+        }
+
+        #[test]
+        fn oracle_guard_holds_the_line_against_the_offset() {
+            // an offset lifting the bid by 1bp at the oracle: short moves up to it
+            assert_eq!(
+                apply_oracle_guard(0, 0, 100, PRICE_PRECISION_U64, PRICE_PRECISION_U64 as i64)
+                    .unwrap(),
+                (0, 101)
+            );
+            // and a negative offset lowering the ask
+            assert_eq!(
+                apply_oracle_guard(0, 0, -100, PRICE_PRECISION_U64, PRICE_PRECISION_U64 as i64)
+                    .unwrap(),
+                (101, 0)
+            );
+        }
+
+        #[test]
+        fn oracle_guard_keeps_the_pair_within_one_hundred_percent() {
+            // an oracle 3x the curve would need more than 100% of ask spread
+            let (long, short) = apply_oracle_guard(0, 250, 0, 1_000_000, 3_000_000).unwrap();
+            assert_eq!(short, 250);
+            assert_eq!(long as u64 + short as u64, BID_ASK_SPREAD_PRECISION);
+        }
+
+        /// Whether the guarded quote sits on the correct side of the oracle, read
+        /// both linearly and as the marginal price at the spread reserves.
+        fn guarded_quote_is_safe(
+            long: u32,
+            short: u32,
+            offset: i32,
+            reserve_price: u64,
+            oracle: u64,
+        ) -> bool {
+            let (long, short) =
+                apply_oracle_guard(long, short, offset, reserve_price, oracle as i64).unwrap();
+            let (bid, ask) = AMM::default()
+                .bid_ask_price(reserve_price, long, short, offset)
+                .unwrap();
+            let p = 2 * BID_ASK_SPREAD_PRECISION_I128;
+            let r = reserve_price as i128;
+            let bid_factor = p + offset as i128 - short as i128;
+            let ask_factor = p + offset as i128 + long as i128;
+            let marginal_bid = r * bid_factor * bid_factor / (p * p);
+            let marginal_ask = r * ask_factor * ask_factor / (p * p);
+            bid <= oracle
+                && ask >= oracle
+                && marginal_bid <= oracle as i128
+                && marginal_ask >= oracle as i128
+        }
+
+        #[test]
+        fn oracle_guard_saturates_when_the_requirement_exceeds_the_remaining_budget() {
+            let r = 1_000_000_u64;
+            // zero opposite spread and offset: safe between about 1/4x and 2x
+            for oracle in [
+                250_100, 300_000, 500_000, 990_000, 1_010_000, 1_500_000, 1_999_000,
+            ] {
+                assert!(guarded_quote_is_safe(0, 0, 0, r, oracle), "oracle {oracle}");
+            }
+            assert!(!guarded_quote_is_safe(0, 0, 0, r, 200_000));
+            assert!(!guarded_quote_is_safe(0, 0, 0, r, 2_100_000));
+
+            // a wide opposite spread uses up the budget well inside that range
+            assert_eq!(
+                apply_oracle_guard(100, 800_000, 0, r, 1_500_000).unwrap(),
+                (200_000, 800_000)
+            );
+            assert!(!guarded_quote_is_safe(100, 800_000, 0, r, 1_500_000));
+            assert_eq!(
+                apply_oracle_guard(800_000, 100, 0, r, 500_000).unwrap(),
+                (800_000, 200_000)
+            );
+            assert!(!guarded_quote_is_safe(800_000, 100, 0, r, 500_000));
+
+            // an offset against the side moves the limit too: a -50% offset
+            // leaves the ask unable to reach an oracle at 1.6x
+            assert!(guarded_quote_is_safe(0, 0, 0, r, 1_600_000));
+            assert!(!guarded_quote_is_safe(0, 0, -500_000, r, 1_600_000));
+        }
+
+        fn quote_state_amm(curve_update_intensity: u8) -> AMM {
+            AMM {
+                base_spread: 500,
+                max_spread: 20_000,
+                curve_update_intensity,
+                amm_spread_adjustment: -25,
+                amm_inventory_spread_adjustment: -25,
+                total_fee_minus_distributions: 100 * QUOTE_PRECISION_I128,
+                ..AMM::default_test()
+            }
+        }
+
+        fn quote_state_stats() -> MarketStats {
+            MarketStats {
+                last_oracle_conf_pct: 2000,
+                mark_std: 500,
+                oracle_std: 500,
+                long_intensity_volume: 1_000_000,
+                short_intensity_volume: 1_000_000,
+                volume_24h: 10_000_000,
+                ..MarketStats::default()
+            }
+        }
+
+        fn refresh_against(amm: &mut AMM, oracle_price: i64) {
+            let reserve_price = amm.reserve_price().unwrap();
+            let opd = OraclePriceData {
+                price: oracle_price,
+                confidence: 100,
+                delay: 0,
+                has_sufficient_number_of_data_points: true,
+                sequence_id: None,
+            };
+            let mm =
+                MMOraclePriceData::new(oracle_price, 0, 0, OracleValidity::Valid, opd).unwrap();
+            update_amm_quote_state(amm, &quote_state_stats(), &mm, reserve_price, 100).unwrap();
+        }
+
+        #[test]
+        fn admin_adjustments_cannot_push_the_bid_through_the_oracle() {
+            // The mainnet case: the curve 30bp above the oracle and both admin
+            // adjustments at -25. The retreat puts the bid below the oracle,
+            // the two -25% cuts pull it back through, and the guard holds it.
+            let mut amm = quote_state_amm(100);
+            let reserve_price = amm.reserve_price().unwrap();
+            let oracle = (reserve_price as u128 * 9_970 / 10_000) as i64;
+            refresh_against(&mut amm, oracle);
+
+            let bid = calculate_price(
+                amm.bid_quote_asset_reserve,
+                amm.bid_base_asset_reserve,
+                amm.peg_multiplier,
+            )
+            .unwrap();
+            assert!(bid as i64 <= oracle, "bid {bid} above oracle {oracle}");
+        }
+
+        #[test]
+        fn frozen_curve_markets_quote_off_the_curve() {
+            // curve_update_intensity 0 never repegs and runs no dynamic
+            // pipeline, so neither the retreat nor the guard applies: the
+            // spread stays at half the base spread after the admin cut.
+            let mut amm = quote_state_amm(0);
+            let reserve_price = amm.reserve_price().unwrap();
+            let oracle = (reserve_price as u128 * 9_970 / 10_000) as i64;
+            refresh_against(&mut amm, oracle);
+            assert_eq!((amm.long_spread, amm.short_spread), (188, 188));
+        }
+
+        #[test]
+        fn lazer_floor_does_not_leak_through_the_vol_base() {
+            // Confidence at the 20bp floor with all flow on the long side
+            // (intensity share 1) and no std. If the vol base used the raw
+            // confidence the long side would get the full 20bp; it gets the
+            // discounted 1bp.
+            let (long, short) =
+                calculate_long_short_vol_spread(2000, PRICE_PRECISION_U64, 0, 0, 100, 0, 100)
+                    .unwrap();
+            assert_eq!((long, short), (100, 100));
+
+            // real price movement still reaches the vol spread through std/4
+            let (long, _) = calculate_long_short_vol_spread(
+                2000,
+                PRICE_PRECISION_U64,
+                40_000,
+                40_000,
+                100,
+                0,
+                100,
+            )
+            .unwrap();
+            assert_eq!(long, 10_000);
+        }
+
+        #[test]
+        fn offset_is_sized_by_inventory_monotone_capped_and_symmetric() {
+            let rev_price = 4216 * 10000;
+            let max_offset: i64 = 2000;
+            let with_premium = |premium_sign: i64, liquidity_fraction: i128| {
+                let mark = (4216 * 10000 + premium_sign * 10000) as u64;
+                calculate_reference_price_offset(
+                    rev_price,
+                    premium_sign * 1_000_000,
+                    liquidity_fraction,
+                    4216 * 10000,
+                    mark,
+                    4216 * 10000,
+                    mark,
+                    max_offset,
+                )
+                .unwrap() as i64
+            };
+
+            let mut previous = 0;
+            for step in 0..=300 {
+                let fraction = step as i128 * 1_000; // 0% .. 30% of liquidity
+                let up = with_premium(1, fraction);
+                let down = with_premium(-1, -fraction);
+                // monotone in inventory and never past the cap
+                assert!(up >= previous && up <= max_offset);
+                // the same size either way
+                assert_eq!(up, -down);
+                // premium and inventory disagreeing gives nothing
+                assert_eq!(with_premium(-1, fraction), 0);
+                assert_eq!(with_premium(1, -fraction), 0);
+                previous = up;
+            }
+            // linear up to 10% of liquidity, flat after
+            assert_eq!(with_premium(1, 50_000), max_offset / 2);
+            assert_eq!(with_premium(1, 100_000), max_offset);
+            assert_eq!(with_premium(1, 300_000), max_offset);
+        }
+    }
+
+    /// Shared parity fixtures: the SDK asserts against the same files
+    /// (packages/sdk/tests/sdkParity/fixtures), so the two implementations
+    /// cannot drift apart without a failing test on at least one side.
+    mod parity_fixtures {
+        use super::*;
+
+        fn rows(csv: &str) -> impl Iterator<Item = Vec<&str>> {
+            csv.lines()
+                .skip(1)
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.split(',').collect())
+        }
+
+        #[test]
+        fn calculate_spread_matches_fixtures() {
+            let csv = include_str!(concat!(
+                "../../../../../../../packages/sdk/tests/sdkParity/fixtures/",
+                "calculate_spread.csv"
+            ));
+            let mut n = 0;
+            for c in rows(csv) {
+                let out = calculate_spread(
+                    c[0].parse().unwrap(),
+                    c[1].parse().unwrap(),
+                    c[2].parse().unwrap(),
+                    c[3].parse().unwrap(),
+                    c[4].parse().unwrap(),
+                    c[5].parse().unwrap(),
+                    c[6].parse().unwrap(),
+                    c[7].parse().unwrap(),
+                    c[8].parse().unwrap(),
+                    c[9].parse().unwrap(),
+                    c[10].parse().unwrap(),
+                    c[11].parse().unwrap(),
+                    c[12].parse().unwrap(),
+                    c[13].parse().unwrap(),
+                    c[14].parse().unwrap(),
+                    c[15].parse().unwrap(),
+                    c[16].parse().unwrap(),
+                    c[17].parse().unwrap(),
+                    c[18].parse().unwrap(),
+                    c[19].parse().unwrap(),
+                    c[20].parse().unwrap(),
+                    c[21].parse().unwrap(),
+                    c[22].parse().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    out,
+                    (c[23].parse().unwrap(), c[24].parse().unwrap()),
+                    "row {}",
+                    n + 1
+                );
+                n += 1;
+            }
+            assert!(n > 0);
+        }
+
+        #[test]
+        fn apply_oracle_guard_matches_fixtures() {
+            let csv = include_str!(concat!(
+                "../../../../../../../packages/sdk/tests/sdkParity/fixtures/",
+                "apply_oracle_guard.csv"
+            ));
+            let mut n = 0;
+            for c in rows(csv) {
+                let out = apply_oracle_guard(
+                    c[0].parse().unwrap(),
+                    c[1].parse().unwrap(),
+                    c[2].parse().unwrap(),
+                    c[3].parse().unwrap(),
+                    c[4].parse().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    out,
+                    (c[5].parse().unwrap(), c[6].parse().unwrap()),
+                    "row {}",
+                    n + 1
+                );
+                n += 1;
+            }
+            assert!(n > 0);
+        }
+
+        #[test]
+        fn reference_price_offset_matches_fixtures() {
+            let csv = include_str!(concat!(
+                "../../../../../../../packages/sdk/tests/sdkParity/fixtures/",
+                "reference_price_offset.csv"
+            ));
+            let mut n = 0;
+            for c in rows(csv) {
+                let out = calculate_reference_price_offset(
+                    c[0].parse().unwrap(),
+                    c[1].parse().unwrap(),
+                    c[2].parse().unwrap(),
+                    c[3].parse().unwrap(),
+                    c[4].parse().unwrap(),
+                    c[5].parse().unwrap(),
+                    c[6].parse().unwrap(),
+                    c[7].parse().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(out, c[8].parse::<i32>().unwrap(), "row {}", n + 1);
+                n += 1;
+            }
+            assert!(n > 0);
         }
     }
 }

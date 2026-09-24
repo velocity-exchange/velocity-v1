@@ -1,7 +1,7 @@
 use {
     crate::{
         error::{ErrorCode, VelocityResult},
-        math::{casting::Cast, safe_math::SafeMath},
+        math::{casting::Cast, constants::LAZER_CONF_FLOOR_DIVISOR, safe_math::SafeMath},
         state::pyth_lazer_oracle::{
             PythLazerOracle, PYTH_LAZER_MAX_FUTURE_SECONDS, PYTH_LAZER_MAX_STALENESS_SECONDS,
             PYTH_LAZER_ORACLE_SEED, PYTH_LAZER_STORAGE_ID,
@@ -189,7 +189,8 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
 /// The confidence to persist for a Lazer price update.
 ///
 /// Confidence shares the price feed's exponent, so its mantissa compares directly to `price`.
-/// The result is the widest of three signals: a 20bps floor on the price, the distance between
+/// The result is the widest of three signals: a 20bps floor on the price
+/// (`LAZER_CONF_FLOOR_DIVISOR`, which the vol spread discounts), the distance between
 /// the best bid and the best ask, and the signed `Confidence` property in the message. The
 /// widest signal wins, so the stored confidence never understates what the message reports.
 ///
@@ -204,7 +205,7 @@ fn calculate_lazer_conf(
     best_ask_price: Option<i64>,
     signed_confidence: Option<i64>,
 ) -> VelocityResult<i64> {
-    let mut conf = price.safe_div(500)?;
+    let mut conf = price.safe_div(LAZER_CONF_FLOOR_DIVISOR)?;
 
     if let (Some(bid), Some(ask)) = (best_bid_price, best_ask_price) {
         let spread = i128::from(ask)
@@ -243,7 +244,7 @@ mod tests {
     /// A price mantissa of 100 units at a Lazer exponent of -6.
     const PRICE: i64 = 100_000_000;
     /// The 20bps floor on `PRICE`.
-    const FLOOR: i64 = PRICE / 500;
+    const FLOOR: i64 = PRICE / crate::math::constants::LAZER_CONF_FLOOR_DIVISOR;
 
     #[test]
     fn floor_wins_when_the_other_signals_are_narrower() {

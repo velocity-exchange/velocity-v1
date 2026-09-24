@@ -1,16 +1,24 @@
 import * as _ from 'lodash';
+import * as fs from 'fs';
+import * as path from 'path';
 import { assert } from 'chai';
 import {
 	BN,
 	MMOraclePriceData,
-	SPREAD_CONF_FULL_WEIGHT_THRESHOLD,
+	LAZER_CONF_FLOOR_PCT,
 	ZERO,
+	applyOracleGuard,
 	calculateAskPrice,
+	calculateBidAskPrice,
 	calculateBidPrice,
+	calculatePrice,
+	calculateReferencePriceOffset,
+	calculateSpreadBN,
 	calculateReservePrice,
 	calculateSpread,
 	calculateSpreadReserves,
 	calculateVolSpreadBN,
+	squareRootBN,
 } from '../../src';
 import { mockPerpMarkets } from '../dlob/helpers';
 
@@ -24,14 +32,12 @@ import { mockPerpMarkets } from '../dlob/helpers';
 // skewed long_spread to 111985 (~11.2%) on chain and put the vAMM ask ~$82.1 against
 // a ~$73.96 oracle. The SDK reported a zero-width spread for the same state.
 //
-// The short side of that capture predates program commit 440349868 (24 Aug 2026),
-// which ramped the confidence contribution to the vol spread. Under the current
-// program the confidence floor dominates the short side: with this snapshot's
-// inputs `calculate_long_short_vol_spread` returns (1620, 1620), so the short
-// spread can no longer sit at the 440 originally recorded here. The long side is
-// driven by inventory skew and is unchanged by the ramp.
+// The short side is the vol floor. This snapshot's confidence (20bp) is the Lazer
+// floor, which the vol spread discounts to 1/20, so the short spread is about 1bp
+// (103, from the program's own `calculate_spread` with these inputs). The long
+// side is driven by inventory skew.
 const ON_CHAIN_LONG_SPREAD = 111985;
-const CONF_FLOORED_SHORT_SPREAD = 1620;
+const SHORT_SPREAD = 103;
 
 // Anchored to the market's own lastMarkPriceTwapTs / lastOraclePriceTwapTs so the
 // `now`-derived inputs (liveOracleStd, oracle conf pct) match the on-chain crank.
@@ -117,7 +123,7 @@ describe('AMM spread parity with update_spreads', () => {
 		);
 
 		assertCloseTo(longSpread, ON_CHAIN_LONG_SPREAD, 2);
-		assertCloseTo(shortSpread, CONF_FLOORED_SHORT_SPREAD, 5);
+		assertCloseTo(shortSpread, SHORT_SPREAD, 5);
 	});
 
 	it('quotes an ask above the reserve price when baseSpread is 0', () => {
@@ -186,6 +192,24 @@ describe('AMM spread parity with update_spreads', () => {
 		assert(shortSpread === 150, `expected 150, got ${shortSpread}`);
 	});
 
+	it('does not apply the oracle guard on the curveUpdateIntensity == 0 branch', () => {
+		const market = devnetSolPerp();
+		market.amm.curveUpdateIntensity = 0;
+		market.amm.baseSpread = 175;
+
+		// The snapshot oracle sits ~4.7bp above the reserve price. A market with
+		// curveUpdateIntensity 0 never repegs and quotes off its curve alone, so
+		// the spread stays at half the base spread on both sides.
+		const [longSpread, shortSpread] = calculateSpread(
+			market.amm,
+			market.marketStats,
+			oracle,
+			NOW
+		);
+		assert(longSpread === 87, `expected 87, got ${longSpread}`);
+		assert(shortSpread === 87, `expected 87, got ${shortSpread}`);
+	});
+
 	it('requires oracle data whenever curveUpdateIntensity is nonzero', () => {
 		const market = devnetSolPerp();
 
@@ -218,11 +242,10 @@ describe('AMM spread parity with update_spreads', () => {
 });
 
 // Isolates the confidence component of `calculateVolSpreadBN`: with zero std the vol
-// base is the confidence itself and the intensity factor floors at 0.01, so the term
-// competing with the confidence component is conf/100, which the ramp (>= conf/20)
-// always dominates. `max()` therefore returns the confidence component. Expected
-// values are the ones asserted by the program's own
-// `confidence_component_ramps_continuously` test.
+// base is the confidence component itself and the intensity factor floors at 0.01, so
+// the term competing with it is component/100. `max()` therefore returns the confidence
+// component. Expected values are the ones asserted by the program's own
+// `confidence_component_discounts_the_lazer_floor` test.
 function confComponent(confidencePct: number): number {
 	const [longVolSpread, shortVolSpread] = calculateVolSpreadBN(
 		new BN(confidencePct),
@@ -241,24 +264,32 @@ function confComponent(confidencePct: number): number {
 }
 
 describe('vol spread confidence component parity with calculate_spread_conf_component', () => {
-	const threshold = SPREAD_CONF_FULL_WEIGHT_THRESHOLD.toNumber();
+	const floor = LAZER_CONF_FLOOR_PCT.toNumber();
 
-	it('matches the program at and around the full-weight threshold', () => {
-		assert(threshold === 2500, `expected 2500, got ${threshold}`);
+	it('matches the program around the Lazer confidence floor', () => {
+		assert(floor === 2000, `expected 2000, got ${floor}`);
 		assert(confComponent(0) === 0);
-		assert(confComponent(threshold / 2) === 656);
-		assert(confComponent(threshold - 1) === 2498);
-		assert(confComponent(threshold) === threshold);
-		assert(confComponent(threshold + 1) === threshold + 1);
+		assert(confComponent(1000) === 50);
+		assert(confComponent(floor) === 100);
+		assert(confComponent(floor + 1) === 101);
+		assert(confComponent(2500) === 625);
+		assert(confComponent(4000) === 2200);
+		assert(confComponent(10000) === 8500);
+		assert(confComponent(40000) === 40000);
+		assert(confComponent(50000) === 50000);
 	});
 
-	it('ramps monotonically and never exceeds the confidence itself', () => {
+	it('is continuous and monotone, never exceeding the confidence itself', () => {
 		let previous = 0;
-		for (let confidence = 0; confidence <= threshold + 1; confidence++) {
+		for (let confidence = 0; confidence <= 60_000; confidence++) {
 			const component = confComponent(confidence);
 			assert(
 				component >= previous,
 				`component fell from ${previous} to ${component} at conf ${confidence}`
+			);
+			assert(
+				component - previous <= 2,
+				`component jumped from ${previous} to ${component} at conf ${confidence}`
 			);
 			assert(
 				component <= confidence,
@@ -267,10 +298,171 @@ describe('vol spread confidence component parity with calculate_spread_conf_comp
 			previous = component;
 		}
 	});
+});
 
-	it('does not step off the old 1/20 cliff just below the threshold', () => {
-		// The pre-ramp SDK divided by a flat 20 anywhere below the threshold,
-		// returning 102 here against the program's 1691.
-		assert(confComponent(2045) === 1691, `got ${confComponent(2045)}`);
+// Mirrors the program's `oracle_guard_never_quotes_through_the_oracle`: for random
+// curves, spreads and offsets, the quotes the curve produces after the guard sit on
+// the right side of the oracle, and the guard only ever widens.
+describe('oracle guard keeps quotes on the right side of the oracle', () => {
+	const P = new BN(1_000_000);
+	// mulberry32: a small deterministic generator for the property test
+	let seed = 7;
+	const next = () => {
+		seed = (seed + 0x6d2b79f5) | 0;
+		let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return (t ^ (t >>> 14)) >>> 0;
+	};
+	const range = (lo: number, hi: number) => lo + (next() % (hi - lo + 1));
+
+	// The signed composite spread s moves the quote reserve by quote * s / 2P and the
+	// base reserve follows from k, as in `compute_spread_reserves_for_direction`.
+	const quotedPrice = (
+		base: BN,
+		quote: BN,
+		sqrtK: BN,
+		peg: BN,
+		s: number
+	): BN => {
+		const newQuote = quote.add(quote.mul(new BN(s)).div(P.muln(2)));
+		const newBase = sqrtK.mul(sqrtK).div(newQuote);
+		return calculatePrice(newBase, newQuote, peg);
+	};
+
+	it('holds for random markets', () => {
+		let widened = 0;
+		for (let i = 0; i < 2000; i++) {
+			const base = new BN(range(1_000_000_000, 1_000_000_000_000));
+			const quote = base.muln(range(500, 2000)).divn(1000);
+			const peg = new BN(range(1_000, 100_000_000_000));
+			const sqrtK = squareRootBN(base.mul(quote));
+			const reservePrice = calculatePrice(base, quote, peg);
+			if (reservePrice.ltn(1_000)) continue;
+			const oracle = reservePrice.muln(range(800_000, 1_200_000)).div(P);
+			const long = range(0, 30_000);
+			const short = range(0, 30_000);
+			const offset = range(0, 10_000) - 5_000;
+
+			const [gLong, gShort] = applyOracleGuard(
+				long,
+				short,
+				offset,
+				reservePrice,
+				oracle
+			);
+			assert(gLong >= long && gShort >= short, 'the guard only widens');
+			assert(gLong + gShort <= 1_000_000, 'the pair stays legal');
+
+			const bid = quotedPrice(base, quote, sqrtK, peg, offset - gShort);
+			const ask = quotedPrice(base, quote, sqrtK, peg, gLong + offset);
+			assert(bid.lte(oracle), `bid ${bid} above oracle ${oracle}`);
+			assert(ask.gte(oracle), `ask ${ask} below oracle ${oracle}`);
+			if (gLong > long || gShort > short) widened++;
+		}
+		assert(widened > 200 && widened < 1900, `widened ${widened}`);
+	});
+
+	it('holds against the admin adjustments end to end', () => {
+		// The mainnet case: the curve 30bp above the oracle with both admin
+		// adjustments at -25. The bid must not end up above the oracle.
+		const market = _.cloneDeep(mockPerpMarkets[0]);
+		const amm = market.amm;
+		amm.baseAssetReserve = new BN(100).mul(new BN(1_000_000_000));
+		amm.quoteAssetReserve = new BN(100).mul(new BN(1_000_000_000));
+		amm.sqrtK = new BN(100).mul(new BN(1_000_000_000));
+		amm.terminalQuoteAssetReserve = amm.quoteAssetReserve;
+		amm.pegMultiplier = new BN(1_000_000);
+		amm.baseAssetAmountWithAmm = ZERO;
+		amm.baseSpread = 500;
+		amm.maxSpread = 20_000;
+		amm.curveUpdateIntensity = 100;
+		amm.ammSpreadAdjustment = -25;
+		amm.ammInventorySpreadAdjustment = -25;
+		amm.totalFeeMinusDistributions = new BN(100_000_000);
+		amm.netRevenueSinceLastFunding = ZERO;
+		market.marketStats.lastOracleConfPct = new BN(2000);
+
+		const oracle = {
+			price: new BN(997_000),
+			slot: new BN(0),
+			confidence: new BN(1),
+			hasSufficientNumberOfDataPoints: true,
+			isMMOracleActive: true,
+		} as MMOraclePriceData;
+		const [bid] = calculateBidAskPrice(amm, market.marketStats, oracle, false);
+		assert(bid.lte(oracle.price), `bid ${bid} above oracle ${oracle.price}`);
+	});
+});
+
+// Shared with the program's `parity_fixtures` tests: both implementations assert
+// against the same expected outputs, which come from the program.
+describe('spread math parity with the program fixtures', () => {
+	const rows = (file: string): string[][] =>
+		fs
+			.readFileSync(path.join(__dirname, 'fixtures', file), 'utf8')
+			.trim()
+			.split('\n')
+			.slice(1)
+			.map((line) => line.split(','));
+	const bn = (x: string) => new BN(x);
+
+	it('calculateSpreadBN matches calculate_spread', () => {
+		for (const [i, c] of rows('calculate_spread.csv').entries()) {
+			const out = calculateSpreadBN(
+				Number(c[0]),
+				bn(c[1]),
+				bn(c[2]),
+				Number(c[3]),
+				bn(c[4]),
+				bn(c[5]),
+				bn(c[6]),
+				bn(c[7]),
+				bn(c[8]),
+				bn(c[9]),
+				bn(c[10]),
+				bn(c[11]),
+				bn(c[12]),
+				bn(c[13]),
+				bn(c[14]),
+				bn(c[15]),
+				bn(c[16]),
+				bn(c[17]),
+				bn(c[18]),
+				Number(c[19]),
+				bn(c[20]),
+				bn(c[21]),
+				Number(c[22])
+			);
+			assert.deepEqual(out, [Number(c[23]), Number(c[24])], `row ${i + 1}`);
+		}
+	});
+
+	it('applyOracleGuard matches apply_oracle_guard', () => {
+		for (const [i, c] of rows('apply_oracle_guard.csv').entries()) {
+			const out = applyOracleGuard(
+				Number(c[0]),
+				Number(c[1]),
+				Number(c[2]),
+				bn(c[3]),
+				bn(c[4])
+			);
+			assert.deepEqual(out, [Number(c[5]), Number(c[6])], `row ${i + 1}`);
+		}
+	});
+
+	it('calculateReferencePriceOffset matches calculate_reference_price_offset', () => {
+		for (const [i, c] of rows('reference_price_offset.csv').entries()) {
+			const out = calculateReferencePriceOffset(
+				bn(c[0]),
+				bn(c[1]),
+				bn(c[2]),
+				bn(c[3]),
+				bn(c[4]),
+				bn(c[5]),
+				bn(c[6]),
+				Number(c[7])
+			);
+			assert.equal(out.toNumber(), Number(c[8]), `row ${i + 1}`);
+		}
 	});
 });

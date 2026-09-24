@@ -1402,8 +1402,8 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionInstruction> {
 		const perpMarket = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 
-		// live chain slot so the target-price trade sizes against the AMM's
-		// current-slot spread smoothing / MM-oracle validity across a gate switch
+		// live chain slot so the target-price trade sizes against the current
+		// MM-oracle validity across a gate switch
 		const currentSlot = await this.connection.getSlot();
 		const [direction, tradeSize, _] = calculateTargetPriceTrade(
 			perpMarket,
@@ -1411,9 +1411,7 @@ export class AdminClient extends VelocityClient {
 			new BN(1000),
 			'quote',
 			this.getMMOracleDataForPerpMarket(perpMarketIndex, currentSlot),
-			true,
-			new BN(currentSlot),
-			this.getStateAccount()
+			true
 		);
 
 		const [newQuoteAssetAmount, newBaseAssetAmount] =

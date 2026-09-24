@@ -375,9 +375,7 @@ export class JitMaker implements Bot {
 			perpMarketAccount.amm,
 			perpMarketAccount.marketStats,
 			this.velocityClient.getMMOracleDataForPerpMarket(perpIdx, slot),
-			true,
-			new BN(slot),
-			this.velocityClient.getStateAccount()
+			true
 		);
 
 		let bestBidPrice;

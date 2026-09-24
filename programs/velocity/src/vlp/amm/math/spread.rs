@@ -23,6 +23,12 @@
 //! pipeline in [`calculate_spread`] is a line-by-line transcription of this
 //! composition, and each term's arithmetic lives in its component function,
 //! documented with its formula, units, and saturation behavior.
+//!
+//! After the admin adjustment, the reference price offset shifts both quotes
+//! by an amount that grows with inventory
+//! ([`calculate_reference_price_offset`]), and on markets with a nonzero
+//! `curve_update_intensity` a final guard ([`apply_oracle_guard`]) widens
+//! whichever side would otherwise quote through the oracle.
 
 use {
     crate::{
@@ -37,16 +43,13 @@ use {
                 BID_ASK_SPREAD_PRECISION_I64, DEFAULT_LARGE_BID_ASK_FACTOR,
                 DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER,
                 FUNDING_RATE_OFFSET_DENOMINATOR, FUNDING_RATE_OFFSET_PERCENTAGE,
-                MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION, PERCENTAGE_PRECISION,
-                PERCENTAGE_PRECISION_I128, PRICE_PRECISION, PRICE_PRECISION_I128,
-                PRICE_PRECISION_I64, REF_PRICE_OFFSET_SMOOTHING_MIN_STEP,
-                REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET,
-                REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR, SPREAD_CONF_DISCOUNT_DIVISOR,
-                SPREAD_CONF_FULL_WEIGHT_THRESHOLD, SPREAD_REVENUE_RETREAT_MAX_DIVISOR,
-                SPREAD_VOL_STD_DISCOUNT_DIVISOR,
+                LAZER_CONF_FLOOR_PCT, MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION,
+                PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PRICE_PRECISION,
+                PRICE_PRECISION_I128, PRICE_PRECISION_I64,
+                REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT, SPREAD_CONF_DISCOUNT_DIVISOR,
+                SPREAD_REVENUE_RETREAT_MAX_DIVISOR, SPREAD_VOL_STD_DISCOUNT_DIVISOR,
             },
             safe_math::SafeMath,
-            time::{Millis, SlotClock},
         },
         msg,
         state::{
@@ -56,6 +59,7 @@ use {
         validate,
         vlp::amm::math::amm::_calculate_market_open_bids_asks,
     },
+    num_integer::Roots,
     std::cmp::{max, min, Ordering},
 };
 
@@ -89,16 +93,8 @@ pub fn update_amm_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
-    slot_clock: SlotClock,
 ) -> VelocityResult<()> {
-    let quote_state = compute_quote_state(
-        amm,
-        market_stats,
-        mm_oracle_price_data,
-        reserve_price,
-        slot,
-        slot_clock,
-    )?;
+    let quote_state = compute_quote_state(amm, market_stats, mm_oracle_price_data, reserve_price)?;
     commit_quote_state(amm, &quote_state, slot)?;
     validate_amm_quote_state(amm)
 }
@@ -117,21 +113,14 @@ struct QuoteState {
 /// the AMM, the market stats, and this slot's oracle, without touching the
 /// account.
 ///
-/// # Reference-price-offset smoothing
-///
-/// When the freshly computed `reference_price_offset` has the opposite sign
-/// of `market_stats.last_reference_price_offset` AND
-/// `amm.curve_update_intensity > 100`, the transition is smoothed across
-/// slots rather than snapping. `market_stats.last_reference_price_offset`
-/// is written by the crank after every refresh (from `amm.reference_price_offset`)
-/// and seeds the smoothing for the next refresh.
+/// The reference price offset grows linearly with inventory (see
+/// [`calculate_reference_price_offset`]), so it passes through zero
+/// continuously when inventory changes sign and needs no smoothing.
 fn compute_quote_state(
     amm: &AMM,
     market_stats: &MarketStats,
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
-    slot: u64,
-    slot_clock: SlotClock,
 ) -> VelocityResult<QuoteState> {
     // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
@@ -171,7 +160,6 @@ fn compute_quote_state(
             reserve_price,
             market_stats.last_24h_avg_funding_rate,
             liquidity_fraction_after_deadband,
-            market_stats.min_order_size,
             market_stats
                 .historical_oracle_data
                 .last_oracle_price_twap_5min,
@@ -224,69 +212,28 @@ fn compute_quote_state(
             .max(1);
     }
 
-    // 10: offset: the reference price offset shifts BOTH quotes; on a sign
-    // transition it is smoothed here rather than snapped.
-    // Mirrors the legacy `update_spreads` smoothing branch (deleted from
-    // `controller::amm`). Reads the previous offset from `MarketStats` so
-    // there's per-crank continuity even though spread state is no longer
-    // cached on `AMM`.
-    let last_reference_price_offset = market_stats.last_reference_price_offset;
-    let do_reference_price_smooth = last_reference_price_offset.signum()
-        != reference_price_offset.signum()
-        && amm.curve_update_intensity > 100;
-
-    let final_reference_price_offset = if do_reference_price_smooth {
-        // The budget is calibrated per 400ms but accrues in proportion to the
-        // elapsed milliseconds, so the smoothing completes over the same wall
-        // clock at any slot duration. Counting whole 400ms periods instead would
-        // floor to zero for every gap under 400ms, which is what a
-        // consecutive-slot crank becomes once slots are faster than that; the
-        // step would then pin to the minimum and converge slower the more often
-        // the market is cranked.
-        let elapsed_ms = slot_clock.elapsed(amm.last_spread_update_slot, slot);
-        let reference_price_delta = {
-            let full_offset_delta = reference_price_offset
-                .cast::<i128>()?
-                .saturating_sub(last_reference_price_offset.cast::<i128>()?);
-            let budget = elapsed_ms
-                .as_ms()
-                .cast::<i128>()?
-                .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET)?
-                .safe_div(Millis::UNIT.as_ms().cast::<i128>()?)?;
-            let raw = full_offset_delta
-                .abs()
-                .min(budget)
-                .safe_div(REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR)?
-                .cast::<i32>()?;
-
-            full_offset_delta.signum().cast::<i32>()?
-                * (raw.max(REF_PRICE_OFFSET_SMOOTHING_MIN_STEP).min(
-                    if last_reference_price_offset != 0 {
-                        last_reference_price_offset.abs()
-                    } else {
-                        reference_price_offset.abs()
-                    },
-                ))
-        };
-
-        let smoothed = last_reference_price_offset.safe_add(reference_price_delta)?;
-
-        if reference_price_delta < 0 {
-            long_spread = long_spread.safe_add(reference_price_delta.unsigned_abs())?;
-            short_spread = short_spread.safe_add(smoothed.unsigned_abs())?;
-        } else {
-            short_spread = short_spread.safe_add(reference_price_delta.unsigned_abs())?;
-            long_spread = long_spread.safe_add(smoothed.unsigned_abs())?;
-        }
-        smoothed
+    // 10: offset: the reference price offset shifts BOTH quotes.
+    // 11: oracle guard: no quote through the oracle. Step 2 keeps the side
+    // facing the divergence off the oracle, but the admin adjustments and the
+    // offset run after it and can undo it, so the guard runs on the final
+    // values. Like step 2 it belongs to the dynamic pipeline: a market with
+    // curve_update_intensity 0 never repegs and quotes off its curve alone.
+    let (long_spread, short_spread) = if amm.curve_update_intensity > 0 {
+        apply_oracle_guard(
+            long_spread,
+            short_spread,
+            reference_price_offset,
+            reserve_price,
+            mm_oracle_price_data.get_price(),
+        )?
     } else {
-        reference_price_offset
+        (long_spread, short_spread)
     };
 
     Ok(QuoteState {
         long_spread,
         short_spread,
-        reference_price_offset: final_reference_price_offset,
+        reference_price_offset,
         last_oracle_reserve_price_spread_pct,
     })
 }
@@ -401,6 +348,113 @@ fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
     }
 
     Ok(())
+}
+
+/// Widen whichever side would quote through the oracle, so the bid stays at or
+/// below it and the ask at or above it. Never narrows a spread.
+///
+/// The quote is read two ways and both must stay on the correct side. Each side
+/// takes the larger of the two requirements.
+///
+/// Where the two prices come from. `s` is the side's signed spread: `offset +
+/// long` for the ask, `offset - short` for the bid.
+/// - Marginal price. The curve's price is `quote * peg / base`, and
+///   `base = k / quote`, so the price is `quote^2 * peg / k`.
+///   [`compute_spread_reserves_for_direction`] builds each side's reserves by
+///   moving the quote reserve to `quote * (1 + s/2)` and taking the base
+///   reserve from `k`. Squaring the quote factor gives
+///   `reserve_price * (1 + s/2)^2`. Small fills execute at this price.
+/// - Linear price. [`AMM::bid_price`] and [`AMM::ask_price`] multiply the
+///   reserve price by `1 + s` directly. Routing (`AmmQuoter::best_price`) and
+///   the mark TWAP crank read this one.
+///
+/// `(1 + s/2)^2 = 1 + s + s^2/4` is always at least `1 + s`, so the two
+/// readings differ by `s^2/4`. The linear bound is stricter on the ask
+/// (`s > 0`) and the marginal bound on the bid (`s < 0`).
+///
+/// Example: reserve price 100, oracle 102, no offset. The linear ask
+/// `100 * (1 + long)` needs long >= 2%. The marginal ask
+/// `100 * (1 + long / 2)^2` needs about 1.99%. The guard sets long to 2%.
+///
+/// The pair is capped at 100%, so a side can widen only by 100% minus the
+/// opposite spread. When it needs more, it stops at the cap and still quotes
+/// through the oracle; callers do not detect this. With a zero opposite spread
+/// and a zero offset that happens past about twice the reserve price (ask) or
+/// under a quarter of it (bid). A wide opposite spread or an offset against
+/// the side brings the limit closer.
+fn apply_oracle_guard(
+    long_spread: u32,
+    short_spread: u32,
+    reference_price_offset: i32,
+    reserve_price: u64,
+    oracle_price: i64,
+) -> VelocityResult<(u32, u32)> {
+    if oracle_price <= 0 || reserve_price == 0 {
+        return Ok((long_spread, short_spread));
+    }
+
+    // All values below are in spread units, BID_ASK_SPREAD_PRECISION = 1 = 100%.
+    // The ask side rounds its requirement up and the bid side rounds down, so a
+    // requirement never comes out too small.
+    let one = BID_ASK_SPREAD_PRECISION_I128;
+    let offset = reference_price_offset.cast::<i128>()?;
+
+    // 1. Linear price, reserve_price * (1 + s). With q = oracle / reserve_price:
+    //   ask >= oracle  <=>  1 + offset + long >= q  <=>  long >= q - 1 - offset
+    //   bid <= oracle  <=>  1 + offset - short <= q  <=>  short >= 1 + offset - q
+    let q_numerator = oracle_price.cast::<i128>()?.safe_mul(one)?;
+    let reserve_price_i128 = reserve_price.cast::<i128>()?;
+    let q_down = q_numerator.safe_div(reserve_price_i128)?;
+    let q_up = q_numerator.safe_div_ceil(reserve_price_i128)?;
+    let linear_min_long = q_up.safe_sub(one)?.safe_sub(offset)?;
+    let linear_min_short = one.safe_add(offset)?.safe_sub(q_down)?;
+
+    // 2. Marginal price at the spread reserves, reserve_price * (1 + s/2)^2
+    // (see compute_spread_reserves_for_direction). With r = sqrt(q):
+    //   ask >= oracle  <=>  1 + (offset + long)/2 >= r  <=>  long >= 2(r - 1) - offset
+    //   bid <= oracle  <=>  1 + (offset - short)/2 <= r  <=>  short >= offset + 2(1 - r)
+    // r = isqrt(oracle * one^2 / reserve_price). The numerator is at most
+    // i64::MAX * 1e12 (about 9.2e30), inside u128. A positive requirement gets
+    // one extra unit because the reserve delta truncates.
+    let r_squared_numerator = oracle_price
+        .cast::<u128>()?
+        .safe_mul(BID_ASK_SPREAD_PRECISION.cast::<u128>()?)?
+        .safe_mul(BID_ASK_SPREAD_PRECISION.cast::<u128>()?)?;
+    let reserve_price_u128 = reserve_price.cast::<u128>()?;
+    let r_squared = r_squared_numerator.safe_div(reserve_price_u128)?;
+    let r_root = r_squared.nth_root(2);
+    let r_is_exact = r_squared.safe_mul(reserve_price_u128)? == r_squared_numerator
+        && r_root.safe_mul(r_root)? == r_squared;
+    let r_down = r_root.cast::<i128>()?;
+    let r_up = if r_is_exact {
+        r_down
+    } else {
+        r_down.safe_add(1)?
+    };
+    let with_margin = |requirement: i128| -> VelocityResult<i128> {
+        if requirement > 0 {
+            requirement.safe_add(1)
+        } else {
+            Ok(requirement)
+        }
+    };
+    let marginal_min_long = with_margin(r_up.safe_sub(one)?.safe_mul(2)?.safe_sub(offset)?)?;
+    let marginal_min_short = with_margin(offset.safe_add(one.safe_sub(r_down)?.safe_mul(2)?)?)?;
+
+    // 3. Raise each side to the larger requirement, never lower it, and keep
+    // long + short <= 100%.
+    let min_long = linear_min_long.max(marginal_min_long);
+    let min_short = linear_min_short.max(marginal_min_short);
+    let mut long = long_spread.cast::<i128>()?;
+    let mut short = short_spread.cast::<i128>()?;
+    if min_short > short {
+        short = min_short.min(one.safe_sub(long)?).max(short);
+    }
+    if min_long > long {
+        long = min_long.min(one.safe_sub(short)?).max(long);
+    }
+
+    Ok((long.cast()?, short.cast()?))
 }
 
 /// The quote side whose fills grow the pool's net position: Long when
@@ -771,6 +825,7 @@ impl SpreadInputs {
 /// -- caller (compute_quote_state), post-cap --
 /// 9  x bot knob       amm_spread_adjustment (crank's actuator)
 /// 10 offset           reference_price_offset shifts BOTH quotes
+/// 11 guard            neither quote crosses the oracle
 /// ```
 ///
 /// Each step's arithmetic lives in its component function; every component
@@ -960,17 +1015,17 @@ pub fn cap_to_max_spread(
 /// padding each side starts from.
 ///
 ///   s   = (oracle_std + mark_std) / (2 * reserve_price)   (PERCENTAGE_PRECISION)
-///   b   = max(conf, s / 4)                                 (vol base)
+///   c   = min(conf, conf / 20 + max(0, conf - 20bp))        (conf component)
+///   b   = max(c, s / 4)                                    (vol base)
 ///   g_i = clamp(intensity_i / volume_24h, 0.01, 1)         (per-side factor)
-///   c   = conf * (1/20 + 19/20 * conf/25bp)  when conf < 25 bp
-///       = conf                                  otherwise
 ///   v_i = max(c, b * g_i)
 ///
-/// `conf` is `last_oracle_conf_pct` (PERCENTAGE_PRECISION of price). The
-/// 25 bp threshold is `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`; below it the
-/// confidence weight ramps continuously from 1/20 at zero to full weight at
-/// the threshold. `volume_24h` is floored at 1 so the factors are defined on
-/// a fresh market.
+/// `conf` is `last_oracle_conf_pct` (PERCENTAGE_PRECISION of price). Pyth
+/// Lazer confidence is floored at 20bp (`LAZER_CONF_FLOOR_PCT`) when posted,
+/// so the floor itself carries no market information: `c` counts it at
+/// 1/20 weight and only the excess at full weight. The vol base uses `c`
+/// rather than raw `conf` for the same reason. `volume_24h` is floored at 1
+/// so the factors are defined on a fresh market.
 fn calculate_long_short_vol_spread(
     last_oracle_conf_pct: u64,
     reserve_price: u64,
@@ -988,7 +1043,9 @@ fn calculate_long_short_vol_spread(
         .safe_div(reserve_price.cast::<u128>()?)?
         .safe_div(2)?;
 
-    let vol_spread: u128 = last_oracle_conf_pct
+    let conf_component = calculate_spread_conf_component(last_oracle_conf_pct)?;
+
+    let vol_spread: u128 = conf_component
         .cast::<u128>()?
         .max(market_avg_std_pct.safe_div(SPREAD_VOL_STD_DISCOUNT_DIVISOR)?);
 
@@ -1005,8 +1062,6 @@ fn calculate_long_short_vol_spread(
     };
     let long_vol_spread_factor = intensity_factor(long_intensity_volume)?;
     let short_vol_spread_factor = intensity_factor(short_intensity_volume)?;
-
-    let conf_component = calculate_spread_conf_component(last_oracle_conf_pct)?;
 
     // v_i = max(c, b * g_i)
     let side_vol_spread = |factor: u128| -> VelocityResult<u64> {
@@ -1025,21 +1080,22 @@ fn calculate_long_short_vol_spread(
     ))
 }
 
-/// Confidence contribution to the per-side volatility spread. Below the
-/// full-weight threshold, linearly interpolate its weight from 1/D at zero to
-/// 1 at the threshold, where D is `SPREAD_CONF_DISCOUNT_DIVISOR`.
+/// Confidence contribution to the per-side volatility spread:
+///
+///   c = min(conf, conf / D + max(0, conf - F))
+///
+/// with D = `SPREAD_CONF_DISCOUNT_DIVISOR` (20) and F = `LAZER_CONF_FLOOR_PCT`
+/// (20bp). Lazer confidence never reports below F, so at the floor `c` is
+/// conf / 20 = 1bp. Above it every bp of real source disagreement adds about a
+/// bp of spread, until `c` meets `conf` at 4% and follows it from there. The
+/// curve is continuous with slope at most 1.05, so a confidence moving around
+/// any level moves the spread by about the same amount, and `c` never exceeds
+/// the reported confidence.
 fn calculate_spread_conf_component(confidence_pct: u64) -> VelocityResult<u64> {
-    if confidence_pct >= SPREAD_CONF_FULL_WEIGHT_THRESHOLD {
-        return Ok(confidence_pct);
-    }
-
-    let threshold = SPREAD_CONF_FULL_WEIGHT_THRESHOLD;
-    let divisor = SPREAD_CONF_DISCOUNT_DIVISOR;
-    let ramp_weight = threshold.safe_add(divisor.safe_sub(1)?.safe_mul(confidence_pct)?)?;
-
     Ok(confidence_pct
-        .safe_mul(ramp_weight)?
-        .safe_div(divisor.safe_mul(threshold)?)?)
+        .safe_div(SPREAD_CONF_DISCOUNT_DIVISOR)?
+        .safe_add(confidence_pct.saturating_sub(LAZER_CONF_FLOOR_PCT))?
+        .min(confidence_pct))
 }
 
 /// Which side of the AMM's open liquidity the inventory ratio is measured
@@ -1351,21 +1407,27 @@ fn calculate_spread_funding_bias_scale(
 }
 
 /// Reference price offset (PERCENTAGE_PRECISION of price, signed): shift of
-/// the quote midpoint toward the measured market premium, applied only when
-/// the premium's sign agrees with the inventory's.
+/// the quote midpoint that makes the inventory-reducing side cheaper and the
+/// inventory-increasing side pricier.
 ///
-/// Three premium estimates (the 5min mark-oracle twap gap, the slower twap
-/// gap, and the 24h funding rate converted to a quote premium) are each
-/// clamped to `max_offset_pct` of price and averaged. The average (as a pct
-/// of price) is scaled by `|liquidity_fraction| / 2` and clamped to
-/// `±max_offset_pct`. Returns 0 when the 24h funding rate or the liquidity
-/// fraction is zero, or when premium and inventory disagree in sign.
+///   offset = sign(q) * max_offset_pct * min(1, |liquidity_fraction| / u_ref)
+///
+/// with u_ref = `REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT` (10% of open
+/// liquidity). The size depends only on inventory: a small position gives a
+/// small shift, and the shift reaches its maximum at u_ref.
+///
+/// The measured market premium only gates the offset. Three premium
+/// estimates (the 5min mark-oracle twap gap, the slower twap gap, and the 24h
+/// funding rate converted to a quote premium) are each clamped to
+/// `max_offset_pct` of price and averaged, and the offset applies only when
+/// that average is nonzero with the same sign as the inventory. Returns 0 when
+/// the 24h funding rate or the liquidity fraction is zero, or when premium and
+/// inventory disagree in sign.
 #[allow(clippy::comparison_chain)]
 pub(crate) fn calculate_reference_price_offset(
     reserve_price: u64,
     last_24h_avg_funding_rate: i64,
     liquidity_fraction: i128,
-    _min_order_size: u64,
     oracle_twap_fast: i64,
     mark_twap_fast: u64,
     oracle_twap_slow: i64,
@@ -1410,26 +1472,22 @@ pub(crate) fn calculate_reference_price_offset(
         .safe_div(reserve_price.cast()?)?;
 
     // only apply when inventory is consistent with recent and 24h market premium
-    let offset_pct = if (mark_premium_avg_pct >= 0 && liquidity_fraction >= 0)
-        || (mark_premium_avg_pct <= 0 && liquidity_fraction <= 0)
-    {
-        mark_premium_avg_pct
-            .safe_mul(liquidity_fraction.unsigned_abs().cast::<i64>()?)?
-            .safe_div(2)?
-    } else {
-        0
-    };
+    if mark_premium_avg_pct.signum() != liquidity_fraction.signum().cast::<i64>()? {
+        return Ok(0);
+    }
 
-    let clamped_offset_pct = offset_pct.clamp(-max_offset_pct, max_offset_pct);
-
-    validate!(
-        clamped_offset_pct.abs() <= max_offset_pct,
-        ErrorCode::InvalidAmmDetected,
-        "clamp offset pct failed {}",
-        clamped_offset_pct
-    )?;
-
-    clamped_offset_pct.cast()
+    // size from inventory alone: linear up to u_ref, max_offset_pct beyond it
+    max_offset_pct
+        .cast::<i128>()?
+        .safe_mul(
+            liquidity_fraction
+                .unsigned_abs()
+                .min(REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT.unsigned_abs())
+                .cast::<i128>()?,
+        )?
+        .safe_div(REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT)?
+        .safe_mul(liquidity_fraction.signum())?
+        .cast()
 }
 
 /// Pure form of the legacy `calculate_spread_reserves` mutator: takes the

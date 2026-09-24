@@ -1540,15 +1540,11 @@ export const getVammSideQuoteWithMargin = (
 		if (!mmOracle?.price || mmOracle.price.isZero()) {
 			return undefined;
 		}
-		const nowSlot =
-			currentSlot !== undefined ? new BN(currentSlot) : mmOracle.slot;
 		const [vammBid, vammAsk] = calculateBidAskPrice(
 			perpMarket.amm,
 			perpMarket.marketStats,
 			mmOracle,
-			true,
-			nowSlot,
-			velocityClient.getStateAccount()
+			true
 		);
 		const marginPct = parseFloat(
 			process.env.DYNAMIC_VAMM_QUOTE_MARGIN || '0.15'

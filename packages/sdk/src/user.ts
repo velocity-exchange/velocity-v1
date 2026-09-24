@@ -2025,17 +2025,12 @@ export class User {
 		let baseAssetValue: BN;
 
 		if (useAMMClose) {
-			const latestSlot = slot !== undefined ? new BN(slot) : undefined;
-			const slotDuration =
-				slot !== undefined ? this.velocityClient.getStateAccount() : undefined;
 			baseAssetValue = calculateBaseAssetValue(
 				market,
 				position,
 				oraclePriceData,
 				true,
-				false,
-				latestSlot,
-				slotDuration
+				false
 			);
 		} else {
 			baseAssetValue = calculateBaseAssetValueWithOracle(

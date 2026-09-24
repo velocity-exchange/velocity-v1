@@ -2706,12 +2706,7 @@ pub fn handle_update_funding_rate(
         &state,
         clock_slot,
     )?;
-    perp_market.refresh_amm_quote_state(
-        &mm_oracle_price_data,
-        validity,
-        clock_slot,
-        state.slot_clock(),
-    )?;
+    perp_market.refresh_amm_quote_state(&mm_oracle_price_data, validity, clock_slot)?;
 
     validate!(
         matches!(
@@ -2836,23 +2831,19 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &state.oracle_guard_rails.validity,
         state.slot_clock(),
     )?;
-    // PerpMarket-level oracle stats only — this ix walks DLOB makers to
-    // estimate bid/ask TWAP and does not read AMM peg or reserves. The
-    // AMM snap_to_oracle that used to fire here was cargo-cult and is
-    // dropped; oracle TWAP / reference-price-offset bookkeeping still
-    // happens via refresh_perp_market_stats_from_oracle.
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         perp_market,
         &mm_oracle_price_data,
         &state,
         slot,
     )?;
-    perp_market.update_oracle_derived_stats(
+    // Project the curve onto this slot's oracle before sampling its quote.
+    crate::vlp::amm::refresh::refresh_for_mark_sample(
+        perp_market,
         &mm_oracle_price_data,
         validity,
         now,
         slot,
-        state.slot_clock(),
     )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
@@ -2894,16 +2885,17 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         let crate::state::perp_market::PerpMarket {
             amm, market_stats, ..
         } = &mut **perp_market;
-        // Refresh the AMM's cached spread state against this slot's oracle,
-        // then fold it (plus DLOB liquidity) into the mark TWAP.
-        crate::vlp::amm::math::spread::update_amm_quote_state(
-            amm,
-            market_stats,
-            &mm_oracle_price_data,
-            reserve_price,
-            slot,
-            state.slot_clock(),
-        )?;
+        // `refresh_for_mark_sample` already refreshed the quote state, except
+        // on a Settlement market, where validity is None and it skips.
+        if validity.is_none() {
+            crate::vlp::amm::math::spread::update_amm_quote_state(
+                amm,
+                market_stats,
+                &mm_oracle_price_data,
+                reserve_price,
+                slot,
+            )?;
+        }
         market_stats.update_mark_twap_crank(
             amm,
             now,

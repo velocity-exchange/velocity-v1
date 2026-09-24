@@ -470,7 +470,7 @@ describe('AMM Tests', () => {
 		assert(terms2.effectiveLeverageCapped >= 1.0002);
 		assert(terms2.inventorySpreadScale == 8.443219);
 		assert(terms2.longSpread == 150);
-		assert(terms2.shortSpread == 3960);
+		assert(terms2.shortSpread == 3959);
 
 		// add spread offset
 		// eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -506,8 +506,8 @@ describe('AMM Tests', () => {
 		assert(terms3.effectiveLeverageCapped >= 1.0002);
 		assert(terms3.inventorySpreadScale == 8.443219);
 		assert(terms3.longSpread == 150);
-		assert(terms3.shortSpread == 3960);
-		assert(terms3.longSpread + terms3.shortSpread == 3960 + 150);
+		assert(terms3.shortSpread == 3959);
+		assert(terms3.longSpread + terms3.shortSpread == 3959 + 150);
 
 		// add spread offset
 		// eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -541,8 +541,11 @@ describe('AMM Tests', () => {
 
 		assert(terms4.effectiveLeverageCapped >= 1.0002);
 		assert(terms4.inventorySpreadScale == 1.73492);
-		assert(terms4.longSpread == 89746);
-		assert(terms4.shortSpread == 910254);
+		// Capped at 100%: the program caps by safety priority (divergence, then
+		// the base/vol floor, then steering, then padding) rather than scaling
+		// both sides proportionally. Verified against its `calculate_spread`.
+		assert(terms4.longSpread == 146096);
+		assert(terms4.shortSpread == 853904);
 		assert(terms4.longSpread + terms4.shortSpread == 1000000);
 	});
 
@@ -577,15 +580,12 @@ describe('AMM Tests', () => {
 		);
 
 		// Verified against the program's own `calculate_spread` test helper with
-		// these inputs. The previous 515 / 5611 predate program commit 440349868,
-		// which ramped the confidence contribution: at conf 1131 the component is
-		// 542, not the 56 the old 1/20 cliff produced. maxTargetSpread is unchanged
-		// at 20000; the inventory scale moves because the pre-scale longSpread fed
-		// into calculateInventoryScale rises from 500 to 542.
+		// these inputs. Confidence 1131 sits below the 20bp Lazer floor, so it
+		// counts at 1/20 weight (56).
 		assert(terms2.effectiveLeverageCapped <= 1.000001);
-		assert(terms2.inventorySpreadScale == 1.028228);
-		assert(terms2.longSpread == 557);
-		assert(terms2.shortSpread == 6097);
+		assert(terms2.inventorySpreadScale == 1.0306);
+		assert(terms2.longSpread == 515);
+		assert(terms2.shortSpread == 5611);
 
 		const suiExample = {
 			status: 'active',
@@ -753,15 +753,15 @@ describe('AMM Tests', () => {
 
 		assert(termsSuiExample.effectiveLeverageCapped <= 1.000001);
 		assert(termsSuiExample.inventorySpreadScale == 1.00007);
-		// Verified against the program's own `calculate_spread` test helper. The
-		// previous 269813 / 3925 predate the confidence ramp (commit 440349868):
-		// at conf 1359 the component is 769, not the 67 the old 1/20 cliff gave.
+		// Verified against the program's own `calculate_spread` test helper.
+		// Confidence 1359 sits below the 20bp Lazer floor, so it counts at 1/20
+		// weight (67).
 		assert(
-			termsSuiExample.longSpread == 269819,
+			termsSuiExample.longSpread == 269813,
 			`SUI long spread got ${termsSuiExample.longSpread}`
 		);
 		assert(
-			termsSuiExample.shortSpread == 3919,
+			termsSuiExample.shortSpread == 3925,
 			`SUI short spread got ${termsSuiExample.shortSpread}`
 		);
 
@@ -867,6 +867,11 @@ describe('AMM Tests', () => {
 			isMMOracleActive: true,
 		} as MMOraclePriceData;
 
+		// The mock's sqrtK (1) is made consistent with its reserves, since spread
+		// reserves derive the base side from k.
+		mockAmm.sqrtK = squareRootBN(
+			mockAmm.baseAssetReserve.mul(mockAmm.quoteAssetReserve)
+		);
 		const reserves = calculateSpreadReserves(
 			mockAmm,
 			mockMarketStats,
@@ -875,7 +880,7 @@ describe('AMM Tests', () => {
 		);
 		assert(reserves[0].baseAssetReserve.eq(new BN('1000000000')));
 		assert(reserves[0].quoteAssetReserve.eq(new BN('12000000000')));
-		assert(reserves[1].baseAssetReserve.eq(new BN('1000000000')));
+		assert(reserves[1].baseAssetReserve.eq(new BN('999999999')));
 		assert(reserves[1].quoteAssetReserve.eq(new BN('12000000000')));
 
 		mockAmm.baseAssetReserve = new BN(1000000000);
@@ -1005,10 +1010,10 @@ describe('AMM Tests', () => {
 		console.log(reserves3[0].baseAssetReserve.toString());
 		console.log(reserves3[0].quoteAssetReserve.toString());
 
-		assert(reserves3[0].baseAssetReserve.eq(new BN('1100068201')));
-		assert(reserves3[0].quoteAssetReserve.eq(new BN('909034546')));
-		assert(reserves3[1].baseAssetReserve.eq(new BN('989999998')));
-		assert(reserves3[1].quoteAssetReserve.eq(new BN('1010101010')));
+		assert(reserves3[0].baseAssetReserve.eq(new BN('1093235060')));
+		assert(reserves3[0].quoteAssetReserve.eq(new BN('914716363')));
+		assert(reserves3[1].baseAssetReserve.eq(new BN('989931495')));
+		assert(reserves3[1].quoteAssetReserve.eq(new BN('1010170908')));
 
 		const p1 = calculatePrice(
 			reserves3[0].baseAssetReserve,
@@ -1022,8 +1027,8 @@ describe('AMM Tests', () => {
 			mockAmm.pegMultiplier
 		);
 
-		assert(p1.eq(new BN(11199437)));
-		assert(p2.eq(new BN(13828180)));
+		assert(p1.eq(new BN(11339876)));
+		assert(p2.eq(new BN(13830094)));
 
 		mockAmm.curveUpdateIntensity = 110;
 		const reserves4 = calculateSpreadReserves(
@@ -1035,8 +1040,8 @@ describe('AMM Tests', () => {
 
 		assert(reserves4[0].baseAssetReserve.eq(new BN('1100068201')));
 		assert(reserves4[0].quoteAssetReserve.eq(new BN('909034546')));
-		assert(reserves4[1].baseAssetReserve.eq(new BN('989999998')));
-		assert(reserves4[1].quoteAssetReserve.eq(new BN('1010101010')));
+		assert(reserves4[1].baseAssetReserve.eq(new BN('995474661')));
+		assert(reserves4[1].quoteAssetReserve.eq(new BN('1004545908')));
 
 		const p1RF = calculatePrice(
 			reserves4[0].baseAssetReserve,
@@ -1051,7 +1056,7 @@ describe('AMM Tests', () => {
 		);
 
 		assert(p1RF.eq(new BN(11199437)));
-		assert(p2RF.eq(new BN(13828180)));
+		assert(p2RF.eq(new BN(13676501)));
 		// no ref price offset at 100
 		mockAmm.curveUpdateIntensity = 100;
 		const reserves5 = calculateSpreadReserves(
@@ -1063,8 +1068,8 @@ describe('AMM Tests', () => {
 
 		assert(reserves5[0].baseAssetReserve.eq(new BN('1100068201')));
 		assert(reserves5[0].quoteAssetReserve.eq(new BN('909034546')));
-		assert(reserves5[1].baseAssetReserve.eq(new BN('989999998')));
-		assert(reserves5[1].quoteAssetReserve.eq(new BN('1010101010')));
+		assert(reserves5[1].baseAssetReserve.eq(new BN('995474661')));
+		assert(reserves5[1].quoteAssetReserve.eq(new BN('1004545908')));
 
 		const p1RFNone = calculatePrice(
 			reserves5[0].baseAssetReserve,
@@ -1079,7 +1084,7 @@ describe('AMM Tests', () => {
 		);
 
 		assert(p1RFNone.eq(new BN(11199437)));
-		assert(p2RFNone.eq(new BN(13828180)));
+		assert(p2RFNone.eq(new BN(13676501)));
 		assert(p1RF.sub(p1RFNone).eq(new BN(0)));
 		assert(p2RF.sub(p2RFNone).eq(new BN(0))); // todo?
 	});
@@ -1098,6 +1103,11 @@ describe('AMM Tests', () => {
 			isMMOracleActive: true,
 		} as MMOraclePriceData;
 
+		// The mock's sqrtK (1) is made consistent with its reserves, since spread
+		// reserves derive the base side from k.
+		mockAmm.sqrtK = squareRootBN(
+			mockAmm.baseAssetReserve.mul(mockAmm.quoteAssetReserve)
+		);
 		const reserves = calculateSpreadReserves(
 			mockAmm,
 			mockMarketStats,
@@ -1106,7 +1116,7 @@ describe('AMM Tests', () => {
 		);
 		assert(reserves[0].baseAssetReserve.eq(new BN('1000000000')));
 		assert(reserves[0].quoteAssetReserve.eq(new BN('12000000000')));
-		assert(reserves[1].baseAssetReserve.eq(new BN('1000000000')));
+		assert(reserves[1].baseAssetReserve.eq(new BN('999999999')));
 		assert(reserves[1].quoteAssetReserve.eq(new BN('12000000000')));
 
 		mockAmm.baseAssetReserve = new BN(1000000000);
@@ -1238,10 +1248,10 @@ describe('AMM Tests', () => {
 		console.log(reserves3[0].baseAssetReserve.toString());
 		console.log(reserves3[0].quoteAssetReserve.toString());
 
-		assert(reserves3[0].baseAssetReserve.eq(new BN('999999998')));
-		assert(reserves3[0].quoteAssetReserve.eq(new BN('1000000000')));
-		assert(reserves3[1].baseAssetReserve.eq(new BN('909034547')));
-		assert(reserves3[1].quoteAssetReserve.eq(new BN('1100068200')));
+		assert(reserves3[0].baseAssetReserve.eq(new BN('1002266071')));
+		assert(reserves3[0].quoteAssetReserve.eq(new BN('997739050')));
+		assert(reserves3[1].baseAssetReserve.eq(new BN('914751388')));
+		assert(reserves3[1].quoteAssetReserve.eq(new BN('1093193200')));
 
 		const p1 = calculatePrice(
 			reserves3[0].baseAssetReserve,
@@ -1255,8 +1265,8 @@ describe('AMM Tests', () => {
 			mockAmm.pegMultiplier
 		);
 
-		assert(p1.eq(new BN(13553000)));
-		assert(p2.eq(new BN(16401163)));
+		assert(p1.eq(new BN(13491784)));
+		assert(p2.eq(new BN(16196802)));
 
 		mockAmm.curveUpdateIntensity = 110;
 		const reserves4 = calculateSpreadReserves(
@@ -1266,10 +1276,10 @@ describe('AMM Tests', () => {
 			now
 		);
 
-		assert(reserves4[0].baseAssetReserve.eq(new BN('999999998')));
-		assert(reserves4[0].quoteAssetReserve.eq(new BN('1000000000')));
-		assert(reserves4[1].baseAssetReserve.eq(new BN('909034547')));
-		assert(reserves4[1].quoteAssetReserve.eq(new BN('1100068200')));
+		assert(reserves4[0].baseAssetReserve.eq(new BN('1000001548')));
+		assert(reserves4[0].quoteAssetReserve.eq(new BN('999998450')));
+		assert(reserves4[1].baseAssetReserve.eq(new BN('909489263')));
+		assert(reserves4[1].quoteAssetReserve.eq(new BN('1099518200')));
 
 		const p1RF = calculatePrice(
 			reserves4[0].baseAssetReserve,
@@ -1283,8 +1293,8 @@ describe('AMM Tests', () => {
 			mockAmm.pegMultiplier
 		);
 
-		assert(p1RF.eq(new BN(13553000)));
-		assert(p2RF.eq(new BN(16401163)));
+		assert(p1RF.eq(new BN(13552958)));
+		assert(p2RF.eq(new BN(16384767)));
 
 		// no ref price offset at 100
 		mockAmm.curveUpdateIntensity = 100;
@@ -1295,8 +1305,8 @@ describe('AMM Tests', () => {
 			now
 		);
 
-		assert(reserves5[0].baseAssetReserve.eq(new BN('999999998')));
-		assert(reserves5[0].quoteAssetReserve.eq(new BN('1000000000')));
+		assert(reserves5[0].baseAssetReserve.eq(new BN('1000001548')));
+		assert(reserves5[0].quoteAssetReserve.eq(new BN('999998450')));
 		assert(reserves5[1].baseAssetReserve.eq(new BN('909034547')));
 		assert(reserves5[1].quoteAssetReserve.eq(new BN('1100068200')));
 
@@ -1313,10 +1323,12 @@ describe('AMM Tests', () => {
 		);
 
 		const rr = p2RF.sub(p2RFNone).mul(PERCENTAGE_PRECISION).div(p2RF);
-		assert(p1RFNone.eq(new BN(13553000)));
+		assert(p1RFNone.eq(new BN(13552958)));
 		assert(p2RFNone.eq(new BN(16401163)));
 		assert(p1RF.sub(p1RFNone).eq(new BN(0))); // todo?
-		assert(rr.eq(new BN(0)));
+		// Intensity 110 applies the full 10bp offset at this inventory (no
+		// smoothing), so the ask sits 0.1% below its intensity-100 price.
+		assert(rr.eq(new BN(-1000)));
 	});
 
 	it('live update functions', () => {
@@ -1869,7 +1881,6 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 
@@ -1947,7 +1958,6 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 
@@ -2026,7 +2036,6 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2109,7 +2118,6 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2195,7 +2203,6 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2279,7 +2286,6 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 
@@ -2317,31 +2323,35 @@ describe('AMM Tests', () => {
 	});
 
 	it('Reference Price Offset accounts for oracle twap slow floor term', () => {
-		// day-premium leg before averaging: 100000/1000*24 = 2400, then the
-		// program subtracts oracleTwapSlow.abs()/FUNDING_RATE_OFFSET_DENOMINATOR
-		// (500000/3333 = 150) => 2250. Without that term the average would be
-		// 1800 instead of 1750.
+		// The premium only gates the offset. With flat twap legs the day leg decides
+		// the sign: 4000 / 1000 * 24 = 96, minus the oracle-twap floor term
+		// oracleTwapSlow.abs() / FUNDING_RATE_OFFSET_DENOMINATOR = 500000 / 3333 =
+		// 150, gives -54. Without the floor term the premium would read positive.
 		const reservePrice = PRICE_PRECISION;
-		const last24hAvgFundingRate = new BN(100000);
-		const liquidityFraction = new BN(2);
+		const last24hAvgFundingRate = new BN(4000);
 		const oracleTwapFast = new BN(500000);
-		const markTwapFast = oracleTwapFast.add(new BN(1000));
+		const markTwapFast = oracleTwapFast;
 		const oracleTwapSlow = new BN(500000);
-		const markTwapSlow = oracleTwapSlow.add(new BN(2000));
+		const markTwapSlow = oracleTwapSlow;
 		const maxOffsetPct = 100000;
+		const offsetFor = (liquidityFraction: BN) =>
+			calculateReferencePriceOffset(
+				reservePrice,
+				last24hAvgFundingRate,
+				liquidityFraction,
+				oracleTwapFast,
+				markTwapFast,
+				oracleTwapSlow,
+				markTwapSlow,
+				maxOffsetPct
+			);
 
-		const referencePriceOffset = calculateReferencePriceOffset(
-			reservePrice,
-			last24hAvgFundingRate,
-			liquidityFraction,
-			oracleTwapFast,
-			markTwapFast,
-			oracleTwapSlow,
-			markTwapSlow,
-			maxOffsetPct
-		);
-
-		assert(referencePriceOffset.eq(new BN(1750)));
+		// positive inventory disagrees with the negative premium: no offset
+		assert(offsetFor(new BN(100000)).eq(ZERO));
+		// negative inventory agrees: the full offset at 10% of liquidity
+		assert(offsetFor(new BN(-100000)).eq(new BN(-maxOffsetPct)));
+		// and half of it at 5%
+		assert(offsetFor(new BN(-50000)).eq(new BN(-maxOffsetPct / 2)));
 	});
 
 	it('calculateUpdatedAMM is a passthrough when the repeg debit fails the affordability floor', () => {

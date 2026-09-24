@@ -26024,6 +26024,10 @@ export type Velocity = {
           },
           {
             "name": "bitFlags",
+            "docs": [
+              "Unused. The modify reads no bit flags. The field stays because it is",
+              "part of the instruction's arguments."
+            ],
             "type": {
               "option": "u8"
             }

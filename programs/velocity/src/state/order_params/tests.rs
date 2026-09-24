@@ -1,7 +1,7 @@
 mod get_close_perp_params {
     use {
         crate::{
-            math::{orders::get_posted_slot_from_clock_slot, time::SlotClock},
+            math::orders::get_posted_slot_from_clock_slot,
             state::{
                 oracle::HistoricalOracleData,
                 order_params::PostOnlyParam,
@@ -66,14 +66,7 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
 
         let amm = AMM {
             ..AMM::default_test()
@@ -115,14 +108,7 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
 
         let amm = AMM {
             ..AMM::default_test()
@@ -164,14 +150,7 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
     }
 
     #[test]
@@ -221,14 +200,7 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
 
         let amm = AMM {
             ..AMM::default_test()
@@ -270,14 +242,7 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
 
         let amm = AMM {
             ..AMM::default_test()
@@ -320,14 +285,7 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
     }
 
     #[test]
@@ -371,14 +329,7 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
     }
 
     #[test]
@@ -423,14 +374,7 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
     }
 
     fn get_order(params: &OrderParams, slot: u64) -> Order {
@@ -507,13 +451,6 @@ mod get_close_perp_params {
 
         let order = get_order(&params, slot);
 
-        validate_order(
-            &order,
-            &perp_market,
-            Some(oracle_price),
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
     }
 }

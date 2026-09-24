@@ -4,7 +4,6 @@ use crate::{
     math::{
         casting::Cast,
         orders::{calculate_base_asset_amount_to_fill_up_to_limit_price, is_multiple_of_step_size},
-        time::SlotClock,
     },
     msg,
     state::{
@@ -23,7 +22,6 @@ pub fn validate_order(
     market: &PerpMarket,
     valid_oracle_price: Option<i64>,
     slot: u64,
-    slot_clock: SlotClock,
 ) -> VelocityResult {
     match order.order_type {
         OrderType::Market => validate_market_order(
@@ -31,9 +29,7 @@ pub fn validate_order(
             market.order_step_size,
             market.market_stats.min_order_size,
         )?,
-        OrderType::Limit => {
-            validate_limit_order(order, market, valid_oracle_price, slot, slot_clock)?
-        }
+        OrderType::Limit => validate_limit_order(order, market, valid_oracle_price, slot)?,
         OrderType::TriggerMarket => validate_trigger_market_order(
             order,
             market.order_step_size,
@@ -131,7 +127,6 @@ fn validate_limit_order(
     market: &PerpMarket,
     valid_oracle_price: Option<i64>,
     slot: u64,
-    slot_clock: SlotClock,
 ) -> VelocityResult {
     validate_base_asset_amount(
         order,
@@ -163,7 +158,7 @@ fn validate_limit_order(
     )?;
 
     if order.post_only {
-        validate_post_only_order(order, market, valid_oracle_price, slot, slot_clock)?;
+        validate_post_only_order(order, market, valid_oracle_price, slot)?;
     }
 
     Ok(())
@@ -174,7 +169,6 @@ fn validate_post_only_order(
     market: &PerpMarket,
     valid_oracle_price: Option<i64>,
     slot: u64,
-    _slot_clock: SlotClock,
 ) -> VelocityResult {
     // jit maker can fill against amm
     if order.is_jit_maker() {

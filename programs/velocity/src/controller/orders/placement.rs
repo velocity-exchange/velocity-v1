@@ -32,11 +32,11 @@ pub struct PlaceOrderResult {
 /// [`build_perp_order`] returns this. It holds no slot and touches no
 /// open-order counter, so a detached taker can route it without ever
 /// entering `user.orders`.
-pub struct BuiltPerpOrder {
-    pub order: Order,
-    pub position_index: usize,
-    pub risk_increasing: bool,
-    pub force_reduce_only: bool,
+struct BuiltPerpOrder {
+    order: Order,
+    position_index: usize,
+    risk_increasing: bool,
+    force_reduce_only: bool,
 }
 
 impl BuiltPerpOrder {
@@ -136,9 +136,7 @@ impl BuiltPerpOrder {
 /// The caller must run the placement preconditions first. Those are the
 /// not-liquidated check, the not-bankrupt check, and the reduce-only-user
 /// gate. They guard the whole placement rather than the order value.
-#[allow(clippy::too_many_arguments)]
-pub fn build_perp_order(
-    state: &State,
+fn build_perp_order(
     user: &mut User,
     maps: &mut AccountMaps,
     clock: &Clock,
@@ -204,7 +202,6 @@ pub fn build_perp_order(
     if !validate_built_order(
         &new_order,
         market,
-        state,
         clock.slot,
         oracle_price_data.price,
         params.post_only,
@@ -477,12 +474,11 @@ impl Order {
 fn validate_built_order(
     order: &Order,
     market: &PerpMarket,
-    state: &State,
     slot: u64,
     oracle_price: i64,
     post_only: PostOnlyParam,
 ) -> VelocityResult<bool> {
-    match validate_order(order, market, Some(oracle_price), slot, state.slot_clock()) {
+    match validate_order(order, market, Some(oracle_price), slot) {
         Ok(()) => Ok(true),
         Err(ErrorCode::PlacePostOnlyLimitFailure) if post_only == PostOnlyParam::TryPostOnly => {
             Ok(false)
@@ -538,8 +534,7 @@ pub fn place_perp_trigger_order(
     // placement rather than mint an id for an order with nowhere to go.
     let order_index = next_order_slot(user, params.user_order_id)?;
 
-    let Some(built) =
-        build_perp_order(state, user, maps, clock, params, &options, rev_share_order)?
+    let Some(built) = build_perp_order(user, maps, clock, params, &options, rev_share_order)?
     else {
         return Ok(PlaceOrderResult::default());
     };
@@ -716,8 +711,7 @@ pub fn create_detached_perp_order(
 ) -> VelocityResult<Option<Order>> {
     validate_placement_preconditions(state, user, maps, &options, &params)?;
 
-    let Some(built) =
-        build_perp_order(state, user, maps, clock, params, &options, rev_share_order)?
+    let Some(built) = build_perp_order(user, maps, clock, params, &options, rev_share_order)?
     else {
         return Ok(None);
     };

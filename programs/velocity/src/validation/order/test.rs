@@ -3,7 +3,6 @@ use {
     crate::{
         controller::position::PositionDirection,
         error::ErrorCode,
-        math::time::SlotClock,
         state::{
             perp_market::PerpMarket,
             user::{Order, OrderStatus, OrderType},
@@ -40,13 +39,7 @@ fn a_limit_order_with_an_oracle_offset_is_refused() {
         ..limit_order()
     };
 
-    let result = validate_order(
-        &order,
-        &market,
-        Some(100 * PRICE_PRECISION_I64),
-        1,
-        SlotClock::baseline(),
-    );
+    let result = validate_order(&order, &market, Some(100 * PRICE_PRECISION_I64), 1);
 
     assert_eq!(result, Err(ErrorCode::InvalidOrderOracleOffset));
 }
@@ -59,13 +52,7 @@ fn an_oracle_offset_is_refused_even_beside_a_fixed_price() {
         ..limit_order()
     };
 
-    let result = validate_order(
-        &order,
-        &market,
-        Some(100 * PRICE_PRECISION_I64),
-        1,
-        SlotClock::baseline(),
-    );
+    let result = validate_order(&order, &market, Some(100 * PRICE_PRECISION_I64), 1);
 
     assert_eq!(result, Err(ErrorCode::InvalidOrderOracleOffset));
 }
@@ -75,12 +62,5 @@ fn a_fixed_price_limit_order_validates() {
     let market = test_market();
     let order = limit_order();
 
-    validate_order(
-        &order,
-        &market,
-        Some(100 * PRICE_PRECISION_I64),
-        1,
-        SlotClock::baseline(),
-    )
-    .unwrap();
+    validate_order(&order, &market, Some(100 * PRICE_PRECISION_I64), 1).unwrap();
 }

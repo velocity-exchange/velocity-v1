@@ -210,6 +210,7 @@ pub fn order_view(node: &OrderNodeV0, node_index: u32) -> OrderViewV0 {
         placed_slot: node.placed_slot,
         max_ts: node.max_ts,
         taker_origin: node.is_taker_origin(),
+        reduce_only: node.is_reduce_only(),
     }
 }
 

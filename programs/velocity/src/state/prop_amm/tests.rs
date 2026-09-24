@@ -797,6 +797,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
         placed_slot: 0x3334_3536_3738_393A,
         max_ts: 0x3B3C_3D3E_3F40_4142,
         taker_origin: true,
+        reduce_only: false,
     };
     let ask_view = OrderViewV0 {
         order_ref: other_order_ref,
@@ -808,6 +809,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
         placed_slot: 0x5758_595A_5B5C_5D5E,
         max_ts: -0x5F60_6162_6364_6566,
         taker_origin: false,
+        reduce_only: true,
     };
     agree("OrderViewV0 (bid)", &bid_view);
     agree("OrderViewV0 (ask)", &ask_view);

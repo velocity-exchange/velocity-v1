@@ -484,6 +484,9 @@ wire_type! {
         /// book. It demands liquidity rather than offering it, so a cross that
         /// touches one settles at the other side's price.
         pub taker_origin: bool,
+        /// The order may only reduce its owner's position. A caller that judges
+        /// whether the order reduces risk clamps its size to the position first.
+        pub reduce_only: bool,
     }
 }
 
@@ -503,6 +506,7 @@ impl OrderViewV0 {
         placed_slot: 0,
         max_ts: 0,
         taker_origin: false,
+        reduce_only: false,
     };
 
     /// Whether this names an order at all.

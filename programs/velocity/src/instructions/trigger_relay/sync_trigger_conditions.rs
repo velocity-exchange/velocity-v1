@@ -3,17 +3,17 @@
 //! The pass is permissionless and idempotent. The block is a hint set, and this is
 //! its only writer besides the trigger cranks' slot release. Anyone can call it, and
 //! the first caller pays the rent. Each armed trigger order up to the slot cap gets
-//! one `OnValueCross` condition on the market oracle's raw price at the trigger
-//! threshold, so relay turners pay nothing while the price is away from the trigger.
+//! one `OnValueCross` condition on the market oracle's raw price. The threshold is
+//! the oracle price at which the median trigger price can first reach the trigger,
+//! so relay turners pay nothing while the price is away from the trigger.
 //!
-//! Four kinds of order are not staged: orders past the slot cap, orders on markets
-//! with no crank conditions, orders on oracle sources with no raw-price watch
-//! layout, and orders on markets with no CLOB. A market with no reservoir has no
-//! keeper fee to express, and a market with no CLOB has nowhere to fire a trigger.
-//! Relay is the only thing that fires a trigger now, so an order this pass skips
-//! is one nothing fires until its market gains what it lacks. The keeper bot that
-//! used to be the floor is gone with `trigger_order`. Each skip is silent by
-//! design: one unstageable order must not stop the rest of the user's from arming.
+//! Five kinds of order are not staged: orders past the slot cap, orders past their
+//! `max_ts`, orders on markets with no crank conditions, orders on oracle sources
+//! with no raw-price watch layout, and orders on markets with no CLOB. A market with
+//! no reservoir has no keeper fee to express, and a market with no CLOB has nowhere
+//! to fire a trigger. Relay is the only thing that fires a trigger, so an order this
+//! pass skips is one nothing fires until its market gains what it lacks. Each skip
+//! is silent: one unstageable order must not stop the rest of the user's from arming.
 //!
 //! Each fired trigger routes to one of two executors by order type. A trigger-limit
 //! rests whole on the book (`trigger_limit_order_v1`). A stop-market fires and
@@ -57,6 +57,9 @@ use {
     std::collections::BTreeMap,
 };
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Accounts)]
 pub struct SyncTriggerConditions<'info> {
     #[account(mut)]
@@ -79,6 +82,9 @@ pub struct SyncTriggerConditions<'info> {
 struct MarketInputs {
     oracle: Option<Pubkey>,
     oracle_source: Option<OracleSource>,
+    /// `PerpMarket::trigger_price_clamp_divisor`, which bounds how far the
+    /// median trigger price sits from the oracle.
+    trigger_price_clamp_divisor: u64,
     /// True when the market has a CLOB attached, which is also when it has a
     /// crank conditions account.
     has_clob: bool,
@@ -147,13 +153,14 @@ pub fn rewrite_trigger_conditions<'info>(
     }
 
     let user = crate::load!(user_loader)?;
+    let now = Clock::get()?.unix_timestamp;
     let mut slot_index = 0usize;
     for order in user.orders.iter() {
         if slot_index >= TRIGGER_CONDITION_SLOTS {
             break;
         }
 
-        let Some(trigger) = trigger_watch_for_order(order, &inputs.markets) else {
+        let Some(trigger) = trigger_watch_for_order(order, &inputs.markets, now) else {
             continue;
         };
         let (resolver_disc, meta) = route_trigger_resolver(order, trigger.clob)?;
@@ -252,6 +259,7 @@ fn collect_trigger_inputs<'info>(
                 let inputs = markets.entry(market.market_index).or_default();
                 inputs.oracle = Some(market.oracle);
                 inputs.oracle_source = Some(market.oracle_source);
+                inputs.trigger_price_clamp_divisor = market.trigger_price_clamp_divisor();
                 inputs.has_clob = market.clob_market != Pubkey::default();
                 market_oracles.insert(market.oracle, market.market_index);
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
@@ -380,19 +388,23 @@ struct TriggerWatch {
 }
 
 /// Derive the watch that arms one order. `None` leaves the order unstaged. That
-/// happens when the order does not trigger, when its market is absent, or when the
-/// market gives no oracle, no watch layout, no keeper payment, or no CLOB.
+/// happens when the order does not trigger or is past its `max_ts`, when its
+/// market is absent, or when the market gives no oracle, no watch layout, no
+/// keeper payment, or no CLOB.
 fn trigger_watch_for_order(
     order: &crate::state::user::Order,
     markets: &BTreeMap<u16, MarketInputs>,
+    now: i64,
 ) -> Option<TriggerWatch> {
     // A trigger already resting on a book reads as untriggered by design. Without
     // this skip the watch re-fires every round, and `trigger_limit_order_v1` rejects
-    // the staged crank each time.
+    // the staged crank each time. An expired trigger stays armed, but no executor
+    // fires it.
+    let expired = order.max_ts != 0 && now > order.max_ts;
     if order.status != OrderStatus::Open
         || !order.must_be_triggered()
-        || order.triggered()
         || order.is_placed_on_clob()
+        || expired
     {
         return None;
     }
@@ -416,7 +428,12 @@ fn trigger_watch_for_order(
     // such order from stopping the sync, which would leave this user's other
     // triggers un-armed.
     let clob = inputs.clob?;
-    let threshold = watch.raw_threshold(i128::from(order.trigger_price), direction)?;
+    let watched_price = earliest_oracle_trigger_price(
+        order.trigger_price,
+        inputs.trigger_price_clamp_divisor,
+        direction,
+    )?;
+    let threshold = watch.raw_threshold(i128::from(watched_price), direction)?;
     Some(TriggerWatch {
         oracle,
         watch,
@@ -425,6 +442,33 @@ fn trigger_watch_for_order(
         cmp: direction.cmp(),
         clob,
     })
+}
+
+/// The oracle price past which the median trigger price can reach
+/// `trigger_price`.
+///
+/// The executors judge the median when `State::use_median_trigger_price` is
+/// set, and this pass cannot read `State`. The median stays within
+/// `oracle / clamp_divisor` of the oracle, so the watch moves the threshold
+/// toward the oracle by that band. It wakes early when the flag is off, and
+/// the resolver finds no work.
+fn earliest_oracle_trigger_price(
+    trigger_price: u64,
+    clamp_divisor: u64,
+    direction: WatchDirection,
+) -> Option<u64> {
+    let trigger_price = u128::from(trigger_price);
+    let clamp_divisor = u128::from(clamp_divisor);
+    let price = match direction {
+        WatchDirection::AtOrAbove => trigger_price
+            .checked_mul(clamp_divisor)?
+            .checked_div(clamp_divisor.checked_add(1)?)?,
+        WatchDirection::AtOrBelow => trigger_price
+            .checked_mul(clamp_divisor)?
+            .checked_div(clamp_divisor.checked_sub(1)?)?,
+    };
+
+    std::convert::TryInto::try_into(price).ok()
 }
 
 /// Route a fired trigger to its resolver by order type. A trigger-limit rests

@@ -1211,18 +1211,22 @@ impl PerpMarket {
         }
     }
 
+    /// The median trigger price stays within `oracle / this` of the oracle:
+    /// A/B 20 bps, C 100 bps, rest 250 bps.
+    pub fn trigger_price_clamp_divisor(&self) -> u64 {
+        if matches!(self.contract_tier, ContractTier::A | ContractTier::B) {
+            500
+        } else if matches!(self.contract_tier, ContractTier::C) {
+            100
+        } else {
+            40
+        }
+    }
+
     /// Clamps the median trigger price to a band around the oracle price.
-    /// Band width by contract tier: A/B 20 bps, C 100 bps, rest 250 bps.
     #[inline(always)]
     fn clamp_trigger_price(&self, oracle_price: u64, median_price: u64) -> VelocityResult<u64> {
-        let clamp_divisor = if matches!(self.contract_tier, ContractTier::A | ContractTier::B) {
-            500 // oracle / 500 = 20 bps
-        } else if matches!(self.contract_tier, ContractTier::C) {
-            100 // oracle / 100 = 100 bps
-        } else {
-            40 // oracle / 40 = 250 bps
-        };
-        let max_oracle_diff = oracle_price / clamp_divisor;
+        let max_oracle_diff = oracle_price / self.trigger_price_clamp_divisor();
 
         Ok(median_price.clamp(
             oracle_price.safe_sub(max_oracle_diff)?,

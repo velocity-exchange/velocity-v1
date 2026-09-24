@@ -524,10 +524,15 @@ pub fn find_fired_trigger(
         market.market_index
     )?;
 
+    // The executors judge the median trigger price when `State` sets the flag.
+    // A resolver cannot read `State`, so an order due at either price is
+    // staged, and the executor's simulation refuses the wrong one.
     let oracle_price =
-        crate::state::oracle::get_oracle_price(&market.oracle_source, oracle_info, slot)?
-            .price
-            .max(0) as u64;
+        crate::state::oracle::get_oracle_price(&market.oracle_source, oracle_info, slot)?.price;
+    let raw_price = oracle_price.max(0) as u64;
+    let median_price = market
+        .get_trigger_price(oracle_price, now, true)
+        .unwrap_or(raw_price);
 
     for order in user.orders.iter() {
         // A trigger slot already placed on the CLOB reads as untriggered, so
@@ -546,7 +551,7 @@ pub fn find_fired_trigger(
             continue;
         }
 
-        if !trigger_crank_is_due(order, oracle_price)? {
+        if !trigger_crank_is_due(order, raw_price)? && !trigger_crank_is_due(order, median_price)? {
             continue;
         }
 

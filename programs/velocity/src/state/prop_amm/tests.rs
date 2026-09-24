@@ -524,20 +524,27 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
     }
 }
 
-/// The two encoders on the CLOB wire agree, byte for byte.
+/// The two encoders on the CLOB wire agree, byte for byte, in both directions.
 ///
 /// Velocity writes these args with anchor's borsh and the book reads them with
-/// wincode. One declaration in `clob-wire` is what stops the *shapes* drifting
-/// apart; this is what stops the *encodings* drifting apart, which no shared
-/// declaration can catch. Every field is given a value that would move if a
-/// width or an order changed.
+/// wincode; the book also writes return data that velocity reads back. One
+/// declaration in `clob-wire` is what stops the *shapes* drifting apart; this
+/// is what stops the *encodings* drifting apart, which no shared declaration
+/// can catch. Every field is given a value that would move if a width or an
+/// order changed, and every `Vec` is non-empty so its length prefix and
+/// elements are both covered.
 #[test]
 fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
-    use anchor_lang::AnchorSerialize;
+    use anchor_lang::{AnchorDeserialize, AnchorSerialize};
 
     fn agree<T>(what: &str, value: &T)
     where
-        T: AnchorSerialize + quoter_spec::wincode::SchemaWrite<quoter_spec::ArgsConfig, Src = T>,
+        T: AnchorSerialize
+            + AnchorDeserialize
+            + PartialEq
+            + std::fmt::Debug
+            + quoter_spec::wincode::SchemaWrite<quoter_spec::ArgsConfig, Src = T>
+            + for<'de> quoter_spec::wincode::SchemaRead<'de, quoter_spec::ArgsConfig, Dst = T>,
     {
         let mut borsh = Vec::new();
         value.serialize(&mut borsh).unwrap();
@@ -546,6 +553,19 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
         assert_eq!(
             borsh, wincode,
             "{what} encodes differently on the two sides"
+        );
+
+        let read_by_wincode: T =
+            quoter_spec::wincode::config::deserialize(&borsh, quoter_spec::ARGS_CONFIG).unwrap();
+        assert_eq!(
+            &read_by_wincode, value,
+            "{what}: wincode misreads velocity's borsh bytes"
+        );
+
+        let read_by_borsh = T::try_from_slice(&wincode).unwrap();
+        assert_eq!(
+            &read_by_borsh, value,
+            "{what}: borsh misreads the book's wincode bytes"
         );
     }
 
@@ -640,6 +660,171 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             bid_reduce_only_orders: 0x191A_1B1C,
             ask_reduce_only_orders: 0x1D1E_1F20,
             exhaustive: true,
+        },
+    );
+
+    let other_order_ref = ClobOrderRefV0 {
+        node_index: 0x0D0E_0F10,
+        order_id: 0x1112_1314_1516_1718,
+    };
+    let fill_request = ClobFillRequestV0 {
+        order_ref,
+        base_asset_amount: 0x2122_2324_2526_2728,
+    };
+    let other_fill_request = ClobFillRequestV0 {
+        order_ref: other_order_ref,
+        base_asset_amount: 0x3132_3334_3536_3738,
+    };
+    agree(
+        "FillArgsV0",
+        &ClobFillArgsV0 {
+            fills: vec![fill_request, other_fill_request],
+        },
+    );
+
+    let filled_order = ClobFilledOrderV0 {
+        order_id: 0x4142_4344_4546_4748,
+        client_order_id: 0x4950_5152,
+        base_asset_amount: 0x5354_5556_5758_595A,
+        culled_base_asset_amount: 0x5B5C_5D5E_5F60_6162,
+        removed: true,
+    };
+    let other_filled_order = ClobFilledOrderV0 {
+        order_id: 0x6364_6566_6768_696A,
+        client_order_id: 0x6B6C_6D6E,
+        base_asset_amount: 0,
+        culled_base_asset_amount: 0,
+        removed: false,
+    };
+    agree(
+        "FillOutcomeV0",
+        &ClobFillOutcomeV0 {
+            filled: vec![filled_order, other_filled_order],
+        },
+    );
+
+    let expiry_resolver = ClobCrankResolverV0 {
+        program: [0x70; 32],
+        disc: [0x71; 8],
+        min_payment: 0x7273_7475_7677_7879,
+    };
+    let activation_resolver = ClobCrankResolverV0 {
+        program: [0x80; 32],
+        disc: [0x81; 8],
+        min_payment: 0x8283_8485_8687_8889,
+    };
+    let capacity_resolver = ClobCrankResolverV0 {
+        program: [0x90; 32],
+        disc: [0x91; 8],
+        min_payment: 0x9293_9495_9697_9899,
+    };
+    let cross_resolver = ClobCrankResolverV0 {
+        program: [0xA0; 32],
+        disc: [0xA1; 8],
+        min_payment: 0xA2A3_A4A5_A6A7_A8A9,
+    };
+    agree("CrankResolverV0", &expiry_resolver);
+
+    let writable_account = ClobCrankAccountV0 {
+        address: [0xB0; 32],
+        writable: 1,
+    };
+    let readonly_account = ClobCrankAccountV0 {
+        address: [0xC0; 32],
+        writable: 0,
+    };
+    agree("CrankAccountV0 (writable)", &writable_account);
+    agree("CrankAccountV0 (readonly)", &readonly_account);
+
+    agree(
+        "CrankConditionsArgsV0",
+        &ClobCrankConditionsArgsV0 {
+            expiry: expiry_resolver,
+            activation: activation_resolver,
+            capacity: capacity_resolver,
+            cross: cross_resolver,
+            accounts: vec![writable_account, readonly_account],
+        },
+    );
+    agree(
+        "CrankBlockV0",
+        &ClobCrankBlockV0 {
+            block_offset: 0xD0D1_D2D3,
+            top_of_book_offset: 0xD4D5_D6D7,
+            top_of_book_len: 0xD8D9_DADB,
+        },
+    );
+
+    agree(
+        "OrderRulesV0",
+        &ClobOrderRulesV0 {
+            min_order_size: 0xE0E1_E2E3_E4E5_E6E7,
+            blocking_min_size: 0xE8E9_EAEB_ECED_EEEF,
+            default_activation_delay_slots: 0xF0F1_F2F3,
+            max_activation_delay_slots: 0xF4F5_F6F7,
+            place_authority: [0xF8; 32],
+            tick_size: 0xF9FA_FBFC_FDFE_FF00,
+            step_size: 0x0102_0304_0506_0708,
+            side_order_counts: [0x090A_0B0C, 0x0D0E_0F10],
+            arena_capacity: 0x1112_1314,
+            evict_threshold_per_side: 0x1516_1718,
+        },
+    );
+
+    let bid_view = ClobOrderViewV0 {
+        order_ref,
+        client_order_id: 0x1920_2122,
+        user,
+        side: ClobSide::Bid,
+        price: 0x2324_2526_2728_292A,
+        base_asset_amount: 0x2B2C_2D2E_2F30_3132,
+        placed_slot: 0x3334_3536_3738_393A,
+        max_ts: 0x3B3C_3D3E_3F40_4142,
+        taker_origin: true,
+    };
+    let ask_view = ClobOrderViewV0 {
+        order_ref: other_order_ref,
+        client_order_id: 0x4344_4546,
+        user: user_ref(0xCD, 0x5678),
+        side: ClobSide::Ask,
+        price: 0x4748_494A_4B4C_4D4E,
+        base_asset_amount: 0x4F50_5152_5354_5556,
+        placed_slot: 0x5758_595A_5B5C_5D5E,
+        max_ts: -0x5F60_6162_6364_6566,
+        taker_origin: false,
+    };
+    agree("OrderViewV0 (bid)", &bid_view);
+    agree("OrderViewV0 (ask)", &ask_view);
+    agree(
+        "NextCrossV0",
+        &clob_wire::NextCrossV0 {
+            bid: bid_view,
+            ask: ask_view,
+        },
+    );
+
+    agree(
+        "OrdersArgsV0",
+        &ClobOrdersArgsV0 {
+            refs: vec![order_ref, other_order_ref],
+        },
+    );
+    agree(
+        "OrdersV0",
+        &ClobOrdersV0 {
+            orders: vec![bid_view, ask_view],
+        },
+    );
+
+    agree("ClobRemovalKindV0 (Expired)", &ClobRemovalKindV0::Expired);
+    agree(
+        "ClobRemovalKindV0 (Evictable)",
+        &ClobRemovalKindV0::Evictable,
+    );
+    agree(
+        "NextRemovalArgsV0",
+        &ClobNextRemovalArgsV0 {
+            kind: ClobRemovalKindV0::Evictable,
         },
     );
 }

@@ -335,7 +335,7 @@ pub struct CrankAccountV0 {
     feature = "anchor-derive",
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
-#[derive(Clone, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CrankConditionsArgsV0 {
     pub expiry: CrankResolverV0,
@@ -528,7 +528,7 @@ pub const ORDER_VIEW_CEILING: usize = 12;
     feature = "anchor-derive",
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
-#[derive(Clone, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct OrdersArgsV0 {
     /// At most [`ORDER_VIEW_CEILING`] refs.
@@ -543,7 +543,7 @@ pub struct OrdersArgsV0 {
     feature = "anchor-derive",
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
-#[derive(Clone, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct OrdersV0 {
     pub orders: Vec<OrderViewV0>,

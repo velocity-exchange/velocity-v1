@@ -727,11 +727,11 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
 
     let writable_account = ClobCrankAccountV0 {
         address: [0xB0; 32],
-        writable: 1,
+        writable: true,
     };
     let readonly_account = ClobCrankAccountV0 {
         address: [0xC0; 32],
-        writable: 0,
+        writable: false,
     };
     agree("CrankAccountV0 (writable)", &writable_account);
     agree("CrankAccountV0 (readonly)", &readonly_account);

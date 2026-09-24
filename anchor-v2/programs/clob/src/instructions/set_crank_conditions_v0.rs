@@ -47,7 +47,7 @@ pub fn handle_set_crank_conditions_v0(
         .iter()
         .map(|account| AccountRefV0 {
             address: account.address,
-            writable: account.writable,
+            writable: account.writable as u8,
         })
         .collect();
     let watched = ctx.accounts.market.address().to_bytes();

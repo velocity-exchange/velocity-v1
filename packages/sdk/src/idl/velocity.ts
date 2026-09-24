@@ -22594,11 +22594,9 @@ export type Velocity = {
     {
       "name": "clobOrderRefV0",
       "docs": [
-        "Order handle. The node index is an O(1) hint the book verifies against the order",
-        "id, so a stale hint fails closed rather than acting on whichever order took the",
-        "slot. The `Clob` prefix is deliberate: this is the one type here that lands in",
-        "velocity's IDL, beside `Order` and `OrderParams`, where `OrderRefV0` names no",
-        "program."
+        "Order handle. The node index is an O(1) hint the book verifies against the",
+        "order id, so a stale hint fails closed. `Clob` marks the one type here that",
+        "lands in velocity's IDL, beside `Order` and `OrderParams`."
       ],
       "type": {
         "kind": "struct",

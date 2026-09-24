@@ -1073,11 +1073,11 @@ fn set_crank_conditions(ctx: &mut Ctx, resolver: Pubkey) -> u32 {
             accounts: vec![
                 CrankAccountV0 {
                     address: ctx.market.to_bytes(),
-                    writable: 1,
+                    writable: true,
                 },
                 CrankAccountV0 {
                     address: resolver.to_bytes(),
-                    writable: 0,
+                    writable: false,
                 },
             ],
         },
@@ -1217,7 +1217,7 @@ fn the_book_hosts_the_conditions_that_watch_its_own_state() {
 
             accounts: vec![CrankAccountV0 {
                 address: ctx.market.to_bytes(),
-                writable: 1,
+                writable: true,
             }],
         },
     }

@@ -127,7 +127,7 @@ pub fn clob_crank_registration(
             .iter()
             .map(|account| ClobCrankAccountV0 {
                 address: account.address,
-                writable: account.writable,
+                writable: account.writable != 0,
             })
             .collect(),
     })

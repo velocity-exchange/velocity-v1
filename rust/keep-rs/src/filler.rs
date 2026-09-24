@@ -3,9 +3,9 @@ use {
     crate::{
         http::{FeedHealth, Metrics},
         util::{
-            is_resting_swift_limit, pyth_update_is_fresh, should_poll_swift, swift_order_expired,
-            swift_slot_wait_if_known, OrderSlotLimiter, PendingTxMeta, PendingTxs,
-            PerpFillFallback, PythPriceUpdate, SwiftSlotWait, TxIntent,
+            is_resting_swift_limit, project_perp_oracle, pyth_update_is_fresh, should_poll_swift,
+            swift_order_expired, swift_slot_wait_if_known, OrderSlotLimiter, PendingTxMeta,
+            PendingTxs, PerpFillFallback, PythPriceUpdate, SwiftSlotWait, TxIntent,
         },
         Config, UseMarkets,
     },
@@ -42,7 +42,7 @@ use {
         priority_fee_subscriber::PriorityFeeSubscriber,
         program::math::{
             auction::calculate_auction_price,
-            constants::MM_ORACLE_MIN_WRITE_GAP,
+            oracle::{is_oracle_valid_for_action, VelocityAction},
             time::{Millis, SlotClock},
         },
         slot_clock_from_state,
@@ -1520,19 +1520,31 @@ async fn try_auction_fill(
         // needs the AMM to want to JIT-make in the taker direction. Inputs are hoisted into
         // locals so the cross-decision wide event can carry each one.
         let drawdown = perp_market.has_too_much_drawdown().unwrap_or(false);
-        let order_low_risk = actual_order
-            .is_some_and(|o| (crosses.slot as i64).saturating_sub(oracle_delay) > o.slot as i64);
         let wants_jit = amm_wants_to_jit_make(
             &perp_market.amm,
             perp_market.order_step_size,
             crosses.taker_direction,
         );
-        // JIT leg validates the MM oracle at the landing slot (crosses were snapshotted at
-        // `crosses.slot`; the fill lands ~next slot). A same-slot snapshot that looks fresh
-        // routinely lands one slot stale under the immediate threshold, so measure at landing.
+        // Both timing gates read the safe (MM or exchange) oracle at landing (crosses were
+        // snapshotted at `crosses.slot`; the fill lands ~next slot), including this tx's
+        // pyth-lazer post. No projection means the vAMM leg can't be validated.
         let landing_slot = crosses.slot.saturating_add(1);
-        let mm_stale_immediate =
-            mm_oracle_stale_for_amm_immediate(&perp_market, landing_slot, velocity.slot_clock());
+        let projected = project_perp_oracle(
+            velocity,
+            &perp_market,
+            landing_slot,
+            oracle_update.as_ref().filter(|_| includes_oracle_update),
+        );
+        let order_low_risk = actual_order.zip(projected).is_some_and(|(o, p)| {
+            (landing_slot as i64).saturating_sub(p.safe.delay) > o.slot as i64
+        });
+        let mm_stale_immediate = projected.is_none_or(|p| {
+            !is_oracle_valid_for_action(
+                p.safe_validity,
+                Some(VelocityAction::FillOrderAmmImmediate),
+            )
+            .unwrap_or(false)
+        });
         let mut vamm_usable = crosses.has_vamm_cross
             && vamm_can_fill_taker(
                 drawdown,
@@ -2111,15 +2123,14 @@ fn order_dedup_key(user: &Pubkey, order_id: u32) -> u32 {
 /// - a "low risk" order (rested longer than the oracle delay, `User::is_low_risk_for_amm`)
 ///   fills unconditionally past the hard gates;
 /// - otherwise (still within the oracle delay, e.g. mid-auction) the AMM only fills via the
-///   immediate JIT leg, which the program gates on `FillOrderAmmImmediate` oracle validity —
-///   a *tighter* staleness bound than the low-risk one (`mm_stale_immediate`) — in addition to
-///   the AMM *wanting* to JIT-make in the taker's direction.
+///   immediate JIT leg, which the program gates on `FillOrderAmmImmediate` validity of the
+///   safe oracle — a *tighter* staleness bound than the low-risk one (`mm_stale_immediate`) —
+///   in addition to the AMM *wanting* to JIT-make in the taker's direction.
 ///
-/// The immediate leg reads the *MM* oracle (`market_stats.mm_oracle_slot`), which a pyth-lazer
-/// update posted in the fill tx does NOT refresh, so a MM crank that lands even one slot late
-/// closes it while the exchange oracle looks fresh. Gating the JIT branch only on the loose
-/// low-risk staleness (as before) sent fills that no-op on-chain with "oracle not valid for
-/// immediate fills" — the `vamm_taker no_fill` spam.
+/// When the safe price is the MM oracle, a pyth-lazer post in the fill tx does not refresh it,
+/// so a crank landing one slot late closes the JIT leg (the `vamm_taker no_fill` spam). When
+/// the MM oracle is stale or diverged (or never cranked), the safe price is the exchange
+/// oracle, which must be same-slot fresh, i.e. posted by this tx.
 ///
 /// Best-effort economy filter only — the program re-checks everything; a `true` here that the
 /// program rejects just costs a failed simulation.
@@ -2133,36 +2144,6 @@ fn vamm_can_fill_taker(
     !drawdown
         && !oracle_stale_for_amm
         && (order_low_risk || (amm_wants_to_jit_make && !mm_stale_immediate))
-}
-
-/// MM-oracle staleness for the *immediate* (JIT) AMM-fill leg, mirroring the program's
-/// `is_stale_for_amm_immediate` (`math/oracle.rs`) with the per-market
-/// `oracle_slot_delay_override`: a positive override is used as-is; `override == 0` disables
-/// the immediate leg entirely (always stale); negative means unset and resolves to
-/// `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price (the program refuses MM-oracle writes
-/// closer together than that, so a tighter threshold is unsatisfiable). Delay is measured
-/// against the *MM* oracle slot (`market_stats.mm_oracle_slot`) at the expected landing slot,
-/// since that — not the exchange oracle — is what the JIT leg validates.
-fn mm_oracle_stale_for_amm_immediate(
-    perp_market: &PerpMarket,
-    landing_slot: u64,
-    slot_clock: SlotClock,
-) -> bool {
-    let mm_oracle_delay =
-        (landing_slot as i64).saturating_sub(perp_market.market_stats.mm_oracle_slot as i64);
-    // the age is wall clock, integrated per slot duration regime like
-    // `oracle_validity`; thresholds are 400ms baseline units
-    let mm_oracle_age = slot_clock.elapsed_slot_delta(mm_oracle_delay.max(0) as u64, landing_slot);
-    let override_ = perp_market.oracle_slot_delay_override;
-    if override_ > 0 {
-        mm_oracle_age > Millis::from_stored_units(override_ as u64)
-    } else if override_ < 0 {
-        let accepted_slots =
-            MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_clock.slot_duration_at(landing_slot));
-        mm_oracle_age > slot_clock.elapsed_slot_delta(accepted_slots, landing_slot)
-    } else {
-        true
-    }
 }
 
 /// How to handle one auction cross given the vAMM's usability and available DLOB makers.
@@ -3320,8 +3301,8 @@ mod tests {
     use {
         super::{
             build_fill_tx, classify_cross, is_expected_fill_event, is_revert_fill_error,
-            mm_oracle_stale_for_amm_immediate, order_dedup_key, record_perp_fill_fallback,
-            vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
+            order_dedup_key, record_perp_fill_fallback, vamm_can_fill_taker, CrossAction, Pubkey,
+            TxIntent, VelocityEvent,
         },
         solana_instruction::error::InstructionError,
         solana_transaction::TransactionError,
@@ -3333,36 +3314,6 @@ mod tests {
             TransactionBuilder,
         },
     };
-
-    // The unset (override < 0) MM-sourced immediate threshold compares the
-    // wall clock MM-oracle age against MM_ORACLE_MIN_WRITE_GAP, matching the
-    // program's `oracle_validity`. The age integrates per slot duration
-    // regime, so the effective slot count scales with the clock.
-    #[test]
-    fn unset_mm_immediate_threshold_scales_per_gate() {
-        use velocity_rs::program::math::time::SlotClock;
-        let mut market = PerpMarket::default();
-        market.oracle_slot_delay_override = -1; // unset -> source-aware fallback
-        market.market_stats.mm_oracle_slot = 1_000;
-        // MM_ORACLE_MIN_WRITE_GAP = 800ms: 2 slots at 400ms, 4 at 200ms
-        for (clock, threshold) in [
-            (SlotClock::baseline(), 2u64),
-            (SlotClock::from_state_fields([1, 0, 0, 0], 0, 0, 0), 3),
-            (SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0), 4),
-        ] {
-            // age exactly at the write gap is NOT stale (`age > gap`)
-            let at = market.market_stats.mm_oracle_slot + threshold;
-            assert!(
-                !mm_oracle_stale_for_amm_immediate(&market, at, clock),
-                "age == write gap should be fresh"
-            );
-            // one slot past is stale
-            assert!(
-                mm_oracle_stale_for_amm_immediate(&market, at + 1, clock),
-                "age past write gap should be stale"
-            );
-        }
-    }
 
     fn order_fill_event(taker: Pubkey, order_id: u32, base_filled: u64) -> VelocityEvent {
         VelocityEvent::OrderFill {

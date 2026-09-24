@@ -22,9 +22,18 @@ use {
         },
         dlob::{L3Order, MakerCrosses},
         math::constants::PRICE_PRECISION,
-        program::math::time::{Millis, SlotClock, SlotDuration},
-        types::{MarketId, MarketType, OraclePriceData, OracleSource, OrderParams, OrderType},
-        Pubkey,
+        program::{
+            math::{
+                oracle::{oracle_validity, LogMode, OracleValidity},
+                time::{Millis, SlotClock, SlotDuration},
+            },
+            state::state::ValidityGuardRails,
+        },
+        types::{
+            accounts::PerpMarket, MarketId, MarketType, OraclePriceData, OracleSource, OrderParams,
+            OrderType,
+        },
+        Pubkey, VelocityClient,
     },
 };
 
@@ -636,6 +645,124 @@ pub struct PerpFillFallback {
     pub attempts: u32,
 }
 
+/// The oracle view the program validates for a perp fill landing at `slot`.
+/// `safe` is what `get_mm_oracle_price_data` selects: the MM oracle when it is
+/// as fresh as the exchange oracle and within 1% of it, else the exchange oracle.
+#[derive(Clone, Copy, Debug)]
+pub struct ProjectedPerpOracle {
+    pub exchange_validity: OracleValidity,
+    pub safe: OraclePriceData,
+    pub safe_validity: OracleValidity,
+    /// The tx's pyth-lazer post is fresher than the cached oracle, so the program uses it.
+    pub uses_pyth_update: bool,
+}
+
+/// Projects the cached exchange oracle to `slot` (replaced by `pyth_price_update`
+/// when the tx posts it and it is fresher) and classifies it with
+/// [`classify_perp_oracle`].
+pub fn project_perp_oracle(
+    velocity: &VelocityClient,
+    market: &PerpMarket,
+    slot: u64,
+    pyth_price_update: Option<&PythPriceUpdate>,
+) -> Option<ProjectedPerpOracle> {
+    let state = velocity.state_account().ok()?;
+    let oracle =
+        velocity.try_get_oracle_price_data_and_slot(MarketId::perp(market.market_index))?;
+    let mut exchange_oracle = oracle.data;
+    let elapsed_slots = slot.saturating_sub(oracle.slot);
+    exchange_oracle.delay = exchange_oracle
+        .delay
+        .saturating_add(i64::try_from(elapsed_slots).unwrap_or(i64::MAX));
+
+    // Model the update the tx would actually post. The program accepts a
+    // post on feed-timestamp freshness alone (a same-price message still
+    // refreshes staleness), so the preview keys on freshness too, and the
+    // previewed oracle is parsed from the retained signed message with
+    // the same confidence the program would store, not fabricated from
+    // the scaled price.
+    let previewed_oracle = pyth_price_update
+        .filter(|update| {
+            update.market_type == MarketType::Perp && update.market_id == market.market_index
+        })
+        .and_then(|update| preview_pyth_lazer_oracle(update, &market.oracle_source));
+    let uses_pyth_update = previewed_oracle.as_ref().is_some_and(|preview| {
+        match (preview.sequence_id, exchange_oracle.sequence_id) {
+            (Some(next), Some(current)) => next > current,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    });
+    if uses_pyth_update {
+        exchange_oracle = previewed_oracle?;
+    }
+
+    let validity_guard_rails: ValidityGuardRails =
+        unsafe { std::mem::transmute_copy(&state.oracle_guard_rails.validity) };
+    classify_perp_oracle(
+        market,
+        exchange_oracle,
+        slot,
+        &validity_guard_rails,
+        velocity.slot_clock(),
+    )
+    .map(|projected| ProjectedPerpOracle {
+        uses_pyth_update,
+        ..projected
+    })
+}
+
+/// Classifies `exchange_oracle` (already aged to `slot`) and the safe price
+/// the program selects from it, as `update_amm_and_check_validity` and
+/// `fill_perp_order` do. `uses_pyth_update` is always false here.
+pub fn classify_perp_oracle(
+    market: &PerpMarket,
+    exchange_oracle: OraclePriceData,
+    slot: u64,
+    validity_guard_rails: &ValidityGuardRails,
+    slot_clock: SlotClock,
+) -> Option<ProjectedPerpOracle> {
+    let validity = |price_data: &OraclePriceData, log_mode, price_is_mm_sourced| {
+        oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            price_data,
+            validity_guard_rails,
+            market.get_max_confidence_interval_multiplier().ok()?,
+            &market.oracle_source,
+            log_mode,
+            market.oracle_slot_delay_override,
+            price_is_mm_sourced,
+            market.oracle_low_risk_slot_delay_override,
+            slot,
+            slot_clock,
+        )
+        .ok()
+    };
+
+    let exchange_validity = validity(&exchange_oracle, LogMode::ExchangeOracle, false)?;
+    let mm_oracle = market
+        .get_mm_oracle_price_data(exchange_oracle, slot, validity_guard_rails, slot_clock)
+        .ok()?;
+    let safe = mm_oracle.get_safe_oracle_price_data();
+    let safe_validity = validity(
+        &safe,
+        LogMode::SafeMMOracle,
+        mm_oracle.is_safe_price_mm_sourced(),
+    )?;
+
+    Some(ProjectedPerpOracle {
+        exchange_validity,
+        safe,
+        safe_validity,
+        uses_pyth_update: false,
+    })
+}
+
 /// The oracle state `update_pyth_lazer_oracle` would persist for `update`,
 /// read back the way `get_pyth_price` reads it, with `delay: 0` since the
 /// posting tx stamps the current slot. Mirrors the program end to end:
@@ -1052,10 +1179,10 @@ pub fn subscribe_price_feeds(
 mod tests {
     use {
         super::{
-            is_resting_swift_limit, preview_pyth_lazer_oracle, pyth_update_is_fresh,
-            should_poll_swift, swift_order_expired, swift_slot_wait, swift_slot_wait_if_known,
-            OrderParams, OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey,
-            PythPriceUpdate, SwiftSlotWait, TxIntent,
+            classify_perp_oracle, is_resting_swift_limit, preview_pyth_lazer_oracle,
+            pyth_update_is_fresh, should_poll_swift, swift_order_expired, swift_slot_wait,
+            swift_slot_wait_if_known, OrderParams, OrderSlotLimiter, OrderType, PendingTxMeta,
+            PendingTxs, Pubkey, PythPriceUpdate, SwiftSlotWait, TxIntent,
         },
         pyth_lazer_protocol::{
             message::SolanaMessage,
@@ -1069,6 +1196,89 @@ mod tests {
             types::{MarketType, OracleSource},
         },
     };
+
+    // The program validates the fill's safe oracle, not the raw MM slot. With
+    // the MM oracle ~34h stale (ZEC-PERP, never cranked) the safe price is the
+    // exchange oracle, whose immediate threshold is zero: a same-tx pyth-lazer
+    // post (delay 0) passes, one slot old does not. A fresh MM oracle is the
+    // safe price and passes within its write gap.
+    #[test]
+    fn immediate_fill_validity_follows_safe_oracle_source() {
+        use velocity_rs::{
+            program::{
+                math::{
+                    oracle::{is_oracle_valid_for_action, VelocityAction},
+                    time::legacy_slot_duration_i64,
+                },
+                state::state::ValidityGuardRails,
+            },
+            types::{accounts::PerpMarket, OraclePriceData},
+        };
+        let guard_rails = ValidityGuardRails {
+            slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+            slots_before_stale_for_margin: legacy_slot_duration_i64(120),
+            confidence_interval_max_size: 20_000,
+            too_volatile_ratio: 5,
+        };
+        let slot = 449_781_953;
+        let price = 1_515_532_437;
+        let exchange_seq = 1_790_187_409_000_000;
+        let exchange = |delay| OraclePriceData {
+            price,
+            confidence: (price / 500) as u64,
+            delay,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: Some(exchange_seq),
+        };
+        let immediate_ok = |market: &PerpMarket, delay| {
+            let projected = classify_perp_oracle(
+                market,
+                exchange(delay),
+                slot,
+                &guard_rails,
+                SlotClock::baseline(),
+            )
+            .expect("classifies");
+            let ok = is_oracle_valid_for_action(
+                projected.safe_validity,
+                Some(VelocityAction::FillOrderAmmImmediate),
+            )
+            .unwrap();
+            (projected.safe.price, ok)
+        };
+
+        let mut market = PerpMarket::default();
+        market.market_index = 4;
+        market.oracle_source = OracleSource::PythLazer;
+        market.oracle_slot_delay_override = -1;
+        market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap = price;
+        market.market_stats.mm_oracle_price = 1_506_838_551;
+        market.market_stats.mm_oracle_slot = slot - 458_505;
+        market.market_stats.mm_oracle_sequence_id = 1_790_065_354_600_000;
+        assert_eq!(
+            immediate_ok(&market, 0),
+            (price, true),
+            "same-tx lazer post"
+        );
+        assert_eq!(
+            immediate_ok(&market, 1),
+            (price, false),
+            "no post this slot"
+        );
+
+        let mm_price = price + price / 1_000; // within the 1% fallback band
+        market.market_stats.mm_oracle_price = mm_price;
+        market.market_stats.mm_oracle_slot = slot - 1;
+        market.market_stats.mm_oracle_sequence_id = exchange_seq + 1;
+        assert_eq!(
+            immediate_ok(&market, 3),
+            (mm_price, true),
+            "fresh MM oracle"
+        );
+    }
 
     /// One lazer solana envelope carrying a single feed with the given
     /// properties, retained the way `subscribe_price_feeds` retains it.

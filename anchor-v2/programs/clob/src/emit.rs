@@ -14,10 +14,13 @@ pub use quoter_emit::{assert_pod_matches_event, emit_pod, pod_log_bytes, DISCRIM
 use {
     crate::{
         error::ClobError,
-        events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0, FILL_SLIM_BYTES},
+        events::{
+            ExecuteRecordV0, FillEntryV0, FillRecordV0, FillSlimV0, OrdersCancelRecordV0,
+            FILL_ENTRY_BYTES, FILL_SLIM_BYTES,
+        },
         state::{
             CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, CLIENT_ORDER_ID_BYTES, COUNT_BYTES,
-            EXECUTE_FILLS_CEILING, ORDER_ID_BYTES,
+            EXECUTE_FILLS_CEILING, FILL_BATCH_CEILING, ORDER_ID_BYTES,
         },
     },
     anchor_lang::prelude::*,
@@ -44,9 +47,9 @@ macro_rules! emit_removal {
 pub(crate) use emit_removal;
 
 /// Widest [`ExecuteRecordV0`] log: discriminator, fixed prefix, and both
-/// sequences at their widest, `EXECUTE_FILLS_CEILING` fills and
-/// `FILL_BATCH_CEILING` culled orders. `execute_v0` culls at most one order,
-/// since a partial fill ends the walk; `fill_v0` reports a batch where every order can leave a leftover.
+/// sequences at their widest. `EXECUTE_FILLS_CEILING` bounds the fills.
+/// `execute_v0` culls at most one order, since a partial fill ends the walk,
+/// but the culled-id sequence is sized to `FILL_BATCH_CEILING` for headroom.
 pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + core::mem::size_of::<i64>()
     + core::mem::size_of::<u64>()
@@ -55,7 +58,19 @@ pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + COUNT_BYTES
     + EXECUTE_FILLS_CEILING as usize * FILL_SLIM_BYTES
     + COUNT_BYTES
-    + crate::state::FILL_BATCH_CEILING * CLIENT_ORDER_ID_BYTES;
+    + FILL_BATCH_CEILING * CLIENT_ORDER_ID_BYTES;
+
+/// Widest [`FillRecordV0`] log: discriminator, fixed prefix, and both
+/// sequences at `FILL_BATCH_CEILING`, the batch limit `fill_v0` enforces on
+/// its argument list.
+pub const FILL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
+    + core::mem::size_of::<i64>()
+    + core::mem::size_of::<u64>()
+    + core::mem::size_of::<u16>()
+    + COUNT_BYTES
+    + FILL_BATCH_CEILING * FILL_ENTRY_BYTES
+    + COUNT_BYTES
+    + FILL_BATCH_CEILING * CLIENT_ORDER_ID_BYTES;
 
 /// Widest [`OrdersCancelRecordV0`] log: discriminator, fixed prefix (authority,
 /// timestamp, base totals, market index, sub-account id, sides tag, exhaustive
@@ -320,6 +335,66 @@ pub fn emit_execute_record(
         cancelled_client_order_ids,
     )?;
 
+    log.emit();
+    Ok(())
+}
+
+/// Borsh-encode a [`FillRecordV0`] payload into `log`. See
+/// [`write_execute_record`] for why this is written field by field instead of
+/// through the `emit_pod!` copy.
+#[inline(always)]
+pub fn write_fill_record<const N: usize>(
+    log: &mut LogBuf<N>,
+    ts: i64,
+    slot: u64,
+    market_index: u16,
+    fills: &[FillEntryV0],
+    cancelled_client_order_ids: &[u32],
+) -> Result<()> {
+    log.push(FillRecordV0::DISCRIMINATOR)?;
+    log.push(&ts.to_le_bytes())?;
+    log.push(&slot.to_le_bytes())?;
+    log.push(&market_index.to_le_bytes())?;
+    log.push(&(fills.len() as u32).to_le_bytes())?;
+    fills.iter().try_for_each(|fill| {
+        let mut entry = [0u8; FILL_ENTRY_BYTES];
+        entry[..ORDER_ID_BYTES].copy_from_slice(&fill.order_id.to_le_bytes());
+        let owner_at = ORDER_ID_BYTES;
+        entry[owner_at..owner_at + core::mem::size_of::<Address>()]
+            .copy_from_slice(&fill.owner.to_bytes());
+        let price_at = owner_at + core::mem::size_of::<Address>();
+        entry[price_at..price_at + ORDER_ID_BYTES].copy_from_slice(&fill.price.to_le_bytes());
+        let base_at = price_at + ORDER_ID_BYTES;
+        entry[base_at..base_at + ORDER_ID_BYTES].copy_from_slice(&fill.base_size.to_le_bytes());
+        entry[base_at + ORDER_ID_BYTES..].copy_from_slice(&fill.client_order_id.to_le_bytes());
+        log.push(&entry)
+    })?;
+
+    log.push(&(cancelled_client_order_ids.len() as u32).to_le_bytes())?;
+    cancelled_client_order_ids
+        .iter()
+        .try_for_each(|order_id| log.push(&order_id.to_le_bytes()))
+}
+
+/// Emit a [`FillRecordV0`] from the stack. See [`emit_execute_record`] for why
+/// this needs its own frame.
+#[inline(never)]
+pub fn emit_fill_record(
+    ts: i64,
+    slot: u64,
+    market_index: u16,
+    fills: &[FillEntryV0],
+    cancelled_client_order_ids: &[u32],
+) -> Result<()> {
+    let mut log = LogBuf::<FILL_RECORD_LOG_BYTES>::new();
+    write_fill_record(
+        &mut log,
+        ts,
+        slot,
+        market_index,
+        fills,
+        cancelled_client_order_ids,
+    )?;
     log.emit();
     Ok(())
 }

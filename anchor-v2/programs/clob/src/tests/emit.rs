@@ -10,14 +10,16 @@
 use {
     crate::{
         emit::{
-            assert_pod_matches_event, write_execute_record, CancelAllRecord, LogBuf,
-            EXECUTE_RECORD_LOG_BYTES,
+            assert_pod_matches_event, write_execute_record, write_fill_record, CancelAllRecord,
+            LogBuf, EXECUTE_RECORD_LOG_BYTES, FILL_RECORD_LOG_BYTES,
         },
         events::{
-            ExecuteRecordV0, FillSlimV0, OrderCancelRecordV0, OrderEvictRecordV0,
-            OrderExpireRecordV0, OrderPlaceRecordV0, OrdersCancelRecordV0,
+            ExecuteRecordV0, FillEntryV0, FillRecordV0, FillSlimV0, OrderCancelRecordV0,
+            OrderEvictRecordV0, OrderExpireRecordV0, OrderPlaceRecordV0, OrdersCancelRecordV0,
         },
-        state::{CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING},
+        state::{
+            CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, FILL_BATCH_CEILING,
+        },
     },
     anchor_lang::prelude::*,
 };
@@ -42,7 +44,8 @@ fn the_lifecycle_records_emit_the_bytes_the_event_impl_would() {
         market_index: 23,
         sub_account_id: 25,
         side: 1,
-        _pad: [0; 3],
+        flags: 5,
+        _pad: [0; 2],
     });
     assert_pod_matches_event!(OrderCancelRecordV0 {
         authority: authority(),
@@ -210,6 +213,48 @@ fn the_execute_record_emits_the_bytes_the_event_impl_would() {
             log.as_slice(),
             Event::data(&record).as_slice(),
             "execute record with {} fills diverged from Event::data()",
+            fills.len()
+        );
+    }
+}
+
+/// `fill_v0`'s record is also variable-length, checked at the same shapes:
+/// no fills, a cull with no fills, and the batch ceiling.
+#[test]
+fn the_fill_record_emits_the_bytes_the_event_impl_would() {
+    let fill = |i: u64| FillEntryV0 {
+        order_id: i,
+        owner: authority(),
+        price: 200 + i,
+        base_size: 100 + i,
+        client_order_id: 1_000 + i as u32,
+    };
+    let shapes: [(Vec<FillEntryV0>, Option<u32>); 4] = [
+        (vec![], None),
+        (vec![], Some(77)),
+        (vec![fill(1), fill(2), fill(3)], Some(77)),
+        (
+            (0..FILL_BATCH_CEILING as u64).map(fill).collect(),
+            Some(u32::MAX),
+        ),
+    ];
+
+    for (fills, cancelled_client_order_id) in shapes {
+        let mut log = Box::new(LogBuf::<FILL_RECORD_LOG_BYTES>::new());
+        let cancelled: Vec<u32> = cancelled_client_order_id.into_iter().collect();
+        write_fill_record(&mut log, -7, 9, 23, &fills, &cancelled).unwrap();
+        let record = FillRecordV0 {
+            ts: -7,
+            slot: 9,
+            market_index: 23,
+            fills: fills.clone(),
+            cancelled_client_order_ids: cancelled.clone(),
+        };
+
+        assert_eq!(
+            log.as_slice(),
+            Event::data(&record).as_slice(),
+            "fill record with {} fills diverged from Event::data()",
             fills.len()
         );
     }

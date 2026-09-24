@@ -2,10 +2,10 @@
 pub use clob_wire::FillArgsV0;
 use {
     crate::{
-        book::ClobBook,
-        emit::emit_execute_record,
+        book::{ClobBook, NodeArena},
+        emit::emit_fill_record,
         error::ClobError,
-        events::FillSlimV0,
+        events::FillEntryV0,
         instructions::GatedMarketV0,
         state::{FillOutcomeV0, FilledOrder},
     },
@@ -38,36 +38,39 @@ pub fn handle_fill_v0(ctx: &mut Context<GatedMarketV0>, args: FillArgsV0) -> Res
         ClobError::InvalidOrderParams
     );
 
-    let filled = args
+    // The node is read before `fill` shrinks or removes it, since the record
+    // needs the remainder's own price and owner and this is the only place
+    // either is stored.
+    let (fills, filled): (Vec<FillEntryV0>, Vec<FilledOrder>) = args
         .fills
         .iter()
-        .map(|request| market.fill(request.order_ref, request.base_asset_amount))
-        .collect::<Result<Vec<FilledOrder>>>()?;
-
-    // This writes the same record as `execute_v0`, because the event is the
-    // same: an order on this book filled. A reader that already follows fills
-    // needs no second shape.
-    let fills: Vec<FillSlimV0> = filled
-        .iter()
-        .map(|order| FillSlimV0 {
-            order_id: order.order_id,
-            base_size: order.base_asset_amount,
-            client_order_id: order.client_order_id,
+        .map(|request| {
+            let node = market.read_node(request.order_ref.node_index)?;
+            let outcome = market.fill(request.order_ref, request.base_asset_amount)?;
+            Ok((
+                FillEntryV0 {
+                    order_id: outcome.order_id,
+                    owner: node.authority,
+                    price: node.price,
+                    base_size: outcome.base_asset_amount,
+                    client_order_id: outcome.client_order_id,
+                },
+                outcome,
+            ))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .unzip();
+
     let culled: Vec<u32> = filled
         .iter()
         .filter(|order| order.culled_base_asset_amount > 0)
         .map(|order| order.client_order_id)
         .collect();
-    emit_execute_record(
+    emit_fill_record(
         clock.unix_timestamp,
         clock.slot,
         market_index,
-        // A batch has no single direction. Each order carries its own side,
-        // and a reader joins to it by order id, as it already does for the
-        // fills an execute reports.
-        0,
         &fills,
         &culled,
     )?;

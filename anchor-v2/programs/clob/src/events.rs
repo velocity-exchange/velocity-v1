@@ -37,7 +37,10 @@ pub struct OrderPlaceRecordV0 {
     pub market_index: u16,
     pub sub_account_id: u16,
     pub side: u8,
-    pub _pad: [u8; 3],
+    /// [`crate::state::OrderBitFlag::TakerOrigin`] and
+    /// [`crate::state::OrderBitFlag::ReduceOnly`], at the same bit values.
+    pub flags: u8,
+    pub _pad: [u8; 2],
 }
 
 #[event(bytemuck)]
@@ -146,3 +149,36 @@ pub struct FillSlimV0 {
 /// Borsh width of a [`FillSlimV0`]. This is the per-fill stride of the execute
 /// record's payload, and [`crate::emit`] sizes its stack buffer from it.
 pub const FILL_SLIM_BYTES: usize = 2 * core::mem::size_of::<u64>() + core::mem::size_of::<u32>();
+
+/// One per `fill_v0`. `execute_v0` fills a taker against makers already on
+/// this book, so [`ExecuteRecordV0`] can name the maker by id and leave price
+/// and owner to the reader's order table. `fill_v0` instead reports a resting
+/// taker remainder that aggressed against a venue this program never saw, so
+/// the record carries the remainder's own price and owner rather than sending
+/// a reader to a fill it cannot resolve any other way.
+#[event]
+pub struct FillRecordV0 {
+    pub ts: i64,
+    pub slot: u64,
+    pub market_index: u16,
+    pub fills: Vec<FillEntryV0>,
+    /// See [`ExecuteRecordV0::cancelled_client_order_ids`].
+    pub cancelled_client_order_ids: Vec<u32>,
+}
+
+/// One taker remainder filled in a `fill_v0` batch. `price` is the remainder's
+/// own resting price, the only price this program stores for it.
+#[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
+pub struct FillEntryV0 {
+    pub order_id: u64,
+    pub owner: Address,
+    pub price: u64,
+    pub base_size: u64,
+    pub client_order_id: u32,
+}
+
+/// Borsh width of a [`FillEntryV0`]. Sizes [`crate::emit`]'s stack buffer for
+/// [`FillRecordV0`].
+pub const FILL_ENTRY_BYTES: usize =
+    3 * core::mem::size_of::<u64>() + core::mem::size_of::<Address>() + core::mem::size_of::<u32>();

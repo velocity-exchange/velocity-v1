@@ -9,7 +9,7 @@ use {
         error::ClobError,
         events::OrderPlaceRecordV0,
         instructions::GatedMarketV0,
-        state::{OrderRefV0, PlaceOrderParams},
+        state::{OrderBitFlag, OrderRefV0, PlaceOrderParams},
     },
     anchor_lang::prelude::*,
 };
@@ -92,7 +92,9 @@ pub fn handle_place_order_v0(
         market_index: market.market_index,
         sub_account_id: user.sub_account_id,
         side: args.side.tag(),
-        _pad: [0; 3],
+        flags: OrderBitFlag::TakerOrigin.bit_if(args.taker_origin)
+            | OrderBitFlag::ReduceOnly.bit_if(args.reduce_only),
+        _pad: [0; 2],
     });
 
     Ok(order_ref)

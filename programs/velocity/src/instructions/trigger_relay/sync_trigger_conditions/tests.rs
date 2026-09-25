@@ -160,7 +160,7 @@ mod coverage_and_direction {
         .unwrap()
         {
             WakeView::OnValueCross { cmp, .. } => cmp,
-            other => panic!("expected OnValueCross, got {other:?}"),
+            other => panic!("expected OnValueCross, got {:?}", other),
         };
 
         rewatch_trigger_slot(&mut conditions, &evicted, &market, &oracle_info).unwrap();

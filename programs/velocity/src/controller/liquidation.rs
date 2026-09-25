@@ -849,6 +849,172 @@ pub struct PlacedLiquidation {
     existing_direction: PositionDirection,
 }
 
+/// The inputs that size a with-fill liquidation. The executor sizes its forced
+/// order with this, and the relay resolver predicts that order with it.
+pub struct LiquidationSizing<'a> {
+    pub user: &'a User,
+    pub market_index: u16,
+    pub liquidation_mode: &'a dyn LiquidatePerpMode,
+    pub margin_calculation: &'a MarginCalculation,
+    pub oracle_price: i64,
+}
+
+/// The size of a with-fill liquidation and the fees its settle charges.
+pub struct LiquidationSize {
+    pub base_asset_amount: u64,
+    pub margin_shortage: u128,
+    pub liquidator_fee: u32,
+    pub if_liquidation_fee: u32,
+    pub protocol_liquidation_fee: u32,
+}
+
+impl LiquidationSizing<'_> {
+    /// `None` when the shortage allows no transfer yet.
+    pub fn size(
+        &self,
+        maps: &mut AccountMaps,
+        state: &State,
+        slot: u64,
+    ) -> VelocityResult<Option<LiquidationSize>> {
+        let cover = self.cover_shortage(maps, state, slot)?;
+        let max_pct_allowed = self.liquidation_mode.calculate_max_pct_to_liquidate(
+            self.user,
+            cover.size.margin_shortage,
+            slot,
+            state.initial_pct_to_liquidate as u128,
+            state.liquidation_duration_ms(),
+            maps.oracle_map.slot_clock,
+        )?;
+        let max_base_asset_amount_allowed_to_be_transferred = cover
+            .base_asset_amount
+            .cast::<u128>()?
+            .saturating_mul(max_pct_allowed)
+            .safe_div(LIQUIDATION_PCT_PRECISION)?
+            .cast::<u64>()?;
+
+        if max_base_asset_amount_allowed_to_be_transferred == 0 {
+            return Ok(None);
+        }
+
+        let base_asset_value = calculate_base_asset_value_with_oracle_price(
+            cover.user_base_asset_amount.cast()?,
+            self.oracle_price,
+        )?
+        .cast::<u64>()?;
+
+        // if position is less than $50, liquidator can liq all of it
+        let min_base_asset_amount = if base_asset_value > 50 * QUOTE_PRECISION_U64 {
+            0_u64
+        } else {
+            cover.user_base_asset_amount
+        };
+
+        let base_asset_amount = cover
+            .user_base_asset_amount
+            .min(max_base_asset_amount_allowed_to_be_transferred.max(min_base_asset_amount));
+        Ok(Some(LiquidationSize {
+            base_asset_amount: standardize_base_asset_amount_ceil(
+                base_asset_amount,
+                maps.perp_market_map
+                    .get_ref(&self.market_index)?
+                    .order_step_size,
+            )?,
+            ..cover.size
+        }))
+    }
+
+    /// The base that covers the whole margin shortage, before the pace cap.
+    fn cover_shortage(
+        &self,
+        maps: &mut AccountMaps,
+        state: &State,
+        slot: u64,
+    ) -> VelocityResult<ShortageCover> {
+        let user_base_asset_amount = self
+            .user
+            .get_perp_position(self.market_index)?
+            .base_asset_amount
+            .unsigned_abs();
+
+        let margin_ratio_with_buffer = maps
+            .perp_market_map
+            .get_ref(&self.market_index)?
+            .get_margin_ratio(
+                user_base_asset_amount.cast()?,
+                MarginRequirementType::Maintenance,
+            )?
+            .safe_add(state.liquidation_margin_buffer_ratio)?;
+
+        let margin_shortage = self
+            .liquidation_mode
+            .margin_shortage(self.margin_calculation)?;
+
+        let market = maps.perp_market_map.get_ref(&self.market_index)?;
+        let quote_spot_market = maps
+            .spot_market_map
+            .get_ref(&market.quote_spot_market_index)?;
+        let quote_oracle_price = maps
+            .oracle_map
+            .get_price_data(&quote_spot_market.oracle_id())?
+            .price;
+        // Use the time-adjusted liquidator fee for both the IF/protocol fee budget and the
+        // margin-shortage base sizing, so it matches the fee the forced order is priced with.
+        // The un-aged `market.liquidator_fee` would under-budget those fees against the larger
+        // execution discount the victim pays after the grace period. `liquidate_perp` matches.
+        let liquidator_fee = get_liquidation_fee(
+            market.get_base_liquidator_fee(),
+            market.get_max_liquidation_fee()?,
+            self.user.last_active_slot,
+            slot,
+            maps.oracle_map.slot_clock,
+        )?;
+        // total insurance-side budget with the cap raised to if + protocol rates,
+        // split IF-first (see liquidate_perp for rationale)
+        let total_if_side_fee = calculate_perp_if_fee(
+            self.margin_calculation
+                .tracked_market_margin_shortage(margin_shortage)?,
+            user_base_asset_amount,
+            margin_ratio_with_buffer,
+            liquidator_fee,
+            self.oracle_price,
+            quote_oracle_price,
+            market
+                .if_liquidation_fee
+                .safe_add(market.protocol_liquidation_fee)?,
+        )?;
+        let if_liquidation_fee = total_if_side_fee.min(market.if_liquidation_fee);
+
+        Ok(ShortageCover {
+            user_base_asset_amount,
+            base_asset_amount: standardize_base_asset_amount_ceil(
+                calculate_base_asset_amount_to_cover_margin_shortage(
+                    margin_shortage,
+                    margin_ratio_with_buffer,
+                    liquidator_fee,
+                    total_if_side_fee,
+                    self.oracle_price,
+                    quote_oracle_price,
+                )?,
+                market.order_step_size,
+            )?,
+            size: LiquidationSize {
+                base_asset_amount: 0,
+                margin_shortage,
+                liquidator_fee,
+                if_liquidation_fee,
+                protocol_liquidation_fee: total_if_side_fee.safe_sub(if_liquidation_fee)?,
+            },
+        })
+    }
+}
+
+/// The base that covers a whole shortage, and the fees priced alongside it.
+struct ShortageCover {
+    user_base_asset_amount: u64,
+    base_asset_amount: u64,
+    size: LiquidationSize,
+}
+
 /// Sizes a liquidation, cancels what blocks it, and places the forced order.
 ///
 /// The order's size follows from the margin shortage, so the order does not exist
@@ -870,7 +1036,6 @@ pub fn place_liquidation_order<'info>(
         liquidator: liquidator_loader,
         liquidator_key,
     } = parties;
-    let slot_clock = maps.oracle_map.slot_clock;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
 
@@ -878,8 +1043,6 @@ pub fn place_liquidation_order<'info>(
     let mut liquidator = load_mut!(liquidator_loader)?;
 
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
-    let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
-    let liquidation_duration = state.liquidation_duration_ms();
 
     let liquidation_mode = get_perp_liquidation_mode(&user, market_index)?;
 
@@ -1118,109 +1281,26 @@ pub fn place_liquidation_order<'info>(
 
     validate!(!oracle_price_too_divergent, ErrorCode::PriceBandsBreached)?;
 
-    let user_base_asset_amount = user.perp_positions[position_index]
-        .base_asset_amount
-        .unsigned_abs();
-
-    let margin_ratio = maps
-        .perp_market_map
-        .get_ref(&market_index)?
-        .get_margin_ratio(
-            user_base_asset_amount.cast()?,
-            MarginRequirementType::Maintenance,
-        )?;
-
-    let margin_ratio_with_buffer = margin_ratio.safe_add(liquidation_margin_buffer_ratio)?;
-
-    let margin_shortage = liquidation_mode.margin_shortage(&intermediate_margin_calculation)?;
-
-    let market = maps.perp_market_map.get_ref(&market_index)?;
-    let quote_spot_market = maps
-        .spot_market_map
-        .get_ref(&market.quote_spot_market_index)?;
-    let quote_oracle_price = maps
-        .oracle_map
-        .get_price_data(&quote_spot_market.oracle_id())?
-        .price;
-    // Use the time-adjusted liquidator fee for both the IF/protocol fee budget and the
-    // margin-shortage base sizing, so it matches the fee the forced order is priced with.
-    // The un-aged `market.liquidator_fee` would under-budget those fees against the larger
-    // execution discount the victim pays after the grace period. `liquidate_perp` matches.
-    let liquidator_fee = get_liquidation_fee(
-        market.get_base_liquidator_fee(),
-        market.get_max_liquidation_fee()?,
-        user.last_active_slot,
-        slot,
-        slot_clock,
-    )?;
-    // total insurance-side budget with the cap raised to if + protocol rates,
-    // split IF-first (see liquidate_perp for rationale)
-    let total_if_side_fee = calculate_perp_if_fee(
-        intermediate_margin_calculation.tracked_market_margin_shortage(margin_shortage)?,
-        user_base_asset_amount,
-        margin_ratio_with_buffer,
-        liquidator_fee,
-        oracle_price,
-        quote_oracle_price,
-        market
-            .if_liquidation_fee
-            .safe_add(market.protocol_liquidation_fee)?,
-    )?;
-    let if_liquidation_fee = total_if_side_fee.min(market.if_liquidation_fee);
-    let protocol_liquidation_fee = total_if_side_fee.safe_sub(if_liquidation_fee)?;
-    let base_asset_amount_to_cover_margin_shortage = standardize_base_asset_amount_ceil(
-        calculate_base_asset_amount_to_cover_margin_shortage(
-            margin_shortage,
-            margin_ratio_with_buffer,
-            liquidator_fee,
-            total_if_side_fee,
-            oracle_price,
-            quote_oracle_price,
-        )?,
-        market.order_step_size,
-    )?;
-    drop(market);
-    drop(quote_spot_market);
-
-    let max_pct_allowed = liquidation_mode.calculate_max_pct_to_liquidate(
-        &user,
+    let Some(LiquidationSize {
+        base_asset_amount,
         margin_shortage,
-        slot,
-        initial_pct_to_liquidate,
-        liquidation_duration,
-        slot_clock,
-    )?;
-    let max_base_asset_amount_allowed_to_be_transferred =
-        base_asset_amount_to_cover_margin_shortage
-            .cast::<u128>()?
-            .saturating_mul(max_pct_allowed)
-            .safe_div(LIQUIDATION_PCT_PRECISION)?
-            .cast::<u64>()?;
-
-    if max_base_asset_amount_allowed_to_be_transferred == 0 {
+        liquidator_fee,
+        if_liquidation_fee,
+        protocol_liquidation_fee,
+    }) = (LiquidationSizing {
+        user: &user,
+        market_index,
+        liquidation_mode: liquidation_mode.as_ref(),
+        margin_calculation: &intermediate_margin_calculation,
+        oracle_price,
+    })
+    .size(maps, state, slot)?
+    else {
         msg!("max_base_asset_amount_allowed_to_be_transferred == 0");
         return Ok(LiquidationStep::Settled {
             book_orders_removed: book_cancel.orders,
         });
-    }
-
-    let base_asset_value =
-        calculate_base_asset_value_with_oracle_price(user_base_asset_amount.cast()?, oracle_price)?
-            .cast::<u64>()?;
-
-    // if position is less than $50, liquidator can liq all of it
-    let min_base_asset_amount = if base_asset_value > 50 * QUOTE_PRECISION_U64 {
-        0_u64
-    } else {
-        user_base_asset_amount
     };
-
-    let base_asset_amount = user_base_asset_amount
-        .min(max_base_asset_amount_allowed_to_be_transferred.max(min_base_asset_amount));
-    let base_asset_amount = standardize_base_asset_amount_ceil(
-        base_asset_amount,
-        maps.perp_market_map.get_ref(&market_index)?.order_step_size,
-    )?;
 
     let existing_direction = user.perp_positions[position_index].get_direction();
 

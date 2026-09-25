@@ -27,10 +27,12 @@
 //! Re-triggering after an eviction runs behind an edge gate, which is
 //! [`OrderBitFlag::AwaitingTriggerRecross`]. While the flag is set, a crank
 //! that observes the price on the non-trigger side clears it and places
-//! nothing. A crank that observes the price still through the trigger fails.
-//! This is the on-chain approximation of a price that must cross back through
-//! the trigger. An evicted stop-limit sits near the tail by definition, and the
-//! gate stops it from re-placing into an immediate second eviction.
+//! nothing. That crank earns the flat reward, because the stop fires again
+//! only once the flag is clear. A crank that observes the price still through
+//! the trigger fails. This is the on-chain approximation of a price that must
+//! cross back through the trigger. An evicted stop-limit sits near the tail by
+//! definition, and the gate stops it from re-placing into an immediate second
+//! eviction.
 //!
 //! The placed order rests taker-origin. A fired trigger is an order that came
 //! to trade, so it gets what any other taker remainder gets. A cross settles at
@@ -374,19 +376,16 @@ impl TriggerLimitCrank<'_, '_> {
     /// Run every gate that can decide against placing, while the owner's
     /// account is borrowed: the trigger condition, the reservation, the
     /// book's rules and the reward.
-    fn decide(
-        &self,
-        maps: &mut AccountMaps<'_>,
-        rules: &OrderRulesV0,
-    ) -> Result<TriggerLimitStep> {
+    fn decide(&self, maps: &mut AccountMaps<'_>, rules: &OrderRulesV0) -> Result<TriggerLimitStep> {
         let now = self.clock.unix_timestamp;
         let user_key = self.user.key();
         let filler_key = self.filler.key();
         let user = &mut load_mut!(self.user)?;
         let user_stats = &mut load_mut!(self.user_stats)?;
 
-        let Some(fired) = self.fire(user, maps)? else {
-            return Ok(TriggerLimitStep::NoWork);
+        let fired = match self.fire(user, maps)? {
+            TriggerFire::Fired(fired) => fired,
+            TriggerFire::Done(step) => return Ok(step),
         };
 
         let Some(reserved) = reserve_and_gate_trigger(
@@ -454,13 +453,8 @@ impl TriggerLimitCrank<'_, '_> {
             .map(TriggerLimitStep::Place)
     }
 
-    /// Find the armed order and hold it to the trigger condition. `None` is
-    /// no payable work.
-    fn fire(
-        &self,
-        user: &mut User,
-        maps: &mut AccountMaps<'_>,
-    ) -> Result<Option<FiredTriggerLimit>> {
+    /// Find the armed order and hold it to the trigger condition.
+    fn fire(&self, user: &mut User, maps: &mut AccountMaps<'_>) -> Result<TriggerFire> {
         let now = self.clock.unix_timestamp;
         let order_index = find_armed_trigger_limit(user, self.order_id, self.market_index)?;
 
@@ -476,7 +470,7 @@ impl TriggerLimitCrank<'_, '_> {
                 now
             );
 
-            return Ok(None);
+            return Ok(TriggerFire::Done(TriggerLimitStep::NoWork));
         }
 
         validate_user_not_being_liquidated(user, maps, self.state.liquidation_margin_buffer_ratio)?;
@@ -498,9 +492,26 @@ impl TriggerLimitCrank<'_, '_> {
             self.clock.slot,
         )?;
 
-        Ok(fired.then_some(FiredTriggerLimit {
-            order_index,
-            prices,
+        if fired {
+            return Ok(TriggerFire::Fired(FiredTriggerLimit {
+                order_index,
+                prices,
+            }));
+        }
+
+        let keeper_reward = pay_trigger_keeper(
+            user,
+            self.filler,
+            &maps.perp_market_map,
+            self.market_index,
+            self.state.perp_fee_structure.flat_filler_fee,
+            &self.user.key(),
+            &self.filler.key(),
+            self.clock.slot,
+        )?;
+
+        Ok(TriggerFire::Done(TriggerLimitStep::Settled {
+            keeper_reward,
         }))
     }
 
@@ -538,6 +549,14 @@ impl TriggerLimitCrank<'_, '_> {
             filler_reward,
         })
     }
+}
+
+/// What holding the armed order to its trigger condition decided.
+enum TriggerFire {
+    Fired(FiredTriggerLimit),
+    /// The crank ends here. An observed recross is paid work, and an expired
+    /// order is none.
+    Done(TriggerLimitStep),
 }
 
 /// The armed order a crank fired, and the prices it fired at.
@@ -584,6 +603,7 @@ fn cancel_refused_trigger(
         reserved.base_asset_amount,
         reserved.reduce_only,
     );
+
     user.replace_reservation(&placed, &armed)?;
 
     cancel_order(
@@ -730,7 +750,7 @@ fn read_trigger_prices(
 ///
 /// A `false` answer ends the crank. The order observed the price back on the
 /// non-trigger side after an eviction, so it is armed again and nothing is
-/// placed.
+/// placed. The keeper that observed it is paid, so the stop can fire again.
 fn observe_trigger_condition(
     user: &mut User,
     order_index: usize,
@@ -1084,11 +1104,11 @@ pub fn handle_resolve_trigger_limit_order_v1(
 }
 
 #[cfg(test)]
-mod refused_placement_tests {
+mod crank_tests {
     use {
         super::{
             cancel_refused_trigger, gate_trigger, rest_admission, RestAdmission, RestRefusal,
-            TriggerCancel, TriggerGate,
+            TriggerCancel, TriggerFire, TriggerGate, TriggerLimitCrank, TriggerLimitStep,
         },
         crate::{
             controller::position::PositionDirection,
@@ -1107,14 +1127,15 @@ mod refused_placement_tests {
                 prop_amm::OrderRulesV0,
                 pyth_lazer_oracle::PythLazerOracle,
                 spot_market_map::SpotMarketMap,
+                state::State,
                 user::{
-                    MarketType, Order, OrderReservation, OrderStatus, OrderTriggerCondition,
-                    OrderType, PerpPosition, User, UserStats,
+                    MarketType, Order, OrderBitFlag, OrderReservation, OrderStatus,
+                    OrderTriggerCondition, OrderType, PerpPosition, User, UserStats,
                 },
             },
             test_utils::{get_positions, get_pyth_price},
         },
-        anchor_lang::prelude::{Clock, Pubkey},
+        anchor_lang::prelude::{AccountLoader, Clock, Pubkey},
         std::str::FromStr,
     };
 
@@ -1161,6 +1182,8 @@ mod refused_placement_tests {
             market_stats: MarketStats {
                 historical_oracle_data: HistoricalOracleData {
                     last_oracle_price: oracle_price,
+                    last_oracle_price_twap: oracle_price,
+                    last_oracle_price_twap_5min: oracle_price,
                     ..HistoricalOracleData::default()
                 },
                 ..MarketStats::default()
@@ -1204,19 +1227,25 @@ mod refused_placement_tests {
     #[test]
     fn a_trigger_the_book_refuses_is_cancelled_and_its_reservation_released() {
         let mut oracle_price = get_pyth_price(100, 6);
-        let oracle_key =
-            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let oracle_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
         let mut market = market(oracle_key, oracle_price.price);
         create_anchor_account_info!(market, PerpMarket, market_info);
         let mut maps = market_maps(&oracle_info, &market_info);
         let (armed, mut user) = armed_on_half_a_long();
 
-        let TriggerGate::Rest(reserved) =
-            gate_trigger(&mut user, &UserStats::default(), 0, 0, 100_000_000, &mut maps).unwrap()
-        else {
+        let TriggerGate::Rest(reserved) = gate_trigger(
+            &mut user,
+            &UserStats::default(),
+            0,
+            0,
+            100_000_000,
+            &mut maps,
+        )
+        .unwrap() else {
             panic!("a reduce-only trigger with a position to reduce rests");
         };
+
         assert_eq!(reserved.base_asset_amount, BASE_PRECISION_I64 as u64 / 2);
 
         let RestAdmission::Refused(reason) = rest_admission(
@@ -1230,6 +1259,7 @@ mod refused_placement_tests {
         ) else {
             panic!("the book refuses a rest under its minimum");
         };
+
         assert_eq!(reason, RestRefusal::SizeBelowMinimum);
 
         cancel_refused_trigger(
@@ -1253,5 +1283,59 @@ mod refused_placement_tests {
         assert_eq!(position.open_asks, 0);
         assert_eq!(position.open_orders, 0);
         assert_eq!(user.open_orders, 0);
+    }
+
+    const FLAT_FILLER_FEE: u64 = 10_000;
+
+    /// An evicted stop-loss waits for the price to cross back. The crank that
+    /// observes the recross clears the gate and earns the flat reward, so a
+    /// keeper and relay have a reason to send it.
+    #[test]
+    fn the_crank_that_observes_the_recross_is_paid() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut market = market(oracle_key, oracle_price.price);
+        create_anchor_account_info!(market, PerpMarket, market_info);
+        let mut maps = market_maps(&oracle_info, &market_info);
+
+        let (_, mut user) = armed_on_half_a_long();
+        user.orders[0].add_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
+        let (user_key, filler_key) = (Pubkey::new_unique(), Pubkey::new_unique());
+        create_anchor_account_info!(user, &user_key, User, user_info);
+        create_anchor_account_info!(User::default(), &filler_key, User, filler_info);
+        create_anchor_account_info!(UserStats::default(), UserStats, user_stats_info);
+
+        let mut state = State::default();
+        state.perp_fee_structure.flat_filler_fee = FLAT_FILLER_FEE;
+        let user_loader = AccountLoader::<User>::try_from(&user_info).unwrap();
+        let filler_loader = AccountLoader::<User>::try_from(&filler_info).unwrap();
+        let crank = TriggerLimitCrank {
+            user: &user_loader,
+            user_stats: &AccountLoader::try_from(&user_stats_info).unwrap(),
+            filler: &filler_loader,
+            state: &state,
+            market_index: 0,
+            order_id: 7,
+            clock: &Clock::default(),
+        };
+
+        let fire = crank
+            .fire(&mut user_loader.load_mut().unwrap(), &mut maps)
+            .unwrap();
+        assert!(matches!(
+            fire,
+            TriggerFire::Done(TriggerLimitStep::Settled {
+                keeper_reward: FLAT_FILLER_FEE
+            })
+        ));
+
+        let user = user_loader.load().unwrap();
+        assert!(!user.orders[0].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
+        assert_eq!(user.orders[0].status, OrderStatus::Open);
+        assert_eq!(
+            filler_loader.load().unwrap().perp_positions[0].quote_asset_amount,
+            FLAT_FILLER_FEE as i64
+        );
     }
 }

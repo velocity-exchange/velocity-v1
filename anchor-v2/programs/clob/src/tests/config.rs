@@ -112,3 +112,13 @@ fn a_header_edited_to_a_zero_tick_fails_the_check() {
     book.order_tick_size = 0;
     assert!(validate_market_config(&book).is_err());
 }
+
+/// A walk visits every order on its side, so the arena may hold at most the
+/// side ceiling on each side.
+#[test]
+fn an_arena_over_the_side_ceiling_is_refused() {
+    use crate::config::{validate_capacity, ORDERS_PER_SIDE_CEILING};
+
+    assert!(validate_capacity(2 * ORDERS_PER_SIDE_CEILING).is_ok());
+    assert!(validate_capacity(2 * ORDERS_PER_SIDE_CEILING + 1).is_err());
+}

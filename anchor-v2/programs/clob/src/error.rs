@@ -104,6 +104,8 @@ pub enum ClobError {
     /// crank conditions.
     #[msg("A crank condition's wake could not be written")]
     WakeWriteFailed,
+    #[msg("Arena capacity is over the per-side order ceiling")]
+    CapacityOverCeiling,
 }
 
 impl From<quoter_spec::SpecError> for ClobError {

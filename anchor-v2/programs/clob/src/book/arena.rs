@@ -242,6 +242,7 @@ pub(super) fn initialize(
 ) -> Result<()> {
     let cap = book.capacity() as u32;
     require!(cap >= 2, ClobError::InvalidCapacity);
+    crate::config::validate_capacity(cap)?;
     // The caps budget and velocity's exact-notional check both divide by
     // `quoter_spec::BASE_PRECISION`, so every fill on another denominator
     // fails. The field stays in the header because resting sizes are

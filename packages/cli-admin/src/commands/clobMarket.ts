@@ -352,7 +352,7 @@ export function registerClobMarket(parent: Command): void {
 				)
 		)
 			.requiredOption('--clob-program <pubkey>', 'deployed CLOB program id')
-			.option('--capacity <n>', 'order-node arena capacity', '4096')
+			.option('--capacity <n>', 'order-node arena capacity, at most 1024', '1024')
 			.option(
 				'--quoter-user <pubkey>',
 				'quoter PDA user seed (unused for CLOB-type entries)',

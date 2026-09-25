@@ -32,6 +32,23 @@ pub const UNKNOWN_USER_GRACE_SLOTS_CEILING: u32 = 150;
 /// longer delay holds its owner's margin against depth that nobody can match.
 pub const MAX_ACTIVATION_DELAY_SLOTS_CEILING: u32 = 1_500;
 
+/// Ceiling on the orders one side holds. A walk visits every order on its side,
+/// at about 250 CU each, so a full side costs about 133k CU to quote and 140k
+/// CU to execute. A router fill pays both.
+pub const ORDERS_PER_SIDE_CEILING: u32 = 512;
+
+/// The arena holds two sides, so its capacity is at most twice the side ceiling.
+/// Only `initialize_market_v0` and `resize_market_v0` check it. An arena cannot
+/// shrink, so a check on update would lock the config of an older, larger book.
+pub fn validate_capacity(capacity: u32) -> Result<()> {
+    require!(
+        capacity <= 2 * ORDERS_PER_SIDE_CEILING,
+        ClobError::CapacityOverCeiling
+    );
+
+    Ok(())
+}
+
 pub fn validate_market_config(market: &ClobMarketV0) -> Result<()> {
     require!(
         market.order_tick_size != 0

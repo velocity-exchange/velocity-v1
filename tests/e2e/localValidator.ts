@@ -711,7 +711,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	/** CLOB bring-up, exactly as `admin-cli clob-market init` does it. */
 	const clobBringUp = async () => {
-		const clobCapacity = 1024;
+		// `space` adds about 222 slots of slack, and the arena must stay within
+		// the 1024 slots the CLOB admits.
+		const clobCapacity = 768;
 		const space = clobIx.space(clobCapacity);
 		clobBook = Keypair.generate();
 		// The market is already initialized. The book must use the market's grid.

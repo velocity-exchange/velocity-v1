@@ -38,6 +38,7 @@ pub fn handle_resize_market_v0(
         ClobError::InvalidCapacity
     );
 
+    crate::config::validate_capacity(args.new_capacity)?;
     market.resize_to_capacity(args.new_capacity)?;
     market.top_up(ctx.accounts.payer.as_ref())?;
     market.grow_free_list()?;

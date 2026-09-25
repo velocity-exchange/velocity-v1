@@ -1153,6 +1153,11 @@
       "code": 6032,
       "name": "WakeWriteFailed",
       "msg": "A crank condition's wake could not be written"
+    },
+    {
+      "code": 6033,
+      "name": "CapacityOverCeiling",
+      "msg": "Arena capacity is over the per-side order ceiling"
     }
   ],
   "types": [

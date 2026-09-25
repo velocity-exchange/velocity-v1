@@ -48,10 +48,7 @@ import {
 	getTokenizedVaultAddressSync,
 	getTokenizedVaultMintAddressSync,
 } from '@velocity-exchange/vaults-sdk';
-import {
-	LiteSVMContextWrapper,
-	LiteSVMProvider,
-} from './litesvmConnection';
+import { LiteSVMContextWrapper, LiteSVMProvider } from './litesvmConnection';
 import {
 	mockUserUSDCAccount,
 	createWSolTokenAccountForUser,

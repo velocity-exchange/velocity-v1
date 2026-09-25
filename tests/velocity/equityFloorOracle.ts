@@ -165,10 +165,7 @@ describe('equity floor oracle validity', () => {
 				bulkAccountLoader
 			);
 
-		await svmContextWrapper.fundKeypair(
-			takerKeypair,
-			10 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(takerKeypair, 10 * LAMPORTS_PER_SOL);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
 		await takerVelocityClient.deposit(
 			new BN(2).mul(new BN(LAMPORTS_PER_SOL)),
@@ -272,9 +269,7 @@ describe('equity floor oracle validity', () => {
 			takerUSDC
 		);
 
-		const after = await svmContextWrapper.connection.getTokenAccount(
-			takerUSDC
-		);
+		const after = await svmContextWrapper.connection.getTokenAccount(takerUSDC);
 		assert(
 			after.amount - before.amount === BigInt(40 * 10 ** 6),
 			'the fair-price withdrawal should have paid out 40 usdc'
@@ -308,9 +303,7 @@ describe('equity floor oracle validity', () => {
 			`expected InvalidOracle, got: ${err.message}`
 		);
 
-		const after = await svmContextWrapper.connection.getTokenAccount(
-			takerUSDC
-		);
+		const after = await svmContextWrapper.connection.getTokenAccount(takerUSDC);
 		assert(
 			after.amount === before.amount,
 			'no usdc should have left the protocol'

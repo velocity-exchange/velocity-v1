@@ -42,9 +42,7 @@ describe('mm oracle batch native', () => {
 	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate then skips no write.
 	 */
 	async function sourceSlot(): Promise<BN> {
-		return new BN(
-			(await svmContextWrapper.connection.getSlot()).toString()
-		);
+		return new BN((await svmContextWrapper.connection.getSlot()).toString());
 	}
 
 	before(async () => {

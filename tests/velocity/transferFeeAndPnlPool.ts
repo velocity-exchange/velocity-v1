@@ -91,10 +91,7 @@ describe('transfer fee and pnl pool', () => {
 		await initializeQuoteSpotMarket(velocityClient, usdcMint.publicKey);
 
 		const solOracle = await mockOracleNoProgram(svmContextWrapper, 150);
-		const placeholderOracle = await mockOracleNoProgram(
-			svmContextWrapper,
-			1
-		);
+		const placeholderOracle = await mockOracleNoProgram(svmContextWrapper, 1);
 		const ethOracle = await mockOracleNoProgram(svmContextWrapper, 2500);
 
 		const periodicity = new BN(3600);

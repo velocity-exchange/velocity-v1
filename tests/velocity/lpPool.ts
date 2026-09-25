@@ -324,14 +324,11 @@ describe('LP Pool', () => {
 			)
 		);
 
-		await svmContextWrapper.sendTransaction(transaction, [
-			whitelistKeypair,
-		]);
+		await svmContextWrapper.sendTransaction(transaction, [whitelistKeypair]);
 
-		const whitelistMintInfo =
-			await svmContextWrapper.connection.getAccountInfo(
-				whitelistKeypair.publicKey
-			);
+		const whitelistMintInfo = await svmContextWrapper.connection.getAccountInfo(
+			whitelistKeypair.publicKey
+		);
 		console.log('whitelistMintInfo', whitelistMintInfo);
 
 		whitelistMint = whitelistKeypair.publicKey;
@@ -1142,10 +1139,9 @@ describe('LP Pool', () => {
 			lpPoolKey,
 			0
 		);
-		const constituentVault =
-			await svmContextWrapper.connection.getTokenAccount(
-				constituentVaultPublicKey
-			);
+		const constituentVault = await svmContextWrapper.connection.getTokenAccount(
+			constituentVaultPublicKey
+		);
 		assert(
 			new BN(constituentVault.amount.toString()).eq(
 				constituent.vaultTokenBalance
@@ -1170,10 +1166,9 @@ describe('LP Pool', () => {
 		);
 
 		/// First remove some liquidity so DLP doesnt have enought to transfer
-		const lpTokenBalance =
-			await svmContextWrapper.connection.getTokenAccount(
-				userLpTokenAccount
-			);
+		const lpTokenBalance = await svmContextWrapper.connection.getTokenAccount(
+			userLpTokenAccount
+		);
 
 		const tx = new Transaction();
 		tx.add(
@@ -1193,10 +1188,9 @@ describe('LP Pool', () => {
 		);
 		await adminClient.sendTransaction(tx);
 
-		let constituentVault =
-			await svmContextWrapper.connection.getTokenAccount(
-				constituentVaultPublicKey
-			);
+		let constituentVault = await svmContextWrapper.connection.getTokenAccount(
+			constituentVaultPublicKey
+		);
 
 		const expectedTransferAmount = getTokenAmount(
 			adminClient.getPerpMarketAccount(0).amm.feePool.scaledBalance,

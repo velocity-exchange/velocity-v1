@@ -69,7 +69,7 @@ describe('spot deposit and withdraw 22', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = (startLiteSVM()) as any;
+		const context = startLiteSVM() as any;
 
 		svmContextWrapper = new LiteSVMContextWrapper(context);
 

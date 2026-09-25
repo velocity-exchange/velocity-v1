@@ -181,10 +181,7 @@ describe('spot swap', () => {
 				bulkAccountLoader
 			);
 
-		await svmContextWrapper.fundKeypair(
-			takerKeypair,
-			10 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(takerKeypair, 10 * LAMPORTS_PER_SOL);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
 	});
 
@@ -621,13 +618,10 @@ describe('spot swap', () => {
 		failed = false;
 		try {
 			const txO = await takerVelocityClient.sendTransaction(tx);
-			const txL = await svmContextWrapper.connection.getTransaction(
-				txO.txSig,
-				{
-					commitment: 'confirmed',
-					maxSupportedTransactionVersion: 1,
-				}
-			);
+			const txL = await svmContextWrapper.connection.getTransaction(txO.txSig, {
+				commitment: 'confirmed',
+				maxSupportedTransactionVersion: 1,
+			});
 			console.log('tx logs', txL.meta.logMessages);
 		} catch (e) {
 			const err = e as Error;

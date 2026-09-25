@@ -228,14 +228,11 @@ describe('LP Pool', () => {
 			)
 		);
 
-		await svmContextWrapper.sendTransaction(transaction, [
-			whitelistKeypair,
-		]);
+		await svmContextWrapper.sendTransaction(transaction, [whitelistKeypair]);
 
-		const whitelistMintInfo =
-			await svmContextWrapper.connection.getAccountInfo(
-				whitelistKeypair.publicKey
-			);
+		const whitelistMintInfo = await svmContextWrapper.connection.getAccountInfo(
+			whitelistKeypair.publicKey
+		);
 		console.log('whitelistMintInfo', whitelistMintInfo);
 	});
 

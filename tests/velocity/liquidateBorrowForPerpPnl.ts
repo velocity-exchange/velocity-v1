@@ -221,10 +221,9 @@ describe('liquidate borrow for perp pnl', () => {
 		);
 		const solBorrow = new BN(5 * 10 ** 8);
 
-		const account =
-			await svmContextWrapper.connection.getAccountInfoAndContext(
-				userWSOLAccount
-			);
+		const account = await svmContextWrapper.connection.getAccountInfoAndContext(
+			userWSOLAccount
+		);
 
 		console.log(account);
 

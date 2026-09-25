@@ -171,10 +171,7 @@ describe('equity floor swap', () => {
 				bulkAccountLoader
 			);
 
-		await svmContextWrapper.fundKeypair(
-			takerKeypair,
-			10 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(takerKeypair, 10 * LAMPORTS_PER_SOL);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
 		takerUserPublicKey = await takerVelocityClient.getUserAccountPublicKey();
 

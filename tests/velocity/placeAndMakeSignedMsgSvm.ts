@@ -125,9 +125,7 @@ describe.skip('place and make signedMsg order', () => {
 		// @ts-ignore
 		svmContextWrapper = new LiteSVMContextWrapper(context);
 
-		slot = new BN(
-			await svmContextWrapper.connection.toConnection().getSlot()
-		);
+		slot = new BN(await svmContextWrapper.connection.toConnection().getSlot());
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			svmContextWrapper.connection,
@@ -703,9 +701,7 @@ describe.skip('place and make signedMsg order', () => {
 	});
 
 	it('should succeed if taker order is a limit order with an auction', async () => {
-		slot = new BN(
-			await svmContextWrapper.connection.toConnection().getSlot()
-		);
+		slot = new BN(await svmContextWrapper.connection.toConnection().getSlot());
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
@@ -783,9 +779,7 @@ describe.skip('place and make signedMsg order', () => {
 	});
 
 	it('places a resting limit order (no auction) stamped ahead of the current slot', async () => {
-		slot = new BN(
-			await svmContextWrapper.connection.toConnection().getSlot()
-		);
+		slot = new BN(await svmContextWrapper.connection.toConnection().getSlot());
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
@@ -858,9 +852,7 @@ describe.skip('place and make signedMsg order', () => {
 	});
 
 	it('rejects a resting limit order stamped too far ahead of the current slot', async () => {
-		slot = new BN(
-			await svmContextWrapper.connection.toConnection().getSlot()
-		);
+		slot = new BN(await svmContextWrapper.connection.toConnection().getSlot());
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
@@ -935,9 +927,7 @@ describe.skip('place and make signedMsg order', () => {
 	});
 
 	it('still rejects an auction order stamped ahead of the current slot', async () => {
-		slot = new BN(
-			await svmContextWrapper.connection.toConnection().getSlot()
-		);
+		slot = new BN(await svmContextWrapper.connection.toConnection().getSlot());
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
@@ -1179,9 +1169,7 @@ describe.skip('place and make signedMsg order', () => {
 	});
 
 	it('should fail if auction params are not set', async () => {
-		slot = new BN(
-			await svmContextWrapper.connection.toConnection().getSlot()
-		);
+		slot = new BN(await svmContextWrapper.connection.toConnection().getSlot());
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(

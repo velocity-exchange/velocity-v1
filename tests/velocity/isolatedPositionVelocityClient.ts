@@ -152,10 +152,9 @@ describe('velocity client', () => {
 		assert(depositTokenAmount.eq(usdcAmount));
 
 		// Check that velocity collateral account has proper collateral
-		const quoteSpotVault =
-			await svmContextWrapper.connection.getTokenAccount(
-				velocityClient.getQuoteSpotMarketAccount().vault
-			);
+		const quoteSpotVault = await svmContextWrapper.connection.getTokenAccount(
+			velocityClient.getQuoteSpotMarketAccount().vault
+		);
 
 		assert.ok(new BN(Number(quoteSpotVault.amount)).eq(usdcAmount));
 
@@ -221,17 +220,15 @@ describe('velocity client', () => {
 		assert(velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(ZERO));
 
 		// Check that velocity collateral account has proper collateral]
-		const quoteSpotVault =
-			await svmContextWrapper.connection.getTokenAccount(
-				velocityClient.getQuoteSpotMarketAccount().vault
-			);
+		const quoteSpotVault = await svmContextWrapper.connection.getTokenAccount(
+			velocityClient.getQuoteSpotMarketAccount().vault
+		);
 
 		assert.ok(new BN(Number(quoteSpotVault.amount)).eq(ZERO));
 
-		const userUSDCtoken =
-			await svmContextWrapper.connection.getTokenAccount(
-				userUSDCAccount.publicKey
-			);
+		const userUSDCtoken = await svmContextWrapper.connection.getTokenAccount(
+			userUSDCAccount.publicKey
+		);
 		assert.ok(new BN(Number(userUSDCtoken.amount)).eq(usdcAmount));
 
 		const depositRecord = eventSubscriber.getEventsArray('DepositRecord')[0];
@@ -269,16 +266,14 @@ describe('velocity client', () => {
 		await velocityClient.fetchAccounts();
 		assert(velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(ZERO));
 
-		const quoteSpotVault =
-			await svmContextWrapper.connection.getTokenAccount(
-				velocityClient.getQuoteSpotMarketAccount().vault
-			);
+		const quoteSpotVault = await svmContextWrapper.connection.getTokenAccount(
+			velocityClient.getQuoteSpotMarketAccount().vault
+		);
 		assert.ok(new BN(Number(quoteSpotVault.amount)).eq(ZERO));
 
-		const userUSDCtoken =
-			await svmContextWrapper.connection.getTokenAccount(
-				userUSDCAccount.publicKey
-			);
+		const userUSDCtoken = await svmContextWrapper.connection.getTokenAccount(
+			userUSDCAccount.publicKey
+		);
 		assert.ok(new BN(Number(userUSDCtoken.amount)).eq(usdcAmount));
 	});
 

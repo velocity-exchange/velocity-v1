@@ -293,17 +293,13 @@ describe('referrer', () => {
 
 		const newUserRecord = eventSubscriber.getEventsArray('NewUserRecord')[0];
 		assert(
-			newUserRecord.referrer.equals(
-				svmContextWrapper.provider.wallet.publicKey
-			)
+			newUserRecord.referrer.equals(svmContextWrapper.provider.wallet.publicKey)
 		);
 
 		await refereeVelocityClient.fetchAccounts();
 		const refereeStats = refereeVelocityClient.getUserStats().getAccount();
 		assert(
-			refereeStats.referrer.equals(
-				svmContextWrapper.provider.wallet.publicKey
-			)
+			refereeStats.referrer.equals(svmContextWrapper.provider.wallet.publicKey)
 		);
 		assert((refereeStats.referrerStatus & ReferrerStatus.IsReferred) > 0);
 
@@ -538,13 +534,12 @@ describe('referrer', () => {
 		);
 
 		// Referrer's RevenueShare.totalReferrerRewards increased by the reward.
-		const revShareAfterInfo =
-			await svmContextWrapper.connection.getAccountInfo(
-				getRevenueShareAccountPublicKey(
-					referrerVelocityClient.program.programId,
-					referrerVelocityClient.wallet.publicKey
-				)
-			);
+		const revShareAfterInfo = await svmContextWrapper.connection.getAccountInfo(
+			getRevenueShareAccountPublicKey(
+				referrerVelocityClient.program.programId,
+				referrerVelocityClient.wallet.publicKey
+			)
+		);
 		const revShareAfter: RevenueShareAccount =
 			referrerVelocityClient.program.account.revenueShare.coder.accounts.decodeUnchecked(
 				'revenueShare',

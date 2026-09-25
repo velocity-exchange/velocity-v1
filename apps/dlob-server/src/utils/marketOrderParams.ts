@@ -293,7 +293,7 @@ const referencePrice = (
 		mark: prices.markPrice,
 		oracle: prices.oraclePrice,
 		entry: prices.entryPrice,
-	}[reference]);
+	})[reference];
 
 /** Quote the `OrderParams` for a perp market order. */
 export const quoteMarketOrder = async (

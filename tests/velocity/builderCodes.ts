@@ -1457,10 +1457,7 @@ describe('builder codes', () => {
 			undefined,
 			escrowMap
 		);
-		await printTxLogs(
-			svmContextWrapper.connection.toConnection(),
-			settleTx
-		);
+		await printTxLogs(svmContextWrapper.connection.toConnection(), settleTx);
 
 		await escrowMap.slowSync();
 		const escrowAfterSettle = (await escrowMap.mustGet(
@@ -1692,10 +1689,7 @@ describe('builder codes', () => {
 			SettlePnlMode.MUST_SETTLE,
 			escrowMap
 		);
-		await printTxLogs(
-			svmContextWrapper.connection.toConnection(),
-			settleTxA
-		);
+		await printTxLogs(svmContextWrapper.connection.toConnection(), settleTxA);
 
 		await escrowMap.slowSync();
 		const escrowAfterSettle = (await escrowMap.mustGet(
@@ -1980,10 +1974,7 @@ describe('builder codes', () => {
 		);
 		const settleRecords = parseLogs(
 			makerClient.program,
-			await printTxLogs(
-				svmContextWrapper.connection.toConnection(),
-				settleTx
-			)
+			await printTxLogs(svmContextWrapper.connection.toConnection(), settleTx)
 		)
 			.filter((e) => e.name === 'revenueShareSettleRecord')
 			.map((e) => e.data) as RevenueShareSettleRecord[];
@@ -2288,9 +2279,7 @@ describe('builder codes', () => {
 		// include the escrow so the referrer reward accrues.
 		await userClient.fetchAccounts();
 		assert(
-			isBuilderReferral(
-				await fetchUserStats(userClient, svmContextWrapper)
-			),
+			isBuilderReferral(await fetchUserStats(userClient, svmContextWrapper)),
 			'userClient should have the BuilderReferral status'
 		);
 

@@ -39,10 +39,7 @@ import {
 	printTxLogs,
 } from './common/testHelpers';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import {
-	mockOracleNoProgram,
-	setFeedPriceNoProgram,
-} from './common/svmOracle';
+import { mockOracleNoProgram, setFeedPriceNoProgram } from './common/svmOracle';
 import { VaultClass } from '@velocity-exchange/vaults-sdk';
 
 // ammInvariant == k == x * y
@@ -288,10 +285,7 @@ describe('TestTrustedVault', () => {
 		expect(isTrustedVaultClass(vaultAcct.vaultClass)).to.deep.equal(true);
 
 		// user1 deposit sol into velocity (for vault to borrow)
-		await svmContextWrapper.fundKeypair(
-			user1Signer,
-			100 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(user1Signer, 100 * LAMPORTS_PER_SOL);
 		await user1VelocityClient.deposit(
 			new BN(100 * LAMPORTS_PER_SOL),
 			1,
@@ -320,10 +314,9 @@ describe('TestTrustedVault', () => {
 			100 * LAMPORTS_PER_SOL
 		);
 
-		const managerSOLBalance0 =
-			await svmContextWrapper.connection.getBalance(
-				managerSigner.publicKey
-			);
+		const managerSOLBalance0 = await svmContextWrapper.connection.getBalance(
+			managerSigner.publicKey
+		);
 
 		// manager performs borrow of 50 SOL
 		const b = await managerClient.managerBorrow(
@@ -348,10 +341,9 @@ describe('TestTrustedVault', () => {
 		expect(e[0].data.borrowSpotMarketIndex).to.deep.equal(1);
 		expect(e[0].data.depositSpotMarketIndex).to.deep.equal(0);
 
-		const managerSOLBalance1 =
-			await svmContextWrapper.connection.getBalance(
-				managerSigner.publicKey
-			);
+		const managerSOLBalance1 = await svmContextWrapper.connection.getBalance(
+			managerSigner.publicKey
+		);
 
 		// check spot market recognizes borrows
 		const spotMarket11 = adminVelocityClient.getSpotMarketAccount(1);
@@ -437,10 +429,7 @@ describe('TestTrustedVault', () => {
 		);
 
 		// user1 funds market 1 so there is SOL to borrow, then joins the vault.
-		await svmContextWrapper.fundKeypair(
-			user1Signer,
-			100 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(user1Signer, 100 * LAMPORTS_PER_SOL);
 		await user1VelocityClient.deposit(
 			new BN(100 * LAMPORTS_PER_SOL),
 			1,
@@ -532,10 +521,7 @@ describe('TestTrustedVault', () => {
 		expect(isTrustedVaultClass(vaultAcct.vaultClass)).to.deep.equal(true);
 
 		// user1 deposit sol into velocity (for vault to borrow)
-		await svmContextWrapper.fundKeypair(
-			user1Signer,
-			100 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(user1Signer, 100 * LAMPORTS_PER_SOL);
 		await user1VelocityClient.deposit(
 			new BN(100 * LAMPORTS_PER_SOL),
 			1,
@@ -564,10 +550,9 @@ describe('TestTrustedVault', () => {
 			100 * LAMPORTS_PER_SOL
 		);
 
-		const managerSOLBalance0 =
-			await svmContextWrapper.connection.getBalance(
-				managerSigner.publicKey
-			);
+		const managerSOLBalance0 = await svmContextWrapper.connection.getBalance(
+			managerSigner.publicKey
+		);
 
 		// manager performs borrow of 50 SOL
 		const b = await managerClient.managerBorrow(
@@ -592,10 +577,9 @@ describe('TestTrustedVault', () => {
 		expect(e[0].data.borrowSpotMarketIndex).to.deep.equal(1);
 		expect(e[0].data.depositSpotMarketIndex).to.deep.equal(0);
 
-		const managerSOLBalance1 =
-			await svmContextWrapper.connection.getBalance(
-				managerSigner.publicKey
-			);
+		const managerSOLBalance1 = await svmContextWrapper.connection.getBalance(
+			managerSigner.publicKey
+		);
 
 		// check spot market recognizes borrows
 		const spotMarket11 = adminVelocityClient.getSpotMarketAccount(1);

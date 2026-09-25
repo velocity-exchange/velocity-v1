@@ -168,10 +168,9 @@ describe('account extension', () => {
 	it('program still operates on the extended account', async () => {
 		// grow the spot market too, so the deposit loads two extended accounts
 		const spotMarketPublicKey = velocityClient.getSpotMarketAccount(0).pubkey;
-		const spotMarketInfo =
-			await svmContextWrapper.connection.getAccountInfo(
-				spotMarketPublicKey
-			);
+		const spotMarketInfo = await svmContextWrapper.connection.getAccountInfo(
+			spotMarketPublicKey
+		);
 		await velocityClient.extendAccountDevnet(
 			spotMarketPublicKey,
 			spotMarketInfo.data.length + EXTRA_BYTES

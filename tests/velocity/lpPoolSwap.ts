@@ -305,10 +305,7 @@ describe('LP Pool', () => {
 				bulkAccountLoader
 			);
 
-		await svmContextWrapper.fundKeypair(
-			serumKeypair,
-			50 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(serumKeypair, 50 * LAMPORTS_PER_SOL);
 		await serumVelocityClient.deposit(usdcAmount, 0, serumUSDC);
 	});
 
@@ -463,13 +460,9 @@ describe('LP Pool', () => {
 		);
 
 		const inTokenBalanceBefore =
-			await svmContextWrapper.connection.getTokenAccount(
-				c0UserTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(c0UserTokenAccount);
 		const outTokenBalanceBefore =
-			await svmContextWrapper.connection.getTokenAccount(
-				c1UserTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(c1UserTokenAccount);
 
 		// in = 0, out = 1
 		const swapTx = new Transaction();
@@ -500,13 +493,9 @@ describe('LP Pool', () => {
 		await adminClient.sendTransaction(swapTx);
 
 		const inTokenBalanceAfter =
-			await svmContextWrapper.connection.getTokenAccount(
-				c0UserTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(c0UserTokenAccount);
 		const outTokenBalanceAfter =
-			await svmContextWrapper.connection.getTokenAccount(
-				c1UserTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(c1UserTokenAccount);
 		const diffInToken =
 			inTokenBalanceAfter.amount - inTokenBalanceBefore.amount;
 		const diffOutToken =
@@ -563,13 +552,9 @@ describe('LP Pool', () => {
 		await adminClient.updateConstituentOracleInfo(c0);
 
 		const userC0TokenBalanceBefore =
-			await svmContextWrapper.connection.getTokenAccount(
-				c0UserTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(c0UserTokenAccount);
 		const userLpTokenBalanceBefore =
-			await svmContextWrapper.connection.getTokenAccount(
-				userLpTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(userLpTokenAccount);
 
 		await overWriteMintAccount(
 			svmContextWrapper,
@@ -619,13 +604,9 @@ describe('LP Pool', () => {
 		await sleep(500);
 
 		const userC0TokenBalanceAfter =
-			await svmContextWrapper.connection.getTokenAccount(
-				c0UserTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(c0UserTokenAccount);
 		const userLpTokenBalanceAfter =
-			await svmContextWrapper.connection.getTokenAccount(
-				userLpTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(userLpTokenAccount);
 		lpPool = (await adminClient.program.account.lpPool.fetch(
 			lpPoolKey
 		)) as LPPoolAccount;
@@ -700,13 +681,9 @@ describe('LP Pool', () => {
 		await adminClient.sendTransaction(withdrawFromProgramVaultTx);
 
 		const userC0TokenBalanceAfterBurn =
-			await svmContextWrapper.connection.getTokenAccount(
-				c0UserTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(c0UserTokenAccount);
 		const userLpTokenBalanceAfterBurn =
-			await svmContextWrapper.connection.getTokenAccount(
-				userLpTokenAccount
-			);
+			await svmContextWrapper.connection.getTokenAccount(userLpTokenAccount);
 
 		const userC0TokenBalanceAfterBurnDiff =
 			Number(userC0TokenBalanceAfterBurn.amount) -

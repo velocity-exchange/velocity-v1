@@ -143,10 +143,7 @@ describe('swap post-end instructions', () => {
 				bulkAccountLoader
 			);
 
-		await svmContextWrapper.fundKeypair(
-			takerKeypair,
-			10 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(takerKeypair, 10 * LAMPORTS_PER_SOL);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
 	});
 
@@ -244,10 +241,10 @@ describe('swap post-end instructions', () => {
 			makerVelocityClient.wallet.payer,
 		]);
 
-		const txLogs = await svmContextWrapper.connection.getTransaction(
-			txSig,
-			{ commitment: 'confirmed', maxSupportedTransactionVersion: 1 }
-		);
+		const txLogs = await svmContextWrapper.connection.getTransaction(txSig, {
+			commitment: 'confirmed',
+			maxSupportedTransactionVersion: 1,
+		});
 		// A loop that fails to advance past the close ix exhausts the bump heap
 		// instead of finishing introspection.
 		assert(

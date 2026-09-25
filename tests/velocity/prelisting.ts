@@ -275,11 +275,10 @@ describe('prelisting', () => {
 
 		await adminVelocityClient.deletePrelaunchOracle(0);
 
-		const result =
-			await svmContextWrapper.connection.getAccountInfoAndContext(
-				oldOracleKey,
-				'processed'
-			);
+		const result = await svmContextWrapper.connection.getAccountInfoAndContext(
+			oldOracleKey,
+			'processed'
+		);
 
 		assert(result.value === null);
 	});

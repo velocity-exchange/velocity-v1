@@ -268,18 +268,9 @@ describe('feeUpdate', () => {
 		// `before` runs once but each test below initializes its own vault +
 		// depositor accounts (rent paid by manager/users), so top these reused
 		// signers up to cover the whole suite's worth of account creation.
-		await svmContextWrapper.fundKeypair(
-			managerSigner,
-			100 * LAMPORTS_PER_SOL
-		);
-		await svmContextWrapper.fundKeypair(
-			user1Signer,
-			100 * LAMPORTS_PER_SOL
-		);
-		await svmContextWrapper.fundKeypair(
-			user2Signer,
-			100 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(managerSigner, 100 * LAMPORTS_PER_SOL);
+		await svmContextWrapper.fundKeypair(user1Signer, 100 * LAMPORTS_PER_SOL);
+		await svmContextWrapper.fundKeypair(user2Signer, 100 * LAMPORTS_PER_SOL);
 	});
 
 	// Per-test: a fresh, uniquely-named vault + its depositors. The chain, markets,
@@ -368,8 +359,8 @@ describe('feeUpdate', () => {
 			commonVaultKey
 		);
 
-		expect(await svmContextWrapper.connection.getAccountInfo(feeUpdate)).to
-			.be.null;
+		expect(await svmContextWrapper.connection.getAccountInfo(feeUpdate)).to.be
+			.null;
 
 		// manager cannot init their own FeeUpdate account
 		try {
@@ -385,8 +376,8 @@ describe('feeUpdate', () => {
 		vaultAcct = await vaultProgram.account.vault.fetch(commonVaultKey);
 		expect(vaultAcct.feeUpdateStatus).to.deep.equal(FeeUpdateStatus.None);
 
-		expect(await svmContextWrapper.connection.getAccountInfo(feeUpdate)).not
-			.to.be.null;
+		expect(await svmContextWrapper.connection.getAccountInfo(feeUpdate)).not.to
+			.be.null;
 	});
 
 	it('manager can lower fee from normal update', async () => {

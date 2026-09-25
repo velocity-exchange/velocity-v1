@@ -316,10 +316,9 @@ describe('protocol fees', () => {
 		);
 		await velocityClient.fetchAccounts();
 
-		const recipientBalance =
-			await svmContextWrapper.connection.getTokenAccount(
-				recipientTokenAccount
-			);
+		const recipientBalance = await svmContextWrapper.connection.getTokenAccount(
+			recipientTokenAccount
+		);
 		assert(
 			new BN(Number(recipientBalance.amount)).eq(poolTokens),
 			`recipient got ${recipientBalance.amount}, expected ${poolTokens} (capped)`

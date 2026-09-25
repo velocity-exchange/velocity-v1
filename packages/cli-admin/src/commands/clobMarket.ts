@@ -539,7 +539,8 @@ export function registerClobMarket(parent: Command): void {
 					marketIndex,
 					clobProgram,
 					book.publicKey,
-					wallet
+					wallet,
+					book.publicKey
 				);
 
 				await provider.sendAndConfirm(

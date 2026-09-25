@@ -15408,6 +15408,14 @@ export type Velocity = {
           "optional": true
         },
         {
+          "name": "responseAccount",
+          "docs": [
+            "approval needs it, because the handler reads the instance. Every other",
+            "entry may omit it."
+          ],
+          "optional": true
+        },
+        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }

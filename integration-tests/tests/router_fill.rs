@@ -492,6 +492,7 @@ fn register_clob_quoter(
             quoter_program_data: Some(program_data_pda(&clob_id())),
             // A book approval asks the book for its own placement rules.
             clob_market: Some(market),
+            response_account: None,
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),
@@ -1568,6 +1569,7 @@ fn a_maker_cancels_off_a_suspended_book() {
             quoter_program_data: Some(program_data_pda(&clob_id())),
             // A revocation reads no book.
             clob_market: None,
+            response_account: None,
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),
@@ -5745,7 +5747,8 @@ fn setup_midpoint_maker_with_flow(
     data.extend_from_slice(&UNIT.to_le_bytes());
     data.extend_from_slice(&1_000u64.to_le_bytes());
     data.extend_from_slice(&1u64.to_le_bytes());
-    data.extend_from_slice(&1u64.to_le_bytes());
+    // Approval requires the step to sit on the market's 1000 grid.
+    data.extend_from_slice(&1_000u64.to_le_bytes());
     data.extend_from_slice(&1u64.to_le_bytes());
     data.push(require_attested_flow as u8);
     // An instance must name a deviation band at creation. Wide enough that
@@ -5870,6 +5873,9 @@ fn setup_midpoint_maker_with_flow(
             quoter_program: midpoint_id(),
             quoter_program_data: Some(program_data_pda(&midpoint_id())),
             clob_market: None,
+            // A midpoint approval reads the instance's execute authority and
+            // size step.
+            response_account: Some(instance),
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),
@@ -6240,6 +6246,7 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
             quoter_program: midpoint_id(),
             quoter_program_data: Some(program_data_pda(&midpoint_id())),
             clob_market: None,
+            response_account: Some(maker.instance),
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),

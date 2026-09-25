@@ -5666,8 +5666,11 @@ export class AdminClient extends VelocityClient {
 	 * Builds the `updateQuoterApproved` instruction, which copies a staging entry into the
 	 * market's slab, or pulls that approval. Approval approves the binary behind the entry,
 	 * so it reads the program-data account that records whether the program can redeploy.
-	 * A book approval also asks the book for its own placement rules.
+	 * A book approval also asks the book for its own placement rules. A midpoint
+	 * approval reads the instance's execute authority and size step.
 	 * @param clobMarket - The book, for approving a CLOB entry. Pass null for every other case.
+	 * @param responseAccount - The entry's response account. A midpoint approval requires it,
+	 * and every other approval may pass it.
 	 */
 	public async getUpdateQuoterApprovedIx(
 		quoter: PublicKey,
@@ -5675,7 +5678,8 @@ export class AdminClient extends VelocityClient {
 		marketIndex: number,
 		quoterProgram: PublicKey,
 		clobMarket: PublicKey | null,
-		admin?: PublicKey
+		admin?: PublicKey,
+		responseAccount: PublicKey | null = null
 	): Promise<TransactionInstruction> {
 		const quoterProgramData = getProgramDataAddress(quoterProgram);
 
@@ -5699,6 +5703,7 @@ export class AdminClient extends VelocityClient {
 					quoterProgram,
 					quoterProgramData: approved ? quoterProgramData : null,
 					clobMarket: approved ? clobMarket : null,
+					responseAccount: approved ? responseAccount : null,
 					systemProgram: SystemProgram.programId,
 				},
 			}

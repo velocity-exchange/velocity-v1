@@ -510,7 +510,10 @@ export function registerQuoter(parent: Command): void {
 					isClobEntry(entry.config.quoterType)
 						? new PublicKey(entry.config.responseAccount)
 						: null,
-					flags.admin ? new PublicKey(flags.admin) : undefined
+					flags.admin ? new PublicKey(flags.admin) : undefined,
+					// A midpoint approval reads its instance, which is the entry's
+					// response account.
+					new PublicKey(entry.config.responseAccount)
 				);
 				const result = await sendOrPropose(
 					provider,

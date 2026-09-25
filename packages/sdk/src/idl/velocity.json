@@ -15402,6 +15402,14 @@
           "optional": true
         },
         {
+          "name": "response_account",
+          "docs": [
+            "approval needs it, because the handler reads the instance. Every other",
+            "entry may omit it."
+          ],
+          "optional": true
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }

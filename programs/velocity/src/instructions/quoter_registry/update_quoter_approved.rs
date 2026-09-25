@@ -11,10 +11,11 @@
 //! Approval checks that the config is coherent enough to call. Both legs need a
 //! non-empty index list, and each list must forward the response account. The
 //! router reads responses from that account. No reserved key may sit on the
-//! registered list. Only the book's own entry may name the market's book, which
-//! closes the window between the book's designation and its own approval. A
-//! `Clob` approval also asks the book for its placement rules, so approval
-//! refuses a slot that would fail every fill.
+//! registered list, and only the response account may be writable. Only the
+//! book's own entry may name the market's book, which closes the window between
+//! the book's designation and its own approval. A `Clob` approval also asks the
+//! book for its own placement rules, and a midpoint approval reads its
+//! instance, so approval refuses a slot that would fail every fill.
 //!
 //! Approval does not require a frozen program, and it does not freeze one. A
 //! maker may upgrade the program behind an approved entry. Three things make
@@ -53,8 +54,8 @@ use {
         state::{
             prop_amm::{
                 list_stays_off_the_book, occupied_slots, slot_for_entry, vacant_slot_index,
-                validate_quoter_accounts, ClobReader, QuoterConfigV0, QuoterSlabExt, QuoterSlabV0,
-                QuoterType, QuoterV0,
+                validate_quoter_accounts, ClobReader, MidpointInstance, QuoterConfigV0,
+                QuoterSlabExt, QuoterSlabV0, QuoterType, QuoterV0, MIDPOINT_PROGRAM_ID,
             },
             state::State,
         },
@@ -102,6 +103,11 @@ pub struct UpdateQuoterApproved<'info> {
     /// book for its own placement rules. Every other entry omits it.
     #[account(address = perp_market.load()?.clob_market)]
     pub clob_market: Option<UncheckedAccount<'info>>,
+    /// CHECK: the entry's response account, bound by address. A midpoint
+    /// approval needs it, because the handler reads the instance. Every other
+    /// entry may omit it.
+    #[account(address = quoter.load()?.config.response_account)]
+    pub response_account: Option<UncheckedAccount<'info>>,
     pub system_program: Program<'info, System>,
 }
 
@@ -274,6 +280,15 @@ pub fn handle_update_quoter_approved(
         )?;
     }
 
+    if config.program_id == MIDPOINT_PROGRAM_ID {
+        validate_midpoint_instance(
+            ctx.accounts.response_account.as_ref(),
+            &ctx.accounts.quoter_slab.key(),
+            config.market,
+            ctx.accounts.perp_market.load()?.order_step_size,
+        )?;
+    }
+
     let approved_program_slot = deployed_slot(
         &ctx.accounts.quoter_program,
         ctx.accounts.quoter_program_data.as_ref(),
@@ -335,6 +350,26 @@ fn validate_book_identity<'info>(
     Ok(())
 }
 
+/// Read the midpoint instance the entry quotes through, and hold it to the
+/// market. An instance that names another execute authority quotes and then
+/// fails every execute.
+fn validate_midpoint_instance(
+    response_account: Option<&UncheckedAccount>,
+    quoter_slab: &Pubkey,
+    market_index: u16,
+    order_step_size: u64,
+) -> Result<()> {
+    let instance = response_account.ok_or_else(|| {
+        msg!("approving a midpoint requires its instance account");
+        error!(ErrorCode::InvalidQuoterConfig)
+    })?;
+    MidpointInstance::read(instance.as_ref())?.validate_for(
+        quoter_slab,
+        market_index,
+        order_step_size,
+    )
+}
+
 /// Pull the entry's copy out of the slab, then give the freed tail back. An
 /// entry that holds no slot is not an error, so a repeated revocation does
 /// nothing.
@@ -368,7 +403,8 @@ fn revoke_slab_slot<'info>(
 
 /// Check that the config is coherent enough to call. Both legs name accounts.
 /// Every index points into the registered list. Both legs forward the response
-/// account. No reserved key sits on the registered list.
+/// account. No reserved key sits on the registered list, and only the
+/// response account is writable.
 fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
     validate!(
         config.quoter_type != QuoterType::Vamm,
@@ -405,6 +441,18 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
         )?;
     }
 
+    validate!(
+        list_writes_only_its_response(
+            registered
+                .iter()
+                .map(|meta| (&meta.pubkey, meta.is_writable)),
+            &config.response_account,
+        ),
+        ErrorCode::InvalidQuoterConfig,
+        "only the response account {} may be registered writable",
+        config.response_account
+    )?;
+
     // The check runs here as well as at write time. A list stored before the
     // reserved-key check existed is still on chain, and approval is the gate
     // that lets a config take flow.
@@ -414,6 +462,21 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
             .map(|meta| (&meta.pubkey, meta.is_writable)),
         config.market,
     )
+}
+
+/// Whether a registered list marks no account writable but its own response
+/// account.
+///
+/// A quoter holds the slab signature inside its execute, and a CPI can only
+/// lend an account writable that it received writable. The book and the
+/// midpoint take their response account writable in every instruction gated
+/// on that signer. So no other quoter's list can complete one of them, even
+/// for an entry that is pending, revoked or on no slab at all.
+fn list_writes_only_its_response<'a>(
+    mut metas: impl Iterator<Item = (&'a Pubkey, bool)>,
+    response_account: &Pubkey,
+) -> bool {
+    metas.all(|(pubkey, is_writable)| !is_writable || pubkey == response_account)
 }
 
 /// Whether two approved quoters keep out of each other's response account.
@@ -545,7 +608,27 @@ fn write_approved_slot(
 /// The rule the quoter signing model rests on, per direction.
 #[cfg(test)]
 mod response_exclusion_tests {
-    use {super::response_accounts_stay_apart, anchor_lang::prelude::Pubkey};
+    use {
+        super::{list_writes_only_its_response, response_accounts_stay_apart},
+        anchor_lang::prelude::Pubkey,
+    };
+
+    #[test]
+    fn only_the_response_account_may_be_writable() {
+        // A list that holds a pending midpoint's instance writable could pass
+        // it writable into that midpoint's execute with the slab signature.
+        let (own, slab, victim) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let writes = |metas: &[(Pubkey, bool)]| {
+            list_writes_only_its_response(metas.iter().map(|(key, w)| (key, *w)), &own)
+        };
+
+        assert!(writes(&[(own, true), (slab, false), (victim, false)]));
+        assert!(!writes(&[(own, true), (slab, false), (victim, true)]));
+    }
 
     fn apart(
         left: &[Pubkey],

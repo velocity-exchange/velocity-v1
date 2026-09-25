@@ -119,6 +119,7 @@ fn approve_ix(
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
             clob_market,
+            response_account: None,
             system_program: system_program(),
         }
         .to_account_metas(None),

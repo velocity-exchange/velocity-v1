@@ -6,7 +6,7 @@
 //! per-leg index lists, and the response account. A quoter is a CLOB, the
 //! midpoint, or a custom PropAMM. The vAMM is in-program and holds no entry.
 //!
-//! One flat namespace, four files by concern:
+//! One flat namespace, five files by concern:
 //!
 //! - [`registry`] holds the config and its staging entry: [`QuoterType`],
 //!   [`QuoterConfigV0`], [`QuoterV0`], and the reserved-key check that
@@ -20,12 +20,15 @@
 //! - [`clob`] holds the velocity-mediated CLOB surface: [`ClobMarket`] and
 //!   [`ClobReader`], the book's wire shapes, and the aggregate unwinds a
 //!   removal drives.
+//! - [`midpoint`] holds the fields of a midpoint instance that approval
+//!   checks: [`MidpointInstance`].
 //!
 //! Every CPI out of this module signs as velocity's one external-CPI identity,
 //! which is the market's quoter slab. See `crate::signer`. No CPI here signs
 //! as the vault authority.
 
 mod clob;
+mod midpoint;
 mod registry;
 mod slab;
 mod wire;
@@ -33,4 +36,4 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use {clob::*, registry::*, slab::*, wire::*};
+pub use {clob::*, midpoint::*, registry::*, slab::*, wire::*};

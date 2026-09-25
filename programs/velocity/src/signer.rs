@@ -26,9 +26,11 @@
 //!   exactly its registered leg accounts plus the slab. Approval refuses a
 //!   registered list that names any other approved quoter's response account
 //!   (`update_quoter_approved`, both directions), and it refuses one that
-//!   names the market's book. Every authority-trusting instruction on the
-//!   book and on the midpoint requires its response account, so the
-//!   forwarded signature has no instruction it can complete.
+//!   names the market's book. It also refuses a list that marks any account
+//!   but the entry's own response account writable. Every
+//!   authority-trusting instruction on the book and on the midpoint requires
+//!   its response account writable, so the forwarded signature has no
+//!   instruction it can complete.
 //! - The slab is per market, so the signature authenticates nothing on any
 //!   other market's quoters or book. A quoter binds the key at its own
 //!   registration and compares against the stored copy, so a signature from

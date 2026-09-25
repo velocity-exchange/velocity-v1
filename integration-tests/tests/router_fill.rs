@@ -7254,6 +7254,8 @@ fn run_liq_resolver(
 #[test]
 fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
     let mut fixture = setup();
+    // The resolver stages only a liquidation the executor can size.
+    arm_liquidation_throttle(&mut fixture.svm);
     const PAYMENT: u64 = 10_000;
     let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
     // The relay turner is paid out of the market's reservoir in
@@ -7505,6 +7507,8 @@ fn liq_conditions_arm_the_liveness_poll() {
 #[test]
 fn liq_resolver_stages_the_with_fill_executor_for_the_protocol_user() {
     let mut fixture = setup();
+    // The resolver stages only a liquidation the executor can size.
+    arm_liquidation_throttle(&mut fixture.svm);
     let market_conditions = init_crank_conditions(&mut fixture, 10_000);
     let protocol_user = set_protocol_user(&mut fixture.svm);
 

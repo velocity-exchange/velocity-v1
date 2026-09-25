@@ -321,8 +321,8 @@ fn liquidation_can_pay_the_crank(
 
     // The executor latches the account before it sizes the order, and the
     // latch resets the pace of an account that was not latched. A copy takes
-    // the same step. It is on the heap because a `User` fills most of a frame.
-    let mut projected = Box::new(*user);
+    // the same step.
+    let mut projected = heap_copy(&user);
     drop(user);
     let liquidation_mode = get_perp_liquidation_mode(&projected, market_index)?;
     liquidation_mode.enter_liquidation(&mut projected, slot)?;
@@ -340,13 +340,28 @@ fn liquidation_can_pay_the_crank(
         margin_calculation: &margin_calculation,
         oracle_price,
     };
-    let Some(size) = sizing.size(maps, state, slot)? else {
+    // A size the executor cannot compute is a call that fails, such as one
+    // under a state with no liquidation margin buffer. That is no work.
+    let Ok(Some(size)) = sizing.size(maps, state, slot) else {
         return Ok(false);
     };
 
     let fill_notional =
         calculate_base_asset_value_with_oracle_price(size.base_asset_amount.cast()?, oracle_price)?;
     Ok(fill_notional >= u128::from(LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE))
+}
+
+/// A copy of `user` that never passes through the stack.
+///
+/// `Box::new(*user)` builds the copy in the caller's frame first. A `User` is
+/// larger than the 4 KB SBF frame, so that overruns the frame, and the program
+/// faults at run time with a bad call target rather than an error.
+fn heap_copy(user: &User) -> Box<User> {
+    // SAFETY: `User` is a zero-copy `Pod` account, so all-zero bytes are a
+    // valid value.
+    let mut copy = unsafe { Box::<User>::new_zeroed().assume_init() };
+    bytemuck::bytes_of_mut(&mut *copy).copy_from_slice(bytemuck::bytes_of(user));
+    copy
 }
 
 /// Whether a liquidation of `market_index` takes book orders off a book. The

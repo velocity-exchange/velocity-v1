@@ -100,7 +100,9 @@ pub use {
     amend::*,
     cross::*,
     keeper::*,
-    perp_fill::{fill_perp_order, FillParties, FillRequest, PerpFillAccounts, SettledMatch},
+    perp_fill::{
+        fill_perp_order, FillParties, FillRequest, MatchOracle, PerpFillAccounts, SettledMatch,
+    },
     placement::*,
     trigger::*,
 };

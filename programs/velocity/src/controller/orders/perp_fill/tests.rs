@@ -185,6 +185,8 @@ struct Case {
     maker_status: u8,
     maker_equity_floor: u64,
     exchange_match_fills_allowed: bool,
+    /// The safe MM price the fill reads, when it is not the raw oracle's 100.
+    safe_oracle_price: Option<i64>,
     crank: Crank,
     min_base_asset_reserve: u128,
 }
@@ -202,6 +204,7 @@ impl Default for Case {
             maker_status: 0,
             maker_equity_floor: 0,
             exchange_match_fills_allowed: true,
+            safe_oracle_price: None,
             crank: Crank::Keeper,
             min_base_asset_reserve: 0,
         }
@@ -311,6 +314,7 @@ struct Scenario {
     book: MockBook,
     levels: Vec<PriceLevelV0>,
     exchange_match_fills_allowed: bool,
+    safe_oracle_price: Option<i64>,
 }
 
 impl Scenario {
@@ -414,6 +418,7 @@ impl Scenario {
             },
             levels,
             exchange_match_fills_allowed: case.exchange_match_fills_allowed,
+            safe_oracle_price: case.safe_oracle_price,
         }
     }
 
@@ -475,6 +480,10 @@ impl Scenario {
             false,
         );
         conditions.exchange_match_fills_allowed = self.exchange_match_fills_allowed;
+        if let Some(price) = self.safe_oracle_price {
+            conditions.oracle_price = price;
+        }
+
         fill_within_taker_risk_limits(
             &mut TakerSide::bind(
                 &mut taker,
@@ -616,6 +625,21 @@ fn a_maker_under_liquidation_takes_no_quoter_fill() {
     });
 
     assert_eq!(filled.unwrap_err(), ErrorCode::UserIsBeingLiquidated);
+}
+
+/// A maker's fill is held to the band around the safe MM price, not the raw
+/// oracle. The raw oracle reads 100 and the MM price reads 110, so a sale at
+/// 99 gives up 10% against the price the fill values it at.
+#[test]
+fn the_maker_band_is_measured_against_the_safe_price() {
+    let (_, at_raw) = run(Case::default());
+    assert_eq!(at_raw.unwrap().base, BASE_PRECISION_U64);
+
+    let (_, at_safe) = run(Case {
+        safe_oracle_price: Some(110 * PRICE_PRECISION_I64),
+        ..Case::default()
+    });
+    assert_eq!(at_safe.unwrap_err(), ErrorCode::QuoterFillOffQuote);
 }
 
 /// The mark TWAP records the price the fill traded at. Two fills that only

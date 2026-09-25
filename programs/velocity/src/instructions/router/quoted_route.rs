@@ -377,6 +377,9 @@ pub struct QuoteInputs<'a> {
     /// the execute must receive the same value. A quoter that spends budgets
     /// would otherwise skip a different set of orders than it quoted.
     pub reference_price: i64,
+    /// The price each quoter's oracle band is measured against. It is the
+    /// price the fill's own band check reads, so a trimmed ladder settles.
+    pub band_oracle_price: i64,
     pub taker: UserRefV0,
     /// The worst price this fill accepts, or zero for no bound. A quoter that
     /// honours it stops its walk where the router would have discarded the
@@ -545,7 +548,7 @@ impl<'info> QuotedRoute<'info> {
             &mut self.levels,
             run,
             sized.inputs.maker_direction(),
-            sized.inputs.reference_price,
+            sized.inputs.band_oracle_price,
             oracle_band,
             sized.rooms.room(index),
         )
@@ -579,7 +582,7 @@ impl<'info> QuotedRoute<'info> {
         if !book_rests_outside_band(
             &self.levels[run.clone()],
             sized.inputs.maker_direction(),
-            sized.inputs.reference_price,
+            sized.inputs.band_oracle_price,
             oracle_band,
         )? {
             return Ok(Some(run));

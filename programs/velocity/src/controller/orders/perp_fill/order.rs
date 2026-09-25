@@ -894,6 +894,33 @@ fn refresh_market_oracle_stats(
     Ok(twap_5min)
 }
 
+/// The oracle price a route trims its books against.
+///
+/// It is the safe MM price the fill measures each maker band against. The
+/// route reads it before the fill, so a level it keeps is a level the band
+/// check admits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchOracle {
+    pub band_price: i64,
+}
+
+impl MatchOracle {
+    pub fn read(
+        maps: &mut AccountMaps,
+        state: &State,
+        market_index: u16,
+        slot: u64,
+    ) -> VelocityResult<Self> {
+        let market = maps.perp_market_map.get_ref(&market_index)?;
+        let oracle_price_data = *maps.oracle_map.get_price_data(&market.oracle_id())?;
+        let (mm_oracle_price_data, _) =
+            safe_mm_oracle_state(&market, state, &oracle_price_data, slot)?;
+        Ok(Self {
+            band_price: mm_oracle_price_data.get_price(),
+        })
+    }
+}
+
 /// The oracle price an oracle-relative limit resolves against.
 ///
 /// `None` when the oracle is not valid for that action.

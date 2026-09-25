@@ -939,7 +939,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
                 change_price,
                 self.maker_direction,
-                self.setup.quote_inputs.oracle_price,
+                self.conditions.oracle_price,
                 leg.oracle_band,
             )?,
             ErrorCode::QuoterFillOffQuote,
@@ -1004,7 +1004,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             &mut maker_side,
             &ExternalMatch {
                 effective_taker_limit: self.setup.effective_taker_limit,
-                oracle_price: self.setup.quote_inputs.oracle_price,
+                oracle_price: self.conditions.oracle_price,
             },
             filler,
             &mut SettleContext {

@@ -30,6 +30,6 @@ pub(crate) use order::fill_perp_order_without_external_books;
 pub use {
     context::{FillAmounts, FillParties, MakerFill, MakerFills, TakerRefs},
     liquidity::{record_fill_in_mark_twap_and_volume, AmmMarkQuote},
-    order::{fill_perp_order, FillRequest, PerpFillAccounts, SettledMatch},
+    order::{fill_perp_order, FillRequest, MatchOracle, PerpFillAccounts, SettledMatch},
     taker_risk::{fill_within_taker_risk_limits, TakerRiskLimits},
 };

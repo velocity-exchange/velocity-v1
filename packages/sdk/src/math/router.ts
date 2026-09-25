@@ -444,6 +444,9 @@ export function quoterOracleBand(
  * favor. A maker buying below oracle or selling above it never breaches.
  * Only the direction that moves value off the maker is bounded.
  * `makerDirection` is the maker's side, the opposite of the taker's.
+ * `oraclePrice` is the market's MM oracle price, as `getMMOracleDataForPerpMarket`
+ * returns it. The fill measures every maker band against that price, not the
+ * raw oracle.
  */
 export function makerPriceBreachesOracleBand(
 	price: BN,
@@ -469,7 +472,8 @@ export function makerPriceBreachesOracleBand(
 /**
  * Whether a book rests a level outside `band` of `oraclePrice`. Mirrors
  * `book_rests_outside_band`. A book fills best price first and cannot skip
- * such a level, so the router takes nothing from that book.
+ * such a level, so the router takes nothing from that book. `oraclePrice` is
+ * the MM oracle price, as for `makerPriceBreachesOracleBand`.
  */
 export function bookRestsOutsideOracleBand(
 	levels: RouterPriceLevel[],

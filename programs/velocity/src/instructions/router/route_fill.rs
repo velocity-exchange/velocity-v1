@@ -10,7 +10,7 @@ use {
     crate::{
         controller::{
             self,
-            orders::{FillAmounts, FillParties, FillRequest, PerpFillAccounts},
+            orders::{FillAmounts, FillParties, FillRequest, MatchOracle, PerpFillAccounts},
             position::PositionDirection,
         },
         error::ErrorCode,
@@ -229,6 +229,12 @@ impl<'info> RouteFill<'_, 'info> {
         parties: &mut FillParties<'_, 'info, 'info, 'info>,
     ) -> Result<RoutedFill> {
         let users = loaded_wire_users(parties.makers_and_referrer)?;
+        let oracle = MatchOracle::read(
+            parties.maps,
+            self.state,
+            fill.order.market_index,
+            self.clock.slot,
+        )?;
         let quoted = quote_route(
             self.tail,
             QuoteInputs {
@@ -237,6 +243,7 @@ impl<'info> RouteFill<'_, 'info> {
                 size: route.order.unfilled,
                 users: &users,
                 reference_price: route.order.mark.reference_price,
+                band_oracle_price: oracle.band_price,
                 taker: route.order.taker,
                 limit_price: route.order.limit_price,
                 taker_served_window: route.taker_served_window,

@@ -839,7 +839,11 @@ export function registerQuoter(parent: Command): void {
 			.description(
 				"Create or re-price a Custom quoter's relay cross-discovery conditions. That per-entry account holds the resolver which prices the quoter through its registered quote_v0 surface and stages crank_cross_match. Permissionless, and the signer pays the rent. The entry must be active and approved, and the market's canonical CLOB must be attached."
 			)
-			.option('--fallback-slots <n>', 'periodic poll interval (slots)', '1500')
+			.option(
+				'--fallback-slots <n>',
+				"periodic poll interval (slots). Only the maker's authority may set a value other than 1500",
+				'1500'
+			)
 	).action(
 		async (
 			quoterArg: string,

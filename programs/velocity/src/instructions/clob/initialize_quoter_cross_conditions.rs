@@ -2,7 +2,9 @@
 //! conditions that already exist.
 //!
 //! The instruction is permissionless. Every input is checked against the
-//! registry and the market, and the caller only pays the rent. An attach
+//! registry and the market, and the caller only pays the rent. Only the
+//! maker's authority chooses the fallback poll interval. Any other caller
+//! attaches at the default and keeps a stored interval on a re-attach. An attach
 //! requires the entry to be active and approved, and requires the market's
 //! canonical CLOB to be attached. The conditions PDA derives from the entry
 //! key. A repeat call re-prices in place, which covers a new keeper payment, a
@@ -75,16 +77,18 @@ pub struct InitializeQuoterCrossConditions<'info> {
 }
 
 /// Ceiling on the cross-discovery poll interval, roughly an hour of slots.
-///
-/// Setting the interval is permissionless, so this bounds what a third party
-/// can do to a maker's own reprice-watch floor to a delay, not indefinite exposure.
 pub const QUOTER_CROSS_FALLBACK_MAX_SLOTS: u64 = 9_000;
+
+/// The interval an attach by anyone other than the maker's authority uses.
+/// Roughly ten minutes of slots.
+pub const QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS: u64 = 1_500;
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeQuoterCrossConditionsArgs {
     /// The poll interval behind the reprice watch. It is the discovery floor
     /// when the maker's declared watch misses a reprice. Bounded above by
-    /// [`QUOTER_CROSS_FALLBACK_MAX_SLOTS`].
+    /// [`QUOTER_CROSS_FALLBACK_MAX_SLOTS`]. A caller other than the maker's
+    /// authority must pass [`QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS`].
     pub expire_fallback_slots: u64,
 }
 
@@ -92,23 +96,6 @@ pub fn handle_initialize_quoter_cross_conditions(
     ctx: Context<InitializeQuoterCrossConditions>,
     args: InitializeQuoterCrossConditionsArgs,
 ) -> Result<()> {
-    let InitializeQuoterCrossConditionsArgs {
-        expire_fallback_slots,
-    } = args;
-
-    validate!(
-        expire_fallback_slots > 0,
-        ErrorCode::InvalidQuoterConfig,
-        "fallback interval must be nonzero"
-    )?;
-    validate!(
-        expire_fallback_slots <= QUOTER_CROSS_FALLBACK_MAX_SLOTS,
-        ErrorCode::InvalidQuoterConfig,
-        "fallback interval {} is past the {} slot ceiling",
-        expire_fallback_slots,
-        QUOTER_CROSS_FALLBACK_MAX_SLOTS
-    )?;
-
     let slots = ctx.accounts.quoter_slab.slots()?;
     let quoter_slot = slot_for_entry(&slots, &ctx.accounts.quoter.key()).ok_or_else(|| {
         msg!("quoter holds no slab slot; approve it first");
@@ -200,10 +187,22 @@ pub fn handle_initialize_quoter_cross_conditions(
         min_payment: keeper_payment_lamports,
     };
 
-    let mut conditions = ctx.accounts.cross_conditions.load_init().or_else(|_| {
+    let caller_is_maker = ctx.accounts.payer.key() == quoter.authority;
+    let (mut conditions, stored_fallback_slots) = match ctx.accounts.cross_conditions.load_init() {
+        Ok(conditions) => (conditions, None),
         // The account already exists on a re-attach, so re-price in place.
-        ctx.accounts.cross_conditions.load_mut()
-    })?;
+        Err(_) => {
+            let conditions = ctx.accounts.cross_conditions.load_mut()?;
+            let stored = conditions.fallback_slots();
+            (conditions, stored)
+        }
+    };
+
+    let expire_fallback_slots = fallback_interval(
+        args.expire_fallback_slots,
+        caller_is_maker,
+        stored_fallback_slots,
+    )?;
 
     conditions.quoter = ctx.accounts.quoter.key();
     conditions.clob_market = clob_market;
@@ -257,4 +256,70 @@ pub fn handle_initialize_quoter_cross_conditions(
     )?;
 
     Ok(())
+}
+
+/// The fallback interval an attach writes.
+///
+/// A longer interval delays cross discovery for the maker's quotes, so only
+/// the maker's authority chooses one. Any other caller must ask for the
+/// default. On a re-attach it keeps whatever interval the block already holds.
+fn fallback_interval(requested: u64, caller_is_maker: bool, stored: Option<u64>) -> Result<u64> {
+    validate!(
+        requested > 0,
+        ErrorCode::InvalidQuoterConfig,
+        "fallback interval must be nonzero"
+    )?;
+    validate!(
+        requested <= QUOTER_CROSS_FALLBACK_MAX_SLOTS,
+        ErrorCode::InvalidQuoterConfig,
+        "fallback interval {} is past the {} slot ceiling",
+        requested,
+        QUOTER_CROSS_FALLBACK_MAX_SLOTS
+    )?;
+
+    if caller_is_maker {
+        return Ok(requested);
+    }
+
+    validate!(
+        requested == QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS,
+        ErrorCode::InvalidQuoterConfig,
+        "only the maker's authority sets a fallback interval other than {}",
+        QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS
+    )?;
+
+    Ok(stored.unwrap_or(QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        fallback_interval, QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS, QUOTER_CROSS_FALLBACK_MAX_SLOTS,
+    };
+
+    /// A third party cannot widen a maker's poll interval up to the ceiling.
+    #[test]
+    fn a_third_party_cannot_choose_the_interval() {
+        assert!(fallback_interval(QUOTER_CROSS_FALLBACK_MAX_SLOTS, false, None).is_err());
+        assert_eq!(
+            fallback_interval(QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS, false, None).unwrap(),
+            QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS
+        );
+    }
+
+    /// A third party re-attach keeps the interval the maker chose.
+    #[test]
+    fn a_third_party_reattach_keeps_the_stored_interval() {
+        assert_eq!(
+            fallback_interval(QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS, false, Some(300)).unwrap(),
+            300
+        );
+    }
+
+    #[test]
+    fn the_maker_chooses_any_interval_up_to_the_ceiling() {
+        assert_eq!(fallback_interval(300, true, Some(9_000)).unwrap(), 300);
+        assert!(fallback_interval(QUOTER_CROSS_FALLBACK_MAX_SLOTS + 1, true, None).is_err());
+        assert!(fallback_interval(0, true, None).is_err());
+    }
 }

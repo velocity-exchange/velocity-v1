@@ -145,6 +145,15 @@ impl QuoterCrossConditionsV0 {
         ConditionBlock::write_condition(&mut self.relay, index, condition)
             .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
+
+    /// The interval the stored fallback poll runs at, if one is armed.
+    pub fn fallback_slots(&self) -> Option<u64> {
+        let condition = ConditionBlock::read_condition(&self.relay, QUOTER_CROSS_FALLBACK).ok()?;
+        match condition.wake() {
+            Ok(relay_spec::WakeView::EverySlots { slots }) if condition.is_active() => Some(slots),
+            _ => None,
+        }
+    }
 }
 
 const _: () = assert!(QUOTER_CROSS_BLOCK_OFFSET.is_multiple_of(8));

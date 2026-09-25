@@ -6291,7 +6291,8 @@ fn attach_quoter_cross(fixture: &mut Fixture, maker: &MidpointMaker) -> Pubkey {
         .to_account_metas(None),
         data: velocity::instruction::InitializeQuoterCrossConditions {
             args: InitializeQuoterCrossConditionsArgs {
-                expire_fallback_slots: 100,
+                // The keeper is not the maker, so it attaches at the default.
+                expire_fallback_slots: 1_500,
             },
         }
         .data(),
@@ -6395,7 +6396,7 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     );
     assert_eq!(
         conditions[QUOTER_CROSS_FALLBACK].wake(),
-        Ok(velocity::relay_spec::WakeView::EverySlots { slots: 100 })
+        Ok(velocity::relay_spec::WakeView::EverySlots { slots: 1_500 })
     );
 
     // The resolver list is stored once, in the relay block's built-in

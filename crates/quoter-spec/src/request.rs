@@ -35,10 +35,10 @@ pub struct UserCapV0 {
     /// placement. Base cannot express that bound, because a fill at a price in
     /// the owner's favour costs nothing per base.
     pub quote_cap: u64,
-    /// The most base this user may give up on the swept side. `u64::MAX` is
-    /// unbounded. A book enforces it at match time and will not fill a reduce-only
-    /// order whose owner has no cap here, so for a book this field is a trust
-    /// boundary. Every other quoter reads it as advisory.
+    /// The most base this user may give up on the swept side. `u64::MAX` is unbounded.
+    /// A book binds reduce-only orders to it and draws it down by every fill of the user.
+    /// A book fills no reduce-only order whose owner has no cap here, so for a book this
+    /// field is a trust boundary. Every other quoter reads it as advisory.
     pub base_cap: u64,
     /// Index into the accompanying user set.
     pub index: u8,

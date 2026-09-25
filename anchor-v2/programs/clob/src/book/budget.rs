@@ -73,6 +73,8 @@ struct UserRoom {
     budget: u64,
     /// Base the book may still fill against this user's reduce-only orders on
     /// the swept side. `u64::MAX` means the user carries no reduce-only cap.
+    /// Every fill of the user on this side draws it down, ordinary or not,
+    /// because each one shrinks the position a reduce-only order may reduce.
     cover: u64,
 }
 
@@ -205,16 +207,15 @@ impl<'a> UserBudget<'a> {
     }
 
     /// How much of `want` the user at `index` may still take from an order at
-    /// `price`, spending their budget for it.
-    ///
-    /// `index` is the position the membership scan already resolved, so the
-    /// bitmap costs a bit test rather than a second walk of the set.
+    /// `price`, spending their budget for it. `index` is the owner's position
+    /// in the caller's set.
     ///
     /// `reduce_only` is the resting order's own flag. A reduce-only order fills
     /// only against an authoritative `base_cover` on a named cap entry. The book
     /// cannot see a position, so no caps at all, an unnamed owner, and an
     /// unconstrained owner all leave the order uncovered, and it does not fill.
-    /// A non-reduce-only order ignores the cover.
+    /// A non-reduce-only order is not bound by the cover, but it draws the
+    /// cover down.
     pub(super) fn allow(
         &mut self,
         index: Option<usize>,
@@ -284,16 +285,13 @@ impl<'a> UserBudget<'a> {
         };
 
         // Spend the quote budget for what was actually taken, and draw the
-        // cover down by the same base for a reduce-only fill.
+        // cover down by the same base.
         if room != u64::MAX && cost_per_base != 0 {
             let spent = (allowed as u128 * cost_per_base as u128).div_ceil(BASE_PRECISION as u128);
             self.entries[slot].budget = room.saturating_sub(spent.min(u64::MAX as u128) as u64);
         }
 
-        if reduce_only {
-            self.entries[slot].cover = cover.saturating_sub(allowed);
-        }
-
+        self.entries[slot].cover = cover.saturating_sub(allowed);
         allowed
     }
 }

@@ -762,6 +762,69 @@ fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
     assert_eq!(filled, 2 * UNIT);
 }
 
+/// The owner's ordinary fills earlier in the walk shrink the position its
+/// reduce-only order may reduce, so they draw the cover down too.
+///
+/// The maker is long `cover` and rests an ordinary ask of 5 ahead of a
+/// reduce-only ask of 5. The reduce-only ask may fill only what the ordinary
+/// fill left of the position, so the maker never ends short.
+#[test]
+fn a_reduce_only_order_fills_only_what_the_owners_earlier_fills_left() {
+    const UNIT: u64 = BASE_PRECISION;
+    for (cover, expected_ladder) in [
+        (5 * UNIT, vec![(100, 5 * UNIT)]),
+        (8 * UNIT, vec![(100, 5 * UNIT), (101, 3 * UNIT)]),
+    ] {
+        let market = TestMarket::new(8);
+        let mut book = market.book();
+        let maker = user(1);
+        place(&mut book, SideV0::Ask, 100, 5 * UNIT, maker);
+        book.place(PlaceOrderParams {
+            reduce_only: true,
+            ..params(SideV0::Ask, 101, 5 * UNIT, maker)
+        })
+        .expect("placement succeeds");
+
+        let users = [maker];
+        let mut caps = UserCapsV0::EMPTY;
+        caps.len = 1;
+        caps.caps[0] = crate::state::UserCapV0 {
+            index: 0,
+            quote_cap: u64::MAX,
+            base_cap: cover,
+        };
+
+        let pointer = book
+            .quote(
+                &QuoteArgsV0 {
+                    users: &users,
+                    caps,
+                    reference_price: Some(100),
+                    ..quote_args(DirectionV0::Long, 10 * UNIT)
+                },
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(levels(&mut book, pointer), expected_ladder);
+
+        let outcome = book
+            .execute(
+                &ExecuteArgsV0 {
+                    users: &users,
+                    caps,
+                    reference_price: Some(100),
+                    ..execute_args(DirectionV0::Long, 10 * UNIT)
+                },
+                0,
+                0,
+            )
+            .unwrap();
+        let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+        assert_eq!(filled, cover, "the maker sells its whole long and no more");
+    }
+}
+
 /// A reduce-only order with no cover does not fill at all.
 ///
 /// A cover the caller did not carry is not "unlimited" — it is unknown, and an

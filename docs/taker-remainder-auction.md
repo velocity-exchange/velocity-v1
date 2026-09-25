@@ -425,7 +425,7 @@ took first.
 - No cross matching and no pricing: R3 lives in velocity.
 
 **velocity (`programs/velocity`)**
-- The migration reuses `try_place_remainder_on_clob`, with the taker-origin flag set. It costs no
+- The migration reuses `rest_remainder_on_clob`, with the taker-origin flag set. It costs no
   extra accounts: a router fill already carries the quoter slab, the book and the clob program,
   because the CLOB baseline is mandatory, so the route adds nothing new.
 - `crank_taker_origin_cross` resolves one cross, and it resolves it as an ordinary fill. The

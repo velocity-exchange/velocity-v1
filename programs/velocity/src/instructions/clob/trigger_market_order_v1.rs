@@ -203,7 +203,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         clock,
     )?;
 
-    rest_fired_remainder(&ctx, &mut maps, &fired, market_index, order_id, clock)?;
+    rest_fired_remainder(&ctx, &mut maps, &fired, clock)?;
 
     // Pay the reservoir and release the trigger wake slot. Drop the state
     // borrow first, because the reservoir payout loads state itself.
@@ -329,97 +329,36 @@ fn route_fill_fired_order<'info>(
 ///
 /// A remainder that cannot rest is lost. The trigger slot was freed and the
 /// flat reward charged before the fill ran, and the fill already moved the
-/// position, so nothing can be restored. The handler emits a cancel record
-/// instead, so the order never leaves the order history without a statement.
+/// position, so nothing can be restored. The lost remainder emits a cancel
+/// record instead.
 fn rest_fired_remainder<'info>(
     ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
     maps: &mut crate::instructions::optional_accounts::AccountMaps<'info>,
     fired: &Order,
-    market_index: u16,
-    order_id: u32,
     clock: &Clock,
 ) -> Result<()> {
     let rest_oracle_price = {
-        let oracle_id = maps.perp_market_map.get_ref(&market_index)?.oracle_id();
+        let oracle_id = maps
+            .perp_market_map
+            .get_ref(&fired.market_index)?
+            .oracle_id();
         maps.oracle_map.get_price_data(&oracle_id)?.price
     };
-    let (remainder, unfilled, is_isolated_position) = {
-        let user = load!(ctx.accounts.user)?;
-        let position_base = user
-            .get_perp_position(market_index)
-            .map(|position| position.base_asset_amount)
-            .ok();
-        let unfilled = fired.get_base_asset_amount_unfilled(position_base)?;
-        let is_isolated_position = user
-            .get_perp_position(market_index)
-            .is_ok_and(|position| position.is_isolated());
-        let remainder = if user.is_being_liquidated() {
-            None
-        } else {
-            crate::instructions::restable_remainder(
-                &user,
-                fired,
-                market_index,
-                Some(rest_oracle_price),
-            )
-        };
 
-        (remainder, unfilled, is_isolated_position)
-    };
-
-    // The fill took the whole order, so there is no remainder to rest.
-    if unfilled == 0 {
-        return Ok(());
-    }
-
-    let rested = match &remainder {
-        Some(remainder) => crate::instructions::try_place_remainder_on_clob(
-            &ctx.accounts.user,
-            &ctx.accounts.quoter_slab,
-            &ctx.accounts.clob_market.to_account_info(),
-            &ctx.accounts.clob_program.to_account_info(),
-            maps,
-            market_index,
-            remainder.direction,
-            remainder.price,
-            remainder.unfilled,
-            remainder.max_ts,
-            order_id,
-            true,
-            false,
-            remainder.reduce_only,
-            None,
-            clock,
-        )?,
-        None => None,
-    };
-
-    if rested.is_some() {
-        return Ok(());
-    }
-
-    // The remainder is lost. Report it with the size and the price it would
-    // have rested at, so a reader sees the order end rather than stop
-    // appearing.
-    super::emit_clob_cancel_record(
-        clock.unix_timestamp,
-        rest_oracle_price,
-        &ctx.accounts.user.key(),
-        super::ClobOrderFacts {
-            order_id,
-            market_index,
-            direction: fired.direction,
-            price: remainder.as_ref().map_or(0, |remainder| remainder.price),
-            base_asset_amount: unfilled,
-            base_asset_amount_filled: 0,
-            max_ts: fired.max_ts,
-            slot: clock.slot,
-            taker_origin: true,
+    crate::instructions::rest_or_cancel_detached_remainder(
+        &crate::instructions::ClobRestAccounts {
+            user: &ctx.accounts.user,
+            quoter_slab: &ctx.accounts.quoter_slab,
+            clob_market: &ctx.accounts.clob_market.to_account_info(),
+            clob_program: &ctx.accounts.clob_program.to_account_info(),
         },
-        crate::state::events::OrderActionExplanation::ClobRemainderCulled,
-        Some(ctx.accounts.filler.key()),
-        None,
-        is_isolated_position,
+        maps,
+        fired,
+        &crate::instructions::DetachedRemainderTerms {
+            rest_oracle_price: Some(rest_oracle_price),
+            activation_delay_slots: None,
+        },
+        clock,
     )?;
 
     Ok(())

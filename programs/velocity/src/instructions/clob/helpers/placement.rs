@@ -8,10 +8,10 @@
 
 use {
     crate::{
-        controller::position::PositionDirection,
+        controller::{self, position::PositionDirection},
         error::ErrorCode,
         instructions::optional_accounts::AccountMaps,
-        load_mut,
+        load, load_mut,
         math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
         state::{
@@ -19,7 +19,7 @@ use {
             prop_amm::{
                 ClobMarket, PlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0, UserRefV0,
             },
-            user::{OrderReservation, ReleaseCheck, User},
+            user::{Order, OrderReservation, ReleaseCheck, User},
         },
         validate,
     },
@@ -485,54 +485,108 @@ pub fn rest_remainder_on_clob<'info>(
     Ok(outcome)
 }
 
-/// [`rest_remainder_on_clob`] for a caller that needs only the CLOB order id.
-/// A signed-message taker records the id, so the fill at the activation slot
-/// can find its route. `None` is a refusal.
-#[allow(clippy::too_many_arguments)]
-pub fn try_place_remainder_on_clob<'info>(
-    user_loader: &AccountLoader<'info, User>,
-    quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
-    clob_market: &AccountInfo<'info>,
-    clob_program: &AccountInfo<'info>,
+/// The terms a detached taker's remainder rests on, beyond the order itself.
+pub struct DetachedRemainderTerms {
+    /// The oracle an `OracleTriggerMarket` offset is relative to.
+    pub rest_oracle_price: Option<i64>,
+    pub activation_delay_slots: Option<u32>,
+}
+
+/// Rest the unfilled part of a detached taker order, or record its cancel.
+/// Returns the CLOB order id when the part rests.
+///
+/// The fill already landed, so no refusal here is an error. Every part that
+/// does not rest emits an `OrderActionRecord(Cancel)`, so the order does not
+/// leave the order history without a record.
+pub fn rest_or_cancel_detached_remainder<'info>(
+    accounts: &ClobRestAccounts<'_, 'info>,
     maps: &mut AccountMaps,
-    market_index: u16,
-    direction: PositionDirection,
-    price: u64,
-    base_asset_amount: u64,
-    max_ts: i64,
-    client_order_id: u32,
-    taker_origin: bool,
-    reject_if_crossed: bool,
-    reduce_only: bool,
-    activation_delay_slots: Option<u32>,
+    order: &Order,
+    terms: &DetachedRemainderTerms,
     clock: &Clock,
 ) -> Result<Option<u64>> {
+    if order.get_base_asset_amount_unfilled(None)? == 0 {
+        return Ok(None);
+    }
+
+    let explanation = match detached_remainder_rest(accounts, maps, order, terms, clock)? {
+        RemainderRest::Rested(clob_order_id) => return Ok(Some(clob_order_id)),
+        RemainderRest::Cancelled(explanation) => explanation,
+    };
+
+    controller::orders::emit_detached_cancel_record(
+        &*load!(accounts.user)?,
+        &accounts.user.key(),
+        order,
+        maps,
+        clock.unix_timestamp,
+        explanation,
+    )?;
+
+    Ok(None)
+}
+
+/// What became of an unfilled part that the caller tried to rest.
+enum RemainderRest {
+    Rested(u64),
+    Cancelled(OrderActionExplanation),
+}
+
+fn detached_remainder_rest<'info>(
+    accounts: &ClobRestAccounts<'_, 'info>,
+    maps: &mut AccountMaps,
+    order: &Order,
+    terms: &DetachedRemainderTerms,
+    clock: &Clock,
+) -> Result<RemainderRest> {
+    if order.immediate_or_cancel {
+        return Ok(RemainderRest::Cancelled(OrderActionExplanation::None));
+    }
+
+    let remainder = {
+        let user = load!(accounts.user)?;
+        if user.is_being_liquidated() {
+            return Ok(RemainderRest::Cancelled(
+                OrderActionExplanation::Liquidation,
+            ));
+        }
+
+        restable_remainder(&user, order, order.market_index, terms.rest_oracle_price)
+    };
+
+    let Some(remainder) = remainder else {
+        return Ok(RemainderRest::Cancelled(OrderActionExplanation::None));
+    };
+
+    // A reduce-only order clamps to the position, so a flat position leaves
+    // nothing to rest.
+    if remainder.unfilled == 0 {
+        return Ok(RemainderRest::Cancelled(
+            OrderActionExplanation::ReduceOnlyOrderIncreasedPosition,
+        ));
+    }
+
     let outcome = rest_remainder_on_clob(
-        &ClobRestAccounts {
-            user: user_loader,
-            quoter_slab,
-            clob_market,
-            clob_program,
-        },
+        accounts,
         maps,
         &ClobRestOrder {
-            market_index,
-            direction,
-            price,
-            base_asset_amount,
-            max_ts,
-            client_order_id,
-            taker_origin,
-            reject_if_crossed,
-            reduce_only,
-            activation_delay_slots,
+            market_index: order.market_index,
+            direction: remainder.direction,
+            price: remainder.price,
+            base_asset_amount: remainder.unfilled,
+            max_ts: remainder.max_ts,
+            client_order_id: order.order_id,
+            taker_origin: true,
+            reject_if_crossed: false,
+            reduce_only: remainder.reduce_only,
+            activation_delay_slots: terms.activation_delay_slots,
         },
         clock,
     )?;
 
     Ok(match outcome {
-        RestOutcome::Placed(placed) => Some(placed.clob_order_id),
-        RestOutcome::Refused(_) => None,
+        RestOutcome::Placed(placed) => RemainderRest::Rested(placed.clob_order_id),
+        RestOutcome::Refused(reason) => RemainderRest::Cancelled(reason.cancel_explanation()),
     })
 }
 
@@ -941,5 +995,140 @@ mod rest_admission_tests {
         );
 
         assert!(matches!(admission, RestAdmission::Admitted { .. }));
+    }
+}
+
+#[cfg(test)]
+mod detached_remainder_tests {
+    use {
+        super::*,
+        crate::{
+            create_anchor_account_info,
+            math::constants::BASE_PRECISION_U64,
+            state::{
+                oracle_map::OracleMap,
+                perp_market_map::PerpMarketMap,
+                spot_market_map::SpotMarketMap,
+                user::{OrderStatus, OrderType, UserStatus},
+            },
+            test_utils::create_account_info,
+        },
+        anchor_lang::Discriminator,
+    };
+
+    fn open_order() -> Order {
+        Order {
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64,
+            price: 100_000_000,
+            ..Order::default()
+        }
+    }
+
+    /// What the rest leg does with `order` for an owner in `user_status`. Each
+    /// case ends before the book, so the book accounts carry no data.
+    fn rest(order: Order, user_status: u8) -> RemainderRest {
+        let mut user = User {
+            status: user_status,
+            ..User::default()
+        };
+
+        create_anchor_account_info!(user, User, user_info);
+        let user_loader = AccountLoader::try_from(&user_info).unwrap();
+
+        let slab_key = Pubkey::new_unique();
+        let mut slab_lamports = 0;
+        let mut slab_data = vec![0u8; QuoterSlabV0::space(0)];
+        slab_data[..8].copy_from_slice(QuoterSlabV0::DISCRIMINATOR);
+        let slab_info = create_account_info(
+            &slab_key,
+            false,
+            &mut slab_lamports,
+            &mut slab_data,
+            &crate::ID,
+        );
+        let slab_loader = AccountLoader::try_from(&slab_info).unwrap();
+
+        let mut maps = AccountMaps::new(
+            PerpMarketMap::empty(),
+            SpotMarketMap::empty(),
+            OracleMap::empty(),
+        );
+        let accounts = ClobRestAccounts {
+            user: &user_loader,
+            quoter_slab: &slab_loader,
+            clob_market: &slab_info,
+            clob_program: &slab_info,
+        };
+        let terms = DetachedRemainderTerms {
+            rest_oracle_price: None,
+            activation_delay_slots: None,
+        };
+
+        let Ok(rest) =
+            detached_remainder_rest(&accounts, &mut maps, &order, &terms, &Clock::default())
+        else {
+            panic!("the rest leg failed");
+        };
+
+        rest
+    }
+
+    fn cancelled_with(rest: RemainderRest) -> Option<OrderActionExplanation> {
+        match rest {
+            RemainderRest::Cancelled(explanation) => Some(explanation),
+            RemainderRest::Rested(_) => None,
+        }
+    }
+
+    #[test]
+    fn an_immediate_or_cancel_remainder_records_a_cancel() {
+        let order = Order {
+            immediate_or_cancel: true,
+            ..open_order()
+        };
+
+        assert!(matches!(
+            cancelled_with(rest(order, 0)),
+            Some(OrderActionExplanation::None)
+        ));
+    }
+
+    #[test]
+    fn the_remainder_of_an_account_under_liquidation_records_a_cancel() {
+        let status = UserStatus::BeingLiquidated as u8;
+
+        assert!(matches!(
+            cancelled_with(rest(open_order(), status)),
+            Some(OrderActionExplanation::Liquidation)
+        ));
+    }
+
+    #[test]
+    fn a_remainder_that_cannot_rest_records_a_cancel() {
+        let order = Order {
+            order_type: OrderType::Oracle,
+            ..open_order()
+        };
+
+        assert!(matches!(
+            cancelled_with(rest(order, 0)),
+            Some(OrderActionExplanation::None)
+        ));
+    }
+
+    #[test]
+    fn a_reduce_only_remainder_with_nothing_to_reduce_records_a_cancel() {
+        let order = Order {
+            reduce_only: true,
+            ..open_order()
+        };
+
+        assert!(matches!(
+            cancelled_with(rest(order, 0)),
+            Some(OrderActionExplanation::ReduceOnlyOrderIncreasedPosition)
+        ));
     }
 }

@@ -253,8 +253,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
 /// A signed-message order never rests in a `User.orders` slot. Either it is
 /// immediate-or-cancel and its residual is cancelled, or the residual migrates
 /// to the CLOB as a taker-origin order and competes for price inside its
-/// activation window. `restable_remainder_price` is the shared rule for which
-/// residuals can rest at all.
+/// activation window. A residual that does not rest emits a cancel record.
 ///
 /// The CLOB order id goes back onto the message's own record. The fill at the
 /// activation slot runs in a different transaction, built by somebody else, and
@@ -267,47 +266,20 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
     maps: &mut AccountMaps,
     clock: &Clock,
 ) -> Result<bool> {
-    // Immediate-or-cancel asked for no residual. The order never persisted, so
-    // dropping it is enough.
-    if placed.order.immediate_or_cancel {
-        return Ok(false);
-    }
-
-    let market_index = placed.order.market_index;
-    let remainder = {
-        let user = load!(ctx.accounts.user)?;
-        if user.is_being_liquidated() {
-            return Ok(false);
-        }
-
-        // The fill leg updated the filled amounts of `placed.order` in place.
-        // `restable_remainder` answers `None` for a post-only order, for a
-        // type that cannot rest, and for a zero price.
-        crate::instructions::restable_remainder(&user, &placed.order, market_index, None)
-    };
-
-    let Some(remainder) = remainder.filter(|remainder| remainder.unfilled != 0) else {
-        return Ok(false);
-    };
-
-    // There is no slot to cancel, because the order never entered
-    // `user.orders`. Its remainder migrates straight onto the CLOB.
-    let rested = crate::instructions::try_place_remainder_on_clob(
-        &ctx.accounts.user,
-        &ctx.accounts.quoter_slab,
-        &ctx.accounts.clob_market.to_account_info(),
-        &ctx.accounts.clob_program.to_account_info(),
+    // The fill leg updated the filled amounts of `placed.order` in place.
+    let rested = crate::instructions::rest_or_cancel_detached_remainder(
+        &crate::instructions::ClobRestAccounts {
+            user: &ctx.accounts.user,
+            quoter_slab: &ctx.accounts.quoter_slab,
+            clob_market: &ctx.accounts.clob_market.to_account_info(),
+            clob_program: &ctx.accounts.clob_program.to_account_info(),
+        },
         maps,
-        market_index,
-        remainder.direction,
-        remainder.price,
-        remainder.unfilled,
-        remainder.max_ts,
-        placed.order.order_id,
-        true,
-        false,
-        remainder.reduce_only,
-        placed.activation_delay_slots,
+        &placed.order,
+        &crate::instructions::DetachedRemainderTerms {
+            rest_oracle_price: None,
+            activation_delay_slots: placed.activation_delay_slots,
+        },
         clock,
     )?;
 
@@ -320,7 +292,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         .load_mut()?
         .set_resting_route(
             placed.record_index,
-            market_index,
+            placed.order.market_index,
             clob_order_id,
             placed.route_digest,
         );

@@ -59,9 +59,12 @@ Each flow lists the ordered call chain from the instruction entry point down to 
    (`controller/orders/settle.rs:77`) emits the `OrderActionRecord` event, whose struct is at
    `state/events.rs:234`. A fill settles only for makers whose `(User, UserStats)` pair the
    transaction carries.
-8. `settle_take_remainder` (`instructions/user/place_and_take.rs:425`) rests the unfilled remainder
+8. `settle_take_remainder` (`instructions/user/place_and_take.rs:336`) rests the unfilled remainder
    of an order that is not immediate-or-cancel on the market's CLOB, through
-   `try_place_remainder_on_clob` (`instructions/clob/helpers/placement.rs:284`).
+   `rest_remainder_on_clob` (`instructions/clob/helpers/placement.rs:456`). A part that does not
+   rest emits an `OrderActionRecord(Cancel)`. The signed-message and fired stop-market paths use
+   `rest_or_cancel_detached_remainder` (`instructions/clob/helpers/placement.rs:501`) for the same
+   rule.
 
 ### Place and make perp order
 
@@ -70,8 +73,8 @@ Each flow lists the ordered call chain from the instruction entry point down to 
    the `PlaceAndMakeV1` accounts context (`instructions/clob/place_and_make_v1.rs:32`).
 3. It builds and admits the order through `controller::orders::create_detached_perp_order`, as in
    steps 3 and 4 of the take flow.
-4. `try_place_remainder_on_clob` (`instructions/clob/helpers/placement.rs:284`) rests the whole
-   order on the market's CLOB as a maker quote. The order never enters `User.orders` and matches
+4. `rest_on_clob` (`instructions/clob/helpers/placement.rs:375`) rests the whole
+   order on the market's CLOB as a maker quote. A refusal is an error. The order never enters `User.orders` and matches
    nothing on placement. A later taker removes it from the book.
 
 ### Liquidate perp

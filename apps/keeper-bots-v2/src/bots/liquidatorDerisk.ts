@@ -515,9 +515,7 @@ export class LiquidatorDerisk {
 				// An empty book, so this is a vAMM-only estimate. Give it the
 				// dlob-server's `/l2` for the market to price against the book
 				// and the PropAMMs as well.
-				{ asks: [], bids: [] },
-				this.userMap.getSlot(),
-				this.velocityClient.getStateAccount()
+				{ asks: [], bids: [] }
 			));
 		} catch (e) {
 			const err = e as Error;

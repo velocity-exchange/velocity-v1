@@ -24,7 +24,6 @@ import {
 } from './amm';
 import { calculateBaseAssetValueWithOracle } from './margin';
 import { calculateNetUserPnlImbalance } from './market';
-import { SlotDurationState } from './time';
 
 /**
  * Simulates fully closing `userPosition` against the AMM (optionally through its bid/ask
@@ -36,7 +35,6 @@ import { SlotDurationState } from './time';
  * @param mmOraclePriceData MM oracle price data used to re-peg/update the AMM before pricing (unless `skipUpdate`).
  * @param useSpread If true (default) and the market has a nonzero base spread, price through the bid/ask spread reserves on the closing side rather than the raw AMM reserves.
  * @param skipUpdate If true, price against `market.amm` as-is without applying `calculateUpdatedAMM`/spread-reserve updates first (default false).
- * @param latestSlot Current slot, forwarded to the spread-reserve update for reference-price-offset smoothing.
  * @returns Value of fully closing the position, QUOTE_PRECISION (1e6).
  */
 export function calculateBaseAssetValue(
@@ -44,9 +42,7 @@ export function calculateBaseAssetValue(
 	userPosition: PerpPosition,
 	mmOraclePriceData: MMOraclePriceData,
 	useSpread = true,
-	skipUpdate = false,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	skipUpdate = false
 ): BN {
 	if (userPosition.baseAssetAmount.eq(ZERO)) {
 		return ZERO;
@@ -62,9 +58,7 @@ export function calculateBaseAssetValue(
 					market.amm,
 					market.marketStats,
 					directionToClose,
-					mmOraclePriceData,
-					latestSlot,
-					slotDurationState
+					mmOraclePriceData
 				);
 			prepegAmm = {
 				baseAssetReserve,

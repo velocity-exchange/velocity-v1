@@ -2007,7 +2007,7 @@ export type MarketStats = {
 	mmOracleSequenceId: BN;
 	/** canonical sanitised/clamped oracle price after normalisation */
 	lastOracleNormalisedPrice: BN;
-	/** PRICE_PRECISION (1e6); reference-price offset from the previous `_update_amm` call, used to smooth the sign-flip transition when the freshly computed offset changes direction */
+	/** PRICE_PRECISION (1e6); the reference price offset from the most recent quote refresh, mirrored from `AMM.referencePriceOffset`. The quote math does not read it. */
 	lastReferencePriceOffset: number;
 	lastOracleValid: boolean;
 	/** unit is quote per base, QUOTE_PRECISION (1e6); oracle TWAP snapshot used by the funding-rate computation */

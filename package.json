@@ -79,6 +79,7 @@
 		"test:integration:full": "bun run program:build && bun run program:build:clob && cd integration-tests && cargo test",
 		"program:idl": "bash deploy-scripts/build-idl.sh velocity",
 		"program:idl:vaults": "bash deploy-scripts/build-idl.sh vaults",
+		"program:idl:revenue-router": "bash deploy-scripts/build-idl.sh revenue-router",
 		"rust:build": "cargo build --locked --manifest-path rust/Cargo.toml",
 		"release": "bash deploy-scripts/release.sh",
 		"verify-buffer": "bash deploy-scripts/verify-buffer.sh",

@@ -1,0 +1,40 @@
+{
+	"name": "@velocity-exchange/revenue-router-sdk",
+	"version": "0.1.0",
+	"description": "TypeScript SDK for the Velocity protocol-revenue-router program.",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/velocity-exchange/velocity-v1.git",
+		"directory": "packages/revenue-router-sdk"
+	},
+	"license": "Apache-2.0",
+	"main": "lib/index.js",
+	"types": "lib/index.d.ts",
+	"files": [
+		"lib"
+	],
+	"engines": {
+		"node": ">=20"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"clean": "rm -rf lib",
+		"build": "bun run clean && tsc",
+		"lint": "eslint './src/**/*.ts' --quiet --format unix",
+		"prettify": "prettier --check './src/**/*.ts'",
+		"prettify:fix": "prettier --write './src/**/*.ts'",
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
+		"@solana/web3.js": "1.99.0"
+	},
+	"devDependencies": {
+		"@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
+		"@types/bn.js": "5.1.6",
+		"@types/node": "20.19.42",
+		"typescript": "5.4.5"
+	}
+}

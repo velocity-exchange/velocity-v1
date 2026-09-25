@@ -1973,8 +1973,8 @@ export class User {
 		position: PerpPosition,
 		amountToClose?: BN,
 		useAMMClose = false,
-		// live chain slot: applies a staged slot-duration switch to the AMM-close
-		// spread-reserve smoothing and MM-oracle validity; omit for the baseline
+		// The live chain slot, which applies a staged slot-duration switch to
+		// MM-oracle validity. Omit it for the baseline.
 		slot?: number
 	): [BN, BN] {
 		const market = this.velocityClient.getPerpMarketAccountOrThrow(
@@ -2003,17 +2003,12 @@ export class User {
 		let baseAssetValue: BN;
 
 		if (useAMMClose) {
-			const latestSlot = slot !== undefined ? new BN(slot) : undefined;
-			const slotDuration =
-				slot !== undefined ? this.velocityClient.getStateAccount() : undefined;
 			baseAssetValue = calculateBaseAssetValue(
 				market,
 				position,
 				oraclePriceData,
 				true,
-				false,
-				latestSlot,
-				slotDuration
+				false
 			);
 		} else {
 			baseAssetValue = calculateBaseAssetValueWithOracle(

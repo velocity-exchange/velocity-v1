@@ -74,9 +74,8 @@ pub struct QuoteContext<'a> {
     /// resting post-auction).
     pub slot: u64,
     /// Cluster slot clock, from `State::slot_clock()`. It scales the
-    /// slot-denominated windows that are calibrated to the 400ms baseline,
-    /// such as the reference price offset smoothing budget, across an IBRL
-    /// transition.
+    /// slot-denominated windows that are calibrated to the 400ms baseline
+    /// across an IBRL transition.
     pub slot_clock: SlotClock,
     /// PerpMarket status — threaded to the AMM's projection so the curve
     /// update can relax its k-down precondition when the market is

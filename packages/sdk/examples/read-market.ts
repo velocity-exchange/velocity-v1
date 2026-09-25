@@ -4,7 +4,6 @@
  */
 import { Connection, Keypair } from '@solana/web3.js';
 import {
-	BN,
 	BulkAccountLoader,
 	PerpMarkets,
 	PRICE_PRECISION,
@@ -56,9 +55,7 @@ async function main() {
 			perpMarket.amm,
 			perpMarket.marketStats,
 			mmOracle,
-			true,
-			new BN(slot),
-			client.getStateAccount()
+			true
 		);
 
 		console.log(

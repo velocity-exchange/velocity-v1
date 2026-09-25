@@ -624,12 +624,11 @@ impl PerpMarket {
         })
     }
 
-    /// PerpMarket-level oracle bookkeeping: refresh the oracle TWAPs,
-    /// cache the latest reference-price-offset (used by the next quote's
-    /// smoothing branch), and stamp `last_oracle_valid`. Called from the
-    /// `update_amms` keeper crank and the bid-ask-twap keeper ix. This is a
-    /// PerpMarket-side concern and mutates no AMM field. It does read the AMM,
-    /// for `reserve_price` and for the spread snapshot the offset comes from.
+    /// Refresh the oracle TWAPs and the AMM's cached quote state (spreads,
+    /// reference price offset, spread reserves) against the current curve,
+    /// mirror the offset into `MarketStats`, and stamp `last_oracle_valid`.
+    /// Leaves the peg and the base and quote reserves alone. Does nothing when
+    /// `oracle_validity` is None.
     ///
     /// A caller that then gates on a TWAP this call would move must not use
     /// this composed form. See [`Self::refresh_amm_quote_state`].
@@ -639,7 +638,6 @@ impl PerpMarket {
         oracle_validity: Option<crate::math::oracle::OracleValidity>,
         now: i64,
         clock_slot: u64,
-        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         let Some(oracle_validity) = oracle_validity else {
             return Ok(());
@@ -658,7 +656,6 @@ impl PerpMarket {
             oracle_validity,
             clock_slot,
             reserve_price_after,
-            slot_clock,
         )
     }
 
@@ -707,7 +704,6 @@ impl PerpMarket {
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
         oracle_validity: Option<crate::math::oracle::OracleValidity>,
         clock_slot: u64,
-        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         let Some(oracle_validity) = oracle_validity else {
             return Ok(());
@@ -719,7 +715,6 @@ impl PerpMarket {
             oracle_validity,
             clock_slot,
             reserve_price_after,
-            slot_clock,
         )
     }
 
@@ -729,12 +724,10 @@ impl PerpMarket {
         oracle_validity: crate::math::oracle::OracleValidity,
         clock_slot: u64,
         reserve_price: u64,
-        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         // Refresh the AMM's cached spread state (long/short spread, reference
         // offset, oracle-reserve spread pct, ask/bid reserves) in place, then
-        // mirror the fresh reference offset into market_stats so the next
-        // refresh can smooth-transition off it.
+        // mirror the fresh reference offset into market_stats for readers.
         let PerpMarket {
             amm, market_stats, ..
         } = self;
@@ -744,7 +737,6 @@ impl PerpMarket {
             mm_oracle_price_data,
             reserve_price,
             clock_slot,
-            slot_clock,
         )?;
         market_stats.last_reference_price_offset = amm.reference_price_offset;
 
@@ -1708,14 +1700,9 @@ pub struct MarketStats {
     /// Canonical sanitised/clamped oracle price — the latest oracle reading
     /// after normalisation (any quoter's view, not AMM-specific).
     pub last_oracle_normalised_price: i64,
-    /// Previous reference price offset, written by `_update_amm` after a
-    /// successful repeg/k_update. Read by `update_amm_quote_state` to
-    /// implement the legacy time-decayed reference-price-offset smoothing
-    /// transition — when the freshly computed offset's sign flips relative
-    /// to this cached value AND `curve_update_intensity > 100`, the
-    /// transition is clamped per-slot rather than snapping. Migrated from
-    /// `AMM.reference_price_offset` (which was deleted in the AMM-decoupling
-    /// refactor) so the smoothing behaviour is preserved across cranks.
+    /// The reference price offset from the most recent quote refresh, mirrored
+    /// from `AMM.reference_price_offset`. The quote math does not read it,
+    /// because the offset grows linearly with inventory and needs no smoothing.
     /// precision: PRICE_PRECISION
     pub last_reference_price_offset: i32,
     /// Whether the oracle was valid at the most recent `_update_amm`.

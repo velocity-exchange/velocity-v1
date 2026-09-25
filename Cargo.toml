@@ -5,6 +5,7 @@ members = [
 	"programs/pyth",
 	"programs/pyth-lazer",
 	"programs/token_faucet",
+	"programs/protocol-revenue-router",
 	"crates/velocity-macros",
   "crates/quoter-spec",
   "crates/quoter-spec-v2",
@@ -27,7 +28,16 @@ members = [
 # + clob.so fixtures) — excluded for the same host-tree isolation reasons.
 # `crates/quoter-emit-v2` is excluded rather than a member: it depends on the
 # anchor v2 fork unconditionally, and only the `anchor-v2` workspace builds it.
-exclude = ["rust", "fuzz", "anchor-v2", "integration-tests", "crates/quoter-emit-v2"]
+# `programs/protocol-revenue-router/svm-tests` loads the router `.so` under litesvm
+# and keeps its own lockfile, so it is excluded for the same reason.
+exclude = [
+  "rust",
+  "fuzz",
+  "anchor-v2",
+  "integration-tests",
+  "crates/quoter-emit-v2",
+  "programs/protocol-revenue-router/svm-tests",
+]
 resolver = "2"
 
 # Shared by the wire crates under `crates/`, which declare the same types for

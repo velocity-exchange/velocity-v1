@@ -23,6 +23,9 @@ cargo "+$tc" fmt --manifest-path rust/Cargo.toml --all -- $check
 cargo "+$tc" fmt --manifest-path anchor-v2/Cargo.toml --all -- $check
 cargo "+$tc" fmt --manifest-path integration-tests/Cargo.toml --all -- $check
 
+# The router's litesvm tests are a standalone workspace.
+cargo "+$tc" fmt --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml --all -- $check
+
 # Each fuzz/<crate>/ is its own standalone workspace.
 for m in fuzz/*/Cargo.toml; do
 	cargo "+$tc" fmt --manifest-path "$m" --all -- $check

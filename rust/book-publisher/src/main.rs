@@ -525,12 +525,16 @@ async fn publish_market(
     redis.set::<_, _, ()>(&key, l2_depth100.to_string()).await?;
     redis.publish::<_, _, ()>(&channel, l2.to_string()).await?;
 
+    // The ws manager sends the grouped key to a new subscriber before the first
+    // live tick, so each grouped channel also gets its snapshot key.
     for (group, document) in payload::grouped_payloads(&l2, perp_market.order_tick_size) {
+        let channel = format!("orderbook_perp_{market_index}_grouped_{group}");
+        let document = document.to_string();
         redis
-            .publish::<_, _, ()>(
-                format!("{prefix}orderbook_perp_{market_index}_grouped_{group}"),
-                document.to_string(),
-            )
+            .set::<_, _, ()>(format!("{prefix}last_update_{channel}"), &document)
+            .await?;
+        redis
+            .publish::<_, _, ()>(format!("{prefix}{channel}"), document)
             .await?;
     }
 

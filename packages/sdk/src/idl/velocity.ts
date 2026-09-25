@@ -25887,14 +25887,9 @@ export type Velocity = {
           {
             "name": "lastReferencePriceOffset",
             "docs": [
-              "Previous reference price offset, written by `_update_amm` after a",
-              "successful repeg/k_update. Read by `update_amm_quote_state` to",
-              "implement the legacy time-decayed reference-price-offset smoothing",
-              "transition — when the freshly computed offset's sign flips relative",
-              "to this cached value AND `curve_update_intensity > 100`, the",
-              "transition is clamped per-slot rather than snapping. Migrated from",
-              "`AMM.reference_price_offset` (which was deleted in the AMM-decoupling",
-              "refactor) so the smoothing behaviour is preserved across cranks.",
+              "The reference price offset from the most recent quote refresh, mirrored",
+              "from `AMM.reference_price_offset`. The quote math does not read it,",
+              "because the offset grows linearly with inventory and needs no smoothing.",
               "precision: PRICE_PRECISION"
             ],
             "type": "i32"

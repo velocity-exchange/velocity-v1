@@ -75,8 +75,7 @@ describe('perp entry price walk', () => {
 			PositionDirection.LONG,
 			marketAtThree(),
 			mmOraclePriceData,
-			dustBook(),
-			0
+			dustBook()
 		);
 	}
 

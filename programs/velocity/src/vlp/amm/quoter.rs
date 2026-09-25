@@ -220,46 +220,24 @@ impl<'a> AmmQuoter<'a> {
             ErrorCode::AmmQuoterMissingMmOracle
         })?;
 
-        // The curve projection is slot-idempotent. A `last_update_slot` at this
-        // slot means an earlier refresh or the keeper crank already projected
-        // the AMM against this slot's oracle. `project_post_refresh_scalar` is
-        // the expensive part, so it is skipped. Later fills in the same slot
-        // move reserves along the curve without another oracle-driven refresh.
-        let projection_current = self.amm.last_update_slot >= ctx.slot;
-        if !projection_current {
-            // Read the PerpMarket-level scalars the projection needs from the
-            // context. The orchestrator fills them once when it builds the
-            // context. The AMM never reads PerpMarket itself.
-            let projection_inputs = crate::vlp::amm::math::repeg::ProjectionInputs {
-                market_status: ctx.market_status,
-                market_config: ctx.market_config,
-                min_order_size: ctx.stats.min_order_size,
-            };
-            let projection = crate::vlp::amm::math::repeg::project_post_refresh_scalar(
-                self.amm,
-                &projection_inputs,
-                mm_oracle,
-                ctx.oracle_validity,
-            )?;
-
-            projection.apply_to(self.amm)?;
-            // Same gates as `snap_to_oracle`: set `last_update_slot` when the oracle is fresh enough for
-            // low-risk fills and the affordability floor accepts the update. The gate reads
-            // `rejected_due_to_affordability`, not `cost > 0`: a rejected refresh returns `cost == 0`
-            // with peg and reserves unchanged, which `cost > 0` misses, wrongly marking the curve fresh.
-            if let Some(validity) = ctx.oracle_validity {
-                if crate::math::oracle::is_oracle_valid_for_action(
-                    validity,
-                    Some(crate::math::oracle::VelocityAction::FillOrderAmmLowRisk),
-                )? && !projection.rejected_due_to_affordability
-                {
-                    self.amm.last_update_slot = ctx.slot;
-                }
-            }
-        }
+        // Read the PerpMarket-level scalars the projection needs from the
+        // context. The orchestrator fills them once when it builds the
+        // context. The AMM never reads PerpMarket itself.
+        let projection_inputs = crate::vlp::amm::math::repeg::ProjectionInputs {
+            market_status: ctx.market_status,
+            market_config: ctx.market_config,
+            min_order_size: ctx.stats.min_order_size,
+        };
+        crate::vlp::amm::refresh::project_and_apply(
+            self.amm,
+            &projection_inputs,
+            mm_oracle,
+            ctx.oracle_validity,
+            ctx.slot,
+        )?;
 
         // Refresh the cached spread state against the projected AMM. It runs
-        // after the block above so the cached ask and bid reserves match the
+        // after the projection so the cached ask and bid reserves match the
         // projected curve. Every quote and fill read in this match then sees
         // the one cached value.
         let reserve_price = self.amm.reserve_price()?;
@@ -269,7 +247,6 @@ impl<'a> AmmQuoter<'a> {
             mm_oracle,
             reserve_price,
             ctx.slot,
-            ctx.slot_clock,
         )?;
 
         Ok(())
@@ -608,14 +585,13 @@ impl<'a> AmmQuoter<'a> {
         let quote_asset_reserve_before = self.amm.quote_asset_reserve;
         let sqrt_k_before = self.amm.sqrt_k;
 
+        // Values above 100 only size the reference price offset, so the k
+        // step is capped at its full-intensity bound, as repeg caps it.
+        let k_update_intensity = self.amm.curve_update_intensity.min(100) as i128;
         let k_pct_upper_bound = crate::math::constants::K_BPS_UPDATE_SCALE
-            + crate::math::constants::MAX_K_BPS_INCREASE
-                * (self.amm.curve_update_intensity as i128)
-                / 100;
+            + crate::math::constants::MAX_K_BPS_INCREASE * k_update_intensity / 100;
         let k_pct_lower_bound = crate::math::constants::K_BPS_UPDATE_SCALE
-            - crate::math::constants::MAX_K_BPS_INCREASE
-                * (self.amm.curve_update_intensity as i128)
-                / 100;
+            - crate::math::constants::MAX_K_BPS_INCREASE * k_update_intensity / 100;
 
         let (k_scale_numerator, k_scale_denominator) =
             crate::vlp::amm::math::cp_curve::calculate_budgeted_k_scale(
@@ -1005,6 +981,73 @@ mod amm_maker_tests {
         // would have overflowed. Note: total_mm_fee / record_amm_pnl never
         // run because we error on the first safe_add.
         assert_eq!(amm.total_fee, i128::MAX - 10);
+    }
+}
+
+#[cfg(test)]
+mod funding_k_step_tests {
+    use {
+        super::*,
+        crate::{
+            math::constants::{
+                AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION,
+                QUOTE_PRECISION_I128,
+            },
+            state::market_status::MarketStatus,
+            vlp::amm::AMM,
+        },
+    };
+
+    /// sqrt_k after a funding period whose revenue is large enough that the
+    /// k increase is limited by the per-update bound, not by the budget.
+    fn sqrt_k_after_funding(curve_update_intensity: u8) -> u128 {
+        let mut amm = AMM {
+            base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            terminal_quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            sqrt_k: 100 * AMM_RESERVE_PRECISION,
+            peg_multiplier: 100 * PEG_PRECISION,
+            min_base_asset_reserve: 50 * AMM_RESERVE_PRECISION,
+            max_base_asset_reserve: 200 * AMM_RESERVE_PRECISION,
+            concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+            base_spread: 1000,
+            curve_update_intensity,
+            total_fee_minus_distributions: 1_000_000 * QUOTE_PRECISION_I128,
+            ..AMM::default()
+        };
+        let oracle = OraclePriceData {
+            price: 100 * PEG_PRECISION as i64,
+            ..OraclePriceData::default()
+        };
+        // negative imbalance cost is period revenue; tight spreads hand half
+        // of it back as a k increase
+        AmmQuoter::for_amm(&mut amm)
+            .handle_funding_applied(
+                -1_000_000 * QUOTE_PRECISION_I128,
+                &oracle,
+                0,
+                0,
+                MarketStatus::Active,
+                1,
+                0,
+                0,
+            )
+            .unwrap();
+        amm.sqrt_k
+    }
+
+    #[test]
+    fn k_step_bound_stops_at_full_intensity() {
+        let start = 100 * AMM_RESERVE_PRECISION;
+        let full = sqrt_k_after_funding(100);
+        assert!(full > start);
+        // intensities above 100 only size the reference price offset; they must
+        // not enlarge the k step past its full-intensity bound
+        assert_eq!(sqrt_k_after_funding(120), full);
+        assert_eq!(sqrt_k_after_funding(200), full);
+        // below 100 the bound scales down with intensity
+        let half = sqrt_k_after_funding(50);
+        assert!(half > start && half < full);
     }
 }
 

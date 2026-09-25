@@ -42,6 +42,7 @@
 	"dependencies": {
 		"@clack/prompts": "0.11.0",
 		"@coral-xyz/anchor": "0.32.1",
+		"@velocity-exchange/revenue-router-sdk": "workspace:*",
 		"@velocity-exchange/sdk": "workspace:*",
 		"@solana/web3.js": "1.99.0",
 		"@sqds/multisig": "2.1.3",

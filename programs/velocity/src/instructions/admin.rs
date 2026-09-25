@@ -3725,7 +3725,6 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
             validity,
             clock.unix_timestamp,
             clock.slot,
-            state.slot_clock(),
         )?;
     }
 

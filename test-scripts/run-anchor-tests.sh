@@ -213,6 +213,7 @@ test_files=(
   # builderCodes.ts
   decodeUser.ts
   admin.ts
+  bidAskTwapCrank.ts
   accountExtension.ts
   equityFloorSwap.ts
   assetTier.ts

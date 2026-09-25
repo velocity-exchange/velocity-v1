@@ -134,13 +134,7 @@ pub fn update_amms(
         let validity =
             compute_amm_refresh_validity(market, &mm_oracle_price_data, state, clock_slot)?;
         snap_to_oracle(market, &mm_oracle_price_data, validity, clock_slot, now)?;
-        market.update_oracle_derived_stats(
-            &mm_oracle_price_data,
-            validity,
-            now,
-            clock_slot,
-            state.slot_clock(),
-        )?;
+        market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
     }
 
     Ok(updated)
@@ -176,7 +170,6 @@ pub fn update_amm(
         validity,
         clock.unix_timestamp,
         clock.slot,
-        state.slot_clock(),
     )?;
 
     Ok(outcome)
@@ -197,13 +190,7 @@ pub fn _update_amm(
 ) -> VelocityResult<i128> {
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state, clock_slot)?;
     let outcome: i128 = snap_to_oracle(market, mm_oracle_price_data, validity, clock_slot, now)?;
-    market.update_oracle_derived_stats(
-        mm_oracle_price_data,
-        validity,
-        now,
-        clock_slot,
-        SlotClock::baseline(),
-    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
     Ok(outcome)
 }
 
@@ -325,6 +312,64 @@ pub fn snap_to_oracle(
     Ok(projection.cost)
 }
 
+/// Project the AMM onto this slot's oracle and apply it in place, without an
+/// `AmmCurveChanged` event. It sets `last_update_slot` under the same gates as
+/// [`snap_to_oracle`].
+///
+/// The projection is slot-idempotent. A `last_update_slot` at this slot means
+/// an earlier refresh or the keeper crank already projected the AMM against
+/// this slot's oracle, so the expensive projection is skipped. Later fills in
+/// the same slot move reserves along the curve without another projection.
+pub fn project_and_apply(
+    amm: &mut crate::vlp::amm::AMM,
+    inputs: &repeg::ProjectionInputs,
+    mm_oracle_price_data: &MMOraclePriceData,
+    oracle_validity: Option<OracleValidity>,
+    slot: u64,
+) -> VelocityResult<()> {
+    if amm.last_update_slot >= slot {
+        return Ok(());
+    }
+
+    let projection =
+        repeg::project_post_refresh_scalar(amm, inputs, mm_oracle_price_data, oracle_validity)?;
+    projection.apply_to(amm)?;
+
+    // The gate reads `rejected_due_to_affordability`, not `cost > 0`. A
+    // rejected refresh returns `cost == 0` with peg and reserves unchanged, and
+    // `cost > 0` would then mark the curve fresh.
+    if let Some(validity) = oracle_validity {
+        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))?
+            && !projection.rejected_due_to_affordability
+        {
+            amm.last_update_slot = slot;
+        }
+    }
+
+    Ok(())
+}
+
+/// Project the curve onto this slot's oracle, then refresh the oracle TWAPs and
+/// quote state against it. `update_perp_bid_ask_twap` runs this before
+/// sampling the quote into the mark TWAP.
+pub fn refresh_for_mark_sample(
+    market: &mut PerpMarket,
+    mm_oracle_price_data: &MMOraclePriceData,
+    oracle_validity: Option<OracleValidity>,
+    now: i64,
+    slot: u64,
+) -> VelocityResult<()> {
+    let projection_inputs = repeg::ProjectionInputs::from_market(market);
+    project_and_apply(
+        &mut market.amm,
+        &projection_inputs,
+        mm_oracle_price_data,
+        oracle_validity,
+        slot,
+    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, oracle_validity, now, slot)
+}
+
 pub fn update_amm_and_check_validity(
     market: &mut PerpMarket,
     mm_oracle_price_data: &MMOraclePriceData,
@@ -333,17 +378,11 @@ pub fn update_amm_and_check_validity(
     clock_slot: u64,
     action: Option<VelocityAction>,
 ) -> VelocityResult {
-    // PerpMarket-stats refresh + one-hour-EMA validity gate against the
-    // requested action. AMM mutation happens later in the liquidation
-    // fill flow via `Quoter::setup` — not here.
+    // Oracle TWAPs and quote state refresh, then the one-hour-EMA validity
+    // gate against the requested action. The curve is projected later, in
+    // `Quoter::setup`.
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state, clock_slot)?;
-    market.update_oracle_derived_stats(
-        mm_oracle_price_data,
-        validity,
-        now,
-        clock_slot,
-        state.slot_clock(),
-    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
 
     // 1 hour EMA
     let risk_ema_price = market

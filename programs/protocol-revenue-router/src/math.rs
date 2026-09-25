@@ -3,7 +3,9 @@
 use crate::state::{Tier, BPS_DENOMINATOR};
 
 /// Cumulative pool entitlement of the ladder at gross `x`, summed slice by slice.
-pub fn pool_entitlement(tiers: &[Tier], x: u128) -> u128 {
+/// Widened to u128 only because `slice * pool_bps` can overflow u64.
+pub fn pool_entitlement(tiers: &[Tier], x: u64) -> u64 {
+    let x = x as u128;
     let mut acc = 0u128;
     for (i, tier) in tiers.iter().enumerate() {
         let lo = tier.threshold as u128;
@@ -17,19 +19,21 @@ pub fn pool_entitlement(tiers: &[Tier], x: u128) -> u128 {
         let slice = x.min(hi) - lo;
         acc += slice * tier.pool_bps as u128 / BPS_DENOMINATOR;
     }
-    acc
+    // Every slice is scaled by at most BPS_DENOMINATOR, so the sum never exceeds x.
+    acc as u64
 }
 
 /// Pool share of `incoming` when `period_fees` has already been distributed today.
-pub fn pool_share(tiers: &[Tier], period_fees: u128, incoming: u128) -> u128 {
-    pool_entitlement(tiers, period_fees + incoming) - pool_entitlement(tiers, period_fees)
+pub fn pool_share(tiers: &[Tier], period_fees: u64, incoming: u64) -> u64 {
+    pool_entitlement(tiers, period_fees.saturating_add(incoming))
+        - pool_entitlement(tiers, period_fees)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const USDT: u128 = 1_000_000;
+    const USDT: u64 = 1_000_000;
 
     fn tier(threshold: u64, pool_bps: u16) -> Tier {
         Tier {
@@ -74,5 +78,10 @@ mod tests {
     fn zero_gross_entitles_nothing() {
         assert_eq!(pool_entitlement(&ladder(), 0), 0);
         assert_eq!(pool_share(&ladder(), 0, 0), 0);
+    }
+
+    #[test]
+    fn a_full_u64_slice_does_not_overflow() {
+        assert_eq!(pool_entitlement(&[tier(0, 10_000)], u64::MAX), u64::MAX);
     }
 }

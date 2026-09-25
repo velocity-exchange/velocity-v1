@@ -461,6 +461,15 @@ export type ProtocolRevenueRouter = {
 					};
 				},
 				{
+					name: 'admin';
+				},
+				{
+					name: 'cranker';
+				},
+				{
+					name: 'treasury';
+				},
+				{
 					name: 'payer';
 					writable: true;
 					signer: true;
@@ -472,18 +481,6 @@ export type ProtocolRevenueRouter = {
 			];
 			args: [
 				{
-					name: 'admin';
-					type: 'pubkey';
-				},
-				{
-					name: 'cranker';
-					type: 'pubkey';
-				},
-				{
-					name: 'treasury';
-					type: 'pubkey';
-				},
-				{
 					name: 'tiers';
 					type: {
 						vec: {
@@ -496,8 +493,8 @@ export type ProtocolRevenueRouter = {
 			];
 		},
 		{
-			name: 'setAdmin';
-			discriminator: [251, 163, 0, 52, 91, 194, 187, 92];
+			name: 'updateConfig';
+			discriminator: [29, 158, 252, 191, 10, 83, 219, 99];
 			accounts: [
 				{
 					name: 'config';
@@ -533,143 +530,12 @@ export type ProtocolRevenueRouter = {
 			];
 			args: [
 				{
-					name: 'newAdmin';
-					type: 'pubkey';
-				},
-			];
-		},
-		{
-			name: 'setCranker';
-			discriminator: [175, 5, 111, 78, 71, 59, 188, 129];
-			accounts: [
-				{
-					name: 'config';
-					writable: true;
-					pda: {
-						seeds: [
-							{
-								kind: 'const';
-								value: [
-									114,
-									111,
-									117,
-									116,
-									101,
-									114,
-									95,
-									99,
-									111,
-									110,
-									102,
-									105,
-									103,
-								];
-							},
-						];
-					};
-				},
-				{
-					name: 'admin';
-					signer: true;
-					relations: ['config'];
-				},
-			];
-			args: [
-				{
-					name: 'newCranker';
-					type: 'pubkey';
-				},
-			];
-		},
-		{
-			name: 'setTiers';
-			discriminator: [170, 131, 109, 175, 156, 214, 177, 121];
-			accounts: [
-				{
-					name: 'config';
-					writable: true;
-					pda: {
-						seeds: [
-							{
-								kind: 'const';
-								value: [
-									114,
-									111,
-									117,
-									116,
-									101,
-									114,
-									95,
-									99,
-									111,
-									110,
-									102,
-									105,
-									103,
-								];
-							},
-						];
-					};
-				},
-				{
-					name: 'admin';
-					signer: true;
-					relations: ['config'];
-				},
-			];
-			args: [
-				{
-					name: 'tiers';
+					name: 'args';
 					type: {
-						vec: {
-							defined: {
-								name: 'tier';
-							};
+						defined: {
+							name: 'updateConfigArgs';
 						};
 					};
-				},
-			];
-		},
-		{
-			name: 'setTreasury';
-			discriminator: [57, 97, 196, 95, 195, 206, 106, 136];
-			accounts: [
-				{
-					name: 'config';
-					writable: true;
-					pda: {
-						seeds: [
-							{
-								kind: 'const';
-								value: [
-									114,
-									111,
-									117,
-									116,
-									101,
-									114,
-									95,
-									99,
-									111,
-									110,
-									102,
-									105,
-									103,
-								];
-							},
-						];
-					};
-				},
-				{
-					name: 'admin';
-					signer: true;
-					relations: ['config'];
-				},
-			];
-			args: [
-				{
-					name: 'newTreasury';
-					type: 'pubkey';
 				},
 			];
 		},
@@ -835,6 +701,10 @@ export type ProtocolRevenueRouter = {
 						type: 'pubkey';
 					},
 					{
+						name: 'routerConfig';
+						type: 'pubkey';
+					},
+					{
 						name: 'cumulativeProtocolFees';
 						type: 'u64';
 					},
@@ -853,7 +723,7 @@ export type ProtocolRevenueRouter = {
 					{
 						name: 'reserved';
 						type: {
-							array: ['u8', 128];
+							array: ['u8', 96];
 						};
 					},
 				];
@@ -906,11 +776,11 @@ export type ProtocolRevenueRouter = {
 					},
 					{
 						name: 'periodFeesAfter';
-						type: 'u128';
+						type: 'u64';
 					},
 					{
 						name: 'lifetimeFeesAfter';
-						type: 'u128';
+						type: 'u64';
 					},
 				];
 			};
@@ -963,19 +833,19 @@ export type ProtocolRevenueRouter = {
 					},
 					{
 						name: 'periodFees';
-						type: 'u128';
+						type: 'u64';
 					},
 					{
 						name: 'lifetimeFees';
-						type: 'u128';
+						type: 'u64';
 					},
 					{
 						name: 'lifetimeToPool';
-						type: 'u128';
+						type: 'u64';
 					},
 					{
 						name: 'lifetimeToTreasury';
-						type: 'u128';
+						type: 'u64';
 					},
 					{
 						name: 'reserved';
@@ -1062,6 +932,47 @@ export type ProtocolRevenueRouter = {
 					{
 						name: 'poolBps';
 						type: 'u16';
+					},
+				];
+			};
+		},
+		{
+			name: 'updateConfigArgs';
+			docs: [
+				'Every field is optional: `None` keeps the stored value, `Some` replaces it.',
+			];
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'admin';
+						type: {
+							option: 'pubkey';
+						};
+					},
+					{
+						name: 'cranker';
+						type: {
+							option: 'pubkey';
+						};
+					},
+					{
+						name: 'treasury';
+						type: {
+							option: 'pubkey';
+						};
+					},
+					{
+						name: 'tiers';
+						type: {
+							option: {
+								vec: {
+									defined: {
+										name: 'tier';
+									};
+								};
+							};
+						};
 					},
 				];
 			};

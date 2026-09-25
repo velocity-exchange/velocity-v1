@@ -3,8 +3,7 @@ use {
         dfx_redemption,
         errors::RouterError,
         events::RouterInitialized,
-        instructions::set_treasury::validate_treasury,
-        state::{RouterConfig, Tier, ROUTER_CONFIG_SEED},
+        state::{RouterConfig, Tier, MAX_TIERS, ROUTER_CONFIG_SEED},
     },
     anchor_lang::prelude::*,
     anchor_spl::token::Mint,
@@ -25,6 +24,20 @@ pub struct Initialize<'info> {
     pub usdt_mint: Account<'info, Mint>,
     #[account(seeds = [b"config"], bump, seeds::program = dfx_redemption::ID)]
     pub redemption_config: Box<Account<'info, dfx_redemption::accounts::Config>>,
+    /// CHECK: only its key is stored
+    #[account(constraint = admin.key() != Pubkey::default() @ RouterError::InvalidAuthority)]
+    pub admin: UncheckedAccount<'info>,
+    /// CHECK: only its key is stored
+    #[account(constraint = cranker.key() != Pubkey::default() @ RouterError::InvalidAuthority)]
+    pub cranker: UncheckedAccount<'info>,
+    /// CHECK: only its key is stored; its ATA must not alias either distribute leg
+    #[account(
+        constraint = treasury.key() != Pubkey::default() @ RouterError::InvalidAuthority,
+        constraint = treasury.key() != config.key()
+            && treasury.key() != redemption_config.key()
+            @ RouterError::InvalidTreasury
+    )]
+    pub treasury: UncheckedAccount<'info>,
     // The singleton init is locked to a fixed key only on a real mainnet build,
     // so devnet/localnet and the test build can still initialize freely.
     #[cfg_attr(
@@ -39,36 +52,30 @@ pub struct Initialize<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn initialize(
-    ctx: Context<Initialize>,
-    admin: Pubkey,
-    cranker: Pubkey,
-    treasury: Pubkey,
-    tiers: Vec<Tier>,
-) -> Result<()> {
-    for key in [admin, cranker] {
-        require_keys_neq!(key, Pubkey::default(), RouterError::InvalidAuthority);
-    }
-    validate_treasury(&treasury, &ctx.accounts.config.key())?;
-
+pub fn initialize(ctx: Context<Initialize>, tiers: Vec<Tier>) -> Result<()> {
     let config = &mut ctx.accounts.config;
-    config.bump = ctx.bumps.config;
-    config.admin = admin;
-    config.cranker = cranker;
-    config.treasury = treasury;
-    config.usdt_mint = ctx.accounts.usdt_mint.key();
-    config.period_day = 0;
-    config.period_fees = 0;
-    config.lifetime_fees = 0;
-    config.lifetime_to_pool = 0;
-    config.lifetime_to_treasury = 0;
+    config.set_inner(RouterConfig {
+        bump: ctx.bumps.config,
+        admin: ctx.accounts.admin.key(),
+        cranker: ctx.accounts.cranker.key(),
+        usdt_mint: ctx.accounts.usdt_mint.key(),
+        treasury: ctx.accounts.treasury.key(),
+        tiers: [Tier::default(); MAX_TIERS],
+        tier_count: 0,
+        period_day: 0,
+        period_fees: 0,
+        lifetime_fees: 0,
+        lifetime_to_pool: 0,
+        lifetime_to_treasury: 0,
+        _reserved: [0u8; 128],
+    });
     config.set_tiers(&tiers)?;
 
     emit!(RouterInitialized {
         ts: Clock::get()?.unix_timestamp,
-        admin,
-        cranker,
-        treasury,
+        admin: config.admin,
+        cranker: config.cranker,
+        treasury: config.treasury,
         usdt_mint: config.usdt_mint,
         tier_count: config.tier_count,
     });

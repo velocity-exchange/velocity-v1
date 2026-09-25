@@ -3,11 +3,6 @@
 
 pub mod distribute;
 pub mod initialize;
-pub mod set_admin;
-pub mod set_cranker;
-pub mod set_tiers;
-pub mod set_treasury;
+pub mod update_config;
 
-pub use {
-    distribute::*, initialize::*, set_admin::*, set_cranker::*, set_tiers::*, set_treasury::*,
-};
+pub use {distribute::*, initialize::*, update_config::*};

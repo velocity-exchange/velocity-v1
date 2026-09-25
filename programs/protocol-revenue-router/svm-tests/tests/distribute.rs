@@ -17,6 +17,7 @@ use {
     },
     protocol_revenue_router::{
         accounts as router_accounts, dfx_redemption, instruction as router_args,
+        instructions::UpdateConfigArgs,
         state::{RouterConfig, Tier, ROUTER_CONFIG_SEED, SECONDS_PER_DAY},
         ID as ROUTER_ID,
     },
@@ -172,55 +173,56 @@ impl Env {
     }
 
     fn initialize_router(&mut self, tiers: Vec<Tier>) -> TxResult {
-        let usdt_mint = self.usdt_mint;
-        self.initialize_router_with_mint(tiers, usdt_mint)
+        let (usdt_mint, treasury) = (self.usdt_mint, self.treasury);
+        self.initialize_router_with(tiers, usdt_mint, treasury)
     }
 
-    fn initialize_router_with_mint(&mut self, tiers: Vec<Tier>, usdt_mint: Pubkey) -> TxResult {
+    fn initialize_router_with(
+        &mut self,
+        tiers: Vec<Tier>,
+        usdt_mint: Pubkey,
+        treasury: Pubkey,
+    ) -> TxResult {
         let accounts = router_accounts::Initialize {
             config: self.router_config,
             usdt_mint,
             redemption_config: self.redemption_config,
+            admin: self.admin.pubkey(),
+            cranker: self.cranker.pubkey(),
+            treasury,
             payer: self.payer.pubkey(),
             system_program: system_program::ID,
         };
-        let data = router_args::Initialize {
+        self.send(
+            &[ix(ROUTER_ID, accounts, router_args::Initialize { tiers })],
+            &[],
+        )
+    }
+
+    fn update_config(&mut self, args: UpdateConfigArgs) -> TxResult {
+        let accounts = router_accounts::UpdateConfig {
+            config: self.router_config,
             admin: self.admin.pubkey(),
-            cranker: self.cranker.pubkey(),
-            treasury: self.treasury,
-            tiers,
         };
-        self.send(&[ix(ROUTER_ID, accounts, data)], &[])
+        let admin = self.admin.insecure_clone();
+        self.send(
+            &[ix(ROUTER_ID, accounts, router_args::UpdateConfig { args })],
+            &[&admin],
+        )
     }
 
     fn set_tiers(&mut self, tiers: Vec<Tier>) -> TxResult {
-        let accounts = router_accounts::AdminUpdate {
-            config: self.router_config,
-            admin: self.admin.pubkey(),
-        };
-        let admin = self.admin.insecure_clone();
-        self.send(
-            &[ix(ROUTER_ID, accounts, router_args::SetTiers { tiers })],
-            &[&admin],
-        )
+        self.update_config(UpdateConfigArgs {
+            tiers: Some(tiers),
+            ..Default::default()
+        })
     }
 
     fn set_treasury(&mut self, treasury: Pubkey) -> TxResult {
-        let accounts = router_accounts::AdminUpdate {
-            config: self.router_config,
-            admin: self.admin.pubkey(),
-        };
-        let admin = self.admin.insecure_clone();
-        self.send(
-            &[ix(
-                ROUTER_ID,
-                accounts,
-                router_args::SetTreasury {
-                    new_treasury: treasury,
-                },
-            )],
-            &[&admin],
-        )
+        self.update_config(UpdateConfigArgs {
+            treasury: Some(treasury),
+            ..Default::default()
+        })
     }
 
     fn distribute(&mut self, cranker: &Keypair) -> TxResult {
@@ -368,11 +370,11 @@ fn distribute_clamps_the_pool_share_to_the_remaining_cap() {
     assert_eq!(env.balance(&env.router_ata), 0);
 
     let config = env.router_config();
-    assert_eq!(config.period_fees, (120_000 * USDT) as u128);
-    assert_eq!(config.lifetime_to_pool, TOTAL_EXPLOITED as u128);
+    assert_eq!(config.period_fees, 120_000 * USDT);
+    assert_eq!(config.lifetime_to_pool, TOTAL_EXPLOITED);
     assert_eq!(
         config.lifetime_to_treasury,
-        (120_000 * USDT - TOTAL_EXPLOITED) as u128
+        120_000 * USDT - TOTAL_EXPLOITED
     );
 }
 
@@ -437,7 +439,7 @@ fn the_cranker_may_also_be_the_payer() {
 }
 
 #[test]
-fn set_treasury_rejects_keys_whose_ata_would_alias_a_leg() {
+fn update_config_rejects_treasuries_whose_ata_would_alias_a_leg() {
     let mut env = setup();
 
     let router_config = env.router_config;
@@ -448,6 +450,39 @@ fn set_treasury_rejects_keys_whose_ata_would_alias_a_leg() {
     let fresh = Pubkey::new_unique();
     env.set_treasury(fresh).expect("set_treasury to a wallet");
     assert_eq!(env.router_config().treasury, fresh);
+}
+
+#[test]
+fn update_config_leaves_unset_fields_alone() {
+    let mut env = setup();
+    let new_cranker = Pubkey::new_unique();
+
+    env.update_config(UpdateConfigArgs {
+        cranker: Some(new_cranker),
+        ..Default::default()
+    })
+    .expect("update cranker only");
+
+    let config = env.router_config();
+    assert_eq!(config.cranker, new_cranker);
+    assert_eq!(config.admin, env.admin.pubkey());
+    assert_eq!(config.treasury, env.treasury);
+    assert_eq!(config.tier_count, 3);
+
+    let old_cranker = env.cranker.insecure_clone();
+    env.fund_router(10_000 * USDT);
+    assert_error(env.distribute(&old_cranker), "Unauthorized");
+}
+
+#[test]
+fn initialize_rejects_a_treasury_that_aliases_a_leg() {
+    let mut env = setup_without_router();
+
+    let (usdt_mint, redemption_config) = (env.usdt_mint, env.redemption_config);
+    assert_error(
+        env.initialize_router_with(ladder(), usdt_mint, redemption_config),
+        "InvalidTreasury",
+    );
 }
 
 #[test]
@@ -482,8 +517,9 @@ fn initialize_rejects_a_mint_other_than_the_redemption_mint() {
     let other_mint = Keypair::new();
     let authority = env.admin.pubkey();
     env.create_mint(&other_mint, &authority);
+    let treasury = env.treasury;
     assert_error(
-        env.initialize_router_with_mint(ladder(), other_mint.pubkey()),
+        env.initialize_router_with(ladder(), other_mint.pubkey(), treasury),
         "UsdtMintMismatch",
     );
 
@@ -516,7 +552,7 @@ fn distribute_leaves_cap_room_for_usdt_already_in_the_vault() {
     env.distribute(&cranker).expect("distribute");
 
     let to_pool = TOTAL_EXPLOITED - stray;
-    assert_eq!(env.router_config().lifetime_to_pool, to_pool as u128);
+    assert_eq!(env.router_config().lifetime_to_pool, to_pool);
     assert_eq!(env.treasury_balance(), 120_000 * USDT - to_pool);
     assert_eq!(env.balance(&env.redemption_vault), TOTAL_EXPLOITED);
     assert_eq!(env.balance(&env.router_ata), 0);

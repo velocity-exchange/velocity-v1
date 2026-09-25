@@ -3,7 +3,6 @@ use {
         dfx_redemption,
         errors::RouterError,
         events::FeesDistributed,
-        math::pool_share,
         state::{RouterConfig, ROUTER_CONFIG_SEED, SECONDS_PER_DAY},
     },
     anchor_lang::prelude::*,
@@ -18,11 +17,10 @@ pub struct Distribute<'info> {
     #[account(
         mut,
         seeds = [ROUTER_CONFIG_SEED],
-        bump = config.bump,
-        constraint = cranker.key() == config.cranker || cranker.key() == config.admin
-            @ RouterError::Unauthorized
+        bump = config.bump
     )]
     pub config: Box<Account<'info, RouterConfig>>,
+    #[account(address = config.cranker @ RouterError::Unauthorized)]
     pub cranker: Signer<'info>,
     #[account(address = config.usdt_mint)]
     pub usdt_mint: Box<Account<'info, Mint>>,
@@ -82,8 +80,7 @@ pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
         return Ok(());
     }
 
-    let config = &ctx.accounts.config;
-    let mut to_pool = pool_share(config.active_tiers(), config.period_fees, incoming as u128);
+    let mut to_pool = ctx.accounts.config.pool_share(incoming);
 
     // Count USDT already sitting unrecognised in the vault: `contribute` recognises
     // it first, so it eats cap room this contribution would otherwise use.
@@ -97,9 +94,7 @@ pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
         .total_exploited_amount
         .saturating_sub(rc.lifetime_recognized_backing)
         .saturating_sub(unrecognized);
-    to_pool = to_pool.min(cap_room as u128);
-
-    let to_pool = to_pool as u64;
+    to_pool = to_pool.min(cap_room);
     let to_treasury = incoming - to_pool;
 
     let bump = ctx.accounts.config.bump;
@@ -162,7 +157,7 @@ pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
     Ok(())
 }
 
-fn add(acc: u128, delta: u64) -> Result<u128> {
-    acc.checked_add(delta as u128)
+fn add(acc: u64, delta: u64) -> Result<u64> {
+    acc.checked_add(delta)
         .ok_or_else(|| error!(RouterError::ArithmeticOverflow))
 }

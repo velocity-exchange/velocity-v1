@@ -29,6 +29,6 @@ pub struct FeesDistributed {
     pub to_treasury: u64,
     pub cap_room_after: u64,
     pub period_day: i64,
-    pub period_fees_after: u128,
-    pub lifetime_fees_after: u128,
+    pub period_fees_after: u64,
+    pub lifetime_fees_after: u64,
 }

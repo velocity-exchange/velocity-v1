@@ -1,6 +1,9 @@
 //! The router's singleton config account and its tier ladder.
 
-use {crate::errors::RouterError, anchor_lang::prelude::*};
+use {
+    crate::{errors::RouterError, math},
+    anchor_lang::prelude::*,
+};
 
 pub const ROUTER_CONFIG_SEED: &[u8] = b"router_config";
 pub const MAX_TIERS: usize = 8;
@@ -28,16 +31,21 @@ pub struct RouterConfig {
     pub tiers: [Tier; MAX_TIERS],
     pub tier_count: u8,
     pub period_day: i64,
-    pub period_fees: u128,
-    pub lifetime_fees: u128,
-    pub lifetime_to_pool: u128,
-    pub lifetime_to_treasury: u128,
+    pub period_fees: u64,
+    pub lifetime_fees: u64,
+    pub lifetime_to_pool: u64,
+    pub lifetime_to_treasury: u64,
     pub _reserved: [u8; 128],
 }
 
 impl RouterConfig {
     pub fn active_tiers(&self) -> &[Tier] {
         &self.tiers[..self.tier_count as usize]
+    }
+
+    /// Pool share of `incoming` on top of what this period already distributed.
+    pub fn pool_share(&self, incoming: u64) -> u64 {
+        math::pool_share(self.active_tiers(), self.period_fees, incoming)
     }
 
     /// Validates and stores a ladder. Unused slots are zeroed so a shorter
@@ -119,6 +127,16 @@ mod tests {
         assert_eq!(config.tier_count, 3);
         assert_eq!(config.active_tiers().len(), 3);
         assert_eq!(config.tiers[3], Tier::default());
+    }
+
+    #[test]
+    fn pool_share_continues_the_period_ladder() {
+        let mut config = blank();
+        config
+            .set_tiers(&[tier(0, 6000), tier(30_000_000_000, 7000)])
+            .unwrap();
+        config.period_fees = 30_000_000_000;
+        assert_eq!(config.pool_share(10_000_000_000), 7_000_000_000);
     }
 
     #[test]

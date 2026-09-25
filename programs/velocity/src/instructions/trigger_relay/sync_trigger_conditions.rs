@@ -37,7 +37,7 @@
 use {
     crate::{
         error::ErrorCode,
-        instructions::{validate_market_coverage, MarketCoverage},
+        instructions::{refuse_duplicate_accounts, validate_market_coverage, MarketCoverage},
         state::{
             clob_crank::ClobCrankConditionsV0,
             oracle::OracleSource,
@@ -92,6 +92,9 @@ struct MarketInputs {
     /// has a registered layout. `None` leaves the order unstaged.
     watch: Option<OracleWatchV0>,
     keeper_payment_lamports: Option<u64>,
+    /// True when the market's `QuoterSlabV0` rode along, whether or not its
+    /// book quotes.
+    has_slab: bool,
     /// (quoter slab, book, program) when a vetted CLOB is attached.
     clob: Option<(Pubkey, Pubkey, Pubkey)>,
 }
@@ -235,6 +238,12 @@ impl TriggerInputs<'_> {
                 .filter(|(_, inputs)| inputs.keeper_payment_lamports.is_some())
                 .map(|(index, _)| *index)
                 .collect(),
+            perp_slabs: self
+                .markets
+                .iter()
+                .filter(|(_, inputs)| inputs.has_slab)
+                .map(|(index, _)| *index)
+                .collect(),
             oracles: self.oracle_infos.keys().copied().collect(),
         }
     }
@@ -245,6 +254,8 @@ impl TriggerInputs<'_> {
 fn collect_trigger_inputs<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
 ) -> Result<TriggerInputs<'info>> {
+    refuse_duplicate_accounts(remaining_accounts)?;
+
     let mut markets: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut market_oracles: BTreeMap<Pubkey, u16> = BTreeMap::new();
     let mut spot_oracles: BTreeMap<u16, Pubkey> = BTreeMap::new();
@@ -282,6 +293,7 @@ fn collect_trigger_inputs<'info>(
             }
             if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
                 let market = loader.load()?.market;
+                markets.entry(market).or_default().has_slab = true;
                 let slots = loader.slots()?;
                 // Stored after the markets, where the map parser never
                 // reaches. The liquidation pass stores the slab, its book and

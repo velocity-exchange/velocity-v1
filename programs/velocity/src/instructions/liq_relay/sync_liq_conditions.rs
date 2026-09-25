@@ -181,6 +181,8 @@ struct MarketInputs {
     /// What this market's conditions account pays. `None` when that account
     /// did not ride along.
     crank_payment: Option<CrankPayment>,
+    /// True when this market's `QuoterSlabV0` rode along.
+    has_slab: bool,
 }
 
 pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
@@ -297,6 +299,12 @@ impl SyncInputs {
                 .filter(|(_, inputs)| inputs.crank_payment.is_some())
                 .map(|(index, _)| *index)
                 .collect(),
+            perp_slabs: self
+                .perps
+                .iter()
+                .filter(|(_, inputs)| inputs.has_slab)
+                .map(|(index, _)| *index)
+                .collect(),
             oracles: self.oracles.clone(),
         }
     }
@@ -304,10 +312,13 @@ impl SyncInputs {
 
 /// Sort `remaining_accounts` by account type into market inputs and the
 /// reference lists. Anything that is not a market or a crank account is a
-/// candidate oracle.
+/// candidate oracle. [`validate_market_coverage`] later refuses a candidate
+/// that no passed market names.
 fn collect_sync_inputs<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
 ) -> Result<SyncInputs> {
+    refuse_duplicate_accounts(remaining_accounts)?;
+
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut spots: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut market_refs: Vec<AccountRefV0> = Vec::new();
@@ -353,7 +364,7 @@ fn collect_sync_inputs<'info>(
             // staged executor. Storing slabs after the markets, where the
             // parser never reaches, keeps them available to a staged resync.
             if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
-                let _ = loader.load()?;
+                perps.entry(loader.load()?.market).or_default().has_slab = true;
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 // The book and its program ride with the slab. The resolver
                 // reads the book to name the makers a liquidation fill settles
@@ -411,8 +422,14 @@ fn collect_sync_inputs<'info>(
 /// itself must be present. The quote market's default oracle needs no account.
 ///
 /// A market with a CLOB must also bring its crank conditions account, because
-/// the liveness poll reads what a liquidation crank pays from it. A market
-/// without a CLOB has neither that account nor a staged liquidation.
+/// the liveness poll reads what a liquidation crank pays from it. It must bring
+/// its quoter slab too. Without the slab the stored list names no book, so a
+/// staged liquidation cannot sweep the user's book orders and never fills. A
+/// market without a CLOB has none of these accounts.
+///
+/// Every oracle candidate must be the oracle of a passed market. `load_maps`
+/// stops at the first account it does not recognize, so an unrelated account
+/// in the oracle section cuts every market off the stored list.
 ///
 /// Returns the perp markets the user has exposure in, which the liveness poll
 /// is priced over.
@@ -423,6 +440,8 @@ pub fn validate_market_coverage(
     let oracle_present = |oracle: &Pubkey| -> bool {
         *oracle == Pubkey::default() || coverage.oracles.contains(oracle)
     };
+    coverage.refuse_unnamed_oracles()?;
+
     let user = crate::load!(user_loader)?;
     let mut exposed_perps: Vec<u16> = Vec::new();
     for position in user.perp_positions.iter() {
@@ -447,6 +466,12 @@ pub fn validate_market_coverage(
             !coverage.perp_books.contains(&index) || coverage.perp_cranks.contains(&index),
             ErrorCode::InvalidUserConditionsSync,
             "sync is missing the crank conditions account for perp market {}",
+            index
+        )?;
+        validate!(
+            !coverage.perp_books.contains(&index) || coverage.perp_slabs.contains(&index),
+            ErrorCode::InvalidUserConditionsSync,
+            "sync is missing the quoter slab for perp market {}",
             index
         )?;
 
@@ -488,8 +513,48 @@ pub struct MarketCoverage {
     pub perp_books: BTreeSet<u16>,
     /// Perp markets whose crank conditions account rode along.
     pub perp_cranks: BTreeSet<u16>,
+    /// Perp markets whose quoter slab rode along.
+    pub perp_slabs: BTreeSet<u16>,
     /// Oracle accounts the call carried.
     pub oracles: BTreeSet<Pubkey>,
+}
+
+impl MarketCoverage {
+    /// Refuse an oracle candidate that no passed market names.
+    fn refuse_unnamed_oracles(&self) -> Result<()> {
+        let named: BTreeSet<&Pubkey> = self
+            .perp_oracles
+            .values()
+            .chain(self.spot_oracles.values())
+            .collect();
+
+        match self.oracles.iter().find(|oracle| !named.contains(oracle)) {
+            Some(unnamed) => {
+                msg!(
+                    "sync account {} is not a market, a crank account or a market's oracle",
+                    unnamed
+                );
+                Err(ErrorCode::InvalidUserConditionsSync.into())
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+/// Refuse an account passed twice. A second copy of a market makes
+/// `load_maps` fail over the stored list, so no staged executor could load it.
+pub fn refuse_duplicate_accounts(remaining_accounts: &[AccountInfo]) -> Result<()> {
+    let mut seen: BTreeSet<&Pubkey> = BTreeSet::new();
+    match remaining_accounts
+        .iter()
+        .find(|info| !seen.insert(info.key))
+    {
+        Some(duplicate) => {
+            msg!("sync account {} is passed twice", duplicate.key);
+            Err(ErrorCode::InvalidUserConditionsSync.into())
+        }
+        None => Ok(()),
+    }
 }
 
 /// The account list staged executors reuse, in `load_maps` order.
@@ -637,4 +702,97 @@ pub fn validate_sync_args(args: &SyncLiqConditionsArgs) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::{refuse_duplicate_accounts, validate_market_coverage, MarketCoverage},
+        crate::{
+            create_anchor_account_info,
+            state::user::{PerpPosition, User},
+        },
+        anchor_lang::prelude::{AccountInfo, AccountLoader, Pubkey},
+        std::collections::{BTreeMap, BTreeSet},
+    };
+
+    const ORACLE: Pubkey = Pubkey::new_from_array([7; 32]);
+
+    /// A user long on perp market 0, and the coverage of a call that carried
+    /// that market, its oracle, its crank account and its slab.
+    fn full_coverage() -> MarketCoverage {
+        MarketCoverage {
+            perp_oracles: BTreeMap::from([(0, ORACLE)]),
+            spot_oracles: BTreeMap::new(),
+            perp_books: BTreeSet::from([0]),
+            perp_cranks: BTreeSet::from([0]),
+            perp_slabs: BTreeSet::from([0]),
+            oracles: BTreeSet::from([ORACLE]),
+        }
+    }
+
+    fn check(coverage: &MarketCoverage) -> bool {
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            base_asset_amount: 1,
+            ..PerpPosition::default()
+        };
+
+        create_anchor_account_info!(user, User, user_account_info);
+        let user_loader = AccountLoader::<User>::try_from(&user_account_info).unwrap();
+        validate_market_coverage(&user_loader, coverage).is_ok()
+    }
+
+    #[test]
+    fn a_full_call_is_accepted() {
+        assert!(check(&full_coverage()));
+    }
+
+    /// The System Program sorts first among the oracles, and `load_maps`
+    /// stops there, so an account no market names must be refused.
+    #[test]
+    fn an_account_no_market_names_is_refused() {
+        let mut coverage = full_coverage();
+        coverage.oracles.insert(Pubkey::default());
+        assert!(!check(&coverage));
+    }
+
+    /// Without the slab the stored list names no book, and a staged
+    /// liquidation can never sweep the user's book orders.
+    #[test]
+    fn a_clob_market_without_its_slab_is_refused() {
+        let mut coverage = full_coverage();
+        coverage.perp_slabs.clear();
+        assert!(!check(&coverage));
+    }
+
+    #[test]
+    fn an_account_passed_twice_is_refused() {
+        let key = Pubkey::new_unique();
+        let owner = Pubkey::default();
+        let (mut first_lamports, mut second_lamports) = (0, 0);
+        let (mut first_data, mut second_data) = (vec![], vec![]);
+        let first = AccountInfo::new(
+            &key,
+            false,
+            false,
+            &mut first_lamports,
+            &mut first_data,
+            &owner,
+            false,
+        );
+        let second = AccountInfo::new(
+            &key,
+            false,
+            false,
+            &mut second_lamports,
+            &mut second_data,
+            &owner,
+            false,
+        );
+
+        assert!(refuse_duplicate_accounts(std::slice::from_ref(&first)).is_ok());
+        assert!(refuse_duplicate_accounts(&[first, second]).is_err());
+    }
 }

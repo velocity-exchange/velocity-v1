@@ -277,11 +277,15 @@ async function main() {
 		],
 	});
 	const marketOracles = new Map<number, PublicKey>();
+	const clobMarkets = new Set<number>();
 	for (const { account } of perpMarkets) {
 		// Decode through the IDL rather than by byte offset. Layouts move, and
 		// a migration that reads the wrong field is worse than one that fails.
 		const decoded: any = program.coder.accounts.decode('perpMarket', account.data);
 		marketOracles.set(decoded.marketIndex, decoded.oracle);
+		if (!decoded.clobMarket.equals(PublicKey.default)) {
+			clobMarkets.add(decoded.marketIndex);
+		}
 	}
 
 	console.log('');
@@ -309,12 +313,23 @@ async function main() {
 		if (marketIndexes.length === 0) continue;
 		const userConditions = getUserConditionsPublicKey(velocity, user);
 		const existing = await connection.getAccountInfo(userConditions);
-		const syncAccounts: AccountMeta[] = [];
+		// The sync refuses an account passed twice, so markets that share an
+		// oracle pass it once.
+		const oracles = new Map<string, PublicKey>();
 		for (const marketIndex of marketIndexes) {
 			const oracle = marketOracles.get(marketIndex);
-			if (!oracle) continue;
-			syncAccounts.push({ pubkey: oracle, isSigner: false, isWritable: false });
+			if (oracle) oracles.set(oracle.toBase58(), oracle);
 		}
+
+		const syncAccounts: AccountMeta[] = [...oracles.values()].map((oracle) => ({
+			pubkey: oracle,
+			isSigner: false,
+			isWritable: false,
+		}));
+		// The sync refuses an account it cannot classify, and a market with no
+		// CLOB has no crank conditions account. A market with a CLOB must bring
+		// its quoter slab.
+		const bookMarkets = marketIndexes.filter((marketIndex) => clobMarkets.has(marketIndex));
 
 		syncAccounts.push(
 			{
@@ -327,8 +342,13 @@ async function main() {
 				isSigner: false,
 				isWritable: true,
 			})),
-			...marketIndexes.map((marketIndex) => ({
+			...bookMarkets.map((marketIndex) => ({
 				pubkey: getClobCrankConditionsPublicKey(velocity, marketIndex),
+				isSigner: false,
+				isWritable: false,
+			})),
+			...bookMarkets.map((marketIndex) => ({
+				pubkey: getQuoterSlabPublicKey(velocity, marketIndex),
 				isSigner: false,
 				isWritable: false,
 			}))

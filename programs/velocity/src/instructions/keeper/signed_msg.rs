@@ -588,8 +588,14 @@ struct AdmittedMessage {
 
 /// The entry must be able to take now or rest on the book. A post-only order
 /// cannot take, and a trigger order needs a `User.orders` slot that the entry
-/// never gets.
+/// never gets. A market entry must name its worst price, because an unnamed
+/// price derives from the oracle at a landing slot the keeper chooses.
 fn validate_entry_order_type(params: &OrderParams) -> Result<()> {
+    if params.order_type == OrderType::Market && params.price == 0 {
+        msg!("a signed-message market entry must name its worst price");
+        return Err(print_error!(ErrorCode::InvalidOrderLimitPrice)().into());
+    }
+
     if params.post_only != crate::state::order_params::PostOnlyParam::None {
         msg!("a signed-message entry cannot be post-only");
         return Err(print_error!(ErrorCode::InvalidOrderPostOnly)().into());

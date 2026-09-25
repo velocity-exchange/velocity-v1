@@ -84,9 +84,7 @@ export class SwiftTaker {
 					tradeSize,
 					perpMarketAccount.orderStepSize
 				),
-				auctionStartPrice: isVariant(direction, 'long') ? lowPrice : highPrice,
-				auctionEndPrice: isVariant(direction, 'long') ? highPrice : lowPrice,
-				auctionDuration: 50,
+				price: isVariant(direction, 'long') ? highPrice : lowPrice,
 			});
 
 			const orderMessage = {

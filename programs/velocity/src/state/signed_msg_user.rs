@@ -45,9 +45,9 @@ pub const SIGNED_MSG_WS_PDA_SEED: &str = "SIGNED_MSG_WS";
 /// Grace past `max_slot` before a signed-message order id can be pruned. The
 /// read site converts it to actual slots.
 pub const SIGNED_MSG_EVICTION_BUFFER: Millis = Millis::from_ms(4_000);
-/// How long a keeper may take to land a signed message. The order's worst
-/// price was measured against the oracle at signing, so a message that lands
-/// later than this no longer describes the market the signer agreed to.
+/// How long a keeper may take to land a signed message. The signer chose the
+/// entry's worst price, or its oracle offset, against the market at signing,
+/// so a message that lands later no longer describes the market it priced.
 pub const SIGNED_MSG_FILL_WINDOW: Millis = Millis::from_ms(30_000);
 
 /// The last slot a keeper may place a signed message at. A resting limit's

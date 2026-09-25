@@ -49,11 +49,25 @@ fn an_entry_that_can_take_is_admitted() {
     for order_type in [OrderType::Market, OrderType::Limit, OrderType::Oracle] {
         let params = OrderParams {
             order_type,
+            price: 100,
             ..OrderParams::default()
         };
 
         assert!(validate_entry_order_type(&params).is_ok());
     }
+}
+
+/// An unnamed price would derive from the oracle at the slot the keeper
+/// lands the message, so the signer would have signed no bound.
+#[test]
+fn a_market_entry_without_a_worst_price_is_refused() {
+    let params = OrderParams {
+        order_type: OrderType::Market,
+        price: 0,
+        ..OrderParams::default()
+    };
+
+    assert!(validate_entry_order_type(&params).is_err());
 }
 
 #[test]

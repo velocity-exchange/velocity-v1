@@ -4,6 +4,7 @@
  */
 
 import { assert } from 'chai';
+import { BN } from '../../src/isomorphic/anchor';
 import { signedMsgEntryOrderRefusal } from '../../src/math/orders';
 import { OrderType, PostOnlyParams } from '../../src/types';
 
@@ -15,9 +16,23 @@ describe('signedMsgEntryOrderRefusal', () => {
 			OrderType.ORACLE,
 		]) {
 			assert.isUndefined(
-				signedMsgEntryOrderRefusal({ orderType, postOnly: PostOnlyParams.NONE })
+				signedMsgEntryOrderRefusal({
+					orderType,
+					postOnly: PostOnlyParams.NONE,
+					price: new BN(100),
+				})
 			);
 		}
+	});
+
+	it('refuses a market entry without a worst price', () => {
+		assert.isString(
+			signedMsgEntryOrderRefusal({
+				orderType: OrderType.MARKET,
+				postOnly: PostOnlyParams.NONE,
+				price: new BN(0),
+			})
+		);
 	});
 
 	it('refuses a post-only entry', () => {
@@ -27,7 +42,11 @@ describe('signedMsgEntryOrderRefusal', () => {
 			PostOnlyParams.SLIDE,
 		]) {
 			assert.isString(
-				signedMsgEntryOrderRefusal({ orderType: OrderType.LIMIT, postOnly })
+				signedMsgEntryOrderRefusal({
+					orderType: OrderType.LIMIT,
+					postOnly,
+					price: new BN(0),
+				})
 			);
 		}
 	});
@@ -38,7 +57,11 @@ describe('signedMsgEntryOrderRefusal', () => {
 			OrderType.TRIGGER_LIMIT,
 		]) {
 			assert.isString(
-				signedMsgEntryOrderRefusal({ orderType, postOnly: PostOnlyParams.NONE })
+				signedMsgEntryOrderRefusal({
+					orderType,
+					postOnly: PostOnlyParams.NONE,
+					price: new BN(0),
+				})
 			);
 		}
 	});

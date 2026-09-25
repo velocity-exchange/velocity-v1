@@ -1010,6 +1010,18 @@ fn validate_signed_order_params(
         return Err(ErrorCode::InvalidOrderMarketType);
     }
 
+    // The program refuses a market entry with no worst price, and an oracle
+    // entry with no offset.
+    if taker_order_params.order_type == OrderType::Market && taker_order_params.price == 0 {
+        return Err(ErrorCode::InvalidOrderLimitPrice);
+    }
+
+    if taker_order_params.order_type == OrderType::Oracle
+        && taker_order_params.oracle_price_offset.unwrap_or(0) == 0
+    {
+        return Err(ErrorCode::InvalidOrderOracleOffset);
+    }
+
     if taker_order_params.base_asset_amount < min_order_size {
         // can always close reduce_only
         if !taker_order_params.reduce_only {
@@ -2074,6 +2086,35 @@ mod tests {
             validate_signed_order_params(&params, min_order_size),
             Err(ErrorCode::InvalidOrderMarketType)
         );
+    }
+
+    #[test]
+    fn test_validate_worst_price_is_named() {
+        let min_order_size = 1 * LAMPORTS_PER_SOL;
+        let order = |order_type: OrderType, price: u64, offset: Option<i64>| {
+            create_test_order_params(
+                order_type,
+                MarketType::Perp,
+                min_order_size,
+                PositionDirection::Long,
+                price,
+                offset,
+            )
+        };
+
+        assert_eq!(
+            validate_signed_order_params(&order(OrderType::Market, 0, None), min_order_size),
+            Err(ErrorCode::InvalidOrderLimitPrice)
+        );
+        assert_eq!(
+            validate_signed_order_params(&order(OrderType::Oracle, 0, None), min_order_size),
+            Err(ErrorCode::InvalidOrderOracleOffset)
+        );
+        assert!(validate_signed_order_params(
+            &order(OrderType::Oracle, 0, Some(200)),
+            min_order_size
+        )
+        .is_ok());
     }
 
     #[test]

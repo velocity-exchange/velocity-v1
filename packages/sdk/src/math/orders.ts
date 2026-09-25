@@ -373,9 +373,7 @@ export function signedMsgOrderMaxSlot(
 
 /**
  * How long a keeper may take to land a signed message. Mirrors the program's
- * `SIGNED_MSG_FILL_WINDOW`. The order's worst price was measured against the
- * oracle at signing, so a message landing later no longer describes the
- * market the signer agreed to.
+ * `SIGNED_MSG_FILL_WINDOW`: the signer priced the entry at signing.
  */
 export const SIGNED_MSG_FILL_WINDOW_MS = 30_000;
 
@@ -430,12 +428,18 @@ export function signedMsgOrderPlaceable(
 /**
  * Why `place_signed_msg_taker_order` refuses this entry order, or `undefined`
  * when it admits it. Mirrors `validate_entry_order_type`. A post-only entry
- * cannot take, and a trigger entry has no slot to wait in.
+ * cannot take, and a trigger entry has no slot to wait in. A market entry must
+ * name its worst price. `/marketOrderParams` quotes one.
  */
 export function signedMsgEntryOrderRefusal(params: {
 	orderType: OrderType;
 	postOnly: PostOnlyParams;
+	price: BN;
 }): string | undefined {
+	if (isVariant(params.orderType, 'market') && params.price.isZero()) {
+		return 'a signed-message market entry must name its worst price';
+	}
+
 	if (!isVariant(params.postOnly, 'none')) {
 		return 'a signed-message entry cannot be post-only';
 	}

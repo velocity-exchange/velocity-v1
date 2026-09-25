@@ -52,9 +52,9 @@ async fn main() {
         order_type: OrderType::Oracle,
         base_asset_amount: 100_000_000,
         direction: PositionDirection::Long,
-        auction_start_price: Some(1_00),
-        auction_end_price: Some(1_000),
-        auction_duration: Some(20),
+        // The worst price, as an offset from the oracle. The program refuses an
+        // oracle entry without one.
+        oracle_price_offset: Some(10_000),
         ..Default::default()
     };
     let signed_order_params = SignedMsgOrderParamsMessage {
@@ -68,6 +68,8 @@ async fn main() {
         builder_idx: None,
         builder_fee_tenth_bps: None,
         isolated_position_deposit: args.isolated_position,
+        network: Some(velocity_rs::swift_order_subscriber::expected_network_tag()),
+        route: None,
     };
     let swift_order_type = SignedOrderType::authority(signed_order_params);
     let signed_msg = hex::encode(swift_order_type.to_borsh());

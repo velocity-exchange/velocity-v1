@@ -122,7 +122,8 @@ master_sha()     { git rev-parse "$MASTER"; }
 tag_version()    { printf '%s' "${1##*-v}"; }
 tag_sha()        { git rev-list -n1 "$1" 2>/dev/null || true; }
 tag_date()       { git log -1 --format=%cs "$1" 2>/dev/null || true; }
-latest_tag()     { git tag --list "${1}v*" | grep -E 'v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1; }
+# `|| true`: a program with no tag yet must not trip pipefail.
+latest_tag()     { git tag --list "${1}v*" | { grep -E 'v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1; }
 tag_exists()     { [ -n "$(git tag --list "$1")" ]; }
 file_at()        { git show "$MASTER:$1" 2>/dev/null || true; }
 cargo_version()  { file_at "$(program_path "$1")/Cargo.toml" | sed -nE 's/^version *= *"([^"]+)".*/\1/p' | head -1; }
@@ -263,7 +264,7 @@ cmd_status() {
 		n="$(count_lines "$(commits_since "$tsha" "$(program_path "$p")")")"
 		mconc=""; [ -z "$tag" ] || mconc="$(run_for_branch "$MAINNET_WF" "$tag" | cut -f4)"
 		printf '   %s%-13s%s Cargo %-9s tag v%-8s %s   mainnet %s   %s program commit(s) since tag\n' \
-			"$BOLD" "$p" "$RST" "$ver" "${tver:-none}" "${DIM}$(short "$tsha") $(tag_date "$tag")${RST}" "$(mark "$mconc")" "$n" >&2
+			"$BOLD" "$p" "$RST" "${ver:-none}" "${tver:-none}" "${DIM}$(short "$tsha") $(tag_date "$tag")${RST}" "$(mark "$mconc")" "$n" >&2
 		if [ -n "$tver" ] && [ "$n" -gt 0 ] && ! semver_gt "$ver" "$tver"; then
 			warn "$p: Cargo $ver is not ahead of tag v$tver; bump before tagging"
 			set_next "bump $p"

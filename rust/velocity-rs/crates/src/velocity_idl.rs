@@ -196,6 +196,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ChangeSignedMsgWsDelegateStatus {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct CrankClobCancelOutsideBand {
+        pub args: CrankClobCancelOutsideBandArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CrankClobCancelOutsideBand {
+        const DISCRIMINATOR: &[u8] = &[129, 65, 110, 34, 231, 251, 2, 9];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CrankClobCancelOutsideBand {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CrankClobEvict {
         pub args: CrankClobEvictArgs,
     }
@@ -3722,6 +3732,23 @@ pub mod types {
         Perpetual,
         DeprecatedFuture,
         DeprecatedPrediction,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct CrankClobCancelOutsideBandArgs {
+        pub market_index: u16,
+        pub order_ref: ClobOrderRefV0,
     }
     #[repr(C)]
     #[derive(
@@ -10398,6 +10425,124 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct CrankClobCancelOutsideBand {
+        pub state: Pubkey,
+        pub authority: Pubkey,
+        pub filler: Pubkey,
+        pub filler_stats: Pubkey,
+        pub user: Pubkey,
+        pub perp_market: Pubkey,
+        pub oracle: Pubkey,
+        pub quoter_slab: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub crank_conditions: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CrankClobCancelOutsideBand {
+        const DISCRIMINATOR: &[u8] = &[245, 174, 20, 161, 48, 156, 122, 41];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for CrankClobCancelOutsideBand {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for CrankClobCancelOutsideBand {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for CrankClobCancelOutsideBand {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CrankClobCancelOutsideBand {}
+    #[automatically_derived]
+    impl ToAccountMetas for CrankClobCancelOutsideBand {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.oracle,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for CrankClobCancelOutsideBand {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for CrankClobCancelOutsideBand {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct CrankClobEvict {
         pub state: Pubkey,
         pub authority: Pubkey,
@@ -11232,6 +11377,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub revenue_share_escrow: Pubkey,
+        pub user_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for DeleteUser {
@@ -11271,6 +11417,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.revenue_share_escrow,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user_conditions,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -12462,6 +12613,7 @@ pub mod accounts {
         pub keeper: Pubkey,
         pub velocity_signer: Pubkey,
         pub revenue_share_escrow: Pubkey,
+        pub user_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ForceDeleteUser {
@@ -12511,6 +12663,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.revenue_share_escrow,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user_conditions,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -13813,7 +13970,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.perp_market,
                     is_signer: false,
-                    is_writable: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.quoter_slab,
@@ -18813,6 +18970,7 @@ pub mod accounts {
         pub user: Pubkey,
         pub liq_conditions: Pubkey,
         pub treasury: Pubkey,
+        pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ResyncLiqConditions {
@@ -18849,6 +19007,11 @@ pub mod accounts {
                     pubkey: self.treasury,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.instructions_sysvar,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -27085,6 +27248,7 @@ pub mod accounts {
         pub quoter_program: Pubkey,
         pub quoter_program_data: Pubkey,
         pub clob_market: Pubkey,
+        pub response_account: Pubkey,
         pub system_program: Pubkey,
     }
     #[automatically_derived]
@@ -27140,6 +27304,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.response_account,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -32798,6 +32967,12 @@ pub mod errors {
         SignedMsgEntryNeitherFilledNorRested,
         #[msg("The market has no CLOB, so no crank can fire a trigger order on it")]
         TriggerMarketHasNoClob,
+        #[msg("The CLOB order rests inside the maker oracle band, so no keeper may cancel it")]
+        ClobOrderInsideOracleBand,
+        #[msg(
+            "Only the user's authority, its delegate or the admin sets or clears a paid self-sync"
+        )]
+        SelfSyncTermsNeedUserAuthority,
     }
 }
 pub mod events {

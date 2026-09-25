@@ -9847,6 +9847,13 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "divided by the resyncs this transaction carries."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": []
@@ -21953,6 +21960,11 @@ export type Velocity = {
       "code": 6461,
       "name": "clobOrderInsideOracleBand",
       "msg": "The CLOB order rests inside the maker oracle band, so no keeper may cancel it"
+    },
+    {
+      "code": 6462,
+      "name": "selfSyncTermsNeedUserAuthority",
+      "msg": "Only the user's authority, its delegate or the admin sets or clears a paid self-sync"
     }
   ],
   "types": [
@@ -24753,7 +24765,8 @@ export type Velocity = {
             "docs": [
               "The poll interval behind the reprice watch. It is the discovery floor",
               "when the maker's declared watch misses a reprice. Bounded above by",
-              "[`QUOTER_CROSS_FALLBACK_MAX_SLOTS`]."
+              "[`QUOTER_CROSS_FALLBACK_MAX_SLOTS`]. A caller other than the maker's",
+              "authority must pass [`QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS`]."
             ],
             "type": "u64"
           }
@@ -28108,8 +28121,9 @@ export type Velocity = {
           {
             "name": "quoterSlab",
             "docs": [
-              "The market's quoter slab PDA, written at market initialization. Derivable from the",
-              "market index, but stored so an accounts struct binds them with",
+              "The market's quoter slab PDA. Market initialization writes it, and",
+              "`initialize_quoter_slab` writes it on a market that predates the field. Derivable",
+              "from the market index, but stored so an accounts struct binds them with",
               "`has_one = quoter_slab`. That is a memcmp instead of a PDA derivation, and the",
               "compiler keeps the check on every context."
             ],
@@ -30125,6 +30139,10 @@ export type Velocity = {
           },
           {
             "name": "maxSlot",
+            "docs": [
+              "The last slot at which the message can be placed, at any slot",
+              "duration. See [`signed_msg_retention_slot`]."
+            ],
             "type": "u64"
           },
           {
@@ -32959,9 +32977,9 @@ export type Velocity = {
           {
             "name": "syncPaymentLamports",
             "docs": [
-              "Fee the sync executor pays its keeper out of the protocol crank treasury. Stated by",
-              "whoever opts in and capped at [`LIQ_SYNC_MAX_COST_UNITS`], because opting in is",
-              "permissionless and the payer is protocol funds. A block below",
+              "Fee the sync executor pays its keeper out of the protocol crank treasury. Set only by",
+              "the user's authority, its delegate or the admin, and capped at",
+              "[`LIQ_SYNC_MAX_COST_UNITS`], because the payer is protocol funds. A block below",
               "[`LIQ_SYNC_MIN_FALLBACK_SLOTS`] pays nothing."
             ],
             "type": "u64"

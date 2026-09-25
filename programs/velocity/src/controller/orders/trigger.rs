@@ -49,6 +49,7 @@ pub fn trigger_and_route_order(
         market_index,
         oracle_price_data,
         trigger_price,
+        market_reduce_only,
     } = firing;
     let oracle_price = oracle_price_data.price;
 
@@ -64,6 +65,13 @@ pub fn trigger_and_route_order(
         slot,
         state.slot_clock(),
     )?;
+
+    // A `ReduceOnly` market admits only fills that shrink a position. The
+    // fired order is stamped here, so the rest clamps it to the position even
+    // when no fill runs.
+    if market_reduce_only {
+        fired.reduce_only = true;
+    }
 
     // A risk-increasing trigger on a failing account cancels instead of
     // firing. The gate runs before any reward.
@@ -126,6 +134,7 @@ struct FiringOrder {
     market_index: u16,
     oracle_price_data: OraclePriceData,
     trigger_price: u64,
+    market_reduce_only: bool,
 }
 
 /// Find the order a trigger names, and hold it, its account and its market to
@@ -150,7 +159,11 @@ fn open_trigger(
     validate_user_not_being_liquidated(user, maps, state.liquidation_margin_buffer_ratio)?;
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-    let (oracle_price_data, trigger_price) = {
+    let TriggerMarketPrices {
+        oracle_price_data,
+        trigger_price,
+        market_reduce_only,
+    } = {
         let perp_market = maps.perp_market_map.get_ref(&market_index)?;
         trigger_market_preflight(state, &perp_market, &mut maps.oracle_map, now)?
     };
@@ -162,6 +175,7 @@ fn open_trigger(
         market_index,
         oracle_price_data,
         trigger_price,
+        market_reduce_only,
     }))
 }
 
@@ -218,8 +232,9 @@ fn find_triggerable_order(
 
 /// The market gates every trigger passes, whichever endpoint fires it.
 ///
-/// Each endpoint judges `MarketStatus` itself. A trigger in settlement would
-/// pay a reward out of PnL-pool headroom owed to expiry claimants.
+/// Each endpoint judges `MarketStatus` itself, because a `ReduceOnly` market
+/// treats a stop-limit and a stop-market differently. A trigger in settlement
+/// would pay a reward out of PnL-pool headroom owed to expiry claimants.
 pub(crate) fn trigger_market_gates(perp_market: &PerpMarket, now: i64) -> VelocityResult {
     validate!(
         !perp_market.is_operation_paused(PerpOperation::Fill),
@@ -235,6 +250,30 @@ pub(crate) fn trigger_market_gates(perp_market: &PerpMarket, now: i64) -> Veloci
     Ok(())
 }
 
+/// Whether a market's status admits a fired stop-market, and whether the
+/// fired order must be reduce-only. An `Active` market admits any order. A
+/// `ReduceOnly` market admits one that it stamps reduce-only. Every other
+/// status refuses the trigger.
+fn trigger_market_status(perp_market: &PerpMarket) -> VelocityResult<bool> {
+    match perp_market.status {
+        MarketStatus::Active => Ok(false),
+        MarketStatus::ReduceOnly => Ok(true),
+        status => {
+            msg!("market takes no trigger (status {:?})", status);
+            Err(ErrorCode::MarketPlaceOrderPaused)
+        }
+    }
+}
+
+/// The prices a fired market order is judged at, and the market's rule on it.
+struct TriggerMarketPrices {
+    oracle_price_data: OraclePriceData,
+    trigger_price: u64,
+    /// The market admits only reducing orders, so the fired order is stamped
+    /// reduce-only.
+    market_reduce_only: bool,
+}
+
 /// The market and oracle gates a fired market order passes, and the price its
 /// condition is judged at.
 fn trigger_market_preflight(
@@ -242,7 +281,8 @@ fn trigger_market_preflight(
     perp_market: &PerpMarket,
     oracle_map: &mut OracleMap,
     now: i64,
-) -> VelocityResult<(OraclePriceData, u64)> {
+) -> VelocityResult<TriggerMarketPrices> {
+    let market_reduce_only = trigger_market_status(perp_market)?;
     trigger_market_gates(perp_market, now)?;
 
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
@@ -285,7 +325,11 @@ fn trigger_market_preflight(
     let oracle_price = oracle_price_data.price;
     let trigger_price =
         perp_market.get_trigger_price(oracle_price, now, state.use_median_trigger_price())?;
-    Ok((*oracle_price_data, trigger_price))
+    Ok(TriggerMarketPrices {
+        oracle_price_data: *oracle_price_data,
+        trigger_price,
+        market_reduce_only,
+    })
 }
 
 /// Hold the order to its own trigger condition.
@@ -561,7 +605,7 @@ mod cancel_gate_tests;
 #[cfg(test)]
 mod gate_tests {
     use {
-        super::{find_triggerable_order, trigger_market_gates},
+        super::{find_triggerable_order, trigger_market_gates, trigger_market_status},
         crate::{
             error::ErrorCode,
             state::{
@@ -681,6 +725,30 @@ mod gate_tests {
         market.status = MarketStatus::Settlement;
         assert_eq!(
             trigger_market_gates(&market, 100).err().unwrap(),
+            ErrorCode::MarketPlaceOrderPaused
+        );
+    }
+
+    #[test]
+    fn an_active_market_fires_the_order_as_armed() {
+        assert!(!trigger_market_status(&active_market()).unwrap());
+    }
+
+    /// A stop that was not reduce-only fires on a `ReduceOnly` market as a
+    /// reduce-only order, so the rest cannot add exposure.
+    #[test]
+    fn a_reduce_only_market_stamps_the_fired_order_reduce_only() {
+        let mut market = active_market();
+        market.status = MarketStatus::ReduceOnly;
+        assert!(trigger_market_status(&market).unwrap());
+    }
+
+    #[test]
+    fn a_market_that_is_not_live_is_refused() {
+        let mut market = active_market();
+        market.status = MarketStatus::Initialized;
+        assert_eq!(
+            trigger_market_status(&market).err().unwrap(),
             ErrorCode::MarketPlaceOrderPaused
         );
     }

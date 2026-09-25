@@ -108,6 +108,7 @@ export * from './oracles/utils';
 export * from './swift/swiftOrderSubscriber';
 export * from './swift/signedMsgUserAccountSubscriber';
 export * from './swift/grpcSignedMsgUserAccountSubscriber';
+export * from './swift/signedMsgUserOrdersDecoder';
 export * from './tx/fastSingleTxSender';
 export * from './tx/forwardOnlyTxSender';
 export * from './tx/retryTxSender';

@@ -2740,6 +2740,8 @@ export type SignedMsgOrderId = {
 /** Per-authority account tracking recently-seen signed-msg order UUIDs, used to detect replay/duplicate submission of the same signed message. */
 export type SignedMsgUserOrdersAccount = {
 	authorityPubkey: PublicKey;
+	/** entry layout; 1 stores 40-byte entries. A legacy account reads 0. See `decodeSignedMsgUserOrdersAccount`. */
+	version: number;
 	signedMsgOrderData: SignedMsgOrderId[];
 };
 

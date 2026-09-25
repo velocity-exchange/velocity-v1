@@ -375,6 +375,7 @@ fn collect_sync_inputs<'info>(
     let mut market_refs: Vec<AccountRefV0> = Vec::new();
     let mut tail_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracles: BTreeSet<Pubkey> = BTreeSet::new();
+    let mut slab_books: BTreeSet<Pubkey> = BTreeSet::new();
 
     for info in remaining_accounts {
         if info.owner == &crate::ID {
@@ -423,12 +424,10 @@ fn collect_sync_inputs<'info>(
                 // The slab names both, so it always carries the book.
                 let slots = loader.slots()?;
                 if let Some(index) = crate::state::prop_amm::clob_slot_index(&slots) {
-                    tail_refs.push(AccountRefV0::writable(
-                        slots[index].config.response_account.to_bytes(),
-                    ));
-                    tail_refs.push(AccountRefV0::readonly(
-                        slots[index].config.program_id.to_bytes(),
-                    ));
+                    let config = &slots[index].config;
+                    tail_refs.push(AccountRefV0::writable(config.response_account.to_bytes()));
+                    tail_refs.push(AccountRefV0::readonly(config.program_id.to_bytes()));
+                    slab_books.extend([config.response_account, config.program_id]);
                 }
 
                 continue;
@@ -443,6 +442,10 @@ fn collect_sync_inputs<'info>(
         oracles.insert(*info.key);
     }
 
+    // A resync replays the stored list, which carries each slab's book and
+    // program. The slab stores them in the tail already, so neither is an
+    // oracle candidate.
+    oracles.retain(|key| !slab_books.contains(key));
     Ok(SyncInputs {
         perps,
         spots,
@@ -842,5 +845,123 @@ mod tests {
 
         assert!(refuse_duplicate_accounts(std::slice::from_ref(&first)).is_ok());
         assert!(refuse_duplicate_accounts(&[first, second]).is_err());
+    }
+
+    /// A resync replays the list a sync stored, which carries the slab's book
+    /// and program. The replay must classify to the same list.
+    #[test]
+    fn a_stored_list_replays_to_the_same_list() {
+        use {
+            super::{build_sync_accounts, collect_sync_inputs, SyncInputs},
+            crate::state::{
+                clob_crank::ClobCrankConditionsV0,
+                perp_market::PerpMarket,
+                prop_amm::{QuoterSlabV0, QuoterSlotV0, QuoterType},
+            },
+            anchor_lang::Discriminator,
+            relay_spec::AccountRefV0,
+        };
+
+        let (book_key, program_key) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let (market_key, crank_key) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let mut market = PerpMarket {
+            oracle: ORACLE,
+            clob_market: book_key,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, &market_key, PerpMarket, market_info);
+        let mut crank = ClobCrankConditionsV0::default();
+        create_anchor_account_info!(crank, &crank_key, ClobCrankConditionsV0, crank_info);
+
+        let mut slot: QuoterSlotV0 = bytemuck::Zeroable::zeroed();
+        slot.entry = Pubkey::new_unique();
+        slot.config.quoter_type = QuoterType::Clob;
+        slot.config.response_account = book_key;
+        slot.config.program_id = program_key;
+        let header = QuoterSlabV0 {
+            capacity: 1,
+            ..QuoterSlabV0::default()
+        };
+        let mut slab_data = QuoterSlabV0::DISCRIMINATOR.to_vec();
+        slab_data.extend_from_slice(bytemuck::bytes_of(&header));
+        slab_data.extend_from_slice(bytemuck::bytes_of(&slot));
+
+        let (slab_key, owner, other_owner) =
+            (Pubkey::new_unique(), crate::ID, Pubkey::new_unique());
+        let mut lamports = [0u64; 4];
+        let [slab_lamports, oracle_lamports, book_lamports, program_lamports] = &mut lamports;
+        let (mut oracle_data, mut book_data, mut program_data) = (vec![], vec![], vec![]);
+        let slab_info = AccountInfo::new(
+            &slab_key,
+            false,
+            false,
+            slab_lamports,
+            &mut slab_data,
+            &owner,
+            false,
+        );
+        let oracle_info = AccountInfo::new(
+            &ORACLE,
+            false,
+            false,
+            oracle_lamports,
+            &mut oracle_data,
+            &other_owner,
+            false,
+        );
+        let book_info = AccountInfo::new(
+            &book_key,
+            false,
+            true,
+            book_lamports,
+            &mut book_data,
+            &other_owner,
+            false,
+        );
+        let program_info = AccountInfo::new(
+            &program_key,
+            false,
+            false,
+            program_lamports,
+            &mut program_data,
+            &other_owner,
+            true,
+        );
+
+        let stored = |inputs: SyncInputs| -> Vec<AccountRefV0> {
+            inputs.coverage().refuse_unnamed_oracles().unwrap();
+            let oracle_refs = inputs
+                .oracles
+                .iter()
+                .map(|key| AccountRefV0::readonly(key.to_bytes()))
+                .collect();
+            build_sync_accounts(
+                Pubkey::default(),
+                Pubkey::default(),
+                oracle_refs,
+                inputs.market_refs,
+                inputs.tail_refs,
+            )
+        };
+
+        let synced = [
+            oracle_info.clone(),
+            market_info.clone(),
+            crank_info.clone(),
+            slab_info.clone(),
+        ];
+        let first = stored(collect_sync_inputs(&synced).unwrap());
+        let replayed = [
+            oracle_info,
+            market_info,
+            crank_info,
+            slab_info,
+            book_info,
+            program_info,
+        ];
+        let second = stored(collect_sync_inputs(&replayed).unwrap());
+
+        assert_eq!(first.len(), 4 + 6);
+        assert_eq!(first, second);
     }
 }

@@ -335,6 +335,7 @@ fn collect_trigger_inputs<'info>(
     let mut market_refs: Vec<AccountRefV0> = Vec::new();
     let mut tail_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracle_infos: BTreeMap<Pubkey, &AccountInfo<'info>> = BTreeMap::new();
+    let mut slab_books: Vec<Pubkey> = Vec::new();
 
     for info in remaining_accounts {
         if info.owner == &crate::ID {
@@ -374,12 +375,10 @@ fn collect_trigger_inputs<'info>(
                 // same list, so this pass carries them the same way.
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 if let Some(index) = clob_slot_index(&slots) {
-                    tail_refs.push(AccountRefV0::writable(
-                        slots[index].config.response_account.to_bytes(),
-                    ));
-                    tail_refs.push(AccountRefV0::readonly(
-                        slots[index].config.program_id.to_bytes(),
-                    ));
+                    let config = &slots[index].config;
+                    tail_refs.push(AccountRefV0::writable(config.response_account.to_bytes()));
+                    tail_refs.push(AccountRefV0::readonly(config.program_id.to_bytes()));
+                    slab_books.extend([config.response_account, config.program_id]);
 
                     if slots[index].quotes() {
                         markets.entry(market).or_default().clob = Some((
@@ -401,6 +400,9 @@ fn collect_trigger_inputs<'info>(
         oracle_infos.insert(*info.key, info);
     }
 
+    // The slab stores its book and program in the tail, so a replayed list
+    // that carries them does not make them oracle candidates.
+    oracle_infos.retain(|key, _| !slab_books.contains(key));
     Ok(TriggerInputs {
         markets,
         market_oracles,

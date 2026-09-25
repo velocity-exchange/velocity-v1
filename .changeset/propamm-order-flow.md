@@ -281,7 +281,7 @@ to land the transaction.
 
 `Order.price` is the worst price the order accepts, for every order type. A market order's `price`
 is its cap, and the sender chooses how far from the oracle it sits. A market order that names no
-price takes `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` (oracle / 200, which is 0.5 percent). An oracle-relative order holds the bound in `oracle_price_offset`.
+price fills at most `oracle / unnamedPriceSlippageDivisor(contractTier)` from the oracle. An oracle-relative order holds the bound in `oracle_price_offset`.
 
 `OrderParams` and `ModifyOrderParams` lose `auctionDuration`, `auctionStartPrice` and
 `auctionEndPrice`. `OrderParams` gains `activationDelaySlots`, which sets how long a rested
@@ -302,8 +302,7 @@ becomes `unusedAuctionDuration`. The account layout is unchanged.
 `isFallbackAvailableLiquiditySource` moves to `math/orders`. `getLimitPrice`, `hasLimitPrice`,
 `isRestingLimitOrder` and `isRestingSignedMsgLimitOrder` lose their auction and slot arguments,
 `signedMsgOrderMaxSlot` trades its auction duration for `isRestingLimit`, and `hasAuctionPrice` is
-removed. `SIGNED_MSG_FILL_WINDOW_MS` and
-`DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` are new.
+removed. `SIGNED_MSG_FILL_WINDOW_MS` and `unnamedPriceSlippageDivisor` are new.
 
 `placeAndTakePerpOrder`, `getPlaceAndTakePerpOrderIx` and
 `preparePlaceAndTakePerpOrderWithAdditionalOrders` drop `auctionDurationPercentage`, so every later

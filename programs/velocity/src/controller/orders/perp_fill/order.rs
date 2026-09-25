@@ -831,6 +831,7 @@ impl FillConditions {
         let oracle_twap_5min =
             refresh_market_oracle_stats(market, state, &mm_oracle_price_data, clock)?;
         let oracle_price = mm_oracle_price_data.get_price();
+        let match_oracle = MatchOracle::of(oracle_price, safe_validity, exchange_validity)?;
 
         Ok(Self {
             mode,
@@ -841,15 +842,8 @@ impl FillConditions {
             valid_oracle_price: limit_price_oracle(safe_validity, oracle_price, market_index)?,
             amm_is_available: amm_not_globally_paused && amm_can_fill,
             oracle_stale_for_margin,
-            safe_match_fills_allowed: is_oracle_valid_for_action(
-                safe_validity,
-                Some(VelocityAction::FillOrderMatch),
-            )?,
-
-            exchange_match_fills_allowed: is_oracle_valid_for_action(
-                exchange_validity,
-                Some(VelocityAction::FillOrderMatch),
-            )?,
+            safe_match_fills_allowed: match_oracle.safe_match_fills_allowed,
+            exchange_match_fills_allowed: match_oracle.exchange_match_fills_allowed,
         })
     }
 }
@@ -894,17 +888,21 @@ fn refresh_market_oracle_stats(
     Ok(twap_5min)
 }
 
-/// The oracle price a route trims its books against.
+/// What the market oracle lets a match fill do.
 ///
-/// It is the safe MM price the fill measures each maker band against. The
-/// route reads it before the fill, so a level it keeps is a level the band
-/// check admits.
+/// The order layer reads it to gate the fill. The route reads it before it
+/// quotes, so it quotes no book the fill withholds, and a level it keeps
+/// inside the band is a level the band check admits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatchOracle {
+    /// The safe MM price the fill measures each maker band against.
     pub band_price: i64,
+    pub safe_match_fills_allowed: bool,
+    pub exchange_match_fills_allowed: bool,
 }
 
 impl MatchOracle {
+    /// Read the oracle the way [`FillConditions::read`] reads it.
     pub fn read(
         maps: &mut AccountMaps,
         state: &State,
@@ -913,11 +911,38 @@ impl MatchOracle {
     ) -> VelocityResult<Self> {
         let market = maps.perp_market_map.get_ref(&market_index)?;
         let oracle_price_data = *maps.oracle_map.get_price_data(&market.oracle_id())?;
-        let (mm_oracle_price_data, _) =
+        let exchange_validity = exchange_oracle_validity(&market, state, &oracle_price_data, slot)?;
+        let (mm_oracle_price_data, safe_validity) =
             safe_mm_oracle_state(&market, state, &oracle_price_data, slot)?;
+        Self::of(
+            mm_oracle_price_data.get_price(),
+            safe_validity,
+            exchange_validity,
+        )
+    }
+
+    fn of(
+        band_price: i64,
+        safe_validity: OracleValidity,
+        exchange_validity: OracleValidity,
+    ) -> VelocityResult<Self> {
+        let match_action = Some(VelocityAction::FillOrderMatch);
         Ok(Self {
-            band_price: mm_oracle_price_data.get_price(),
+            band_price,
+            safe_match_fills_allowed: is_oracle_valid_for_action(safe_validity, match_action)?,
+            exchange_match_fills_allowed: is_oracle_valid_for_action(
+                exchange_validity,
+                match_action,
+            )?,
         })
+    }
+
+    /// Whether the fill would take any book for a taker with this floor.
+    /// It is the rule `OrderUnderFill::gate_match_fills` applies, less its
+    /// post-only case.
+    pub fn admits_books(&self, taker_equity_floor: u64) -> bool {
+        self.safe_match_fills_allowed
+            && (taker_equity_floor == 0 || self.exchange_match_fills_allowed)
     }
 }
 

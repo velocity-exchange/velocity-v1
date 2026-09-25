@@ -235,6 +235,7 @@ impl<'info> RouteFill<'_, 'info> {
             fill.order.market_index,
             self.clock.slot,
         )?;
+        let taker_equity_floor = load!(accounts.user)?.equity_floor;
         let quoted = quote_route(
             self.tail,
             QuoteInputs {
@@ -244,6 +245,7 @@ impl<'info> RouteFill<'_, 'info> {
                 users: &users,
                 reference_price: route.order.mark.reference_price,
                 band_oracle_price: oracle.band_price,
+                match_fills_allowed: oracle.admits_books(taker_equity_floor),
                 taker: route.order.taker,
                 limit_price: route.order.limit_price,
                 taker_served_window: route.taker_served_window,

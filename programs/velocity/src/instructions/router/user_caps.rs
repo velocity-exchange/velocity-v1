@@ -359,7 +359,11 @@ pub fn with_counterparty_room<'a, 'info>(
     // of the account tail that borrows every account on it, and the quote
     // that follows reads the same one.
     let slab = route_slab(tail, inputs.market_index)?;
-    let (caps, rooms) = build_user_caps(slab.as_ref(), tail, &inputs, ctx)?;
+    let (caps, rooms) = if inputs.match_fills_allowed {
+        build_user_caps(slab.as_ref(), tail, &inputs, ctx)?
+    } else {
+        (UserCapsV0::default(), QuoterRooms::NONE)
+    };
     Ok(SizedQuote {
         inputs,
         caps,

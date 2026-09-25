@@ -319,9 +319,13 @@ pub fn quote_route<'a, 'info>(
 ///
 /// Every reason here is a skip, not a refusal. A route signed before an admin
 /// revoked, suspended, or deactivated a quoter must still fill.
-fn slot_offers_nothing(slot: &QuoterSlotV0, taker_served_window: bool) -> Option<&'static str> {
+fn slot_offers_nothing(slot: &QuoterSlotV0, inputs: &QuoteInputs) -> Option<&'static str> {
     if !slot.quotes() {
         return Some("non quoting slot");
+    }
+
+    if !inputs.match_fills_allowed {
+        return Some("oracle not valid for a match fill");
     }
 
     // Makers take priority. A book with an activation delay quotes no depth
@@ -329,7 +333,7 @@ fn slot_offers_nothing(slot: &QuoterSlotV0, taker_served_window: bool) -> Option
     // is presence and the rest leg still uses it. Unattested aggression rests
     // through the activation window. A maker can reprice or cross it first.
     if matches!(slot.config.quoter_type, QuoterType::Clob)
-        && !taker_served_window
+        && !inputs.taker_served_window
         && slot.config.book_default_activation_delay_slots > 0
     {
         return Some("runs a speed bump; no depth for an unattested taker");
@@ -380,6 +384,9 @@ pub struct QuoteInputs<'a> {
     /// The price each quoter's oracle band is measured against. It is the
     /// price the fill's own band check reads, so a trimmed ladder settles.
     pub band_oracle_price: i64,
+    /// Whether the oracle admits a match fill for this taker. When it does
+    /// not, the fill takes no book, so no slot is asked to quote.
+    pub match_fills_allowed: bool,
     pub taker: UserRefV0,
     /// The worst price this fill accepts, or zero for no bound. A quoter that
     /// honours it stops its walk where the router would have discarded the
@@ -489,7 +496,7 @@ impl<'info> QuotedRoute<'info> {
         let inputs = &sized.inputs;
         let slots = slab.slots()?;
         let slot = &slots[index];
-        if let Some(reason) = slot_offers_nothing(slot, inputs.taker_served_window) {
+        if let Some(reason) = slot_offers_nothing(slot, inputs) {
             if !reason.is_empty() {
                 msg!("quoter {}: {}", slot.entry, reason);
             }
@@ -1012,5 +1019,52 @@ mod claimed_entry_tests {
     #[test]
     fn a_live_approved_entry_left_out_is_the_omission() {
         assert!(claimed_entry_is_omitted(Some((7, true)), &[1, 3, 5]));
+    }
+}
+
+/// Which live slots a route asks to quote.
+#[cfg(test)]
+mod slot_skip_tests {
+    use super::*;
+
+    fn inputs(match_fills_allowed: bool) -> QuoteInputs<'static> {
+        QuoteInputs {
+            market_index: 0,
+            direction: DirectionV0::Long,
+            size: 1,
+            users: &[],
+            reference_price: 100,
+            band_oracle_price: 100,
+            match_fills_allowed,
+            taker: UserRefV0 {
+                authority: Pubkey::default(),
+                sub_account_id: 0,
+            },
+            limit_price: 0,
+            taker_served_window: true,
+            margin_ratio_initial: 1_000,
+            include_taker_origin_reservations: false,
+        }
+    }
+
+    fn live_slot() -> QuoterSlotV0 {
+        let mut slot = QuoterSlotV0 {
+            entry: Pubkey::new_unique(),
+            ..Default::default()
+        };
+        slot.config.is_active = true;
+        slot
+    }
+
+    #[test]
+    fn a_live_slot_quotes_while_the_oracle_admits_a_match() {
+        assert_eq!(slot_offers_nothing(&live_slot(), &inputs(true)), None);
+    }
+
+    #[test]
+    fn no_slot_quotes_while_the_oracle_refuses_a_match() {
+        // The fill would withhold every book, so the quoters are not asked
+        // to price against an oracle price the fill does not trust.
+        assert!(slot_offers_nothing(&live_slot(), &inputs(false)).is_some());
     }
 }

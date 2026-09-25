@@ -7,7 +7,8 @@ use {
     super::{
         super::{FillerSide, PricingRules, TakerSide},
         context::{FillConditions, FillParties, OfferedLiquidity},
-        fill_perp_order, fill_within_taker_risk_limits, FillAmounts, FillRequest, PerpFillAccounts,
+        fill_perp_order, fill_within_taker_risk_limits, FillAmounts, FillRequest, MatchOracle,
+        PerpFillAccounts,
     },
     crate::{
         controller::position::PositionDirection,
@@ -640,6 +641,22 @@ fn the_maker_band_is_measured_against_the_safe_price() {
         ..Case::default()
     });
     assert_eq!(at_safe.unwrap_err(), ErrorCode::QuoterFillOffQuote);
+}
+
+/// A route asks no book to quote when the fill would withhold every book.
+#[test]
+fn the_route_quotes_books_only_when_the_fill_would_take_them() {
+    let oracle = |safe: bool, exchange: bool| MatchOracle {
+        band_price: 100,
+        safe_match_fills_allowed: safe,
+        exchange_match_fills_allowed: exchange,
+    };
+
+    assert!(oracle(true, true).admits_books(1));
+    assert!(!oracle(false, true).admits_books(0));
+    // Only a taker with an equity floor answers to the exchange oracle.
+    assert!(oracle(true, false).admits_books(0));
+    assert!(!oracle(true, false).admits_books(1));
 }
 
 /// The mark TWAP records the price the fill traded at. Two fills that only

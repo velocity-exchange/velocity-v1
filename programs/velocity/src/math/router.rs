@@ -17,7 +17,7 @@ use crate::{
     error::{ErrorCode, VelocityResult},
     math::{casting::Cast, constants::BASE_PRECISION, safe_math::SafeMath},
     msg,
-    state::prop_amm::{DirectionV0, PriceLevelV0},
+    state::prop_amm::{DirectionV0, ExecuteResponseV0, PriceLevelV0},
     validate,
 };
 
@@ -566,6 +566,42 @@ pub fn validate_change_notional(
     notional_within(at_best.min(at_worst), at_best.max(at_worst), quote, orders)
 }
 
+/// The least base a book change must have filled through its maker's last
+/// reduce-only order, or `0` when the response cannot bound it.
+///
+/// A reduce-only order may fill only while the base its maker filled so far
+/// stays inside the cover. The response gives no per-order base and no order
+/// between the sections. It does list completed orders in walk order. So when
+/// the last completed order is reduce-only, only the partial record and a cull
+/// can follow it. A reduce-only cull is held to the same cover. An ordinary
+/// cull reports no fill, so it leaves the change unbounded.
+pub fn base_through_last_reduce_only_order(
+    response: &ExecuteResponseV0,
+    change_index: usize,
+) -> u64 {
+    let change = &response.changes[change_index];
+    let ends_reduce_only = response
+        .completed_for(change_index)
+        .last()
+        .is_some_and(|completed| completed.is_reduce_only());
+    let ordinary_cull = response
+        .cancelled
+        .iter()
+        .any(|cancelled| cancelled.user == change.user && !cancelled.is_reduce_only());
+    if !ends_reduce_only || ordinary_cull {
+        return 0;
+    }
+
+    let partial_base = response
+        .partial
+        .iter()
+        .filter(|partial| partial.change_index as usize == change_index)
+        .fold(0u64, |total, partial| {
+            total.saturating_add(partial.base_filled)
+        });
+    change.base_size.saturating_sub(partial_base)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,5 +1087,129 @@ mod tests {
         );
 
         assert!(quoted_prefix(&levels, 2, 7).is_err());
+    }
+}
+
+/// What a book change shows about the base its maker filled through a
+/// reduce-only order.
+#[cfg(test)]
+mod reduce_only_reach_tests {
+    use {
+        super::base_through_last_reduce_only_order,
+        crate::state::prop_amm::{
+            CancelledRemainderV0, CompletedOrderV0, ExecuteResponseV0, UserBalanceChangeV0,
+            UserRefV0, L3_ROW_FLAG_REDUCE_ONLY,
+        },
+        anchor_lang::prelude::Pubkey,
+        quoter_spec::PartiallyFilledOrderV0,
+    };
+
+    const MAKER: u8 = 1;
+
+    fn user(byte: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([byte; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn change(base_size: u64) -> UserBalanceChangeV0 {
+        UserBalanceChangeV0 {
+            base_size,
+            quote_size: 0,
+            user: user(MAKER),
+            _pad: [0; 6],
+        }
+    }
+
+    fn completed(order_id: u64, reduce_only: bool) -> CompletedOrderV0 {
+        CompletedOrderV0 {
+            order_id,
+            change_index: 0,
+            flags: if reduce_only {
+                L3_ROW_FLAG_REDUCE_ONLY
+            } else {
+                0
+            },
+            _pad: [0; 1],
+            client_order_id: 0,
+        }
+    }
+
+    fn partial(base_filled: u64) -> PartiallyFilledOrderV0 {
+        PartiallyFilledOrderV0 {
+            order_id: 9,
+            base_filled,
+            client_order_id: 0,
+            change_index: 0,
+            _pad: [0; 2],
+        }
+    }
+
+    fn cull(reduce_only: bool) -> CancelledRemainderV0 {
+        CancelledRemainderV0 {
+            order_id: 8,
+            base_asset_amount: 1,
+            price: 0,
+            client_order_id: 0,
+            user: user(MAKER),
+            flags: if reduce_only {
+                L3_ROW_FLAG_REDUCE_ONLY
+            } else {
+                0
+            },
+            _pad: [0; 1],
+        }
+    }
+
+    fn reach(
+        base: u64,
+        completed: &[CompletedOrderV0],
+        partial: &[PartiallyFilledOrderV0],
+        cancelled: &[CancelledRemainderV0],
+    ) -> u64 {
+        let changes = [change(base)];
+        let response = ExecuteResponseV0 {
+            changes: &changes,
+            cancelled,
+            completed,
+            partial,
+        };
+        base_through_last_reduce_only_order(&response, 0)
+    }
+
+    #[test]
+    fn an_ordinary_order_then_a_reduce_only_one_reaches_the_whole_change() {
+        // Long 10: an ordinary ask of 10 fills, then a reduce-only ask of 10.
+        // The reduce-only order ends the change, so it filled through all 20.
+        let orders = [completed(1, false), completed(2, true)];
+        assert_eq!(reach(20, &orders, &[], &[]), 20);
+    }
+
+    #[test]
+    fn an_ordinary_order_after_the_reduce_only_one_bounds_nothing() {
+        // The ordinary order may be what took the maker past flat, and the
+        // response does not say its size.
+        let orders = [completed(1, true), completed(2, false)];
+        assert_eq!(reach(20, &orders, &[], &[]), 0);
+    }
+
+    #[test]
+    fn a_partial_fill_may_follow_the_reduce_only_order() {
+        let orders = [completed(1, true)];
+        assert_eq!(reach(20, &orders, &[partial(15)], &[]), 5);
+    }
+
+    #[test]
+    fn an_ordinary_cull_leaves_the_change_unbounded() {
+        let orders = [completed(1, true)];
+        assert_eq!(reach(20, &orders, &[], &[cull(false)]), 0);
+        assert_eq!(reach(20, &orders, &[], &[cull(true)]), 20);
+    }
+
+    #[test]
+    fn a_change_with_no_reduce_only_order_bounds_nothing() {
+        assert_eq!(reach(20, &[completed(1, false)], &[], &[]), 0);
+        assert_eq!(reach(20, &[], &[partial(20)], &[]), 0);
     }
 }

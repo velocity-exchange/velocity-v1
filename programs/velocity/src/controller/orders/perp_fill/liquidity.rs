@@ -17,7 +17,10 @@ use {
         math::{
             casting::Cast,
             constants::BASE_PRECISION_U64,
-            router::{split_across_quoters, QuoterAllocation, QuoterBook, RouterLeg},
+            router::{
+                base_through_last_reduce_only_order, split_across_quoters, QuoterAllocation,
+                QuoterBook, RouterLeg,
+            },
             safe_math::SafeMath,
         },
         state::{
@@ -971,6 +974,10 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         self.check_external_change(leg, change, &maker_key, orders.completed)?;
         let mut maker = self.makers_and_referrer.get_ref_mut(&maker_key)?;
         self.bind_reduce_only_maker(market, &maker, &maker_key, change.base_size)?;
+        if leg.maker_aggregates_tracked {
+            self.bind_reduce_only_orders(&maker, &maker_key, response, change_index)?;
+        }
+
         self.settle_maker_funding(&mut maker, &maker_key, market)?;
         maker.update_last_active_slot(self.conditions.slot);
         let mut maker_stats = maker_stats_for(
@@ -1018,6 +1025,35 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if leg.maker_aggregates_tracked {
             self.release_completed_book_orders(&mut maker, response.completed_for(change_index))?;
         }
+
+        Ok(())
+    }
+
+    /// Hold a book maker's reduce-only orders to the position they reduce.
+    ///
+    /// The book caps reduce-only fills to a cover. This check does not depend
+    /// on how the book spends it. See [`base_through_last_reduce_only_order`]
+    /// for what the response can prove.
+    fn bind_reduce_only_orders(
+        &self,
+        maker: &User,
+        maker_key: &Pubkey,
+        response: &crate::state::prop_amm::ExecuteResponseV0,
+        change_index: usize,
+    ) -> VelocityResult {
+        let position_base = maker
+            .get_perp_position(self.market_index)
+            .map_or(0, |position| position.base_asset_amount);
+        let cover = crate::math::orders::reduce_only_cover(position_base, self.maker_direction);
+        let reduce_only_reach = base_through_last_reduce_only_order(response, change_index);
+        validate!(
+            reduce_only_reach <= cover,
+            ErrorCode::ReduceOnlyOrderIncreasedRisk,
+            "user {} filled {} base through a reduce-only order against a cover of {}",
+            maker_key,
+            reduce_only_reach,
+            cover
+        )?;
 
         Ok(())
     }

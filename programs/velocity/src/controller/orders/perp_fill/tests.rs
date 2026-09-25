@@ -31,8 +31,9 @@ use {
             perp_market::{MarketStats, PerpMarket, AMM},
             perp_market_map::PerpMarketMap,
             prop_amm::{
-                DirectionV0, ExternalQuoterExecutor, PriceLevelV0, QuoterSubjects, QuoterType,
-                ResponseLocationV0, UserBalanceChangeV0, UserRefV0,
+                CompletedOrderV0, DirectionV0, ExternalQuoterExecutor, PriceLevelV0,
+                QuoterSubjects, QuoterType, ResponseLocationV0, UserBalanceChangeV0, UserRefV0,
+                L3_ROW_FLAG_REDUCE_ONLY,
             },
             pyth_lazer_oracle::PythLazerOracle,
             spot_market::{SpotBalanceType, SpotMarket},
@@ -74,11 +75,14 @@ fn leak_account<T: ZeroCopy + Owner>(mut account: T, key: Pubkey) -> &'static Ac
 }
 
 /// A response account holding the bytes a quoter would have written.
-fn response_account(changes: &[UserBalanceChangeV0]) -> ResponseLocationV0<'static> {
+fn response_account(
+    changes: &[UserBalanceChangeV0],
+    completed: &[CompletedOrderV0],
+) -> ResponseLocationV0<'static> {
     let bytes = quoter_spec::wincode::serialize(&quoter_spec::ExecuteResponseV0 {
         changes,
         cancelled: &[],
-        completed: &[],
+        completed,
         partial: &[],
     })
     .unwrap();
@@ -97,17 +101,20 @@ fn response_account(changes: &[UserBalanceChangeV0]) -> ResponseLocationV0<'stat
     .unwrap()
 }
 
-/// One custom book that fills its maker at one price.
+/// One book that fills its maker at one price.
 struct MockBook {
+    quoter_type: QuoterType,
     maker: Pubkey,
     maker_ref: UserRefV0,
     price: u64,
+    /// The maker's orders the fill consumes, in walk order.
+    completed: Vec<CompletedOrderV0>,
     requested: u64,
 }
 
 impl ExternalQuoterExecutor<'static> for MockBook {
     fn quoter_type(&self, _index: usize) -> QuoterType {
-        QuoterType::Custom
+        self.quoter_type
     }
 
     fn quoter_user(&self, _index: usize) -> Pubkey {
@@ -124,7 +131,10 @@ impl ExternalQuoterExecutor<'static> for MockBook {
         _direction: DirectionV0,
         _size: u64,
     ) -> VelocityResult<QuoterSubjects> {
-        Ok(QuoterSubjects::Account(self.maker))
+        Ok(match self.quoter_type {
+            QuoterType::Clob => QuoterSubjects::Book,
+            _ => QuoterSubjects::Account(self.maker),
+        })
     }
 
     fn execute(
@@ -136,12 +146,15 @@ impl ExternalQuoterExecutor<'static> for MockBook {
         self.requested = size;
         let quote_size =
             ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
-        Ok(response_account(&[UserBalanceChangeV0 {
-            base_size: size,
-            quote_size,
-            user: self.maker_ref,
-            _pad: [0; 6],
-        }]))
+        Ok(response_account(
+            &[UserBalanceChangeV0 {
+                base_size: size,
+                quote_size,
+                user: self.maker_ref,
+                _pad: [0; 6],
+            }],
+            &self.completed,
+        ))
     }
 }
 
@@ -159,9 +172,16 @@ struct Case {
     market_status: MarketStatus,
     /// The price the book quotes and fills at, or `None` for no book.
     book_price: Option<u64>,
+    book_type: QuoterType,
+    /// The orders a `Clob` book consumes, in walk order. The maker rests
+    /// each for one base, and the flag marks a reduce-only order.
+    book_orders: Vec<bool>,
     maker_authority: Pubkey,
     maker_sub_account_id: u16,
     maker_position_base: i64,
+    maker_status: u8,
+    maker_equity_floor: u64,
+    exchange_match_fills_allowed: bool,
     crank: Crank,
     min_base_asset_reserve: u128,
 }
@@ -171,9 +191,14 @@ impl Default for Case {
         Self {
             market_status: MarketStatus::Active,
             book_price: Some(99 * PRICE_PRECISION_U64),
+            book_type: QuoterType::Custom,
+            book_orders: Vec::new(),
             maker_authority: MAKER_AUTHORITY,
             maker_sub_account_id: 0,
             maker_position_base: 0,
+            maker_status: 0,
+            maker_equity_floor: 0,
+            exchange_match_fills_allowed: true,
             crank: Crank::Keeper,
             min_base_asset_reserve: 0,
         }
@@ -282,6 +307,7 @@ struct Scenario {
     maker_key: Pubkey,
     book: MockBook,
     levels: Vec<PriceLevelV0>,
+    exchange_match_fills_allowed: bool,
 }
 
 impl Scenario {
@@ -311,15 +337,24 @@ impl Scenario {
             SpotMarketMap::load_one(leak_account(spot_market, Pubkey::new_unique()), true).unwrap();
 
         let maker_key = Pubkey::new_unique();
+        let book_orders = case.book_orders.len() as u8;
+        let reduce_only_book_orders = case.book_orders.iter().filter(|&&flag| flag).count();
         let maker = User {
             authority: case.maker_authority,
             sub_account_id: case.maker_sub_account_id,
+            status: case.maker_status,
+            equity_floor: case.maker_equity_floor,
+            open_orders: book_orders,
+            has_open_order: book_orders > 0,
             spot_positions: deposit(10_000),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: case.maker_position_base,
                 quote_asset_amount: -case.maker_position_base * 100 * QUOTE_PRECISION_I64
                     / BASE_PRECISION_I64,
+                open_asks: -(i64::from(book_orders) * BASE_PRECISION_I64),
+                open_orders: book_orders,
+                reduce_only_clob_orders: reduce_only_book_orders as u16,
                 ..PerpPosition::default()
             }),
             ..User::default()
@@ -341,6 +376,22 @@ impl Scenario {
                 }]
             })
             .unwrap_or_default();
+        let completed = case
+            .book_orders
+            .iter()
+            .enumerate()
+            .map(|(index, &reduce_only)| CompletedOrderV0 {
+                order_id: index as u64 + 1,
+                change_index: 0,
+                flags: if reduce_only {
+                    L3_ROW_FLAG_REDUCE_ONLY
+                } else {
+                    0
+                },
+                _pad: [0; 1],
+                client_order_id: 0,
+            })
+            .collect();
 
         Self {
             maps: AccountMaps::new(perp_market_map, spot_market_map, oracle_map),
@@ -348,15 +399,18 @@ impl Scenario {
             maker_stats,
             maker_key,
             book: MockBook {
+                quoter_type: case.book_type,
                 maker: maker_key,
                 maker_ref: UserRefV0 {
                     authority: case.maker_authority,
                     sub_account_id: case.maker_sub_account_id,
                 },
                 price: case.book_price.unwrap_or(0),
+                completed,
                 requested: 0,
             },
             levels,
+            exchange_match_fills_allowed: case.exchange_match_fills_allowed,
         }
     }
 
@@ -396,7 +450,7 @@ impl Scenario {
         };
 
         let books = [QuoterBook {
-            priority: QuoterType::Custom.default_priority(),
+            priority: self.book.quoter_type.default_priority(),
             levels: &self.levels,
             withheld: PriceLevelV0::default(),
         }];
@@ -409,6 +463,15 @@ impl Scenario {
         };
 
         let mut order = taker_order();
+        let mut conditions = FillConditions::for_layer_test(
+            FillMode::Fill,
+            NOW,
+            SLOT,
+            Some(100 * PRICE_PRECISION_I64),
+            true,
+            false,
+        );
+        conditions.exchange_match_fills_allowed = self.exchange_match_fills_allowed;
         fill_within_taker_risk_limits(
             &mut TakerSide::bind(
                 &mut taker,
@@ -418,14 +481,7 @@ impl Scenario {
                 false,
             )?,
             &pricing_rules(&fee_structure),
-            &FillConditions::for_layer_test(
-                FillMode::Fill,
-                NOW,
-                SLOT,
-                Some(100 * PRICE_PRECISION_I64),
-                true,
-                false,
-            ),
+            &conditions,
             &mut FillParties {
                 maps: &mut self.maps,
                 makers_and_referrer: &self.makers,
@@ -516,6 +572,35 @@ fn a_maker_in_a_reduce_only_market_may_only_reduce() {
 
     assert_eq!(long.unwrap().base, BASE_PRECISION_U64);
     assert_eq!(scenario.maker().perp_positions[0].base_asset_amount, 0);
+}
+
+/// A book walk may end on a reduce-only order only while the maker's fills
+/// so far stay inside the position that order reduces. The book spends that
+/// cover, and velocity does not rely on it.
+#[test]
+fn a_reduce_only_book_order_may_not_take_its_maker_past_flat() {
+    let half = BASE_PRECISION_I64 / 2;
+    let clob = |book_orders: Vec<bool>| Case {
+        book_type: QuoterType::Clob,
+        book_orders,
+        maker_position_base: half,
+        ..Case::default()
+    };
+
+    // An ordinary ask flattens the maker, then the reduce-only ask sells on.
+    let (_, flipped) = run(clob(vec![false, true]));
+    assert_eq!(
+        flipped.unwrap_err(),
+        ErrorCode::ReduceOnlyOrderIncreasedRisk
+    );
+
+    // The reduce-only ask flattens the maker, and the ordinary ask flips it.
+    let (scenario, reduced_first) = run(clob(vec![true, false]));
+    assert_eq!(reduced_first.unwrap().base, BASE_PRECISION_U64);
+    let maker = scenario.maker();
+    assert_eq!(maker.perp_positions[0].base_asset_amount, -half);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.perp_positions[0].reduce_only_clob_orders, 0);
 }
 
 /// The mark TWAP records the price the fill traded at. Two fills that only

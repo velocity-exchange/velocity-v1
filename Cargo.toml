@@ -6,6 +6,7 @@ members = [
 	"programs/pyth",
 	"programs/pyth-lazer",
 	"programs/token_faucet",
+	"programs/protocol-revenue-router",
 	"crates/velocity-macros",
 ]
 # The `rust/` directory is a SEPARATE Cargo workspace (velocity-rs/keep-rs/swift).
@@ -16,7 +17,7 @@ members = [
 # fuzz harnesses). Each `fuzz/<crate>/` is its own standalone workspace (there is
 # no `fuzz/Cargo.toml` root) so their solana-sdk 3.x / libafl trees never unify
 # with the program (SBF) build; see fuzz/README.md.
-exclude = ["rust", "fuzz"]
+exclude = ["rust", "fuzz", "programs/protocol-revenue-router/svm-tests"]
 resolver = "2"
 
 [profile.release]

@@ -7,6 +7,12 @@ import {
 	PriorityFeeSubscriberMap,
 	VelocityMarketInfo,
 } from '@velocity-exchange/sdk';
+import {
+	fetchRouterConfig,
+	getAssociatedTokenAddress,
+	getDistributeIx,
+	getRouterConfigPda,
+} from '@velocity-exchange/revenue-router-sdk';
 import { Mutex } from 'async-mutex';
 
 import { getErrorCode } from '../error';
@@ -64,6 +70,7 @@ export class ProtocolFeeCollectorBot implements Bot {
 	private watchdogTimerMutex = new Mutex();
 	private watchdogTimerLastPatTime = Date.now();
 	private lookupTableAccounts?: AddressLookupTableAccount[];
+	private unhealthyReason?: string;
 
 	constructor(adminClient: AdminClient, config: BaseBotConfig) {
 		this.name = config.botId;
@@ -132,6 +139,10 @@ export class ProtocolFeeCollectorBot implements Bot {
 	}
 
 	public async healthCheck(): Promise<boolean> {
+		if (this.unhealthyReason !== undefined) {
+			logger.error(`${this.name} unhealthy: ${this.unhealthyReason}`);
+			return false;
+		}
 		let healthy = false;
 		await this.watchdogTimerMutex.runExclusive(async () => {
 			healthy =
@@ -141,15 +152,17 @@ export class ProtocolFeeCollectorBot implements Bot {
 	}
 
 	/**
-	 * Simulate and send one collection ix. Returns true if a transaction was
-	 * actually sent (false on dry run, sim error, or send failure).
+	 * Simulate and send one collection ix. `sent` is false on dry run, sim
+	 * error, or send failure. `confirmedSlot` is undefined when the send
+	 * returned without a confirmed slot, which means the money it moves may
+	 * not have landed yet.
 	 */
 	private async sendIx(
 		ix: TransactionInstruction,
 		marketType: 'perp' | 'spot',
 		marketIndex: number,
 		label: string
-	): Promise<boolean> {
+	): Promise<{ sent: boolean; confirmedSlot?: number }> {
 		try {
 			const pfs = this.priorityFeeSubscriberMap!.getPriorityFees(
 				marketType,
@@ -222,7 +235,7 @@ export class ProtocolFeeCollectorBot implements Bot {
 						Date.now() - sendTxStart
 					}ms: https://solana.fm/tx/${txSig.txSig}`
 				);
-				return true;
+				return { sent: true, confirmedSlot: txSig.slot };
 			}
 		} catch (e: any) {
 			const err = e as Error;
@@ -242,10 +255,79 @@ export class ProtocolFeeCollectorBot implements Bot {
 				);
 			}
 		}
-		return false;
+		return { sent: false };
+	}
+
+	/**
+	 * Confirm the router is initialized and cranked by this wallet. Returning
+	 * false skips only the distribute step; the withdrawals still run and the
+	 * money waits in the router ATA.
+	 */
+	private async checkRouterConfig(): Promise<boolean> {
+		const routerConfigPda = getRouterConfigPda();
+		let config;
+		try {
+			config = await fetchRouterConfig(this.adminClient.connection);
+		} catch (e: any) {
+			logger.error(
+				`${
+					this.name
+				}: could not read RouterConfig ${routerConfigPda.toBase58()}: ${
+					e.message
+				}`
+			);
+			return false;
+		}
+		if (config === null) {
+			logger.error(
+				`${
+					this.name
+				}: RouterConfig ${routerConfigPda.toBase58()} does not exist, skipping distribute`
+			);
+			return false;
+		}
+		if (config.cranker.equals(PublicKey.default)) {
+			logger.error(
+				`${this.name}: RouterConfig.cranker is unset, skipping distribute`
+			);
+			return false;
+		}
+		if (!config.cranker.equals(this.adminClient.wallet.publicKey)) {
+			logger.error(
+				`${
+					this.name
+				}: RouterConfig.cranker is ${config.cranker.toBase58()}, not this wallet ${this.adminClient.wallet.publicKey.toBase58()}, skipping distribute`
+			);
+			return false;
+		}
+		return true;
+	}
+
+	/** Own method so tests can drive the run without an RPC. Returns null when
+	 *  the router ATA does not exist yet: Velocity creates it on the first perp
+	 *  withdrawal, and distribute fails account validation before that. */
+	private async buildDistributeIx(): Promise<TransactionInstruction | null> {
+		const connection = this.adminClient.connection;
+		const config = await fetchRouterConfig(connection);
+		if (config === null) {
+			throw new Error('RouterConfig is not initialized');
+		}
+		const routerAta = getAssociatedTokenAddress(
+			config.usdtMint,
+			getRouterConfigPda()
+		);
+		if ((await connection.getAccountInfo(routerAta)) === null) {
+			return null;
+		}
+		return await getDistributeIx({
+			connection,
+			cranker: this.adminClient.wallet.publicKey,
+			payer: this.adminClient.wallet.publicKey,
+		});
 	}
 
 	private async tryCollectProtocolFees() {
+		this.unhealthyReason = undefined;
 		try {
 			const state = this.adminClient.getStateAccount();
 			const perpRecipientSet = !state.protocolFeeRecipientPerp.equals(
@@ -265,7 +347,7 @@ export class ProtocolFeeCollectorBot implements Bot {
 					);
 					continue;
 				}
-				const sent = await this.sendIx(
+				const result = await this.sendIx(
 					await this.adminClient.getSweepPerpMarketFeesIx(
 						perpMarket.marketIndex
 					),
@@ -273,7 +355,7 @@ export class ProtocolFeeCollectorBot implements Bot {
 					perpMarket.marketIndex,
 					'sweepPerpMarketFees'
 				);
-				if (sent) {
+				if (result.sent) {
 					sweepsSent++;
 				}
 			}
@@ -288,6 +370,18 @@ export class ProtocolFeeCollectorBot implements Bot {
 			}
 
 			// 2) perp withdrawals (quote-denominated pools)
+			const routerOk = await this.checkRouterConfig();
+			if (
+				routerOk &&
+				!state.protocolFeeRecipientPerp.equals(getRouterConfigPda())
+			) {
+				logger.warn(
+					`${
+						this.name
+					}: state.protocolFeeRecipientPerp is ${state.protocolFeeRecipientPerp.toBase58()}, not the router config ${getRouterConfigPda().toBase58()}`
+				);
+			}
+			let perpWithdrawalsUnconfirmed = 0;
 			if (!perpRecipientSet) {
 				logger.info(
 					`${this.name}: state.protocolFeeRecipientPerp is unset, skipping perp withdrawals`
@@ -318,7 +412,7 @@ export class ProtocolFeeCollectorBot implements Bot {
 							perpMarket.marketIndex
 						}`
 					);
-					await this.sendIx(
+					const result = await this.sendIx(
 						await this.adminClient.getWithdrawProtocolFeesPerpIx(
 							perpMarket.marketIndex,
 							U64_MAX
@@ -327,6 +421,9 @@ export class ProtocolFeeCollectorBot implements Bot {
 						perpMarket.marketIndex,
 						'withdrawProtocolFeesPerp'
 					);
+					if (result.sent && result.confirmedSlot === undefined) {
+						perpWithdrawalsUnconfirmed++;
+					}
 				}
 			}
 
@@ -335,6 +432,14 @@ export class ProtocolFeeCollectorBot implements Bot {
 			if (!spotRecipientSet) {
 				logger.info(
 					`${this.name}: state.protocolFeeRecipientSpot is unset, skipping spot withdrawals`
+				);
+			} else if (state.protocolFeeRecipientSpot.equals(getRouterConfigPda())) {
+				// The router treats everything in its ATA as perp revenue, so spot
+				// fees sent there would be misrouted and misreported.
+				logger.error(
+					`${
+						this.name
+					}: state.protocolFeeRecipientSpot is the router config ${getRouterConfigPda().toBase58()}, skipping spot withdrawals`
 				);
 			} else {
 				for (const spotMarket of this.adminClient.getSpotMarketAccounts()) {
@@ -365,6 +470,53 @@ export class ProtocolFeeCollectorBot implements Bot {
 						spotMarket.marketIndex,
 						'withdrawProtocolFeesSpot'
 					);
+				}
+			}
+
+			// 4) split whatever reached the router ATA between the recovery pool
+			// and the treasury
+			if (routerOk) {
+				if (perpWithdrawalsUnconfirmed > 0) {
+					logger.info(
+						`${this.name}: skipping distribute: ${perpWithdrawalsUnconfirmed} withdrawal(s) without a confirmed slot; funds wait in the router ATA`
+					);
+				} else {
+					// marketType/marketIndex only pick a priority fee bucket here
+					const firstPerpMarket =
+						this.adminClient.getPerpMarketAccounts()[0]?.marketIndex ?? 0;
+					// Building the ix reads RouterConfig over RPC and can throw; that
+					// must count as a failed distribute, not escape to the outer catch.
+					let result: { sent: boolean } | null = null;
+					try {
+						const ix = await this.buildDistributeIx();
+						if (ix === null) {
+							logger.info(
+								`${this.name}: router ATA does not exist yet, nothing to distribute`
+							);
+						} else {
+							result = await this.sendIx(
+								ix,
+								'perp',
+								firstPerpMarket,
+								'distribute'
+							);
+						}
+					} catch (e: any) {
+						logger.error(
+							`${this.name}: could not build distribute ix: ${e.message}`
+						);
+						result = { sent: false };
+					}
+					if (result !== null && !result.sent && !this.dryRun) {
+						this.unhealthyReason = 'distribute failed';
+						// A CronJob only sees the exit code, so fail the run.
+						if (this.runOnce) {
+							process.exitCode = 1;
+						}
+						await webhookMessage(
+							`[${this.name}]: :x: router distribute failed; fees are stranded in the router ATA until the next run`
+						);
+					}
 				}
 			}
 		} catch (e: any) {

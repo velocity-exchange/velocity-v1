@@ -171,7 +171,7 @@ license-files = []
 
 # First-party crates. Every one of them is governed by the repository's root
 # ./LICENSE (Apache-2.0) but omits `license` from its own `[package]` table.
-# Adding `license = "Apache-2.0"` to those six manifests would make these
+# Adding `license = "Apache-2.0"` to those seven manifests would make these
 # clarifications unnecessary; that is a manifest change, not a CI change, so it
 # is left for a separate PR.
 [[licenses.clarify]]
@@ -233,3 +233,9 @@ allow-wildcard-paths = true
 
 deny = []
 skip-tree = []
+
+[[licenses.clarify]]
+name = "protocol-revenue-router"
+expression = "Apache-2.0"
+license-files = []
+

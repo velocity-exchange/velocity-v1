@@ -261,10 +261,11 @@ cmd_status() {
 		ver="$(cargo_version "$p")"
 		tag="$(latest_tag "program-$p-")"
 		tver=""; tsha=""; [ -z "$tag" ] || { tver="$(tag_version "$tag")"; tsha="$(tag_sha "$tag")"; }
+		local tv="${tver:+v$tver}"
 		n="$(count_lines "$(commits_since "$tsha" "$(program_path "$p")")")"
 		mconc=""; [ -z "$tag" ] || mconc="$(run_for_branch "$MAINNET_WF" "$tag" | cut -f4)"
-		printf '   %s%-13s%s Cargo %-9s tag v%-8s %s   mainnet %s   %s program commit(s) since tag\n' \
-			"$BOLD" "$p" "$RST" "${ver:-none}" "${tver:-none}" "${DIM}$(short "$tsha") $(tag_date "$tag")${RST}" "$(mark "$mconc")" "$n" >&2
+		printf '   %s%-13s%s Cargo %-9s tag %-9s %s   mainnet %s   %s program commit(s) since tag\n' \
+			"$BOLD" "$p" "$RST" "${ver:-none}" "${tv:-none}" "${DIM}$(short "$tsha") $(tag_date "$tag")${RST}" "$(mark "$mconc")" "$n" >&2
 		if [ -n "$tver" ] && [ "$n" -gt 0 ] && ! semver_gt "$ver" "$tver"; then
 			warn "$p: Cargo $ver is not ahead of tag v$tver; bump before tagging"
 			set_next "bump $p"

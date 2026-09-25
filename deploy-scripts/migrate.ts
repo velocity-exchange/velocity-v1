@@ -132,13 +132,14 @@ function ixDiscriminator(name: string): Buffer {
 	return createHash('sha256').update(`global:${name}`).digest().subarray(0, 8);
 }
 
-/** Zero-copy accounts `extend_account` can grow, and their sizes in the
- * current build. An account already at or beyond its target is skipped, so a
- * type that never grew is harmless to list. */
+/** Zero-copy accounts `extend_account` can grow, with their `SIZE`, which
+ * includes the discriminator. An account at or past its size is skipped. The
+ * unit test `the_migration_script_resizes_to_the_real_sizes` parses these
+ * entries, so keep each one on one line with a plain number. */
 const RESIZABLE: { name: string; size: number }[] = [
-	{ name: 'User', size: 8 + 4496 },
-	{ name: 'PerpMarket', size: 8 + 1328 },
-	{ name: 'QuoterV0', size: 8 + 784 },
+	{ name: 'User', size: 4496 },
+	{ name: 'PerpMarket', size: 1560 },
+	{ name: 'QuoterV0', size: 792 },
 	// Relay condition hosts. Sizes come from `cargo test -p velocity --lib
 	// sizes_for_the_migration_script -- --show-output` in `state/relay_scratch.rs`. A stale or missing entry here has no symptom until read at the wrong offset.
 	{ name: 'ClobCrankConditionsV0', size: 808 },

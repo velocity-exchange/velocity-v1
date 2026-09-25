@@ -89,4 +89,36 @@ mod tests {
             crate::state::user_conditions::UserConditionsV0::SIZE,
         );
     }
+
+    /// A stale size makes the migration extend an account that is current, or
+    /// skip one that is too small.
+    #[test]
+    fn the_migration_script_resizes_to_the_real_sizes() {
+        use crate::state::{
+            clob_crank::ClobCrankConditionsV0, perp_market::PerpMarket, prop_amm::QuoterV0,
+            quoter_cross::QuoterCrossConditionsV0, traits::Size, user::User,
+            user_conditions::UserConditionsV0,
+        };
+
+        let script = include_str!("../../../../deploy-scripts/migrate.ts");
+        let listed_size = |name: &str| -> Option<usize> {
+            let entry = format!("{{ name: '{name}', size: ");
+            let start = script.find(&entry)? + entry.len();
+            let end = start + script[start..].find(" }")?;
+            script[start..end].parse().ok()
+        };
+
+        let expected = [
+            ("User", User::SIZE),
+            ("PerpMarket", PerpMarket::SIZE),
+            ("QuoterV0", QuoterV0::SIZE),
+            ("ClobCrankConditionsV0", ClobCrankConditionsV0::SIZE),
+            ("QuoterCrossConditionsV0", QuoterCrossConditionsV0::SIZE),
+            ("UserConditionsV0", UserConditionsV0::SIZE),
+        ];
+
+        for (name, size) in expected {
+            assert_eq!(listed_size(name), Some(size), "migrate.ts size for {name}");
+        }
+    }
 }

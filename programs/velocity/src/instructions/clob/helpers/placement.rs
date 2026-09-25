@@ -12,7 +12,9 @@ use {
         error::ErrorCode,
         instructions::optional_accounts::AccountMaps,
         load, load_mut,
-        math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
+        math::{
+            margin::meets_place_order_margin_requirement, orders::is_new_order_risk_increasing,
+        },
         msg,
         state::{
             events::OrderActionExplanation,
@@ -404,19 +406,7 @@ pub fn rest_on_clob<'info>(
         RestAdmission::Refused(reason) => return Ok(RestOutcome::Refused(reason)),
     };
 
-    let reserved = match reserve_remainder(
-        accounts.user,
-        maps,
-        &OrderReservation::book_order(
-            order.market_index,
-            order.direction,
-            order.base_asset_amount,
-            order.reduce_only,
-        ),
-        order.direction,
-        order.base_asset_amount,
-        clock.slot,
-    )? {
+    let reserved = match reserve_remainder(accounts.user, maps, order, clock.slot)? {
         RemainderReservation::Held(reserved) => reserved,
         RemainderReservation::Refused(reason) => return Ok(RestOutcome::Refused(reason)),
     };
@@ -603,17 +593,12 @@ enum RemainderReservation {
 }
 
 /// Reserve a remainder on its owner's account before it goes to the book,
-/// and gate margin the way a placement does.
-///
-/// A refusal leaves the account as it was. A reducing remainder skips the
-/// margin gate, because refusing it would remove the order that shrinks the
-/// position.
+/// and gate margin the way a placement does. A refusal leaves the account as
+/// it was.
 fn reserve_remainder(
     user_loader: &AccountLoader<User>,
     maps: &mut AccountMaps,
-    reservation: &OrderReservation,
-    direction: PositionDirection,
-    base_asset_amount: u64,
+    order: &ClobRestOrder,
     slot: u64,
 ) -> Result<RemainderReservation> {
     let mut user = load_mut!(user_loader)?;
@@ -621,28 +606,31 @@ fn reserve_remainder(
         return Ok(RemainderReservation::Refused(RestRefusal::OwnerBankrupt));
     }
 
-    let position = user.get_perp_position(reservation.market_index).ok();
+    let position = user.get_perp_position(order.market_index).ok();
     if position.is_some_and(|position| position.open_orders == u8::MAX) {
         return Ok(RemainderReservation::Refused(
             RestRefusal::PositionAtOrderLimit,
         ));
     }
 
-    let risk_increasing = !is_order_position_reducing(
-        &direction,
-        base_asset_amount,
-        position.map_or(0, |position| position.base_asset_amount),
-    )?;
+    let risk_increasing = rest_is_risk_increasing(position, order)?;
+    let reservation = OrderReservation::book_order(
+        order.market_index,
+        order.direction,
+        order.base_asset_amount,
+        order.reduce_only,
+    );
 
-    let position_index = user.reserve_orders(reservation)?;
+    let position_index = user.reserve_orders(&reservation)?;
     let is_isolated_position = user.perp_positions[position_index].is_isolated();
 
-    if risk_increasing {
-        let isolated_market_index = is_isolated_position.then_some(reservation.market_index);
-        if meets_place_order_margin_requirement(&user, maps, true, isolated_market_index).is_err() {
-            user.release_orders(reservation, ReleaseCheck::HeldToReservation)?;
-            return Ok(RemainderReservation::Refused(RestRefusal::FailsMarginGate));
-        }
+    let isolated_market_index =
+        (risk_increasing && is_isolated_position).then_some(order.market_index);
+    if meets_place_order_margin_requirement(&user, maps, risk_increasing, isolated_market_index)
+        .is_err()
+    {
+        user.release_orders(&reservation, ReleaseCheck::HeldToReservation)?;
+        return Ok(RemainderReservation::Refused(RestRefusal::FailsMarginGate));
     }
 
     user.update_last_active_slot(slot);
@@ -650,6 +638,29 @@ fn reserve_remainder(
         user_ref: user.clob_user_ref(),
         is_isolated_position,
     }))
+}
+
+/// Whether resting `order` adds risk, judged by the predicate every placement
+/// uses. It reads the position before the rest reserves, and it counts the
+/// orders the position already rests, so orders that together flip the
+/// position read as risk-increasing.
+fn rest_is_risk_increasing(
+    position: Option<&crate::state::user::PerpPosition>,
+    order: &ClobRestOrder,
+) -> Result<bool> {
+    let rest = Order {
+        direction: order.direction,
+        base_asset_amount: order.base_asset_amount,
+        reduce_only: order.reduce_only,
+        ..Order::default()
+    };
+
+    Ok(is_new_order_risk_increasing(
+        &rest,
+        position.map_or(0, |position| position.base_asset_amount),
+        position.map_or(0, |position| position.open_bids),
+        position.map_or(0, |position| position.open_asks),
+    )?)
 }
 
 #[cfg(test)]
@@ -995,6 +1006,59 @@ mod rest_admission_tests {
         );
 
         assert!(matches!(admission, RestAdmission::Admitted { .. }));
+    }
+}
+
+#[cfg(test)]
+mod rest_risk_tests {
+    use {
+        super::{rest_is_risk_increasing, ClobRestOrder},
+        crate::{controller::position::PositionDirection, state::user::PerpPosition},
+    };
+
+    fn ask(base_asset_amount: u64, reduce_only: bool) -> ClobRestOrder {
+        ClobRestOrder {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price: 100,
+            base_asset_amount,
+            max_ts: 0,
+            client_order_id: 1,
+            taker_origin: true,
+            reject_if_crossed: false,
+            reduce_only,
+            activation_delay_slots: None,
+        }
+    }
+
+    /// A long of 10 already rests asks for 8. Another ask of 5 fits the bare
+    /// position, but with the resting asks it takes the account short.
+    #[test]
+    fn a_rest_that_flips_the_position_with_resting_orders_is_risk_increasing() {
+        let position = PerpPosition {
+            base_asset_amount: 10,
+            open_asks: -8,
+            ..PerpPosition::default()
+        };
+
+        assert!(rest_is_risk_increasing(Some(&position), &ask(5, false)).unwrap());
+        assert!(!rest_is_risk_increasing(Some(&position), &ask(2, false)).unwrap());
+    }
+
+    #[test]
+    fn a_reduce_only_rest_is_not_risk_increasing() {
+        let position = PerpPosition {
+            base_asset_amount: 10,
+            open_asks: -8,
+            ..PerpPosition::default()
+        };
+
+        assert!(!rest_is_risk_increasing(Some(&position), &ask(5, true)).unwrap());
+    }
+
+    #[test]
+    fn a_rest_with_no_position_is_risk_increasing() {
+        assert!(rest_is_risk_increasing(None, &ask(5, false)).unwrap());
     }
 }
 

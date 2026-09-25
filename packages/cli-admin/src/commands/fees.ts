@@ -14,6 +14,7 @@ import {
 } from '@velocity-exchange/sdk';
 import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
+import { getAccountsBatched } from '../lib/rpc';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import * as ui from '../lib/ui';
 import {
@@ -319,14 +320,22 @@ export function registerFees(parent: Command): void {
 							}
 						}
 					}
-					for (const beneficiary of beneficiaries) {
-						const revenueSharePk = getRevenueShareAccountPublicKey(
+					// One batched existence probe for every beneficiary, instead of a
+					// getAccountInfo per beneficiary inside the loop.
+					const beneficiaryList = [...beneficiaries];
+					const revenueSharePks = beneficiaryList.map((b) =>
+						getRevenueShareAccountPublicKey(
 							client.program.programId,
-							new PublicKey(beneficiary)
-						);
-						if (
-							(await client.connection.getAccountInfo(revenueSharePk)) !== null
-						) {
+							new PublicKey(b)
+						)
+					);
+					const revenueShareInfos = await getAccountsBatched(
+						client.connection,
+						revenueSharePks
+					);
+					for (let bi = 0; bi < beneficiaryList.length; bi++) {
+						const beneficiary = beneficiaryList[bi];
+						if (revenueShareInfos[bi] !== null) {
 							continue;
 						}
 						try {

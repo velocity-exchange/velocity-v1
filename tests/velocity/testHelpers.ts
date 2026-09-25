@@ -58,7 +58,19 @@ import {
 	User,
 	OracleSource,
 	getSpotMarketPublicKey,
+	AssetTier,
+	ContractTier,
+	InitializePerpMarketArgs,
+	InitializeSpotMarketArgs,
+	PEG_PRECISION,
+	BASE_PRECISION,
+	ZERO,
+	ONE,
 } from '../../packages/sdk/src';
+import {
+	encodeName,
+	DEFAULT_MARKET_NAME,
+} from '../../packages/sdk/src/userName';
 import {
 	LiteSVMContextWrapper,
 	LiteSVMConnection,
@@ -1542,4 +1554,89 @@ export function getProtocolFeeTotal(
 			SpotBalanceType.DEPOSIT
 		)
 	);
+}
+
+/**
+ * Fill out `InitializePerpMarketArgs` from a handful of overrides.
+ *
+ * `getInitializePerpMarketIx` takes a struct with all twenty-eight fields
+ * present, which is the point: there are no silent defaults at a listing. Tests
+ * are the opposite case, where most callers only care about three or four
+ * values, so this supplies the same defaults the positional
+ * `initializePerpMarket` helper applies. Keeping them here rather than in the
+ * SDK means production callers still have to state every field.
+ */
+export function perpMarketParams(
+	overrides: Partial<InitializePerpMarketArgs> &
+		Pick<
+			InitializePerpMarketArgs,
+			| 'marketIndex'
+			| 'ammBaseAssetReserve'
+			| 'ammQuoteAssetReserve'
+			| 'ammPeriodicity'
+		>
+): InitializePerpMarketArgs {
+	return {
+		ammPegMultiplier: PEG_PRECISION,
+		oracleSource: OracleSource.PYTH_LAZER,
+		contractTier: ContractTier.SPECULATIVE,
+		marginRatioInitial: 2000,
+		marginRatioMaintenance: 500,
+		liquidatorFee: 0,
+		ifLiquidationFee: 10000,
+		imfFactor: 0,
+		activeStatus: true,
+		baseSpread: 0,
+		maxSpread: 142500,
+		maxOpenInterest: ZERO,
+		maxRevenueWithdrawPerPeriod: ZERO,
+		quoteMaxInsurance: ZERO,
+		orderStepSize: BASE_PRECISION.divn(10000),
+		orderTickSize: PRICE_PRECISION.divn(100000),
+		minOrderSize: BASE_PRECISION.divn(10000),
+		concentrationCoefScale: ONE,
+		curveUpdateIntensity: 0,
+		ammJitIntensity: 0,
+		name: encodeName(DEFAULT_MARKET_NAME),
+		lpPoolId: 0,
+		fundingClampThreshold: 0,
+		fundingRampSlope: 0,
+		...overrides,
+	};
+}
+
+/**
+ * Fill out `InitializeSpotMarketArgs`, mirroring `perpMarketParams`.
+ *
+ * `minBorrowRate` and `maxTokenDeposits` default to 0, which is what the
+ * positional `initializeSpotMarket` hardcodes, so a params built here and the
+ * positional call produce the same market.
+ */
+export function spotMarketParams(
+	overrides: Partial<InitializeSpotMarketArgs> &
+		Pick<InitializeSpotMarketArgs, 'oracleSource'>
+): InitializeSpotMarketArgs {
+	return {
+		optimalUtilization: SPOT_MARKET_RATE_PRECISION.divn(2).toNumber(),
+		optimalBorrowRate: SPOT_MARKET_RATE_PRECISION.toNumber(),
+		maxBorrowRate: SPOT_MARKET_RATE_PRECISION.muln(2).toNumber(),
+		minBorrowRate: 0,
+		initialAssetWeight: SPOT_MARKET_WEIGHT_PRECISION.toNumber(),
+		maintenanceAssetWeight: SPOT_MARKET_WEIGHT_PRECISION.toNumber(),
+		initialLiabilityWeight: SPOT_MARKET_WEIGHT_PRECISION.toNumber(),
+		maintenanceLiabilityWeight: SPOT_MARKET_WEIGHT_PRECISION.toNumber(),
+		imfFactor: 0,
+		liquidatorFee: 0,
+		ifLiquidationFee: 0,
+		activeStatus: true,
+		assetTier: AssetTier.COLLATERAL,
+		scaleInitialAssetWeightStart: ZERO,
+		withdrawGuardThreshold: ZERO,
+		orderTickSize: ONE,
+		orderStepSize: ONE,
+		ifTotalFactor: 0,
+		maxTokenDeposits: ZERO,
+		name: encodeName(DEFAULT_MARKET_NAME),
+		...overrides,
+	};
 }

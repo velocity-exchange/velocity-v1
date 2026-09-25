@@ -264,6 +264,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for DepositIntoPerpMarketFeePool {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct DepositIntoPerpMarketPnlPool {
+        pub amount: u64,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for DepositIntoPerpMarketPnlPool {
+        const DISCRIMINATOR: &[u8] = &[224, 20, 50, 106, 186, 1, 182, 15];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for DepositIntoPerpMarketPnlPool {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct DepositIntoSpotMarketRevenuePool {
         pub amount: u64,
     }
@@ -450,34 +460,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for InitializeLpPool {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializePerpMarket {
-        pub market_index: u16,
-        pub amm_base_asset_reserve: u128,
-        pub amm_quote_asset_reserve: u128,
-        pub amm_periodicity: i64,
-        pub amm_peg_multiplier: u128,
-        pub oracle_source: OracleSource,
-        pub contract_tier: ContractTier,
-        pub margin_ratio_initial: u32,
-        pub margin_ratio_maintenance: u32,
-        pub liquidator_fee: u32,
-        pub if_liquidation_fee: u32,
-        pub imf_factor: u32,
-        pub active_status: bool,
-        pub base_spread: u32,
-        pub max_spread: u32,
-        pub max_open_interest: u128,
-        pub max_revenue_withdraw_per_period: u64,
-        pub quote_max_insurance: u64,
-        pub order_step_size: u64,
-        pub order_tick_size: u64,
-        pub min_order_size: u64,
-        pub concentration_coef_scale: u128,
-        pub curve_update_intensity: u8,
-        pub amm_jit_intensity: u8,
-        pub name: [u8; 32],
-        pub lp_pool_id: u8,
-        pub funding_clamp_threshold: u32,
-        pub funding_ramp_slope: u32,
+        pub args: InitializePerpMarketArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for InitializePerpMarket {
@@ -555,25 +538,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for InitializeSignedMsgWsDelegates {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializeSpotMarket {
-        pub optimal_utilization: u32,
-        pub optimal_borrow_rate: u32,
-        pub max_borrow_rate: u32,
-        pub oracle_source: OracleSource,
-        pub initial_asset_weight: u32,
-        pub maintenance_asset_weight: u32,
-        pub initial_liability_weight: u32,
-        pub maintenance_liability_weight: u32,
-        pub imf_factor: u32,
-        pub liquidator_fee: u32,
-        pub if_liquidation_fee: u32,
-        pub active_status: bool,
-        pub asset_tier: AssetTier,
-        pub scale_initial_asset_weight_start: u64,
-        pub withdraw_guard_threshold: u64,
-        pub order_tick_size: u64,
-        pub order_step_size: u64,
-        pub if_total_factor: u32,
-        pub name: [u8; 32],
+        pub args: InitializeSpotMarketArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for InitializeSpotMarket {
@@ -3409,6 +3374,85 @@ pub mod types {
         FeeWithdraw,
         AccountExtension,
         VammQuoteManagement,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct InitializePerpMarketArgs {
+        pub market_index: u16,
+        pub amm_base_asset_reserve: u128,
+        pub amm_quote_asset_reserve: u128,
+        pub amm_periodicity: i64,
+        pub amm_peg_multiplier: u128,
+        pub oracle_source: OracleSource,
+        pub contract_tier: ContractTier,
+        pub margin_ratio_initial: u32,
+        pub margin_ratio_maintenance: u32,
+        pub liquidator_fee: u32,
+        pub if_liquidation_fee: u32,
+        pub imf_factor: u32,
+        pub active_status: bool,
+        pub base_spread: u32,
+        pub max_spread: u32,
+        pub max_open_interest: u128,
+        pub max_revenue_withdraw_per_period: u64,
+        pub quote_max_insurance: u64,
+        pub order_step_size: u64,
+        pub order_tick_size: u64,
+        pub min_order_size: u64,
+        pub concentration_coef_scale: u128,
+        pub curve_update_intensity: u8,
+        pub amm_jit_intensity: u8,
+        pub name: [u8; 32],
+        pub lp_pool_id: u8,
+        pub funding_clamp_threshold: u32,
+        pub funding_ramp_slope: u32,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct InitializeSpotMarketArgs {
+        pub optimal_utilization: u32,
+        pub optimal_borrow_rate: u32,
+        pub max_borrow_rate: u32,
+        pub min_borrow_rate: u8,
+        pub oracle_source: OracleSource,
+        pub initial_asset_weight: u32,
+        pub maintenance_asset_weight: u32,
+        pub initial_liability_weight: u32,
+        pub maintenance_liability_weight: u32,
+        pub imf_factor: u32,
+        pub liquidator_fee: u32,
+        pub if_liquidation_fee: u32,
+        pub active_status: bool,
+        pub asset_tier: AssetTier,
+        pub scale_initial_asset_weight_start: u64,
+        pub withdraw_guard_threshold: u64,
+        pub order_tick_size: u64,
+        pub order_step_size: u64,
+        pub if_total_factor: u32,
+        pub max_token_deposits: u64,
+        pub name: [u8; 32],
     }
     #[repr(C)]
     #[derive(
@@ -8748,6 +8792,106 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for DepositIntoPerpMarketFeePool {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct DepositIntoPerpMarketPnlPool {
+        pub state: Pubkey,
+        pub perp_market: Pubkey,
+        pub admin: Pubkey,
+        pub source_vault: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub quote_spot_market: Pubkey,
+        pub spot_market_vault: Pubkey,
+        pub token_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for DepositIntoPerpMarketPnlPool {
+        const DISCRIMINATOR: &[u8] = &[185, 9, 179, 196, 92, 152, 90, 48];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for DepositIntoPerpMarketPnlPool {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for DepositIntoPerpMarketPnlPool {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for DepositIntoPerpMarketPnlPool {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for DepositIntoPerpMarketPnlPool {}
+    #[automatically_derived]
+    impl ToAccountMetas for DepositIntoPerpMarketPnlPool {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.source_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quote_spot_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.token_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for DepositIntoPerpMarketPnlPool {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for DepositIntoPerpMarketPnlPool {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

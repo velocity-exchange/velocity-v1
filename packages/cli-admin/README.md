@@ -56,8 +56,14 @@ velocity-admin whoami                                # which on-chain authoritie
 velocity-admin show config
 velocity-admin show state   # every field of the State account, with the exchange-status, feature, LP-pool feature and solvency bitmasks decoded to bit names
 velocity-admin show fees    # every fee users pay: trading tiers, filler reward, split, per-market adjustments + liquidation fees
-velocity-admin show perp-markets [market]  # per-market risk + quoting params: OI cap, margins, spreads, jit/curve intensity, funding clamp, fee/pnl pool balances (the vAMM capital view)
+velocity-admin show perp-markets [market]  # per-market risk + quoting params: OI cap, margins, spreads + spread adjustments, jit/curve intensity, funding clamp, fee/pnl pool balances (the vAMM capital view)
 velocity-admin show spot-markets [market]  # per-market lending params: deposit cap + headroom, weights, rate curve, withdraw guard, IF vault balance
+velocity-admin show user [authority] [--vault-index n]  # UserStats plus each sub-account: delegate, status, collateral, health, leverage, spot balances, perp positions
+
+velocity-admin audit withdrawals [market] [--hours <n>] [--min-usd <n>] [--limit <n>] [--history-pages <n>] [--json]  # read-only; the Spot Withdraw Breaker alert dump: breaker consumption per market at Grafana parity, then every withdrawal on the audited market attributed to the Velocity sub-account that made it (not the fee payer, which is usually our sponsor wallet), with each withdrawer's lifetime flows, PnL decomposition, live positions, 30d volume and account age. Facts only, no verdict. Defaults to the worst-consumed market
+
+velocity-admin market payloads <symbol> [--out <dir>] [--spot-only|--perp-only] [--spot-params <file>] [--perp-params <file>]  # read-only; derive the listing payloads for a market from its entry in deploy-scripts/params, computing every PDA from the market index and feed id. Prints unless --out. Feed them to `propose-batch` in the printed order and read the ordering note: the oracle payload cannot share a batch with the market init
+velocity-admin market fund <symbol> [--deposit <raw>] [--if-stake <raw>] [--fee-pool <raw>] [--pnl-pool <raw>] [--sub-account <n>]  # one Squads batch funding a listed market: lending deposit, IF stake, vAMM fee pool, pnl pool. All four sign as the same vault, so one proposal and one approval. Raw base units of the market each funds; omit a flag to skip that pool. Requires --multisig, the VaultDeposit hot role and tokens in the vault
 
 velocity-admin auth set-cold-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
@@ -70,10 +76,11 @@ velocity-admin auth init-config [--initial-warm <pk>]
 velocity-admin perp-market set-status <market> <status>
 velocity-admin perp-market set-fee-buffer <market> <amount>
 velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>  # PERCENTAGE_PRECISION (1e6); 0 selects the 10 bps default, "disabled" turns the floor off
-velocity-admin perp-market set-spread-adjustment <market> <spreadAdjustment> <inventorySpreadAdjustment>  # VammQuoteManagement/warm/cold; both -100..100. Negative values need `--` first: set-spread-adjustment 0 -- -50 -25
+velocity-admin perp-market set-spread-adjustment <markets> <spreadAdjustment> <inventorySpreadAdjustment>  # VammQuoteManagement/warm/cold; both -100..100. <markets> is 0, 0,1,4 or all, one tx. Negative values need `--` first: set-spread-adjustment all -- -50 -25
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin perp-market deposit-fee-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); funds amm.fee_pool + total_fee_minus_distributions, raw quote base units
+velocity-admin perp-market deposit-pnl-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); transfers raw quote base units into the quote spot vault and credits perp_market.pnl_pool by the same amount in one ix. Prefer over `call updatePerpMarketPnlPool`, which credits without moving tokens
 velocity-admin perp-market sync-amm-summary-stats <market> [--net-unsettled-funding-pnl <amount>]  # AmmCrank hot key (or warm/cold); recompute total_fee_minus_distributions from live state
 velocity-admin spot-market set-status <market> <status>
 velocity-admin spot-market set-guard-threshold <market> <threshold>
@@ -133,6 +140,7 @@ velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a S
 velocity-admin multisig proposals [--limit <n>]                  # recent proposals: status, approvals, timelock ETA
 velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs)
 velocity-admin multisig inspect <index> [--raw]                  # review a pending proposal: decoded instructions + args + named accounts, the account fields it would change (before -> after), program logs, and whether it can execute yet
+velocity-admin multisig inspect-batch-tx <batchIndex> <n>  # decode inner transaction <n> (1-based) of a batch proposal: instructions, args, named accounts. A batch keeps its transactions in separate accounts, so `inspect` reports only the batch itself and `inspect <batchIndex>` says how many inner transactions it holds
 velocity-admin multisig set-rent-collector <pubkey>              # propose a config tx setting the rent collector (required by close-accounts); executing any config tx marks still-Active vault proposals stale
 velocity-admin multisig close-accounts [--dry-run]               # reclaim rent from settled proposals (Executed/Rejected/Cancelled + stale non-approved); requires the multisig's rent collector to be set
 
@@ -141,6 +149,7 @@ velocity-admin extend-account --type <type> [--batch-size <n>] [--dry-run]  # mi
 
 velocity-admin call <ixName> <payloadFile>     # generic IDL escape hatch
 velocity-admin batch <payloadFile> [--dry-run] # several instructions in ONE tx / vault proposal ({ instructions: [{ ix, args, accounts }, ...] }); one approval round, one timelock
+velocity-admin propose-batch <payloadFiles...> [--dry-run]  # several payload files as ONE Squads batch: one proposal, one approval round, one timelock, N inner txs executed in order. Only each file has to fit 1232 bytes. Requires --multisig
 ```
 
 ## Common flows
@@ -158,10 +167,13 @@ large depositors get their collateral weight derated.
 **Seed or top up an insurance fund**: `if stake <market> <amount>`, which initializes the stake
 account on first use. It is not subject to deposit caps.
 
-**Fund perp pnl pools**: first `wallet transfer <quoteMint> <spotMarketVault> <amount>
---to-token-account`, an unattributed donation to the quote spot vault. Once it lands, send a `batch`
-of `updatePerpMarketPnlPool` instructions attributing the amounts per market. The order matters,
-because the update instruction validates that the vault holds the tokens.
+**Fund perp pnl pools**: `perp-market deposit-pnl-pool <market> <amount>`, signed by the
+VaultDeposit hot role. It transfers and credits in one instruction, so there is no window where the
+vault holds tokens no balance claims. Fund several markets in one proposal with a `batch` of
+`depositIntoPerpMarketPnlPool`. The older route, a `wallet transfer --to-token-account` donation
+followed by a `batch` of `updatePerpMarketPnlPool`, still works and is still order-sensitive,
+because the update instruction only credits and validates that the vault already holds the tokens.
+Use it only against a program build that predates `deposit_into_perp_market_pnl_pool`.
 
 **Fund vAMM fee pools (vAMM capital)**: `perp-market deposit-fee-pool <market> <amount>`, signed by
 the VaultDeposit hot role, which `show config` lists. Fund several markets in one proposal with a
@@ -173,10 +185,17 @@ separate operation: `recenterPerpMarketAmm` sets peg and sqrt_k in one instructi
 cold, and wants values re-derived at the live oracle price. Reserves never adjust themselves to new
 capital.
 
-**List a new market**: initialize and parameterise the market, then extend the market address
-lookup table. `lut show` reports what is missing and `lut extend` adds it. Services build versioned
-transactions against that table, so a fill or liquidation touching a market missing from it can
-exceed the transaction size limit. Extend the table before you redeploy the services.
+**List a new market**: `market payloads <symbol>` derives every payload from the reviewed entry in
+`deploy-scripts/params` and computes the PDAs, so nothing is typed by hand. Propose the oracle
+payload on its own first, because the lazer cranker has to post a price before the market init can
+read it, then `propose-batch` the rest as one batch. Members read what they are approving with
+`multisig inspect-batch-tx`. Once it executes, `market fund <symbol>` funds the lending pool, the
+insurance fund, the vAMM fee pool and the pnl pool in a second proposal.
+
+Then extend the market address lookup table. `lut show` reports what is missing and `lut extend`
+adds it. Services build versioned transactions against that table, so a fill or liquidation
+touching a market missing from it can exceed the transaction size limit. Extend the table before
+you redeploy the services.
 
 **Reclaim proposal rent**: `multisig set-rent-collector` first, then `multisig close-accounts`. The
 first one is a config transaction, and it marks still-Active vault proposals stale, so time it.
@@ -241,6 +260,11 @@ section's verdict right-aligned, then `label   value` rows beneath it. This cove
 `picocolors`, which turns itself off when stdout is not a TTY or when `NO_COLOR` is set, so
 redirecting to a file or piping into Slack gives clean text. Prefer these helpers over bare
 `console.log` in new commands, so the tool keeps reading as one thing.
+
+`--agent` renders the same output for a program rather than a terminal: no colour, no alignment
+padding, no truncated addresses, tables as tab-separated rows and labelled rows as `key=value`. It
+is global, so it applies to any command. Commands that emit structured data offer `--json` as well,
+which is the better target when you want the numbers rather than the layout.
 
 ## Routing through a Squads V4 multisig
 
@@ -348,6 +372,30 @@ not the snake_case of the raw IDL file. Field names and types come from the inst
 `--multisig` the whole batch shares a single proposal. `--dry-run` prints the built instructions and
 the expected proposal rent first.
 
+### Batching past one transaction
+
+`batch` puts everything in one inner transaction, so the whole payload has to fit Solana's
+1232-byte limit. When it does not, `propose-batch` takes several payload files and proposes them as
+one Squads batch:
+
+```sh
+velocity-admin propose-batch 1-oracle.json 2-init-spot.json 3-init-perp.json --dry-run
+```
+
+Each file becomes one inner transaction, in the order given, and only each file has to fit the
+limit. There is still one proposal, one approval round and one timelock. Files use the same shape
+as `batch`, `{ instructions: [...] }`. Requires `--multisig`.
+
+Two things to know before using it. Execution is not atomic across inner transactions, so order
+them to leave a coherent state wherever they stop. And members cannot read a batch's contents from
+`multisig inspect`, which reports only the batch and how many inner transactions it holds, so point
+them at `multisig inspect-batch-tx <batchIndex> <n>` to decode each one.
+
+`--dry-run` simulates every inner transaction as the vault, in order, before proposing anything.
+Groups run against the same chain state, so a group that depends on an earlier one's effect, a
+market that does not exist yet for instance, reports an error there that is expected. The error
+text is printed rather than judged, because only you know which of those are real.
+
 ## Global options
 
 | Flag                      | Default                                                                                   |
@@ -358,6 +406,8 @@ the expected proposal rent first.
 | `-e, --env <env>`         | profile, else detected from the RPC's genesis hash                                        |
 | `-m, --multisig <pubkey>` | profile, else none: direct send (`--no-multisig` forces direct under a proposing profile) |
 | `-y, --yes`               | (unset; mainnet direct sends ask for confirmation)                                        |
+| `--agent`                 | (unset; renders for a terminal)                                                           |
+| `--dry-run`               | (unset; builds, prices and prints without sending)                                        |
 
 ## Authority introspection
 

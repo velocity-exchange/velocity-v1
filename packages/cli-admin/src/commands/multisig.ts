@@ -17,10 +17,25 @@ import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { confirmMainnetDirect } from '../lib/context';
+import { renderInstructions } from '../lib/decode';
 import * as ui from '../lib/ui';
 import { flatten } from '../lib/decode';
 
 const { Permission, Permissions } = multisig.types;
+
+/**
+ * A batch and a vault transaction share a PDA derivation: each consumes one
+ * slot in the multisig's transaction index. Only the discriminator tells them
+ * apart, so any command taking a proposal index must check before decoding.
+ */
+function isBatchAccount(data: Buffer): boolean {
+	return (
+		data.length >= 8 &&
+		Buffer.from(multisig.generated.batchDiscriminator).equals(
+			data.subarray(0, 8)
+		)
+	);
+}
 
 export function registerMultisig(parent: Command): void {
 	const ms = parent
@@ -220,6 +235,10 @@ export function registerMultisig(parent: Command): void {
 			)
 	).action(async (indexArg: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
+		// `cmd.opts()` sees only options declared on this leaf. `--dry-run` is a
+		// global, so it resolves through `optsWithGlobals()`, which is what
+		// `readGlobalOpts` already did into `opts`. Reading it off `local` misses
+		// the flag entirely and the command sends for real.
 		const local = cmd.opts() as { cuLimit: string; cuPrice?: string };
 		if (!opts.multisig) {
 			throw new Error(
@@ -237,6 +256,81 @@ export function registerMultisig(parent: Command): void {
 		const multisigPda = new PublicKey(opts.multisig);
 		const member = provider.wallet.publicKey;
 
+		const [slotPda] = multisig.getTransactionPda({
+			multisigPda,
+			index: transactionIndex,
+		});
+		const slotAcc = await provider.connection.getAccountInfo(slotPda);
+		if (slotAcc && isBatchAccount(slotAcc.data)) {
+			const [batch] = multisig.accounts.Batch.fromAccountInfo(slotAcc);
+			const size = Number(batch.size);
+			const from = Number(batch.executedTransactionIndex) + 1;
+			if (from > size) {
+				ui.header(`batch #${transactionIndex}`, ui.ok('already executed'));
+				console.log('');
+				return;
+			}
+			if (opts.dryRun) {
+				ui.header(`batch #${transactionIndex}`, pc.dim('dry run'));
+				ui.kv('would execute', `inner transactions ${from}..${size}, in order`);
+				ui.kv('cu limit', String(cuLimit));
+				ui.note('nothing sent');
+				console.log('');
+				return;
+			}
+			ui.header(
+				`batch #${transactionIndex}`,
+				pc.dim(`executing ${from}..${size}`)
+			);
+			// Sequential and fail-fast. Inner transactions are not atomic with one
+			// another, so stopping at the first failure leaves the batch at a known
+			// index the operator can resume from, rather than punching holes in it.
+			for (let i = from; i <= size; i++) {
+				const inner = await multisig.instructions.batchExecuteTransaction({
+					connection: provider.connection,
+					multisigPda,
+					member,
+					batchIndex: transactionIndex,
+					transactionIndex: i,
+				});
+				const innerIxs = [
+					ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+				];
+				if (local.cuPrice !== undefined) {
+					innerIxs.push(
+						ComputeBudgetProgram.setComputeUnitPrice({
+							microLamports: Number.parseInt(local.cuPrice, 10),
+						})
+					);
+				}
+				innerIxs.push(inner.instruction);
+				const { blockhash } = await provider.connection.getLatestBlockhash();
+				const message = new TransactionMessage({
+					payerKey: member,
+					recentBlockhash: blockhash,
+					instructions: innerIxs,
+				}).compileToV0Message(inner.lookupTableAccounts);
+				try {
+					const sig = await provider.sendAndConfirm(
+						new VersionedTransaction(message)
+					);
+					ui.kv(`tx ${i}/${size}`, pc.dim(sig));
+				} catch (err) {
+					ui.line(
+						ui.bad(
+							`inner transaction ${i}/${size} failed; ${size - i + 1} left. ` +
+								`Fix the cause and re-run \`multisig execute ${transactionIndex}\` ` +
+								'to resume from this index.'
+						)
+					);
+					throw err;
+				}
+			}
+			ui.line(ui.ok(`all ${size} inner transaction(s) executed`));
+			console.log('');
+			return;
+		}
+
 		const { instruction, lookupTableAccounts } =
 			await multisig.instructions.vaultTransactionExecute({
 				connection: provider.connection,
@@ -244,6 +338,15 @@ export function registerMultisig(parent: Command): void {
 				transactionIndex,
 				member,
 			});
+
+		if (opts.dryRun) {
+			ui.header(`proposal #${transactionIndex}`, pc.dim('dry run'));
+			ui.kv('would execute', 'the approved vault transaction');
+			ui.kv('cu limit', String(cuLimit));
+			ui.note('nothing sent');
+			console.log('');
+			return;
+		}
 
 		const ixs = [ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit })];
 		if (local.cuPrice !== undefined) {
@@ -271,6 +374,124 @@ export function registerMultisig(parent: Command): void {
 			`✓ executed proposal #${transactionIndex} (cu-limit ${cuLimit})`
 		);
 		console.log(`  signature: ${signature}`);
+	});
+
+	withGlobalOptions(
+		ms
+			.command('inspect-batch-tx <batchIndex> <n>')
+			.description(
+				'Decode one inner transaction of a batch: its instructions, arguments and ' +
+					'accounts. A batch holds its transactions in separate accounts, so ' +
+					'`inspect` can only report the batch itself. Without this a member would ' +
+					'be approving a batch whose contents they cannot read. Pass no <n> range: ' +
+					'inner transactions are 1-based, and `inspect <batchIndex>` reports how many.'
+			)
+			.option('--raw', 'also print raw instruction data', false)
+	).action(async (batchArg: string, nArg: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { raw: boolean };
+		if (!opts.multisig) {
+			throw new Error(
+				'no multisig: pass --multisig <pda> or use a profile that has one'
+			);
+		}
+		const client = await buildAdminClient(opts, false);
+		const connection = client.connection;
+		const multisigPda = new PublicKey(opts.multisig);
+		const batchIndex = BigInt(Number.parseInt(batchArg, 10));
+		const innerIndex = Number.parseInt(nArg, 10);
+
+		const [batchPda] = multisig.getTransactionPda({
+			multisigPda,
+			index: batchIndex,
+		});
+		const batchAcc = await connection.getAccountInfo(batchPda);
+		if (!batchAcc || !isBatchAccount(batchAcc.data)) {
+			throw new Error(
+				`#${batchIndex} is not a batch. Use \`multisig inspect ${batchIndex}\`.`
+			);
+		}
+		const [batch] = multisig.accounts.Batch.fromAccountInfo(batchAcc);
+		const size = Number(batch.size);
+		if (!Number.isInteger(innerIndex) || innerIndex < 1 || innerIndex > size) {
+			throw new Error(
+				`inner transaction ${nArg} out of range: this batch holds ${size}`
+			);
+		}
+
+		const [txPda] = multisig.getBatchTransactionPda({
+			multisigPda,
+			batchIndex,
+			transactionIndex: innerIndex,
+		});
+		const txAcc = await connection.getAccountInfo(txPda);
+		if (!txAcc) {
+			throw new Error(
+				`inner transaction ${innerIndex} account not found (already closed?)`
+			);
+		}
+		const [inner] =
+			multisig.accounts.VaultBatchTransaction.fromAccountInfo(txAcc);
+		const msg = inner.message;
+
+		// Same account-key convention as a vault transaction: static keys, then
+		// every table's writable indexes, then every table's readonly indexes.
+		const combined: string[] = msg.accountKeys.map((k) => k.toBase58());
+		const lookupTableAccounts: AddressLookupTableAccount[] = [];
+		for (const lookup of msg.addressTableLookups) {
+			const alt = await connection.getAddressLookupTable(lookup.accountKey);
+			if (!alt.value) {
+				throw new Error(
+					`lookup table ${lookup.accountKey.toBase58()} not found`
+				);
+			}
+			lookupTableAccounts.push(alt.value);
+		}
+		msg.addressTableLookups.forEach((lookup, t) => {
+			for (const i of lookup.writableIndexes) {
+				combined.push(lookupTableAccounts[t].state.addresses[i].toBase58());
+			}
+		});
+		msg.addressTableLookups.forEach((lookup, t) => {
+			for (const i of lookup.readonlyIndexes) {
+				combined.push(lookupTableAccounts[t].state.addresses[i].toBase58());
+			}
+		});
+		const flags = accountFlags(msg, combined.length);
+
+		const [vaultPda] = multisig.getVaultPda({
+			multisigPda,
+			index: batch.vaultIndex,
+		});
+		const instructions = msg.instructions.map(
+			(ix) =>
+				new TransactionInstruction({
+					programId: new PublicKey(combined[ix.programIdIndex]),
+					keys: Array.from(ix.accountIndexes).map((a) => ({
+						pubkey: new PublicKey(combined[a]),
+						isSigner: flags.isSigner(a),
+						isWritable: flags.isWritable(a),
+					})),
+					data: Buffer.from(ix.data),
+				})
+		);
+
+		ui.header(
+			`batch #${batchIndex}, inner transaction ${innerIndex}/${size}`,
+			pc.dim(`${instructions.length} instruction(s)`)
+		);
+		ui.kv('multisig', pc.dim(multisigPda.toBase58()));
+		ui.kv('creator', pc.dim(batch.creator.toBase58()));
+		ui.kv(
+			'runs as',
+			`${vaultPda.toBase58()} ${pc.dim(`(vault ${batch.vaultIndex})`)}`
+		);
+		ui.header('instructions');
+		renderInstructions(instructions, local.raw);
+		ui.note(
+			'decode only: unlike `inspect`, this does not simulate or diff state'
+		);
+		console.log('');
 	});
 
 	withGlobalOptions(
@@ -312,6 +533,39 @@ export function registerMultisig(parent: Command): void {
 			throw new Error(
 				`no vault transaction account for proposal #${transactionIndex} (closed, or a config transaction)`
 			);
+		}
+		if (isBatchAccount(acc.data)) {
+			const [batch] = multisig.accounts.Batch.fromAccountInfo(acc);
+			const [proposalPdaB] = multisig.getProposalPda({
+				multisigPda,
+				transactionIndex,
+			});
+			const proposalAccB = await connection.getAccountInfo(proposalPdaB);
+			const proposalB = proposalAccB
+				? multisig.accounts.Proposal.fromAccountInfo(proposalAccB)[0]
+				: undefined;
+			const executed = Number(batch.executedTransactionIndex);
+			const size = Number(batch.size);
+			ui.header(
+				`batch #${transactionIndex}`,
+				pc.dim(`${executed}/${size} executed`)
+			);
+			ui.kv('creator', pc.dim(batch.creator.toBase58()));
+			ui.kv('vault index', String(batch.vaultIndex));
+			ui.kv(
+				'status',
+				proposalB ? JSON.stringify(proposalB.status) : pc.dim('(no proposal)')
+			);
+			ui.note(
+				'one proposal, ' +
+					`${size} inner transaction(s) executed in order; inspect an inner one ` +
+					`with \`multisig inspect-batch-tx ${transactionIndex} <n>\``
+			);
+			ui.note(
+				`execute the remainder with \`multisig execute ${transactionIndex}\``
+			);
+			console.log('');
+			return;
 		}
 		const [vaultTx] = multisig.accounts.VaultTransaction.fromAccountInfo(acc);
 		const msg = vaultTx.message;
@@ -782,7 +1036,6 @@ export function registerMultisig(parent: Command): void {
 			)
 	).action(async (_flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
-		const local = cmd.opts() as { dryRun: boolean };
 		if (!opts.multisig) {
 			throw new Error(
 				'no multisig: pass --multisig <pda> or use a profile that has one'
@@ -854,7 +1107,7 @@ export function registerMultisig(parent: Command): void {
 				4
 			)} SOL to rent collector ${rentCollector.toBase58()}`
 		);
-		if (local.dryRun) {
+		if (opts.dryRun) {
 			console.log('dry run, nothing closed');
 			return;
 		}

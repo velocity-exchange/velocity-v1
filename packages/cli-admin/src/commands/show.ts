@@ -8,14 +8,23 @@ import {
 	HotRole,
 	LpPoolFeatureBitFlags,
 	SolvencyStatus,
+	SpecialUserStatus,
+	UserStatus,
 	decodeName,
+	fetchUserStatsAccount,
 	getTokenAmount,
+	getUserStatsAccountPublicKey,
 	SpotBalanceType,
 } from '@velocity-exchange/sdk';
 import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import { getTokenBalancesBatched, uiAmount } from '../lib/rpc';
 import * as ui from '../lib/ui';
+import { resolveAuthority } from '../lib/userOps';
+
+/** Mirrors `UserDelegatePermission::AllowDelegateTransfer` (state/user.rs). */
+const ALLOW_DELEGATE_TRANSFER = 1;
 
 /** Render `numerator / denominator` as basis points (e.g. taker fee). */
 function asBps(numerator: number, denominator: number): string {
@@ -30,6 +39,28 @@ function asPct(numerator: number, denominator: number): string {
 /** Render a 1e6-precision fraction (LIQUIDATION_FEE_PRECISION, IF_FACTOR_PRECISION) as a percentage. */
 function pct1e6(value: number): string {
 	return `${trimZeros((value / 1_000_000) * 100)}%`;
+}
+
+/** `$1,234.56`, thousands-separated, as in `audit`. */
+function usd(v: number, dp = 2): string {
+	const abs = Math.abs(v).toLocaleString('en-US', {
+		minimumFractionDigits: dp,
+		maximumFractionDigits: dp,
+	});
+	return `${v < 0 ? '-' : ''}$${abs}`;
+}
+
+/** Names of the set bits in a bitmask, or `zeroLabel` when none are set. */
+function bitNames(
+	value: number,
+	bits: Record<string, number>,
+	zeroLabel = 'none'
+): string {
+	const set = Object.entries(bits)
+		.filter(([, bit]) => typeof bit === 'number' && bit !== 0)
+		.filter(([, bit]) => (value & bit) === bit)
+		.map(([name]) => name);
+	return set.length > 0 ? set.join(' | ') : zeroLabel;
 }
 
 function trimZeros(n: number): string {
@@ -227,12 +258,19 @@ export function registerShow(parent: Command): void {
 			markets.sort((a, b) => a.marketIndex - b.marketIndex);
 			const filter =
 				market !== undefined ? Number.parseInt(market, 10) : undefined;
+			const quoteSpot = (client as any).getQuoteSpotMarketAccount();
+			const quote = (raw: any) => Number(raw.toString()) / 1e6;
+			// Spread fields are BID_ASK_SPREAD_PRECISION (1e6 = 100%), so /100 is bps.
+			const bps = (v: number) => `${trimZeros(v / 100)}bp`;
+			// -100..100 scales the spread by 0x..2x.
+			const adj = (v: number) => {
+				const text = `${v > 0 ? '+' : ''}${v} (${trimZeros(1 + v / 100)}x)`;
+				return v === 0 ? pc.dim(text) : pc.yellow(text);
+			};
 			for (const m of markets) {
 				if (filter !== undefined && m.marketIndex !== filter) {
 					continue;
 				}
-				const quoteSpot = (client as any).getQuoteSpotMarketAccount();
-				const q = (bn: any) => trimZeros(Number(bn.toString()) / 1_000_000);
 				const feePool = getTokenAmount(
 					m.amm.feePool.scaledBalance,
 					quoteSpot,
@@ -249,44 +287,69 @@ export function registerShow(parent: Command): void {
 						Number(m.amm.baseAssetReserve.toString())) *
 					(Number(m.amm.pegMultiplier.toString()) / 1e6);
 				const maxOiBase = Number(m.maxOpenInterest.toString()) / 1e9;
-				console.log(
-					`${decodeName(m.name)} (perp ${m.marketIndex}, ${JSON.stringify(
-						m.status
-					)})`
+				const status = Object.keys(m.status)[0] ?? 'unknown';
+
+				ui.header(
+					`${pc.dim(`[${m.marketIndex}]`)} ${ui.safe(decodeName(m.name))}`,
+					`${
+						status === 'active' ? pc.green(status) : pc.yellow(status)
+					} ${pc.dim('·')} ${usd(price, 4)}`
 				);
-				console.log(
-					`  oracle: ${m.oracle.toBase58()} reservePrice=$${trimZeros(price)}`
+				ui.kv('oracle', pc.dim(m.oracle.toBase58()));
+				ui.kv(
+					'max OI',
+					`${ui.count(Number(trimZeros(maxOiBase)))} base ${pc.dim(
+						`(~${usd(maxOiBase * price)})`
+					)} · insurance ${usd(quote(m.insuranceClaim.quoteMaxInsurance))}`
 				);
-				console.log(
-					`  max OI: ${trimZeros(maxOiBase)} base (~$${trimZeros(
-						maxOiBase * price
-					)})  quote_max_insurance: $${q(m.insuranceClaim.quoteMaxInsurance)}`
-				);
-				console.log(
-					`  margins: init ${m.marginRatioInitial / 100}% maint ${
+				ui.kv(
+					'margins',
+					`init ${m.marginRatioInitial / 100}% · maint ${
 						m.marginRatioMaintenance / 100
-					}%  imf: ${m.imfFactor}  liq fees: ${pct1e6(
-						m.liquidatorFee
-					)}/${pct1e6(m.ifLiquidationFee)} (liquidator/IF)`
+					}% · imf ${m.imfFactor}`
 				);
-				console.log(
-					`  spreads: base ${m.amm.baseSpread / 100}bp max ${
-						m.amm.maxSpread / 100
-					}bp  jit: ${m.amm.ammJitIntensity}  curve intensity: ${
+				ui.kv(
+					'liq fees',
+					`liquidator ${pct1e6(m.liquidatorFee)} · if ${pct1e6(
+						m.ifLiquidationFee
+					)}`
+				);
+				ui.kv(
+					'spreads',
+					`base ${bps(m.amm.baseSpread)} · max ${bps(m.amm.maxSpread)} ${pc.dim(
+						`· live long ${bps(m.amm.longSpread)} short ${bps(
+							m.amm.shortSpread
+						)}`
+					)}`
+				);
+				ui.kv(
+					'spread adj',
+					`spread ${adj(m.amm.ammSpreadAdjustment)} · inventory ${adj(
+						m.amm.ammInventorySpreadAdjustment
+					)}`
+				);
+				ui.kv(
+					'amm',
+					`jit ${m.amm.ammJitIntensity} · curve intensity ${
 						m.amm.curveUpdateIntensity
-					}`
+					} · sqrt_k ${ui.count(
+						Number(trimZeros(Number(m.amm.sqrtK.toString()) / 1e9))
+					)}`
 				);
-				console.log(
-					`  funding: clamp ${m.fundingClampThreshold}bp slope ${
+				ui.kv(
+					'funding',
+					`clamp ${m.fundingClampThreshold}bp · slope ${
 						Number(m.fundingRampSlope) / 1e6
 					}x`
 				);
-				console.log(
-					`  pools: fee $${trimZeros(Number(feePool) / 1e6)} pnl $${trimZeros(
+				ui.kv(
+					'pools',
+					`fee ${usd(Number(feePool) / 1e6)} · pnl ${usd(
 						Number(pnlPool) / 1e6
-					)}  sqrt_k ${trimZeros(Number(m.amm.sqrtK.toString()) / 1e9)}`
+					)}`
 				);
 			}
+			console.log('');
 		} finally {
 			await client.unsubscribe();
 		}
@@ -309,6 +372,15 @@ export function registerShow(parent: Command): void {
 			markets.sort((a, b) => a.marketIndex - b.marketIndex);
 			const filter =
 				market !== undefined ? Number.parseInt(market, 10) : undefined;
+			const shown = markets.filter(
+				(m) => filter === undefined || m.marketIndex === filter
+			);
+			// One batched read for every insurance fund vault, rather than a
+			// `getTokenAccountBalance` per market inside the render loop.
+			const ifBalances = await getTokenBalancesBatched(
+				provider.connection,
+				shown.map((m) => m.insuranceFund.vault)
+			);
 			for (const m of markets) {
 				if (filter !== undefined && m.marketIndex !== filter) {
 					continue;
@@ -321,10 +393,10 @@ export function registerShow(parent: Command): void {
 					Number(getTokenAmount(m.borrowBalance, m, SpotBalanceType.BORROW)) /
 					div;
 				const cap = Number(m.maxTokenDeposits.toString()) / div;
-				const ifBal = await provider.connection
-					.getTokenAccountBalance(m.insuranceFund.vault)
-					.then((r) => r.value.uiAmountString)
-					.catch(() => 'n/a');
+				const ifBal = uiAmount(
+					ifBalances.get(m.insuranceFund.vault.toBase58()),
+					m.decimals
+				);
 				console.log(
 					`${decodeName(m.name)} (spot ${m.marketIndex}, ${JSON.stringify(
 						m.status
@@ -359,6 +431,165 @@ export function registerShow(parent: Command): void {
 					)}  IF vault: ${ifBal}`
 				);
 			}
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		show
+			.command('user [authority]')
+			.description(
+				"Print an authority's UserStats and every sub-account: delegate, status flags, " +
+					'collateral, health, leverage, spot balances and perp positions. The authority ' +
+					'defaults to the signer, or to the vault PDA at --vault-index with --multisig.'
+			)
+			.option(
+				'--vault-index <index>',
+				'with --multisig, vault index used to derive the authority PDA',
+				'0'
+			)
+	).action(async (authorityArg: string | undefined, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { vaultIndex: string };
+		const vaultIndex = Number.parseInt(local.vaultIndex, 10);
+		const authority = resolveAuthority(opts, authorityArg, vaultIndex);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const key = (value: PublicKey) =>
+				value.equals(PublicKey.default)
+					? pc.dim('(unset)')
+					: value.toBase58();
+			const quote = (raw: BN) => usd(Number(raw.toString()) / 1e6);
+
+			const userStats = await fetchUserStatsAccount(
+				provider.connection,
+				client.program,
+				authority
+			);
+			if (!userStats) {
+				console.log(`no UserStats for authority ${authority.toBase58()}`);
+				return;
+			}
+			const userStatsPk = getUserStatsAccountPublicKey(
+				client.program.programId,
+				authority
+			);
+			ui.header(
+				'UserStats',
+				userStats.equityBreakerTripped !== 0
+					? pc.red('breaker TRIPPED')
+					: pc.dim('breaker clear')
+			);
+			ui.kv('authority', authority.toBase58());
+			ui.kv('account', pc.dim(userStatsPk.toBase58()));
+			ui.kv(
+				'sub-accounts',
+				`${userStats.numberOfSubAccounts} live ${pc.dim(
+					`(${userStats.numberOfSubAccountsCreated} created)`
+				)}`
+			);
+			ui.kv(
+				'delegate transfer',
+				(userStats.delegatePermissions & ALLOW_DELEGATE_TRANSFER) !== 0
+					? pc.yellow('allowed')
+					: pc.dim('not allowed')
+			);
+			ui.kv('referrer', key(userStats.referrer));
+			ui.kv(
+				'30d volume',
+				`taker ${quote(userStats.takerVolume30D)} · maker ${quote(
+					userStats.makerVolume30D
+				)}`
+			);
+
+			for (
+				let subId = 0;
+				subId < userStats.numberOfSubAccountsCreated;
+				subId++
+			) {
+				if (!(await client.addUser(subId, authority))) {
+					continue; // deleted sub-account
+				}
+				const u = client.getUser(subId, authority);
+				const account = u.getUserAccountOrThrow();
+				ui.header(
+					`${pc.dim(`[${subId}]`)} ${ui.safe(decodeName(account.name))}`,
+					pc.dim(u.getUserAccountPublicKey().toBase58())
+				);
+				ui.kv('delegate', key(account.delegate));
+				ui.kv(
+					'status',
+					`${bitNames(
+						account.status,
+						UserStatus as unknown as Record<string, number>,
+						'active'
+					)}${
+						account.specialUserStatus !== 0
+							? ` · special ${bitNames(
+									account.specialUserStatus,
+									SpecialUserStatus as unknown as Record<string, number>
+							  )}`
+							: ''
+					} · margin trading ${
+						account.isMarginTradingEnabled ? 'on' : 'off'
+					} · pool ${account.poolId}`
+				);
+				ui.kv(
+					'collateral',
+					`total ${quote(u.getTotalCollateral())} · free ${quote(
+						u.getFreeCollateral()
+					)} · health ${u.getHealth()}% · leverage ${trimZeros(
+						Number(u.getLeverage().toString()) / 1e4
+					)}x`
+				);
+				if (!account.equityFloor.isZero()) {
+					ui.kv(
+						'equity floor',
+						`${quote(account.equityFloor)} + buffer ${quote(
+							account.equityFloorBuffer
+						)}`
+					);
+				}
+				ui.kv('open orders', String(account.openOrders));
+
+				const spotRows = u.getActiveSpotPositions().map((pos) => {
+					const market = client.getSpotMarketAccountOrThrow(pos.marketIndex);
+					const amount =
+						Number(u.getTokenAmount(pos.marketIndex).toString()) /
+						10 ** market.decimals;
+					return [
+						pc.dim(`spot [${pos.marketIndex}]`),
+						pc.bold(ui.safe(decodeName(market.name))),
+						amount < 0 ? pc.red(trimZeros(amount)) : trimZeros(amount),
+					];
+				});
+				const perpRows = u.getActivePerpPositions().map((pos) => {
+					const market = client.getPerpMarketAccountOrThrow(pos.marketIndex);
+					const base = Number(pos.baseAssetAmount.toString()) / 1e9;
+					const entry =
+						base === 0
+							? 0
+							: Math.abs(Number(pos.quoteEntryAmount.toString()) / 1e6 / base);
+					const pnl = Number(
+						u.getUnrealizedPNL(true, pos.marketIndex).toString()
+					);
+					return [
+						pc.dim(`perp [${pos.marketIndex}]`),
+						pc.bold(ui.safe(decodeName(market.name))),
+						base < 0 ? pc.red(trimZeros(base)) : pc.green(trimZeros(base)),
+						pc.dim(`entry ${usd(entry, 4)}`),
+						`upnl ${usd(pnl / 1e6)}`,
+					];
+				});
+				if (spotRows.length + perpRows.length > 0) {
+					ui.table([...spotRows, ...perpRows]);
+				} else {
+					ui.note('no positions');
+				}
+			}
+			console.log('');
 		} finally {
 			await client.unsubscribe();
 		}

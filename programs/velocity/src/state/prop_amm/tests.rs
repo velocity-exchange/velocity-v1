@@ -961,3 +961,92 @@ fn slab_space_counts_whole_slots() {
     config.program_id = Pubkey::new_unique();
     assert!(config.validate_clob_book(7, &book).is_err());
 }
+
+/// A slab account for `market` whose slot 0 is a book on `book`. Words back
+/// the bytes, so the slot region is 8-aligned as the reader requires.
+fn slab_with_book(market: u16, book: Pubkey) -> Vec<u64> {
+    let space = QuoterSlabV0::space(1);
+    let mut words = vec![0u64; space.div_ceil(8)];
+    let bytes = &mut bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..space];
+    bytes[..8].copy_from_slice(QuoterSlabV0::DISCRIMINATOR);
+
+    let header = QuoterSlabV0 {
+        market,
+        capacity: 1,
+        clob_market: book,
+        ..Default::default()
+    };
+    bytes[8..8 + std::mem::size_of::<QuoterSlabV0>()].copy_from_slice(bytemuck::bytes_of(&header));
+
+    let slot = QuoterSlotV0 {
+        entry: Pubkey::new_unique(),
+        config: QuoterConfigV0 {
+            quoter_type: QuoterType::Clob,
+            program_id: crate::ids::clob_program::id(),
+            response_account: book,
+            market,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    bytes[QuoterSlabV0::SLOT_REGION_OFFSET..].copy_from_slice(bytemuck::bytes_of(&slot));
+    words
+}
+
+/// `from_slab` binds the program as well as the book. Every CPI signs with
+/// the slab, so no other program may receive that signature.
+#[test]
+fn a_book_binds_only_to_the_program_its_slot_runs() {
+    let book = Pubkey::new_unique();
+    let mut words = slab_with_book(3, book);
+    let slab_data = &mut bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..QuoterSlabV0::space(1)];
+    let slab_key = Pubkey::new_unique();
+    let clob_id = crate::ids::clob_program::id();
+    let other_id = Pubkey::new_unique();
+    let loader = Pubkey::default();
+
+    let mut lamports = [0u64; 4];
+    let [slab_lamports, book_lamports, clob_lamports, other_lamports] = &mut lamports;
+    let (mut book_data, mut clob_data, mut other_data) = (vec![], vec![], vec![]);
+
+    let slab_info = AccountInfo::new(
+        &slab_key,
+        false,
+        true,
+        slab_lamports,
+        slab_data,
+        &crate::ID,
+        false,
+    );
+    let book_info = AccountInfo::new(
+        &book,
+        false,
+        true,
+        book_lamports,
+        &mut book_data,
+        &clob_id,
+        false,
+    );
+    let clob_info = AccountInfo::new(
+        &clob_id,
+        false,
+        false,
+        clob_lamports,
+        &mut clob_data,
+        &loader,
+        true,
+    );
+    let other_info = AccountInfo::new(
+        &other_id,
+        false,
+        false,
+        other_lamports,
+        &mut other_data,
+        &loader,
+        true,
+    );
+
+    let slab = AccountLoader::<QuoterSlabV0>::try_from(&slab_info).unwrap();
+    assert!(ClobMarket::from_slab(&slab, 3, &book_info, &clob_info).is_ok());
+    assert!(ClobMarket::from_slab(&slab, 3, &book_info, &other_info).is_err());
+}

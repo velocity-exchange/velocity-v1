@@ -110,8 +110,9 @@ pub struct ClobMarket<'a, 'info> {
 impl<'a, 'info> ClobMarket<'a, 'info> {
     /// Bind to the book the market's slab names. It checks what every caller
     /// needs: the slab serves `market_index`, it holds a book slot, and
-    /// `market` is the account the admin vetted onto that slot. A caller
-    /// therefore cannot point the slab at an arbitrary account it owns.
+    /// `market` and `program` are the accounts the admin vetted onto that
+    /// slot. A caller therefore cannot point the slab at an arbitrary account
+    /// it owns, or hand the slab signature to another program.
     ///
     /// Not gated on `is_active` or `suspended`. Those two mean the slot may
     /// take new flow, and the removal paths must keep working on a killed or
@@ -122,9 +123,13 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         market: &'a AccountInfo<'info>,
         program: &'a AccountInfo<'info>,
     ) -> Result<Self> {
-        slab.clob_slot(market_index)?
-            .config
-            .validate_clob_book(market_index, &market.key())?;
+        {
+            let slot = slab.clob_slot(market_index)?;
+            slot.config
+                .validate_clob_book(market_index, &market.key())?;
+            slot.config.validate_clob_program(&program.key())?;
+        }
+
         let bump = slab.load()?.bump;
         Ok(Self {
             market,
@@ -525,6 +530,21 @@ impl QuoterConfigV0 {
             self.response_account == *book,
             ErrorCode::InvalidQuoterConfig,
             "clob market is not the quoter entry's registered book"
+        )?;
+
+        Ok(())
+    }
+
+    /// Hold `program` to the program this book slot runs. The CPIs sign with
+    /// the slab and read return data from `program`, so an unbound program
+    /// would get the slab signature and answer for the book.
+    pub fn validate_clob_program(&self, program: &Pubkey) -> Result<()> {
+        validate!(
+            self.program_id == *program,
+            ErrorCode::InvalidQuoterConfig,
+            "program {} is not the book's program {}",
+            program,
+            self.program_id
         )?;
 
         Ok(())

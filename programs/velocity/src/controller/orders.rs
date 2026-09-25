@@ -23,8 +23,7 @@ use {
         controller::{
             self,
             position::{
-                self, add_new_position, decrease_open_bids_and_asks, get_position_index,
-                increase_open_bids_and_asks, update_position_and_market, PositionDirection,
+                add_new_position, get_position_index, update_position_and_market, PositionDirection,
             },
             spot_balance::update_spot_balances,
             spot_position::decrease_spot_open_bids_and_asks,

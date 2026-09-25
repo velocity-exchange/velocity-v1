@@ -746,6 +746,7 @@ impl AMM {
         Ok((bid_price, ask_price))
     }
 
+    #[cfg(test)]
     pub fn last_ask_premium(&self, market_stats: &MarketStats) -> VelocityResult<i64> {
         let reserve_price = self.reserve_price()?;
         let ask_price = self
@@ -754,6 +755,7 @@ impl AMM {
         ask_price.safe_sub(market_stats.historical_oracle_data.last_oracle_price)
     }
 
+    #[cfg(test)]
     pub fn last_bid_discount(&self, market_stats: &MarketStats) -> VelocityResult<i64> {
         let reserve_price = self.reserve_price()?;
         let bid_price = self

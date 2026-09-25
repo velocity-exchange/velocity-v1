@@ -249,8 +249,6 @@ impl<'info> RouteFill<'_, 'info> {
                 makers_and_referrer: parties.makers_and_referrer,
                 makers_and_referrer_stats: parties.makers_and_referrer_stats,
                 maps: parties.maps,
-                slot: self.clock.slot,
-                now: self.clock.unix_timestamp,
             },
             self.scratch,
         )?;

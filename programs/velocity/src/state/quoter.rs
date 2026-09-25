@@ -50,8 +50,6 @@ pub struct QuoteContext<'a> {
     /// by `controller/market_stats.rs` from every fill path; read by makers
     /// when computing their quotes.
     pub stats: &'a MarketStats,
-    /// Current oracle reading for the market.
-    pub oracle: &'a OraclePriceData,
     /// MM-wrapped oracle reading. Required for makers whose `setup` derives
     /// post-refresh state from the same MM oracle the orchestrator's keeper
     /// crank uses (the AMM); `None` for callers that only need the plain
@@ -66,9 +64,6 @@ pub struct QuoteContext<'a> {
     /// it in as a scalar — the AMM itself does not reach into PerpMarket
     /// state.
     pub fee_budget: u64,
-    /// The market's price tick — minimum **price** increment. Sourced from
-    /// `PerpMarket::order_tick_size`.
-    pub tick: u64,
     /// The market's base step — minimum **base-amount** increment a fill
     /// can take. Used by the AMM's `cumulative_size` (the sole-vAMM
     /// limit cap) to standardise its analytic-inverse output into valid lot
@@ -83,11 +78,6 @@ pub struct QuoteContext<'a> {
     /// such as the reference price offset smoothing budget, across an IBRL
     /// transition.
     pub slot_clock: SlotClock,
-    /// Base-asset precision divisor. `quote = base * price / base_precision`
-    /// converts a raw base amount to QUOTE_PRECISION-scaled quote. `1e9`
-    /// (BASE_PRECISION) for perps. An AMM maker computes quote through its
-    /// own swap math instead and does not use this field.
-    pub base_precision: u64,
     /// PerpMarket status — threaded to the AMM's projection so the curve
     /// update can relax its k-down precondition when the market is
     /// `ReduceOnly` (matching legacy behaviour). AMM-only.
@@ -193,15 +183,11 @@ pub enum MarketEvent<'a> {
 /// it. Setup is not part of this contract, which is how an external quoter
 /// refreshes its own state too.
 pub trait RouterQuoter {
-    /// Routing tier, with the same meaning as the registry's
-    /// `QuoterConfigV0::priority`. A lower number fills first at a shared
-    /// price, and one tier splits pro rata.
-    fn priority(&self) -> u8;
-
     /// Discrete best-first levels for a taker of `direction` and `size`.
     /// This is the in-program `quote_v0`. `rival_books` carries the books
     /// already built in this fill (external CPI books and worse-tier
     /// internal ones), letting a quoter run a last look. Most ignore it.
+    #[cfg(test)]
     fn quote(
         &self,
         ctx: &QuoteContext,
@@ -263,7 +249,6 @@ pub trait RouterQuoter {
 /// Assembling them by hand at each site lets the two drift apart.
 pub struct MarketQuoteInputs {
     pub stats: MarketStats,
-    pub safe_oracle: OraclePriceData,
     pub mm_oracle: MMOraclePriceData,
     pub oracle_validity: Option<crate::math::oracle::OracleValidity>,
     pub oracle_price: i64,
@@ -291,7 +276,7 @@ impl MarketQuoteInputs {
             slot_clock,
         )?;
 
-        // Only `project_and_apply` reads `oracle_validity`, and it returns
+        // Only `AmmQuoter::refresh` reads `oracle_validity`, and it returns
         // early when the curve was already refreshed at this slot. The
         // router's own projection, an earlier fill, or a keeper crank can do
         // that refresh. In that common case the value is never read, so the
@@ -310,7 +295,6 @@ impl MarketQuoteInputs {
 
         Ok(MarketQuoteInputs {
             stats: market.market_stats,
-            safe_oracle: mm_oracle.get_safe_oracle_price_data(),
             mm_oracle,
             oracle_validity,
             oracle_price: oracle_price_data.price,
@@ -328,15 +312,12 @@ impl MarketQuoteInputs {
     pub fn ctx(&self, slot: u64) -> QuoteContext<'_> {
         QuoteContext {
             stats: &self.stats,
-            oracle: &self.safe_oracle,
             mm_oracle: Some(&self.mm_oracle),
             oracle_validity: self.oracle_validity,
             fee_budget: 0,
-            tick: self.tick_size,
             step_size: self.step_size,
             slot,
             slot_clock: self.slot_clock,
-            base_precision: crate::math::constants::BASE_PRECISION_U64,
             market_status: self.market_status,
             market_config: self.market_config,
         }

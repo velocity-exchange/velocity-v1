@@ -60,7 +60,7 @@ pub use clob_wire::RemoveExpiredArgsV0;
 /// was a migrated taker remainder, which decides whose price a cross settles at.
 pub use clob_wire::RemovedOrderV0;
 /// `cancel_order_v0` and `fill_v0` args and answers on the CLOB wire.
-pub use clob_wire::{CancelOrderArgsV0, FillArgsV0, FillOutcomeV0, FillRequestV0, FilledOrderV0};
+pub use clob_wire::{CancelOrderArgsV0, FillArgsV0, FillOutcomeV0, FillRequestV0};
 /// `next_removal_v0` args and answer: which order the book would let a caller
 /// reclaim, and why. The book decides both. Velocity supplies the removal's
 /// consequences rather than the search.

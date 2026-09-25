@@ -264,8 +264,6 @@ fn measure(case: Case, measure: Measure) -> u64 {
         makers_and_referrer: &makers,
         makers_and_referrer_stats: &stats_map,
         maps: &mut maps,
-        slot,
-        now: 0,
     };
 
     match measure {

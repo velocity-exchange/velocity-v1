@@ -219,17 +219,6 @@ pub const fn legacy_slot_duration_i64_raw(value: LegacySlotDurationI64) -> i64 {
     }
 }
 
-pub const fn legacy_slot_duration_u8_raw(value: LegacySlotDurationU8) -> u8 {
-    #[cfg(not(feature = "idl-build"))]
-    {
-        value.raw_units()
-    }
-    #[cfg(feature = "idl-build")]
-    {
-        value
-    }
-}
-
 pub fn legacy_slot_duration_u64_to_millis(value: LegacySlotDurationU64) -> Millis {
     #[cfg(not(feature = "idl-build"))]
     {

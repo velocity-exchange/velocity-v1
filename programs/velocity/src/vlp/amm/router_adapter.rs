@@ -46,7 +46,7 @@ use {
             safe_math::SafeMath,
         },
         state::{
-            prop_amm::{DirectionV0, PriceLevelV0, QuoterType},
+            prop_amm::{DirectionV0, PriceLevelV0},
             quoter::{QuoteContext, QuoterFill, RouterQuoter},
         },
     },
@@ -302,13 +302,10 @@ pub fn vamm_quote_levels(
 }
 
 impl RouterQuoter for AmmQuoter<'_> {
-    fn priority(&self) -> u8 {
-        QuoterType::Vamm.default_priority()
-    }
-
     /// The vAMM's router quote is the shaded ladder, and `rival_books` is the
     /// last look. The AMM's per-fill refresh happens in `AmmQuoter::refresh`,
     /// which the fill controller runs before the router quotes.
+    #[cfg(test)]
     fn quote(
         &self,
         ctx: &QuoteContext,

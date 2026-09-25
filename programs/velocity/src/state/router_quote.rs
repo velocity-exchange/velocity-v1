@@ -342,13 +342,6 @@ impl RouterQuoteBufferV0 {
         MAX_QUOTED_ROWS.saturating_sub(self.row_count as usize)
     }
 
-    /// One source's rows, by its index in `sources`.
-    pub fn rows_for(&self, index: usize) -> &[QuotedRowV0] {
-        let start = self.sources[index].row_start as usize;
-        let end = start + self.sources[index].row_len as usize;
-        &self.rows[start..end]
-    }
-
     /// One source's levels, by its index in `sources`.
     pub fn levels_for(&self, index: usize) -> &[QuotedLevelV0] {
         &self.levels[index][..self.sources[index].level_count as usize]

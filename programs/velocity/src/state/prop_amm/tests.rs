@@ -2,6 +2,8 @@ use {
     super::{wire::write_quoter_account_metas, *},
     crate::{error::ErrorCode, state::pdas},
     anchor_lang::prelude::*,
+    clob_wire::FilledOrderV0,
+    quoter_spec::{USER_EXCLUSION_BITMAP_BYTES, USER_SET_MAX_BYTES},
 };
 
 fn meta(pubkey: Pubkey, is_writable: bool) -> AmmAccountMeta {

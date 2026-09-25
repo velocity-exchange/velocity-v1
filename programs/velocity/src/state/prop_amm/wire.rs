@@ -12,7 +12,7 @@ pub use quoter_spec::{
     ExecuteResponseV0, L3ArgsV0, L3ResponseV0, L3RowV0, PriceLevelV0, QuoteArgsV0, QuoteResponseV0,
     ResponsePointerV0, SideV0, UserBalanceChangeV0, UserCapV0, UserCapsV0, UserRefV0,
     L3_ROW_FLAG_BLOCKS_WALK, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN, USER_CAPS_BYTES,
-    USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
+    USER_CAPS_CAPACITY, USER_SET_CAPACITY,
 };
 use {
     super::{
@@ -538,8 +538,10 @@ pub trait ExternalQuoterExecutor<'info> {
 /// It holds no entry at any index, so each read gives the no-entry answer the trait
 /// declares. Quoting produced no external books, so a leg is never reachable, and
 /// `subjects` and `execute` are errors rather than a skip.
+#[cfg(test)]
 pub struct NoExternalQuoters;
 
+#[cfg(test)]
 impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
     fn quoter_type(&self, _index: usize) -> QuoterType {
         QuoterType::Custom

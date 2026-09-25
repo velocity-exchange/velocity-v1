@@ -183,8 +183,6 @@ pub struct CapInputs<'a, 'info> {
     /// The taker's own `User`. A quoter settling for the taker is a
     /// self-trade and gets no room at all.
     pub taker_key: &'a Pubkey,
-    pub slot: u64,
-    pub now: i64,
 }
 
 /// Budgets for every named maker this fill could put out of margin.

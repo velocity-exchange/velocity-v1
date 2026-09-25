@@ -10,7 +10,4 @@ pub mod quoted_route;
 pub mod route_fill;
 pub mod user_caps;
 
-pub use {
-    cpi_executor::*, initialize_router_quote_buffer::*, quote_router::*, quoted_route::*,
-    route_fill::*, user_caps::*,
-};
+pub use {initialize_router_quote_buffer::*, quote_router::*, quoted_route::*, route_fill::*};

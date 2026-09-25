@@ -139,6 +139,7 @@ pub struct Cross {
 impl Cross {
     /// The price a cross with an aggressor settles at. A protocol-middled cross
     /// has no single price, because each leg fills at its own.
+    #[cfg(test)]
     pub fn settlement_price(&self) -> Option<u64> {
         match self.kind {
             CrossKind::BidAggresses => Some(self.ask.price),

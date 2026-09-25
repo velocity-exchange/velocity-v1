@@ -1083,10 +1083,6 @@ impl PerpMarket {
         Ok(true)
     }
 
-    pub fn can_sanitize_market_order_auctions(&self) -> bool {
-        self.oracle_source != OracleSource::Prelaunch
-    }
-
     /// Reference price for evaluating trigger (TP/SL) orders:
     ///
     /// `trigger_price = clamp(median(leg_a, leg_b, leg_c))`

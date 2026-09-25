@@ -124,6 +124,7 @@ impl QuoterCrossConditionsV0 {
         })
     }
 
+    #[cfg(test)]
     pub fn block(&self) -> &[u8] {
         ConditionBlock::block(&self.relay)
     }

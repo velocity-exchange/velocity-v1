@@ -19,19 +19,14 @@ fn run_amm_swap_for_test(
     swap_direction: SwapDirection,
 ) -> (u64, i64) {
     let stats_snapshot = market.market_stats;
-    let oracle = OraclePriceData::default();
-    let order_tick = market.order_tick_size;
     let ctx = QuoteContext {
         stats: &stats_snapshot,
-        oracle: &oracle,
         mm_oracle: None,
         oracle_validity: None,
         fee_budget: 0,
-        tick: order_tick,
         step_size: 1,
         slot: 0,
         slot_clock: SlotClock::baseline(),
-        base_precision: BASE_PRECISION as u64,
         market_status: crate::state::market_status::MarketStatus::default(),
         market_config: 0,
     };

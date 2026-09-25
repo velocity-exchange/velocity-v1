@@ -685,13 +685,6 @@ impl TransactionFeeRails {
         max_priority_micro_lamports_per_cu: 0,
     };
 
-    /// The fixed lamports one transaction costs whatever it contains: the
-    /// inclusion fee plus one signature. A crank payment covers this once, so
-    /// a transaction batching many cranks amortizes it across them.
-    pub fn fixed_cost(&self) -> u64 {
-        u64::from(self.inclusion_lamports).saturating_add(u64::from(self.signature_lamports))
-    }
-
     /// Lamports a transaction of this shape costs whoever sends it.
     /// `cost_units` sums what the block-packing cost model charges for
     /// signatures, write locks, instruction-data bytes, the requested compute

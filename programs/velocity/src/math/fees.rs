@@ -547,6 +547,7 @@ impl TakerOriginCrossFee {
     /// What the taker keeps. It is the whole budget when the cross resolves for free,
     /// and the rest of the budget when the cranker is paid. The value is never
     /// negative, which is why this is a subtraction and not a `saturating_sub`.
+    #[cfg(test)]
     pub fn taker_surplus(&self) -> VelocityResult<u64> {
         self.budget.safe_sub(self.crank_reward)
     }

@@ -1738,10 +1738,6 @@ impl Order {
         }
     }
 
-    pub fn has_limit_price(self) -> bool {
-        self.price > 0 || self.has_oracle_price_offset()
-    }
-
     /// Passing in an existing_position forces the function to consider the order's reduce only status
     pub fn get_base_asset_amount_unfilled(
         &self,
@@ -1835,10 +1831,6 @@ impl Order {
             self.order_type,
             OrderType::Market | OrderType::TriggerMarket | OrderType::Oracle
         )
-    }
-
-    pub fn is_limit_order(&self) -> bool {
-        matches!(self.order_type, OrderType::Limit | OrderType::TriggerLimit)
     }
 
     pub fn is_signed_msg(&self) -> bool {

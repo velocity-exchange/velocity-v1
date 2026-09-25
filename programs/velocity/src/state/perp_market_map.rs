@@ -193,6 +193,7 @@ impl<'a> PerpMarketMap<'a> {
         PerpMarketMap(BTreeMap::new())
     }
 
+    #[cfg(test)]
     pub fn load_multiple<'c: 'a>(
         account_infos: Vec<&'c AccountInfo<'a>>,
         must_be_writable: bool,

@@ -7,8 +7,8 @@ use {
         math::{
             casting::Cast,
             constants::{
-                BASE_PRECISION_U64, BPS_PRECISION, FUNDING_RATE_BUFFER,
-                FUNDING_RATE_OFFSET_DENOMINATOR, ONE_HOUR_I128, TWENTY_FOUR_HOUR,
+                BPS_PRECISION, FUNDING_RATE_BUFFER, FUNDING_RATE_OFFSET_DENOMINATOR, ONE_HOUR_I128,
+                TWENTY_FOUR_HOUR,
             },
             funding::{
                 calculate_funding_payment, calculate_funding_premium_with_offset,
@@ -198,18 +198,14 @@ fn refresh_amm_for_funding_gate(
         slot_clock,
     )?;
     let market_stats_snap = market.market_stats;
-    let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
     let ctx = QuoteContext {
         stats: &market_stats_snap,
-        oracle: &safe_oracle,
         mm_oracle: Some(&mm_oracle_price_data),
         oracle_validity,
         fee_budget: 0,
-        tick: market.order_tick_size,
         step_size: market.order_step_size,
         slot,
         slot_clock,
-        base_precision: BASE_PRECISION_U64,
         market_status: market.status,
         market_config: market.market_config,
     };
@@ -304,18 +300,14 @@ pub fn update_funding_rate(
     // funding event + mark-twap update need. The quoter's `&mut amm` borrow is
     // confined to this block; everything after it touches PerpMarket fields
     // directly, and the AMM is settled below via a fresh quoter. ----
-    let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
     let setup_ctx = QuoteContext {
         stats: &market_stats_snap,
-        oracle: &safe_oracle,
         mm_oracle: Some(&mm_oracle_price_data),
         oracle_validity: amm_refresh_validity,
         fee_budget: 0,
-        tick: order_tick_size,
         step_size: order_step_size,
         slot,
         slot_clock,
-        base_precision: BASE_PRECISION_U64,
         market_status,
         market_config: market.market_config,
     };
@@ -449,15 +441,12 @@ pub fn update_funding_rate(
     };
     let event_ctx = QuoteContext {
         stats: &market_stats_snap,
-        oracle: oracle_price_data,
         mm_oracle: None,
         oracle_validity: None,
         fee_budget: 0,
-        tick: order_tick_size,
         step_size: order_step_size,
         slot,
         slot_clock,
-        base_precision: BASE_PRECISION_U64,
         market_status: MarketStatus::default(),
         market_config: 0,
     };

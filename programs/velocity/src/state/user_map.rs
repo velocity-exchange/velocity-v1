@@ -108,6 +108,7 @@ impl<'a> UserMap<'a> {
         }
     }
 
+    #[cfg(test)]
     pub fn insert(
         &mut self,
         user: Pubkey,

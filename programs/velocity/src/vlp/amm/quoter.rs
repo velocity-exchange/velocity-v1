@@ -718,18 +718,15 @@ mod amm_maker_tests {
         }
     }
 
-    fn make_ctx<'a>(stats: &'a MarketStats, oracle: &'a OraclePriceData) -> QuoteContext<'a> {
+    fn make_ctx(stats: &MarketStats) -> QuoteContext<'_> {
         QuoteContext {
             stats,
-            oracle,
             mm_oracle: None,
             oracle_validity: None,
             fee_budget: 0,
-            tick: 1,
             step_size: 1,
             slot: 0,
             slot_clock: SlotClock::baseline(),
-            base_precision: crate::math::constants::BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,
         }
@@ -738,8 +735,7 @@ mod amm_maker_tests {
     #[test]
     fn ask_price_is_above_bid_price() {
         let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
+        let ctx = make_ctx(&stats);
         let mut amm = make_amm();
         // Seed an explicit non-zero cached spread so ask > bid.
         amm.seed_no_spread_quote_state();
@@ -759,8 +755,7 @@ mod amm_maker_tests {
         // strictly increase. At the best ask price, size is 0; far above,
         // size approaches max_fillable.
         let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
+        let ctx = make_ctx(&stats);
         let mut amm = make_amm();
         let maker = AmmQuoter::new_no_spread(&mut amm);
 
@@ -798,8 +793,7 @@ mod amm_maker_tests {
         // swap math share the same closed form, so agreement is exact modulo
         // integer rounding.
         let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
+        let ctx = make_ctx(&stats);
         let mut amm = make_amm();
         let target = AMM_RESERVE_PRECISION as u64;
         let maker = AmmQuoter::new_no_spread(&mut amm);
@@ -847,8 +841,7 @@ mod amm_maker_tests {
     #[test]
     fn try_fill_solo_returns_some_for_buyable_size() {
         let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
+        let ctx = make_ctx(&stats);
         let mut amm = make_amm();
         let maker = AmmQuoter::new_no_spread(&mut amm);
 
@@ -868,8 +861,7 @@ mod amm_maker_tests {
         // from the AMM's spread math. With a nonzero spread, the AMM captures
         // a quote surplus; surplus should be non-negative on a buy.
         let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
+        let ctx = make_ctx(&stats);
         let mut amm = make_amm();
         let maker = AmmQuoter::new_no_spread(&mut amm);
 
@@ -891,8 +883,7 @@ mod amm_maker_tests {
         // Taker is selling — AMM adds base to reserves (Short direction).
         // Verifies the bid-side path through calculate_base_swap_output_with_spread.
         let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
+        let ctx = make_ctx(&stats);
         let mut amm = make_amm();
         let starting_base = amm.base_asset_reserve;
 
@@ -918,8 +909,7 @@ mod amm_maker_tests {
         // (which tracks USERS' net position) should DECREASE (users' net
         // long shrunk — the taker just sold).
         let stats = MarketStats::default();
-        let oracle = OraclePriceData::default();
-        let ctx = make_ctx(&stats, &oracle);
+        let ctx = make_ctx(&stats);
         let mut amm = make_amm();
         let starting_base = amm.base_asset_reserve;
         let starting_position = amm.base_asset_amount_with_amm;
@@ -1024,7 +1014,7 @@ mod amm_jit_maker_tests {
         super::*,
         crate::{
             math::{
-                constants::{AMM_RESERVE_PRECISION, BASE_PRECISION, PEG_PRECISION},
+                constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
                 time::SlotClock,
             },
             vlp::amm::AMM,
@@ -1043,18 +1033,15 @@ mod amm_jit_maker_tests {
         }
     }
 
-    fn make_ctx<'a>(stats: &'a MarketStats, oracle: &'a OraclePriceData) -> QuoteContext<'a> {
+    fn make_ctx(stats: &MarketStats) -> QuoteContext<'_> {
         QuoteContext {
             stats,
-            oracle,
             mm_oracle: None,
             oracle_validity: None,
             fee_budget: 0,
-            tick: 1,
             step_size: 1,
             slot: 0,
             slot_clock: SlotClock::baseline(),
-            base_precision: BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,
         }

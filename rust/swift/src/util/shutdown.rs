@@ -2,10 +2,9 @@
 //!
 //! This lives in `util` rather than in one server module because signal
 //! disposition and process exit are properties of the *process*, not of any one
-//! protocol. `main.rs` dispatches the same binary into the swift, ws and
-//! confirmation servers; today only the ws server calls [`install`], but the
-//! next one to need it wires the same channel rather than growing a second copy
-//! of the phase machine.
+//! protocol. `main.rs` dispatches the same binary into the swift, ws and confirmation
+//! servers, installs the handler once, and each server observes the same
+//! channel rather than growing its own copy of the phase machine.
 
 use {
     std::{env, sync::OnceLock, time::Duration},
@@ -49,6 +48,15 @@ pub fn subscribe() -> watch::Receiver<Lifecycle> {
 /// while still serving in-flight work.
 pub fn is_serving() -> bool {
     *channel().borrow() == Lifecycle::Running
+}
+
+/// Resolves once the drain window has elapsed and connections should close.
+///
+/// Hand this to `axum::serve(..).with_graceful_shutdown(..)`: axum then stops
+/// accepting, lets in-flight requests finish, and returns.
+pub async fn closing() {
+    let mut rx = subscribe();
+    let _ = rx.wait_for(|phase| *phase >= Lifecycle::Closing).await;
 }
 
 fn duration_from_env(key: &str, default_secs: u64) -> Duration {

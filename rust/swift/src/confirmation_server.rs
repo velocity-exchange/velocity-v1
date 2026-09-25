@@ -1,4 +1,5 @@
 use {
+    crate::util::shutdown,
     axum::{
         extract::{Query, State},
         http::Method,
@@ -43,6 +44,12 @@ pub async fn fallback(uri: axum::http::Uri) -> impl axum::response::IntoResponse
 pub async fn health_check<T: Clone + AsyncCommands>(
     State(server_params): State<ServerParams<T>>,
 ) -> impl axum::response::IntoResponse {
+    // Checked first: once SIGTERM lands this pod must fail readiness so the load
+    // balancer stops routing to it, whatever its dependencies say.
+    if !shutdown::is_serving() {
+        log::info!(target: "server", "Health check reporting draining");
+        return (axum::http::StatusCode::PRECONDITION_FAILED, "serving=false");
+    }
     match server_params.redis_pool.clone().ping().await {
         Ok(()) => (axum::http::StatusCode::OK, "ok"),
         Err(_) => {
@@ -218,7 +225,7 @@ pub async fn start_server() {
     );
 
     let _ = tokio::join!(
-        axum::serve(listener, app),
+        axum::serve(listener, app).with_graceful_shutdown(shutdown::closing()),
         axum::serve(listener_metrics, metrics_app)
     );
 }

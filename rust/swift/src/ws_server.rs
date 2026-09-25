@@ -822,7 +822,6 @@ async fn subscribe_redis_pubsub(
 
 pub async fn start_server() {
     dotenv().ok();
-    shutdown::install();
 
     let client = RpcClient::new(ENDPOINT.to_string());
     let (perp_market_accounts, _) =

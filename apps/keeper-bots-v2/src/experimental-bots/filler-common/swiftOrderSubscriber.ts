@@ -12,6 +12,12 @@ import { sleepMs } from '../../utils';
 import dotenv from 'dotenv';
 import parseArgs from 'minimist';
 
+/**
+ * Cadence of the liveness IPC to the parent filler, matching the sibling
+ * children (`orderSubscriberFiltered`, `dlobBuilder`).
+ */
+const LIVENESS_INTERVAL_MS = 10_000;
+
 export type SwiftOrderSubscriberConfig = {
 	velocityEnv: VelocityEnv;
 	endpoint: string;
@@ -79,6 +85,7 @@ export class SwiftOrderSubscriber {
 			// completes the TCP handshake, so a successful auth is the first real
 			// proof the connection is usable.
 			this.reconnectAttempts = 0;
+			this.sendLivenessCheck(true);
 			this.config.marketIndexes.forEach(async (marketIndex) => {
 				this.ws?.send(
 					JSON.stringify({
@@ -197,6 +204,7 @@ export class SwiftOrderSubscriber {
 		}
 		this.teardownSocket();
 		this.subscribed = false;
+		this.sendLivenessCheck(false);
 
 		const delayMs = this.nextReconnectDelayMs();
 		console.log(`Reconnecting to swift WebSocket in ${delayMs}ms...`);
@@ -220,6 +228,27 @@ export class SwiftOrderSubscriber {
 		);
 		this.reconnectAttempts++;
 		return Math.floor(Math.random() * ceiling);
+	}
+
+	/**
+	 * Report feed state to the parent filler, which latches it into
+	 * `swiftOrderSubscriberHealth` and gates its own `healthCheck()` on it.
+	 *
+	 * The sibling children send an unconditional `true`; this one reports the
+	 * real state, because it is the only signal that a swift feed has died.
+	 * Until the reconnect fix above, a dead feed crashed this process and the
+	 * restart itself was what surfaced the outage — now that it retries
+	 * quietly, an unreported feed death would be invisible.
+	 */
+	sendLivenessCheck(health: boolean) {
+		if (typeof process.send === 'function') {
+			process.send({
+				type: 'health',
+				data: {
+					healthy: health,
+				},
+			});
+		}
 	}
 
 	private convertUuidToNumber(uuid: string): number {
@@ -271,6 +300,13 @@ async function main() {
 		swiftOrderSubscriberConfig
 	);
 	await swiftOrderSubscriber.subscribe();
+
+	// Auth and disconnect both report immediately; this re-asserts the current
+	// state so a child that wedges without emitting either goes stale rather
+	// than leaving the parent latched on a value it can no longer trust.
+	setInterval(() => {
+		swiftOrderSubscriber.sendLivenessCheck(swiftOrderSubscriber.subscribed);
+	}, LIVENESS_INTERVAL_MS);
 }
 
 main();

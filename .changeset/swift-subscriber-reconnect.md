@@ -19,3 +19,8 @@ Fix `SwiftOrderSubscriber` crashing the process instead of reconnecting.
   caller's `acceptSanitized` and `acceptDepositTrade` options. Both are now retained.
 - `unsubscribe()` no longer no-ops when called before the subscription is established, and it
   cancels any pending reconnect so a queued timer cannot resurrect the socket.
+
+`IndicativeQuotesSender` had the same nested-handler crash path and gets the same treatment:
+handlers registered on the socket immediately, jittered exponential backoff in place of a
+plain doubling delay, reconnects idempotent per disconnect, and `connected` reset on
+disconnect rather than staying `true` until the next successful auth.

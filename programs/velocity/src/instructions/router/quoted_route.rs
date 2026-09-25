@@ -55,11 +55,9 @@ fn is_quoter_slab(info: &AccountInfo) -> bool {
 /// Cut a custom quoter's ladder to the depth this fill will settle against.
 ///
 /// Two bounds apply, and both are the quoter's own. The ladder ends at its
-/// first level outside the declared oracle band. The base its account can
-/// carry truncates what is left. The quoter's execute fills its own ladder
-/// best level first, so only a prefix is a ladder it can honour. The band
-/// cuts the taker-favourable end, so a best level outside it drops the whole
-/// run, as a book's does.
+/// first level outside the declared oracle band, because the quoter's execute
+/// fills its own ladder best level first. The base its account can carry
+/// truncates what is left.
 ///
 /// A book is never trimmed here. Its makers rest depth that was margin
 /// reserved at placement, and the caps the call carries size them one per

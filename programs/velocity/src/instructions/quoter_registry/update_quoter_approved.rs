@@ -464,14 +464,10 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
     )
 }
 
-/// Whether a registered list marks no account writable but its own response
-/// account.
-///
-/// A quoter holds the slab signature inside its execute, and a CPI can only
-/// lend an account writable that it received writable. The book and the
-/// midpoint take their response account writable in every instruction gated
-/// on that signer. So no other quoter's list can complete one of them, even
-/// for an entry that is pending, revoked or on no slab at all.
+/// Whether a list marks no account writable but its own response account. A
+/// CPI lends an account writable only if it received it writable. The book and
+/// the midpoint take their response account writable in every slab-gated
+/// instruction, so no other list can complete one, approved or not.
 fn list_writes_only_its_response<'a>(
     mut metas: impl Iterator<Item = (&'a Pubkey, bool)>,
     response_account: &Pubkey,

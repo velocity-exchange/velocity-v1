@@ -8081,6 +8081,359 @@ fn set_signed_msg_user_orders(svm: &mut litesvm::LiteSVM, authority: &Pubkey, nu
     .unwrap();
 }
 
+/// Create a `SignedMsgUserOrders` account in the layout master wrote: version
+/// 0, 24-byte entries, and exactly `legacy_space(num_orders)` bytes. Each
+/// `live` entry is a uuid and its `max_slot`.
+fn set_legacy_signed_msg_user_orders(
+    svm: &mut litesvm::LiteSVM,
+    authority: &Pubkey,
+    num_orders: u32,
+    live: &[([u8; 8], u64)],
+) {
+    use velocity::state::signed_msg_user::SignedMsgUserOrders;
+    let mut data = SignedMsgUserOrders::DISCRIMINATOR.to_vec();
+    data.extend_from_slice(authority.as_ref());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&num_orders.to_le_bytes());
+    for (index, (uuid, max_slot)) in live.iter().enumerate() {
+        data.extend_from_slice(uuid);
+        data.extend_from_slice(&max_slot.to_le_bytes());
+        data.extend_from_slice(&(index as u32 + 1).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    let space = SignedMsgUserOrders::legacy_space(num_orders as usize);
+    data.resize(space, 0);
+    let lamports = svm.minimum_balance_for_rent_exemption(space);
+    svm.set_account(
+        signed_msg_user_orders_pda(authority),
+        Account {
+            lamports,
+            data,
+            owner: velocity_id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+}
+
+fn read_signed_msg_user_orders(
+    svm: &litesvm::LiteSVM,
+    authority: &Pubkey,
+) -> velocity::state::signed_msg_user::SignedMsgUserOrders {
+    let account = svm
+        .get_account(&signed_msg_user_orders_pda(authority))
+        .expect("record missing");
+    velocity::state::signed_msg_user::SignedMsgUserOrders::deserialize(&mut &account.data[8..])
+        .unwrap()
+}
+
+fn resize_signed_msg_user_orders_ix(
+    authority: &Pubkey,
+    payer: &Pubkey,
+    num_orders: u16,
+) -> Instruction {
+    Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::ResizeSignedMsgUserOrders {
+            signed_msg_user_orders: signed_msg_user_orders_pda(authority),
+            authority: *authority,
+            payer: *payer,
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::ResizeSignedMsgUserOrders { num_orders }.data(),
+    }
+}
+
+fn delete_signed_msg_user_orders_ix(authority: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::DeleteSignedMsgUserOrders {
+            signed_msg_user_orders: signed_msg_user_orders_pda(authority),
+            state: state_pda(),
+            authority: *authority,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::DeleteSignedMsgUserOrders {}.data(),
+    }
+}
+
+/// A resize grows a legacy record at the new stride and keeps every live
+/// entry. Only the authority may shrink it.
+#[test]
+fn a_legacy_signed_msg_record_resizes_at_the_new_stride() {
+    use velocity::state::signed_msg_user::{SignedMsgUserOrders, SIGNED_MSG_USER_ORDERS_VERSION};
+
+    let mut fixture = setup();
+    let owner = party(&mut fixture.svm, 0);
+    let helper = party(&mut fixture.svm, 0);
+    let authority = owner.authority.pubkey();
+    let live: Vec<([u8; 8], u64)> = (1..=6u8).map(|i| ([i; 8], 100 + i as u64)).collect();
+    set_legacy_signed_msg_user_orders(&mut fixture.svm, &authority, 8, &live);
+
+    send_with_ixs(
+        &mut fixture.svm,
+        &helper.authority,
+        &[resize_signed_msg_user_orders_ix(
+            &authority,
+            &helper.authority.pubkey(),
+            8,
+        )],
+        &[],
+    )
+    .unwrap();
+
+    let record = fixture
+        .svm
+        .get_account(&signed_msg_user_orders_pda(&authority))
+        .unwrap();
+    assert_eq!(record.data.len(), SignedMsgUserOrders::space(8));
+    assert!(
+        record.lamports
+            >= fixture
+                .svm
+                .minimum_balance_for_rent_exemption(record.data.len())
+    );
+
+    let orders = read_signed_msg_user_orders(&fixture.svm, &authority);
+    assert_eq!(orders.version, SIGNED_MSG_USER_ORDERS_VERSION);
+    assert_eq!(orders.authority_pubkey, authority);
+    let uuids: Vec<u8> = orders
+        .signed_msg_order_data
+        .iter()
+        .map(|e| e.uuid[0])
+        .collect();
+    assert_eq!(uuids, vec![6, 5, 4, 3, 2, 1, 0, 0]);
+
+    let shrink_by_helper = send_with_ixs(
+        &mut fixture.svm,
+        &helper.authority,
+        &[resize_signed_msg_user_orders_ix(
+            &authority,
+            &helper.authority.pubkey(),
+            4,
+        )],
+        &[],
+    );
+
+    assert!(shrink_by_helper.is_err(), "only the authority may shrink");
+}
+
+/// A delete closes a legacy record, which the borsh decoder cannot read, and
+/// pays its rent to the authority.
+#[test]
+fn a_legacy_signed_msg_record_deletes() {
+    let mut fixture = setup();
+    let owner = party(&mut fixture.svm, 0);
+    let authority = owner.authority.pubkey();
+    set_legacy_signed_msg_user_orders(&mut fixture.svm, &authority, 8, &[([1; 8], 100)]);
+    let rent = fixture
+        .svm
+        .get_account(&signed_msg_user_orders_pda(&authority))
+        .unwrap()
+        .lamports;
+    let before = fixture.svm.get_balance(&authority).unwrap();
+
+    send_with_ixs(
+        &mut fixture.svm,
+        &owner.authority,
+        &[delete_signed_msg_user_orders_ix(&authority)],
+        &[],
+    )
+    .unwrap();
+
+    let closed = fixture
+        .svm
+        .get_account(&signed_msg_user_orders_pda(&authority));
+    assert!(closed.is_none_or(|account| account.lamports == 0 && account.data.is_empty()));
+
+    let after = fixture.svm.get_balance(&authority).unwrap();
+    let max_fee = 10_000;
+    assert!(after <= before + rent && after + max_fee >= before + rent);
+}
+
+/// A market order for one unit, signed by `taker`, in the envelope
+/// `place_signed_msg_taker_order` reads.
+fn signed_market_order_envelope(taker: &Party, uuid: [u8; 8], slot: u64) -> Vec<u8> {
+    use {
+        anchor_lang::AnchorSerialize, velocity::state::order_params::SignedMsgOrderParamsMessage,
+    };
+
+    let message = SignedMsgOrderParamsMessage {
+        signed_msg_order_params: OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: UNIT,
+            price: 101 * PRICE,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            ..OrderParams::default()
+        },
+        sub_account_id: 0,
+        slot,
+        uuid,
+        network: Some(velocity::state::order_params::expected_signed_msg_network()),
+        ..SignedMsgOrderParamsMessage::default()
+    };
+    let mut borsh_body = vec![0u8; 8];
+    message.serialize(&mut borsh_body).unwrap();
+    let hex_msg = hex_lower(&borsh_body);
+    let signature = taker.authority.sign_message(hex_msg.as_bytes());
+
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(signature.as_ref());
+    envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());
+    envelope.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+    envelope.extend_from_slice(hex_msg.as_bytes());
+    envelope
+}
+
+/// `place_signed_msg_taker_order` for `envelope`, with the book's maker as the
+/// one resting owner the transaction carries.
+fn place_signed_msg_with_book_ix(
+    fixture: &Fixture,
+    taker: &Party,
+    keeper: &Party,
+    maker_stats: Pubkey,
+    envelope: Vec<u8>,
+) -> Instruction {
+    let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+        authority: keeper.authority.pubkey(),
+        ix_sysvar: instructions_sysvar(),
+        filler: keeper.user,
+        filler_stats: keeper.stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.extend([
+        AccountMeta::new_readonly(fixture.oracle, false),
+        AccountMeta::new(spot_market_pda(0), false),
+        AccountMeta::new(perp_market_pda(0), false),
+        AccountMeta::new(fixture.clob_maker_user, false),
+        AccountMeta::new(maker_stats, false),
+        AccountMeta::new_readonly(fixture.quoter_slab, false),
+        AccountMeta::new(fixture.clob_market, false),
+        AccountMeta::new_readonly(clob_id(), false),
+    ]);
+
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceSignedMsgTakerOrder {
+            signed_msg_order_params_message_bytes: envelope,
+            is_delegate_signer: false,
+            flow_attestation: None,
+        }
+        .data(),
+    }
+}
+
+/// Rest an ask at 99 on a book with an activation delay, and move to slot 30
+/// with the oracle at 100. An unattested signed order then rests whole.
+/// Returns the maker's `UserStats`.
+fn rest_an_ask_behind_a_speed_bump(fixture: &mut Fixture) -> Pubkey {
+    let maker_stats = maker_stats_address(fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    place_clob_ask(fixture, 99 * PRICE, 2 * UNIT);
+    set_clob_default_activation_delay(fixture, 5);
+
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+
+    maker_stats
+}
+
+/// A placement migrates a legacy record in place and succeeds. The uuid a
+/// legacy entry holds stays refused after the migration.
+#[test]
+fn a_signed_order_migrates_a_legacy_record() {
+    use velocity::state::signed_msg_user::{SignedMsgUserOrders, SIGNED_MSG_USER_ORDERS_VERSION};
+
+    let mut fixture = setup();
+    let maker_stats = rest_an_ask_behind_a_speed_bump(&mut fixture);
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    let authority = taker.authority.pubkey();
+    set_legacy_signed_msg_user_orders(&mut fixture.svm, &authority, 8, &[(*b"legacy01", 25)]);
+
+    let envelope = signed_market_order_envelope(&taker, *b"migrate1", 30);
+    let place = place_signed_msg_with_book_ix(&fixture, &taker, &keeper, maker_stats, envelope);
+    let placed = send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[compute_unit_limit_ix(600_000), place],
+        &[],
+    )
+    .unwrap();
+    assert!(
+        placed
+            .logs
+            .iter()
+            .any(|l| l.contains("migrated to version 1")),
+        "the placement migrates the record: {:?}",
+        placed.logs
+    );
+
+    let record = fixture
+        .svm
+        .get_account(&signed_msg_user_orders_pda(&authority));
+    assert_eq!(
+        record.unwrap().data.len(),
+        SignedMsgUserOrders::legacy_space(8)
+    );
+
+    let orders = read_signed_msg_user_orders(&fixture.svm, &authority);
+    assert_eq!(orders.version, SIGNED_MSG_USER_ORDERS_VERSION);
+    assert_eq!(orders.signed_msg_order_data.len(), 5);
+    let uuids: Vec<[u8; 8]> = orders
+        .signed_msg_order_data
+        .iter()
+        .map(|e| e.uuid)
+        .collect();
+    assert!(uuids.contains(b"migrate1"));
+    assert!(uuids.contains(b"legacy01"));
+
+    let taker_state: User = read_zero_copy(&fixture.svm, &taker.user);
+    assert_eq!(taker_state.perp_positions[0].open_bids, UNIT as i64);
+
+    let envelope = signed_market_order_envelope(&taker, *b"legacy01", 30);
+    let replay = place_signed_msg_with_book_ix(&fixture, &taker, &keeper, maker_stats, envelope);
+    let replayed = send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[compute_unit_limit_ix(600_000), replay],
+        &[],
+    )
+    .unwrap();
+    assert!(
+        replayed.logs.iter().any(|l| l.contains("already exists")),
+        "a uuid from the legacy record stays refused: {:?}",
+        replayed.logs
+    );
+
+    let taker_state: User = read_zero_copy(&fixture.svm, &taker.user);
+    assert_eq!(taker_state.perp_positions[0].open_bids, UNIT as i64);
+}
+
 /// The taker's ed25519 signature over a swift order is verified in-program
 /// (brine-ed25519), with no ed25519 precompile instruction. A real signature
 /// clears the verifier; flipping one byte makes the same order fail with

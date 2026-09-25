@@ -34,6 +34,7 @@ function makeBot(opts: {
 	routerOk?: boolean;
 	runOnce?: boolean;
 	spotRecipient?: PublicKey;
+	routerAtaMissing?: boolean;
 }): { bot: ProtocolFeeCollectorBot; calls: SendCall[] } {
 	const bot = Object.create(ProtocolFeeCollectorBot.prototype) as any;
 	const calls: SendCall[] = [];
@@ -63,7 +64,7 @@ function makeBot(opts: {
 	};
 
 	bot.checkRouterConfig = async () => opts.routerOk ?? true;
-	bot.buildDistributeIx = async () => ({});
+	bot.buildDistributeIx = async () => (opts.routerAtaMissing ? null : {});
 	bot.sendIx = async (
 		_ix: unknown,
 		_marketType: string,
@@ -115,6 +116,21 @@ describe('ProtocolFeeCollectorBot router distribute step', () => {
 
 		expect(labels(calls)).to.include('distribute');
 		expect((bot as any).unhealthyReason).to.equal(undefined);
+	});
+
+	it('skips distribute without going unhealthy when the router ATA does not exist', async () => {
+		const { bot, calls } = makeBot({
+			withdrawResult: { sent: true, confirmedSlot: 42 },
+			routerAtaMissing: true,
+			runOnce: true,
+		});
+		const exitCodeBefore = process.exitCode;
+
+		await (bot as any).tryCollectProtocolFees();
+
+		expect(labels(calls)).to.not.include('distribute');
+		expect((bot as any).unhealthyReason).to.equal(undefined);
+		expect(process.exitCode).to.equal(exitCodeBefore);
 	});
 
 	it('skips distribute when the router config check fails', async () => {

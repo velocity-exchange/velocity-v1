@@ -9,6 +9,7 @@ import {
 } from '@velocity-exchange/sdk';
 import {
 	fetchRouterConfig,
+	getAssociatedTokenAddress,
 	getDistributeIx,
 	getRouterConfigPda,
 } from '@velocity-exchange/revenue-router-sdk';
@@ -302,10 +303,24 @@ export class ProtocolFeeCollectorBot implements Bot {
 		return true;
 	}
 
-	/** Own method so tests can drive the run without an RPC. */
-	private async buildDistributeIx(): Promise<TransactionInstruction> {
+	/** Own method so tests can drive the run without an RPC. Returns null when
+	 *  the router ATA does not exist yet: Velocity creates it on the first perp
+	 *  withdrawal, and distribute fails account validation before that. */
+	private async buildDistributeIx(): Promise<TransactionInstruction | null> {
+		const connection = this.adminClient.connection;
+		const config = await fetchRouterConfig(connection);
+		if (config === null) {
+			throw new Error('RouterConfig is not initialized');
+		}
+		const routerAta = getAssociatedTokenAddress(
+			config.usdtMint,
+			getRouterConfigPda()
+		);
+		if ((await connection.getAccountInfo(routerAta)) === null) {
+			return null;
+		}
 		return await getDistributeIx({
-			connection: this.adminClient.connection,
+			connection,
 			cranker: this.adminClient.wallet.publicKey,
 			payer: this.adminClient.wallet.publicKey,
 		});
@@ -471,20 +486,28 @@ export class ProtocolFeeCollectorBot implements Bot {
 						this.adminClient.getPerpMarketAccounts()[0]?.marketIndex ?? 0;
 					// Building the ix reads RouterConfig over RPC and can throw; that
 					// must count as a failed distribute, not escape to the outer catch.
-					let result: { sent: boolean } = { sent: false };
+					let result: { sent: boolean } | null = null;
 					try {
-						result = await this.sendIx(
-							await this.buildDistributeIx(),
-							'perp',
-							firstPerpMarket,
-							'distribute'
-						);
+						const ix = await this.buildDistributeIx();
+						if (ix === null) {
+							logger.info(
+								`${this.name}: router ATA does not exist yet, nothing to distribute`
+							);
+						} else {
+							result = await this.sendIx(
+								ix,
+								'perp',
+								firstPerpMarket,
+								'distribute'
+							);
+						}
 					} catch (e: any) {
 						logger.error(
 							`${this.name}: could not build distribute ix: ${e.message}`
 						);
+						result = { sent: false };
 					}
-					if (!result.sent && !this.dryRun) {
+					if (result !== null && !result.sent && !this.dryRun) {
 						this.unhealthyReason = 'distribute failed';
 						// A CronJob only sees the exit code, so fail the run.
 						if (this.runOnce) {

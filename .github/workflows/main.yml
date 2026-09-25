@@ -1021,7 +1021,7 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: 'thin'
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
         run: |
-          rm -rf target/sbpf-solana-solana target/deploy
+          rm -rf target/sbpf*-solana-solana target/deploy
           bash deploy-scripts/build-sbf.sh test protocol-revenue-router
 
       # Loads the vendored svm-tests/fixtures/dfx_redemption.so; a missing

@@ -200,14 +200,19 @@ impl Env {
     }
 
     fn update_config(&mut self, args: UpdateConfigArgs) -> TxResult {
+        let admin = self.admin.insecure_clone();
+        self.update_config_as(&admin, args)
+    }
+
+    fn update_config_as(&mut self, signer: &Keypair, args: UpdateConfigArgs) -> TxResult {
         let accounts = router_accounts::UpdateConfig {
             config: self.router_config,
-            admin: self.admin.pubkey(),
+            admin: signer.pubkey(),
         };
-        let admin = self.admin.insecure_clone();
+        let signer = signer.insecure_clone();
         self.send(
             &[ix(ROUTER_ID, accounts, router_args::UpdateConfig { args })],
-            &[&admin],
+            &[&signer],
         )
     }
 
@@ -472,6 +477,20 @@ fn update_config_leaves_unset_fields_alone() {
     let old_cranker = env.cranker.insecure_clone();
     env.fund_router(10_000 * USDT);
     assert_error(env.distribute(&old_cranker), "Unauthorized");
+}
+
+#[test]
+fn update_config_rejects_a_signer_other_than_the_admin() {
+    let mut env = setup();
+
+    let stranger = Keypair::new();
+    env.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let args = UpdateConfigArgs {
+        treasury: Some(Pubkey::new_unique()),
+        ..Default::default()
+    };
+    assert_error(env.update_config_as(&stranger, args), "Unauthorized");
+    assert_eq!(env.router_config().treasury, env.treasury);
 }
 
 #[test]

@@ -30,7 +30,7 @@ pub struct UpdateConfig<'info> {
 }
 
 /// The treasury's ATA must not alias the router ATA or the redemption vault.
-pub fn validate_treasury(treasury: &Pubkey, config: &Pubkey) -> Result<()> {
+fn validate_treasury(treasury: &Pubkey, config: &Pubkey) -> Result<()> {
     require_keys_neq!(*treasury, Pubkey::default(), RouterError::InvalidAuthority);
     require_keys_neq!(*treasury, *config, RouterError::InvalidTreasury);
     let (redemption_config, _) = Pubkey::find_program_address(&[b"config"], &dfx_redemption::ID);
@@ -40,6 +40,7 @@ pub fn validate_treasury(treasury: &Pubkey, config: &Pubkey) -> Result<()> {
 
 pub fn update_config(ctx: Context<UpdateConfig>, args: UpdateConfigArgs) -> Result<()> {
     let config_key = ctx.accounts.config.key();
+    let now = Clock::get()?.unix_timestamp;
     let config = &mut ctx.accounts.config;
 
     if let Some(admin) = args.admin {
@@ -55,7 +56,7 @@ pub fn update_config(ctx: Context<UpdateConfig>, args: UpdateConfigArgs) -> Resu
         config.treasury = treasury;
     }
     if let Some(tiers) = args.tiers {
-        let now_day = Clock::get()?.unix_timestamp / SECONDS_PER_DAY;
+        let now_day = now / SECONDS_PER_DAY;
         // A ladder must never change part-way through a period it has already priced.
         // `<=` mirrors roll_period: a clock reading earlier than period_day never unlocks.
         require!(
@@ -66,7 +67,7 @@ pub fn update_config(ctx: Context<UpdateConfig>, args: UpdateConfigArgs) -> Resu
     }
 
     emit!(RouterConfigUpdated {
-        ts: Clock::get()?.unix_timestamp,
+        ts: now,
         admin: config.admin,
         cranker: config.cranker,
         treasury: config.treasury,

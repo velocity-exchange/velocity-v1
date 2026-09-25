@@ -264,7 +264,7 @@ cmd_status() {
 		local tv="${tver:+v$tver}"
 		n="$(count_lines "$(commits_since "$tsha" "$(program_path "$p")")")"
 		mconc=""; [ -z "$tag" ] || mconc="$(run_for_branch "$MAINNET_WF" "$tag" | cut -f4)"
-		printf '   %s%-13s%s Cargo %-9s tag %-9s %s   mainnet %s   %s program commit(s) since tag\n' \
+		printf '   %s%-23s%s Cargo %-9s tag %-9s %s   mainnet %s   %s program commit(s) since tag\n' \
 			"$BOLD" "$p" "$RST" "${ver:-none}" "${tv:-none}" "${DIM}$(short "$tsha") $(tag_date "$tag")${RST}" "$(mark "$mconc")" "$n" >&2
 		if [ -n "$tver" ] && [ "$n" -gt 0 ] && ! semver_gt "$ver" "$tver"; then
 			warn "$p: Cargo $ver is not ahead of tag v$tver; bump before tagging"
@@ -340,6 +340,7 @@ cmd_status() {
 	# --- mainnet tag for the current Cargo version
 	for p in $MAINNET_PROGRAMS; do
 		ver="$(cargo_version "$p")"; tag="program-$p-v$ver"
+		[ -n "$ver" ] || continue
 		if ! tag_exists "$tag"; then
 			set_next "mainnet $p" "then sign the mainnet Squads proposal; verify first: bun run verify-buffer $p"
 		else
@@ -462,6 +463,7 @@ cmd_mainnet() {
 	kv "last tag" "${last:-none} ${DIM}($n program commit(s) since)${RST}"
 	[ "$p" != velocity ] || velocity_checks "$(tag_sha "$last")" >/dev/null
 
+	is_semver "$ver" || die "no Cargo version for $p on $MASTER"
 	[ -n "$tver" ] && ! semver_gt "$ver" "$tver" && die "Cargo $ver is not ahead of $last; land \`release.sh bump $p\` first"
 	tag_exists "$tag" && die "$tag already exists"
 

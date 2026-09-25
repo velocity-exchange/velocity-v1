@@ -275,23 +275,52 @@ fn quote_then_execute(
     })
 }
 
-/// Seeds whose execute delivered a different base or notional than the quote
-/// promised, and how many seeds had depth to check.
-fn delivery_mismatches(allow_empty_set: bool) -> (usize, Vec<u64>) {
-    let pool: Vec<UserRefV0> = (1..=6).map(user).collect();
-    let mut checked = 0;
-    let mut mismatched = Vec::new();
-    for seed in 1..=20_000u64 {
+/// One generated book and the caller that reads it. The same seed always
+/// builds the same book, so a test can rebuild it for each execute.
+struct Scenario {
+    market: TestMarket,
+    caller: Caller,
+    slot: u64,
+    now: i64,
+}
+
+impl Scenario {
+    fn seeded(seed: u64, allow_empty_set: bool) -> Self {
+        let pool: Vec<UserRefV0> = (1..=6).map(user).collect();
         let mut rng = Rng::seeded(seed);
         let (min_units, config) = random_config(&mut rng);
         let market = TestMarket::new_with(64, config);
-        let mut book = market.book();
-        for _ in 0..rng.below(24) {
-            place_random(&mut book, &mut rng, &pool, min_units, 0, 0);
+        {
+            let mut book = market.book();
+            for _ in 0..rng.below(24) {
+                place_random(&mut book, &mut rng, &pool, min_units, 0, 0);
+            }
         }
 
         let caller = Caller::random(&mut rng, &pool, allow_empty_set);
         let (slot, now) = (rng.below(14), rng.pick(&[0i64, 10, 60]));
+        Self {
+            market,
+            caller,
+            slot,
+            now,
+        }
+    }
+}
+
+/// Seeds whose execute delivered a different base or notional than the quote
+/// promised, and how many seeds had depth to check.
+fn delivery_mismatches(allow_empty_set: bool) -> (usize, Vec<u64>) {
+    let mut checked = 0;
+    let mut mismatched = Vec::new();
+    for seed in 1..=20_000u64 {
+        let Scenario {
+            market,
+            caller,
+            slot,
+            now,
+        } = Scenario::seeded(seed, allow_empty_set);
+        let mut book = market.book();
         let Some(delivery) = quote_then_execute(&mut book, &caller, slot, now) else {
             continue;
         };
@@ -333,6 +362,113 @@ fn execute_delivers_what_quote_promised_to_an_unrestricted_caller() {
         mismatched.len(),
         &mismatched[..mismatched.len().min(5)]
     );
+}
+
+/// The ladder a quote of the caller's size publishes.
+fn quoted_levels(book: &mut ClobMarketV0, caller: &Caller, slot: u64, now: i64) -> Vec<(u64, u64)> {
+    let args = QuoteArgsV0 {
+        users: &caller.users,
+        caps: caller.caps,
+        reference_price: caller.reference_price,
+        taker: caller.taker,
+        include_taker_origin_reservations: caller.include_reserved,
+        ..quote_args(caller.direction, caller.size)
+    };
+    let pointer = book.quote(&args, slot, now).expect("quote succeeds");
+    let bytes = streamed(book, pointer);
+    QuoteResponseV0::parse(&bytes)
+        .unwrap()
+        .levels
+        .iter()
+        .map(|level| (level.price, level.size))
+        .collect()
+}
+
+/// The base and quote an execute of `size` delivered.
+fn executed_totals(
+    book: &mut ClobMarketV0,
+    caller: &Caller,
+    size: u64,
+    slot: u64,
+    now: i64,
+) -> (u64, u64) {
+    let args = ExecuteArgsV0 {
+        users: &caller.users,
+        caps: caller.caps,
+        reference_price: caller.reference_price,
+        taker: caller.taker,
+        include_taker_origin_reservations: caller.include_reserved,
+        ..execute_args(caller.direction, size)
+    };
+    let outcome = book.execute(&args, slot, now).expect("execute succeeds");
+    let bytes = streamed(book, outcome.response);
+    ExecuteResponseV0::parse(&bytes)
+        .unwrap()
+        .changes
+        .iter()
+        .fold((0, 0), |(base, quote), change| {
+            (base + change.base_size, quote + change.quote_size)
+        })
+}
+
+/// The quote of `base` taken best first off `levels`, floored once.
+fn prefix_quote(levels: &[(u64, u64)], base: u64) -> u64 {
+    let mut left = base;
+    let notional: u128 = levels
+        .iter()
+        .map(|&(price, size)| {
+            let take = size.min(left);
+            left -= take;
+            price as u128 * take as u128
+        })
+        .sum();
+    (notional / crate::state::BASE_PRECISION as u128) as u64
+}
+
+/// Velocity floors each level to the step and may allocate any step-aligned
+/// prefix of the ladder, because it splits a fill pro rata with other sources.
+/// So every level but the last is on the step grid, and every such prefix
+/// executes to exactly its base, at the floor of its notional.
+#[test]
+fn every_step_aligned_prefix_of_a_quote_executes_in_full() {
+    let mut checked = 0;
+    for seed in 1..=4_000u64 {
+        let scenario = Scenario::seeded(seed, true);
+        let step = scenario.market.book().order_step_size;
+        let ladder = quoted_levels(
+            &mut scenario.market.book(),
+            &scenario.caller,
+            scenario.slot,
+            scenario.now,
+        );
+        let Some((_, head)) = ladder.split_last() else {
+            continue;
+        };
+
+        assert!(
+            head.iter().all(|&(_, size)| size % step == 0),
+            "seed {seed}: a level before the last is off the step grid: {ladder:?}"
+        );
+
+        let quoted: u64 = ladder.iter().map(|&(_, size)| size).sum();
+        for allocation in (1..=quoted / step).map(|k| k * step) {
+            let Scenario {
+                market,
+                caller,
+                slot,
+                now,
+            } = Scenario::seeded(seed, true);
+            let delivered = executed_totals(&mut market.book(), &caller, allocation, slot, now);
+            assert_eq!(
+                delivered,
+                (allocation, prefix_quote(&ladder, allocation)),
+                "seed {seed}: allocation {allocation} of ladder {ladder:?}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(checked > 10_000, "only {checked} prefixes were checked");
 }
 
 /// No live order's expiry or pending activation is earlier than the hint

@@ -106,8 +106,8 @@ pub(crate) fn is_live(node: &OrderNodeV0, slot: u64, now: i64) -> bool {
 ///
 /// It also withholds whatever [`CrossReservation`] holds back. That is the
 /// units a crossing taker remainder claims, and the whole of a remainder a
-/// counterparty crosses. A level that loses all of its size to a claim is
-/// not published at all.
+/// counterparty crosses. An order that loses any of its size to a claim is
+/// not offered at all.
 pub(super) fn quote(
     book: &mut ClobMarketV0,
     args: &QuoteArgsV0,
@@ -125,7 +125,6 @@ pub(super) fn quote(
         side,
         book.max_quote_levels.min(QUOTE_LEVELS_CEILING) as usize,
     );
-    let mut truncations = TruncationSlots::default();
     let mut users_promised = DistinctUsers::new(if args.users.is_empty() {
         max_execute_users
     } else {
@@ -162,9 +161,7 @@ pub(super) fn quote(
             }
         };
 
-        if !truncations.claim(node, take.base, book.min_order_size)
-            || !users_promised.admit(take.owner, node, max_execute_users)
-        {
+        if !users_promised.admit(take.owner, node, max_execute_users) {
             return Ok(Walk::Stop);
         }
 
@@ -174,11 +171,7 @@ pub(super) fn quote(
         }
 
         remaining -= take.base;
-        Ok(if remaining == 0 {
-            Walk::Stop
-        } else {
-            Walk::Continue
-        })
+        Ok(take.walk_after(node, remaining))
     })?;
 
     ladder.finish(book, unsettleable_level)
@@ -283,7 +276,6 @@ pub(super) fn execute(
 
     let mut gate = SweepGate::new(book, side, args.into(), slot, now)?;
     let mut report = ExecuteReport::new(book, side, max_fills);
-    let mut truncations = TruncationSlots::default();
     let mut remaining = args.size;
 
     walk_side(book, side, |book, index, node| {
@@ -297,24 +289,13 @@ pub(super) fn execute(
             Offer::Withheld { .. } => return Ok(Walk::Stop),
         };
 
-        // A per-owner budget can truncate two orders, so the walk ends where
-        // the response runs out of room. Ending short is a smaller fill the
-        // caller reads off the response, rather than a failure.
-        if !truncations.claim(node, take.base, book.min_order_size) {
-            return Ok(Walk::Stop);
-        }
-
         let Some(change_index) = report.merge_change(book, node, take.base, max_users)? else {
             return Ok(Walk::Stop);
         };
 
         report.settle_order(book, index, node, take.base, change_index)?;
         remaining -= take.base;
-        Ok(if remaining == 0 {
-            Walk::Stop
-        } else {
-            Walk::Continue
-        })
+        Ok(take.walk_after(node, remaining))
     })?;
 
     report.finish(book, slot)
@@ -374,6 +355,23 @@ struct Take {
     owner: Option<usize>,
 }
 
+impl Take {
+    /// Both walks end after the first order they take only part of.
+    ///
+    /// `execute` reports one partial fill and one cull, and velocity may take
+    /// any step-aligned prefix of the ladder. A walk that went on past a
+    /// truncated order would quote depth that a shorter prefix cannot reach
+    /// without a second truncated order.
+    #[inline(always)]
+    fn walk_after(&self, node: &OrderNodeV0, remaining: u64) -> Walk {
+        if remaining == 0 || self.base < node.base_asset_amount {
+            Walk::Stop
+        } else {
+            Walk::Continue
+        }
+    }
+}
+
 enum Offer {
     Take(Take),
     /// Pass over the order to the depth behind it.
@@ -405,7 +403,12 @@ impl<'a> SweepGate<'a> {
             slot,
             now,
             reservation: CrossReservation::new(book, side, slot, now, include_reserved),
-            budget: UserBudget::new(request.caps, side, request.reference_price)?,
+            budget: UserBudget::new(
+                request.caps,
+                side,
+                request.reference_price,
+                book.order_step_size,
+            )?,
         })
     }
 
@@ -417,8 +420,10 @@ impl<'a> SweepGate<'a> {
             return Ok(Offer::Skip);
         }
 
+        // An order a claim covers in part is passed over whole. Its free units
+        // would be a truncated order ahead of the depth behind it.
         let available = self.reservation.available(book, node)?;
-        if available == 0 || is_takers_own(node, self.taker) {
+        if available < node.base_asset_amount || is_takers_own(node, self.taker) {
             return Ok(Offer::Skip);
         }
 
@@ -433,8 +438,6 @@ impl<'a> SweepGate<'a> {
         ) {
             Settleable::Yes => {}
             Settleable::SteppedOver => return Ok(Offer::Skip),
-            // `available` is nonzero here, because a wholly claimed order is
-            // passed over above.
             Settleable::Withheld => return Ok(Offer::Withheld { available }),
         }
 
@@ -451,39 +454,6 @@ impl<'a> SweepGate<'a> {
         }
 
         Ok(Offer::Take(Take { base, owner }))
-    }
-}
-
-/// `execute` reports a truncated order in one of two single-slot sections: a
-/// cull when the remainder falls under `min_order_size`, and a partial fill
-/// otherwise. Both walks stop at the order that needs a used section.
-#[derive(Default)]
-struct TruncationSlots {
-    cull_used: bool,
-    partial_used: bool,
-}
-
-impl TruncationSlots {
-    /// Claims the section a fill of `take` from `node` needs. False when that
-    /// section is already used. A fill of the whole order needs neither.
-    #[inline(always)]
-    fn claim(&mut self, node: &OrderNodeV0, take: u64, min_order_size: u64) -> bool {
-        if take == node.base_asset_amount {
-            return true;
-        }
-
-        let used = if node.base_asset_amount - take < min_order_size {
-            &mut self.cull_used
-        } else {
-            &mut self.partial_used
-        };
-
-        if *used {
-            return false;
-        }
-
-        *used = true;
-        true
     }
 }
 
@@ -748,8 +718,8 @@ impl ExecuteReport {
                 client_order_id: node.client_order_id,
             });
         } else if remainder < book.min_order_size {
-            // `TruncationSlots` admits one cull per walk. Fail here rather than
-            // drop a cull velocity must unwind.
+            // The walk ends after its first truncated order, so a second cull
+            // is a bug. Fail here rather than drop a cull velocity must unwind.
             require!(self.cancelled.is_none(), ClobError::BookInvariantViolated);
             self.cancelled = Some(CancelledRemainderV0 {
                 order_id: node.order_id,

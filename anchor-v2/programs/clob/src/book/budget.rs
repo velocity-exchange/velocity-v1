@@ -148,6 +148,7 @@ pub(super) struct UserBudget<'a> {
     /// move for the fill to cost their owner anything.
     side: SideV0,
     reference_price: u64,
+    order_step_size: u64,
 }
 
 impl<'a> UserBudget<'a> {
@@ -157,6 +158,7 @@ impl<'a> UserBudget<'a> {
         caps: &'a UserCapsV0,
         side: SideV0,
         reference_price: Option<u64>,
+        order_step_size: u64,
     ) -> Result<Self> {
         let spends_quote = caps.as_slice().iter().any(|cap| cap.quote_cap != u64::MAX);
         require!(
@@ -176,6 +178,7 @@ impl<'a> UserBudget<'a> {
             len: 0,
             side,
             reference_price: reference_price.unwrap_or(0),
+            order_step_size,
         };
 
         for cap in caps.as_slice() {
@@ -234,57 +237,63 @@ impl<'a> UserBudget<'a> {
             return 0;
         }
 
-        for slot in 0..self.len {
-            let UserRoom {
-                index: named,
-                budget: room,
-                cover,
-            } = self.entries[slot];
+        let Some(slot) = (0..self.len).find(|&slot| self.entries[slot].index as usize == index)
+        else {
+            // An owner named in the set but carrying no cap entry is
+            // unconstrained. It is uncovered, so a reduce-only order does not fill.
+            return if reduce_only { 0 } else { want };
+        };
 
-            if named as usize != index {
-                continue;
-            }
+        self.spend_room(slot, want, price, reduce_only)
+    }
 
-            let cost_per_base = self.cost_per_base(price);
-            // The quote budget does not bind when it is unbounded, or when the
-            // cost is zero. Otherwise the base rounds down and the spend rounds
-            // up, so a long run cannot creep past the budget one remainder at a
-            // time.
-            let budget_allowed = if room == u64::MAX || cost_per_base == 0 {
-                want
-            } else {
-                let affordable = (room as u128 * BASE_PRECISION as u128) / cost_per_base as u128;
-                want.min(affordable.min(u64::MAX as u128) as u64)
-            };
+    /// Takes what the cap entry at `slot` allows of `want`, and spends the
+    /// entry's room for it.
+    fn spend_room(&mut self, slot: usize, want: u64, price: u64, reduce_only: bool) -> u64 {
+        let UserRoom {
+            budget: room,
+            cover,
+            ..
+        } = self.entries[slot];
+        let cost_per_base = self.cost_per_base(price);
 
-            // The authoritative base cover binds only a reduce-only order.
-            let allowed = if reduce_only {
-                budget_allowed.min(cover)
-            } else {
-                budget_allowed
-            };
-
-            // Spend the quote budget for what was actually taken, and draw the
-            // cover down by the same base for a reduce-only fill.
-            if room != u64::MAX && cost_per_base != 0 {
-                let spent =
-                    (allowed as u128 * cost_per_base as u128).div_ceil(BASE_PRECISION as u128);
-                self.entries[slot].budget = room.saturating_sub(spent.min(u64::MAX as u128) as u64);
-            }
-
-            if reduce_only {
-                self.entries[slot].cover = cover.saturating_sub(allowed);
-            }
-
-            return allowed;
-        }
-
-        // An owner named in the set but carrying no cap entry is
-        // unconstrained. It is uncovered, so a reduce-only order does not fill.
-        if reduce_only {
-            0
-        } else {
+        // The quote budget does not bind when it is unbounded, or when the
+        // cost is zero. Otherwise the base rounds down and the spend rounds
+        // up, so a long run cannot creep past the budget one remainder at a
+        // time.
+        let budget_allowed = if room == u64::MAX || cost_per_base == 0 {
             want
+        } else {
+            let affordable = (room as u128 * BASE_PRECISION as u128) / cost_per_base as u128;
+            want.min(affordable.min(u64::MAX as u128) as u64)
+        };
+
+        // The authoritative base cover binds only a reduce-only order.
+        let allowed = if reduce_only {
+            budget_allowed.min(cover)
+        } else {
+            budget_allowed
+        };
+
+        // A cut take is the last level the ladder quotes. Velocity floors
+        // each level to the step, so the cut lands on the step grid.
+        let allowed = if allowed < want {
+            allowed - allowed % self.order_step_size
+        } else {
+            allowed
+        };
+
+        // Spend the quote budget for what was actually taken, and draw the
+        // cover down by the same base for a reduce-only fill.
+        if room != u64::MAX && cost_per_base != 0 {
+            let spent = (allowed as u128 * cost_per_base as u128).div_ceil(BASE_PRECISION as u128);
+            self.entries[slot].budget = room.saturating_sub(spent.min(u64::MAX as u128) as u64);
         }
+
+        if reduce_only {
+            self.entries[slot].cover = cover.saturating_sub(allowed);
+        }
+
+        allowed
     }
 }

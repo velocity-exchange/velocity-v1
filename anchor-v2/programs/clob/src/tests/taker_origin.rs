@@ -818,18 +818,13 @@ fn a_claim_takes_the_best_priced_prefix_of_the_side() {
     // Four base of demand: the whole 100 level, then one of the 101.
     place_taker_origin(&mut book, SideV0::Bid, 102, 4, taker);
 
+    // The 101 order is claimed in part, so the walk passes over all of it.
     assert_eq!(
         quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
-        encode_quote(&[
-            PriceLevelV0 {
-                price: 101,
-                size: 2
-            },
-            PriceLevelV0 {
-                price: 102,
-                size: 3
-            },
-        ])
+        encode_quote(&[PriceLevelV0 {
+            price: 102,
+            size: 3
+        }])
     );
 
     // Nothing moved on the book: a claim is computed, not stored.
@@ -1063,27 +1058,20 @@ fn quote_and_execute_withhold_the_same_units() {
 
     assert_eq!(
         quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
-        encode_quote(&[
-            PriceLevelV0 {
-                price: 101,
-                size: 2
-            },
-            PriceLevelV0 {
-                price: 102,
-                size: 3
-            },
-        ])
+        encode_quote(&[PriceLevelV0 {
+            price: 102,
+            size: 3
+        }])
     );
 
-    // Five base, the same five the ladder published, and the claimed unit of
-    // the 101 stays resting.
-    assert_eq!(
-        executed(&mut book, DirectionV0::Long, u64::MAX, 0),
-        vec![2, 3]
-    );
+    // The same three base the ladder published. The claimed 100 and the
+    // partly claimed 101 stay resting whole.
+    assert_eq!(executed(&mut book, DirectionV0::Long, u64::MAX, 0), vec![3]);
     assert_eq!(book.node_count(SideV0::Ask), 2);
-    let partial = book.read_node(book.best(SideV0::Ask)).unwrap();
-    assert_eq!((partial.price, partial.base_asset_amount), (100, 3));
+    let best = book.read_node(book.best(SideV0::Ask)).unwrap();
+    assert_eq!((best.price, best.base_asset_amount), (100, 3));
+    let next = book.read_node(best.next).unwrap();
+    assert_eq!((next.price, next.base_asset_amount), (101, 3));
 }
 
 /// The claimant list is maintained by the two functions every placement and
@@ -1158,11 +1146,10 @@ fn every_removal_path_maintains_the_claimant_list() {
     assert!(book.read_node(culled.node_index).unwrap().order_id != culled.order_id);
 }
 
-/// The withheld report says how much depth a caller would reach by loading the
-/// absent owner. Units a remainder claims stay out of reach either way, so the
-/// report leaves them out.
+/// An order a remainder claims in part is out of reach whoever the caller
+/// loads, so an absent owner's order of that kind does not end the walk.
 #[test]
-fn the_withheld_report_leaves_out_claimed_depth() {
+fn a_partly_claimed_order_of_an_absent_owner_does_not_end_the_walk() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, absent_maker, loaded) = (user(0xA), user(0xB), user(0xC));
@@ -1183,13 +1170,7 @@ fn the_withheld_report_leaves_out_claimed_depth() {
     let bytes = streamed(&book, pointer);
     let response = QuoteResponseV0::parse(&bytes).unwrap();
     assert!(response.levels.is_empty());
-    assert_eq!(
-        response.withheld,
-        PriceLevelV0 {
-            price: 100,
-            size: 2
-        }
-    );
+    assert_eq!(response.withheld, PriceLevelV0::default());
 }
 
 /// Velocity reports a fill only against a remainder the book offers to someone,

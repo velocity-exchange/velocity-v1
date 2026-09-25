@@ -659,12 +659,11 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     );
 }
 
-/// A budget truncates one maker without ending the walk, and the book is the
-/// one that turns quote into base.
+/// A budget truncates one maker, and the book is the one that turns quote
+/// into base. Both walks end at the truncated order.
 ///
 /// The tight maker's ask sits 2 below the reference, so every base it sells
-/// costs it 2. A budget of 4 therefore buys 2 base of it, and the depth
-/// behind it is untouched.
+/// costs it 2. A budget of 4 therefore buys 2 base of it.
 #[test]
 fn a_user_with_some_room_is_filled_only_that_far() {
     const UNIT: u64 = BASE_PRECISION;
@@ -698,8 +697,8 @@ fn a_user_with_some_room_is_filled_only_that_far() {
         .unwrap();
     assert_eq!(
         levels(&mut book, pointer),
-        vec![(100, 2 * UNIT), (101, 7 * UNIT)],
-        "capped to what its budget buys, and the rest of the book follows"
+        vec![(100, 2 * UNIT)],
+        "capped to what its budget buys, and the ladder ends there"
     );
 
     let outcome = book
@@ -715,7 +714,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
         )
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
-    assert_eq!(filled, 9 * UNIT);
+    assert_eq!(filled, 2 * UNIT);
 }
 
 /// A reduce-only order fills only up to its owner's authoritative base cover.
@@ -723,7 +722,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
 /// The book is position-blind, so the cover the caller carries is the only
 /// thing that keeps a reduce-only fill from growing a position it should
 /// shrink. The maker's reduce-only ask is capped to two units, so two fill and
-/// the depth behind it takes the rest.
+/// the walk ends there.
 #[test]
 fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
     const UNIT: u64 = BASE_PRECISION;
@@ -760,8 +759,7 @@ fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
         )
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
-    // Two units of the reduce-only ask (its cover) plus all seven behind it.
-    assert_eq!(filled, 9 * UNIT);
+    assert_eq!(filled, 2 * UNIT);
 }
 
 /// A reduce-only order with no cover does not fill at all.

@@ -255,6 +255,7 @@ impl<'info> RouteFill<'_, 'info> {
             route.claim,
             &mut super::user_caps::CapInputs {
                 taker_key: &accounts.user.key(),
+                exchange_match_fills_allowed: oracle.exchange_match_fills_allowed,
                 makers_and_referrer: parties.makers_and_referrer,
                 makers_and_referrer_stats: parties.makers_and_referrer_stats,
                 maps: parties.maps,

@@ -183,6 +183,10 @@ pub struct CapInputs<'a, 'info> {
     /// The taker's own `User`. A quoter settling for the taker is a
     /// self-trade and gets no room at all.
     pub taker_key: &'a Pubkey,
+    /// Whether the exchange oracle admits a match fill. The exchange oracle
+    /// values the equity floor, so a maker with a floor gets no room while it
+    /// does not.
+    pub exchange_match_fills_allowed: bool,
 }
 
 /// Budgets for every named maker this fill could put out of margin.
@@ -540,7 +544,8 @@ impl CapInputs<'_, '_> {
 
         // The tier this fill answers to, read from the same rule the fill
         // itself reads. A fill that only reduces is exempt from the gates
-        // below, so a floored maker can still deleverage through the book.
+        // below, so a floored maker can still deleverage through the book
+        // while the exchange oracle is valid.
         let signed_fill = match resting_side {
             SideV0::Ask => resting.cast::<i64>()?.safe_mul(-1)?,
             SideV0::Bid => resting.cast::<i64>()?,
@@ -640,7 +645,7 @@ impl CapInputs<'_, '_> {
         maker_direction: PositionDirection,
     ) -> Result<u64> {
         let maker = self.makers_and_referrer.get_ref(quoter_user_key)?;
-        if maker.is_being_liquidated() {
+        if maker.is_being_liquidated() || self.floor_unpriceable(&maker) {
             return Ok(0);
         }
 
@@ -667,7 +672,8 @@ impl CapInputs<'_, '_> {
 
     /// Whether the fill must take nothing of this maker's book depth.
     ///
-    /// A maker under liquidation takes no fill. The book ignores `base_cap` on
+    /// A maker under liquidation takes no fill, and neither does a maker whose
+    /// floor the exchange oracle cannot price. The book ignores `base_cap` on
     /// an ordinary order, so in a `ReduceOnly` market a maker whose ordinary
     /// orders could grow its position is excluded whole.
     fn book_fill_barred(
@@ -677,13 +683,19 @@ impl CapInputs<'_, '_> {
         resting_side: SideV0,
         resting: u64,
     ) -> Result<bool> {
-        if maker.is_being_liquidated() {
+        if maker.is_being_liquidated() || self.floor_unpriceable(maker) {
             return Ok(true);
         }
 
         Ok(self.market_is_reduce_only(market_index)?
             && rests_ordinary_clob_orders(maker, market_index)
             && resting > position_cover(maker, market_index, resting_side))
+    }
+
+    /// Whether the maker has an equity floor that the exchange oracle cannot
+    /// value for a match. Settle refuses such a maker in any direction.
+    fn floor_unpriceable(&self, maker: &crate::state::user::User) -> bool {
+        maker.equity_floor > 0 && !self.exchange_match_fills_allowed
     }
 
     fn market_is_reduce_only(&self, market_index: u16) -> Result<bool> {

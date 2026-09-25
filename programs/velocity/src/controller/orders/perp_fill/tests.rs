@@ -659,6 +659,25 @@ fn the_route_quotes_books_only_when_the_fill_would_take_them() {
     assert!(!oracle(true, false).admits_books(1));
 }
 
+/// A maker with an equity floor takes no quoter fill while the exchange oracle
+/// cannot value that floor for a match. The fill here reduces the maker's
+/// long, and is refused anyway.
+#[test]
+fn a_floored_maker_takes_no_fill_while_the_exchange_oracle_is_invalid() {
+    let floored = |exchange_match_fills_allowed: bool| Case {
+        maker_position_base: BASE_PRECISION_I64,
+        maker_equity_floor: 100 * QUOTE_PRECISION_I64 as u64,
+        exchange_match_fills_allowed,
+        ..Case::default()
+    };
+
+    let (_, valid) = run(floored(true));
+    assert_eq!(valid.unwrap().base, BASE_PRECISION_U64);
+
+    let (_, invalid) = run(floored(false));
+    assert_eq!(invalid.unwrap_err(), ErrorCode::InvalidOracle);
+}
+
 /// The mark TWAP records the price the fill traded at. Two fills that only
 /// take the book, at different prices, record different samples. The vAMM
 /// quote is the same in both.

@@ -58,6 +58,7 @@ struct Case {
     /// reduce-only.
     clob_orders: u8,
     reduce_only_clob_orders: u16,
+    exchange_match_fills_allowed: bool,
 }
 
 impl Default for Case {
@@ -77,6 +78,7 @@ impl Default for Case {
             reduce_only_market: false,
             clob_orders: 0,
             reduce_only_clob_orders: 0,
+            exchange_match_fills_allowed: true,
         }
     }
 }
@@ -261,6 +263,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
 
     let mut inputs = CapInputs {
         taker_key: &Pubkey::new_unique(),
+        exchange_match_fills_allowed: case.exchange_match_fills_allowed,
         makers_and_referrer: &makers,
         makers_and_referrer_stats: &stats_map,
         maps: &mut maps,
@@ -432,6 +435,34 @@ fn a_slot_order_is_not_mistaken_for_book_depth() {
         }),
         45 * QUOTE
     );
+}
+
+/// The exchange oracle values the floor. While it cannot price a match, a
+/// floored maker has no room, even for a fill that only reduces.
+#[test]
+fn a_floored_maker_has_no_room_while_the_exchange_oracle_is_invalid() {
+    // Long one, resting one bid: the taker sells into it and grows the long.
+    // The short case below reduces instead, and gets no room either.
+    let floored = |position_base: i64, exchange_match_fills_allowed: bool| Case {
+        deposit: 100_000,
+        floor: FLOOR,
+        position_base,
+        open_bids: BASE_PRECISION_I64,
+        exchange_match_fills_allowed,
+        ..Case::default()
+    };
+
+    assert_eq!(budget(floored(-BASE_PRECISION_I64, true)), u64::MAX);
+    assert_eq!(budget(floored(-BASE_PRECISION_I64, false)), 0);
+    assert_eq!(budget(floored(BASE_PRECISION_I64, false)), 0);
+    assert!(quoter_room(floored(-BASE_PRECISION_I64, false)) == 0);
+
+    // A maker without a floor does not answer to the exchange oracle.
+    let unfloored = Case {
+        floor: 0,
+        ..floored(-BASE_PRECISION_I64, false)
+    };
+    assert_eq!(budget(unfloored), u64::MAX);
 }
 
 #[test]

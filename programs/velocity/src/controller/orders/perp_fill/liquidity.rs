@@ -973,7 +973,11 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         self.mark_settled(&maker_key);
         self.check_external_change(leg, change, &maker_key, orders.completed)?;
         let mut maker = self.makers_and_referrer.get_ref_mut(&maker_key)?;
-        admit_external_maker(&maker, &maker_key)?;
+        admit_external_maker(
+            &maker,
+            &maker_key,
+            self.conditions.exchange_match_fills_allowed,
+        )?;
         self.bind_reduce_only_maker(market, &maker, &maker_key, change.base_size)?;
         if leg.maker_aggregates_tracked {
             self.bind_reduce_only_orders(&maker, &maker_key, response, change_index)?;
@@ -1555,14 +1559,27 @@ fn merged_orders(consumed: usize) -> VelocityResult<u64> {
     consumed.cast::<u64>()?.safe_add(1)
 }
 
-/// Refuse a maker the route excludes before it quotes. The route gives a
-/// maker under liquidation no room, and this stops a quoter that fills one
-/// anyway.
-fn admit_external_maker(maker: &User, maker_key: &Pubkey) -> VelocityResult {
+/// Refuse a maker the route excludes before it quotes. This stops a quoter
+/// that fills one anyway.
+///
+/// A maker under liquidation takes no fill. The exchange oracle values the
+/// equity floor, so a maker with a floor takes no fill while that oracle is
+/// not valid for a match, even a fill that reduces.
+fn admit_external_maker(
+    maker: &User,
+    maker_key: &Pubkey,
+    exchange_match_fills_allowed: bool,
+) -> VelocityResult {
     validate!(
         !maker.is_being_liquidated(),
         ErrorCode::UserIsBeingLiquidated,
         "user {} is being liquidated and takes no quoter fill",
+        maker_key
+    )?;
+    validate!(
+        maker.equity_floor == 0 || exchange_match_fills_allowed,
+        ErrorCode::InvalidOracle,
+        "user {} has an equity floor the exchange oracle cannot value for a match",
         maker_key
     )?;
 

@@ -721,3 +721,36 @@ mod keeper_payment_floor {
         assert!(!collected_covers_payment(u64::MAX, None));
     }
 }
+
+mod builder_binding {
+    use {
+        super::*,
+        crate::state::user::{Order, OrderBitFlag},
+    };
+
+    /// The book names the remainder by its own handle. A builder row for the
+    /// velocity id renames the order and flags it, so the fill charges the fee.
+    #[test]
+    fn a_remainder_with_a_builder_row_is_charged_the_builder_fee() {
+        let mut order = Order {
+            order_id: 41,
+            ..Order::default()
+        };
+
+        apply_builder_row(&mut order, 7, true);
+        assert_eq!(order.order_id, 7);
+        assert!(order.is_bit_flag_set(OrderBitFlag::HasBuilder));
+    }
+
+    #[test]
+    fn a_remainder_with_no_builder_row_is_left_as_the_book_named_it() {
+        let mut order = Order {
+            order_id: 41,
+            ..Order::default()
+        };
+
+        apply_builder_row(&mut order, 7, false);
+        assert_eq!(order.order_id, 41);
+        assert!(!order.is_bit_flag_set(OrderBitFlag::HasBuilder));
+    }
+}

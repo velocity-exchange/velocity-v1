@@ -91,13 +91,15 @@ use {
             order_params::NO_ROUTE_DIGEST,
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
-            prop_amm::{ClobMarket, FillArgsV0, FillRequestV0, QuoterSlabExt, SideV0, UserRefV0},
+            prop_amm::{
+                ClobMarket, ClobReader, FillArgsV0, FillRequestV0, QuoterSlabExt, SideV0, UserRefV0,
+            },
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
             state::State,
             user::{
-                OrderReservation, OrderStatus, PerpPosition, ReferrerStatus, ReleaseCheck, User,
-                UserStats,
+                MarketType, OrderBitFlag, OrderReservation, OrderStatus, PerpPosition,
+                ReferrerStatus, ReleaseCheck, User, UserStats,
             },
             user_map::{load_user_maps, UserMap, UserStatsMap},
         },
@@ -266,9 +268,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
     // The taker's escrow, when the caller carries it. The referee discount and
-    // the referrer reward are keyed by market, so they bind here. A builder
-    // fee does not bind, because `L3RowV0` names the book's handle and not the
-    // order id.
+    // the referrer reward are keyed by market, so they bind here. The builder
+    // row is keyed by order, so it binds to the remainder the crank fills.
     let mut rev_share_escrow = if state.builder_codes_enabled() {
         let taker_authority = load!(ctx.accounts.taker)?.authority;
         let escrow = crate::instructions::optional_accounts::get_revenue_share_escrow_account(
@@ -604,6 +605,7 @@ fn route_and_fill_remainder<'info>(
     // reservation from when the remainder rested is still on the position.
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, subject_order);
+    bind_builder_order(cx, rev_share_escrow, subject_order, &mut order)?;
 
     let mark = crate::instructions::RouteMark::read(maps, cx.market_index)?;
 
@@ -681,6 +683,61 @@ fn route_and_fill_remainder<'info>(
     )?;
 
     Ok(filled)
+}
+
+/// Carry the taker's builder terms onto the order the crank fills.
+///
+/// The escrow keys a builder row by velocity order id, and a book row names
+/// the book's handle instead. The book keeps the velocity id as the order's
+/// `client_order_id`, so the crank reads it back. A live row for that id,
+/// sub-account and market is this order's own. Velocity order ids only
+/// increase, and a placement that stops early clears the row it wrote.
+fn bind_builder_order<'info>(
+    cx: &TakerOriginContext<'_, 'info>,
+    rev_share_escrow: &Option<RevenueShareEscrowZeroCopyMut<'info>>,
+    resting: &RestingOrder,
+    order: &mut crate::state::user::Order,
+) -> Result<()> {
+    let Some(escrow) = rev_share_escrow.as_ref() else {
+        return Ok(());
+    };
+
+    let Some(view) = ClobReader {
+        market: &cx.accounts.clob_market,
+        program: &cx.accounts.clob_program,
+    }
+    .orders(vec![resting.order_ref])?
+    .first()
+    .copied()
+    .filter(|view| view.found()) else {
+        return Ok(());
+    };
+
+    let builder_row = escrow.find_builder_order_index(
+        cx.taker_ref.sub_account_id,
+        view.client_order_id,
+        cx.market_index,
+        MarketType::Perp,
+    );
+
+    apply_builder_row(order, view.client_order_id, builder_row.is_some());
+    Ok(())
+}
+
+/// Name the order by its velocity id and flag its builder, so the fill finds
+/// the escrow row and charges the builder fee. An order with no row is left
+/// as the book named it.
+fn apply_builder_row(
+    order: &mut crate::state::user::Order,
+    velocity_order_id: u32,
+    has_builder_row: bool,
+) {
+    if !has_builder_row {
+        return;
+    }
+
+    order.order_id = velocity_order_id;
+    order.add_bit_flag(OrderBitFlag::HasBuilder);
 }
 
 /// Whether the cranker is paid a reward out of the improvement.
@@ -1056,6 +1113,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
 ) -> Result<()> {
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, aggressor);
+    bind_builder_order(cx, rev_share_escrow, aggressor, &mut order)?;
     let pair = bind_pair(cx, cross, aggressor, counterparty, &mut order, maps)?;
 
     // The pre-flight comes first, because a refusal must leave the book as it

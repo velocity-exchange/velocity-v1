@@ -208,9 +208,10 @@ impl Rng {
 const OWNERS: u8 = 7;
 
 fn random_config(rng: &mut Rng) -> MarketConfigV0 {
+    let min_order_size = [1, BASE_PRECISION / 10][rng.below(2) as usize];
     MarketConfigV0 {
-        min_order_size: [1, BASE_PRECISION / 10][rng.below(2) as usize],
-        blocking_min_size: [0, 2 * BASE_PRECISION][rng.below(2) as usize],
+        min_order_size,
+        blocking_min_size: [min_order_size + 1, 2 * BASE_PRECISION][rng.below(2) as usize],
         unknown_user_grace_slots: rng.below(4) as u32,
         max_quote_levels: 1 + rng.below(8) as u16,
         max_execute_fills: 1 + rng.below(10) as u16,

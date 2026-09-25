@@ -727,7 +727,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						orderTickSize: market.orderTickSize,
 						orderStepSize: market.orderStepSize,
 						minOrderSize: market.orderStepSize,
-						blockingMinSize: new BN(0),
+						blockingMinSize: market.orderStepSize.muln(2),
 						defaultActivationDelaySlots: 0,
 						maxActivationDelaySlots: 20,
 						unknownUserGraceSlots: 2,

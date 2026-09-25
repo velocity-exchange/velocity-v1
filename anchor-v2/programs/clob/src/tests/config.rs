@@ -45,6 +45,7 @@ fn a_minimum_off_the_step_is_refused() {
     let off_step = MarketConfigV0 {
         order_step_size: 10,
         min_order_size: 15,
+        blocking_min_size: 30,
         ..test_config()
     };
     assert!(!initializes(off_step));
@@ -52,6 +53,26 @@ fn a_minimum_off_the_step_is_refused() {
         min_order_size: 20,
         ..off_step
     }));
+}
+
+/// A blocking floor at or under the minimum lets 49 minimum-size orders end
+/// every walk, so the config refuses it.
+#[test]
+fn a_blocking_floor_must_exceed_the_minimum() {
+    let config = MarketConfigV0 {
+        min_order_size: 10,
+        ..test_config()
+    };
+    for (blocking_min_size, admitted) in [(0, false), (10, false), (11, true)] {
+        assert_eq!(
+            initializes(MarketConfigV0 {
+                blocking_min_size,
+                ..config
+            }),
+            admitted,
+            "blocking_min_size {blocking_min_size}"
+        );
+    }
 }
 
 #[test]

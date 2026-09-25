@@ -424,9 +424,9 @@ wire_type! {
         /// rejects.
         pub min_order_size: u64,
         /// Floor on the size of an order that may end a fill walk when its owner is not in
-        /// the caller's user set. The book skips a smaller order at any age. A maker sizing
-        /// a quote needs this, because it is what keeping price priority costs against a
-        /// caller that leaves the maker out. Zero disables the floor.
+        /// the caller's user set. The book skips a smaller order at any age. A maker needs
+        /// it to keep price priority against a caller that leaves the maker out. It exceeds
+        /// `min_order_size`, except on an older market, where zero lets any order end a walk.
         pub blocking_min_size: u64,
         /// Slots added to the placement slot to get `activation_slot` when the
         /// caller chooses no delay. A caller that compares its own delay against

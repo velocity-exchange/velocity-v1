@@ -178,7 +178,7 @@ fn init_clob_book(svm: &mut litesvm::LiteSVM, admin: &Keypair) -> Pubkey {
     data.extend_from_slice(&1u64.to_le_bytes()); // order_tick_size
     data.extend_from_slice(&1_000u64.to_le_bytes()); // order_step_size
     data.extend_from_slice(&1_000u64.to_le_bytes()); // min_order_size (one step)
-    data.extend_from_slice(&0u64.to_le_bytes()); // blocking_min_size
+    data.extend_from_slice(&2_000u64.to_le_bytes()); // blocking_min_size (above the minimum)
     data.extend_from_slice(&0u32.to_le_bytes()); // default_activation_delay_slots
     data.extend_from_slice(&20u32.to_le_bytes()); // max_activation_delay_slots
     data.extend_from_slice(&2u32.to_le_bytes()); // unknown_user_grace_slots

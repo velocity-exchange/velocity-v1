@@ -163,6 +163,7 @@ fn a_budget_cut_off_the_step_grid_floors_to_the_step() {
     let config = MarketConfigV0 {
         order_step_size: STEP,
         min_order_size: STEP,
+        blocking_min_size: 2 * STEP,
         ..test_config()
     };
 

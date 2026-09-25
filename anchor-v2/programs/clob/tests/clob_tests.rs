@@ -100,9 +100,9 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
             order_tick_size: 1,
             order_step_size: 1,
             min_order_size: 1,
-            // Off by default, so every test here reads the behaviour of a market
-            // whose reserved bytes are still zero.
-            blocking_min_size: 0,
+            // The lowest floor the config admits. Every order a test places is a
+            // whole unit, so every order can end a walk.
+            blocking_min_size: 2,
             default_activation_delay_slots: 1,
             max_activation_delay_slots: 20,
             unknown_user_grace_slots: 2,
@@ -754,6 +754,7 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
             order_tick_size: Some(10),
             order_step_size: Some(5 * UNIT),
             min_order_size: Some(10 * UNIT),
+            blocking_min_size: Some(20 * UNIT),
             ..Default::default()
         },
     }
@@ -1663,26 +1664,28 @@ fn the_l3_read_flags_the_orders_that_can_end_a_walk() {
     );
 }
 
-/// Zero is what a market reads out of reserved bytes, so an untouched market
-/// keeps the behaviour it had before the floor existed.
+/// A floor at or under `min_order_size` lets minimum-size orders end every
+/// walk, so an update may not set one.
 #[test]
-fn a_zero_blocking_floor_lets_any_order_end_a_walk() {
+fn an_update_refuses_a_blocking_floor_at_the_minimum() {
     let mut ctx = setup();
-    let dust = addr(Pubkey::new_unique());
-    ctx.svm.warp_to_slot(10);
-    place(&mut ctx, place_args(SideV0::Ask, 100, 1), dust);
-    ctx.svm.warp_to_slot(10_000);
+    for blocking_min_size in [0, 1] {
+        let ix = instruction::UpdateMarketV0 {
+            args: ClobUpdateMarketArgsV0 {
+                blocking_min_size: Some(blocking_min_size),
+                ..Default::default()
+            },
+        }
+        .to_instruction(accounts::UpdateMarketV0 {
+            market: addr(ctx.market),
+            authority: addr(ctx.admin.pubkey()),
+        });
 
-    assert_eq!(
-        quote_withheld(
-            &mut ctx,
-            DirectionV0::Long,
-            30,
-            Some(vec![addr(Pubkey::new_unique())])
-        ),
-        Some((100, 1)),
-        "a one-lot order ends the walk when no floor is set"
-    );
+        assert_clob_err(
+            send(&mut ctx, ix),
+            err_code(clob::error::ClobError::InvalidConfig),
+        );
+    }
 }
 
 /// The report is one order deep, and deliberately so.
@@ -1721,6 +1724,7 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
     let ix = instruction::UpdateMarketV0 {
         args: ClobUpdateMarketArgsV0 {
             min_order_size: Some(10 * UNIT),
+            blocking_min_size: Some(20 * UNIT),
             ..Default::default()
         },
     }
@@ -2884,7 +2888,7 @@ fn initializing_a_market_needs_the_accounts_own_keypair() {
         order_tick_size: 1,
         order_step_size: 1,
         min_order_size: 1,
-        blocking_min_size: 0,
+        blocking_min_size: 2,
         default_activation_delay_slots: 1,
         max_activation_delay_slots: 20,
         unknown_user_grace_slots: 2,

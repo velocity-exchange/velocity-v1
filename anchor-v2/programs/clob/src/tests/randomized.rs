@@ -79,7 +79,7 @@ fn random_config(rng: &mut Rng) -> (u64, MarketConfigV0) {
     let config = MarketConfigV0 {
         order_step_size: UNIT,
         min_order_size: min_units * UNIT,
-        blocking_min_size: rng.pick(&[0u64, 0, 4 * UNIT]),
+        blocking_min_size: rng.pick(&[min_units + 1, min_units + 1, 4.max(min_units + 1)]) * UNIT,
         unknown_user_grace_slots: rng.pick(&[0u32, 2, 5]),
         max_execute_fills: rng.pick(&[2u16, 3, 5, 8]),
         max_execute_users: rng.pick(&[1u16, 2, 3, 4]),

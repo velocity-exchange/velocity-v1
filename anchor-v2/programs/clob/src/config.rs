@@ -6,9 +6,11 @@
 //! update changes separately. The book reads the tick, the step and the
 //! minimum without a zero guard, so a zero must never reach the header.
 //!
-//! `blocking_min_size` has no ceiling. A high floor only lets a caller step
-//! over more of the makers it did not load, and no bound on it is right for
-//! every asset's price.
+//! `blocking_min_size` must exceed `min_order_size`, so an order of the minimum
+//! size never ends a walk. Otherwise 49 such orders on fresh sub-accounts put
+//! the depth behind them out of reach of every caller. It has no ceiling. A
+//! high floor only lets a caller step over more of the makers it did not load,
+//! and no bound on it is right for every asset's price.
 
 use {
     crate::{
@@ -36,6 +38,10 @@ pub fn validate_market_config(market: &ClobMarketV0) -> Result<()> {
             && market.order_step_size != 0
             && market.min_order_size != 0
             && market.min_order_size.is_multiple_of(market.order_step_size),
+        ClobError::InvalidConfig
+    );
+    require!(
+        market.blocking_min_size > market.min_order_size,
         ClobError::InvalidConfig
     );
 

@@ -368,8 +368,8 @@ export function registerClobMarket(parent: Command): void {
 			)
 			.option(
 				'--blocking-min-size <n>',
-				'floor on the size of an order that may end a fill walk when its owner is not carried. 0 disables the floor',
-				'0'
+				'floor on the size of an order that may end a fill walk when its owner is not carried. Must exceed the minimum order size',
+				'1000000'
 			)
 			.option(
 				'--default-activation-delay <slots>',
@@ -702,7 +702,7 @@ export function registerClobMarket(parent: Command): void {
 			.option('--min-order-size <n>', 'minimum order size (base precision)')
 			.option(
 				'--blocking-min-size <n>',
-				'floor on the size of an order that may end a fill walk when its owner is not carried. 0 disables the floor'
+				'floor on the size of an order that may end a fill walk when its owner is not carried. Must exceed the minimum order size'
 			)
 			.option('--default-activation-delay <slots>', 'default taker speed bump')
 			.option('--max-activation-delay <slots>', 'max caller-chosen delay')

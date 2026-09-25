@@ -231,10 +231,10 @@ pub struct ClobHeaderV0 {
     pub order_step_size: u64,
     /// Floor on order size so every resting order has real capital at risk.
     pub min_order_size: u64,
-    /// Floor on the size of an order that may end a walk. Zero disables it.
-    ///
-    /// A caller carries at most 48 users, so 49 orders at the top of book can
-    /// block the depth behind them. The walk steps over a smaller order.
+    /// Floor on the size of an order that may end a walk. The walk steps over a
+    /// smaller order. The config requires it to exceed `min_order_size`, for
+    /// the reason `crate::config` gives. Zero, which only a market made before
+    /// that rule can hold, lets any order end a walk.
     pub blocking_min_size: u64,
     /// Base units per whole unit. Velocity perps use 1e9 and spot varies.
     /// Immutable after init, because resting order sizes are denominated in
@@ -489,7 +489,7 @@ pub struct MarketConfigV0 {
     pub order_tick_size: u64,
     pub order_step_size: u64,
     pub min_order_size: u64,
-    /// See [`ClobHeaderV0::blocking_min_size`]. Zero disables the floor.
+    /// See [`ClobHeaderV0::blocking_min_size`]. Must exceed `min_order_size`.
     pub blocking_min_size: u64,
     pub default_activation_delay_slots: u32,
     pub max_activation_delay_slots: u32,

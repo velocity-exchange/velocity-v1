@@ -253,6 +253,7 @@ fn execute_streams_balance_changes_merged_by_user() {
 fn execute_streams_a_sub_min_cull_alongside_the_fill() {
     let config = crate::state::MarketConfigV0 {
         min_order_size: 10 * UNIT,
+        blocking_min_size: 20 * UNIT,
         ..test_config()
     };
     let market = TestMarket::new_with(16, config);

@@ -1088,6 +1088,7 @@ fn every_removal_path_maintains_the_claimant_list() {
         MarketConfigV0 {
             // A floor, so a fill can leave a remainder small enough to cull.
             min_order_size: 3,
+            blocking_min_size: 4,
             ..test_market_config()
         },
     );

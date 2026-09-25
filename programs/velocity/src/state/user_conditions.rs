@@ -215,7 +215,6 @@ impl UserConditionsV0 {
         hash
     }
 
-    #[cfg(test)]
     pub fn block(&self) -> &[u8] {
         ConditionBlock::block(&self.relay)
     }

@@ -3047,6 +3047,11 @@ impl Fixture {
             state: self.state_pda(),
             authority: authority.pubkey(),
             revenue_share_escrow: self.revenue_share_escrow_pda(&authority.pubkey()),
+            user_conditions: Pubkey::find_program_address(
+                &[b"user_conditions", user_pda.as_ref()],
+                &self.program_id,
+            )
+            .0,
         }
         .to_account_metas(None);
         self.ctx
@@ -3807,6 +3812,11 @@ impl Fixture {
             keeper: crank.pubkey(),
             velocity_signer: self.signer_pda,
             revenue_share_escrow: self.revenue_share_escrow_pda(&authority),
+            user_conditions: Pubkey::find_program_address(
+                &[b"user_conditions", user_pda.as_ref()],
+                &self.program_id,
+            )
+            .0,
         }
         .to_account_metas(None);
         accounts.extend(self.market_ras(false));
@@ -6167,6 +6177,11 @@ mod smoke {
             keeper: crank.pubkey(),
             velocity_signer: f.signer_pda,
             revenue_share_escrow: f.revenue_share_escrow_pda(&kp.pubkey()),
+            user_conditions: Pubkey::find_program_address(
+                &[b"user_conditions", user_pda.as_ref()],
+                &f.program_id,
+            )
+            .0,
         }
         .to_account_metas(None);
         accounts.extend(f.market_ras(false));

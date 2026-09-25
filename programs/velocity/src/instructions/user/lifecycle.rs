@@ -23,6 +23,35 @@ fn init_user_conditions(
     Ok(())
 }
 
+/// Close the conditions block of a `User` that is being deleted, and send
+/// every lamport it holds to `recipient`. A user created before
+/// `initialize_user` made the block may have none, and then this does nothing.
+///
+/// The caller pins the address with `seeds`. So a non-empty account there is
+/// one that velocity created, and a relay `WatchV0` on it becomes inert.
+pub fn close_user_conditions<'info>(
+    user_conditions: &AccountInfo<'info>,
+    recipient: &AccountInfo<'info>,
+) -> Result<()> {
+    if user_conditions.data_is_empty() {
+        return Ok(());
+    }
+
+    validate!(
+        user_conditions.owner == &crate::ID,
+        ErrorCode::DefaultError,
+        "user conditions account is not owned by velocity"
+    )?;
+
+    let lamports = user_conditions.lamports();
+    **recipient.try_borrow_mut_lamports()? = recipient.lamports().safe_add(lamports)?;
+    **user_conditions.try_borrow_mut_lamports()? = 0;
+
+    user_conditions.assign(&anchor_lang::system_program::ID);
+    user_conditions.resize(0)?;
+    Ok(())
+}
+
 /// Mark both sides of a referral and return the referrer authority. Returns
 /// the default key when the caller passed no referrer accounts.
 fn link_referrer<'a>(
@@ -90,7 +119,11 @@ fn pay_init_user_fee<'info>(
 ///
 /// For any other authority, a payer that is not the authority must be an
 /// allowlisted external depositor. Only the mainnet build holds an allowlist.
-fn validate_payer(authority: &UncheckedAccount<'_>, payer: &Signer<'_>, state: &State) -> Result<()> {
+fn validate_payer(
+    authority: &UncheckedAccount<'_>,
+    payer: &Signer<'_>,
+    state: &State,
+) -> Result<()> {
     if authority.key() == state.signer {
         validate!(
             state.is_warm(&payer.key()),
@@ -267,7 +300,10 @@ pub fn handle_delete_user(ctx: Context<DeleteUser>) -> Result<()> {
     let mut state = ctx.accounts.state.load_mut()?;
     safe_decrement!(state.number_of_sub_accounts, 1);
 
-    Ok(())
+    close_user_conditions(
+        &ctx.accounts.user_conditions,
+        &ctx.accounts.authority.to_account_info(),
+    )
 }
 
 pub fn handle_reclaim_rent(ctx: Context<ReclaimRent>) -> Result<()> {
@@ -405,6 +441,15 @@ pub struct DeleteUser<'info> {
         bump,
     )]
     pub revenue_share_escrow: UncheckedAccount<'info>,
+    /// CHECK: the user's conditions block, closed with the user. It is an
+    /// `UncheckedAccount` because a user created before the block existed may
+    /// have none. The `seeds` stop a caller from naming another account.
+    #[account(
+        mut,
+        seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        bump,
+    )]
+    pub user_conditions: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -524,5 +569,114 @@ mod payer_tests {
         let key = Pubkey::new_unique();
         let mut accounts = Accounts::new(key, key);
         assert!(accounts.check(&state).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod close_user_conditions_tests {
+    use {
+        super::close_user_conditions,
+        anchor_lang::prelude::{AccountInfo, Pubkey},
+    };
+
+    /// `AccountInfo::resize` reads the original length 4 bytes before the key
+    /// and writes the new length 8 bytes before the data, as the runtime lays
+    /// out an input buffer. These types give it that memory on the host.
+    #[repr(C)]
+    struct KeyWithOriginalLen {
+        original_data_len: u32,
+        key: Pubkey,
+    }
+
+    struct ClosingAccounts {
+        conditions_key: KeyWithOriginalLen,
+        recipient_key: Pubkey,
+        owner: Pubkey,
+        recipient_owner: Pubkey,
+        conditions_lamports: u64,
+        recipient_lamports: u64,
+        conditions_words: Vec<u64>,
+        recipient_data: Vec<u8>,
+    }
+
+    impl ClosingAccounts {
+        fn new(owner: Pubkey, data_len: usize) -> Self {
+            Self {
+                conditions_key: KeyWithOriginalLen {
+                    original_data_len: data_len as u32,
+                    key: Pubkey::new_unique(),
+                },
+                recipient_key: Pubkey::new_unique(),
+                owner,
+                recipient_owner: Pubkey::default(),
+                conditions_lamports: 1_000,
+                recipient_lamports: 5,
+                conditions_words: vec![0; 1 + data_len / 8],
+                recipient_data: vec![],
+            }
+        }
+
+        fn close(&mut self) -> anchor_lang::Result<ClosedAccounts> {
+            let conditions_bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut self.conditions_words);
+            let conditions = AccountInfo::new(
+                &self.conditions_key.key,
+                false,
+                true,
+                &mut self.conditions_lamports,
+                &mut conditions_bytes[8..],
+                &self.owner,
+                false,
+            );
+            let recipient = AccountInfo::new(
+                &self.recipient_key,
+                false,
+                true,
+                &mut self.recipient_lamports,
+                &mut self.recipient_data,
+                &self.recipient_owner,
+                false,
+            );
+
+            close_user_conditions(&conditions, &recipient)?;
+
+            Ok(ClosedAccounts {
+                conditions_lamports: conditions.lamports(),
+                conditions_owner: *conditions.owner,
+                conditions_data_len: conditions.data_len(),
+                recipient_lamports: recipient.lamports(),
+            })
+        }
+    }
+
+    struct ClosedAccounts {
+        conditions_lamports: u64,
+        conditions_owner: Pubkey,
+        conditions_data_len: usize,
+        recipient_lamports: u64,
+    }
+
+    #[test]
+    fn a_velocity_owned_block_is_closed_to_the_recipient() {
+        let closed = ClosingAccounts::new(crate::ID, 64).close().unwrap();
+
+        assert_eq!(closed.conditions_lamports, 0);
+        assert_eq!(closed.conditions_owner, anchor_lang::system_program::ID);
+        assert_eq!(closed.conditions_data_len, 0);
+        assert_eq!(closed.recipient_lamports, 1_005);
+    }
+
+    #[test]
+    fn an_absent_block_is_left_alone() {
+        let closed = ClosingAccounts::new(Pubkey::default(), 0).close().unwrap();
+
+        assert_eq!(closed.conditions_lamports, 1_000);
+        assert_eq!(closed.recipient_lamports, 5);
+    }
+
+    #[test]
+    fn a_block_owned_by_another_program_is_refused() {
+        assert!(ClosingAccounts::new(Pubkey::new_unique(), 64)
+            .close()
+            .is_err());
     }
 }

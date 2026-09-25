@@ -2248,6 +2248,42 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "userConditions",
+          "docs": [
+            "`UncheckedAccount` because a user created before the block existed may",
+            "have none. The `seeds` stop a caller from naming another account."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -3298,6 +3334,42 @@ export type Velocity = {
               {
                 "kind": "account",
                 "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "userConditions",
+          "docs": [
+            "same contract as `DeleteUser::user_conditions`. Its lamports go to the",
+            "authority, as the rent of the `User` does."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
               }
             ]
           }

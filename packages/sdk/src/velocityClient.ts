@@ -2862,7 +2862,8 @@ export class VelocityClient {
 	 * Builds the `deleteUser` instruction. See `deleteUser` for on-chain preconditions. It passes
 	 * the authority's `RevenueShareEscrow` PDA, which is required even when no escrow exists,
 	 * because seeds pin the address. The program settles this sub-account's builder rows before
-	 * the id is retired, so an accrued builder fee is not stranded (OtterSec #128).
+	 * the id is retired, so an accrued builder fee is not stranded (OtterSec #128). It also passes
+	 * the user's conditions PDA, which the program closes to the authority when it exists.
 	 */
 	public async getUserDeletionIx(userAccountPublicKey: PublicKey) {
 		const ix = await this.program.instruction.deleteUser({
@@ -2874,6 +2875,10 @@ export class VelocityClient {
 				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
 					this.program.programId,
 					this.wallet.publicKey
+				),
+				userConditions: getUserConditionsPublicKey(
+					this.program.programId,
+					userAccountPublicKey
 				),
 			},
 		});
@@ -2998,6 +3003,10 @@ export class VelocityClient {
 				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
 					this.program.programId,
 					authority
+				),
+				userConditions: getUserConditionsPublicKey(
+					this.program.programId,
+					userAccountPublicKey
 				),
 			},
 			remainingAccounts,

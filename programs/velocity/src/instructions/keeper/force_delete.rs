@@ -93,7 +93,10 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
         keeper: Some(*ctx.accounts.keeper.key),
     });
 
-    Ok(())
+    crate::instructions::close_user_conditions(
+        &ctx.accounts.user_conditions,
+        &ctx.accounts.authority,
+    )
 }
 
 /// Prove the account is dust and has been dormant long enough to retire.
@@ -373,4 +376,13 @@ pub struct ForceDeleteUser<'info> {
         bump,
     )]
     pub revenue_share_escrow: UncheckedAccount<'info>,
+    /// CHECK: the user's conditions block, closed with the user. It carries the
+    /// same contract as `DeleteUser::user_conditions`. Its lamports go to the
+    /// authority, as the rent of the `User` does.
+    #[account(
+        mut,
+        seeds = [crate::state::user_conditions::USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        bump,
+    )]
+    pub user_conditions: UncheckedAccount<'info>,
 }

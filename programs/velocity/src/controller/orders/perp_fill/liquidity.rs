@@ -973,6 +973,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         self.mark_settled(&maker_key);
         self.check_external_change(leg, change, &maker_key, orders.completed)?;
         let mut maker = self.makers_and_referrer.get_ref_mut(&maker_key)?;
+        admit_external_maker(&maker, &maker_key)?;
         self.bind_reduce_only_maker(market, &maker, &maker_key, change.base_size)?;
         if leg.maker_aggregates_tracked {
             self.bind_reduce_only_orders(&maker, &maker_key, response, change_index)?;
@@ -1552,4 +1553,18 @@ fn idle_loaded_users<'info>(
 /// record can carry (see `math::router::validate_change_notional`).
 fn merged_orders(consumed: usize) -> VelocityResult<u64> {
     consumed.cast::<u64>()?.safe_add(1)
+}
+
+/// Refuse a maker the route excludes before it quotes. The route gives a
+/// maker under liquidation no room, and this stops a quoter that fills one
+/// anyway.
+fn admit_external_maker(maker: &User, maker_key: &Pubkey) -> VelocityResult {
+    validate!(
+        !maker.is_being_liquidated(),
+        ErrorCode::UserIsBeingLiquidated,
+        "user {} is being liquidated and takes no quoter fill",
+        maker_key
+    )?;
+
+    Ok(())
 }

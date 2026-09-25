@@ -39,7 +39,10 @@ use {
             spot_market::{SpotBalanceType, SpotMarket},
             spot_market_map::SpotMarketMap,
             state::{FeeStructure, OracleGuardRails, State},
-            user::{Order, OrderStatus, OrderType, PerpPosition, SpotPosition, User, UserStats},
+            user::{
+                Order, OrderStatus, OrderType, PerpPosition, SpotPosition, User, UserStats,
+                UserStatus,
+            },
             user_map::{UserMap, UserStatsMap},
         },
         test_utils::{
@@ -601,6 +604,18 @@ fn a_reduce_only_book_order_may_not_take_its_maker_past_flat() {
     assert_eq!(maker.perp_positions[0].base_asset_amount, -half);
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(maker.perp_positions[0].reduce_only_clob_orders, 0);
+}
+
+/// The route gives a maker under liquidation no room. A quoter that fills
+/// one anyway is refused at settle.
+#[test]
+fn a_maker_under_liquidation_takes_no_quoter_fill() {
+    let (_, filled) = run(Case {
+        maker_status: UserStatus::BeingLiquidated as u8,
+        ..Case::default()
+    });
+
+    assert_eq!(filled.unwrap_err(), ErrorCode::UserIsBeingLiquidated);
 }
 
 /// The mark TWAP records the price the fill traded at. Two fills that only

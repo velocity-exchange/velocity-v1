@@ -134,9 +134,9 @@
 //! Budgets are not a trust boundary. A book that ignores a budget leaves
 //! velocity where it stands without one, because the post-fill checks still
 //! refuse the fill. What honouring a budget buys is that the honest case
-//! stops reverting. Exclusion is the one exception. It also drops that maker
-//! from the permitted subject set velocity derives from the book itself, and
-//! a response that names someone outside that set is refused.
+//! stops reverting. Exclusion for liquidation is the one exception. Settle
+//! refuses a change for a maker under liquidation, whatever the book did with
+//! its exclusion.
 
 use {
     crate::{

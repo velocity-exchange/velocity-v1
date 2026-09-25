@@ -907,6 +907,8 @@ export class FillerMultithreaded {
 		// SignedMsg Subscriber process
 		const swiftOrderSubscriberFileName =
 			'swiftOrderSubscriber' + (isTsRuntime() ? '.ts' : '.js');
+		// Start the staleness grace when the child exists, not when init() began.
+		this.swiftOrderSubscriberHealthAt = Date.now();
 		const swiftOrderSubscriberProcess = spawnChild(
 			path.join(
 				__dirname,

@@ -137,6 +137,8 @@ export class SwiftOrderSubscriber {
 	private teardownSocket() {
 		if (this.ws) {
 			this.ws.removeAllListeners();
+			// terminate() on a CONNECTING socket emits `error` on next tick; unhandled, it crashes.
+			this.ws.on('error', () => {});
 			this.ws.terminate();
 			this.ws = null;
 		}

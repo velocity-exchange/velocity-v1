@@ -280,9 +280,9 @@ import { TakerInfo } from './types';
 import { getOracleConfidenceFromMMOracleData } from './oracles/utils';
 import { ConstituentMap } from './constituentMap/constituentMap';
 import {
-  clobResidentOpenOrders,
-  hasBuilder,
-  signedMsgEntryOrderRefusal,
+	clobResidentOpenOrders,
+	hasBuilder,
+	signedMsgEntryOrderRefusal,
 } from './math/orders';
 import { getMarketFeesForFeeTier, getPerpFeeTierIndex } from './math/fees';
 import { RevenueShareEscrowMap } from './userMap/revenueShareEscrowMap';

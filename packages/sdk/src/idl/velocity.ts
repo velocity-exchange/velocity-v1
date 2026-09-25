@@ -1283,6 +1283,138 @@ export type Velocity = {
       ]
     },
     {
+      "name": "crankClobCancelOutsideBand",
+      "docs": [
+        "Cancel a CLOB order that rests outside the maker oracle band, which",
+        "the router otherwise answers by dropping the whole book. The call is",
+        "permissionless, and the keeper earns the flat reward from the maker."
+      ],
+      "discriminator": [
+        129,
+        65,
+        110,
+        34,
+        231,
+        251,
+        2,
+        9
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "constraint below enforces. In program-keeper mode it is only the lamport",
+            "payout target, and no signature is required."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the order. The book's report of the cancel is checked",
+            "against this account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        },
+        {
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "quoterSlab",
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designated."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's lamport reservoir. Program-keeper mode requires it."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "crankClobCancelOutsideBandArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "crankClobEvict",
       "discriminator": [
         151,
@@ -21816,6 +21948,11 @@ export type Velocity = {
       "code": 6460,
       "name": "triggerMarketHasNoClob",
       "msg": "The market has no CLOB, so no crank can fire a trigger order on it"
+    },
+    {
+      "code": 6461,
+      "name": "clobOrderInsideOracleBand",
+      "msg": "The CLOB order rests inside the maker oracle band, so no keeper may cancel it"
     }
   ],
   "types": [
@@ -23353,6 +23490,29 @@ export type Velocity = {
           },
           {
             "name": "deprecatedPrediction"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankClobCancelOutsideBandArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "The order outside the band. The crank reads it back from the book."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
           }
         ]
       }

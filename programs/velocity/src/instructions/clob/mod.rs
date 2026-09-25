@@ -113,6 +113,7 @@
 mod admin;
 mod cancel_order_v1;
 mod cancel_orders_v1;
+mod crank_clob_cancel_outside_band;
 mod crank_clob_evict;
 mod crank_clob_remove_expired;
 mod crank_conditions_setup;
@@ -130,9 +131,9 @@ mod trigger_limit_order_v1;
 mod trigger_market_order_v1;
 
 pub use {
-    admin::*, cancel_order_v1::*, cancel_orders_v1::*, crank_clob_evict::*,
-    crank_clob_remove_expired::*, crank_conditions_setup::*, crank_cross_match::*,
-    crank_taker_origin_cross::*, force_cancel_clob_orders::*, helpers::*,
+    admin::*, cancel_order_v1::*, cancel_orders_v1::*, crank_clob_cancel_outside_band::*,
+    crank_clob_evict::*, crank_clob_remove_expired::*, crank_conditions_setup::*,
+    crank_cross_match::*, crank_taker_origin_cross::*, force_cancel_clob_orders::*, helpers::*,
     initialize_quoter_cross_conditions::*, modify_order_v1::*, place_and_make_v1::*,
     place_and_take_v1::*, refill_crank_reservoir::*, resolve_clob_crank::*,
     trigger_limit_order_v1::*, trigger_market_order_v1::*,

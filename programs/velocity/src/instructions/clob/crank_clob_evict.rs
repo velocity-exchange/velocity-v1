@@ -22,13 +22,13 @@ pub struct CrankClobEvictArgs {
     pub side: SideV0,
 }
 
-pub fn handle_crank_clob_evict(
-    ctx: Context<CrankClobOrderRemoval>,
+pub fn handle_crank_clob_evict<'info>(
+    ctx: Context<'info, CrankClobOrderRemoval<'info>>,
     args: CrankClobEvictArgs,
 ) -> Result<()> {
     let CrankClobEvictArgs { market_index, side } = args;
     crank_clob_removal(
-        ctx,
+        &ctx.accounts.removal_accounts(ctx.remaining_accounts),
         market_index,
         ClobRemoval::Evict(EvictWorstArgsV0 { side }),
     )

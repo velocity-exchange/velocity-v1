@@ -2393,18 +2393,28 @@ pub mod velocity {
         handle_quote_router(ctx, args)
     }
 
-    pub fn crank_clob_evict(
-        ctx: Context<CrankClobOrderRemoval>,
+    pub fn crank_clob_evict<'info>(
+        ctx: Context<'info, CrankClobOrderRemoval<'info>>,
         args: CrankClobEvictArgs,
     ) -> Result<()> {
         handle_crank_clob_evict(ctx, args)
     }
 
-    pub fn crank_clob_remove_expired(
-        ctx: Context<CrankClobOrderRemoval>,
+    pub fn crank_clob_remove_expired<'info>(
+        ctx: Context<'info, CrankClobOrderRemoval<'info>>,
         args: CrankClobRemoveExpiredArgs,
     ) -> Result<()> {
         handle_crank_clob_remove_expired(ctx, args)
+    }
+
+    /// Cancel a CLOB order that rests outside the maker oracle band, which
+    /// the router otherwise answers by dropping the whole book. The call is
+    /// permissionless, and the keeper earns the flat reward from the maker.
+    pub fn crank_clob_cancel_outside_band<'info>(
+        ctx: Context<'info, CrankClobCancelOutsideBand<'info>>,
+        args: CrankClobCancelOutsideBandArgs,
+    ) -> Result<()> {
+        handle_crank_clob_cancel_outside_band(ctx, args)
     }
 
     /// Crank an armed trigger-limit order onto the market's CLOB once its

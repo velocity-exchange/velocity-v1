@@ -357,3 +357,23 @@ fn safe_mm_oracle_state(
 
     Ok((mm_oracle_price_data, safe_oracle_validity))
 }
+
+/// The price a fill measures each maker's oracle band against.
+///
+/// A crank that removes an order for its band must use this price, or it can
+/// refuse an order that the router drops the book for.
+pub fn maker_band_oracle_price(
+    market: &PerpMarket,
+    state: &State,
+    oracle_price_data: &OraclePriceData,
+    slot: u64,
+) -> VelocityResult<i64> {
+    let mm_oracle_price_data = market.get_mm_oracle_price_data(
+        *oracle_price_data,
+        slot,
+        &state.oracle_guard_rails.validity,
+        state.slot_clock(),
+    )?;
+
+    Ok(mm_oracle_price_data.get_price())
+}

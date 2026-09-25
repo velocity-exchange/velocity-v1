@@ -39,8 +39,8 @@ use {
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0, L3RowV0,
-                OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterSlotV0,
+                CancelOrderArgsV0, ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0,
+                L3RowV0, OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterSlotV0,
                 QuoterType, RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
             },
             signed_msg_user::release_removed_remainders,
@@ -114,12 +114,55 @@ pub struct CrankClobOrderRemoval<'info> {
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
-/// Which removal a crank runs. The two differ only in the CLOB call they make
-/// and in what happens to a placed trigger's shadow slot. Eviction re-arms the
-/// slot in the same transaction. Expiry frees it.
+/// The accounts one removal crank reads. Each removal instruction names them
+/// in its own accounts struct.
+pub struct RemovalAccounts<'a, 'info> {
+    pub state: &'a AccountLoader<'info, State>,
+    pub authority: &'a UncheckedAccount<'info>,
+    pub filler: &'a AccountLoader<'info, User>,
+    pub user: &'a AccountLoader<'info, User>,
+    pub perp_market: &'a AccountLoader<'info, PerpMarket>,
+    pub quoter_slab: &'a AccountLoader<'info, QuoterSlabV0>,
+    pub clob_market: &'a UncheckedAccount<'info>,
+    pub clob_program: &'a UncheckedAccount<'info>,
+    pub crank_conditions: &'a Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// The owner's signed-message record, which a taker-origin removal
+    /// releases its entry in.
+    pub signed_msg_record: Option<&'a AccountInfo<'info>>,
+}
+
+impl<'info> CrankClobOrderRemoval<'info> {
+    /// The removal accounts, with the owner's signed-message record as the
+    /// first remaining account.
+    pub fn removal_accounts<'a>(
+        &'a self,
+        remaining_accounts: &'a [AccountInfo<'info>],
+    ) -> RemovalAccounts<'a, 'info> {
+        RemovalAccounts {
+            state: &self.state,
+            authority: &self.authority,
+            filler: &self.filler,
+            user: &self.user,
+            perp_market: &self.perp_market,
+            quoter_slab: &self.quoter_slab,
+            clob_market: &self.clob_market,
+            clob_program: &self.clob_program,
+            crank_conditions: &self.crank_conditions,
+            signed_msg_record: remaining_accounts.first(),
+        }
+    }
+}
+
+/// Which removal a crank runs. They differ in the CLOB call they make, the
+/// explanation they record, and what happens to a placed trigger's shadow
+/// slot. Eviction re-arms the slot in the same transaction. Expiry and a band
+/// cancel free it.
 pub enum ClobRemoval {
     Evict(EvictWorstArgsV0),
     Expire(RemoveExpiredArgsV0),
+    /// An order resting outside the maker oracle band. The caller judged the
+    /// band before the crank runs.
+    OutsideBand(CancelOrderArgsV0),
 }
 
 impl ClobRemoval {
@@ -127,11 +170,20 @@ impl ClobRemoval {
         match self {
             ClobRemoval::Evict(args) => clob.evict(args),
             ClobRemoval::Expire(args) => clob.remove_expired(args),
+            ClobRemoval::OutsideBand(args) => clob.cancel(args),
         }
     }
 
     fn is_evict(&self) -> bool {
         matches!(self, ClobRemoval::Evict(_))
+    }
+
+    fn explanation(&self) -> OrderActionExplanation {
+        match self {
+            ClobRemoval::Evict(_) => OrderActionExplanation::ClobOrderEvicted,
+            ClobRemoval::Expire(_) => OrderActionExplanation::OrderExpired,
+            ClobRemoval::OutsideBand(_) => OrderActionExplanation::OraclePriceBreachedLimitPrice,
+        }
     }
 }
 
@@ -144,53 +196,49 @@ impl ClobRemoval {
 /// reclaimed. The fee follows `force_cancel_clob_orders`: a full exchange halt
 /// stops the fee and not the removal.
 pub fn crank_clob_removal(
-    ctx: Context<CrankClobOrderRemoval>,
+    accounts: &RemovalAccounts,
     market_index: u16,
     removal: ClobRemoval,
 ) -> Result<()> {
     let clock = Clock::get()?;
-    let state = ctx.accounts.state.load()?;
+    let state = accounts.state.load()?;
     let program_keeper_mode = program_keeper_mode(
-        &ctx.accounts.filler,
-        &ctx.accounts.state,
-        ctx.accounts.crank_conditions.is_some(),
+        accounts.filler,
+        accounts.state,
+        accounts.crank_conditions.is_some(),
     )?;
 
     let clob = ClobMarket::from_slab(
-        &ctx.accounts.quoter_slab,
+        accounts.quoter_slab,
         market_index,
-        &ctx.accounts.clob_market,
-        &ctx.accounts.clob_program,
+        accounts.clob_market,
+        accounts.clob_program,
     )?;
 
     // CPI while no user borrows are held.
     let is_evict = removal.is_evict();
+    let explanation = removal.explanation();
     let removed = removal.invoke(&clob)?;
-    require_removed_for(&ctx.accounts.user, &removed.user)?;
-    release_removed_remainders(ctx.remaining_accounts.first(), market_index, &[removed]);
+    require_removed_for(accounts.user, &removed.user)?;
+    release_removed_remainders(accounts.signed_msg_record, market_index, &[removed]);
 
     // Each removal charges the maker the flat removal reward before it
-    // unwinds. In program-keeper mode the filler is the protocol `User`. Unwinding an
-    // otherwise-empty position frees its slot, and the reward needs that slot
-    // to resolve.
+    // unwinds, because unwinding an otherwise-empty position frees the slot
+    // the reward resolves in.
     //
     // An eviction charges the same fee as an expiry, because a caller can
-    // manufacture a free eviction. In program-keeper mode the crank pays the
-    // caller reservoir lamports and needs no signature, so a caller that fills
-    // a side to its threshold with its own dust and then evicts its own tail
-    // draws lamports for nothing. The fee prices that loop, because every
-    // iteration costs the evictee one flat reward and the evictee is the
-    // caller. A free eviction also left an honest signed keeper no reason to
-    // clear a full side.
+    // manufacture a free eviction. A caller that fills a side with its own
+    // dust and evicts its own tail draws program-keeper lamports, and the fee
+    // prices that loop. A free eviction also left an honest signed keeper no
+    // reason to clear a full side.
     //
-    // The book evicts the worst-priced order on its side that is not a bound
-    // taker remainder, so the fee falls on a quote that no longer competes and
-    // whose slot the book needs back. Pushing
+    // The book evicts the worst-priced order that is not a bound taker
+    // remainder, so the fee falls on a quote that no longer competes. Pushing
     // an honest maker to that tail costs an attacker a full side of
     // better-priced, takeable quotes, each holding real margin.
     let (removal_fee, maker_authority) = {
-        let mut user = load_mut!(ctx.accounts.user)?;
-        let mut market = load_mut!(ctx.accounts.perp_market)?;
+        let mut user = load_mut!(accounts.user)?;
+        let mut market = load_mut!(accounts.perp_market)?;
         validate!(
             market.market_index == market_index,
             ErrorCode::PerpMarketAccountMismatch,
@@ -201,8 +249,8 @@ pub fn crank_clob_removal(
 
         // A keeper that removes its own order is already loaded as the maker,
         // so it is not loaded again and pays itself nothing.
-        let mut filler = (ctx.accounts.filler.key() != ctx.accounts.user.key())
-            .then(|| load_mut!(ctx.accounts.filler))
+        let mut filler = (accounts.filler.key() != accounts.user.key())
+            .then(|| load_mut!(accounts.filler))
             .transpose()?;
         let removal_fee = charge_removal_fee(
             &state,
@@ -223,14 +271,10 @@ pub fn crank_clob_removal(
         super::emit_clob_cancel_record(
             clock.unix_timestamp,
             market.market_stats.historical_oracle_data.last_oracle_price,
-            &ctx.accounts.user.key(),
+            &accounts.user.key(),
             super::ClobOrderFacts::from_removed(&removed, market_index, clock.slot),
-            if is_evict {
-                OrderActionExplanation::ClobOrderEvicted
-            } else {
-                OrderActionExplanation::OrderExpired
-            },
-            Some(ctx.accounts.filler.key()),
+            explanation,
+            Some(accounts.filler.key()),
             Some(removal_fee),
             user.perp_positions[position_index].is_isolated(),
         )?;
@@ -239,12 +283,8 @@ pub fn crank_clob_removal(
     };
 
     let paid_lamports = program_keeper_mode
-        && earns_crank_lamports(
-            removal_fee,
-            &ctx.accounts.authority.key(),
-            &maker_authority,
-        );
-    if let (true, Some(conditions)) = (paid_lamports, &ctx.accounts.crank_conditions) {
+        && earns_crank_lamports(removal_fee, &accounts.authority.key(), &maker_authority);
+    if let (true, Some(conditions)) = (paid_lamports, accounts.crank_conditions) {
         // An expiry that went unclaimed pays escalation, priced off the
         // order's own `max_ts` so a caller cannot name its own figure.
         // Eviction is a capacity limit, not a deadline, so it does not
@@ -257,7 +297,7 @@ pub fn crank_clob_removal(
 
         ClobCrankConditionsV0::pay_crank(
             conditions,
-            &ctx.accounts.authority.to_account_info(),
+            &accounts.authority.to_account_info(),
             |payments| u64::from(payments.removal).saturating_add(u64::from(escalation)),
         )?;
     }
@@ -265,7 +305,7 @@ pub fn crank_clob_removal(
     msg!(
         "cranked clob removal of order {} for user {}",
         removed.order_id,
-        ctx.accounts.user.key()
+        accounts.user.key()
     );
 
     Ok(())
@@ -536,6 +576,7 @@ pub fn finish_trigger_crank<'info>(
         order_id,
         keeper_reward,
     } = *cranked;
+
     if let Some(conditions) = trigger_conditions {
         let mut conditions = load_mut!(conditions)?;
         validate!(

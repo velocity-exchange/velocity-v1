@@ -23,8 +23,8 @@ pub struct CrankClobRemoveExpiredArgs {
     pub order_ref: ClobOrderRefV0,
 }
 
-pub fn handle_crank_clob_remove_expired(
-    ctx: Context<CrankClobOrderRemoval>,
+pub fn handle_crank_clob_remove_expired<'info>(
+    ctx: Context<'info, CrankClobOrderRemoval<'info>>,
     args: CrankClobRemoveExpiredArgs,
 ) -> Result<()> {
     let CrankClobRemoveExpiredArgs {
@@ -33,7 +33,7 @@ pub fn handle_crank_clob_remove_expired(
     } = args;
 
     crank_clob_removal(
-        ctx,
+        &ctx.accounts.removal_accounts(ctx.remaining_accounts),
         market_index,
         ClobRemoval::Expire(RemoveExpiredArgsV0 { order_ref }),
     )

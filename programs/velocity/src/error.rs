@@ -995,6 +995,8 @@ pub enum ErrorCode {
     SignedMsgEntryNeitherFilledNorRested,
     #[msg("The market has no CLOB, so no crank can fire a trigger order on it")]
     TriggerMarketHasNoClob,
+    #[msg("The CLOB order rests inside the maker oracle band, so no keeper may cancel it")]
+    ClobOrderInsideOracleBand,
 }
 
 #[macro_export]

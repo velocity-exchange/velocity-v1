@@ -22,6 +22,20 @@ export type SwiftOrderSubscriberConfig = {
 export class SwiftOrderSubscriber {
 	private heartbeatTimeout: NodeJS.Timeout | null = null;
 	private readonly heartbeatIntervalMs = 60000;
+	/**
+	 * Reconnect backoff bounds. Jittered, so that a fleet of subscribers
+	 * knocked off the same server pod does not retry in lockstep.
+	 */
+	private readonly reconnectBaseDelayMs = 500;
+	private readonly reconnectMaxDelayMs = 30000;
+	private reconnectAttempts = 0;
+	/**
+	 * Handle of the pending reconnect, and the guard against scheduling a
+	 * second one: a single disconnect normally emits both `close` and `error`,
+	 * and the heartbeat timer can fire on top of them, so without it one
+	 * eviction would spawn two or three sockets.
+	 */
+	private reconnectTimeout: NodeJS.Timeout | null = null;
 	private ws: WebSocket | null = null;
 	subscribed: boolean = false;
 
@@ -61,6 +75,10 @@ export class SwiftOrderSubscriber {
 			message['message']?.toLowerCase() === 'authenticated'
 		) {
 			this.subscribed = true;
+			// Reset here rather than on `open`: a pod that is mid-shutdown still
+			// completes the TCP handshake, so a successful auth is the first real
+			// proof the connection is usable.
+			this.reconnectAttempts = 0;
 			this.config.marketIndexes.forEach(async (marketIndex) => {
 				this.ws?.send(
 					JSON.stringify({
@@ -81,6 +99,33 @@ export class SwiftOrderSubscriber {
 				this.config.keypair.publicKey.toBase58()
 		);
 		this.ws = ws;
+
+		// Registered before `open`, never inside it. A socket that dies during the
+		// handshake - server pod evicted, connection refused, reset - emits
+		// `error` without ever emitting `open`. Node throws on an unhandled
+		// 'error' event, so with the handlers nested inside `open` this process
+		// died instead of retrying, which is exactly what a rolling swift
+		// ws-server produces.
+		ws.on('error', (error: Error) => {
+			console.error('Swift WebSocket error:', error);
+			this.scheduleReconnect();
+		});
+
+		ws.on('close', (code: number, reason: Buffer) => {
+			console.log(
+				`Disconnected from swift server: code=${code} reason=${reason?.toString()}`
+			);
+			this.scheduleReconnect();
+		});
+
+		ws.on('unexpected-response', (_request, response) => {
+			console.error(
+				'Unexpected response from swift server:',
+				response.statusCode
+			);
+			this.scheduleReconnect();
+		});
+
 		ws.on('open', async () => {
 			console.log('Connected to the server');
 
@@ -107,16 +152,6 @@ export class SwiftOrderSubscriber {
 					}
 				}
 			});
-
-			ws.on('close', () => {
-				console.log('Disconnected from the server');
-				this.reconnect();
-			});
-
-			ws.on('error', (error: Error) => {
-				console.error('WebSocket error:', error);
-				this.reconnect();
-			});
 		});
 	}
 
@@ -125,21 +160,66 @@ export class SwiftOrderSubscriber {
 			clearTimeout(this.heartbeatTimeout);
 		}
 		this.heartbeatTimeout = setTimeout(() => {
-			console.warn('No heartbeat received within 30 seconds, reconnecting...');
-			this.reconnect();
+			console.warn(
+				`No heartbeat received within ${this.heartbeatIntervalMs}ms, reconnecting...`
+			);
+			this.scheduleReconnect();
 		}, this.heartbeatIntervalMs);
 	}
 
-	private reconnect() {
+	/**
+	 * Detach listeners, then drop the socket. Order matters: `terminate()` on a
+	 * live socket emits `close`, which would otherwise re-enter
+	 * `scheduleReconnect()`.
+	 */
+	private teardownSocket() {
 		if (this.ws) {
 			this.ws.removeAllListeners();
 			this.ws.terminate();
+			this.ws = null;
+		}
+	}
+
+	/**
+	 * Tear the current socket down and queue a fresh `subscribe()`.
+	 *
+	 * Idempotent per disconnect, and safe to call from any of the socket's
+	 * failure paths.
+	 */
+	private scheduleReconnect() {
+		if (this.reconnectTimeout) {
+			return;
 		}
 
-		console.log('Reconnecting to WebSocket...');
-		setTimeout(() => {
-			this.subscribe();
-		}, 1000);
+		if (this.heartbeatTimeout) {
+			clearTimeout(this.heartbeatTimeout);
+			this.heartbeatTimeout = null;
+		}
+		this.teardownSocket();
+		this.subscribed = false;
+
+		const delayMs = this.nextReconnectDelayMs();
+		console.log(`Reconnecting to swift WebSocket in ${delayMs}ms...`);
+		this.reconnectTimeout = setTimeout(() => {
+			// Cleared before resubscribing, not in the `open` handler: the
+			// replacement socket may itself fail before opening, and that failure
+			// has to be able to schedule the next attempt.
+			this.reconnectTimeout = null;
+			this.subscribe().catch((error) => {
+				console.error('Swift resubscribe failed:', error);
+				this.scheduleReconnect();
+			});
+		}, delayMs);
+	}
+
+	/** Exponential backoff with full jitter, capped at `reconnectMaxDelayMs`. */
+	private nextReconnectDelayMs(): number {
+		const ceiling = Math.min(
+			this.reconnectMaxDelayMs,
+			this.reconnectBaseDelayMs * 2 ** this.reconnectAttempts
+		);
+		this.reconnectAttempts++;
+		return Math.floor(Math.random() * ceiling);
 	}
 
 	private convertUuidToNumber(uuid: string): number {

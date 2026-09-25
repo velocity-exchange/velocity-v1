@@ -83,3 +83,46 @@ before `docker-compose up`.
   reject valid orders (default 10, roughly 4s; `0` always applies the band)
 - `FAST_CHECK`: set to `true` to derive a ws connection's priority from the maker's
   insurance-fund stake. Otherwise every authenticated connection gets fast priority
+- `SHUTDOWN_DRAIN_SECS`: how long health checks report unhealthy after SIGTERM before
+  connections are closed (default 15). See "Shutdown" below
+- `SHUTDOWN_CLOSE_SECS`: grace period for connections to flush their goodbyes once draining
+  ends, after which the process exits (default 5)
+
+## Shutdown
+
+`util/shutdown.rs` drives SIGTERM through three phases, so that an eviction — a rolling
+deploy, a node roll, a cluster autoscaler consolidating — is a reconnect for subscribers
+rather than a dropped feed. Only the **ws server** calls `shutdown::install()` today; the
+swift and confirmation servers still die abruptly on SIGTERM, and wiring them is a
+follow-up (each needs `shutdown::install()` plus
+`axum::serve(..).with_graceful_shutdown(..)` and a `shutdown::is_serving()` check in its
+health handler).
+
+The phases:
+
+1. **Drain** (`SHUTDOWN_DRAIN_SECS`): `GET /ws/health` starts answering `503` while the
+   server keeps serving normally. This is what gets the pod out of the load balancer's
+   rotation. Without it, a client that reconnects immediately can be routed straight back
+   to the pod that is about to die.
+2. **Close** (`SHUTDOWN_CLOSE_SECS`): the listener stops accepting, and every live
+   connection is sent a websocket `Close` frame with code `1001` (going away). Clients see
+   a deliberate close and reconnect on their own terms instead of inferring a dead feed
+   from a read error.
+3. **Exit**: the process exits 0.
+
+Two deployment requirements follow from this:
+
+- `terminationGracePeriodSeconds` must exceed `SHUTDOWN_DRAIN_SECS + SHUTDOWN_CLOSE_SECS`,
+  or the kubelet SIGKILLs the process mid-drain and none of the above happens.
+- `SHUTDOWN_DRAIN_SECS` must exceed the load balancer's deregistration delay and at least
+  two readiness-probe periods, so a probe is guaranteed to observe the 503.
+
+`GET /ws/health` is therefore a *readiness* signal as well as a liveness one. Wiring it as
+a liveness probe alone defeats the drain, because nothing acts on the 503.
+
+Clients are expected to reconnect. The in-repo subscribers do: the two TypeScript ones
+(`packages/sdk/src/swift/swiftOrderSubscriber.ts` and
+`apps/keeper-bots-v2/src/experimental-bots/filler-common/swiftOrderSubscriber.ts`) with
+jittered exponential backoff, and `keep-rs`'s filler with capped exponential backoff and no
+jitter (`rust/keep-rs/src/filler.rs`; `velocity-rs`'s `SwiftOrderStream` itself just ends,
+and the filler drives the resubscribe).

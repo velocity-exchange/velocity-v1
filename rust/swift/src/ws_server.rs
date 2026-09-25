@@ -7,7 +7,10 @@ use {
             },
             types::{unix_now_ms, WsError},
         },
-        util::metrics::{metrics_handler, MetricsServerParams, WsServerMetrics},
+        util::{
+            metrics::{metrics_handler, MetricsServerParams, WsServerMetrics},
+            shutdown::{self, Lifecycle},
+        },
     },
     anchor_lang::AccountDeserialize,
     anyhow::{Context, Result},
@@ -40,11 +43,15 @@ use {
         sync::{
             broadcast::{self},
             mpsc::{self, error::TrySendError},
+            watch,
         },
         time::timeout,
     },
     tokio_tungstenite::tungstenite::{
-        self, extensions::DeflateConfig, protocol::WebSocketConfig, Message,
+        self,
+        extensions::DeflateConfig,
+        protocol::{frame::coding::CloseCode, CloseFrame, WebSocketConfig},
+        Message,
     },
     velocity_rs::{
         constants::MarketExt,
@@ -434,11 +441,14 @@ impl WsConnection {
     /// * `ws_sink` - write-half of the Ws connection (sends to client)
     /// * `ws_stream` - read-half of the Ws connection (receives from client)
     /// * `shared_state` - app global vars
+    /// * `lifecycle_rx` - process shutdown phase, so the connection closes
+    ///   deliberately instead of dying with the process
     async fn spawn_handler(
         mut self,
         mut ws_sink: impl Sink<Message> + Unpin,
         mut ws_stream: impl Stream<Item = Result<Message, tungstenite::Error>> + Unpin,
         shared_state: &'static ServerParams,
+        lifecycle_rx: watch::Receiver<Lifecycle>,
     ) -> Result<(), WsError> {
         let log_prefix = format!("[websocket: {}]", self.pubkey);
 
@@ -453,6 +463,16 @@ impl WsConnection {
 
         let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
         let _ = heartbeat_interval.tick().await; // skip first immediate tick
+
+        // Pinned, so the waiter is registered once for the connection. A
+        // `wait_for` built inline in the select would be re-polled from scratch
+        // on every pass of this loop, and each such poll takes a read lock on
+        // the watch channel, clones the task waker, and pushes/pops an entry
+        // under a process-shared mutex — all on the wake path that delivers
+        // orders to market makers.
+        let mut shutdown_rx = lifecycle_rx.clone();
+        let shutting_down = shutdown_rx.wait_for(|phase| *phase >= Lifecycle::Closing);
+        tokio::pin!(shutting_down);
 
         // Loop that handles the message forwarding and transmission
         let res = 'handler: loop {
@@ -561,6 +581,11 @@ impl WsConnection {
                         }
                     }
                 }
+                _ = &mut shutting_down => {
+                    drop(topic_subs);
+                    log::info!(target: "ws", "{log_prefix}: server shutting down, closing connection");
+                    break 'handler Ok(());
+                }
                 _ = heartbeat_interval.tick() => {
                     drop(topic_subs);
                     if !self.authenticated {
@@ -597,6 +622,20 @@ impl WsConnection {
             if ws_sink.send(Message::Text(msg)).await.is_err() {
                 log::error!(target: "ws", "sending messages to client failed. closing connection");
             }
+        }
+
+        // A deliberate Close frame is what makes a rolling deploy a non-event
+        // for subscribers: they observe 1001 and reconnect on their own terms,
+        // instead of inferring a dead feed from a read error some seconds later.
+        if *lifecycle_rx.borrow() >= Lifecycle::Closing {
+            let close = Message::Close(Some(CloseFrame {
+                code: CloseCode::Away,
+                reason: "server shutting down".into(),
+            }));
+            if ws_sink.send(close).await.is_err() {
+                debug!(target: "ws", "{log_prefix}: peer gone before close frame");
+            }
+            let _ = ws_sink.flush().await;
         }
 
         // Decrement connection counter
@@ -783,6 +822,7 @@ async fn subscribe_redis_pubsub(
 
 pub async fn start_server() {
     dotenv().ok();
+    shutdown::install();
 
     let client = RpcClient::new(ENDPOINT.to_string());
     let (perp_market_accounts, _) =
@@ -918,7 +958,30 @@ pub async fn start_server() {
     ws_config.compression = Some(DeflateConfig::default());
     ws_config.max_message_size = Some(2 << 20); // max. Ws message size ~2MiB
 
-    while let Ok((mut tcp_stream, addr)) = listener.accept().await {
+    let mut lifecycle_rx = shutdown::subscribe();
+    let shutting_down = lifecycle_rx.wait_for(|phase| *phase >= Lifecycle::Closing);
+    tokio::pin!(shutting_down);
+
+    loop {
+        let accepted = tokio::select! {
+            biased;
+            _ = &mut shutting_down => {
+                log::info!(target: "ws", "shutting down, no longer accepting connections");
+                // Park rather than return: dropping the runtime here would kill
+                // the connection tasks mid-flush, which is the very thing the
+                // close grace exists for. `shutdown::install` owns the exit.
+                std::future::pending().await
+            }
+            accepted = listener.accept() => accepted,
+        };
+        let (mut tcp_stream, addr) = match accepted {
+            Ok(pair) => pair,
+            Err(err) => {
+                log::error!(target: "ws", "accept failed, stopping listener: {err:?}");
+                break;
+            }
+        };
+
         // Everything that touches the client must happen off the accept loop. A
         // peer that completes the TCP handshake and then sends nothing would
         // otherwise stall `peek` here forever, and no further connection is
@@ -983,7 +1046,10 @@ pub async fn start_server() {
                     Ok(ws) => {
                         let (ws_send, ws_recv) = ws.split();
                         let ws_conn = WsConnection::new(pubkey);
-                        if let Err(err) = ws_conn.spawn_handler(ws_send, ws_recv, state).await {
+                        if let Err(err) = ws_conn
+                            .spawn_handler(ws_send, ws_recv, state, shutdown::subscribe())
+                            .await
+                        {
                             state
                                 .metrics
                                 .ws_connection_errors
@@ -1002,9 +1068,14 @@ pub async fn start_server() {
                 }
                 log::info!(target: "ws", "connection closed: {addr:?}|{pubkey:?}");
             } else if request.starts_with("GET /ws/health") {
-                let _ = tcp_stream
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                    .await;
+                // 503 from the moment SIGTERM lands, so the load balancer pulls
+                // this pod out of rotation before its connections are closed.
+                let response: &[u8] = if shutdown::is_serving() {
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
+                };
+                let _ = tcp_stream.write_all(response).await;
             } else {
                 let _ = tcp_stream
                     .write_all(b"HTTP/1.1 404\r\nContent-Length: 0\r\n\r\n")
@@ -1264,6 +1335,7 @@ mod test {
                 &mut client_rx,
                 &mut client_tx,
                 Box::leak(Box::new(ServerParams::default())),
+                shutdown::subscribe(),
             ),
         )
         .await;
@@ -1297,6 +1369,7 @@ mod test {
                 &mut client_rx,
                 &mut client_tx,
                 Box::leak(Box::new(ServerParams::default())),
+                shutdown::subscribe(),
             ),
         )
         .await;
@@ -1313,6 +1386,52 @@ mod test {
         // 2 heartbeats
         assert!(client_rx.get(1).unwrap().is_text());
         assert!(client_rx.get(2).unwrap().is_text());
+    }
+
+    /// A shutdown must end the connection with a Close(1001), not by dropping
+    /// the socket: subscribers reconnect off that frame, and without it they
+    /// only discover the feed is gone via a read error (or, for a client whose
+    /// error handler is not yet attached, not at all).
+    #[tokio::test]
+    async fn ws_closes_connection_on_shutdown() {
+        let _ = env_logger::try_init();
+
+        let mut client_rx = vec![];
+        let mut client_tx = stream::pending();
+
+        let (lifecycle_tx, lifecycle_rx) = watch::channel(Lifecycle::Running);
+        let mut ws_conn = WsConnection::new(Pubkey::new_unique());
+        ws_conn.authenticated = true;
+
+        let handler = tokio::time::timeout(
+            Duration::from_secs(5),
+            ws_conn.spawn_handler(
+                &mut client_rx,
+                &mut client_tx,
+                Box::leak(Box::new(ServerParams::default())),
+                lifecycle_rx,
+            ),
+        );
+
+        // Draining alone must not disturb a live connection: that phase exists
+        // only to fail health checks while the load balancer catches up.
+        lifecycle_tx.send(Lifecycle::Draining).expect("rx alive");
+        let closer = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            lifecycle_tx.send(Lifecycle::Closing).expect("rx alive");
+        };
+
+        let (res, ()) = tokio::join!(handler, closer);
+        assert!(
+            matches!(res, Ok(Ok(()))),
+            "shutdown is a clean close, got {res:?}"
+        );
+
+        let last = client_rx.last().expect("connection wrote a close frame");
+        match last {
+            Message::Close(Some(frame)) => assert_eq!(frame.code, CloseCode::Away),
+            other => panic!("expected Close(Away), got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1335,6 +1454,7 @@ mod test {
                 &mut client_rx,
                 &mut client_tx,
                 Box::leak(Box::new(ServerParams::default())),
+                shutdown::subscribe(),
             ),
         )
         .await;
@@ -1421,7 +1541,12 @@ mod test {
             // run Ws connection
             let _ = tokio::time::timeout(
                 Duration::from_millis(delay_ms),
-                ws_conn.spawn_handler(&mut client_rx, &mut client_tx, shared_state),
+                ws_conn.spawn_handler(
+                    &mut client_rx,
+                    &mut client_tx,
+                    shared_state,
+                    shutdown::subscribe(),
+                ),
             )
             .await;
 
@@ -1447,7 +1572,12 @@ mod test {
         ws_conn.authenticated = true;
 
         let _ = ws_conn
-            .spawn_handler(&mut client_rx, &mut client_tx, Box::leak(Box::default()))
+            .spawn_handler(
+                &mut client_rx,
+                &mut client_tx,
+                Box::leak(Box::default()),
+                shutdown::subscribe(),
+            )
             .await;
 
         let last_msg = client_rx.last().cloned().unwrap().into_text().unwrap();
@@ -1465,7 +1595,12 @@ mod test {
 
         let res = tokio::time::timeout(
             Duration::from_secs(5),
-            ws_conn.spawn_handler(&mut client_rx, &mut client_tx, Box::leak(Box::default())),
+            ws_conn.spawn_handler(
+                &mut client_rx,
+                &mut client_tx,
+                Box::leak(Box::default()),
+                shutdown::subscribe(),
+            ),
         );
 
         assert!(res.await.is_ok(), "Ws cleanup hanging...");
@@ -1478,7 +1613,12 @@ mod test {
         let mut client_tx = stream::iter([Ok(Message::Close(None))]);
         let ws_conn = WsConnection::new(Pubkey::new_unique());
         let _ = ws_conn
-            .spawn_handler(&mut client_rx, &mut client_tx, Box::leak(Box::default()))
+            .spawn_handler(
+                &mut client_rx,
+                &mut client_tx,
+                Box::leak(Box::default()),
+                shutdown::subscribe(),
+            )
             .await;
     }
 
@@ -1492,7 +1632,12 @@ mod test {
         let _ = ws_conn.send_message(WsMessage::heartbeat());
         let _ = ws_conn.send_message(WsMessage::heartbeat());
         let _ = ws_conn
-            .spawn_handler(&mut client_rx, &mut client_tx, Box::leak(Box::default()))
+            .spawn_handler(
+                &mut client_rx,
+                &mut client_tx,
+                Box::leak(Box::default()),
+                shutdown::subscribe(),
+            )
             .await;
         assert!(client_rx.len() >= 3);
     }

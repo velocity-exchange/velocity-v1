@@ -71,6 +71,22 @@ export interface SwiftOrderMessage {
 export class SwiftOrderSubscriber {
 	private heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
 	private readonly heartbeatIntervalMs = 60000;
+	/**
+	 * Reconnect backoff bounds. Jittered, so that a fleet of subscribers
+	 * knocked off the same server pod does not retry in lockstep.
+	 */
+	private readonly reconnectBaseDelayMs = 500;
+	private readonly reconnectMaxDelayMs = 30000;
+	private reconnectAttempts = 0;
+	/**
+	 * Handle of the pending reconnect, and the guard against scheduling a
+	 * second one: a single disconnect normally emits both `close` and `error`,
+	 * and the heartbeat timer can fire on top of them, so without it one
+	 * eviction would spawn two or three sockets.
+	 */
+	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+	/** Set by `unsubscribe()` so a pending reconnect timer cannot undo it. */
+	private stopped = false;
 	private ws: WebSocket | null = null;
 	private velocityClient: VelocityClient;
 	public userAccountGetter?: AccountGetter; // In practice, this for now is just an OrderSubscriber or a UserMap
@@ -84,6 +100,15 @@ export class SwiftOrderSubscriber {
 
 	subscribed = false;
 
+	/**
+	 * Retained so a reconnect resubscribes with the caller's original options.
+	 * The previous implementation re-entered `subscribe(onOrder)` with no
+	 * further arguments, so after any disconnect a subscriber silently reverted
+	 * to rejecting sanitized orders and deposit trades.
+	 */
+	private acceptSanitized = false;
+	private acceptDepositTrade = false;
+
 	constructor(private config: SwiftOrderSubscriberConfig) {
 		// Type-system guarantees at least one of the two is supplied.
 		this.velocityClient = config.velocityClient!;
@@ -91,11 +116,31 @@ export class SwiftOrderSubscriber {
 	}
 
 	unsubscribe() {
-		if (this.subscribed) {
-			this.ws?.removeAllListeners();
-			this.ws?.terminate();
+		this.stopped = true;
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
+		if (this.heartbeatTimeout) {
+			clearTimeout(this.heartbeatTimeout);
+			this.heartbeatTimeout = null;
+		}
+		this.teardownSocket();
+		this.subscribed = false;
+	}
+
+	/**
+	 * Detach listeners, then drop the socket. Order matters: `terminate()` on a
+	 * live socket emits `close`, which would otherwise re-enter
+	 * `scheduleReconnect()`.
+	 */
+	private teardownSocket() {
+		if (this.ws) {
+			this.ws.removeAllListeners();
+			// terminate() on a CONNECTING socket emits `error` on next tick; unhandled, it crashes.
+			this.ws.on('error', () => {});
+			this.ws.terminate();
 			this.ws = null;
-			this.subscribed = false;
 		}
 	}
 
@@ -131,6 +176,10 @@ export class SwiftOrderSubscriber {
 			message['message']?.toLowerCase() === 'authenticated'
 		) {
 			this.subscribed = true;
+			// Reset here rather than on `open`: a pod that is mid-shutdown still
+			// completes the TCP handshake, so a successful auth is the first real
+			// proof the connection is usable.
+			this.reconnectAttempts = 0;
 			this.config.marketIndexes.forEach(async (marketIndex) => {
 				this.ws?.send(
 					JSON.stringify({
@@ -156,6 +205,9 @@ export class SwiftOrderSubscriber {
 		acceptDepositTrade = false
 	): Promise<void> {
 		this.onOrder = onOrder;
+		this.acceptSanitized = acceptSanitized;
+		this.acceptDepositTrade = acceptDepositTrade;
+		this.stopped = false;
 
 		const env = this.config.velocityEnv;
 		const endpoint =
@@ -167,6 +219,31 @@ export class SwiftOrderSubscriber {
 			endpoint + '?pubkey=' + this.config.keypair.publicKey.toBase58()
 		);
 		this.ws = ws;
+
+		// Registered before `open`, never inside it. A socket that dies during the
+		// handshake - server pod evicted, connection refused, reset - emits
+		// `error` without ever emitting `open`, and node throws on an unhandled
+		// 'error' event, taking the whole process down instead of retrying.
+		ws.on('error', (error: Error) => {
+			console.error('Swift WebSocket error:', error);
+			this.scheduleReconnect();
+		});
+
+		ws.on('close', (code: number, reason: Buffer) => {
+			console.log(
+				`Disconnected from swift server: code=${code} reason=${reason?.toString()}`
+			);
+			this.scheduleReconnect();
+		});
+
+		ws.on('unexpected-response', (_request, response) => {
+			console.error(
+				'Unexpected response from swift server:',
+				response.statusCode
+			);
+			this.scheduleReconnect();
+		});
+
 		ws.on('open', async () => {
 			console.log('Connected to the server');
 
@@ -222,35 +299,6 @@ export class SwiftOrderSubscriber {
 					onOrder(order, signedMessage, isDelegateSigner);
 				}
 			});
-
-			ws.on('close', () => {
-				console.log('Disconnected from the server');
-				this.reconnect();
-			});
-
-			ws.on('error', (error: Error) => {
-				console.error('WebSocket error:', error);
-				this.reconnect();
-			});
-		});
-
-		ws.on('unexpected-response', async (request, response) => {
-			console.error(
-				'Unexpected response, reconnecting in 5s:',
-				response.statusCode
-			);
-			setTimeout(() => {
-				if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
-				this.reconnect();
-			}, 5000);
-		});
-
-		ws.on('error', async (error: Error) => {
-			console.error('WS closed from error, reconnecting in 1s:', error);
-			setTimeout(() => {
-				if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
-				this.reconnect();
-			}, 1000);
 		});
 	}
 
@@ -328,24 +376,56 @@ export class SwiftOrderSubscriber {
 			throw new Error('onOrder callback function must be set');
 		}
 		this.heartbeatTimeout = setTimeout(() => {
-			console.warn('No heartbeat received within 30 seconds, reconnecting...');
-			this.reconnect();
+			console.warn(
+				`No heartbeat received within ${this.heartbeatIntervalMs}ms, reconnecting...`
+			);
+			this.scheduleReconnect();
 		}, this.heartbeatIntervalMs);
 	}
 
-	private reconnect() {
-		if (this.ws) {
-			this.ws.removeAllListeners();
-			this.ws.terminate();
+	/**
+	 * Tear the current socket down and queue a fresh `subscribe()`.
+	 *
+	 * Idempotent per disconnect, and safe to call from any of the socket's
+	 * failure paths.
+	 */
+	private scheduleReconnect() {
+		if (this.stopped || this.reconnectTimeout) {
+			return;
 		}
 
-		console.log('Reconnecting to WebSocket...');
-		const onOrder = this.onOrder;
-		if (!onOrder) {
-			throw new Error('onOrder callback function must be set');
+		if (this.heartbeatTimeout) {
+			clearTimeout(this.heartbeatTimeout);
+			this.heartbeatTimeout = null;
 		}
-		setTimeout(() => {
-			this.subscribe(onOrder);
-		}, 1000);
+		this.teardownSocket();
+		this.subscribed = false;
+
+		const delayMs = this.nextReconnectDelayMs();
+		console.log(`Reconnecting to swift WebSocket in ${delayMs}ms...`);
+		this.reconnectTimeout = setTimeout(() => {
+			// Cleared before resubscribing, not in the `open` handler: the
+			// replacement socket may itself fail before opening, and that failure
+			// has to be able to schedule the next attempt.
+			this.reconnectTimeout = null;
+			this.subscribe(
+				this.onOrder!,
+				this.acceptSanitized,
+				this.acceptDepositTrade
+			).catch((error) => {
+				console.error('Swift resubscribe failed:', error);
+				this.scheduleReconnect();
+			});
+		}, delayMs);
+	}
+
+	/** Exponential backoff with full jitter, capped at `reconnectMaxDelayMs`. */
+	private nextReconnectDelayMs(): number {
+		const ceiling = Math.min(
+			this.reconnectMaxDelayMs,
+			this.reconnectBaseDelayMs * 2 ** this.reconnectAttempts
+		);
+		this.reconnectAttempts++;
+		return Math.floor(Math.random() * ceiling);
 	}
 }

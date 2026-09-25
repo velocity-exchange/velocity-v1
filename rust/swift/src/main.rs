@@ -1,4 +1,7 @@
-use clap::{Arg, Command};
+use {
+    clap::{Arg, Command},
+    util::shutdown,
+};
 
 mod confirmation_server;
 mod super_slot_subscriber;
@@ -39,6 +42,10 @@ async fn main() {
     let server_type = matches
         .get_one::<String>("server")
         .expect("default is provided");
+
+    // Signal disposition is a property of the process, not of whichever server
+    // was selected: all three drain on SIGTERM rather than dying mid-request.
+    shutdown::install();
 
     match server_type.as_str() {
         "confirmation" => {

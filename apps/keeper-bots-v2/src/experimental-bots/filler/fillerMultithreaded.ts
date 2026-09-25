@@ -252,6 +252,10 @@ const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana
 const MAX_POSITIONS_PER_USER = 8;
 export const SETTLE_POSITIVE_PNL_COOLDOWN_MS = 60_000;
 export const CONFIRM_TX_INTERVAL_MS = 5_000;
+// 2x the child's 10s health-report interval: a silent hang should read as
+// unhealthy, not just an explicit unhealthy message (same reasoning as
+// swiftOrderSubscriber's own heartbeat-timeout-triggers-reconnect).
+const SWIFT_ORDER_SUBSCRIBER_HEALTH_STALE_MS = 20_000;
 const SIM_CU_ESTIMATE_MULTIPLIER = 3;
 // wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
 const JITO_LEADER_LEAD_MS = 1_600;
@@ -458,6 +462,8 @@ export class FillerMultithreaded {
 	private dlobHealthy = true;
 	private orderSubscriberHealthy = true;
 	private swiftOrderSubscriberHealth = true;
+	// Grace period until the first health message arrives, same as the boolean above.
+	private swiftOrderSubscriberHealthAt = Date.now();
 	private simulateTxForCUEstimate?: boolean;
 
 	// SignedMsg orders
@@ -901,6 +907,8 @@ export class FillerMultithreaded {
 		// SignedMsg Subscriber process
 		const swiftOrderSubscriberFileName =
 			'swiftOrderSubscriber' + (isTsRuntime() ? '.ts' : '.js');
+		// Start the staleness grace when the child exists, not when init() began.
+		this.swiftOrderSubscriberHealthAt = Date.now();
 		const swiftOrderSubscriberProcess = spawnChild(
 			path.join(
 				__dirname,
@@ -925,6 +933,7 @@ export class FillerMultithreaded {
 						break;
 					case 'health':
 						this.swiftOrderSubscriberHealth = msg.data.healthy;
+						this.swiftOrderSubscriberHealthAt = Date.now();
 						break;
 				}
 			}
@@ -1138,13 +1147,17 @@ export class FillerMultithreaded {
 		if (!this.orderSubscriberHealthy) {
 			logger.error(`${logPrefix} Order subscriber not healthy`);
 		}
-		if (!this.swiftOrderSubscriberHealth) {
+		const swiftOrderSubscriberStale =
+			Date.now() - this.swiftOrderSubscriberHealthAt >
+			SWIFT_ORDER_SUBSCRIBER_HEALTH_STALE_MS;
+		if (!this.swiftOrderSubscriberHealth || swiftOrderSubscriberStale) {
 			logger.error(`${logPrefix} SignedMsg order subscriber not healthy`);
 		}
 		return (
 			this.dlobHealthy &&
 			this.orderSubscriberHealthy &&
-			this.swiftOrderSubscriberHealth
+			this.swiftOrderSubscriberHealth &&
+			!swiftOrderSubscriberStale
 		);
 	}
 

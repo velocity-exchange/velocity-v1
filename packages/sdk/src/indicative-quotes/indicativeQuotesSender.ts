@@ -27,7 +27,19 @@ export class IndicativeQuotesSender {
 	private sendQuotesInterval: ReturnType<typeof setTimeout> | null = null;
 
 	private readonly heartbeatIntervalMs = 60000;
-	private reconnectDelay = 1000;
+	/**
+	 * Reconnect backoff bounds. Jittered, so that a fleet of senders knocked off
+	 * the same server pod does not retry in lockstep.
+	 */
+	private readonly reconnectBaseDelayMs = 500;
+	private readonly reconnectMaxDelayMs = 30000;
+	private reconnectAttempts = 0;
+	/**
+	 * Handle of the pending reconnect, and the guard against scheduling a
+	 * second one: a single disconnect normally emits both `close` and `error`,
+	 * and the heartbeat timer can fire on top of them.
+	 */
+	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 	private ws: WebSocket | null = null;
 	private connected = false;
 
@@ -61,6 +73,10 @@ export class IndicativeQuotesSender {
 			message['message']?.toLowerCase() === 'authenticated'
 		) {
 			this.connected = true;
+			// Reset here rather than on `open`: a pod that is mid-shutdown still
+			// completes the TCP handshake, so a successful auth is the first real
+			// proof the connection is usable.
+			this.reconnectAttempts = 0;
 		}
 	}
 
@@ -69,9 +85,33 @@ export class IndicativeQuotesSender {
 			this.endpoint + '?pubkey=' + this.keypair.publicKey.toBase58()
 		);
 		this.ws = ws;
+
+		// Registered before `open`, never inside it. A socket that dies during the
+		// handshake - server pod evicted, connection refused, reset - emits
+		// `error` without ever emitting `open`, and node throws on an unhandled
+		// 'error' event, taking the whole process down instead of retrying.
+		ws.on('error', (error: Error) => {
+			console.error('Indicative quotes WebSocket error:', error);
+			this.scheduleReconnect();
+		});
+
+		ws.on('close', (code: number, reason: Buffer) => {
+			console.log(
+				`Disconnected from indicative quotes server: code=${code} reason=${reason?.toString()}`
+			);
+			this.scheduleReconnect();
+		});
+
+		ws.on('unexpected-response', (_request, response) => {
+			console.error(
+				'Unexpected response from indicative quotes server:',
+				response?.statusCode
+			);
+			this.scheduleReconnect();
+		});
+
 		ws.on('open', async () => {
 			console.log('Connected to the server');
-			this.reconnectDelay = 1000;
 
 			ws.on('message', async (data: WebSocket.Data) => {
 				let message: WsMessage;
@@ -130,37 +170,6 @@ export class IndicativeQuotesSender {
 					}, SEND_INTERVAL);
 				}
 			});
-
-			ws.on('close', () => {
-				console.log('Disconnected from the server');
-				this.reconnect();
-			});
-
-			ws.on('error', (error: Error) => {
-				console.error('WebSocket error:', error);
-				this.reconnect();
-			});
-		});
-
-		ws.on('unexpected-response', async (request, response) => {
-			console.error(
-				'Unexpected response, reconnecting in 5s:',
-				response?.statusCode
-			);
-			setTimeout(() => {
-				if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
-				if (this.sendQuotesInterval) clearInterval(this.sendQuotesInterval);
-				this.reconnect();
-			}, 5000);
-		});
-
-		ws.on('error', async (error: Error) => {
-			console.error('WS closed from error, reconnecting in 1s:', error);
-			setTimeout(() => {
-				if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
-				if (this.sendQuotesInterval) clearInterval(this.sendQuotesInterval);
-				this.reconnect();
-			}, 1000);
 		});
 	}
 
@@ -169,8 +178,10 @@ export class IndicativeQuotesSender {
 			clearTimeout(this.heartbeatTimeout);
 		}
 		this.heartbeatTimeout = setTimeout(() => {
-			console.warn('No heartbeat received within 30 seconds, reconnecting...');
-			this.reconnect();
+			console.warn(
+				`No heartbeat received within ${this.heartbeatIntervalMs}ms, reconnecting...`
+			);
+			this.scheduleReconnect();
 		}, this.heartbeatIntervalMs);
 	}
 
@@ -207,12 +218,26 @@ export class IndicativeQuotesSender {
 		});
 	}
 
-	private reconnect() {
-		if (this.ws) {
-			this.ws.removeAllListeners();
-			this.ws.terminate();
+	/**
+	 * Tear the current socket down and queue a fresh `connect()`.
+	 *
+	 * Idempotent per disconnect, and safe to call from any of the socket's
+	 * failure paths.
+	 */
+	private scheduleReconnect() {
+		if (this.reconnectTimeout) {
+			return;
 		}
 
+		// Listeners go first: `terminate()` on a live socket emits `close`, which
+		// would otherwise re-enter this method.
+		if (this.ws) {
+			this.ws.removeAllListeners();
+			// terminate() on a CONNECTING socket emits `error` on next tick; unhandled, it crashes.
+			this.ws.on('error', () => {});
+			this.ws.terminate();
+			this.ws = null;
+		}
 		if (this.heartbeatTimeout) {
 			clearTimeout(this.heartbeatTimeout);
 			this.heartbeatTimeout = null;
@@ -221,13 +246,31 @@ export class IndicativeQuotesSender {
 			clearInterval(this.sendQuotesInterval);
 			this.sendQuotesInterval = null;
 		}
+		this.connected = false;
 
+		const delayMs = this.nextReconnectDelayMs();
 		console.log(
-			`Reconnecting to WebSocket in ${this.reconnectDelay / 1000} seconds...`
+			`Reconnecting to indicative quotes WebSocket in ${delayMs}ms...`
 		);
-		setTimeout(() => {
-			this.connect();
-			this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
-		}, this.reconnectDelay);
+		this.reconnectTimeout = setTimeout(() => {
+			// Cleared before reconnecting, not in the `open` handler: the
+			// replacement socket may itself fail before opening, and that failure
+			// has to be able to schedule the next attempt.
+			this.reconnectTimeout = null;
+			this.connect().catch((error) => {
+				console.error('Indicative quotes reconnect failed:', error);
+				this.scheduleReconnect();
+			});
+		}, delayMs);
+	}
+
+	/** Exponential backoff with full jitter, capped at `reconnectMaxDelayMs`. */
+	private nextReconnectDelayMs(): number {
+		const ceiling = Math.min(
+			this.reconnectMaxDelayMs,
+			this.reconnectBaseDelayMs * 2 ** this.reconnectAttempts
+		);
+		this.reconnectAttempts++;
+		return Math.floor(Math.random() * ceiling);
 	}
 }

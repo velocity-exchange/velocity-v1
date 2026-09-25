@@ -148,7 +148,7 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     // Three steps run in the order they must happen. The liquidation sizes its
     // order and places it. This handler routes the fill against the accounts
     // only it holds. The liquidation then books the result.
-    let filled_quote = match controller::liquidation::place_liquidation_order(
+    let progress = match controller::liquidation::place_liquidation_order(
         market_index,
         parties(),
         &mut maps,
@@ -156,32 +156,41 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         &state,
         &mut liquidation_books,
     )? {
-        controller::liquidation::LiquidationStep::Settled => 0,
+        controller::liquidation::LiquidationStep::Settled {
+            book_orders_removed,
+        } => LiquidationProgress {
+            filled_quote: 0,
+            book_orders_removed,
+        },
         controller::liquidation::LiquidationStep::Placed(mut placed) => {
+            let book_orders_removed = placed.book_orders_removed;
             let fill = books.route_fill(&mut placed.order, &mut maps, &clock)?;
-            controller::liquidation::settle_liquidation_fill(
-                placed,
-                fill,
-                parties(),
-                &mut maps,
-                &clock,
-                &state,
-            )?
+            LiquidationProgress {
+                filled_quote: controller::liquidation::settle_liquidation_fill(
+                    placed,
+                    fill,
+                    parties(),
+                    &mut maps,
+                    &clock,
+                    &state,
+                )?,
+                book_orders_removed,
+            }
         }
     };
 
     // In program-keeper mode the caller's payout account earns reservoir
     // lamports for the crank; every other relay executor closes the same loop.
-    // Only a crank that filled something is paid, since paying a no-op success
-    // (exit or shortage) would let anyone drain the reservoir by looping on it.
-    if filled_quote > 0
+    // A crank that neither filled nor swept is not paid, since paying a no-op
+    // success would let anyone drain the reservoir by looping on it.
+    if progress.made_any()
         && ctx
             .accounts
             .liquidator
             .load()?
             .is_protocol_user(&state.signer)
     {
-        pay_liquidation_crank(&ctx, &state, &mut maps, market_index, filled_quote)?;
+        pay_liquidation_crank(&ctx, &state, &mut maps, market_index, progress)?;
     }
 
     Ok(())
@@ -391,13 +400,45 @@ fn skip_foreign_books<'info>(
     }
 }
 
+/// What one liquidation call did that a program keeper is paid for.
+#[derive(Clone, Copy)]
+struct LiquidationProgress {
+    filled_quote: u64,
+    book_orders_removed: u32,
+}
+
+impl LiquidationProgress {
+    fn made_any(&self) -> bool {
+        self.filled_quote > 0 || self.book_orders_removed > 0
+    }
+
+    /// The reservoir's flat payment for this progress.
+    ///
+    /// A fill below the dust floor liquidates the position but earns no flat
+    /// payment. Paying for each small step would let a keeper farm the flat
+    /// reward by slicing one liquidation into many. A call that only swept
+    /// book orders earns the force-cancel figure. The account is latched, so
+    /// it rests no new orders, and each paid sweep takes at least one order
+    /// off a finite set. Without this payment a sweep that stops at the book's
+    /// cap pays nothing, and relay's payment guard reverts it every time.
+    fn flat_payment(&self, payments: &CrankPaymentsV0) -> u64 {
+        if self.filled_quote >= LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
+            u64::from(payments.liquidation)
+        } else if self.book_orders_removed > 0 {
+            u64::from(payments.force_cancel)
+        } else {
+            0
+        }
+    }
+}
+
 /// Pay the caller out of the market's reservoir for a liquidation crank.
 fn pay_liquidation_crank<'info>(
     ctx: &Context<'info, LiquidatePerp<'info>>,
     state: &State,
     maps: &mut AccountMaps,
     market_index: u16,
-    filled_quote: u64,
+    progress: LiquidationProgress,
 ) -> Result<()> {
     let reservoir =
         ctx.accounts
@@ -418,14 +459,7 @@ fn pay_liquidation_crank<'info>(
             market_index
         )?;
 
-        // A fill below the dust floor liquidates the position but earns no flat
-        // payment. Paying for each small step would let a keeper farm the flat
-        // reward by slicing one liquidation into many.
-        let flat = if filled_quote >= LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
-            u64::from(conditions.crank_payments.liquidation)
-        } else {
-            0
-        };
+        let flat = progress.flat_payment(&conditions.crank_payments);
 
         // The liquidations batched into one transaction do not share the flat
         // payment. A relay crank carries its own payment guard, which measures
@@ -439,7 +473,7 @@ fn pay_liquidation_crank<'info>(
             state,
             &maps.spot_market_map,
             &mut maps.oracle_map,
-            filled_quote,
+            progress.filled_quote,
         ))
     };
 
@@ -850,10 +884,32 @@ pub struct SetUserStatusToBeingLiquidated<'info> {
 #[cfg(test)]
 mod tests {
     use {
-        super::liquidation_reimbursement,
+        super::{liquidation_reimbursement, LiquidationProgress},
         crate::state::{oracle_map::OracleMap, spot_market_map::SpotMarketMap, state::State},
         anchor_lang::prelude::{AccountInfo, Pubkey, UncheckedAccount},
     };
+
+    /// A sweep that stops at the book's cap fills nothing. It still pays the
+    /// force-cancel figure, or relay's payment guard reverts it every time and
+    /// the account never liquidates.
+    #[test]
+    fn a_sweep_without_a_fill_pays_the_force_cancel_figure() {
+        let payments = crate::state::clob_crank::CrankPaymentsV0 {
+            liquidation: 9_000,
+            force_cancel: 4_000,
+            ..Default::default()
+        };
+        let progress = |filled_quote, book_orders_removed| LiquidationProgress {
+            filled_quote,
+            book_orders_removed,
+        };
+
+        assert_eq!(progress(0, 128).flat_payment(&payments), 4_000);
+        assert_eq!(progress(0, 0).flat_payment(&payments), 0);
+        assert!(!progress(0, 0).made_any());
+        assert_eq!(progress(20_000_000, 128).flat_payment(&payments), 9_000);
+        assert_eq!(progress(1, 0).flat_payment(&payments), 0);
+    }
 
     /// The reimbursement is extra to the flat payment, so an instructions
     /// sysvar that holds no readable instruction pays nothing extra rather than

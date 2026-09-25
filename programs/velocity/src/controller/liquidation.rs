@@ -811,10 +811,11 @@ pub struct LiquidationParties<'a, 'info> {
 /// allocator never reclaims, while 336 bytes sits well inside an SBF frame.
 #[allow(clippy::large_enum_variant)]
 pub enum LiquidationStep {
-    /// Nothing to liquidate. The account exited liquidation, holds no
-    /// position, or its shortage allows no transfer yet. All three are correct
-    /// outcomes, and none of them leaves work for the caller.
-    Settled,
+    /// Nothing to fill. The account exited liquidation, holds no position, its
+    /// shortage allows no transfer yet, or book orders remain after the sweep.
+    /// None of them leaves work for the caller. The sweep may still have taken
+    /// book orders, which is progress a program keeper is paid for.
+    Settled { book_orders_removed: u32 },
     /// A forced order is built and waiting for its fill. Route it, then hand
     /// it and the fill back to [`settle_liquidation_fill`].
     Placed(PlacedLiquidation),
@@ -833,6 +834,8 @@ pub struct PlacedLiquidation {
     /// progress back here.
     pub order: Order,
     pub market_index: u16,
+    /// Book orders the sweep ahead of this fill took.
+    pub book_orders_removed: u32,
     liquidation_id: u16,
     liquidation_mode: Box<dyn LiquidatePerpMode>,
     canceled_order_ids: Vec<u32>,
@@ -962,7 +965,9 @@ pub fn place_liquidation_order<'info>(
         && liquidation_mode.can_exit_liquidation(&margin_calculation)?
     {
         liquidation_mode.exit_liquidation(&mut user)?;
-        return Ok(LiquidationStep::Settled);
+        return Ok(LiquidationStep::Settled {
+            book_orders_removed: 0,
+        });
     }
 
     user.get_perp_position(market_index).inspect_err(|_e| {
@@ -1074,7 +1079,9 @@ pub fn place_liquidation_order<'info>(
             });
 
             liquidation_mode.exit_liquidation(&mut user)?;
-            return Ok(LiquidationStep::Settled);
+            return Ok(LiquidationStep::Settled {
+                book_orders_removed: book_cancel.orders,
+            });
         }
 
         intermediate_margin_calculation
@@ -1084,12 +1091,16 @@ pub fn place_liquidation_order<'info>(
 
     if book_cancel.orders_remain {
         msg!("book orders remain in the liquidation's scope; the next call continues");
-        return Ok(LiquidationStep::Settled);
+        return Ok(LiquidationStep::Settled {
+            book_orders_removed: book_cancel.orders,
+        });
     }
 
     if user.perp_positions[position_index].base_asset_amount == 0 {
         msg!("User has no base asset amount");
-        return Ok(LiquidationStep::Settled);
+        return Ok(LiquidationStep::Settled {
+            book_orders_removed: book_cancel.orders,
+        });
     }
 
     let oracle_price_too_divergent = is_oracle_too_divergent_with_twap_5min(
@@ -1188,7 +1199,9 @@ pub fn place_liquidation_order<'info>(
 
     if max_base_asset_amount_allowed_to_be_transferred == 0 {
         msg!("max_base_asset_amount_allowed_to_be_transferred == 0");
-        return Ok(LiquidationStep::Settled);
+        return Ok(LiquidationStep::Settled {
+            book_orders_removed: book_cancel.orders,
+        });
     }
 
     let base_asset_value =
@@ -1254,6 +1267,7 @@ pub fn place_liquidation_order<'info>(
     Ok(LiquidationStep::Placed(PlacedLiquidation {
         order,
         market_index,
+        book_orders_removed: book_cancel.orders,
         liquidation_id,
         liquidation_mode,
         canceled_order_ids,
@@ -1304,6 +1318,7 @@ pub fn settle_liquidation_fill<'info>(
         oracle_price,
         fill_record_id,
         existing_direction,
+        ..
     } = placed;
     let orders::FillAmounts {
         base: fill_base_asset_amount,

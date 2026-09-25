@@ -2806,7 +2806,7 @@ pub mod liquidate_perp_with_fill {
             state,
             &mut crate::controller::liquidation::NoBooks,
         )? {
-            LiquidationStep::Settled => Ok(0),
+            LiquidationStep::Settled { .. } => Ok(0),
             LiquidationStep::Placed(mut placed) => {
                 let filled = fill_perp_order_without_external_books(
                     &mut placed.order,

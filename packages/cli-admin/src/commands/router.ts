@@ -244,10 +244,10 @@ export function registerRouter(parent: Command): void {
 		const multisigPda = opts.multisig
 			? new PublicKey(opts.multisig)
 			: undefined;
+		// payer defaults to cranker: a Squads vault transaction can only sign as the vault.
 		const ix = await getDistributeIx({
 			connection: provider.connection,
 			cranker: resolveAdminAuthority(provider, multisigPda),
-			payer: provider.wallet.publicKey,
 		});
 		const result = await sendOrPropose(
 			provider,

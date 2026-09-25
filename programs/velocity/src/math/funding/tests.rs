@@ -401,9 +401,11 @@ fn max_funding_rates() {
         .unwrap();
     assert_eq!(res1, 1484848);
 
+    let gate_twaps = market.market_stats.historical_oracle_data.twaps();
     let did_succeed = update_funding_rate(
         0,
         &mut market,
+        gate_twaps,
         &mut oracle_map,
         now,
         slot,
@@ -514,6 +516,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     // Baseline: the gate blocks this oracle.
     assert!(block_operation(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         reserve_price,
@@ -538,6 +541,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     assert!(
         !block_operation(
             &unfixed,
+            unfixed.market_stats.historical_oracle_data.twaps(),
             &oracle_price_data,
             &state.oracle_guard_rails,
             unfixed.amm.reserve_price().unwrap(),
@@ -567,6 +571,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     assert_eq!(historical.last_oracle_price_twap_ts, 0);
     assert!(block_operation(
         &fixed,
+        fixed.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         fixed.amm.reserve_price().unwrap(),
@@ -670,6 +675,7 @@ fn unsettled_funding_pnl() {
     assert_eq!(time_until_next_update, 0);
     let block_funding_rate_update = block_operation(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -698,6 +704,7 @@ fn unsettled_funding_pnl() {
 
     let block_funding_rate_update = block_operation(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -708,9 +715,11 @@ fn unsettled_funding_pnl() {
     assert_eq!(block_funding_rate_update, false);
     assert_eq!(market.amm.total_fee_minus_distributions, 99999000000);
 
+    let gate_twaps = market.market_stats.historical_oracle_data.twaps();
     let did_succeed = update_funding_rate(
         0,
         &mut market,
+        gate_twaps,
         &mut oracle_map,
         now,
         slot,
@@ -1128,9 +1137,11 @@ fn funding_after_a_long_mark_twap_gap_charges_the_offset_alone() {
 
     let mut oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+    let gate_twaps = market.market_stats.historical_oracle_data.twaps();
     assert!(update_funding_rate(
         0,
         &mut market,
+        gate_twaps,
         &mut oracle_map,
         now,
         slot,
@@ -1142,9 +1153,11 @@ fn funding_after_a_long_mark_twap_gap_charges_the_offset_alone() {
 
     let mut oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+    let gate_twaps = control.market_stats.historical_oracle_data.twaps();
     assert!(update_funding_rate(
         0,
         &mut control,
+        gate_twaps,
         &mut oracle_map,
         now,
         slot,

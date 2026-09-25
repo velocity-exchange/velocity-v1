@@ -11,8 +11,8 @@ use {
         create_anchor_account_info,
         math::{
             constants::{
-                BASE_PRECISION_I64, BASE_PRECISION_U64, PRICE_PRECISION_I64, QUOTE_PRECISION_I64,
-                QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
+                BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION, PRICE_PRECISION_I64,
+                QUOTE_PRECISION_I64, QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
                 SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
             },
             time::SlotClock,
@@ -504,16 +504,30 @@ mod settled_match {
         last_fill_price: Option<u64>,
     }
 
+    /// What one run observed, and the market as the run left it.
+    struct Ran {
+        observed: Observed,
+        market: PerpMarket,
+    }
+
+    fn oracle_key() -> Pubkey {
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap()
+    }
+
     /// Read the conditions for a one-unit match with an oracle at 100. With
     /// `apply`, run the bookkeeping at `case.fill_price` too.
     fn run(case: Case, apply: bool) -> VelocityResult<Observed> {
+        let market = market_at(&case, oracle_key());
+        run_on(market, case.fill_price, apply).map(|ran| ran.observed)
+    }
+
+    fn run_on(mut market: PerpMarket, fill_price: u64, apply: bool) -> VelocityResult<Ran> {
         let mut oracle_price = get_pyth_price(100, 6);
-        let oracle_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let oracle_key = oracle_key();
         create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
         let oracle_map =
             OracleMap::load_one(&oracle_info, SLOT, SlotClock::baseline(), None).unwrap();
 
-        let mut market = market_at(&case, oracle_key);
         create_anchor_account_info!(market, PerpMarket, market_info);
         let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
         let mut maps = AccountMaps::new(perp_market_map, SpotMarketMap::empty(), oracle_map);
@@ -557,33 +571,31 @@ mod settled_match {
             &clock,
         )?;
         let too_divergent = settled.oracle_too_divergent_with_twap(&state)?;
-        if !apply {
-            return Ok(Observed {
-                too_divergent,
-                last_fill_price: None,
-            });
+        if apply {
+            settled.apply_bookkeeping(
+                &state,
+                &mut order,
+                &taker_loader,
+                &taker_stats_loader,
+                &mut controller::orders::FillParties {
+                    maps: &mut maps,
+                    makers_and_referrer: &UserMap::empty(),
+                    makers_and_referrer_stats: &UserStatsMap::empty(),
+                },
+                controller::orders::FillAmounts {
+                    base: BASE_PRECISION_U64,
+                    quote: fill_price,
+                },
+            )?;
         }
 
-        settled.apply_bookkeeping(
-            &state,
-            &mut order,
-            &taker_loader,
-            &taker_stats_loader,
-            &mut controller::orders::FillParties {
-                maps: &mut maps,
-                makers_and_referrer: &UserMap::empty(),
-                makers_and_referrer_stats: &UserStatsMap::empty(),
+        let market = *maps.perp_market_map.get_ref(&0)?;
+        Ok(Ran {
+            observed: Observed {
+                too_divergent,
+                last_fill_price: apply.then_some(market.last_fill_price),
             },
-            controller::orders::FillAmounts {
-                base: BASE_PRECISION_U64,
-                quote: case.fill_price,
-            },
-        )?;
-
-        let last_fill_price = maps.perp_market_map.get_ref(&0)?.last_fill_price;
-        Ok(Observed {
-            too_divergent,
-            last_fill_price: Some(last_fill_price),
+            market,
         })
     }
 
@@ -633,6 +645,44 @@ mod settled_match {
                 last_fill_price: None,
             })
         );
+    }
+
+    const FUNDING_PERIOD: i64 = 3_600;
+
+    /// Whether a match at 100, on a market whose funding period is due and
+    /// whose AMM marks at 100, writes funding at fill exit.
+    fn match_writes_funding(oracle_twap_5min: i64) -> bool {
+        let case = Case {
+            oracle_twap_5min,
+            ..ORDINARY
+        };
+        let mut market = market_at(&case, oracle_key());
+        market.amm.peg_multiplier = 100 * PEG_PRECISION;
+        market.last_funding_rate_ts = NOW - FUNDING_PERIOD;
+        let stats = &mut market.market_stats;
+        stats.funding_period = FUNDING_PERIOD;
+        stats.historical_oracle_data.last_oracle_price_twap_ts = NOW - 300;
+        stats.last_mark_price_twap_ts = NOW - 300;
+        stats.last_bid_price_twap = 100 * PRICE_PRECISION_I64 as u64;
+        stats.last_ask_price_twap = 100 * PRICE_PRECISION_I64 as u64;
+        stats.last_mark_price_twap = 100 * PRICE_PRECISION_I64 as u64;
+        stats.last_mark_price_twap_5min = 100 * PRICE_PRECISION_I64 as u64;
+
+        let ran = run_on(market, case.fill_price, true).unwrap();
+        assert!(!ran.observed.too_divergent);
+        ran.market.last_funding_rate_ts == NOW
+    }
+
+    #[test]
+    fn a_match_at_the_funding_boundary_writes_funding() {
+        assert!(match_writes_funding(100 * PRICE_PRECISION_I64));
+    }
+
+    /// The fill's own refresh moves a lagging 5-minute TWAP onto the live
+    /// price. The funding gate judges the TWAP from before that refresh.
+    #[test]
+    fn a_match_with_a_lagging_twap_writes_no_funding() {
+        assert!(!match_writes_funding(85 * PRICE_PRECISION_I64));
     }
 }
 

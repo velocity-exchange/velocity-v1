@@ -2738,8 +2738,8 @@ mod order_is_low_risk_for_amm {
 /// OtterSec #112 — a perp fill must measure its band checks against the 5-minute
 /// oracle TWAP as it stood *before* the fill's own refresh.
 ///
-/// `fill_perp_order` captures `oracle_twap_5min` once and feeds it to both
-/// `is_oracle_too_divergent_with_twap_5min` and
+/// `fill_perp_order` captures `entry_oracle_twaps` once and feeds its 5-minute
+/// TWAP to both `is_oracle_too_divergent_with_twap_5min` and
 /// `validate_fill_price_within_price_bands`. It used to read that value *after*
 /// calling `update_oracle_derived_stats`, which advances the TWAP toward the live
 /// oracle price — so a currently-divergent oracle normalized itself inside the

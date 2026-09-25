@@ -45,9 +45,11 @@ pub fn handle_update_funding_rate(
     let funding_paused =
         state.funding_paused()? || perp_market.is_operation_paused(PerpOperation::UpdateFunding);
 
+    let gate_twaps = perp_market.market_stats.historical_oracle_data.twaps();
     let is_updated = controller::funding::update_funding_rate(
         perp_market_index,
         perp_market,
+        gate_twaps,
         &mut oracle_map,
         now,
         clock_slot,

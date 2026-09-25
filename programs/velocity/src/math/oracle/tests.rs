@@ -140,6 +140,7 @@ fn calculate_oracle_valid() {
 
     let mut oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -173,6 +174,7 @@ fn calculate_oracle_valid() {
     };
     oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -193,6 +195,7 @@ fn calculate_oracle_valid() {
         .last_oracle_price_twap = 21 * PRICE_PRECISION as i64;
     oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -209,6 +212,7 @@ fn calculate_oracle_valid() {
         .last_oracle_price_twap_5min = 29 * PRICE_PRECISION as i64;
     oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -222,6 +226,7 @@ fn calculate_oracle_valid() {
     oracle_price_data.confidence = PRICE_PRECISION_U64;
     oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),

@@ -129,13 +129,36 @@ impl HistoricalOracleData {
     /// Spread between `other_price` and the 5-minute oracle TWAP, expressed
     /// in `BID_ASK_SPREAD_PRECISION`. Pure read against `self`; no AMM state.
     pub fn twap_5min_spread_pct(&self, other_price: u64) -> VelocityResult<i64> {
+        self.twaps().twap_5min_spread_pct(other_price)
+    }
+
+    pub fn twaps(&self) -> OracleTwaps {
+        OracleTwaps {
+            twap: self.last_oracle_price_twap,
+            twap_5min: self.last_oracle_price_twap_5min,
+        }
+    }
+}
+
+/// The two oracle TWAPs a gate reads. A gate that runs after its own
+/// instruction advanced the TWAPs reads a copy taken before that.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OracleTwaps {
+    /// `last_oracle_price_twap`. precision: PRICE_PRECISION
+    pub twap: i64,
+    /// `last_oracle_price_twap_5min`. precision: PRICE_PRECISION
+    pub twap_5min: i64,
+}
+
+impl OracleTwaps {
+    /// Spread between `other_price` and the 5-minute oracle TWAP, expressed
+    /// in `BID_ASK_SPREAD_PRECISION`.
+    pub fn twap_5min_spread_pct(&self, other_price: u64) -> VelocityResult<i64> {
         use crate::math::{
             casting::Cast, constants::BID_ASK_SPREAD_PRECISION_I128, safe_math::SafeMath,
         };
 
-        let price_spread = other_price
-            .cast::<i64>()?
-            .safe_sub(self.last_oracle_price_twap_5min)?;
+        let price_spread = other_price.cast::<i64>()?.safe_sub(self.twap_5min)?;
         price_spread
             .cast::<i128>()?
             .safe_mul(BID_ASK_SPREAD_PRECISION_I128)?

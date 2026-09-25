@@ -10,6 +10,7 @@ use {
         math::{casting::Cast, orders::is_oracle_too_divergent_with_twap_5min, router::RouterLeg},
         state::{
             fill_mode::FillMode,
+            oracle::OracleTwaps,
             oracle_map::OracleMap,
             state::State,
             user::{User, UserStats},
@@ -42,9 +43,9 @@ pub struct FillConditions {
     pub slot: u64,
     /// The safe mm oracle price every band is measured against.
     pub oracle_price: i64,
-    /// The 5-minute oracle TWAP, read before this fill's own refresh advanced
-    /// it.
-    pub oracle_twap_5min: i64,
+    /// The oracle TWAPs, read before this fill's own refresh advanced them.
+    /// The band checks and the funding gate judge these.
+    pub entry_oracle_twaps: OracleTwaps,
     /// The price an oracle-relative limit resolves against. `None` leaves such
     /// a limit unresolved.
     pub valid_oracle_price: Option<i64>,
@@ -78,7 +79,7 @@ impl FillConditions {
             now,
             slot,
             oracle_price: valid_oracle_price.unwrap_or(0),
-            oracle_twap_5min: 0,
+            entry_oracle_twaps: OracleTwaps::default(),
             valid_oracle_price,
             amm_is_available,
             oracle_stale_for_margin,
@@ -91,7 +92,7 @@ impl FillConditions {
     pub(super) fn oracle_too_divergent_with_twap(&self, state: &State) -> VelocityResult<bool> {
         is_oracle_too_divergent_with_twap_5min(
             self.oracle_price,
-            self.oracle_twap_5min,
+            self.entry_oracle_twaps.twap_5min,
             state
                 .oracle_guard_rails
                 .max_oracle_twap_5min_percent_divergence()

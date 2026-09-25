@@ -23,6 +23,7 @@ use {
         state::{
             events::{FundingPaymentRecord, FundingRateRecord},
             market_status::MarketStatus,
+            oracle::OracleTwaps,
             oracle_map::OracleMap,
             perp_market::{MarketConfigFlag, PerpMarket},
             perp_market_map::PerpMarketMap,
@@ -214,9 +215,14 @@ fn refresh_amm_for_funding_gate(
 }
 
 #[allow(clippy::comparison_chain)]
+/// Update the funding rate when the gate allows it and the period is due.
+///
+/// `gate_twaps` are the oracle TWAPs the gate judges. A caller that advanced
+/// the TWAPs earlier in the instruction passes the values from before that.
 pub fn update_funding_rate(
     market_index: u16,
     market: &mut PerpMarket,
+    gate_twaps: OracleTwaps,
     oracle_map: &mut OracleMap,
     now: UnixTimestamp,
     slot: u64,
@@ -235,6 +241,7 @@ pub fn update_funding_rate(
     let slot_clock = oracle_map.slot_clock;
     let block_funding_rate_update = oracle::block_operation(
         market,
+        gate_twaps,
         oracle_map.get_price_data(&market.oracle_id())?,
         guard_rails,
         reserve_price,

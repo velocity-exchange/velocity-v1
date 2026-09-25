@@ -23,6 +23,7 @@ use {
         state::{
             fill_mode::FillMode,
             market_status::MarketStatus,
+            oracle::OracleTwaps,
             paused_operations::PerpOperation,
             revenue_share::RevenueShareEscrowZeroCopyMut,
             state::State,
@@ -589,7 +590,7 @@ impl OrderUnderFill<'_> {
         validate_fill_price_within_price_bands(
             fill_price,
             self.conditions.oracle_price,
-            self.conditions.oracle_twap_5min,
+            self.conditions.entry_oracle_twaps.twap_5min,
             market.margin_ratio_initial,
             self.state
                 .oracle_guard_rails
@@ -688,6 +689,7 @@ impl OrderUnderFill<'_> {
         controller::funding::update_funding_rate(
             self.market_index(),
             market,
+            self.conditions.entry_oracle_twaps,
             &mut parties.maps.oracle_map,
             self.conditions.now,
             self.conditions.slot,
@@ -828,7 +830,7 @@ impl FillConditions {
             .slot_clock()
             .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, slot)
             > state.oracle_guard_rails.validity.stale_for_margin_ms();
-        let oracle_twap_5min =
+        let entry_oracle_twaps =
             refresh_market_oracle_stats(market, state, &mm_oracle_price_data, clock)?;
         let oracle_price = mm_oracle_price_data.get_price();
         let match_oracle = MatchOracle::of(oracle_price, safe_validity, exchange_validity)?;
@@ -838,7 +840,7 @@ impl FillConditions {
             now,
             slot,
             oracle_price,
-            oracle_twap_5min,
+            entry_oracle_twaps,
             valid_oracle_price: limit_price_oracle(safe_validity, oracle_price, market_index)?,
             amm_is_available: amm_not_globally_paused && amm_can_fill,
             oracle_stale_for_margin,
@@ -848,28 +850,24 @@ impl FillConditions {
     }
 }
 
-/// Advance the market's own oracle bookkeeping, and report the 5-minute oracle
-/// TWAP as it stood before that.
+/// Advance the market's own oracle bookkeeping, and report the oracle TWAPs
+/// as they stood before that.
 ///
-/// The TWAP is read before the refresh. This fill's own band checks,
-/// `is_oracle_too_divergent_with_twap_5min` and
-/// `validate_fill_price_within_price_bands`, both measure against it, and the
-/// refresh pulls it toward the live oracle price. Reading it after the refresh
-/// lets a divergent oracle normalize itself inside the same instruction and
-/// clear the checks that are meant to stop the fill.
+/// The band checks, `is_oracle_too_divergent_with_twap_5min` and
+/// `validate_fill_price_within_price_bands`, and the funding gate at fill exit
+/// measure against these TWAPs. The refresh pulls the TWAPs toward the live
+/// price, so a read after it lets a divergent oracle clear the checks meant to
+/// stop the fill or the funding update.
 ///
 /// The refresh itself stays. A fill is one of the paths that advances the
-/// TWAPs, and it does not gate on the refreshed value.
+/// TWAPs, and it does not gate on the refreshed values.
 fn refresh_market_oracle_stats(
     market: &mut PerpMarket,
     state: &State,
     mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
     clock: &Clock,
-) -> VelocityResult<i64> {
-    let twap_5min = market
-        .market_stats
-        .historical_oracle_data
-        .last_oracle_price_twap_5min;
+) -> VelocityResult<OracleTwaps> {
+    let entry_oracle_twaps = market.market_stats.historical_oracle_data.twaps();
     let amm_refresh_validity =
         crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
             market,
@@ -885,7 +883,7 @@ fn refresh_market_oracle_stats(
         clock.slot,
     )?;
 
-    Ok(twap_5min)
+    Ok(entry_oracle_twaps)
 }
 
 /// What the market oracle lets a match fill do.

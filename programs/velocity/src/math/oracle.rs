@@ -10,7 +10,7 @@ use {
             time::{legacy_slot_duration_i64_raw, DelayOverride, Millis, SlotClock},
         },
         state::{
-            oracle::{OraclePriceData, OracleSource},
+            oracle::{OraclePriceData, OracleSource, OracleTwaps},
             paused_operations::PerpOperation,
             perp_market::PerpMarket,
             state::{OracleGuardRails, PriceDivergenceGuardRails, ValidityGuardRails},
@@ -265,8 +265,11 @@ pub fn is_oracle_valid_for_action(
     Ok(is_ok)
 }
 
+/// Whether the funding update is blocked. `twaps` are the oracle TWAPs the
+/// gate judges, which a fill passes as they stood before its own refresh.
 pub fn block_operation(
     market: &PerpMarket,
+    twaps: OracleTwaps,
     oracle_price_data: &OraclePriceData,
     guard_rails: &OracleGuardRails,
     reserve_price: u64,
@@ -280,6 +283,7 @@ pub fn block_operation(
         ..
     } = get_oracle_status(
         market,
+        twaps,
         oracle_price_data,
         guard_rails,
         reserve_price,
@@ -323,6 +327,7 @@ pub struct OracleStatus {
 
 pub fn get_oracle_status(
     market: &PerpMarket,
+    twaps: OracleTwaps,
     oracle_price_data: &OraclePriceData,
     guard_rails: &OracleGuardRails,
     reserve_price: u64,
@@ -334,10 +339,7 @@ pub fn get_oracle_status(
     let oracle_validity = oracle_validity(
         MarketType::Perp,
         market.market_index,
-        market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap,
+        twaps.twap,
         oracle_price_data,
         &guard_rails.validity,
         market.get_max_confidence_interval_multiplier()?,
@@ -349,10 +351,7 @@ pub fn get_oracle_status(
         slot,
         slot_clock,
     )?;
-    let oracle_reserve_price_spread_pct = market
-        .market_stats
-        .historical_oracle_data
-        .twap_5min_spread_pct(reserve_price)?;
+    let oracle_reserve_price_spread_pct = twaps.twap_5min_spread_pct(reserve_price)?;
     let is_oracle_mark_too_divergent = is_mark_oracle_too_divergent(
         oracle_reserve_price_spread_pct,
         &guard_rails.price_divergence,

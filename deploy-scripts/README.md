@@ -96,7 +96,7 @@ upgrade keypair.
 
 | Target | Trigger | Workflow |
 | --- | --- | --- |
-| mainnet | Push tag `program-<name>-v<version>` where `<name>` is the program lib name, `velocity` or `jit_proxy` (for example `program-velocity-v2.163.0`, `program-jit_proxy-v0.21.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
+| mainnet | Push tag `program-<name>-v<version>` where `<name>` is the program lib name, `velocity`, `jit_proxy` or `protocol_revenue_router` (for example `program-velocity-v2.163.0`, `program-jit_proxy-v0.21.0`, `program-protocol_revenue_router-v0.2.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
 | devnet | Run **Manual Devnet Program Deploy** from the Actions tab, picking program and branch | [`.github/workflows/manual-devnet-deploy.yaml`](../.github/workflows/manual-devnet-deploy.yaml) |
 
 Both workflows do the same thing on different multisigs.
@@ -159,6 +159,11 @@ batch are involved, because the deployer sends the chunked writes directly.
 The Anchor CLI does not do this. `anchor deploy` only deploys the program, and `anchor idl init`
 targets the legacy onchain IDL account rather than the program-metadata account velocity's clients
 resolve. Use the program-metadata CLI explicitly.
+
+> protocol-revenue-router: steps 1 through 5 apply unchanged, substituting `protocol_revenue_router`
+> for `velocity` and building with `bash deploy-scripts/build-sbf.sh mainnet protocol-revenue-router`
+> (default features keep the mainnet init gate on). It has a program keypair like velocity. It has no
+> devnet workflow: devnet deploys use the same commands against the devnet cluster.
 
 > jit-proxy: its program id is a create-with-seed vanity address with no keypair, so step 1 below
 > does not apply. The initial deploy must go through [`deploy-jit-proxy.sh`](./deploy-jit-proxy.sh),

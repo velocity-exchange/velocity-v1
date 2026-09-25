@@ -1,7 +1,8 @@
 name: Release Program to Mainnet
 
 # Mainnet program upgrades are gated by a `program-<name>-<version>` tag
-# (e.g. program-velocity-v1.2.3, program-jit_proxy-v0.21.0). The workflow only
+# (e.g. program-velocity-v1.2.3, program-jit_proxy-v0.21.0,
+# program-protocol_revenue_router-v0.2.0). The workflow only
 # PROPOSES the Squads transaction; multisig signers must approve + execute via
 # the Squads UI.
 
@@ -10,6 +11,7 @@ on:
     tags:
       - "program-velocity-*"
       - "program-jit_proxy-*"
+      - "program-protocol_revenue_router-*"
 
 permissions:
   contents: read
@@ -22,6 +24,7 @@ env:
   VERIFIABLE_BUILD_IMAGE: solanafoundation/solana-verifiable-build:3.1.14
   VELOCITY_MAINNET_PROGRAM_ID: vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P
   JIT_PROXY_MAINNET_PROGRAM_ID: J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ
+  PROTOCOL_REVENUE_ROUTER_MAINNET_PROGRAM_ID: 39PAxdVaWHYH62bR5AWTkMVd52Y4QeJLjQ8TChupghgT
 
 jobs:
   release:
@@ -48,6 +51,7 @@ jobs:
           case "$PROGRAM" in
             velocity)  PID="${{ env.VELOCITY_MAINNET_PROGRAM_ID }}" ;;
             jit_proxy) PID="${{ env.JIT_PROXY_MAINNET_PROGRAM_ID }}" ;;
+            protocol_revenue_router) PID="${{ env.PROTOCOL_REVENUE_ROUTER_MAINNET_PROGRAM_ID }}" ;;
             *) echo "Unknown program '$PROGRAM'" >&2; exit 1 ;;
           esac
           echo "program=$PROGRAM" >> "$GITHUB_OUTPUT"
@@ -60,6 +64,10 @@ jobs:
         with:
           program: ${{ steps.tag.outputs.program }}
           devnet: "false"
+
+      # SIMD-0500 rejects upgrades below SBPF v3, so refuse to stage one.
+      - name: Assert SBPF v3
+        run: bash deploy-scripts/assert-sbpf-version.sh "target/deploy/${{ steps.tag.outputs.program }}.so"
 
       # The IDL is published on-chain as a program-metadata buffer by the
       # buffer-deploy action below (and applied by the Squads proposal), so there

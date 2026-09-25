@@ -1661,9 +1661,9 @@ fn a_clob_orders_records_name_it_by_the_users_own_order_id() {
     assert_eq!(placed[0].order.base_asset_amount, UNIT / 2);
     assert_eq!(placed[0].order.status, OrderStatus::Open);
     assert!(placed[0].order.is_placed_on_clob());
-    // A resting book order settles at its own price on the maker schedule, so
-    // it reports as one.
-    assert!(placed[0].order.post_only);
+    // The record carries the order's own post-only flag, and this order was
+    // placed without one.
+    assert!(!placed[0].order.post_only);
     // The counter moved, so the next order gets its own id.
     let user: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(user.next_order_id, next_order_id + 1);

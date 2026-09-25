@@ -390,6 +390,13 @@ fn resolve_replacement_terms(
         requested_base_asset_amount
     };
 
+    validate!(
+        base_asset_amount > 0 || !removed.reduce_only,
+        ErrorCode::InvalidOrder,
+        "reduce-only modify has no position left to reduce: position {}",
+        position_base
+    )?;
+
     // `None` keeps the expiry the order rested with. The removal response
     // reports it, which is the last moment it is knowable.
     let max_ts = params.max_ts.unwrap_or(removed.max_ts);

@@ -440,7 +440,7 @@ fn pay_liquidation_crank<'info>(
             &maps.spot_market_map,
             &mut maps.oracle_map,
             filled_quote,
-        )?)
+        ))
     };
 
     ClobCrankConditionsV0::pay_keeper(
@@ -470,51 +470,57 @@ fn liquidation_reimbursement<'info>(
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
     filled_quote: u64,
-) -> Result<u64> {
+) -> u64 {
     let Some(sysvar) = instructions_sysvar else {
-        return Ok(0);
+        return 0;
     };
 
     if state.liquidation_crank_reimbursement_bps == 0 || state.sol_spot_market_index == 0 {
-        return Ok(0);
+        return 0;
     }
 
-    let (price_per_unit, requested_units) =
-        crate::instructions::optional_accounts::tx_compute_budget(sysvar)?;
+    let Ok((price_per_unit, requested_units)) =
+        crate::instructions::optional_accounts::tx_compute_budget(sysvar)
+    else {
+        return 0;
+    };
+
     if price_per_unit == 0 || requested_units == 0 {
-        return Ok(0);
+        return 0;
     }
 
     let Some(sol_price) =
         crate::state::clob_crank::sol_oracle_price(state, spot_market_map, oracle_map)
     else {
-        return Ok(0);
+        return 0;
     };
 
     // The priority fee is a whole-transaction cost, so the liquidations batched
     // into that transaction share it. Reimbursing each one the full figure would
     // pay the same fee once per liquidated account.
-    let claimants = crate::instructions::optional_accounts::tx_reimbursement_claimants(
+    let Ok(claimants) = crate::instructions::optional_accounts::tx_reimbursement_claimants(
         sysvar,
         crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
-    )?;
-    let priority_lamports = CrankPaymentsV0::crank_priority_lamports(
-        price_per_unit,
-        requested_units,
-        u64::from(
-            state
-                .transaction_fee_rails
-                .max_priority_micro_lamports_per_cu,
-        ),
-    )?
-    .safe_div(u64::from(claimants))?;
-    CrankPaymentsV0::liquidation_reimbursement(
-        filled_quote,
-        sol_price,
-        priority_lamports,
-        state.liquidation_crank_reimbursement_bps,
-    )
-    .map_err(Into::into)
+    ) else {
+        return 0;
+    };
+
+    let max_price_per_unit = u64::from(
+        state
+            .transaction_fee_rails
+            .max_priority_micro_lamports_per_cu,
+    );
+    CrankPaymentsV0::crank_priority_lamports(price_per_unit, requested_units, max_price_per_unit)
+        .and_then(|lamports| lamports.safe_div(u64::from(claimants)))
+        .and_then(|priority_lamports| {
+            CrankPaymentsV0::liquidation_reimbursement(
+                filled_quote,
+                sol_price,
+                priority_lamports,
+                state.liquidation_crank_reimbursement_bps,
+            )
+        })
+        .unwrap_or(0)
 }
 
 #[access_control(
@@ -839,4 +845,41 @@ pub struct SetUserStatusToBeingLiquidated<'info> {
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::liquidation_reimbursement,
+        crate::state::{oracle_map::OracleMap, spot_market_map::SpotMarketMap, state::State},
+        anchor_lang::prelude::{AccountInfo, Pubkey, UncheckedAccount},
+    };
+
+    /// The reimbursement is extra to the flat payment, so an instructions
+    /// sysvar that holds no readable instruction pays nothing extra rather than
+    /// failing the liquidation that already ran.
+    #[test]
+    fn an_unreadable_instructions_sysvar_pays_nothing_extra() {
+        let key = solana_program::sysvar::instructions::ID;
+        let owner = Pubkey::default();
+        let mut lamports = 0;
+        let mut data = vec![0xFFu8; 16];
+        let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, false);
+        let sysvar = Some(UncheckedAccount::try_from(&info));
+        let state = State {
+            liquidation_crank_reimbursement_bps: 5_000,
+            sol_spot_market_index: 1,
+            ..State::default()
+        };
+
+        let paid = liquidation_reimbursement(
+            &sysvar,
+            &state,
+            &SpotMarketMap::empty(),
+            &mut OracleMap::empty(),
+            1_000_000_000,
+        );
+
+        assert_eq!(paid, 0);
+    }
 }

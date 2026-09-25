@@ -7861,6 +7861,11 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     fixture
         .svm
         .warp_to_slot(fixture.svm.get_sysvar::<anchor_lang::prelude::Clock>().slot + 3_000);
+    // The treasury pays only a resync that finds the positions changed, and
+    // the resync above already recorded the close.
+    let mut account: User = read_zero_copy(&fixture.svm, &user);
+    account.perp_positions[1].quote_asset_amount = -1;
+    set_user_account(&mut fixture.svm, user, &account);
     run_staged_executor(
         &mut fixture,
         &resolved,

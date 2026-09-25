@@ -9,7 +9,9 @@
 //!
 //! The instruction relay stages therefore takes no payer and allocates
 //! nothing. The opt-in sync created the account before relay ever stages this.
-//! The keeper is paid from the protocol crank treasury.
+//! The keeper is paid from the protocol crank treasury, and only for a resync
+//! that found the user's positions changed. The stored payment prices a whole
+//! transaction, so resyncs batched into one transaction share it.
 //!
 //! The treasury pays rather than the user's own conditions account, because a
 //! stale threshold is a protocol problem before it is a user's. A resync that
@@ -49,6 +51,10 @@ pub struct ResyncLiqConditions<'info> {
     /// The protocol pool this resync is paid from.
     #[account(mut, seeds = [CRANK_TREASURY_PDA_SEED], bump)]
     pub treasury: AccountLoader<'info, CrankTreasuryV0>,
+    /// CHECK: the instructions sysvar, pinned by address. The payment is
+    /// divided by the resyncs this transaction carries.
+    #[account(address = solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: UncheckedAccount<'info>,
 }
 
 /// Resyncs a user's liquidation conditions along relay's permissionless path.
@@ -58,12 +64,14 @@ pub struct ResyncLiqConditions<'info> {
 pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     ctx: Context<'info, ResyncLiqConditions<'info>>,
 ) -> Result<()> {
-    let args = {
+    let (args, digest_before) = {
         let conditions = ctx.accounts.liq_conditions.load()?;
-        SyncLiqConditionsTerms {
+        let terms = SyncLiqConditionsTerms {
             sync_payment_lamports: conditions.sync_payment_lamports,
             sync_fallback_slots: conditions.sync_fallback_slots,
-        }
+        };
+
+        (terms, conditions.positions_digest)
     };
 
     rewrite_liq_conditions(
@@ -79,14 +87,14 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     // above already zeroes and silences a block armed before the floor
     // existed, so this also covers that case.
     let payment = args.payable_lamports();
-    if payment == 0 {
+    let digest_after = ctx.accounts.liq_conditions.load()?.positions_digest;
+    if !resync_earns_payment(payment, digest_before, digest_after) {
         return Ok(());
     }
 
-    // Paid at most once per fallback interval. Opting in is permissionless
-    // and the treasury pays even when nothing moved, so without this bound
-    // anyone could loop a crank on the same account and draw the fee every
-    // time. The interval matches the fallback poll's own cadence.
+    // Paid at most once per fallback interval, the fallback poll's own
+    // cadence. A user who changes positions every slot still draws the fee
+    // once per interval.
     let slot = Clock::get()?.slot;
     let due_slot = {
         let conditions = ctx.accounts.liq_conditions.load()?;
@@ -116,12 +124,31 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     let paid = CrankTreasuryV0::pay_out(
         &treasury,
         &ctx.accounts.keeper.to_account_info(),
-        payment.min(available),
+        batch_share(payment, &ctx.accounts.instructions_sysvar).min(available),
         rent_minimum,
     )?;
     let mut treasury_state = ctx.accounts.treasury.load_mut()?;
     treasury_state.total_paid = treasury_state.total_paid.saturating_add(paid);
     Ok(())
+}
+
+/// Whether a resync may draw its payment at all. The treasury pays for a
+/// position change, not for a rewrite of the same exposures. Without the
+/// digest test a keeper could crank an unchanged account every interval.
+fn resync_earns_payment(payment: u64, digest_before: u64, digest_after: u64) -> bool {
+    payment > 0 && digest_before != digest_after
+}
+
+/// This resync's share of a payment that prices a whole transaction. An
+/// unreadable sysvar counts one claimant.
+fn batch_share(payment: u64, instructions_sysvar: &AccountInfo) -> u64 {
+    let claimants = crate::instructions::optional_accounts::tx_reimbursement_claimants(
+        instructions_sysvar,
+        crate::instruction::ResyncLiqConditions::DISCRIMINATOR,
+    )
+    .unwrap_or(1);
+
+    payment / u64::from(claimants.max(1))
 }
 
 /// Resolver for the self-sync conditions. It reports work when the user's
@@ -176,9 +203,68 @@ pub fn handle_resolve_resync_liq_conditions(
                 user: ctx.accounts.user.key(),
                 liq_conditions: ctx.accounts.liq_conditions.key(),
                 treasury: crate::state::pdas::crank_treasury(),
+                instructions_sysvar: solana_program::sysvar::instructions::ID,
             })
             // The margin-map + reservoir accounts the last sync stored.
             .refs(ctx.accounts.liq_conditions.load()?.read_sync_accounts()),
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::{batch_share, resync_earns_payment},
+        anchor_lang::{
+            prelude::{AccountInfo, Pubkey},
+            Discriminator,
+        },
+    };
+
+    #[test]
+    fn a_resync_of_unchanged_positions_is_not_paid() {
+        assert!(!resync_earns_payment(5_000, 42, 42));
+        assert!(resync_earns_payment(5_000, 42, 43));
+        assert!(!resync_earns_payment(0, 42, 43));
+    }
+
+    /// A payment divides by the resyncs in the transaction. The instructions
+    /// sysvar is serialized as a u16 count, one u16 offset per instruction,
+    /// then each instruction and a trailing current index.
+    #[test]
+    fn resyncs_in_one_transaction_share_its_payment() {
+        use solana_program::{
+            instruction::Instruction,
+            sysvar::instructions::{construct_instructions_data, BorrowedInstruction},
+        };
+
+        let data = crate::instruction::ResyncLiqConditions::DISCRIMINATOR.to_vec();
+        let resync = Instruction::new_with_bytes(crate::ID, &data, vec![]);
+        let other = Instruction::new_with_bytes(Pubkey::new_unique(), &data, vec![]);
+        fn borrowed(ix: &Instruction) -> BorrowedInstruction<'_> {
+            BorrowedInstruction {
+                program_id: &ix.program_id,
+                accounts: vec![],
+                data: &ix.data,
+            }
+        }
+
+        let share = |instructions: &[&Instruction]| {
+            let mut bytes = construct_instructions_data(
+                &instructions
+                    .iter()
+                    .map(|ix| borrowed(ix))
+                    .collect::<Vec<_>>(),
+            );
+            let key = solana_program::sysvar::instructions::ID;
+            let owner = Pubkey::default();
+            let mut lamports = 0;
+            let info =
+                AccountInfo::new(&key, false, false, &mut lamports, &mut bytes, &owner, false);
+            batch_share(20_000, &info)
+        };
+
+        assert_eq!(share(&[&resync]), 20_000);
+        assert_eq!(share(&[&resync, &resync, &other, &resync, &resync]), 5_000);
+    }
 }

@@ -32,6 +32,7 @@
 //! missing record is not an error.
 
 use {
+    super::helpers::crank_common::earns_crank_lamports,
     crate::{
         controller::{
             orders::pay_keeper_flat_reward_for_spot,
@@ -216,16 +217,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         maps.oracle_map.get_price_data(&oracle_id)?.price
     };
 
-    // The orders this crank reclaimed. Reaching this point does not prove any
-    // work was done: `open_bids`/`open_asks` count a user's slot orders too, so
-    // a sweep can remove zero without erroring. Paying anyway would let a
-    // failing account drain the market's reservoir in a loop and stall every crank, liquidations included.
-    let reclaimed_orders = removals.orders.len() as u64
-        + removals.swept.map_or(0, |outcome| {
-            u64::from(outcome.bid_orders) + u64::from(outcome.ask_orders)
-        });
-
-    unwind_cancelled_orders(
+    let collected_fee = unwind_cancelled_orders(
         ctx.accounts,
         &state,
         &maps.spot_market_map,
@@ -237,12 +229,19 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         &removals,
     )?;
 
-    pay_crank_reward(
-        &ctx.accounts.crank_conditions,
-        &ctx.accounts.authority,
-        program_keeper_mode,
-        reclaimed_orders,
-    )?;
+    // Reaching this point does not prove any work was done. `open_bids` and
+    // `open_asks` count a user's slot orders too, so a sweep can remove zero
+    // without erroring. The fee is charged per reclaimed order, so a crank
+    // that reclaimed nothing collected nothing and draws no lamports.
+    if program_keeper_mode
+        && earns_crank_lamports(
+            collected_fee,
+            &ctx.accounts.authority.key(),
+            &plan.user_ref.authority,
+        )
+    {
+        pay_crank_reward(&ctx.accounts.crank_conditions, &ctx.accounts.authority)?;
+    }
 
     msg!(
         "force-cancelled {} clob orders for user {}",
@@ -492,7 +491,7 @@ fn unwind_cancelled_orders(
     oracle_price: i64,
     plan: &ForceCancelPlan,
     removals: &ClobRemovals,
-) -> Result<()> {
+) -> Result<u64> {
     let mut total_fee = 0u64;
     let user = &mut load_mut!(accounts.user)?;
     let mut filler = load_mut!(accounts.filler)?;
@@ -576,7 +575,7 @@ fn unwind_cancelled_orders(
         msg!("exchange halted; cancelling without the keeper fee");
     }
 
-    pay_keeper_flat_reward_for_spot(
+    let collected_fee = pay_keeper_flat_reward_for_spot(
         user,
         Some(&mut filler),
         spot_market_map.get_quote_spot_market_mut()?.deref_mut(),
@@ -586,33 +585,21 @@ fn unwind_cancelled_orders(
 
     user.update_last_active_slot(clock.slot);
 
-    Ok(())
+    Ok(collected_fee)
 }
 
-/// Pay the relay turner out of the reservoir when the turner cranked, and only
-/// for a crank that reclaimed something. `liquidate_perp_with_fill` applies the
-/// same rule to its own reward. A crank that removed nothing is a correct
-/// outcome rather than an error, but it is not work, and paying for it empties
-/// the reservoir.
+/// Pay the relay turner its force-cancel figure out of the reservoir.
+/// `liquidate_perp_with_fill` pays for its own reward on the same terms.
 fn pay_crank_reward<'info>(
     crank_conditions: &Option<AccountLoader<'info, ClobCrankConditionsV0>>,
     authority: &UncheckedAccount<'info>,
-    program_keeper_mode: bool,
-    reclaimed_orders: u64,
 ) -> Result<()> {
     if let Some(conditions_loader) = crank_conditions {
-        let payment = {
-            let conditions = load_mut!(conditions_loader)?;
-            u64::from(conditions.crank_payments.force_cancel)
-        };
-
-        if program_keeper_mode && reclaimed_orders > 0 {
-            ClobCrankConditionsV0::pay_keeper(
-                conditions_loader,
-                &authority.to_account_info(),
-                payment,
-            )?;
-        }
+        ClobCrankConditionsV0::pay_crank(
+            conditions_loader,
+            &authority.to_account_info(),
+            |payments| u64::from(payments.force_cancel),
+        )?;
     }
 
     Ok(())

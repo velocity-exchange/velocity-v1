@@ -215,7 +215,16 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         )?
     };
 
-    let (side, price, base_asset_amount, max_ts, reduce_only, user_ref, is_isolated_position) = {
+    let (
+        side,
+        price,
+        base_asset_amount,
+        max_ts,
+        reduce_only,
+        user_ref,
+        is_isolated_position,
+        filler_reward,
+    ) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
 
@@ -309,6 +318,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             reserved.reduce_only,
             user.clob_user_ref(),
             is_isolated_position,
+            filler_reward,
         )
     };
 
@@ -367,8 +377,11 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         &ctx.accounts.user,
         &ctx.accounts.trigger_conditions,
         &ctx.accounts.crank_conditions,
-        market_index,
-        order_id,
+        &super::helpers::crank_common::CrankedTrigger {
+            market_index,
+            order_id,
+            keeper_reward: filler_reward,
+        },
     )?;
 
     msg!(

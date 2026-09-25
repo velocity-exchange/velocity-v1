@@ -49,9 +49,11 @@
 //! `min_payment` stays the market's `keeper_payment_lamports`, because relay
 //! measures lamports and `assert_paid_v0` watches the payout account's
 //! balance. The quote-denominated crank reward can be zero, because a dust or
-//! equal-price improvement resolves for free by design. Pricing the condition
-//! above the lamport payout would leave those crosses undiscoverable, and a
-//! unit of dust in front of a gated remainder would strand it for its life.
+//! equal-price improvement resolves for free by design. The reservoir pays the
+//! lamports only when the fill's fee remainder plus that reward covers their
+//! value in quote, so the protocol never pays more for a crank than it
+//! collects. A cross below that floor is left to a signed keeper, or to any
+//! taker once the remainder's claim lapses.
 //!
 //! Two remainders can face each other only while something crosses the earlier
 //! one, so their pair usually becomes resolvable when the blocker is removed
@@ -328,6 +330,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     drop(book_slot);
 
     let taker_direction = PositionDirection::from(aggressor_side);
+    let fees_booked_before = booked_fee_remainder(&maps.perp_market_map, market_index)?;
     let cx = TakerOriginContext {
         accounts: &*ctx.accounts,
         market_index,
@@ -354,6 +357,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             &counterparty,
             &mut maps,
             &mut rev_share_escrow,
+            fees_booked_before,
         );
     }
 
@@ -401,7 +405,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         }],
     )?;
 
-    pay_crank_lamports(&cx)?;
+    pay_crank_lamports(&cx, &mut maps, fees_booked_before, crank_reward)?;
     emit_taker_origin_record(
         &cx,
         &TakerOriginOutcome {
@@ -866,17 +870,94 @@ fn report_fills_to_book<'info>(
     Ok(taker_remainder)
 }
 
-/// The keeper's lamports, as every CLOB crank pays them.
-fn pay_crank_lamports<'info>(cx: &TakerOriginContext<'_, 'info>) -> Result<()> {
-    if let (true, Some(conditions)) = (cx.program_keeper_mode, &cx.accounts.crank_conditions) {
-        ClobCrankConditionsV0::pay_crank(
-            conditions,
-            &cx.accounts.authority.to_account_info(),
-            |payments| u64::from(payments.taker_origin_cross),
-        )?;
+/// The fee remainder the market's ledger has booked: the protocol's, the
+/// insurance fund's and the AMM's cuts of every taker fee, net of the maker
+/// rebate, the referral and the filler reward.
+fn booked_fee_remainder(perp_market_map: &PerpMarketMap, market_index: u16) -> Result<u128> {
+    let market = perp_market_map.get_ref(&market_index)?;
+    let ledger = &market.fee_ledger;
+    Ok(ledger
+        .pending_protocol_fee
+        .saturating_add(ledger.pending_if_fee)
+        .saturating_add(ledger.amm_protocol_fees_received))
+}
+
+/// The keeper's lamports in program-keeper mode, for a crank that collected
+/// at least their value.
+///
+/// What the crank collected is the fee remainder its fill booked plus the
+/// crank reward, which lands in the protocol `User`. Two wallets can cross
+/// each other at one price for no reward, so without the floor each such
+/// crank draws lamports that nothing paid for.
+fn pay_crank_lamports<'info>(
+    cx: &TakerOriginContext<'_, 'info>,
+    maps: &mut AccountMaps,
+    fees_booked_before: u128,
+    crank_reward: u64,
+) -> Result<()> {
+    let (true, Some(conditions)) = (cx.program_keeper_mode, &cx.accounts.crank_conditions) else {
+        return Ok(());
+    };
+
+    let collected = booked_fee_remainder(&maps.perp_market_map, cx.market_index)?
+        .saturating_sub(fees_booked_before)
+        .saturating_add(u128::from(crank_reward))
+        .min(u128::from(u64::MAX)) as u64;
+    if !super::helpers::crank_common::earns_crank_lamports(
+        collected,
+        &cx.accounts.authority.key(),
+        &cx.taker_ref.authority,
+    ) {
+        return Ok(());
     }
 
+    let payment_lamports = u64::from(conditions.load()?.crank_payments.taker_origin_cross);
+    let payment_quote = taker_origin_payment_quote(cx.state, maps, payment_lamports);
+    if !collected_covers_payment(collected, payment_quote) {
+        msg!(
+            "crank collected {} quote against a keeper payment worth {:?}; the reservoir pays nothing",
+            collected,
+            payment_quote
+        );
+
+        return Ok(());
+    }
+
+    ClobCrankConditionsV0::pay_keeper(
+        conditions,
+        &cx.accounts.authority.to_account_info(),
+        payment_lamports,
+    )?;
+
     Ok(())
+}
+
+/// Whether what a crank collected covers the keeper payment's value in quote.
+/// A payment with no price to value it at is not covered.
+fn collected_covers_payment(collected: u64, payment_quote: Option<u64>) -> bool {
+    payment_quote.is_some_and(|payment_quote| collected >= payment_quote)
+}
+
+/// The keeper payment's value in quote, as the cross-match floor prices it.
+/// A state with no SOL spot market has no price to convert at, so any
+/// collected fee clears it.
+fn taker_origin_payment_quote(
+    state: &State,
+    maps: &mut AccountMaps,
+    payment_lamports: u64,
+) -> Option<u64> {
+    if state.sol_spot_market_index == 0 {
+        return Some(1);
+    }
+
+    crate::state::clob_crank::sol_price_for_payment_floor(
+        state,
+        &maps.spot_market_map,
+        &mut maps.oracle_map,
+    )
+    .and_then(|sol_price| {
+        crate::state::clob_crank::CrankPaymentsV0::lamports_to_quote(payment_lamports, sol_price)
+    })
 }
 
 /// What one crank did for the taker, as its record reports it.
@@ -971,6 +1052,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     counterparty: &RestingOrder,
     maps: &mut AccountMaps<'info>,
     rev_share_escrow: &mut Option<RevenueShareEscrowZeroCopyMut<'info>>,
+    fees_booked_before: u128,
 ) -> Result<()> {
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, aggressor);
@@ -1024,7 +1106,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     let remainder_base_asset_amount = report_fills_to_book(cx, &pair.book_fills())?;
     let crank_reward = pay_crank_reward(cx, &pricing.fee, pair.quote_filled, maps)?;
 
-    pay_crank_lamports(cx)?;
+    pay_crank_lamports(cx, maps, fees_booked_before, crank_reward)?;
     emit_taker_origin_record(
         cx,
         &TakerOriginOutcome {
@@ -1637,7 +1719,15 @@ fn taker_origin_call(
         signed_msg_user_orders: pdas::signed_msg_user_orders(&taker_ref.authority),
         instructions_sysvar: IX_ID,
     })
-    .map_section(oracle, quote_spot_market_index, market_index)
+    .map_section_named_perp(oracle, quote_spot_market_index);
+    // The SOL spot market prices the keeper payment's floor. It sits after the
+    // quote spot market, so the perp market still closes the maps section.
+    let call = super::crank_cross_match::with_sol_spot_market(
+        call,
+        &*ctx.accounts.state.load()?,
+        quote_spot_market_index,
+    )
+    .account(pdas::perp_market(market_index), true)
     .maker_refs([counterparty_ref]);
     let call = if ctx.accounts.state.load()?.builder_codes_enabled() {
         call.account(revenue_share_escrow(&taker_ref.authority), true)

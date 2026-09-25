@@ -36,7 +36,7 @@ pub fn trigger_and_route_order(
     accounts: &TriggerAccounts,
     maps: &mut AccountMaps,
     clock: &Clock,
-) -> VelocityResult<Option<Order>> {
+) -> VelocityResult<Option<FiredTrigger>> {
     let now = clock.unix_timestamp;
     let slot = clock.slot;
     let user = &mut load_mut!(accounts.user)?;
@@ -118,7 +118,17 @@ pub fn trigger_and_route_order(
 
     user.update_last_active_slot(slot);
 
-    Ok(Some(fired))
+    Ok(Some(FiredTrigger {
+        order: fired,
+        filler_reward,
+    }))
+}
+
+/// The live order a trigger fired as, and the flat reward the keeper
+/// collected for firing it.
+pub struct FiredTrigger {
+    pub order: Order,
+    pub filler_reward: u64,
 }
 
 /// The armed order a trigger crank names, and the market the crank runs on.

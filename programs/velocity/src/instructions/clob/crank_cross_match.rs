@@ -755,7 +755,7 @@ fn stage_maker_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCal
 /// Add the SOL spot market to the maps section, after the quote spot market.
 /// The executor prices the keeper payment off it, and a resolver can derive
 /// it where it cannot name the SOL oracle.
-fn with_sol_spot_market(
+pub(super) fn with_sol_spot_market(
     call: StagedCall,
     state: &State,
     quote_spot_market_index: u16,

@@ -18,7 +18,8 @@
 //!   The maker's reward accrues to the protocol `User`. The caller's
 //!   `authority` account is paid `keeper_payment_lamports` from the market's
 //!   conditions-account reservoir instead, which gives relay's `assert_paid_v0`
-//!   a real fee to measure.
+//!   a real fee to measure. [`earns_crank_lamports`] states when the reservoir
+//!   pays.
 //!
 //! Resolvers are advisory. The executor verifies everything again, because the
 //! CLOB fails removals that are not due and velocity fails the crank when the
@@ -136,7 +137,8 @@ impl ClobRemoval {
 
 /// The shared crank body. It CPIs the removal, checks that the removal hit the
 /// passed maker, unwinds the aggregates, and pays the keeper. Both modes pay
-/// quote from the maker. Program-keeper mode adds reservoir lamports.
+/// quote from the maker. Program-keeper mode adds reservoir lamports for a
+/// removal that collected the fee.
 ///
 /// The removal is ungated, because a halted market still needs its orders
 /// reclaimed. The fee follows `force_cancel_clob_orders`: a full exchange halt
@@ -167,8 +169,8 @@ pub fn crank_clob_removal(
     require_removed_for(&ctx.accounts.user, &removed.user)?;
     release_removed_remainders(ctx.remaining_accounts.first(), market_index, &[removed]);
 
-    // Both removals charge the maker the flat removal reward before they
-    // unwind. In program-keeper mode the filler is the protocol `User`. Unwinding an
+    // Each removal charges the maker the flat removal reward before it
+    // unwinds. In program-keeper mode the filler is the protocol `User`. Unwinding an
     // otherwise-empty position frees its slot, and the reward needs that slot
     // to resolve.
     //
@@ -186,7 +188,7 @@ pub fn crank_clob_removal(
     // whose slot the book needs back. Pushing
     // an honest maker to that tail costs an attacker a full side of
     // better-priced, takeable quotes, each holding real margin.
-    {
+    let (removal_fee, maker_authority) = {
         let mut user = load_mut!(ctx.accounts.user)?;
         let mut market = load_mut!(ctx.accounts.perp_market)?;
         validate!(
@@ -232,9 +234,17 @@ pub fn crank_clob_removal(
             Some(removal_fee),
             user.perp_positions[position_index].is_isolated(),
         )?;
-    }
 
-    if let (true, Some(conditions)) = (program_keeper_mode, &ctx.accounts.crank_conditions) {
+        (removal_fee, user.authority)
+    };
+
+    let paid_lamports = program_keeper_mode
+        && earns_crank_lamports(
+            removal_fee,
+            &ctx.accounts.authority.key(),
+            &maker_authority,
+        );
+    if let (true, Some(conditions)) = (paid_lamports, &ctx.accounts.crank_conditions) {
         // An expiry that went unclaimed pays escalation, priced off the
         // order's own `max_ts` so a caller cannot name its own figure.
         // Eviction is a capacity limit, not a deadline, so it does not
@@ -342,6 +352,31 @@ fn unwind_removed_order(
     let armed = OrderReservation::of_order(&user.orders[slot_index])?;
     user.reserve_orders(&armed)?;
     Ok(user.release_orders(&removed_order, ReleaseCheck::ClampedForExit)?)
+}
+
+/// Whether a program-keeper crank earns its reservoir lamports.
+///
+/// The reservoir pays only for a crank that collected a fee for the protocol,
+/// so a crank that moved no value draws nothing. A full exchange halt waives
+/// the fee. A protocol `User` with no free perp position books none. The payout
+/// account must not be the order owner's authority, because an owner that
+/// cranks its own order is not doing a keeper's work.
+pub(crate) fn earns_crank_lamports(
+    collected_fee: u64,
+    payout: &Pubkey,
+    owner_authority: &Pubkey,
+) -> bool {
+    if collected_fee == 0 {
+        msg!("crank collected no fee; the reservoir pays nothing");
+        return false;
+    }
+
+    if payout == owner_authority {
+        msg!("the order owner cranked its own order; the reservoir pays nothing");
+        return false;
+    }
+
+    true
 }
 
 /// Whether the protocol `User` cranks. That mode pays the keeper out of the
@@ -473,12 +508,18 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
     Ok(call.account(pdas::signed_msg_user_orders(&found.user.authority), true))
 }
 
+/// The trigger a crank acted on, and the reward it collected from the owner.
+pub struct CrankedTrigger {
+    pub market_index: u16,
+    pub order_id: u32,
+    pub keeper_reward: u64,
+}
+
 /// The shared tail of the trigger cranks `trigger_market_order_v1` and
 /// `trigger_limit_order_v1`. It releases the fired slot on the user's relay
 /// trigger conditions so that its level-triggered wake goes quiet. In
 /// program-keeper mode it also pays the caller from the fired market's
-/// reservoir.
-#[allow(clippy::too_many_arguments)]
+/// reservoir, for a crank that collected its reward.
 pub fn finish_trigger_crank<'info>(
     state: &AccountLoader<'info, State>,
     filler: &AccountLoader<'info, User>,
@@ -488,9 +529,13 @@ pub fn finish_trigger_crank<'info>(
         AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
     >,
     crank_conditions: &Option<AccountLoader<'info, ClobCrankConditionsV0>>,
-    market_index: u16,
-    order_id: u32,
+    cranked: &CrankedTrigger,
 ) -> Result<()> {
+    let CrankedTrigger {
+        market_index,
+        order_id,
+        keeper_reward,
+    } = *cranked;
     if let Some(conditions) = trigger_conditions {
         let mut conditions = load_mut!(conditions)?;
         validate!(
@@ -505,7 +550,13 @@ pub fn finish_trigger_crank<'info>(
     }
 
     let program_keeper_mode = program_keeper_mode(filler, state, crank_conditions.is_some())?;
-    if let (true, Some(reservoir)) = (program_keeper_mode, crank_conditions) {
+    let paid_lamports = program_keeper_mode
+        && earns_crank_lamports(
+            keeper_reward,
+            &authority.key(),
+            &crate::load!(user)?.authority,
+        );
+    if let (true, Some(reservoir)) = (paid_lamports, crank_conditions) {
         let reservoir_market_index = reservoir.load()?.market_index;
         validate!(
             reservoir_market_index == market_index,
@@ -801,7 +852,7 @@ pub(crate) fn book_l3_sides<'info, T>(
 #[cfg(test)]
 mod removal_tests {
     use {
-        super::{charge_removal_fee, unwind_removed_order},
+        super::{charge_removal_fee, earns_crank_lamports, unwind_removed_order},
         crate::{
             error::ErrorCode,
             math::constants::BASE_PRECISION_U64,
@@ -881,6 +932,40 @@ mod removal_tests {
     #[test]
     fn a_maker_removing_its_own_order_pays_nothing() {
         assert_eq!(charge(&state(0), None).unwrap(), 0);
+    }
+
+    /// A protocol `User` with a position in every slot books no reward, so the
+    /// crank collected nothing to pay lamports out of.
+    #[test]
+    fn a_filler_with_no_free_position_collects_nothing() {
+        let mut filler = User::default();
+        for (index, position) in filler.perp_positions.iter_mut().enumerate() {
+            position.market_index = index as u16 + 1;
+            position.quote_asset_amount = 1;
+        }
+
+        assert_eq!(charge(&state(0), Some(&mut filler)).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_crank_that_collected_its_fee_earns_lamports() {
+        let keeper = anchor_lang::prelude::Pubkey::new_unique();
+        let owner = anchor_lang::prelude::Pubkey::new_unique();
+        assert!(earns_crank_lamports(FEE, &keeper, &owner));
+    }
+
+    /// A waived fee, as under a full exchange halt, pays no lamports.
+    #[test]
+    fn a_crank_that_collected_nothing_earns_no_lamports() {
+        let keeper = anchor_lang::prelude::Pubkey::new_unique();
+        let owner = anchor_lang::prelude::Pubkey::new_unique();
+        assert!(!earns_crank_lamports(0, &keeper, &owner));
+    }
+
+    #[test]
+    fn an_owner_cranking_its_own_order_earns_no_lamports() {
+        let owner = anchor_lang::prelude::Pubkey::new_unique();
+        assert!(!earns_crank_lamports(FEE, &owner, &owner));
     }
 
     /// A report above what the maker reserved releases the whole reservation

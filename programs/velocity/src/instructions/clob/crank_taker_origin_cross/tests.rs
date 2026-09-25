@@ -694,3 +694,30 @@ mod pair_mark_twap {
         );
     }
 }
+
+mod keeper_payment_floor {
+    use super::*;
+
+    const PAYMENT_QUOTE: u64 = 1_000;
+
+    /// Two wallets can cross each other at one price. That crank earns no
+    /// reward, and the fee remainder alone must cover the keeper payment.
+    #[test]
+    fn a_crank_that_collected_less_than_the_payment_is_not_paid() {
+        assert!(!collected_covers_payment(0, Some(PAYMENT_QUOTE)));
+        assert!(!collected_covers_payment(
+            PAYMENT_QUOTE - 1,
+            Some(PAYMENT_QUOTE)
+        ));
+    }
+
+    #[test]
+    fn a_crank_that_collected_the_payment_is_paid() {
+        assert!(collected_covers_payment(PAYMENT_QUOTE, Some(PAYMENT_QUOTE)));
+    }
+
+    #[test]
+    fn a_payment_with_no_price_is_not_paid() {
+        assert!(!collected_covers_payment(u64::MAX, None));
+    }
+}

@@ -174,7 +174,10 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     // means there was no payable work. The order was past its `max_ts`, or a
     // risk-increasing trigger on a failing account was cancelled. Either way,
     // skip the fill and the reservoir payout.
-    let Some(mut fired) = controller::orders::trigger_and_route_order(
+    let Some(controller::orders::FiredTrigger {
+        order: mut fired,
+        filler_reward,
+    }) = controller::orders::trigger_and_route_order(
         controller::orders::OrderToFire {
             market_index,
             order_id,
@@ -215,8 +218,11 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         &ctx.accounts.user,
         &ctx.accounts.trigger_conditions,
         &ctx.accounts.crank_conditions,
-        market_index,
-        order_id,
+        &super::helpers::crank_common::CrankedTrigger {
+            market_index,
+            order_id,
+            keeper_reward: filler_reward,
+        },
     )?;
 
     Ok(())

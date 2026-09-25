@@ -15,8 +15,8 @@
 //! A legacy account migrates in place on its first mutable load. The size and
 //! the lamports stay the same, so the account then holds fewer entries: the
 //! capacity becomes the entry bytes over 40. The migration keeps every entry
-//! that is not empty, or fails when they do not fit. Dropping an entry could
-//! re-admit a message that is still placeable. A resize migrates as well and
+//! that is not expired, or fails when they do not fit. Dropping a live entry
+//! could re-admit a message that is still placeable. A resize migrates as well and
 //! restores the capacity the owner asks for.
 
 use {
@@ -32,7 +32,7 @@ use {
         account,
         prelude::{
             borsh::{BorshDeserialize, BorshSerialize},
-            Pubkey,
+            Clock, Pubkey, SolanaSysvar,
         },
         zero_copy, *,
     },
@@ -218,6 +218,12 @@ const LEGACY_DEADLINE_EXTENSION_SLOTS: u64 = SIGNED_MSG_FILL_WINDOW
     .as_ms()
     .div_ceil(SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64);
 
+/// Slots past a migrated `max_slot` after which the entry is expired at any
+/// slot duration. The shortest slot sets the bound, because a longer slot only
+/// makes the elapsed time greater.
+const LEGACY_EXPIRY_SLOTS: u64 = SIGNED_MSG_EVICTION_BUFFER.as_ms()
+    / SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64;
+
 impl LegacySignedMsgOrderId {
     fn migrated(self) -> SignedMsgOrderId {
         let max_slot = self
@@ -235,12 +241,26 @@ pub fn is_legacy_layout(fixed: &SignedMsgUserOrdersFixed, data_len: usize) -> bo
 }
 
 /// The entries of a legacy account that are not empty, newest first.
-fn legacy_live_entries(entries: &[u8], legacy_len: u32) -> Vec<SignedMsgOrderId> {
+///
+/// An entry past its migrated `max_slot` by more than [`LEGACY_EXPIRY_SLOTS`]
+/// at `current_slot` is dropped. The replay check would clear it on the next
+/// placement, and a legacy account clears expired entries only then, so a busy
+/// account can hold stale entries that do not fit the new stride. Without a
+/// current slot every entry that is not empty is kept.
+fn legacy_live_entries(
+    entries: &[u8],
+    legacy_len: u32,
+    current_slot: Option<u64>,
+) -> Vec<SignedMsgOrderId> {
     let mut live: Vec<SignedMsgOrderId> = entries[..legacy_len as usize * LEGACY_ENTRY_LEN]
         .chunks_exact(LEGACY_ENTRY_LEN)
         .map(bytemuck::pod_read_unaligned::<LegacySignedMsgOrderId>)
         .filter(|entry| entry.max_slot != 0)
         .map(LegacySignedMsgOrderId::migrated)
+        .filter(|entry| {
+            current_slot
+                .is_none_or(|slot| slot.saturating_sub(entry.max_slot) <= LEGACY_EXPIRY_SLOTS)
+        })
         .collect();
     live.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.max_slot));
 
@@ -257,14 +277,16 @@ fn write_entries(data: &mut [u8], entries: &[SignedMsgOrderId]) {
 
 /// Rewrite a legacy account at the current stride, with no change of size.
 ///
-/// Every entry that is not empty must fit, because a dropped entry can hold
+/// Every entry that is not expired must fit, because a dropped entry can hold
 /// the uuid of a message that is still placeable. When they do not fit, the
-/// load fails and placement fails with it until the owner resizes.
+/// load fails and placement fails with it until the entries expire or the
+/// owner resizes.
 fn migrate_legacy_in_place(
     fixed: &mut SignedMsgUserOrdersFixed,
     data: &mut [u8],
+    current_slot: Option<u64>,
 ) -> VelocityResult {
-    let live = legacy_live_entries(data, fixed.len);
+    let live = legacy_live_entries(data, fixed.len, current_slot);
     let capacity = data.len() / ENTRY_LEN;
     validate!(
         live.len() <= capacity,
@@ -592,7 +614,7 @@ impl<'a> SignedMsgUserOrdersLoader<'a> for AccountInfo<'a> {
     fn load_mut(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopyMut<'_>> {
         let mut record = load_mut_untrimmed(self)?;
         if is_legacy_layout(&record.fixed, HEADER_LEN + record.data.len()) {
-            migrate_legacy_in_place(&mut record.fixed, &mut record.data)?;
+            migrate_legacy_in_place(&mut record.fixed, &mut record.data, current_slot())?;
         }
 
         let entries_len = current_entries_len(&record.fixed, record.data.len())?;
@@ -601,6 +623,11 @@ impl<'a> SignedMsgUserOrdersLoader<'a> for AccountInfo<'a> {
             data: RefMut::map(record.data, |d| &mut d[..entries_len]),
         })
     }
+}
+
+/// The cluster slot, or `None` where the clock sysvar cannot be read.
+fn current_slot() -> Option<u64> {
+    Clock::get().ok().map(|clock| clock.slot)
 }
 
 /// Every entry of a record, read out so a resize can write the account again
@@ -617,7 +644,7 @@ impl SignedMsgUserOrdersSnapshot {
     pub fn read(account: &AccountInfo) -> VelocityResult<Self> {
         let record = load_untrimmed(account)?;
         let entries = if is_legacy_layout(&record.fixed, HEADER_LEN + record.data.len()) {
-            legacy_live_entries(&record.data, record.fixed.len)
+            legacy_live_entries(&record.data, record.fixed.len, current_slot())
         } else {
             let entries_len = current_entries_len(&record.fixed, record.data.len())?;
             record.data[..entries_len]

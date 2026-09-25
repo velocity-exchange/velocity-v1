@@ -795,9 +795,10 @@ mod legacy_layout {
             state::{
                 order_params::NO_ROUTE_DIGEST,
                 signed_msg_user::{
-                    is_legacy_layout, validate_signed_msg_user_orders_account, SignedMsgOrderId,
-                    SignedMsgUserOrders, SignedMsgUserOrdersFixed, SignedMsgUserOrdersLoader,
-                    SignedMsgUserOrdersSnapshot, LEGACY_DEADLINE_EXTENSION_SLOTS,
+                    is_legacy_layout, legacy_live_entries, validate_signed_msg_user_orders_account,
+                    SignedMsgOrderId, SignedMsgUserOrders, SignedMsgUserOrdersFixed,
+                    SignedMsgUserOrdersLoader, SignedMsgUserOrdersSnapshot,
+                    LEGACY_DEADLINE_EXTENSION_SLOTS, LEGACY_EXPIRY_SLOTS,
                     SIGNED_MSG_USER_ORDERS_VERSION,
                 },
             },
@@ -915,6 +916,26 @@ mod legacy_layout {
         drop(info);
 
         assert_eq!(bytes, before);
+    }
+
+    /// A legacy account clears an expired entry only on its next placement, so
+    /// a busy account can hold more stale entries than the new stride fits.
+    #[test]
+    fn a_migration_drops_entries_expired_at_every_slot_duration() {
+        let fresh = 10_000;
+        let at_bound = fresh - LEGACY_DEADLINE_EXTENSION_SLOTS - LEGACY_EXPIRY_SLOTS;
+        let mut live: Vec<LegacyEntry> = (1..=5).map(|i| entry(i, 100 + i as u64)).collect();
+        live.push(entry(6, at_bound));
+        live.push(entry(7, at_bound - 1));
+        live.push(entry(8, fresh));
+        let bytes = legacy_bytes(&Pubkey::new_unique(), 8, &live);
+
+        let kept = legacy_live_entries(&bytes[48..], 8, Some(fresh));
+        let uuids: Vec<[u8; 8]> = kept.iter().map(|entry| entry.uuid).collect();
+        assert_eq!(uuids, vec![[8; 8], [6; 8]]);
+
+        let without_clock = legacy_live_entries(&bytes[48..], 8, None);
+        assert_eq!(without_clock.len(), 8);
     }
 
     #[test]

@@ -1046,11 +1046,14 @@ the current ones.
   read at 40 bytes per entry, so an account created at 40 bytes before the version field reads
   as current. The program migrates a legacy account in place on its first write, with no
   realloc and no lamport change. The account then holds `(data_len - 48) / 40` entries, which is
-  5 for the default 8-entry account. The migration keeps every entry that is not empty, newest
-  first, and adds 150 slots to each `max_slot`. The extension covers the 30-second window in
-  which this program places a message signed before the upgrade. When the kept entries do not
-  fit, the migration fails with `SignedMsgUserOrdersAccountFull`, and so does the placement,
-  until the account is resized. A read-only load of a legacy account has no entries.
+  5 for the default 8-entry account. The migration adds 150 slots to each `max_slot`. The
+  extension covers the 30-second window in which this program places a message signed before
+  the upgrade. It then drops each entry more than 20 slots past its extended `max_slot`, which
+  is past the eviction buffer at every slot duration, and keeps the rest, newest first. A legacy
+  account clears an expired entry only on its next placement, so without this a busy account
+  could hold more stale entries than the new stride fits. When the kept entries do not fit,
+  the migration fails with `SignedMsgUserOrdersAccountFull`, and so does the placement, until
+  they expire or the account is resized. A read-only load of a legacy account has no entries.
   `resize_signed_msg_user_orders` and `delete_signed_msg_user_orders` accept a legacy
   account. A resize writes version 1 at `space(num_orders)`, so it restores the capacity the
   migration took. Anyone may grow the account, and only the authority may shrink it below its

@@ -4998,10 +4998,9 @@ export type Velocity = {
         {
           "name": "perpMarket",
           "docs": [
-            "Existence check, so a slab serves a market that exists. The market",
-            "stored the slab PDA at its own initialization, so `has_one` holds",
-            "before the slab account exists."
+            "Existence check, so a slab serves a market that exists."
           ],
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -5053,10 +5052,7 @@ export type Velocity = {
                 "path": "args.market_index"
               }
             ]
-          },
-          "relations": [
-            "perpMarket"
-          ]
+          }
         },
         {
           "name": "rent",

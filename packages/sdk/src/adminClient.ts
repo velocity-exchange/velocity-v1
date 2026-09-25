@@ -5600,7 +5600,9 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `initializeQuoterSlab` instruction, which creates a market's
 	 * `QuoterSlabV0`. There is one slab per market and every approved quoter config
-	 * lives in it. Permissionless, and `payer` pays the rent.
+	 * lives in it. A market created before `PerpMarket.quoterSlab` existed reads the
+	 * default key there, and this instruction stores the slab on it. Permissionless,
+	 * and `payer` pays the rent.
 	 */
 	public async getInitializeQuoterSlabIx(
 		marketIndex: number,

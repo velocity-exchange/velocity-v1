@@ -214,7 +214,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('init-slab <market>')
 			.description(
-				"Initialize a perp market's QuoterSlabV0. The slab holds every approved quoter config for the market, and velocity signs every external quoter CPI as the slab. There is one slab per market. Approval with set-approved copies a staging entry into a slot and grows the account to fit, so the slab starts with one slot for the book and stays at the size its slots need. Permissionless, and the signer pays the rent."
+				"Initialize a perp market's QuoterSlabV0. The slab holds every approved quoter config for the market, and velocity signs every external quoter CPI as the slab. There is one slab per market. Approval with set-approved copies a staging entry into a slot and grows the account to fit, so the slab starts with one slot for the book and stays at the size its slots need. On a market created before the slab field existed, it also stores the slab on the market. Permissionless, and the signer pays the rent."
 			)
 	).action(async (market: string, cmd: Command) => {
 		const marketIndex = Number.parseInt(market, 10);

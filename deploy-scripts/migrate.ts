@@ -11,7 +11,9 @@
  * Steps:
  *   1. resize: grow every velocity-owned zero-copy account whose struct gained fields.
  *      `extend_account` resolves the target size from the discriminator, so this step covers
- *      past and future growth the same way.
+ *      past and future growth the same way. Then create the singletons and the per-market
+ *      accounts the new code loads: the relay scratch, the crank treasury, and the quoter slab
+ *      of every perp market that predates it.
  *   2. liq coverage: create and sync relay liquidation conditions for every user with exposure,
  *      backfilling users that predate `initialize_user` creating them automatically.
  *   3. watches: register the relay `WatchV0` records that make the blocks from steps 1 and 2
@@ -50,6 +52,7 @@ import {
 	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
 	getPerpMarketPublicKeySync,
+	getQuoterSlabPublicKey,
 	getVelocityStateAccountPublicKey,
 	getSpotMarketPublicKeySync,
 	Wallet,
@@ -268,14 +271,6 @@ async function main() {
 		]);
 	}
 
-	// 2. liquidation coverage
-	const userDisc = discriminator('User');
-	const users = await connection.getProgramAccounts(velocity, {
-		filters: [{ memcmp: { offset: 0, bytes: bs58(userDisc) } }],
-	});
-
-	console.log(`\nliq coverage: ${users.length} user accounts`);
-	// The markets and oracles the sync needs, read once.
 	const perpMarkets = await connection.getProgramAccounts(velocity, {
 		filters: [
 			{ memcmp: { offset: 0, bytes: bs58(discriminator('PerpMarket')) } },
@@ -288,6 +283,23 @@ async function main() {
 		const decoded: any = program.coder.accounts.decode('perpMarket', account.data);
 		marketOracles.set(decoded.marketIndex, decoded.oracle);
 	}
+
+	console.log('');
+	await createMissingQuoterSlabs(
+		connection,
+		program,
+		payer,
+		[...marketOracles.keys()],
+		act
+	);
+
+	// 2. liquidation coverage
+	const userDisc = discriminator('User');
+	const users = await connection.getProgramAccounts(velocity, {
+		filters: [{ memcmp: { offset: 0, bytes: bs58(userDisc) } }],
+	});
+
+	console.log(`\nliq coverage: ${users.length} user accounts`);
 
 	let covered = 0;
 	for (const { pubkey: user, account } of users) {
@@ -460,6 +472,42 @@ async function clobBookFor(
 
 	if (!clobMarket || clobMarket.equals(PublicKey.default)) return undefined;
 	return new PublicKey(clobMarket);
+}
+
+/**
+ * Every order path loads the market's quoter slab. A market created before the
+ * slab existed has none, and its `quoterSlab` field reads as the default key.
+ * `initialize_quoter_slab` creates the slab and stores it on the market.
+ */
+async function createMissingQuoterSlabs(
+	connection: Connection,
+	program: Program,
+	payer: Keypair,
+	marketIndexes: number[],
+	act: (label: string, ixs: TransactionInstruction[]) => Promise<void>
+) {
+	const velocity = program.programId;
+	for (const marketIndex of marketIndexes) {
+		const quoterSlab = getQuoterSlabPublicKey(velocity, marketIndex);
+		if (await connection.getAccountInfo(quoterSlab)) {
+			console.log(`quoter slab market ${marketIndex}: already created`);
+			continue;
+		}
+
+		console.log(`quoter slab market ${marketIndex}: creating`);
+		await act(`create quoter slab for market ${marketIndex}`, [
+			await program.methods
+				.initializeQuoterSlab({ marketIndex })
+				.accounts({
+					payer: payer.publicKey,
+					perpMarket: getPerpMarketPublicKeySync(velocity, marketIndex),
+					quoterSlab,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				})
+				.instruction(),
+		]);
+	}
 }
 
 /** Register a relay watch over a conditions block, unless the registry

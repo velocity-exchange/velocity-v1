@@ -5813,10 +5813,10 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Builds the `UserStats` and sub-account 0 instructions for the protocol `User`, whose
-	 * authority is the velocity signer PDA. Neither instruction needs an authority
-	 * signature, so any payer can create it. It holds the fees the protocol keeps.
+	 * authority is the velocity signer PDA. That authority cannot sign, so the program
+	 * requires the payer to be the cold or warm admin. It holds the fees the protocol keeps.
 	 * @param name - Sub-account name. Defaults to the SDK's default user name.
-	 * @param payer - Pays the rent for both accounts. Defaults to the wallet.
+	 * @param payer - The admin that pays the rent for both accounts. Defaults to the wallet.
 	 */
 	public async getInitializeProtocolUserIxs(
 		name?: string,

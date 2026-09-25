@@ -1408,8 +1408,8 @@ export class VelocityClient {
 		 */
 		externalWallet?: PublicKey;
 		/**
-		 * Build for an authority other than this client's. `initialize_user_stats` needs no
-		 * authority signature, so a `UserStats` can be made for any key, such as the signer PDA.
+		 * Build for an authority other than this client's. For the signer PDA, the payer
+		 * must be an admin.
 		 */
 		authority?: PublicKey;
 	}): Promise<TransactionInstruction> {

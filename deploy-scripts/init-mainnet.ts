@@ -517,10 +517,9 @@ async function main() {
 	writeReceipt();
 
 	// Phase A.3: the protocol User
-	// A permissionless crank names this account as the filler or the taker, and
-	// `initialize_user` does not require the authority to sign. Any key can
-	// therefore create the account first and choose its name and its referrer.
-	// Create it with the rest of the protocol, before the program serves anyone.
+	// A permissionless crank names this account as the filler or the taker. Its
+	// authority is the velocity signer, which cannot sign, so the program
+	// accepts only an admin payer. The deployer is the cold admin here.
 	const velocitySigner = getVelocitySignerPublicKey(programId);
 	const protocolUser = getUserAccountPublicKeySync(
 		programId,

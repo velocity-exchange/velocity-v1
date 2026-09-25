@@ -77,8 +77,8 @@ export type LiquidatorConfig = BaseBotConfig & {
 	maxSlippagePct?: number;
 	maxSlippageBps?: number;
 
-	/// Wall-clock ms for a derisk order auction. The bot converts it to slots at
-	/// the current slot duration.
+	/// @deprecated Ignored. A derisk order names its worst price and has no
+	/// auction. The key still parses so that an old config loads.
 	deriskAuctionDurationMs?: number;
 	twapDurationSec?: number;
 	minDepositToLiq?: Map<number, number>;

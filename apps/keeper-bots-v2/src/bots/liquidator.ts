@@ -311,9 +311,6 @@ export class LiquidatorBot implements Bot {
 			this.liquidatorConfig.maxSlippageBps =
 				this.liquidatorConfig.maxSlippagePct!;
 		}
-		if (this.liquidatorConfig.deriskAuctionDurationMs === undefined) {
-			this.liquidatorConfig.deriskAuctionDurationMs = 40_000;
-		}
 
 		if (this.liquidatorConfig.spotDustValueThreshold !== undefined) {
 			this.liquidatorConfig.spotDustValueThresholdBN = new BN(

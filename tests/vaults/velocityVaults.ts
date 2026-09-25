@@ -512,7 +512,6 @@ describe('TestProtocolVaults', () => {
 	let managerUser: User;
 
 	let fillerClient: VaultClient;
-	let fillerUser: User;
 
 	let vd: Keypair;
 	let vdClient: VaultClient;
@@ -608,7 +607,6 @@ describe('TestProtocolVaults', () => {
 			velocityClientConfig,
 		});
 		fillerClient = bootstrapFiller.vaultClient;
-		fillerUser = bootstrapFiller.user;
 
 		// the VaultDepositor for the protocol vault
 		const bootstrapVD = await bootstrapSignerClientAndUser({

@@ -229,9 +229,9 @@ function testOrder(anchor: Order, custom: Order) {
 	assert(anchor.postOnly === custom.postOnly);
 	assert(anchor.immediateOrCancel === custom.immediateOrCancel);
 	assert(anchor.oraclePriceOffset.eq(custom.oraclePriceOffset));
-	assert(anchor.auctionDuration === custom.auctionDuration);
-	assert(anchor.auctionStartPrice.eq(custom.auctionStartPrice));
-	assert(anchor.auctionEndPrice.eq(custom.auctionEndPrice));
+	assert(anchor.unusedAuctionDuration === custom.unusedAuctionDuration);
+	assert(anchor.clobNodeIndex.eq(custom.clobNodeIndex));
+	assert(anchor.clobOrderId.eq(custom.clobOrderId));
 	assert(anchor.maxTs.eq(custom.maxTs));
 }
 

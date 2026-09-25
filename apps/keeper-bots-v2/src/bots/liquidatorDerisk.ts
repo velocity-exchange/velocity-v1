@@ -16,7 +16,6 @@ import {
 	JupiterClient,
 	MarketType,
 	getVariant,
-	OraclePriceData,
 	UserAccount,
 	OptionalOrderParams,
 	TEN,
@@ -32,8 +31,6 @@ import {
 	calculateMarketAvailablePNL,
 	MakerInfo,
 	RECOMMENDED_JUPITER_API,
-	msToSlotsCeilNum,
-	SLOT_DURATION_BASELINE,
 	TopMakersClient,
 } from '@velocity-exchange/sdk';
 import {
@@ -134,19 +131,6 @@ export class LiquidatorDerisk {
 		}
 	}
 
-	private calculateDeriskAuctionStartPrice(
-		oracle: OraclePriceData,
-		direction: PositionDirection
-	): BN {
-		let auctionStartPrice: BN;
-		if (isVariant(direction, 'long')) {
-			auctionStartPrice = oracle.price.sub(oracle.confidence);
-		} else {
-			auctionStartPrice = oracle.price.add(oracle.confidence);
-		}
-		return auctionStartPrice;
-	}
-
 	private async buildVersionedTransactionWithSimulatedCus(
 		ixs: Array<TransactionInstruction>,
 		luts: Array<AddressLookupTableAccount>,
@@ -188,12 +172,6 @@ export class LiquidatorDerisk {
 			return false;
 		}
 
-		const oracle = this.velocityClient.getOracleDataForSpotMarket(marketIndex);
-		const auctionStartPrice = this.calculateDeriskAuctionStartPrice(
-			oracle,
-			orderDirection
-		);
-
 		const cancelOrdersIx = await this.velocityClient.getCancelOrdersIx(
 			MarketType.SPOT,
 			marketIndex,
@@ -207,18 +185,6 @@ export class LiquidatorDerisk {
 				baseAssetAmount: standardizedTokenAmount,
 				reduceOnly: true,
 				price: limitPrice,
-				// Wall-clock ms in the onchain 400ms unit encoding. The
-				// program converts elapsed slots to wall clock at fill
-				// time.
-				auctionDuration: Math.min(
-					255,
-					msToSlotsCeilNum(
-						this.config.deriskAuctionDurationMs!,
-						SLOT_DURATION_BASELINE
-					)
-				),
-				auctionStartPrice,
-				auctionEndPrice: limitPrice,
 			}),
 			subAccountId
 		);
@@ -504,9 +470,8 @@ export class LiquidatorDerisk {
 		);
 		const direction = findDirectionToClose(position);
 		let entryPrice;
-		let bestPrice;
 		try {
-			({ entryPrice, bestPrice } = calculateEstimatedPerpEntryPrice(
+			({ entryPrice } = calculateEstimatedPerpEntryPrice(
 				'base',
 				baseAssetAmount.abs(),
 				direction,
@@ -532,26 +497,14 @@ export class LiquidatorDerisk {
 
 		// A market order, not oracle-offset: `place_and_take_perp_order_v1` refuses
 		// an order with no restable price during a speed bump, and an oracle-offset
-		// order has none. A market order rests at its auction end price, the worst
-		// fill this derisk already agreed to.
+		// order has none. The market order names its worst price, which is the
+		// worst fill this derisk already agreed to.
 		return getOrderParams({
 			orderType: OrderType.MARKET,
 			direction,
 			baseAssetAmount,
 			reduceOnly: true,
 			marketIndex: position.marketIndex,
-			// Wall-clock ms in the onchain 400ms unit encoding. The program
-			// converts elapsed slots to wall clock at fill time.
-			auctionDuration: Math.min(
-				255,
-				msToSlotsCeilNum(
-					this.config.deriskAuctionDurationMs!,
-					SLOT_DURATION_BASELINE
-				)
-			),
-
-			auctionStartPrice: bestPrice,
-			auctionEndPrice: limitPrice,
 			price: limitPrice,
 		});
 	}

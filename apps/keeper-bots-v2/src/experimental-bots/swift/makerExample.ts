@@ -31,7 +31,6 @@ export class SwiftMaker {
 	private priorityFeeSubscriber: PriorityFeeSubscriberMap;
 	private readonly heartbeatIntervalMs = 80_000;
 	private isMainnet: boolean;
-	private pctIntoAuction: number;
 	constructor(
 		private velocityClient: VelocityClient,
 		private userMap: UserMap,
@@ -42,11 +41,6 @@ export class SwiftMaker {
 		this.signedMsgUrl = this.isMainnet
 			? 'wss://swift.velocity.exchange/ws'
 			: 'wss://swift.master.velocity.exchange/ws';
-
-		// Configure what percent into the auction to attempt the fill
-		const pctEnv = process.env.SWIFT_PCT_INTO_AUCTION;
-		const pct = pctEnv ? Number(pctEnv) : 0.55;
-		this.pctIntoAuction = Math.max(0, Math.min(1, isNaN(pct) ? 0.55 : pct));
 
 		const perpMarketsToWatchForFees = [0, 1, 2, 3, 4, 5].map((x) => {
 			return { marketType: 'perp', marketIndex: x };
@@ -202,76 +196,53 @@ export class SwiftMaker {
 						)
 					);
 
-					const timeUntilAuction =
-						(signedMsgOrderParams.auctionDuration ?? 0) *
-						this.pctIntoAuction *
-						400;
+					// The taker's named worst price is the one price it is known to accept.
+					const ixs = [
+						await this.velocityClient.getPlaceAndMakePerpOrderIx(
+							getLimitOrderParams({
+								marketType: MarketType.PERP,
+								marketIndex: signedMsgOrderParams.marketIndex,
+								direction: isOrderLong
+									? PositionDirection.SHORT
+									: PositionDirection.LONG,
+								baseAssetAmount: signedMsgOrderParams.baseAssetAmount.divn(2),
+								price: signedMsgOrderParams.price,
+								postOnly: PostOnlyParams.MUST_POST_ONLY,
+							})
+						),
+					];
 
-					if (timeUntilAuction > 0) {
-						setTimeout(async () => {
-							// Compute the target price at pct into the auction.
-							let price = this.velocityClient.getOracleDataForPerpMarket(
-								signedMsgOrderParams.marketIndex
-							).price;
-							if (signedMsgOrderParams.auctionDuration !== null) {
-								const offset = signedMsgOrderParams
-									.auctionEndPrice!.sub(signedMsgOrderParams.auctionStartPrice!)
-									.muln(this.pctIntoAuction * 10000)
-									.divn(10000);
-								price = signedMsgOrderParams.auctionStartPrice!.add(offset);
-							}
-
-							const ixs = [
-								await this.velocityClient.getPlaceAndMakePerpOrderIx(
-									getLimitOrderParams({
-										marketType: MarketType.PERP,
-										marketIndex: signedMsgOrderParams.marketIndex,
-										direction: isOrderLong
-											? PositionDirection.SHORT
-											: PositionDirection.LONG,
-										baseAssetAmount:
-											signedMsgOrderParams.baseAssetAmount.divn(2),
-										price,
-										postOnly: PostOnlyParams.MUST_POST_ONLY,
-									})
-								),
-							];
-
-							if (this.dryRun) {
-								console.log(Date.now() - order['ts']);
-								return;
-							}
-
-							const resp = await simulateAndGetTxWithCUs({
-								connection: this.velocityClient.connection,
-								payerPublicKey: this.velocityClient.wallet.payer!.publicKey,
-								ixs: [...computeBudgetIxs, ...ixs],
-								cuLimitMultiplier: 1.5,
-								lookupTableAccounts:
-									await this.velocityClient.fetchAllLookupTableAccounts(),
-								doSimulation: true,
-							});
-							if (resp.simError) {
-								console.log(resp.simTxLogs);
-								return;
-							}
-
-							this.velocityClient.txSender
-								.sendVersionedTransaction(resp.tx)
-								.then((response) => {
-									console.log(
-										`Sent tx slot: ${
-											response.slot
-										}, tx: https://solscan.io/tx/${response.txSig}?cluster=${
-											this.isMainnet ? 'mainnet-beta' : 'devnet'
-										}`
-									);
-								})
-								.catch((error) => {
-									console.log(error);
-								});
-						}, timeUntilAuction);
+					if (this.dryRun) {
+						console.log(Date.now() - order['ts']);
+						return;
 					}
+
+					const resp = await simulateAndGetTxWithCUs({
+						connection: this.velocityClient.connection,
+						payerPublicKey: this.velocityClient.wallet.payer!.publicKey,
+						ixs: [...computeBudgetIxs, ...ixs],
+						cuLimitMultiplier: 1.5,
+						lookupTableAccounts:
+							await this.velocityClient.fetchAllLookupTableAccounts(),
+						doSimulation: true,
+					});
+					if (resp.simError) {
+						console.log(resp.simTxLogs);
+						return;
+					}
+
+					this.velocityClient.txSender
+						.sendVersionedTransaction(resp.tx)
+						.then((response) => {
+							console.log(
+								`Sent tx slot: ${response.slot}, tx: https://solscan.io/tx/${
+									response.txSig
+								}?cluster=${this.isMainnet ? 'mainnet-beta' : 'devnet'}`
+							);
+						})
+						.catch((error) => {
+							console.log(error);
+						});
 				}
 			});
 

@@ -423,14 +423,6 @@ function prettyPrintOrderParams(orderParams: OrderParams) {
 	)}| baseAssetAmount:${convertToNumber(
 		orderParams.baseAssetAmount,
 		BASE_PRECISION
-	)}| auctionDuration:${
-		orderParams.auctionDuration
-	}| auctionStartPrice:${convertToNumber(
-		orderParams.auctionStartPrice!,
-		PRICE_PRECISION
-	)}| auctionEndPrice:${convertToNumber(
-		orderParams.auctionEndPrice!,
-		PRICE_PRECISION
-	)}| `;
+	)}| price:${convertToNumber(orderParams.price, PRICE_PRECISION)}| `;
 	return orderParamsStr;
 }

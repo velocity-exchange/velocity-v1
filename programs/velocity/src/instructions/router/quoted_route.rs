@@ -54,10 +54,12 @@ fn is_quoter_slab(info: &AccountInfo) -> bool {
 
 /// Cut a custom quoter's ladder to the depth this fill will settle against.
 ///
-/// Two bounds apply, and both are the quoter's own. The declared oracle band
-/// drops the levels that price outside it. The base its account can carry
-/// truncates what is left. The band always cuts the taker-favourable end of
-/// the ladder, because that end prices against the maker.
+/// Two bounds apply, and both are the quoter's own. The ladder ends at its
+/// first level outside the declared oracle band. The base its account can
+/// carry truncates what is left. The quoter's execute fills its own ladder
+/// best level first, so only a prefix is a ladder it can honour. The band
+/// cuts the taker-favourable end, so a best level outside it drops the whole
+/// run, as a book's does.
 ///
 /// A book is never trimmed here. Its makers rest depth that was margin
 /// reserved at placement, and the caps the call carries size them one per
@@ -92,7 +94,7 @@ fn trim_to_quoter_room(
             band_oracle_price,
             oracle_band,
         )? {
-            continue;
+            break;
         }
 
         let size = level.size.min(remaining);
@@ -917,10 +919,10 @@ mod trim_tests {
     }
 
     #[test]
-    fn the_band_cuts_the_end_that_prices_against_the_maker() {
+    fn the_ladder_ends_at_its_first_level_outside_the_band() {
         // A maker that sells at 100 with a 5% band may not sell below 95. The
-        // cheap ask is the taker-favourable one, and the trim drops it. The
-        // levels behind it keep their sizes and their order.
+        // quoter fills its own ladder in order, so the levels behind the one
+        // at 90 are out of reach too.
         let band = crate::math::constants::MARGIN_PRECISION / 20;
         assert_eq!(
             trim(
@@ -929,24 +931,22 @@ mod trim_tests {
                 band,
                 u64::MAX
             ),
-            [(99, 1), (98, 1)]
+            [(99, 1)]
         );
     }
 
     #[test]
-    fn a_banded_out_level_does_not_spend_the_room() {
-        // The band applies first, so a level the fill would refuse anyway
-        // costs the quoter no allocation.
+    fn a_best_level_outside_the_band_drops_the_run() {
+        // The quoter would fill the level at 90 first, which settle refuses.
+        // The levels behind it cannot be reached without it.
         let band = crate::math::constants::MARGIN_PRECISION / 20;
-        assert_eq!(
-            trim(
-                &[(90, 5), (99, 2)],
-                PositionDirection::Short,
-                band,
-                2 * BASE
-            ),
-            [(99, 2)]
-        );
+        assert!(trim(
+            &[(90, 5), (99, 2)],
+            PositionDirection::Short,
+            band,
+            2 * BASE
+        )
+        .is_empty());
     }
 }
 

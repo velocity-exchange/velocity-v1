@@ -487,6 +487,46 @@ export function bookRestsOutsideOracleBand(
 }
 
 /**
+ * The part of a custom quoter's ladder a router fill can settle. Mirrors
+ * `trim_to_quoter_room`. The ladder ends at its first level outside `band`
+ * of `oraclePrice`, because the quoter fills its own ladder best level first.
+ * `room` then cuts the base that is left, so the last kept level may shrink.
+ * `oraclePrice` is the MM oracle price, as for `makerPriceBreachesOracleBand`.
+ */
+export function customLadderInRoom(
+	levels: RouterPriceLevel[],
+	makerDirection: PositionDirection,
+	oraclePrice: BN,
+	band: number,
+	room: BN
+): RouterPriceLevel[] {
+	const kept: RouterPriceLevel[] = [];
+	let remaining = room;
+	for (const level of levels) {
+		if (remaining.isZero()) {
+			break;
+		}
+
+		if (
+			makerPriceBreachesOracleBand(
+				level.price,
+				makerDirection,
+				oraclePrice,
+				band
+			)
+		) {
+			break;
+		}
+
+		const size = BN.min(level.size, remaining);
+		remaining = remaining.sub(size);
+		kept.push({ ...level, size });
+	}
+
+	return kept;
+}
+
+/**
  * Whether a maker's reported filled or removed `base` is within what
  * velocity reserved for it. Mirrors `PerpPosition::reserved_open_base`.
  * `openBids`/`openAsks` are signed by the owner, so a quoter cannot inflate them.

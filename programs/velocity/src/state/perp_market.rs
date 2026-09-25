@@ -448,8 +448,9 @@ pub struct PerpMarket {
     /// it. A dead book must still be passed, but quoting skips it. `Pubkey::default()`
     /// means the market has no CLOB requirement.
     pub clob_market: Pubkey,
-    /// The market's quoter slab PDA, written at market initialization. Derivable from the
-    /// market index, but stored so an accounts struct binds them with
+    /// The market's quoter slab PDA. Market initialization writes it, and
+    /// `initialize_quoter_slab` writes it on a market that predates the field. Derivable
+    /// from the market index, but stored so an accounts struct binds them with
     /// `has_one = quoter_slab`. That is a memcmp instead of a PDA derivation, and the
     /// compiler keeps the check on every context.
     pub quoter_slab: Pubkey,

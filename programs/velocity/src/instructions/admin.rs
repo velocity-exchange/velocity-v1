@@ -880,8 +880,8 @@ pub fn handle_initialize_perp_market(
         // `update_perp_market_clob_quoter` sets this once the CLOB registry
         // entry exists. The registry entry needs the market first.
         clob_market: Pubkey::default(),
-        // The slab PDA is derivable here, so it is stored at creation. Every
-        // accounts struct that names both binds them with `has_one`.
+        // The slab PDA is derivable here, so it is stored at creation. A market
+        // that predates the field gets it from `initialize_quoter_slab`.
         quoter_slab: crate::state::pdas::quoter_slab(market_index),
         _padding_future: [0; 192],
     };

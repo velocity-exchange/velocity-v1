@@ -161,7 +161,7 @@ targets the legacy onchain IDL account rather than the program-metadata account 
 resolve. Use the program-metadata CLI explicitly.
 
 > protocol-revenue-router: steps 1 through 5 apply unchanged, substituting `protocol_revenue_router`
-> for `velocity`, setting `PROGRAM_ID=39PAxdVaWHYH62bR5AWTkMVd52Y4QeJLjQ8TChupghgT`, and building with
+> for `velocity`, setting `PROGRAM_ID=rout8Eh6aU911sDDyJaDWGY61mSfVhSNXqk1Bw9xeNn`, and building with
 > `bash deploy-scripts/build-sbf.sh mainnet protocol-revenue-router` (default features keep the
 > mainnet init gate on). It has a program keypair like velocity. It has no
 > devnet workflow: devnet deploys use the same commands against the devnet cluster.

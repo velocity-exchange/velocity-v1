@@ -381,7 +381,7 @@ mod regr_271_pause {
     /// Layout (see `validation/sig_verification.rs`):
     ///   signature[64] | pubkey[32] | message_size: u16 LE | message[...]
     /// where `message` is the ASCII-hex encoding of
-    ///   manual_discriminator[8] || borsh(SignedMsgOrderParamsMessage)
+    ///   payload_discriminator[8] || borsh(SignedMsgOrderParamsMessage)
     ///
     /// Returns (envelope, message_size).
     fn build_envelope(
@@ -415,8 +415,8 @@ mod regr_271_pause {
             route: None,
         };
 
-        // manual 8-byte discriminator (not validated by the program) + borsh body.
-        let mut borsh_body = vec![0u8; 8];
+        // The payload discriminator, then the borsh body.
+        let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
         msg_struct.serialize(&mut borsh_body).unwrap();
 
         // The signed message is the ASCII-hex of (disc || borsh).

@@ -263,7 +263,7 @@ fn ed25519_program_id() -> Pubkey {
 //     msg[  0.. 64]  ed25519 signature over msg[98..]
 //     msg[ 64.. 96]  signer pubkey (taker authority, or delegate)
 //     msg[ 96.. 98]  u16 LE length of the payload that follows
-//     msg[ 98..  N]  ASCII-hex of (8-byte manual discriminator || borsh message)
+//     msg[ 98..  N]  ASCII-hex of (8-byte payload discriminator || borsh message)
 //
 // The program hex-decodes the payload before borsh-deserializing it, so the
 // signed bytes are the hex characters, not the borsh bytes.
@@ -285,12 +285,12 @@ fn hex_encode(bytes: &[u8]) -> Vec<u8> {
 
 /// Assemble the self-framing signed message described above.
 ///
-/// `borsh_message` is the already-serialized `SignedMsgOrderParamsMessage` (or
-/// its delegate variant); the 8-byte manual discriminator is prepended here
-/// because `deserialize_into_verified_message` skips exactly 8 bytes before
-/// handing the rest to borsh — the value itself is never inspected.
+/// `borsh_message` is the already-serialized `SignedMsgOrderParamsMessage`.
+/// The program checks the payload discriminator of that type, so it is
+/// prepended here.
 fn build_signed_msg_envelope(signer: &Keypair, borsh_message: &[u8]) -> Vec<u8> {
-    let mut payload = vec![0u8; 8]; // manual discriminator (unchecked by the program)
+    let mut payload =
+        velocity::state::order_params::SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
     payload.extend_from_slice(borsh_message);
     let hex_payload = hex_encode(&payload);
 

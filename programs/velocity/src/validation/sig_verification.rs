@@ -52,21 +52,20 @@ pub fn deserialize_into_verified_message(
     is_delegate_signer: bool,
 ) -> Result<VerifiedMessage> {
     if is_delegate_signer {
-        if payload.len() < 8 {
-            return Err(SignatureVerificationError::InvalidMessageDataSize.into());
-        }
+        validate_payload_discriminator(
+            &payload,
+            &SignedMsgOrderParamsDelegateMessage::PAYLOAD_DISCRIMINATOR,
+        )?;
         let min_len: usize = std::mem::size_of::<SignedMsgOrderParamsDelegateMessage>();
         let mut owned = payload;
         if owned.len() < min_len {
             owned.resize(min_len, 0);
         }
-        let deserialized = SignedMsgOrderParamsDelegateMessage::deserialize(
-            &mut &owned[8..], // 8 byte manual discriminator
-        )
-        .map_err(|_| {
-            msg!("Invalid message encoding for is_delegate_signer = true");
-            SignatureVerificationError::InvalidMessageDataSize
-        })?;
+        let deserialized = SignedMsgOrderParamsDelegateMessage::deserialize(&mut &owned[8..])
+            .map_err(|_| {
+                msg!("Invalid message encoding for is_delegate_signer = true");
+                SignatureVerificationError::InvalidMessageDataSize
+            })?;
 
         validate_signed_msg_network(deserialized.network)?;
         Ok(VerifiedMessage {
@@ -85,21 +84,20 @@ pub fn deserialize_into_verified_message(
             signature: *signature,
         })
     } else {
-        if payload.len() < 8 {
-            return Err(SignatureVerificationError::InvalidMessageDataSize.into());
-        }
+        validate_payload_discriminator(
+            &payload,
+            &SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR,
+        )?;
         let min_len: usize = std::mem::size_of::<SignedMsgOrderParamsMessage>();
         let mut owned = payload;
         if owned.len() < min_len {
             owned.resize(min_len, 0);
         }
-        let deserialized = SignedMsgOrderParamsMessage::deserialize(
-            &mut &owned[8..], // 8 byte manual discriminator
-        )
-        .map_err(|_| {
-            msg!("Invalid delegate message encoding for with is_delegate_signer = false");
-            SignatureVerificationError::InvalidMessageDataSize
-        })?;
+        let deserialized =
+            SignedMsgOrderParamsMessage::deserialize(&mut &owned[8..]).map_err(|_| {
+                msg!("Invalid delegate message encoding for with is_delegate_signer = false");
+                SignatureVerificationError::InvalidMessageDataSize
+            })?;
 
         validate_signed_msg_network(deserialized.network)?;
         Ok(VerifiedMessage {
@@ -118,6 +116,21 @@ pub fn deserialize_into_verified_message(
             signature: *signature,
         })
     }
+}
+
+/// Refuse a payload that does not start with the discriminator of the message
+/// type `is_delegate_signer` selects. A payload of another type, or one signed
+/// for another protocol, then fails here and not in the decode.
+fn validate_payload_discriminator(
+    payload: &[u8],
+    expected: &[u8; 8],
+) -> std::result::Result<(), anchor_lang::error::Error> {
+    if payload.get(..8) != Some(expected.as_slice()) {
+        msg!("signed message payload has the wrong discriminator");
+        return Err(SignatureVerificationError::InvalidMessageDataSize.into());
+    }
+
+    Ok(())
 }
 
 /// Refuse an over-long route rather than truncating it. A taker's signed route

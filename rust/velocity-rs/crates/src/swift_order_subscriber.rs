@@ -31,14 +31,14 @@ pub const fn expected_network_tag() -> u8 {
     program::state::order_params::expected_signed_msg_network()
 }
 
-/// Swift message discriminator (Anchor)
-///
-/// sha256("global:SignedMsgOrderParamsMessage")[..8]
-pub const SWIFT_MSG_PREFIX: [u8; 8] = [0xc8, 0xd5, 0xa6, 0x5e, 0x22, 0x34, 0xf5, 0x5d];
-/// Swift delegate message discriminator (Anchor)
-///
-/// sha256("global:/// sha256("global:SignedMsgOrderParamsDelegatedMessage")[..8]
-pub const SWIFT_DELEGATE_MSG_PREFIX: [u8; 8] = [0x42, 0x65, 0x66, 0x38, 0xc7, 0x25, 0x9e, 0x23];
+/// Swift message discriminator, `sha256("global:SignedMsgOrderParamsMessage")[..8]`.
+/// The program refuses a payload that does not start with it.
+pub const SWIFT_MSG_PREFIX: [u8; 8] =
+    program::state::order_params::SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR;
+/// Swift delegate message discriminator,
+/// `sha256("global:SignedMsgOrderParamsDelegateMessage")[..8]`.
+pub const SWIFT_DELEGATE_MSG_PREFIX: [u8; 8] =
+    program::state::order_params::SignedMsgOrderParamsDelegateMessage::PAYLOAD_DISCRIMINATOR;
 
 pub const SWIFT_DEVNET_WS_URL: &str = "wss://swift.master.velocity.exchange";
 pub const SWIFT_MAINNET_WS_URL: &str = "wss://swift.velocity.exchange";

@@ -192,6 +192,18 @@ pub struct SignedMsgOrderParamsMessage {
     pub route: Option<Vec<Pubkey>>,
 }
 
+impl SignedMsgOrderParamsMessage {
+    /// The first 8 bytes of the signed payload:
+    /// `sha256("global:SignedMsgOrderParamsMessage")[..8]`.
+    pub const PAYLOAD_DISCRIMINATOR: [u8; 8] = [0xc8, 0xd5, 0xa6, 0x5e, 0x22, 0x34, 0xf5, 0x5d];
+}
+
+impl SignedMsgOrderParamsDelegateMessage {
+    /// The first 8 bytes of the signed payload:
+    /// `sha256("global:SignedMsgOrderParamsDelegateMessage")[..8]`.
+    pub const PAYLOAD_DISCRIMINATOR: [u8; 8] = [0x42, 0x65, 0x66, 0x38, 0xc7, 0x25, 0x9e, 0x23];
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, Eq, PartialEq, Debug)]
 pub struct SignedMsgOrderParamsDelegateMessage {
     pub signed_msg_order_params: OrderParams,

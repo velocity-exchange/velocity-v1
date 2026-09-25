@@ -28,9 +28,6 @@ mod sig_verification {
         message
     }
 
-    /// The eight bytes the verifier skips before the message body.
-    const MESSAGE_DISCRIMINATOR: [u8; 8] = [200, 213, 166, 94, 34, 52, 245, 93];
-
     /// The order every fixture carries, unless the test changes it.
     fn fixture_order_params() -> OrderParams {
         OrderParams {
@@ -65,7 +62,7 @@ mod sig_verification {
         };
         build(&mut message);
 
-        let mut payload = MESSAGE_DISCRIMINATOR.to_vec();
+        let mut payload = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
         message.serialize(&mut payload).unwrap();
         payload
     }
@@ -85,7 +82,7 @@ mod sig_verification {
         };
         build(&mut message);
 
-        let mut payload = MESSAGE_DISCRIMINATOR.to_vec();
+        let mut payload = SignedMsgOrderParamsDelegateMessage::PAYLOAD_DISCRIMINATOR.to_vec();
         message.serialize(&mut payload).unwrap();
         payload
     }
@@ -639,7 +636,7 @@ mod sig_verification {
                 network,
                 route,
             };
-            let mut payload = vec![0u8; 8]; // manual discriminator
+            let mut payload = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
             message.serialize(&mut payload).unwrap();
             payload
         };
@@ -675,5 +672,45 @@ mod sig_verification {
                 .is_err(),
             "a message signed for the other cluster must be refused"
         );
+    }
+
+    #[test]
+    fn the_payload_discriminators_are_the_anchor_type_hashes() {
+        let type_hash = |name: &str| -> [u8; 8] {
+            let hash = solana_program::hash::hash(format!("global:{name}").as_bytes());
+            let mut discriminator = [0u8; 8];
+            discriminator.copy_from_slice(&hash.to_bytes()[..8]);
+            discriminator
+        };
+
+        assert_eq!(
+            SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR,
+            type_hash("SignedMsgOrderParamsMessage")
+        );
+        assert_eq!(
+            SignedMsgOrderParamsDelegateMessage::PAYLOAD_DISCRIMINATOR,
+            type_hash("SignedMsgOrderParamsDelegateMessage")
+        );
+    }
+
+    /// A payload must start with the discriminator of the type the signer
+    /// flag selects. The other type's discriminator is refused as well.
+    #[test]
+    fn a_payload_with_the_wrong_discriminator_is_refused() {
+        let signature = [1u8; 64];
+        let mut payload = non_delegate_payload(|_| {});
+        assert!(deserialize_into_verified_message(payload.clone(), &signature, false).is_ok());
+
+        payload[..8].copy_from_slice(&SignedMsgOrderParamsDelegateMessage::PAYLOAD_DISCRIMINATOR);
+        assert!(deserialize_into_verified_message(payload.clone(), &signature, false).is_err());
+
+        payload[..8].fill(0);
+        assert!(deserialize_into_verified_message(payload, &signature, false).is_err());
+
+        let mut delegate = delegate_payload(|_| {});
+        assert!(deserialize_into_verified_message(delegate.clone(), &signature, true).is_ok());
+
+        delegate[..8].copy_from_slice(&SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR);
+        assert!(deserialize_into_verified_message(delegate, &signature, true).is_err());
     }
 }

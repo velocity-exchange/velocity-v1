@@ -74,13 +74,21 @@ impl OracleWatchV0 {
     /// [`Self::raw_price`], whose units are the oracle's own and match the protocol's only when the
     /// feed publishes six decimals.
     pub fn protocol_price(&self) -> Option<i128> {
+        i128::from(self.raw_price)
+            .checked_mul((self.multiple as i128).checked_mul(PRICE_PRECISION_I128)?)?
+            .checked_div(self.oracle_precision()?)
+    }
+
+    /// Raw units per whole unit, or `None` for a feed `get_pyth_price` refuses.
+    /// That function reads the exponent through `unsigned_abs` and refuses a
+    /// precision at or below the multiple, so this does the same.
+    fn oracle_precision(&self) -> Option<i128> {
         if self.decimals > MAX_DECIMALS {
             return None;
         }
 
-        i128::from(self.raw_price)
-            .checked_mul((self.multiple as i128).checked_mul(PRICE_PRECISION_I128)?)?
-            .checked_div(10i128.checked_pow(self.decimals)?)
+        let precision = 10i128.checked_pow(self.decimals)?;
+        (precision > self.multiple as i128).then_some(precision)
     }
 
     /// A `PRICE_PRECISION` price in this oracle's raw units, or `None` when it does not survive the
@@ -94,11 +102,7 @@ impl OracleWatchV0 {
     /// `None` means the caller must not arm this watch. A threshold that overflows, or that lands at
     /// or below zero, is not a price the oracle can report.
     pub fn raw_threshold(&self, price: i128, direction: WatchDirection) -> Option<i64> {
-        if self.decimals > MAX_DECIMALS {
-            return None;
-        }
-
-        let numerator = price.checked_mul(10i128.checked_pow(self.decimals)?)?;
+        let numerator = price.checked_mul(self.oracle_precision()?)?;
         let denominator = (self.multiple as i128).checked_mul(PRICE_PRECISION_I128)?;
         if numerator <= 0 || denominator <= 0 {
             return None;
@@ -259,7 +263,7 @@ mod tests {
         assert_eq!(watch(8, 1).raw_threshold(0, up), None);
         assert_eq!(watch(8, 1).raw_threshold(-1, up), None);
         // Rounds to zero rather than arming a watch at price 0.
-        assert_eq!(watch(0, 1).raw_threshold(1, up), None);
+        assert_eq!(watch(1, 1).raw_threshold(1, up), None);
         assert_eq!(
             watch(MAX_DECIMALS + 1, 1).raw_threshold(150_000_000, up),
             None
@@ -290,6 +294,20 @@ mod tests {
         let mut w = watch(8, 1);
         w.raw_price = 15_000_000_000; // $150.00
         assert_eq!(w.protocol_price(), Some(150_000_000));
+    }
+
+    /// `get_pyth_price` refuses a feed whose precision is not above its
+    /// multiple, so no watch is armed on one.
+    #[test]
+    fn a_feed_the_oracle_reader_refuses_arms_no_watch() {
+        let up = WatchDirection::AtOrAbove;
+        assert_eq!(watch(3, 1000).raw_threshold(150_000_000, up), None);
+        assert_eq!(watch(2, 1000).raw_threshold(150_000_000, up), None);
+        assert_eq!(watch(6, 1_000_000).protocol_price(), None);
+        assert_eq!(
+            watch(4, 1000).raw_threshold(150_000_000, up),
+            Some(150_000_000 * 10_000 / 1000 / 1_000_000)
+        );
     }
 
     #[test]

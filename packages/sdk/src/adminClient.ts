@@ -47,6 +47,8 @@ import {
 	ClobUpdateMarketArgsV0,
 	CrankCostUnitsV0,
 	QuoterType,
+	QuoterSlotV0,
+	isVariant,
 } from './types';
 import { DEFAULT_MARKET_NAME, DEFAULT_USER_NAME, encodeName } from './userName';
 import { BN } from './isomorphic/anchor';
@@ -3546,8 +3548,53 @@ export class AdminClient extends VelocityClient {
 						perpMarketIndex
 					),
 				},
+				remainingAccounts: await this.getAttachedBookGridAccounts(
+					perpMarketIndex
+				),
 			}
 		);
+	}
+
+	/**
+	 * The accounts a change to a perp market's tick, step or minimum order size reads the
+	 * attached book through. The program holds the new values to the book's own rules, as the
+	 * attach does. This passes the quoter slab when it exists, and the book and its program
+	 * when a book is attached. The program reads them only for a market that designated a book.
+	 */
+	public async getAttachedBookGridAccounts(
+		perpMarketIndex: number
+	): Promise<AccountMeta[]> {
+		const quoterSlab = getQuoterSlabPublicKey(
+			this.program.programId,
+			perpMarketIndex
+		);
+		let slots: QuoterSlotV0[];
+		try {
+			slots = (await this.getQuoterSlabAccount(perpMarketIndex)).slots;
+		} catch {
+			return [];
+		}
+
+		const slab = { pubkey: quoterSlab, isWritable: false, isSigner: false };
+		const book = slots[0];
+		if (
+			!book ||
+			book.entry.equals(PublicKey.default) ||
+			!isVariant(book.config.quoterType, 'clob') ||
+			book.config.bookTickSize.isZero()
+		) {
+			return [slab];
+		}
+
+		return [
+			slab,
+			{
+				pubkey: book.config.responseAccount,
+				isWritable: false,
+				isSigner: false,
+			},
+			{ pubkey: book.config.programId, isWritable: false, isSigner: false },
+		];
 	}
 
 	/**
@@ -3593,6 +3640,9 @@ export class AdminClient extends VelocityClient {
 						perpMarketIndex
 					),
 				},
+				remainingAccounts: await this.getAttachedBookGridAccounts(
+					perpMarketIndex
+				),
 			}
 		);
 	}

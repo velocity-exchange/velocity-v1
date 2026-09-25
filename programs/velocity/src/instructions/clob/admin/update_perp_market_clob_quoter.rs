@@ -237,18 +237,7 @@ pub(super) fn mirror_book_placement_rules(
     quoter: &AccountLoader<QuoterV0>,
 ) -> Result<()> {
     let rules = clob.reader().order_rules()?;
-    // A market with no minimum of its own has nothing to bound against and
-    // nothing to bound. The book's cull fires on a remainder under the book's
-    // own minimum. Releasing that from an aggregate the market never reserved
-    // against changes nothing.
-    validate!(
-        perp_market.market_stats.min_order_size == 0
-            || rules.min_order_size <= perp_market.market_stats.min_order_size,
-        ErrorCode::InvalidQuoterConfig,
-        "book minimum order size {} is above the market's {}",
-        rules.min_order_size,
-        perp_market.market_stats.min_order_size
-    )?;
+    validate_book_fits_market(&rules, perp_market)?;
 
     // The book's place authority is its trust root. Velocity signs every
     // external quoter CPI as the market's quoter slab PDA, so only a book
@@ -267,24 +256,6 @@ pub(super) fn mirror_book_placement_rules(
         rules.authority == quoter_slab.key().to_bytes(),
         ErrorCode::InvalidQuoterConfig,
         "book config authority is not the market's quoter slab"
-    )?;
-
-    // The book's grid must match the market's grid. A remainder aligned to the
-    // market can then always rest. An off-tick or off-step remainder would
-    // revert the whole fill that carried it.
-    validate!(
-        rules.tick_size == perp_market.order_tick_size,
-        ErrorCode::InvalidQuoterConfig,
-        "book tick {} does not match the market tick {}",
-        rules.tick_size,
-        perp_market.order_tick_size
-    )?;
-    validate!(
-        rules.step_size == perp_market.order_step_size,
-        ErrorCode::InvalidQuoterConfig,
-        "book step {} does not match the market step {}",
-        rules.step_size,
-        perp_market.order_step_size
     )?;
 
     // Mirrors the rules onto the book's slot and the staging entry, so the
@@ -306,6 +277,94 @@ pub(super) fn mirror_book_placement_rules(
     quoter.config.book_min_order_size = rules.min_order_size;
     quoter.config.book_default_activation_delay_slots = rules.default_activation_delay_slots;
     Ok(())
+}
+
+/// Hold the book's size floor and grid to the market's.
+///
+/// The book's minimum must sit at or under the market's, because the fill
+/// bounds a culled remainder's release by the market's minimum. A market with
+/// no minimum of its own has nothing to bound. The book's tick and step must
+/// equal the market's, so a remainder aligned to the market can always rest.
+/// An off-tick or off-step remainder reverts the whole fill that carried it.
+pub(crate) fn validate_book_fits_market(
+    rules: &crate::state::prop_amm::OrderRulesV0,
+    perp_market: &PerpMarket,
+) -> Result<()> {
+    validate!(
+        perp_market.market_stats.min_order_size == 0
+            || rules.min_order_size <= perp_market.market_stats.min_order_size,
+        ErrorCode::InvalidQuoterConfig,
+        "book minimum order size {} is above the market's {}",
+        rules.min_order_size,
+        perp_market.market_stats.min_order_size
+    )?;
+    validate!(
+        rules.tick_size == perp_market.order_tick_size,
+        ErrorCode::InvalidQuoterConfig,
+        "book tick {} does not match the market tick {}",
+        rules.tick_size,
+        perp_market.order_tick_size
+    )?;
+    validate!(
+        rules.step_size == perp_market.order_step_size,
+        ErrorCode::InvalidQuoterConfig,
+        "book step {} does not match the market step {}",
+        rules.step_size,
+        perp_market.order_step_size
+    )?;
+
+    Ok(())
+}
+
+/// Hold a perp market's changed grid or minimum to the book attached to it.
+///
+/// A market that designated a book passes its quoter slab as the first
+/// remaining account, and the book and the CLOB program after it once the
+/// book is attached. An attached book mirrors a non-zero tick onto its slot.
+pub fn validate_attached_book_grid<'info>(
+    perp_market: &PerpMarket,
+    remaining_accounts: &'info [AccountInfo<'info>],
+) -> Result<()> {
+    if perp_market.clob_market == Pubkey::default() {
+        return Ok(());
+    }
+
+    let slab_info = remaining_accounts
+        .first()
+        .filter(|info| info.key() == perp_market.quoter_slab)
+        .ok_or_else(|| {
+            msg!("market designated a book; pass its quoter slab as the first remaining account");
+            error!(ErrorCode::InvalidQuoterConfig)
+        })?;
+
+    let quoter_slab = AccountLoader::<QuoterSlabV0>::try_from(slab_info)?;
+    let book_attached = quoter_slab
+        .clob_slot(perp_market.market_index)
+        .is_ok_and(|slot| slot.config.book_tick_size != 0);
+    if !book_attached {
+        return Ok(());
+    }
+
+    let [_, clob_market, clob_program, ..] = remaining_accounts else {
+        msg!("market has an attached book; pass the book and the clob program after the slab");
+        return Err(ErrorCode::InvalidQuoterConfig.into());
+    };
+
+    validate!(
+        clob_program.key() == crate::ids::clob_program::id(),
+        ErrorCode::InvalidQuoterConfig,
+        "clob program {} is not velocity's clob",
+        clob_program.key()
+    )?;
+
+    let clob = ClobMarket::from_slab(
+        &quoter_slab,
+        perp_market.market_index,
+        clob_market,
+        clob_program,
+    )?;
+
+    validate_book_fits_market(&clob.reader().order_rules()?, perp_market)
 }
 
 /// The first attach initializes the conditions account. A re-attach rewrites
@@ -350,4 +409,75 @@ fn write_market_crank_conditions(
     // there is no work.
     conditions.spendable_mirror = spendable_lamports;
     Ok(())
+}
+
+#[cfg(test)]
+mod book_grid_tests {
+    use {
+        super::{validate_attached_book_grid, validate_book_fits_market},
+        crate::{error::ErrorCode, state::perp_market::PerpMarket},
+        anchor_lang::prelude::Pubkey,
+    };
+
+    fn rules() -> crate::state::prop_amm::OrderRulesV0 {
+        crate::state::prop_amm::OrderRulesV0 {
+            min_order_size: 100,
+            blocking_min_size: 0,
+            default_activation_delay_slots: 0,
+            max_activation_delay_slots: 0,
+            place_authority: [0; 32],
+            tick_size: 10,
+            step_size: 100,
+            side_order_counts: [0, 0],
+            arena_capacity: 512,
+            evict_threshold_per_side: 200,
+            authority: [0; 32],
+        }
+    }
+
+    fn market(min_order_size: u64, tick_size: u64, step_size: u64) -> PerpMarket {
+        let mut market = PerpMarket::default_test();
+        market.market_stats.min_order_size = min_order_size;
+        market.order_tick_size = tick_size;
+        market.order_step_size = step_size;
+        market
+    }
+
+    #[test]
+    fn a_market_that_matches_its_book_passes() {
+        assert!(validate_book_fits_market(&rules(), &market(100, 10, 100)).is_ok());
+        assert!(validate_book_fits_market(&rules(), &market(500, 10, 100)).is_ok());
+    }
+
+    /// A market minimum under the book's lets a fill cull a remainder that the
+    /// market's minimum does not bound.
+    #[test]
+    fn a_market_minimum_under_the_books_is_refused() {
+        assert_eq!(
+            validate_book_fits_market(&rules(), &market(99, 10, 100)).unwrap_err(),
+            ErrorCode::InvalidQuoterConfig.into()
+        );
+    }
+
+    #[test]
+    fn a_grid_off_the_books_is_refused() {
+        assert!(validate_book_fits_market(&rules(), &market(100, 20, 100)).is_err());
+        assert!(validate_book_fits_market(&rules(), &market(100, 10, 50)).is_err());
+    }
+
+    #[test]
+    fn a_market_with_no_designated_book_has_nothing_to_check() {
+        assert!(validate_attached_book_grid(&market(1, 1, 1), &[]).is_ok());
+    }
+
+    /// The admin change cannot skip the book by leaving its accounts out.
+    #[test]
+    fn a_market_with_a_designated_book_must_pass_it() {
+        let mut market = market(1, 1, 1);
+        market.clob_market = Pubkey::new_unique();
+        assert_eq!(
+            validate_attached_book_grid(&market, &[]).unwrap_err(),
+            ErrorCode::InvalidQuoterConfig.into()
+        );
+    }
 }

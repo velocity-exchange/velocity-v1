@@ -3122,7 +3122,7 @@ pub fn handle_update_perp_market_step_size_and_tick_size(
 
     perp_market.order_step_size = step_size;
     perp_market.order_tick_size = tick_size;
-    Ok(())
+    crate::instructions::clob::validate_attached_book_grid(perp_market, ctx.remaining_accounts)
 }
 
 #[access_control(
@@ -3144,7 +3144,7 @@ pub fn handle_update_perp_market_min_order_size(
     );
 
     perp_market.market_stats.min_order_size = order_size;
-    Ok(())
+    crate::instructions::clob::validate_attached_book_grid(perp_market, ctx.remaining_accounts)
 }
 
 #[access_control(

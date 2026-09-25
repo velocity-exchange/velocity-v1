@@ -1358,8 +1358,15 @@ fn settle_pair_match<'info>(
         filler_reward_paid
     )?;
 
-    market.market_stats.update_volume_24h(
-        pair.quote_filled,
+    // A pair takes nothing from the vAMM, so the sample reads the stored curve.
+    let amm_mark_quote = controller::orders::AmmMarkQuote::of_amm(&market.amm)?;
+    controller::orders::record_fill_in_mark_twap_and_volume(
+        market.deref_mut(),
+        &amm_mark_quote,
+        controller::orders::FillAmounts {
+            base: pair.base_filled,
+            quote: pair.quote_filled,
+        },
         taker_direction,
         cx.clock.unix_timestamp,
     )?;

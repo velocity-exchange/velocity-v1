@@ -106,8 +106,8 @@ pub use {
 };
 pub(crate) use {
     perp_fill::{
-        fill_within_taker_risk_limits, FillAmounts, MakerFill, MakerFills, TakerRefs,
-        TakerRiskLimits,
+        fill_within_taker_risk_limits, record_fill_in_mark_twap_and_volume, AmmMarkQuote,
+        FillAmounts, MakerFill, MakerFills, TakerRefs, TakerRiskLimits,
     },
     settle::*,
 };

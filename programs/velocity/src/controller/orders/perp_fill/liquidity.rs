@@ -46,13 +46,8 @@ struct FillMarketSetup {
     /// The market fields quoting reads, owned so the caller can hold the AMM
     /// mutably while it quotes.
     quote_inputs: QuoteInputs,
-    /// The vAMM bid and ask after the refresh, and the spreads that produced
-    /// them. The deferred mark TWAP reads all five.
-    amm_bid_price: u64,
-    amm_ask_price: u64,
-    amm_base_spread: u32,
-    amm_long_spread: u32,
-    amm_short_spread: u32,
+    /// The vAMM quote after the refresh, which the deferred mark TWAP reads.
+    amm_mark_quote: AmmMarkQuote,
     /// The ceiling the vAMM ladder is cut at, tighter than the maker books get. A
     /// post-only taker's limit is buffered by the rebate it earns, and a ladder bounded
     /// by the raw limit would let it sweep past that buffer and price every unit at the
@@ -86,11 +81,7 @@ impl FillMarketSetup {
         )?;
 
         amm_quoter.refresh(&quote_inputs.ctx(slot))?;
-        let reserve_after_setup = amm_quoter.amm.reserve_price()?;
-        let (amm_bid_price, amm_ask_price) = amm_quoter.amm_bid_ask(reserve_after_setup)?;
-        let amm_base_spread = amm_quoter.amm_base_spread();
-        let amm_long_spread = amm_quoter.amm.long_spread;
-        let amm_short_spread = amm_quoter.amm.short_spread;
+        let amm_mark_quote = AmmMarkQuote::of_amm(amm_quoter.amm)?;
 
         let amm_taker_limit = crate::math::orders::calculate_effective_amm_taker_limit(
             taker.order,
@@ -108,16 +99,76 @@ impl FillMarketSetup {
 
         Ok(Self {
             quote_inputs,
-            amm_bid_price,
-            amm_ask_price,
-            amm_base_spread,
-            amm_long_spread,
-            amm_short_spread,
+            amm_mark_quote,
             amm_taker_limit,
             effective_taker_limit,
             taker_limit_price,
         })
     }
+}
+
+/// The vAMM quote a mark TWAP sample reads beside the trade price.
+pub struct AmmMarkQuote {
+    bid_price: u64,
+    ask_price: u64,
+    base_spread: u32,
+    long_spread: u32,
+    short_spread: u32,
+}
+
+impl AmmMarkQuote {
+    /// The vAMM's quote at its current reserves and spreads.
+    pub fn of_amm(amm: &crate::vlp::amm::AMM) -> VelocityResult<Self> {
+        let (bid_price, ask_price) = amm.bid_ask_price(
+            amm.reserve_price()?,
+            amm.long_spread,
+            amm.short_spread,
+            amm.reference_price_offset,
+        )?;
+
+        Ok(Self {
+            bid_price,
+            ask_price,
+            base_spread: amm.base_spread,
+            long_spread: amm.long_spread,
+            short_spread: amm.short_spread,
+        })
+    }
+}
+
+/// Record one fill in the mark TWAP and the 24-hour volume.
+///
+/// The trade price is the average price of the whole fill, over every source.
+/// A fill that trades only on a book then records the book's price, not the
+/// vAMM quote it never took. Every fill path samples through here, so funding
+/// reads each one alike.
+pub fn record_fill_in_mark_twap_and_volume(
+    market: &mut PerpMarket,
+    amm_quote: &AmmMarkQuote,
+    filled: FillAmounts,
+    direction: PositionDirection,
+    now: i64,
+) -> VelocityResult {
+    let trade_price = calculate_fill_price(filled.quote, filled.base, BASE_PRECISION_U64)?;
+    let sanitize_clamp_denominator = market.get_sanitize_clamp_denominator()?;
+    let tick_size = market.order_tick_size;
+
+    market.market_stats.update_mark_twap_with_amm_bid_ask(
+        amm_quote.bid_price,
+        amm_quote.ask_price,
+        amm_quote.base_spread,
+        amm_quote.long_spread,
+        amm_quote.short_spread,
+        now,
+        Some(trade_price),
+        Some(direction),
+        sanitize_clamp_denominator,
+        tick_size,
+    )?;
+
+    market
+        .market_stats
+        .update_volume_24h(filled.quote, direction, now)
 }
 
 /// The ceiling a market order is cut at.
@@ -1160,32 +1211,14 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 
     /// The deferred mark TWAP and the 24-hour volume. Both are gated on a
     /// real fill.
-    ///
-    /// The trade price is the average price of the whole fill, over every
-    /// source. A fill that trades only on a book then records the book's
-    /// price, not the vAMM quote it never took.
     fn update_mark_twap_and_volume(&self, market: &mut PerpMarket) -> VelocityResult {
-        let twap_trade_price = calculate_fill_price(
-            self.tally.quote_filled,
-            self.tally.base_filled,
-            BASE_PRECISION_U64,
-        )?;
-
-        market.market_stats.update_mark_twap_with_amm_bid_ask(
-            self.setup.amm_bid_price,
-            self.setup.amm_ask_price,
-            self.setup.amm_base_spread,
-            self.setup.amm_long_spread,
-            self.setup.amm_short_spread,
-            self.conditions.now,
-            Some(twap_trade_price),
-            Some(self.taker.direction),
-            self.setup.quote_inputs.sanitize_clamp_denominator,
-            self.setup.quote_inputs.tick_size,
-        )?;
-
-        market.market_stats.update_volume_24h(
-            self.tally.quote_filled,
+        record_fill_in_mark_twap_and_volume(
+            market,
+            &self.setup.amm_mark_quote,
+            FillAmounts {
+                base: self.tally.base_filled,
+                quote: self.tally.quote_filled,
+            },
             self.taker.direction,
             self.conditions.now,
         )

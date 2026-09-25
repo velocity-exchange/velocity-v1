@@ -626,3 +626,62 @@ mod settled_match {
         );
     }
 }
+
+/// A pair takes nothing from the vAMM. It still samples the mark TWAP at the
+/// price it traded, as a routed fill does, so funding reads both branches
+/// alike.
+mod pair_mark_twap {
+    use {
+        super::*,
+        crate::{
+            controller::orders::{record_fill_in_mark_twap_and_volume, AmmMarkQuote, FillAmounts},
+            math::constants::PRICE_PRECISION_U64,
+        },
+    };
+
+    /// The ask TWAP after one pair buys a unit at `price`, a minute after the
+    /// last sample.
+    fn ask_twap_after_pair_at(price: u64) -> u64 {
+        let mut market = PerpMarket {
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: 100 * PRICE_PRECISION_I64,
+                    last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                    last_oracle_price_twap_5min: 100 * PRICE_PRECISION_I64,
+                    ..HistoricalOracleData::default()
+                },
+                last_bid_price_twap: 100 * PRICE_PRECISION_U64,
+                last_ask_price_twap: 100 * PRICE_PRECISION_U64,
+                last_mark_price_twap: 100 * PRICE_PRECISION_U64,
+                last_mark_price_twap_5min: 100 * PRICE_PRECISION_U64,
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        let amm_mark_quote = AmmMarkQuote::of_amm(&market.amm).unwrap();
+
+        record_fill_in_mark_twap_and_volume(
+            &mut market,
+            &amm_mark_quote,
+            FillAmounts {
+                base: BASE_PRECISION_U64,
+                // Price and quote share one precision.
+                quote: price,
+            },
+            PositionDirection::Long,
+            60,
+        )
+        .unwrap();
+
+        assert_eq!(market.market_stats.last_trade_ts, 60);
+        market.market_stats.last_ask_price_twap
+    }
+
+    #[test]
+    fn a_pair_samples_the_mark_twap_at_its_price() {
+        assert!(
+            ask_twap_after_pair_at(100 * PRICE_PRECISION_U64)
+                < ask_twap_after_pair_at(101 * PRICE_PRECISION_U64)
+        );
+    }
+}

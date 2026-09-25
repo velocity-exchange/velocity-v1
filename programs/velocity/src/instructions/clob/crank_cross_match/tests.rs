@@ -263,9 +263,9 @@ mod cross_rules {
 
 /// Where a cross leg bounds itself.
 ///
-/// A leg brings no price of its own — the crossed prices are what it exists
-/// to reach — so it bounds itself at the edge of the market's maker band,
-/// which is the widest price the fill would settle a maker at anyway.
+/// A leg brings no price of its own, so it bounds itself at the last price
+/// the maker band accepts. That is the widest price the fill settles a maker
+/// at.
 mod leg_bound {
     use super::{super::*, PRICE};
 
@@ -280,19 +280,41 @@ mod leg_bound {
         .unwrap()
     }
 
-    /// The bound sits exactly where the band starts refusing, on both sides,
-    /// so it discards no price the fill would have taken.
+    /// The bound is the last price the band accepts, on both sides. A level
+    /// at the bound fills, and the next price out is refused.
     #[test]
-    fn a_leg_is_bounded_at_the_first_price_the_band_refuses() {
+    fn a_leg_is_bounded_at_the_last_price_the_band_accepts() {
         let buy = leg_limit_price(PositionDirection::Long, ORACLE, BAND).unwrap();
-        assert_eq!(buy, 110 * PRICE);
-        assert!(breaches(buy, PositionDirection::Long));
-        assert!(!breaches(buy - 1, PositionDirection::Long));
+        assert_eq!(buy, 110 * PRICE - 1);
+        assert!(!breaches(buy, PositionDirection::Long));
+        assert!(breaches(buy + 1, PositionDirection::Long));
 
         let sell = leg_limit_price(PositionDirection::Short, ORACLE, BAND).unwrap();
-        assert_eq!(sell, 90 * PRICE);
-        assert!(breaches(sell, PositionDirection::Short));
-        assert!(!breaches(sell + 1, PositionDirection::Short));
+        assert_eq!(sell, 90 * PRICE + 1);
+        assert!(!breaches(sell, PositionDirection::Short));
+        assert!(breaches(sell - 1, PositionDirection::Short));
+    }
+
+    /// A band whose edge falls between two prices keeps the price below the
+    /// edge, which the band accepts.
+    #[test]
+    fn an_edge_between_two_prices_keeps_the_price_inside_it() {
+        let oracle = 1_000_003;
+        let band = 1_000;
+        let buy = leg_limit_price(PositionDirection::Long, oracle, band).unwrap();
+        let refuses = |price, direction| {
+            crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+                price, direction, oracle, band,
+            )
+            .unwrap()
+        };
+
+        assert!(!refuses(buy, PositionDirection::Long));
+        assert!(refuses(buy + 1, PositionDirection::Long));
+
+        let sell = leg_limit_price(PositionDirection::Short, oracle, band).unwrap();
+        assert!(!refuses(sell, PositionDirection::Short));
+        assert!(refuses(sell - 1, PositionDirection::Short));
     }
 
     /// A market with no band of its own bounds a leg at the oracle price,

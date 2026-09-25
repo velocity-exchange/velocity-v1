@@ -246,6 +246,11 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         market_index,
         band_oracle_price,
         margin_ratio_initial,
+        leg_oracle_band: consulted_oracle_band(
+            &ctx.accounts.quoter_slab,
+            tail,
+            margin_ratio_initial,
+        )?,
         makers_and_referrer: &makers_and_referrer,
         makers_and_referrer_stats: &makers_and_referrer_stats,
         clock: &clock,
@@ -312,6 +317,9 @@ struct CrossMatchContext<'a, 'info> {
     band_oracle_price: i64,
     /// The market's own band, in MARGIN_PRECISION units.
     margin_ratio_initial: u32,
+    /// The band each leg bounds its limit price at, in MARGIN_PRECISION
+    /// units. It is never wider than `margin_ratio_initial`.
+    leg_oracle_band: u32,
     makers_and_referrer: &'a UserMap<'info>,
     makers_and_referrer_stats: &'a UserStatsMap<'info>,
     clock: &'a Clock,
@@ -379,11 +387,7 @@ fn run_cross_leg<'info>(
         });
     }
 
-    let limit_price = leg_limit_price(
-        taker_direction,
-        cx.band_oracle_price,
-        cx.margin_ratio_initial,
-    )?;
+    let limit_price = leg_limit_price(taker_direction, cx.band_oracle_price, cx.leg_oracle_band)?;
 
     // Funding is settled here, before the quote is read. The fill settles it
     // too, so by the time the fill runs there is nothing left to charge, and the
@@ -512,29 +516,49 @@ fn run_cross_leg<'info>(
     })
 }
 
-/// The edge of the market's maker oracle band, on the side the leg buys or
+/// The last price inside the maker oracle band, on the side the leg buys or
 /// sells at.
 ///
-/// A cross leg brings no price of its own. The crossed prices are what it
-/// exists to reach, and they are not known until both sides are read. The band
-/// is the widest price the fill itself settles a maker at, so it is the widest
-/// bound that discards nothing. It still bounds the leg, which keeps a quoter's
-/// walk and the vAMM ladder off levels the fill would refuse.
+/// A cross leg brings no price of its own, and the crossed prices are not
+/// known until both sides are read. The band is the widest price the fill
+/// settles a maker at, so the bound discards nothing the fill would take.
+/// `limit_price_breaches_maker_oracle_price_bands` refuses a distance that
+/// reaches the band, so the bound is one unit inside it.
 fn leg_limit_price(
     taker_direction: PositionDirection,
     oracle_price: i64,
-    margin_ratio_initial: u32,
+    oracle_band: u32,
 ) -> Result<u64> {
     let oracle_price = oracle_price.unsigned_abs();
-    let band = oracle_price
+    let refused_distance = oracle_price
         .cast::<u128>()?
-        .safe_mul(margin_ratio_initial.cast()?)?
-        .safe_div(MARGIN_PRECISION_U128)?
+        .safe_mul(oracle_band.cast()?)?
+        .div_ceil(MARGIN_PRECISION_U128)
         .cast::<u64>()?;
+    let accepted_distance = refused_distance.saturating_sub(1);
     Ok(match taker_direction {
-        PositionDirection::Long => oracle_price.saturating_add(band),
-        PositionDirection::Short => oracle_price.saturating_sub(band),
+        PositionDirection::Long => oracle_price.saturating_add(accepted_distance),
+        PositionDirection::Short => oracle_price.saturating_sub(accepted_distance),
     })
+}
+
+/// The narrowest oracle band among the quoters this cross consults.
+///
+/// A quoter entry can declare a band inside the market's. The router drops a
+/// book whose quote reaches past its entry's band, so a leg bounded at the
+/// market's band alone can lose the book it exists to cross.
+fn consulted_oracle_band<'info>(
+    quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
+    tail: &'info [AccountInfo<'info>],
+    margin_ratio_initial: u32,
+) -> Result<u32> {
+    let consulted = quoter_slab.consulted_slots(tail)?;
+    let slots = quoter_slab.slots()?;
+    Ok(consulted
+        .iter()
+        .filter(|&&index| slots[index].quotes())
+        .map(|&index| slots[index].config.oracle_band(margin_ratio_initial))
+        .fold(margin_ratio_initial, u32::min))
 }
 
 /// The base both legs matched, and the quote the protocol kept for it.

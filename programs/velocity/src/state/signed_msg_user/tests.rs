@@ -764,9 +764,16 @@ mod market_scoped_route {
 
 #[cfg(test)]
 mod signed_msg_max_slot {
-    use crate::{
-        math::time::SlotClock,
-        state::signed_msg_user::{signed_msg_max_slot, SIGNED_MSG_FILL_WINDOW},
+    use {
+        crate::{
+            math::time::SlotClock,
+            state::signed_msg_user::{
+                signed_msg_max_slot, signed_msg_retention_slot, SignedMsgOrderId,
+                SignedMsgUserOrdersFixed, SignedMsgUserOrdersZeroCopyMut, SIGNED_MSG_FILL_WINDOW,
+            },
+        },
+        anchor_lang::prelude::Pubkey,
+        std::cell::RefCell,
     };
 
     #[test]
@@ -784,6 +791,49 @@ mod signed_msg_max_slot {
 
         assert!(signed_msg_max_slot(clock, 100, false) > 100);
     }
+
+    #[test]
+    fn a_resting_limit_is_retained_until_its_stamp() {
+        assert_eq!(signed_msg_retention_slot(100, true), 100);
+    }
+
+    /// The first placement runs at 250ms slots. A sync then records a 200ms
+    /// transition that the cluster already made, which moves the placement
+    /// deadline from 120 to 150 slots past the message slot. The uuid must
+    /// still refuse the message at every slot up to the new deadline.
+    #[test]
+    fn a_slot_duration_sync_between_placements_does_not_re_admit_the_message() {
+        let before_sync = SlotClock::from_state_fields([1, 2, 3, 0], 0, 0, 0);
+        let after_sync = SlotClock::from_state_fields([1, 2, 3, 50], 0, 0, 0);
+        let order_slot = 1_000;
+        assert_eq!(signed_msg_max_slot(before_sync, order_slot, false), 1_120);
+        assert_eq!(signed_msg_max_slot(after_sync, order_slot, false), 1_150);
+
+        let fixed = RefCell::new(SignedMsgUserOrdersFixed {
+            user_pubkey: Pubkey::default(),
+            version: 1,
+            len: 4,
+        });
+        let data = RefCell::new([0u8; 160]);
+        let mut orders = SignedMsgUserOrdersZeroCopyMut {
+            fixed: fixed.borrow_mut(),
+            data: data.borrow_mut(),
+        };
+
+        let entry = SignedMsgOrderId::new([9; 8], signed_msg_retention_slot(order_slot, false), 1);
+        orders
+            .add_signed_msg_order_id(entry, order_slot, before_sync)
+            .unwrap();
+
+        let deadline = signed_msg_max_slot(after_sync, order_slot, false);
+        for slot in order_slot..=deadline {
+            assert!(
+                orders.check_exists_and_prune_stale_signed_msg_order_ids(entry, slot, after_sync),
+                "the message is placeable again at slot {}",
+                slot
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -797,9 +847,8 @@ mod legacy_layout {
                 signed_msg_user::{
                     is_legacy_layout, legacy_live_entries, validate_signed_msg_user_orders_account,
                     SignedMsgOrderId, SignedMsgUserOrders, SignedMsgUserOrdersFixed,
-                    SignedMsgUserOrdersLoader, SignedMsgUserOrdersSnapshot,
-                    LEGACY_DEADLINE_EXTENSION_SLOTS, LEGACY_EXPIRY_SLOTS,
-                    SIGNED_MSG_USER_ORDERS_VERSION,
+                    SignedMsgUserOrdersLoader, SignedMsgUserOrdersSnapshot, LEGACY_EXPIRY_SLOTS,
+                    SIGNED_MSG_FILL_WINDOW_MAX_SLOTS, SIGNED_MSG_USER_ORDERS_VERSION,
                 },
             },
             test_utils::create_account_info,
@@ -881,7 +930,7 @@ mod legacy_layout {
         assert_eq!(orders.len(), 5);
 
         let max_slots: Vec<u64> = (0..orders.len()).map(|i| orders.get(i).max_slot).collect();
-        let extended = |slot: u64| slot + LEGACY_DEADLINE_EXTENSION_SLOTS;
+        let extended = |slot: u64| slot + SIGNED_MSG_FILL_WINDOW_MAX_SLOTS;
         assert_eq!(
             max_slots,
             vec![extended(300), extended(200), extended(100), 0, 0]
@@ -923,7 +972,7 @@ mod legacy_layout {
     #[test]
     fn a_migration_drops_entries_expired_at_every_slot_duration() {
         let fresh = 10_000;
-        let at_bound = fresh - LEGACY_DEADLINE_EXTENSION_SLOTS - LEGACY_EXPIRY_SLOTS;
+        let at_bound = fresh - SIGNED_MSG_FILL_WINDOW_MAX_SLOTS - LEGACY_EXPIRY_SLOTS;
         let mut live: Vec<LegacyEntry> = (1..=5).map(|i| entry(i, 100 + i as u64)).collect();
         live.push(entry(6, at_bound));
         live.push(entry(7, at_bound - 1));

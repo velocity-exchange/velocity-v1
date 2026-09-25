@@ -347,7 +347,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         env.state,
     )?;
 
-    let Some(mut order_id) = signed_msg_order_slot(&mut taker, &message, env)? else {
+    let Some(mut admitted) = signed_msg_order_slot(&mut taker, &message, env)? else {
         return Ok((escrow_zc, None));
     };
 
@@ -391,7 +391,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     // `taker.next_order_id`, the id the placement assigns, so the main
     // order takes the trailing id.
     place_bracket_orders(&mut taker, &message, &mut builder, env)?;
-    let placed = place_entry_order(&mut taker, &mut message, &mut order_id, &mut builder, env)?;
+    let placed = place_entry_order(&mut taker, &mut message, &mut admitted, &mut builder, env)?;
 
     // This function does not run `revoke_completed_orders`. The fill leg follows
     // in the same instruction and completes orders of its own, so the caller
@@ -462,10 +462,9 @@ fn message_signer(user: &User, is_delegate_signer: bool) -> Result<Pubkey> {
 ///
 /// `None` means the message is too old, already placed, or past its landing
 /// deadline, [`crate::state::signed_msg_user::signed_msg_max_slot`]. Those are
-/// no-ops rather than failures. The returned id carries that deadline as
-/// `max_slot`. It bounds placement, not the order's life, which `max_ts`
-/// bounds. `place_entry_order` writes the entry's order id and route digest
-/// and adds the record, once the sidecars have taken their ids.
+/// no-ops rather than failures. The deadline bounds placement, not the order's
+/// life, which `max_ts` bounds. `place_entry_order` writes the entry's order id
+/// and route digest and adds the record, once the sidecars have taken their ids.
 ///
 /// Immediate-or-cancel is allowed. This instruction routes and fills in the same
 /// transaction, and it cancels the residual instead of storing it. Nothing of an
@@ -476,7 +475,7 @@ fn signed_msg_order_slot(
     taker: &mut SignedMsgTaker<'_, '_>,
     message: &VerifiedMessage,
     env: &PlacementEnv<'_, '_>,
-) -> Result<Option<SignedMsgOrderId>> {
+) -> Result<Option<AdmittedMessage>> {
     let params = &message.signed_msg_order_params;
     if params.market_type != MarketType::Perp {
         msg!("First order must be a perp taker order");
@@ -525,23 +524,27 @@ fn signed_msg_order_slot(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
-    let max_slot = crate::state::signed_msg_user::signed_msg_max_slot(
+    let placement_deadline = crate::state::signed_msg_user::signed_msg_max_slot(
         env.state.slot_clock(),
         order_slot,
         is_resting_limit,
     );
 
-    if max_slot < env.clock.slot {
+    if placement_deadline < env.clock.slot {
         msg!(
             "SignedMsg order max_slot {} < current slot {}",
-            max_slot,
+            placement_deadline,
             env.clock.slot
         );
 
         return Ok(None);
     }
 
-    let signed_msg_order_id = SignedMsgOrderId::new(message.uuid, max_slot, 0);
+    let signed_msg_order_id = SignedMsgOrderId::new(
+        message.uuid,
+        crate::state::signed_msg_user::signed_msg_retention_slot(order_slot, is_resting_limit),
+        0,
+    );
     if taker
         .orders
         .check_exists_and_prune_stale_signed_msg_order_ids(
@@ -554,7 +557,18 @@ fn signed_msg_order_slot(
         return Ok(None);
     }
 
-    Ok(Some(signed_msg_order_id))
+    Ok(Some(AdmittedMessage {
+        order_id: signed_msg_order_id,
+        placement_deadline,
+    }))
+}
+
+/// A message `signed_msg_order_slot` admits for placement.
+struct AdmittedMessage {
+    /// The record entry. Its `max_slot` is the retention slot, not the
+    /// deadline under the current slot clock.
+    order_id: SignedMsgOrderId,
+    placement_deadline: u64,
 }
 
 /// The entry must be able to take now or rest on the book. A post-only order
@@ -725,11 +739,12 @@ fn place_bracket_orders(
 fn place_entry_order(
     taker: &mut SignedMsgTaker<'_, '_>,
     message: &mut VerifiedMessage,
-    order_id: &mut SignedMsgOrderId,
+    admitted: &mut AdmittedMessage,
     builder: &mut BuilderRows<'_, '_>,
     env: &mut PlacementEnv<'_, '_>,
 ) -> Result<PlacedSignedMsgOrder> {
     let entry = message.signed_msg_order_params;
+    let order_id = &mut admitted.order_id;
 
     order_id.order_id = taker.user.next_order_id;
     order_id.route_digest = message
@@ -775,7 +790,7 @@ fn place_entry_order(
 
     emit!(SignedMsgOrderRecord {
         user: taker.key,
-        signed_msg_order_max_slot: order_id.max_slot,
+        signed_msg_order_max_slot: admitted.placement_deadline,
         signed_msg_order_uuid: order_id.uuid,
         user_order_id: order_id.order_id,
         matching_order_params: entry,

@@ -2724,7 +2724,7 @@ export interface SignedMsgOrderParams {
 
 /** One slot of a `SignedMsgUserOrdersAccount`, recording a signed-msg order's validity window and dedupe key so a replayed/expired signed message can be rejected without an extra RPC round-trip. */
 export type SignedMsgOrderId = {
-	/** slot after which this signed message is no longer eligible to be placed */
+	/** the last slot at which this message can be placed at any slot duration. It can be later than `signedMsgOrderMaxSlot` under the current slot clock */
 	maxSlot: BN;
 	uuid: Uint8Array;
 	/** the CLOB order this message's remainder rests as. Zero when nothing of it rests */

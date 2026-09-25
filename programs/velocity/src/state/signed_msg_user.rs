@@ -61,6 +61,24 @@ pub fn signed_msg_max_slot(slot_clock: SlotClock, order_slot: u64, is_resting_li
     slot_clock.slot_at_or_after_duration(order_slot, SIGNED_MSG_FILL_WINDOW)
 }
 
+/// `SIGNED_MSG_FILL_WINDOW` in slots of the shortest slot duration. No slot
+/// clock puts a placement deadline further past the message slot than this.
+pub const SIGNED_MSG_FILL_WINDOW_MAX_SLOTS: u64 = SIGNED_MSG_FILL_WINDOW
+    .as_ms()
+    .div_ceil(SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64);
+
+/// The `max_slot` a placed message's entry stores. It is at or after the
+/// [`signed_msg_max_slot`] of every slot clock. A permissionless sync of the
+/// slot duration can move the placement deadline later, and the replay check
+/// must keep the uuid until then.
+pub fn signed_msg_retention_slot(order_slot: u64, is_resting_limit: bool) -> u64 {
+    if is_resting_limit {
+        return order_slot;
+    }
+
+    order_slot.saturating_add(SIGNED_MSG_FILL_WINDOW_MAX_SLOTS)
+}
+
 mod tests;
 
 /// One signed message this user sent, and what is still live from it.
@@ -80,6 +98,8 @@ mod tests;
 #[repr(C)]
 pub struct SignedMsgOrderId {
     pub uuid: [u8; 8],
+    /// The last slot at which the message can be placed, at any slot
+    /// duration. See [`signed_msg_retention_slot`].
     pub max_slot: u64,
     /// The CLOB order this message's remainder rests as, or zero when nothing
     /// of it rests. An entry naming a live order survives the stale sweep,
@@ -209,15 +229,6 @@ const LEGACY_ENTRY_LEN: usize = std::mem::size_of::<LegacySignedMsgOrderId>();
 
 static_assertions::const_assert_eq!(LEGACY_ENTRY_LEN, 24);
 
-/// Slots added to the `max_slot` of a migrated entry. A legacy auction order
-/// had a deadline at the end of its auction. This program places the same
-/// message until `SIGNED_MSG_FILL_WINDOW` past its slot. The count is that
-/// window at the shortest slot duration, so the uuid outlives the message.
-/// allow-verbose: a replay bound that the arithmetic below cannot show.
-const LEGACY_DEADLINE_EXTENSION_SLOTS: u64 = SIGNED_MSG_FILL_WINDOW
-    .as_ms()
-    .div_ceil(SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64);
-
 /// Slots past a migrated `max_slot` after which the entry is expired at any
 /// slot duration. The shortest slot sets the bound, because a longer slot only
 /// makes the elapsed time greater.
@@ -225,10 +236,13 @@ const LEGACY_EXPIRY_SLOTS: u64 = SIGNED_MSG_EVICTION_BUFFER.as_ms()
     / SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64;
 
 impl LegacySignedMsgOrderId {
+    /// A legacy auction order had its deadline at the end of its auction. This
+    /// program places the same message until `SIGNED_MSG_FILL_WINDOW` past its
+    /// slot, so the migrated deadline moves out by that window.
     fn migrated(self) -> SignedMsgOrderId {
         let max_slot = self
             .max_slot
-            .saturating_add(LEGACY_DEADLINE_EXTENSION_SLOTS);
+            .saturating_add(SIGNED_MSG_FILL_WINDOW_MAX_SLOTS);
 
         SignedMsgOrderId::new(self.uuid, max_slot, self.order_id)
     }
@@ -431,7 +445,7 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     /// An entry carries the uuid `check_exists_and_prune_stale_signed_msg_order_ids` matches
     /// on, so reclaiming a live entry would re-admit its message and fill the same signed order
     /// a second time. An entry past `max_slot` plus the buffer cannot be re-admitted anyway,
-    /// because placement refuses a message whose `max_slot` is behind the current slot.
+    /// because placement refuses a message whose deadline is behind the current slot.
     /// Releasing such an entry costs its resting order the route, and the fill then treats the
     /// order as unrouted. The taker's own limit price still bounds that fill.
     ///

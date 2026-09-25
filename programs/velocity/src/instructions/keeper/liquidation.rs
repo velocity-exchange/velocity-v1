@@ -412,15 +412,10 @@ impl LiquidationProgress {
         self.filled_quote > 0 || self.book_orders_removed > 0
     }
 
-    /// The reservoir's flat payment for this progress.
-    ///
-    /// A fill below the dust floor liquidates the position but earns no flat
-    /// payment. Paying for each small step would let a keeper farm the flat
-    /// reward by slicing one liquidation into many. A call that only swept
-    /// book orders earns the force-cancel figure. The account is latched, so
-    /// it rests no new orders, and each paid sweep takes at least one order
-    /// off a finite set. Without this payment a sweep that stops at the book's
-    /// cap pays nothing, and relay's payment guard reverts it every time.
+    /// A fill below the dust floor earns no flat payment, so a keeper cannot
+    /// farm it by slicing one liquidation. A call that only swept book orders
+    /// earns the force-cancel figure. The latched account rests no new orders,
+    /// so each paid sweep takes orders off a finite set.
     fn flat_payment(&self, payments: &CrankPaymentsV0) -> u64 {
         if self.filled_quote >= LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
             u64::from(payments.liquidation)

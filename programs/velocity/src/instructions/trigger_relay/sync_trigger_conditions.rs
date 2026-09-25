@@ -136,14 +136,9 @@ pub fn rewrite_trigger_conditions<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
     write_shared_list: bool,
 ) -> Result<()> {
-    let mut inputs = collect_trigger_inputs(remaining_accounts)?;
-    if write_shared_list {
-        validate_market_coverage(user_loader, &inputs.coverage())?;
-    }
-
     let now = Clock::get()?.unix_timestamp;
-    validate_trigger_coverage(&*crate::load!(user_loader)?, &inputs.markets, now)?;
-
+    let mut inputs =
+        checked_trigger_inputs(user_loader, remaining_accounts, write_shared_list, now)?;
     let oracle_refs = resolve_oracle_watches(&mut inputs);
 
     let user_key = user_loader.key();
@@ -211,6 +206,25 @@ pub fn rewrite_trigger_conditions<'info>(
     clear_unused_trigger_slots(&mut conditions, slot_index)
 }
 
+/// Classify `remaining_accounts` and refuse a call that could weaken the
+/// stored list or disarm a trigger. The shared list is checked only when this
+/// pass writes it.
+fn checked_trigger_inputs<'info>(
+    user_loader: &AccountLoader<'info, User>,
+    remaining_accounts: &'info [AccountInfo<'info>],
+    write_shared_list: bool,
+    now: i64,
+) -> Result<TriggerInputs<'info>> {
+    refuse_duplicate_accounts(remaining_accounts)?;
+    let inputs = collect_trigger_inputs(remaining_accounts)?;
+    if write_shared_list {
+        validate_market_coverage(user_loader, &inputs.coverage())?;
+    }
+
+    validate_trigger_coverage(&*crate::load!(user_loader)?, &inputs.markets, now)?;
+    Ok(inputs)
+}
+
 /// Refuse a call that leaves out an account a stageable trigger order needs.
 ///
 /// The pass skips an order it cannot arm, and the skip also clears the slot
@@ -251,12 +265,9 @@ fn validate_trigger_coverage(
     Ok(())
 }
 
-/// An order this pass arms: an open, untriggered trigger order that does not
-/// rest on a book and has not passed its `max_ts`.
-///
-/// A trigger already resting on a book reads as untriggered by design. Without
-/// the skip the watch re-fires every round, and `trigger_limit_order_v1`
-/// rejects the staged crank each time.
+/// An open, untriggered trigger order within its `max_ts` that does not rest
+/// on a book. A resting trigger reads as untriggered, so without that skip its
+/// watch re-fires every round and `trigger_limit_order_v1` rejects each crank.
 fn is_stageable(order: &crate::state::user::Order, now: i64) -> bool {
     let expired = order.max_ts != 0 && now > order.max_ts;
     order.status == OrderStatus::Open
@@ -318,8 +329,6 @@ impl TriggerInputs<'_> {
 fn collect_trigger_inputs<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
 ) -> Result<TriggerInputs<'info>> {
-    refuse_duplicate_accounts(remaining_accounts)?;
-
     let mut markets: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut market_oracles: BTreeMap<Pubkey, u16> = BTreeMap::new();
     let mut spot_oracles: BTreeMap<u16, Pubkey> = BTreeMap::new();

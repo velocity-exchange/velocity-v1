@@ -161,12 +161,9 @@ pub fn price_sync_terms(
     Ok(terms)
 }
 
-/// Who runs an opt-in sync, and the block it writes.
-///
-/// The treasury pays a block's self-sync terms, and a block with no terms has no
-/// self-maintenance. So only the user's authority, its delegate or the admin
-/// may set paid terms or clear them. Anyone else may still refresh an unpaid
-/// block.
+/// Who runs an opt-in sync, and the block it writes. The treasury pays a
+/// block's terms, and a block without terms has no self-maintenance. So only
+/// the user's authority, its delegate or the admin sets or clears paid terms.
 pub struct SyncCaller<'a, 'info> {
     pub payer: &'a Signer<'info>,
     pub state: &'a AccountLoader<'info, State>,
@@ -276,6 +273,7 @@ pub fn rewrite_liq_conditions<'info>(
         sync_fallback_slots: args.sync_fallback_slots,
     };
     let user_key = user_loader.key();
+    refuse_duplicate_accounts(remaining_accounts)?;
     let inputs = collect_sync_inputs(remaining_accounts)?;
     let exposed_perps = validate_market_coverage(user_loader, &inputs.coverage())?;
     let oracle_refs = inputs
@@ -372,8 +370,6 @@ impl SyncInputs {
 fn collect_sync_inputs<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
 ) -> Result<SyncInputs> {
-    refuse_duplicate_accounts(remaining_accounts)?;
-
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut spots: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut market_refs: Vec<AccountRefV0> = Vec::new();
@@ -476,15 +472,12 @@ fn collect_sync_inputs<'info>(
 /// only from a `ClobCrankConditionsV0` sets no oracle, so the `PerpMarket`
 /// itself must be present. The quote market's default oracle needs no account.
 ///
-/// A market with a CLOB must also bring its crank conditions account, because
-/// the liveness poll reads what a liquidation crank pays from it. It must bring
-/// its quoter slab too. Without the slab the stored list names no book, so a
-/// staged liquidation cannot sweep the user's book orders and never fills. A
-/// market without a CLOB has none of these accounts.
+/// A market with a CLOB must also bring its crank conditions account, which
+/// prices the liveness poll, and its quoter slab, without which a staged
+/// liquidation cannot sweep the user's book orders.
 ///
-/// Every oracle candidate must be the oracle of a passed market. `load_maps`
-/// stops at the first account it does not recognize, so an unrelated account
-/// in the oracle section cuts every market off the stored list.
+/// `load_maps` stops at the first account it does not recognize, so every
+/// oracle candidate must be the oracle of a passed market.
 ///
 /// Returns the perp markets the user has exposure in, which the liveness poll
 /// is priced over.

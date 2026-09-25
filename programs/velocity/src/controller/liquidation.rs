@@ -879,7 +879,7 @@ impl LiquidationSizing<'_> {
         let cover = self.cover_shortage(maps, state, slot)?;
         let max_pct_allowed = self.liquidation_mode.calculate_max_pct_to_liquidate(
             self.user,
-            cover.size.margin_shortage,
+            cover.margin_shortage,
             slot,
             state.initial_pct_to_liquidate as u128,
             state.liquidation_duration_ms(),
@@ -919,7 +919,10 @@ impl LiquidationSizing<'_> {
                     .get_ref(&self.market_index)?
                     .order_step_size,
             )?,
-            ..cover.size
+            margin_shortage: cover.margin_shortage,
+            liquidator_fee: cover.liquidator_fee,
+            if_liquidation_fee: cover.if_liquidation_fee,
+            protocol_liquidation_fee: cover.protocol_liquidation_fee,
         }))
     }
 
@@ -997,13 +1000,10 @@ impl LiquidationSizing<'_> {
                 )?,
                 market.order_step_size,
             )?,
-            size: LiquidationSize {
-                base_asset_amount: 0,
-                margin_shortage,
-                liquidator_fee,
-                if_liquidation_fee,
-                protocol_liquidation_fee: total_if_side_fee.safe_sub(if_liquidation_fee)?,
-            },
+            margin_shortage,
+            liquidator_fee,
+            if_liquidation_fee,
+            protocol_liquidation_fee: total_if_side_fee.safe_sub(if_liquidation_fee)?,
         })
     }
 }
@@ -1012,7 +1012,10 @@ impl LiquidationSizing<'_> {
 struct ShortageCover {
     user_base_asset_amount: u64,
     base_asset_amount: u64,
-    size: LiquidationSize,
+    margin_shortage: u128,
+    liquidator_fee: u32,
+    if_liquidation_fee: u32,
+    protocol_liquidation_fee: u32,
 }
 
 /// Sizes a liquidation, cancels what blocks it, and places the forced order.

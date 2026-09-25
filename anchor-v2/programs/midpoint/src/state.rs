@@ -171,7 +171,9 @@ pub struct MidpointQuoterV0 {
     /// Quote prices round to a multiple of this, away from mid. It uses the
     /// same price precision as `mid_price`.
     pub price_tick_size: u64,
-    /// Quoted sizes floor to a multiple of this (base precision).
+    /// Quoted sizes floor to a multiple of this (base precision). It must be a
+    /// multiple of the velocity market's step. Otherwise velocity floors a rung
+    /// that execute fills whole, and the fill misses the quoted notional.
     pub size_step: u64,
     /// The quoter does not quote a level remainder below this. The value is
     /// in base precision. It floors the base size of a rung despite the name.
@@ -1123,6 +1125,47 @@ mod tests {
         assert_eq!(fill.base, UNIT / 2);
         assert_eq!(quoter.asks[1].filled, UNIT);
         quoter.validate().unwrap();
+    }
+
+    /// Velocity may allocate any prefix of the quoted ladder on its step grid.
+    /// With the market step a divisor of `size_step`, every such prefix fills
+    /// to exactly its base at the floor of its notional.
+    #[test]
+    fn every_step_aligned_prefix_of_a_quote_fills_in_full() {
+        let asks = [(1_000, UNIT + 7_000), (3_000, 2 * UNIT), (5_000, UNIT)];
+        let mut quoter = quoter(&[], &asks);
+        let pointer = quoter
+            .write_quote_response(DirectionV0::Long, u64::MAX, 0, 0, true)
+            .unwrap();
+        let bytes = written(&quoter, pointer);
+        let ladder: Vec<(u64, u64)> = QuoteResponseV0::parse(&bytes)
+            .unwrap()
+            .levels
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect();
+        assert!(ladder.iter().all(|&(_, size)| size % quoter.size_step == 0));
+
+        let quoted: u64 = ladder.iter().map(|&(_, size)| size).sum();
+        let stride = 997 * quoter.size_step;
+        for allocation in (1..=quoted / stride).map(|k| k * stride).chain([quoted]) {
+            let mut left = allocation;
+            let notional: u128 = ladder
+                .iter()
+                .map(|&(price, size)| {
+                    let take = size.min(left);
+                    left -= take;
+                    price as u128 * take as u128
+                })
+                .sum();
+
+            let fill = quoter.fill(DirectionV0::Long, allocation, 0).unwrap();
+            assert_eq!(
+                (fill.base, fill.quote),
+                (allocation, (notional / UNIT as u128) as u64),
+                "allocation {allocation}"
+            );
+        }
     }
 
     #[test]

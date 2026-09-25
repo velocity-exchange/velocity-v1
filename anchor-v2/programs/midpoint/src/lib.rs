@@ -27,6 +27,12 @@
 //! rotating a compromised flow key is one velocity admin call and not a
 //! per-maker migration.
 //!
+//! Execute fills rungs best first, as quote published them. So it delivers an
+//! allocation only when the allocation is a prefix of the quoted ladder, with
+//! every rung before the last one it touches taken whole. A caller that drops
+//! a rung, or floors one to a step that does not divide `size_step`, gets a
+//! fill at other prices than it allocated.
+//!
 //! Discriminators stay at the 8-byte anchor default. Velocity's quoter registry
 //! stores `[u8; 8]` discriminators.
 

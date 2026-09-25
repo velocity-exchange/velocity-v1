@@ -496,6 +496,13 @@ lifecycle takes. `MarketStatus` carries no fill-paused variant, so a paused mark
 the fired order reduce-only, so its rest cannot add exposure. `trigger_limit_order_v1` fires only a
 reduce-only trigger there.
 
+Both trigger endpoints refuse, with `InvalidOracle`, an oracle that margin refuses: non-positive, too
+volatile, too uncertain or stale for margin. A fire pays the keeper and cannot be undone, so it
+judges the oracle by the set the fill it starts uses. Before, a stale or uncertain oracle could fire
+a stop. `isOracleValidForTriggerOrder` mirrors the rule. The relay resolvers cannot read `State`, so
+they can stage a fire on such an oracle. The executor's simulation then refuses it, and the turner
+sends nothing.
+
 `PerpPosition.reduceOnlyClobOrders` counts the reduce-only orders the owner has resting on the CLOB.
 While it is nonzero the router caps that user's reduce-only fills to the position they reduce, so a
 reduce-only stop can rest its remainder on the book without over-filling. A reduce-only order also
@@ -725,6 +732,13 @@ the book's resting owners in `makerInfos`.
 
 A fill samples the mark TWAP at its average price over every source, so a fill that trades only on
 a book records the book's price.
+
+A fill's funding update judges the oracle TWAPs as they stood when the instruction began, the same
+values its price-band checks read. The fill advances the TWAPs toward the live oracle price before
+it updates funding. Before, a fill at a funding boundary could pull a lagging 5-minute TWAP inside
+the mark divergence limit and write funding that the funding crank would refuse. `blockOperation`
+reads the TWAPs from the market account, which is the state the instruction starts from, so it
+predicts the gate unchanged.
 
 `updatePerpBidAskTwap` takes `quoterSlab`, `clobMarket` and `clobProgram`, and estimates each side of
 the market from the book alone. It names no counterparties, and both it and

@@ -1,5 +1,14 @@
 # @velocity-exchange/keeper-bots-v2
 
+## 0.2.25
+
+### Patch Changes
+
+- Updated dependencies [[`6b2075b`](https://github.com/velocity-exchange/velocity-v1/commit/6b2075bfca5d85d045b7430da48999c982b6ca78), [`98c6416`](https://github.com/velocity-exchange/velocity-v1/commit/98c6416402f7cd3a8328a07589088aaba9d6be8e)]:
+  - @velocity-exchange/revenue-router-sdk@0.2.0
+  - @velocity-exchange/sdk@0.26.0
+  - @velocity-exchange/jit-proxy@0.3.22
+
 ## 0.2.24
 
 ### Patch Changes

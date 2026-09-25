@@ -105,6 +105,12 @@ reports garbage.
 
 `math/router` exports `quoterOracleBand`, `makerPriceBreachesOracleBand` and
 `isReportWithinReservation`, the three predicates a client needs to tell whether a fill is accepted.
+A book that rests a level outside its oracle band quotes nothing to a fill, and
+`bookRestsOutsideOracleBand` mirrors that skip.
+
+A post-only order takes no external book. In a `ReduceOnly` market every maker may only reduce, and
+a fill that grows one fails with `QuoterReportExceedsReservation`. A maker under liquidation gets no
+depth. A vAMM past its reserve bound fails the fill with `InvalidAmmForFillDetected`.
 
 The three accounts a CLOB order instruction takes are the exported type `ClobAccounts`, and
 `VelocityClient.getClobAccounts(marketIndex)` is public, so a caller resolves them from a market
@@ -136,7 +142,10 @@ releases its entry and a modified one keeps its route. `SignedMsgOrderId` gains 
 because each book numbers its own orders. The keeper arms are
 `force_cancel_clob_orders`, `crank_clob_evict` and `crank_clob_remove_expired`. `force_cancel_clob_orders`
 cancels during a full exchange halt but pays no keeper fee, so the halt means the same thing for
-it as for its `User.orders` twin, which refuses outright.
+it as for its `User.orders` twin, which refuses outright. It takes no `fillerStats` account, and it
+judges a reduce-only order at the size it can close. The evict and expiry cranks charge no maker fee
+under a full halt. They and `crank_taker_origin_cross` refuse a filler outside pool 0 when a reward
+is due.
 
 `initialize_quoter_cross_conditions` bounds `expireFallbackSlots` at 9,000 slots. The endpoint is
 permissionless and re-prices in place, so the ceiling limits what a third party can do to another
@@ -152,6 +161,23 @@ and the order shrinks in place instead of being cancelled and re-placed at the b
 `rejectIfCrossed` refuses a placement that would rest crossed with the opposite side, which is what
 a post-only order asks for. It is not what makes the order a maker. A resting CLOB order settles at
 its own price on the maker fee schedule either way.
+
+`placeAndMakePerpOrder` places or fails. A placement that the book or the margin gate refuses is an
+error rather than a success that placed nothing, and the error names the rule, such as
+`InvalidOrderMinOrderSize`, `InvalidOrderLimitPrice` or `InsufficientCollateral`. An IOC maker order
+fails with `InvalidOrderIOC`. A builder code fails with `InvalidOrder`, because no fill pays a
+maker-side builder fee. A `userOrderId` that a live slot order holds fails with
+`UserOrderIdAlreadyInUse`. A reduce-only maker order rests, clamped to the position, also on a
+`ReduceOnly` market. `TryPostOnly` and `Slide` read the book's best opposite order as well as the
+vAMM. The placement emits `OrderActionRecord(Place)` beside its `OrderRecord`.
+
+`modifyOrderV1` holds the replacement to the market's tick, step and minimum order size, to the
+open-interest cap, and to the vAMM post-only check when `rejectIfCrossed` is set. It refuses a market
+in settlement.
+
+`cancelOrder` and `cancelOrdersByIds` fail with `OrderDoesNotExist` for an id the account minted that
+holds no open slot order, such as a book order id or an order already filled. An id the account has
+not minted is still a no-op, and `cancelOrdersByIds` skips a placed trigger.
 
 `UserClobOrdersClient` reads a user's resting book orders from the dlob-server, over
 `GET /userOrders` or the `user_orders` websocket channel. Book orders have no `User.orders` slot, so
@@ -298,7 +324,10 @@ On `Order`, `auctionStartPrice` and `auctionEndPrice` are renamed `clobNodeIndex
 `clobOrderId`, which is what a placed-trigger shadow already stored in them, and `auctionDuration`
 becomes `unusedAuctionDuration`. The account layout is unchanged.
 
-`math/auction` is deleted. `math/worstPrice` replaces it with `deriveWorstPrice`.
+`math/auction` is deleted. `math/worstPrice` replaces it with
+`deriveWorstPrice(oraclePrice, contractTier, direction, namedPrice)`. The contract tier sets the
+bound of an unnamed price: 2 percent on tier A, 5 on B and C, 10 on Speculative, and 20 on
+HighlySpeculative and Isolated. A fired stop-market takes the same bound.
 `isFallbackAvailableLiquiditySource` moves to `math/orders`. `getLimitPrice`, `hasLimitPrice`,
 `isRestingLimitOrder` and `isRestingSignedMsgLimitOrder` lose their auction and slot arguments,
 `signedMsgOrderMaxSlot` trades its auction duration for `isRestingLimit`, and `hasAuctionPrice` is
@@ -329,6 +358,13 @@ The route digest is eight bytes on `SignedMsgUserOrders`, next to the CLOB order
 rests under. `getRouteDigest(route)` mirrors it, which a filler needs because the program rejects a
 fill whose claimed route does not digest to what the order carries.
 
+The entry must take or rest. A post-only entry fails with `InvalidOrderPostOnly`, and a trigger
+entry with `InvalidSignedMsgOrderParam`. `signSignedMsgOrderParamsMessage` throws on both, and
+`signedMsgEntryOrderRefusal` mirrors the check. An entry that neither fills nor rests fails with
+`SignedMsgEntryNeitherFilledNorRested` (6459), so the whole bundle reverts: its sidecars do not arm
+and its uuid is not spent. `isDelegateSigner` for a user with no delegate fails with
+`SigVerificationFailed`, as does a signature under a small-order key.
+
 The network tag is required. A message that names no cluster is refused the same way a message naming
 the wrong cluster is, because both replay the same way. `network` is a required field on both message
 types, `signedMsgNetworkForEnv` is exported, and the client stamps the tag from its configured `env`,
@@ -344,7 +380,16 @@ A trigger order becomes a book order through `trigger_limit_order_v1`, leaving a
 `VelocityClient.triggerMarketOrderV1` and `getTriggerMarketOrderV1Ix`, plus
 `VelocityCore.buildTriggerMarketOrderV1Instruction`, fire an armed trigger-market order and fill
 it against the book in the same instruction, resting only the remainder as a taker-origin order.
-Nothing lingers live in `User.orders`.
+Nothing lingers live in `User.orders`. `place_trigger_orders_v1` refuses a market with no CLOB
+with `TriggerMarketHasNoClob` (6460). `trigger_market_order_v1` fires only a `TriggerMarket` on the
+market it names. `trigger_limit_order_v1` takes `userStats` writable, because a cancel for
+insufficient free collateral trips the equity breaker, and it records the trigger with its keeper
+reward and trigger price before the place record.
+
+The unfilled part of a take that does not rest emits `OrderActionRecord(Cancel)`, on the take,
+signed-message and fired stop-market paths alike. Its explanation names the cause: an IOC remainder,
+a spent reduce-only order, an account under liquidation, a size below the book minimum or the margin
+gate.
 
 A fired trigger rests taker-origin. It came to trade, so a cross settles at the counterparty's price
 rather than picking it off at its own. Its owner cannot cancel it inside the activation window.
@@ -391,9 +436,8 @@ about 328,000 compute units rather than 75,000. That is past one instruction's 2
 keeper must request a budget for it. Cross cranks are permissionless and revert unless the spread
 clears both takers' fees and the market's `min_cross_surplus` floor.
 
-`crank_taker_origin_cross` takes the taker's `RevenueShareEscrow` when the caller carries it.
-A referred taker's cross previously failed outright, because the fill requires the account
-whenever the taker carries a builder referral. The referee discount and the referrer reward are
+`crank_taker_origin_cross` requires the taker's `RevenueShareEscrow` when the taker carries a
+builder referral, on the routed branch and on a settled pair. The referee discount and the referrer reward are
 keyed by market, so they bind on this path. A builder fee does not: a builder row is keyed by the
 velocity order id, and the book's row carries its own handle instead.
 
@@ -409,6 +453,14 @@ now fails rather than being trusted not to matter.
 makers it sizes. It was opening a position slot on a third party's account to reproduce the fill's
 clamp and putting it back; it now sizes against the position a fill would open, so the makers ride
 read-only.
+
+`crank_cross_match` carries the SOL spot market, read-only, after the quote spot market, when
+`State.solSpotMarketIndex` is not 0. It prices its keeper payment in quote at the live SOL oracle,
+or else at that market's 5-minute TWAP, and fails with `SpotMarketNotFound` without either.
+
+A settled pair of taker-origin remainders applies the post-fill rules a routed fill applies: the
+open-interest cap, the fill-price bands, the funding update, the 24-hour volume and the mark TWAP
+sample. A reduce-only side shrinks the pair to its cover.
 
 A cross crank runs the market gates a routed fill runs. It refuses a market that is not `Active` or
 `ReduceOnly`, in settlement, or fill-paused. When two crossed taker-origin remainders settle against
@@ -531,12 +583,22 @@ depth rather than the fill.
 
 ## Liquidation and the mark TWAP
 
+A liquidation cancels the account's book orders in its scope itself, so `forceCancelClobOrders` is
+not a step before it. Every liquidation builder, `getSetUserStatusToBeingLiquidatedIx` and
+`getForceDeleteUserIx` append the books through `getLiquidationBookMetas(userAccount)`.
+`clobResidentOpenOrders` mirrors the count the program reads. Without a market's book the
+liquidation latches the account, cancels what it can and succeeds without a transfer, and a later
+call continues. A liquidation with a swap fails with `LiquidationConflictsWithClobOrders` instead.
+
 `liquidatePerpWithFill` fills its forced order through the router, so a liquidation reaches the
 market's CLOB and its PropAMM quoters rather than only the makers the caller passes.
 `getLiquidatePerpWithFillIx` appends the market's quoter section to the remaining accounts and takes
 an `extraQuoterAccounts` argument for further quoters. A market that names a book refuses the call
 without that section, and book depth is reachable only for owners the transaction carries, so pass
 the book's resting owners in `makerInfos`.
+
+A fill samples the mark TWAP at its average price over every source, so a fill that trades only on
+a book records the book's price.
 
 `updatePerpBidAskTwap` takes `quoterSlab`, `clobMarket` and `clobProgram`, and estimates each side of
 the market from the book alone. It names no counterparties, and both it and

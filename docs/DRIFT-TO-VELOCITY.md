@@ -573,6 +573,22 @@ These public exports were added, or restored, relative to the fork point:
   slot. Every row carries the handle a cancel or a modify takes.
 - `liquiditySource`, and so `L2Level['sources']`, gains `'clob'` and `'propamm'`
   (feat/propamm).
+- Liquidation book accounts (feat/propamm). `VelocityClient.getLiquidationBookMetas(userAccount)`
+  returns the `(slab, book)` metas and the CLOB program a liquidation of that account carries
+  (§5.4), and every liquidation builder appends them. `clobResidentOpenOrders(user,
+  marketIndex)` (`math/orders`) mirrors `User::clob_resident_open_orders`. velocity-rs adds
+  `liquidation_books`, `clob_resident_open_orders` and
+  `TransactionBuilder::with_liquidation_books`, and
+  `liquidate_perp_with_fill`, `jupiter_swap_liquidate` and `titan_swap_liquidate` take a new
+  `books: &[ClobFillAccounts]` argument.
+- `signedMsgEntryOrderRefusal({ orderType, postOnly })` (`math/orders`) mirrors the program's
+  signed-message entry check, and `signSignedMsgOrderParamsMessage` throws on a post-only or
+  trigger entry.
+- `unnamedPriceSlippageDivisor(contractTier)` (`math/worstPrice`) gives the tier bound of a
+  market order that names no price, and `deriveWorstPrice(oraclePrice, contractTier, direction,
+  namedPrice)` takes the tier.
+- `bookRestsOutsideOracleBand` (`math/router`) mirrors the route's skip of a book that rests a
+  level outside its oracle band.
 - `EquityFloorManager` and its plan types (`equityFloorManager`),
   `calculateEquityFloorAutoDelta`, `getEquityFloorLevel`, `EquityFloorLevel` (`math/margin`),
   and `User.isBelowBufferedEquityFloor`, `getBufferedEquityFloor`,
@@ -1204,6 +1220,30 @@ the current ones.
   signed-message order already resting in `User.orders`, and no signed-message order rests
   there any more. There is no v0/v1 pair and no frozen second path; velocity controls the
   fillers. The taker-facing signed message and its broadcast to swift are unchanged.
+- Liquidation entries take the liquidatee's CLOB books (feat/propamm). `liquidate_perp`,
+  `liquidate_spot`, `liquidate_borrow_for_perp_pnl`, `liquidate_perp_pnl_for_deposit`,
+  `set_user_status_to_being_liquidated`, `force_delete_user` and
+  `liquidate_spot_with_swap_begin` / `_end` read optional `remaining_accounts` after the margin
+  map. For each market in the liquidation's scope where the account rests book orders, they
+  take that market's `QuoterSlabV0` (read-only) and its book (writable), and they take the CLOB
+  program once. The program finds them by key, so their order is free. On the swap pair they
+  follow the token program, mint and transfer-hook accounts, and begin and end carry the same
+  list. `liquidate_perp_with_fill` takes, in order: the maps, a `(slab, book)` pair for each
+  other market in scope, the maker `(User, UserStats)` pairs, and then the quoter section. The
+  liquidated market's own slab, book and program ride in the quoter section as before. When
+  that market has no book, the CLOB program must be in the tail. The TS SDK and velocity-rs
+  attach these accounts in every liquidation builder.
+- `force_cancel_clob_orders` drops the `filler_stats` account (feat/propamm). The named
+  accounts are `state`, `authority`, `filler`, `user`, `quoter_slab`, `clob_market`,
+  `clob_program` and the optional crank-conditions account. A manual builder must drop the
+  account, because the list shifts. `getForceCancelClobOrdersIx` and velocity-rs follow.
+- `trigger_limit_order_v1` takes `user_stats` writable (feat/propamm), because a cancel for
+  insufficient free collateral can trip the authority-wide equity breaker. A client built from
+  an older IDL that passes it read-only fails the `mut` constraint.
+- `crank_cross_match` takes the SOL spot market (feat/propamm). When
+  `State.sol_spot_market_index` is not 0, the call must carry the SOL oracle or the SOL spot
+  market, read-only, in the spot-market section after the quote spot market. Without either it
+  fails with `SpotMarketNotFound`. Both relay resolvers and the book publisher stage it.
 
 ### 5.5 New instructions with layout or account implications
 
@@ -1245,7 +1285,7 @@ enum is:
 
 | Code | Variant |
 | ---- | ------- |
-| 6350 | `SpotDlobTradingDisabled` |
+| 6350 | `SpotDlobTradingDisabled` (deprecated, no longer emitted) |
 | 6351 | `InvalidAdminTier` |
 | 6352 | `WithdrawGuardThresholdNotionalTooLarge` |
 | 6353 | `InvalidProtocolFeeRecipient` |
@@ -1296,8 +1336,8 @@ enum is:
 | 6398 | `FillerObligationUncountable` |
 | 6399 | `QuoterFilledShort` |
 | 6400 | `FillerCarriedUnroutedQuoter` |
-| 6401 | `ReduceOnlyOrderCannotRestOnClob` |
-| 6402 | `LiquidationConflictsWithClobOrders` |
+| 6401 | `ReduceOnlyOrderCannotRestOnClob` (deprecated, no longer emitted) |
+| 6402 | `LiquidationConflictsWithClobOrders` (only `liquidate_spot_with_swap_begin`, see §5.7) |
 | 6403 | `QuoterReportExceedsReservation` |
 | 6404 | `UnattestedSynchronousTake` |
 | 6405 | `QuoterSlabFull` |
@@ -1312,6 +1352,12 @@ quoter or crank failure decodes to a name that states the cause. They cover quot
 encoding and account wiring, relay condition blocks, crank conditions, cross participants,
 router quote buffers, feature gates and slot duration sync. `DefaultError` keeps every site
 Drift already used it for, so its meaning is unchanged on inherited instructions.
+
+6459 `SignedMsgEntryNeitherFilledNorRested` and 6460 `TriggerMarketHasNoClob` follow them (§5.7).
+`SignedMsgOrderDoesNotExist` (6300) is deprecated in place, because nothing raises it since
+`place_and_make_signed_msg_perp_order` was removed. In the separate
+`SignatureVerificationError` enum, `MessageOffsetOverflow` is deprecated in place and never
+raised, so `InvalidMessageHex` keeps its code.
 
 Decode errors by code as before, but expect `Deprecated*` names for retired features.
 
@@ -1355,6 +1401,96 @@ Decode errors by code as before, but expect `Deprecated*` names for retired feat
   whose Borsh keys are `deprecatedSwitchboard` and `deprecatedSwitchboardOnDemand`. Any code
   still matching on the old `switchboard` or `switchboardOnDemand` keys will fail to decode
   these oracle sources.
+- Liquidation cancels the account's book orders itself (feat/propamm). Every liquidation entry,
+  `set_user_status_to_being_liquidated` and `force_delete_user` cancel the liquidatee's CLOB
+  orders in the liquidation mode's scope with a forced `cancel_all_v0`, and release their
+  reservations. `force_delete_user` sweeps every perp position, isolated ones included.
+  `force_cancel_clob_orders` is therefore not a prerequisite. When orders remain because a
+  book was not passed or the sweep reached its cap, the entry latches the account, cancels what
+  it can and returns `Ok` without a transfer. The next call continues.
+  `liquidate_spot_with_swap_begin` cannot continue in a later call, so it fails with
+  `LiquidationConflictsWithClobOrders` (6402) when in-scope orders remain. The sweep emits no
+  per-order `OrderActionRecord`. The book emits its own cancel record.
+- `force_cancel_clob_orders` judges a reduce-only book order at the size it can close, so a
+  facing reduce-only order stays. The CLOB's `OrderViewV0` gains a trailing `reduce_only: bool`
+  in `orders_v0`, `next_removal_v0` and `next_cross_v0`, so a decoder of those answers must add
+  the field.
+- `place_and_make_perp_order_v1` (feat/propamm). An IOC order fails with `InvalidOrderIOC`
+  (6050). A builder code fails with `InvalidOrder` (6042), because a book order has no
+  `RevenueShareOrder` row and no fill pays a maker-side builder fee. A `user_order_id` that a
+  live slot order holds fails with `UserOrderIdAlreadyInUse` (6071). A placement that the book
+  or the margin gate refuses is an error, where it returned `Ok` with nothing placed:
+  `ClobQuoterNotActive` for a closed book, `InvalidOrderMinOrderSize`,
+  `InvalidOrderNotStepSizeMultiple`, `InvalidOrderLimitPrice` for a price off the tick,
+  `InvalidOrderMaxTs`, `MaxNumberOfOrders` for a full side or position, `UserBankrupt` and
+  `InsufficientCollateral`. A reduce-only maker order rests, clamped to the position, also on a
+  `ReduceOnly` market and for a reduce-only user. One with nothing to reduce fails with
+  `InvalidOrderNotRiskReducing`. `TryPostOnly` skips and `Slide` slides one book tick behind the
+  book's best opposite order as well as the vAMM. The placement emits `OrderActionRecord(Place)`
+  and `OrderRecord`, with the owner's `user_order_id`, `post_only`, `reduce_only`, the book
+  price and the `PlacedOnClob` bit.
+- `modify_order_v1` holds the replacement to the market's tick, step and `min_order_size`
+  (reduce-only exempt from the minimum), to the vAMM post-only check when `reject_if_crossed`
+  is set on a maker order (`PlacePostOnlyLimitFailure`), and to the open-interest cap on a
+  risk-increasing replacement (`MaxOpenInterest`). It refuses a market in settlement
+  (`MarketPlaceOrderPaused`). `modify_order` and `modify_order_by_user_id` keep
+  `AwaitingTriggerRecross` on an evicted trigger.
+- `cancel_order` and `cancel_orders_by_ids` fail with `OrderDoesNotExist` (6061) for an id the
+  account minted that holds no open slot order. That includes a book order id and an already
+  filled or cancelled slot order, where the cancel returned `Ok`. An id the account has not
+  minted is still a no-op. `cancel_orders_by_ids` skips a placed trigger's slot.
+- A taker's unfilled part that does not rest emits `OrderActionRecord(Cancel)` on every taker
+  path: `place_and_take_perp_order_v1`, `place_signed_msg_taker_order` and
+  `trigger_market_order_v1`. The explanation is `None` for an IOC remainder or a type that
+  cannot rest, `ReduceOnlyOrderIncreasedPosition` for a spent reduce-only order, `Liquidation`
+  for an account under liquidation, `ClobRemainderCulled` for a size below the book minimum,
+  and `InsufficientFreeCollateral` for the margin gate. On `place_and_take_perp_order_v1` a
+  spent reduce-only order counts as filled for `FullFill`, and a non-IOC remainder that can
+  never rest, such as an `Oracle` order, fails the take with `InvalidOrder` after the fill.
+- `place_signed_msg_taker_order` (feat/propamm). An entry that neither fills nor rests fails
+  with `SignedMsgEntryNeitherFilledNorRested` (6459), so the whole bundle reverts: the sidecars
+  do not arm, the uuid is not spent, and the margin-ratio and isolated-deposit settings do not
+  apply. It returned `Ok` before. A post-only entry fails with `InvalidOrderPostOnly`, and a
+  `TriggerMarket` or `TriggerLimit` entry with `InvalidSignedMsgOrderParam`. On a book with a
+  speed bump, an unattested IOC entry, or one with no rest price such as an `Oracle` order,
+  fails with `UnattestedSynchronousTake`. `is_delegate_signer` for a user with no delegate
+  fails with `SigVerificationFailed`, and so does a signature under a small-order key, on the
+  taker message and on the flow attestation.
+- Triggers (feat/propamm). `place_trigger_orders_v1`, the SL/TP sidecars of a signed message
+  and a trigger amend refuse a market with no CLOB with `TriggerMarketHasNoClob` (6460).
+  `trigger_market_order_v1` refuses an order that is not a `TriggerMarket`
+  (`OrderNotTriggerable`) or not on `args.market_index` (`InvalidOrderMarketType`), and it
+  cancels a risk-increasing stop on an account that fails initial margin with the fired order
+  counted. `trigger_limit_order_v1` trips the equity breaker when it cancels a trigger for
+  insufficient free collateral, fires a reduce-only trigger on a `ReduceOnly` market, and emits `OrderActionRecord(Trigger)` with the
+  keeper reward and the trigger price before its CLOB place record. That record's
+  `trigger_condition` reads `TriggeredAbove` or `TriggeredBelow`. Relay wakes a trigger where
+  the median trigger price can first reach it, and does not stage an expired one.
+- The unnamed market-order bound depends on the contract tier (feat/propamm). A price-0 market
+  order and a fired stop-market take `oracle / divisor` from the oracle: 2 percent on tier A,
+  5 percent on B and C, 10 percent on Speculative, and 20 percent on HighlySpeculative and
+  Isolated. A fired stop-market still stores the bound as an oracle offset.
+- Router fills (feat/propamm). The mark TWAP sample of a fill is the fill's average price over
+  every source, on the routed branch and on a settled taker-origin pair. A post-only order takes
+  no external book. A maker in a `ReduceOnly` market may only reduce, and a change that grows
+  one fails with `QuoterReportExceedsReservation`. A Custom quoter's user gets no depth while
+  latched or bankrupt, and only reducing depth while its breaker is tripped or its floor is
+  breached or unverifiable. A CLOB maker under liquidation gets a zero budget. A book that rests
+  a level outside its oracle band quotes nothing to that fill. A vAMM past its reserve bound
+  fails the fill with `InvalidAmmForFillDetected`. A filled maker's `last_active_slot` updates.
+  A maker that cranks the fill earns the filler reward on the vAMM slice, unless it shares the
+  taker's authority. The vAMM limit cap rounds for the house, by at most one quote unit.
+- Cranks (feat/propamm). The pair branch of `crank_taker_origin_cross` applies the
+  open-interest cap, the fill-price bands, a TWAP-5m divergence refusal (`PriceBandsBreached`),
+  the exchange-oracle gate for a party with an equity floor (`InvalidOracle`), the funding
+  update, the last fill price, the 24-hour volume and the mark TWAP. A reduce-only side shrinks
+  the pair to its cover, and the pair fails with `NoTakerOriginCross` only when nothing is
+  left. A `BuilderReferral` taker needs its `RevenueShareEscrow` on both branches
+  (`UnableToLoadRevenueShareAccount`). A cranker that shares the taker's authority earns no
+  reward and no filler volume. A cranker outside pool 0 fails with `InvalidPoolId` when a
+  reward is due. `crank_clob_remove_expired` and `crank_clob_evict` charge no maker fee under a
+  full exchange halt, refuse a filler outside pool 0 with `InvalidPoolId`, and clamp the
+  release to the reservation.
 
 ### 5.8 PropAMM quoter interface
 
@@ -1615,7 +1751,7 @@ long carry a one-line summary here and a link into §6.2.
 | equity-floor-oracle-validity | Fix three OtterSec findings (#131, #139, #142) where an equity-floor decision was taken off an oracle price the program had already judged invalid. Introduced a two-sided equity bound, later replaced by `equity-floor-fail-closed`. [Details](#equity-floor-oracle-validity) |
 | expiry-price-conservation | Fix three Medium audit findings (OtterSec #116, #125, #147) on opposite sides of the same expiry-settlement conservation equation, where aggregate user claims must fit the value that backs them. [Details](#expiry-price-conservation) |
 | expiry-settlement-guards | Fix two High audit findings (OtterSec #149, #133). #149: a time-expired perp position could still be liquidated at the live oracle before its fixed settlement price existed. Every ordinary user path already refuses past `expiry_ts` via `is_in_settlement(now)`, so placing, filling, triggering, transferring and settling all gate on it, but `liquidate_perp` and `liquidate_perp_with_fill` did not. For the whole window between `expiry_ts` and a warm admin flipping the status to `Settlement`, a liquidator could take the position at a live price the committed `expiry_price` then supersedes, while the owner had no way to act. Both now reject with `InvalidLiquidation` when the market has expired but is not yet `Settlement` or `Delisted`. They are deliberately not gated on `is_in_settlement` itself, because that is also true once the status is `Settlement` or `Delisted`, by which point `expiry_price` is committed and liquidating during the wind-down is a legitimate way to resolve bad debt. An existing delisting test caught the over-broad first attempt. `resolve_perp_bankruptcy` is likewise untouched, so bad debt on an expired market can always still be cleared. Integrator-visible: liquidating a perp market between `expiry_ts` and its `Settlement` flip now reverts, so run `settle_expired_market` first, then close positions via `settle_expired_position`. #133: a negative committed `expiry_price` was clipped out of margin and equity. `calculate_base_asset_value_and_pnl_with_oracle_price` clamps a non-positive price to zero, which is correct for a live oracle where a negative print is nonsense, but margin reused it for the `Settlement` valuation, so a long's signed base loss was clipped to zero and the position read as merely worthless instead of underwater, letting the owner withdraw collateral. `settle_expired_position` values the same position through `calculate_base_asset_value_with_expiry_price`, which never clamped, and later booked the real negative value as an unsecured quote borrow, and that divergence was the bug. The new `calculate_base_asset_value_and_pnl_with_expiry_price` keeps the sign, and both `Settlement` branches in `math/margin.rs` use it. The live-oracle clamp is deliberately left intact, since it is a real guard against a bogus oracle print and only the expiry-price path is legitimately allowed to be negative. No account-layout, IDL, error-code or SDK-API change, since it reuses `InvalidLiquidation` |
-| feat/propamm | PropAMM order flow. Perps fill through one router across the vAMM, an on-chain CLOB book and external quoter programs. The DLOB, order auctions, AMM JIT and jit-proxy are removed, and every live order is ephemeral: only its unfilled remainder rests, on the book. New accounts `QuoterV0`, `QuoterSlabV0`, `ClobCrankConditionsV0`, `UserConditionsV0` and `CrankTreasuryV0`, new error codes 6375 to 6458, and relay cranks for expiry, eviction, crosses, triggers and liquidations. Velocity holds every attached book's config authority, and `update_perp_market_clob_book_config` / `resize_perp_market_clob_book` are the only paths that change it. §2, §3, §4 and §5 carry the surface. [Details](#propamm-order-flow) |
+| feat/propamm | PropAMM order flow. Perps fill through one router across the vAMM, an on-chain CLOB book and external quoter programs. The DLOB, order auctions, AMM JIT and jit-proxy are removed, and every live order is ephemeral: only its unfilled remainder rests, on the book. New accounts `QuoterV0`, `QuoterSlabV0`, `ClobCrankConditionsV0`, `UserConditionsV0` and `CrankTreasuryV0`, new error codes 6375 to 6460, and relay cranks for expiry, eviction, crosses, triggers and liquidations. Velocity holds every attached book's config authority, and `update_perp_market_clob_book_config` / `resize_perp_market_clob_book` are the only paths that change it. §2, §3, §4 and §5 carry the surface. [Details](#propamm-order-flow) |
 | fee-tier-vip3 | Adds a fourth perp fee tier, VIP 3, at $200M trailing-30d volume (§3). `PERP_FEE_TIER_MAX_INDEX` goes from 2 to 3, `VOLUME_THRESHOLDS` gains `TWO_HUNDRED_MILLION_QUOTE`, `FeeStructure::perps_default` seeds `fee_tiers[3]`, and `update_promo_fee_tier` accepts 3. No ix, layout, IDL or error-code change, since the slot already existed in the 10-wide array. SDK mirror: `VIP_FEE_TIER_THREE_VOLUME_QUOTE` in `PERP_FEE_TIER_VOLUME_THRESHOLDS`, so `getPerpFeeTierIndex`, `getUserFeeTier` and `getMarketFees` pick tier 3 above $200M. Admin CLI `fees set-schedule` takes four tier fees |
 | fill-stale-margin-bad-debt | Fix four High audit findings (OtterSec #143, #144 on oracle validity, and #135, #148 on unaccrued interest) in the perp-fill path's post-fill margin checks. Adds the new error `SpotMarketInterestStaleForMargin` (6371). [Details](#fill-stale-margin-bad-debt) |
 | if-add-exact-share-pricing | Follow-up to #253 on the same High finding. Rejecting only the zero-share case still let a deposit be partly captured. Shares are indivisible, so a request worth 1.5 shares minted 1 and donated the remaining half to existing shareholders, and with a donation-inflated share price the forfeited fraction approaches 100%, so the zero-share guard bounded the loss rather than removing it. `add_insurance_fund_stake` now transfers only the portion of the requested amount that prices to whole shares, via `deposit_amount_and_shares_for_if_stake`, which floors the shares and ceils their cost so the fund never sells a share below price, and leaves the remainder, always less than one share price, in the depositor's token account. `IFDepositMintsZeroShares` (6360) now means the request is below the price of one share. `InsuranceFundStakeRecord.amount`, `InsuranceFundStake.cost_basis`, `UserStats.if_staked_quote_asset_amount` and `SpotMarket.if_last_settle_vault_amount` all track the accepted amount rather than the request. Integrators must treat the `amount` argument as an upper bound and read the staked amount from `InsuranceFundStakeRecord`, since the SDK's `fromSubaccount` path leaves any remainder in the wallet's token account. The `vaults` program's `add_insurance_fund_stake` stakes the whole balance of `vault_if_token_account` rather than the requested `amount`, so a remainder left by an earlier add folds into the next one. That account holds nothing else and no instruction sweeps it, so the amount staked can exceed the manager's transfer. No layout, IDL or error-code change |
@@ -2681,8 +2817,9 @@ the placement args, the node, `RemovedOrderV0`, `CompletedOrderV0`, the new
 `PartiallyFilledOrderV0`, and every CLOB event), so a client names an order the same way
 wherever it rests and holds no map between two id spaces. Its lifecycle is on the records the
 order-history pipeline already reads: velocity emits `OrderRecord` when an order starts resting
-(placement, modify, a trigger firing, a taker remainder migrating) and `OrderActionRecord` with
-`OrderAction::Cancel` when it stops, with two appended `OrderActionExplanation` variants,
+(placement, modify, a trigger firing, a taker remainder migrating), a maker placement adds
+`OrderActionRecord` with `OrderAction::Place`, and velocity emits `OrderActionRecord` with
+`OrderAction::Cancel` when an order stops, with two appended `OrderActionExplanation` variants,
 `ClobOrderEvicted` and `ClobRemainderCulled`. Both records carry `OrderBitFlag::PlacedOnClob`,
 and `OrderBitFlag::IsIsolatedPosition` when the order belongs to an isolated position, so a
 reader learns a book order's margin regime from the record that opens it. A fill's
@@ -2862,7 +2999,8 @@ Reservoir and treasury. `force_cancel_clob_orders` paid its reservoir whenever i
 and the only work gate was `open_bids`/`open_asks`, which count a user's slot orders too, so an
 account holding only those swept a book that held nothing of theirs, `cancel_all_v0` removed
 zero without erroring, and the payment landed anyway; it now requires a removal.
-`force_cancel_clob_orders` also drops the liquidatee's `user_stats` account. Its grounds are
+`force_cancel_clob_orders` also drops the liquidatee's `user_stats` account and the
+filler's `filler_stats` account. Its grounds are
 the two `force_cancel_orders` answers to: the account fails initial margin, or it is provably
 below its equity floor. The authority-wide equity breaker authorises neither surface, so both
 force-cancel routes answer one rule. The liquidation priority-fee reimbursement was charged per
@@ -2978,7 +3116,9 @@ look, PropAMM crossing and the pre-execute margin clamp all apply. It carries th
 on the tail and an `instructions_sysvar`. Its cost rose from ~75k to ~328k CU, past one
 instruction's 200,000 default, so a caller must request a budget. New errors
 `CrossMatchLegsDoNotCross` (6407) and `TakerExposureNotProtocolOwned` (6408);
-`CrossedTakerRemainderPending` (6390) is deprecated in place and no longer emitted. CLOB place
+`CrossedTakerRemainderPending` (6390) is deprecated in place and no longer emitted. The
+payment floor is priced at the live SOL oracle, or else at the SOL spot market's 5-minute TWAP,
+so the call carries one of them (§5.4). CLOB place
 records now carry `IsIsolatedPosition`, matching the cancel and fill records.
 
 ##### Liquidation and the funding mark read the book
@@ -2986,7 +3126,8 @@ records now carry `IsIsolatedPosition`, matching the cancel and fill records.
 `liquidate_perp_with_fill` fills its forced order through the router, so a liquidation reaches
 the market's CLOB and its PropAMM quoters instead of matching only the makers the caller
 loaded. The named account list does not change: the quoter section rides `remaining_accounts`
-after the maker pairs, and a market that names a book refuses the call without it. The
+after the maker pairs, and a market that names a book refuses the call without it. The book
+of each other market in the liquidation's scope rides before the maker pairs (§5.4). The
 liquidator is still only the filler and acquires no position. A liquidation carries no
 attestation, so the route vouches for protected flow the way the cross cranks do. It measures
 that the depth it can reach has rested for `SERVED_WINDOW_MIN_SLOTS`, rather than asserting a
@@ -3058,13 +3199,11 @@ emit the same record; `MidpointQuoterV0` gains `pending_authority: Address`, car
 trailing padding, so the account size is unchanged but a decoder that reads that offset as
 padding must add the field.
 
-Behaviour an integrator can observe. A liquidation refuses while the account holds orders on a
-book, and that refusal now covers `set_user_status_to_being_liquidated` and the four spot and
-pnl liquidation entries as well as the perp ones, so `force_cancel_clob_orders` runs first; a
-fired trigger order counts as book-resident for that rule. `modify_order_v1` applies the same
+Behaviour an integrator can observe. A liquidation cancels the account's book orders in its
+scope itself, so `force_cancel_clob_orders` is not a prerequisite (§5.4, §5.7). `modify_order_v1` applies the same
 placement preconditions a placement does. An eviction charges the evicted maker the flat
-removal reward, as an expiry already did. A fired stop that cannot rest emits a cancel record
-rather than disappearing, and a reducing remainder is no longer held to a margin gate the old
+removal reward, as an expiry already did. A taker remainder that does not rest, on the take, signed-message
+and fired-stop paths, emits a cancel record rather than disappearing (§5.7), and a reducing remainder is no longer held to a margin gate the old
 matching path never applied. A reduce-only order is sized against the position as each leg
 leaves it, so several of one maker's orders in one fill cannot flip that maker's position. The
 vAMM's last look shades only the depth a rival actually offers. A fill that withholds book
@@ -3085,8 +3224,8 @@ quoting that over-allocates the vAMM. The protocol-owned `User` is exempt from t
 external-payer allowlist, because its authority is `State::signer` and a program address can
 neither sign nor pay. An armed trigger past its `max_ts` is no longer payable work on either
 trigger endpoint, and relay's discovery skips it, so a dead stop neither pays a keeper nor
-starves the triggers behind it. `crank_taker_origin_cross` accepts the taker's
-`RevenueShareEscrow`: without it a referred taker's cross failed outright, and with it the
+starves the triggers behind it. `crank_taker_origin_cross` requires the taker's
+`RevenueShareEscrow` for a `BuilderReferral` taker on both of its branches, and with it the
 referee discount and referrer reward bind. A builder fee does not bind on that path, because
 the book row carries its own handle rather than the velocity order id.
 `force_cancel_clob_orders` cancels during a full exchange halt but pays no keeper fee.
@@ -3100,7 +3239,7 @@ longer writes to the makers it sizes.
 ##### Auctions are gone
 
 An order carries one worst price instead of a ramp, and `Order.price` holds it for every type.
-A market order's bound is clamped to 0.5 percent of the oracle at placement. An oracle-relative
+A market order that names no price takes a bound from its contract tier (§5.7). An oracle-relative
 order uses `oracle_price_offset`. `auction_start_price`, `auction_end_price` and
 `auction_duration` are renamed on `Order`, removed from `OrderParams` and `ModifyOrderParams`,
 and replaced there by `activation_delay_slots`. Off-chain fill prediction must stop

@@ -6184,7 +6184,7 @@ export class VelocityClient {
 	/**
 	 * Opens/increases a perp position with a market order (or a limit order if `limitPrice` is
 	 * given), filled immediately against the AMM/makers via `placeAndTakePerpOrder`.
-	 * @deprecated use `placePerpOrder` or `placeAndTakePerpOrder` instead.
+	 * @deprecated use `placeAndTakePerpOrder` instead.
 	 * @param direction - `LONG` or `SHORT`.
 	 * @param amount - Base asset amount to trade, BASE_PRECISION (1e9).
 	 * @param marketIndex - Perp market index.
@@ -8995,7 +8995,7 @@ export class VelocityClient {
 	 * Closes (or reduces to zero) the caller's entire perp position in `marketIndex` with a
 	 * reduce-only market order (or limit order if `limitPrice` is given), filled immediately via
 	 * `placeAndTakePerpOrder`.
-	 * @deprecated use `placePerpOrder` or `placeAndTakePerpOrder` instead.
+	 * @deprecated use `placeAndTakePerpOrder` instead.
 	 * @param marketIndex - Perp market index of the position to close.
 	 * @param limitPrice - Optional limit price, PRICE_PRECISION (1e6); omit for a pure market order.
 	 * @param subAccountId - Sub-account holding the position; defaults to the active sub-account.

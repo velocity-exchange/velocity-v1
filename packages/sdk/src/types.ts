@@ -284,7 +284,7 @@ export class OracleSourceNum {
 	static readonly PYTH_LAZER_STABLE_COIN = 15;
 }
 
-/** The order's price-determination mechanism: `LIMIT`/`TRIGGER_LIMIT` use `Order.price`, `MARKET`/`TRIGGER_MARKET` fill at the best available price (subject to any auction), and `ORACLE` prices relative to the oracle via `Order.oraclePriceOffset`. `TRIGGER_*` variants only become active once `Order.triggerPrice` is crossed. */
+/** The order's price-determination mechanism: `LIMIT`/`TRIGGER_LIMIT` use `Order.price`, `MARKET`/`TRIGGER_MARKET` fill at the best available price up to their worst price, and `ORACLE` prices relative to the oracle via `Order.oraclePriceOffset`. `TRIGGER_*` variants only become active once `Order.triggerPrice` is crossed. */
 export class OrderType {
 	static readonly LIMIT = { limit: {} };
 	static readonly TRIGGER_MARKET = { triggerMarket: {} };
@@ -2158,7 +2158,7 @@ export type Order = {
 	orderId: number;
 	userOrderId: number;
 	marketIndex: number;
-	/** the limit price; can be 0 for market orders. For orders with an auction, unused until the auction completes. PRICE_PRECISION (1e6) */
+	/** the limit price. A market order that names 0 takes a worst price from the oracle and the contract tier. A signed market entry must name one. PRICE_PRECISION (1e6) */
 	price: BN;
 	/** perp: BASE_PRECISION (1e9); spot: token mint precision */
 	baseAssetAmount: BN;

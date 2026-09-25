@@ -4,8 +4,18 @@
 //! authority signs off chain. It is authority-scoped, so every subaccount
 //! shares it. `SignedMsgWsDelegates` names the keys allowed to submit on the
 //! authority's behalf.
+//!
+//! Resize and delete take the record as an unchecked account, because a
+//! record in the legacy layout does not decode as `Account<SignedMsgUserOrders>`.
+//! See `state::signed_msg_user` for the layouts.
 
-use super::*;
+use {
+    super::*,
+    crate::state::signed_msg_user::{
+        validate_signed_msg_user_orders_account, SignedMsgUserOrdersSnapshot,
+        SIGNED_MSG_USER_ORDERS_VERSION,
+    },
+};
 
 pub fn handle_initialize_signed_msg_user_orders<'c: 'info, 'info>(
     ctx: Context<'info, InitializeSignedMsgUserOrders<'info>>,
@@ -13,6 +23,7 @@ pub fn handle_initialize_signed_msg_user_orders<'c: 'info, 'info>(
 ) -> Result<()> {
     let signed_msg_user_orders = &mut ctx.accounts.signed_msg_user_orders;
     signed_msg_user_orders.authority_pubkey = ctx.accounts.authority.key();
+    signed_msg_user_orders.version = SIGNED_MSG_USER_ORDERS_VERSION;
     signed_msg_user_orders
         .signed_msg_order_data
         .resize_with(num_orders as usize, SignedMsgOrderId::default);
@@ -20,27 +31,71 @@ pub fn handle_initialize_signed_msg_user_orders<'c: 'info, 'info>(
     Ok(())
 }
 
+/// Resize the record to `num_orders` entries. The record is read in either
+/// layout, and the write migrates a legacy record to the current one.
 pub fn handle_resize_signed_msg_user_orders<'c: 'info, 'info>(
     ctx: Context<'info, ResizeSignedMsgUserOrders<'info>>,
     num_orders: u16,
 ) -> Result<()> {
-    let signed_msg_user_orders = &mut ctx.accounts.signed_msg_user_orders;
+    let account = ctx.accounts.signed_msg_user_orders.to_account_info();
+    let mut snapshot = SignedMsgUserOrdersSnapshot::read(&account)?;
     // SignedMsgUserOrders is authority-scoped and shared across the authority's subaccounts, and
     // its replay-protection UUIDs cover every one. Shrinking it evicts active UUIDs of other
     // subaccounts and re-enables replay of their signed orders, so only the authority may shrink
     // it, not a per-subaccount delegate. Anyone else may only grow it and pays the rent.
     if ctx.accounts.payer.key != ctx.accounts.authority.key {
         validate!(
-            num_orders as usize >= signed_msg_user_orders.signed_msg_order_data.len(),
+            num_orders as usize >= snapshot.header_len as usize,
             ErrorCode::InvalidSignedMsgUserOrdersResize,
             "Invalid shrinking resize for payer != user authority"
         )?;
     }
 
-    signed_msg_user_orders
-        .signed_msg_order_data
-        .resize_with(num_orders as usize, SignedMsgOrderId::default);
-    signed_msg_user_orders.validate()?;
+    snapshot.resize(num_orders as usize)?;
+    resize_paid_by(
+        &account,
+        &ctx.accounts.payer.to_account_info(),
+        &ctx.accounts.system_program,
+        SignedMsgUserOrders::space(num_orders as usize),
+    )?;
+
+    snapshot.write(&account)?;
+
+    Ok(())
+}
+
+/// Resize `account` the way Anchor's `realloc` constraint does. The payer
+/// covers the rent shortfall of a growth, and a shrink refunds the excess
+/// rent to the payer.
+fn resize_paid_by<'info>(
+    account: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    system_program: &Program<'info, System>,
+    new_space: usize,
+) -> Result<()> {
+    let rent_minimum = Rent::get()?.minimum_balance(new_space);
+    if new_space > account.data_len() {
+        let shortfall = rent_minimum.saturating_sub(account.lamports());
+        if shortfall > 0 {
+            anchor_lang::system_program::transfer(
+                CpiContext::new(
+                    system_program.key(),
+                    anchor_lang::system_program::Transfer {
+                        from: payer.clone(),
+                        to: account.clone(),
+                    },
+                ),
+                shortfall,
+            )?;
+        }
+    } else if new_space < account.data_len() {
+        let refund = account.lamports().saturating_sub(rent_minimum);
+        **account.try_borrow_mut_lamports()? -= refund;
+        **payer.try_borrow_mut_lamports()? += refund;
+    }
+
+    account.resize(new_space).map_err(Into::<Error>::into)?;
+
     Ok(())
 }
 
@@ -75,9 +130,23 @@ pub fn handle_change_signed_msg_ws_delegate_status<'c: 'info, 'info>(
     Ok(())
 }
 
-pub fn handle_delete_signed_msg_user_orders(
-    _ctx: Context<DeleteSignedMsgUserOrders>,
-) -> Result<()> {
+/// Close the record to the authority, the way Anchor's `close` constraint
+/// does. The record is read unchecked, so a legacy record closes too.
+pub fn handle_delete_signed_msg_user_orders(ctx: Context<DeleteSignedMsgUserOrders>) -> Result<()> {
+    let account = ctx.accounts.signed_msg_user_orders.to_account_info();
+    validate_signed_msg_user_orders_account(&account)?;
+
+    let authority = ctx.accounts.authority.to_account_info();
+    let closed_lamports = account.lamports();
+    **authority.try_borrow_mut_lamports()? = authority
+        .lamports()
+        .checked_add(closed_lamports)
+        .ok_or(ErrorCode::MathError)?;
+    **account.try_borrow_mut_lamports()? = 0;
+
+    account.assign(&anchor_lang::system_program::ID);
+    account.resize(0).map_err(Into::<Error>::into)?;
+
     Ok(())
 }
 
@@ -103,15 +172,13 @@ pub struct InitializeSignedMsgUserOrders<'info> {
 #[derive(Accounts)]
 #[instruction(num_orders: u16)]
 pub struct ResizeSignedMsgUserOrders<'info> {
+    /// CHECK: the handler checks the owner and the discriminator in either layout.
     #[account(
         mut,
         seeds = [SIGNED_MSG_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
-        realloc = SignedMsgUserOrders::space(num_orders as usize),
-        realloc::payer = payer,
-        realloc::zero = false,
     )]
-    pub signed_msg_user_orders: Box<Account<'info, SignedMsgUserOrders>>,
+    pub signed_msg_user_orders: UncheckedAccount<'info>,
     /// CHECK: authority
     pub authority: UncheckedAccount<'info>,
     #[account(mut)]
@@ -155,13 +222,13 @@ pub struct ChangeSignedMsgWsDelegateStatus<'info> {
 
 #[derive(Accounts)]
 pub struct DeleteSignedMsgUserOrders<'info> {
+    /// CHECK: the handler checks the owner and the discriminator in either layout.
     #[account(
         mut,
-        close = authority,
         seeds = [SIGNED_MSG_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
     )]
-    pub signed_msg_user_orders: Box<Account<'info, SignedMsgUserOrders>>,
+    pub signed_msg_user_orders: UncheckedAccount<'info>,
     #[account(mut)]
     pub state: AccountLoader<'info, State>,
     pub authority: Signer<'info>,

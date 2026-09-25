@@ -16,7 +16,7 @@ mod signed_msg_order_id_eviction {
     fn signed_msg_order_id_exists() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             len: 32,
         });
         let data = RefCell::new([0u8; 1280]);
@@ -72,7 +72,7 @@ mod signed_msg_order_id_eviction {
     fn signed_msg_user_order_account_full() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             len: 32,
         });
 
@@ -110,7 +110,7 @@ mod signed_msg_order_id_eviction {
     fn bad_signed_msg_order_ids() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             len: 32,
         });
 
@@ -189,7 +189,7 @@ mod zero_copy {
     fn zero_copy() {
         let mut orders: SignedMsgUserOrders = SignedMsgUserOrders {
             authority_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             signed_msg_order_data: Vec::with_capacity(100),
         };
 
@@ -262,7 +262,7 @@ mod zero_copy {
     fn zero_copy_mut() {
         let mut orders: SignedMsgUserOrders = SignedMsgUserOrders {
             authority_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             signed_msg_order_data: Vec::with_capacity(100),
         };
 
@@ -362,7 +362,7 @@ mod resting_route {
     fn a_resting_entry_survives_the_stale_sweep() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             len: LEN,
         });
         let data = RefCell::new([0u8; 1280]);
@@ -411,7 +411,7 @@ mod resting_route {
     fn a_reused_uuid_routes_the_new_entry() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             len: LEN,
         });
         let data = RefCell::new([0u8; 1280]);
@@ -471,7 +471,7 @@ mod resting_route {
     fn a_full_account_refuses_while_every_entry_is_live() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             len: LEN,
         });
         let data = RefCell::new([0u8; 1280]);
@@ -509,7 +509,7 @@ mod resting_route {
     fn a_full_account_reclaims_only_an_expired_resting_entry() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             len: LEN,
         });
         let data = RefCell::new([0u8; 1280]);
@@ -549,7 +549,7 @@ mod resting_route {
     fn the_reclaim_advances_as_entries_expire() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
-            padding: 0,
+            version: 0,
             len: LEN,
         });
         let data = RefCell::new([0u8; 1280]);
@@ -625,7 +625,7 @@ mod market_scoped_route {
             Self {
                 fixed: RefCell::new(SignedMsgUserOrdersFixed {
                     user_pubkey: Pubkey::default(),
-                    padding: 0,
+                    version: 0,
                     len: LEN,
                 }),
                 data: RefCell::new([0u8; 1280]),
@@ -642,7 +642,7 @@ mod market_scoped_route {
         fn orders(&self) -> SignedMsgUserOrdersZeroCopy<'_> {
             SignedMsgUserOrdersZeroCopy {
                 fixed: self.fixed.borrow(),
-                data: self.data.borrow(),
+                data: std::cell::Ref::map(self.data.borrow(), |d| &d[..LEN as usize * 40]),
             }
         }
 
@@ -721,7 +721,7 @@ mod market_scoped_route {
     fn record_bytes(authority: &Pubkey) -> Vec<u8> {
         let orders = SignedMsgUserOrders {
             authority_pubkey: *authority,
-            padding: 0,
+            version: 0,
             signed_msg_order_data: vec![SignedMsgOrderId::default(); LEN as usize],
         };
         let mut bytes = SignedMsgUserOrders::DISCRIMINATOR.to_vec();
@@ -781,6 +781,267 @@ mod signed_msg_max_slot {
             signed_msg_max_slot(clock, 100, false),
             clock.slot_at_or_after_duration(100, SIGNED_MSG_FILL_WINDOW)
         );
+
         assert!(signed_msg_max_slot(clock, 100, false) > 100);
+    }
+}
+
+#[cfg(test)]
+mod legacy_layout {
+    use {
+        crate::{
+            error::ErrorCode,
+            math::time::SlotClock,
+            state::{
+                order_params::NO_ROUTE_DIGEST,
+                signed_msg_user::{
+                    is_legacy_layout, validate_signed_msg_user_orders_account, SignedMsgOrderId,
+                    SignedMsgUserOrders, SignedMsgUserOrdersFixed, SignedMsgUserOrdersLoader,
+                    SignedMsgUserOrdersSnapshot, LEGACY_DEADLINE_EXTENSION_SLOTS,
+                    SIGNED_MSG_USER_ORDERS_VERSION,
+                },
+            },
+            test_utils::create_account_info,
+            ID,
+        },
+        anchor_lang::{prelude::Pubkey, Discriminator},
+    };
+
+    /// The legacy `max_slot` of a replay entry and its uuid.
+    struct LegacyEntry {
+        uuid: [u8; 8],
+        max_slot: u64,
+    }
+
+    /// A master-era account: 24-byte entries, version 0, `legacy_space` bytes.
+    fn legacy_bytes(authority: &Pubkey, len: u32, live: &[LegacyEntry]) -> Vec<u8> {
+        let mut bytes = SignedMsgUserOrders::DISCRIMINATOR.to_vec();
+        bytes.extend_from_slice(authority.as_ref());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&len.to_le_bytes());
+        for (index, entry) in live.iter().enumerate() {
+            bytes.extend_from_slice(&entry.uuid);
+            bytes.extend_from_slice(&entry.max_slot.to_le_bytes());
+            bytes.extend_from_slice(&(index as u32 + 1).to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        bytes.resize(SignedMsgUserOrders::legacy_space(len as usize), 0);
+        bytes
+    }
+
+    fn entry(uuid: u8, max_slot: u64) -> LegacyEntry {
+        LegacyEntry {
+            uuid: [uuid; 8],
+            max_slot,
+        }
+    }
+
+    fn fixed(version: u32, len: u32) -> SignedMsgUserOrdersFixed {
+        SignedMsgUserOrdersFixed {
+            user_pubkey: Pubkey::default(),
+            version,
+            len,
+        }
+    }
+
+    #[test]
+    fn only_version_zero_at_the_legacy_size_is_legacy() {
+        let legacy_8 = SignedMsgUserOrders::legacy_space(8);
+        let legacy_1 = SignedMsgUserOrders::legacy_space(1);
+
+        assert!(is_legacy_layout(&fixed(0, 8), legacy_8));
+        assert!(is_legacy_layout(&fixed(0, 1), legacy_1));
+        assert!(!is_legacy_layout(
+            &fixed(0, 8),
+            SignedMsgUserOrders::space(8)
+        ));
+        assert!(!is_legacy_layout(&fixed(0, 7), legacy_8));
+        // A migrated 1-entry account keeps the legacy size of one entry.
+        assert!(!is_legacy_layout(&fixed(1, 1), legacy_1));
+    }
+
+    #[test]
+    fn a_mutable_load_migrates_the_live_entries_newest_first() {
+        let authority = Pubkey::new_unique();
+        let mut bytes = legacy_bytes(
+            &authority,
+            8,
+            &[entry(1, 100), entry(0, 0), entry(3, 300), entry(2, 200)],
+        );
+        let data_len = bytes.len();
+        let mut lamports = 7;
+        let key = Pubkey::new_unique();
+        let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+
+        let orders = info.load_mut().unwrap();
+        assert_eq!(orders.fixed.version, SIGNED_MSG_USER_ORDERS_VERSION);
+        assert_eq!(orders.fixed.user_pubkey, authority);
+        assert_eq!(orders.len(), 5);
+
+        let max_slots: Vec<u64> = (0..orders.len()).map(|i| orders.get(i).max_slot).collect();
+        let extended = |slot: u64| slot + LEGACY_DEADLINE_EXTENSION_SLOTS;
+        assert_eq!(
+            max_slots,
+            vec![extended(300), extended(200), extended(100), 0, 0]
+        );
+        assert_eq!(orders.get(0).uuid, [3; 8]);
+        assert_eq!(orders.get(0).order_id, 3);
+        assert_eq!(orders.get(0).clob_order_id, 0);
+        assert_eq!(orders.get(0).route_digest, NO_ROUTE_DIGEST);
+        drop(orders);
+
+        assert_eq!(info.data_len(), data_len);
+        assert_eq!(info.lamports(), 7);
+        assert!(info.load_mut().is_ok());
+    }
+
+    /// Placement fails closed, so no live uuid is ever dropped.
+    #[test]
+    fn a_migration_refuses_more_live_entries_than_slots() {
+        let live: Vec<LegacyEntry> = (1..=6).map(|i| entry(i, 100 + i as u64)).collect();
+        let mut bytes = legacy_bytes(&Pubkey::new_unique(), 8, &live);
+        let before = bytes.clone();
+        let mut lamports = 0;
+        let key = Pubkey::new_unique();
+        let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+
+        let result = info.load_mut();
+        assert_eq!(
+            result.err().unwrap(),
+            ErrorCode::SignedMsgUserOrdersAccountFull
+        );
+
+        drop(info);
+
+        assert_eq!(bytes, before);
+    }
+
+    #[test]
+    fn a_read_only_load_of_a_legacy_account_has_no_entries() {
+        let mut bytes = legacy_bytes(&Pubkey::new_unique(), 8, &[entry(1, 100)]);
+        let mut lamports = 0;
+        let key = Pubkey::new_unique();
+        let info = create_account_info(&key, false, &mut lamports, &mut bytes, &ID);
+
+        let orders = info.load().unwrap();
+        assert_eq!(orders.len(), 0);
+        assert_eq!(orders.iter().count(), 0);
+        assert_eq!(orders.route_for_clob_order(0, 1), None);
+        assert_eq!(orders.fixed.version, 0);
+    }
+
+    /// The legacy deadline of an auction order is behind this program's
+    /// window, so without the extension the sweep frees the uuid.
+    #[test]
+    fn a_uuid_live_before_the_migration_is_still_refused() {
+        let legacy_max_slot = 100;
+        let mut bytes = legacy_bytes(&Pubkey::new_unique(), 8, &[entry(4, legacy_max_slot)]);
+        let mut lamports = 0;
+        let key = Pubkey::new_unique();
+        let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+
+        let mut orders = info.load_mut().unwrap();
+        let replay = SignedMsgOrderId::new([4; 8], legacy_max_slot + 75, 0);
+        let current_slot = legacy_max_slot + 40;
+        assert!(orders.check_exists_and_prune_stale_signed_msg_order_ids(
+            replay,
+            current_slot,
+            SlotClock::baseline()
+        ));
+    }
+
+    #[test]
+    fn a_header_longer_than_the_data_is_an_error() {
+        let mut bytes = SignedMsgUserOrders::DISCRIMINATOR.to_vec();
+        bytes.extend_from_slice(&[0; 36]);
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.resize(bytes.len() + 2 * 40, 0);
+        let mut lamports = 0;
+        let key = Pubkey::new_unique();
+        let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+        assert_eq!(info.load().err().unwrap(), ErrorCode::DefaultError);
+        assert_eq!(info.load_mut().err().unwrap(), ErrorCode::DefaultError);
+
+        let mut short = SignedMsgUserOrders::DISCRIMINATOR.to_vec();
+        let short_info = create_account_info(&key, true, &mut lamports, &mut short, &ID);
+        assert_eq!(short_info.load().err().unwrap(), ErrorCode::DefaultError);
+    }
+
+    /// The handler reallocates between `read` and `write`. The test does it
+    /// by hand.
+    #[test]
+    fn a_resize_keeps_every_legacy_entry_at_the_new_stride() {
+        let authority = Pubkey::new_unique();
+        let live: Vec<LegacyEntry> = (1..=6).map(|i| entry(i, 100 + i as u64)).collect();
+        let mut bytes = legacy_bytes(&authority, 8, &live);
+        let mut lamports = 0;
+        let key = Pubkey::new_unique();
+
+        let mut snapshot = {
+            let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+            validate_signed_msg_user_orders_account(&info).unwrap();
+            SignedMsgUserOrdersSnapshot::read(&info).unwrap()
+        };
+
+        assert_eq!(snapshot.header_len, 8);
+        assert_eq!(snapshot.entries.len(), 6);
+
+        snapshot.resize(8).unwrap();
+        bytes.resize(SignedMsgUserOrders::space(8), 0);
+        let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+        snapshot.write(&info).unwrap();
+
+        let orders = info.load().unwrap();
+        assert_eq!(orders.fixed.version, SIGNED_MSG_USER_ORDERS_VERSION);
+        assert_eq!(orders.fixed.user_pubkey, authority);
+        assert_eq!(orders.len(), 8);
+        let uuids: Vec<u8> = orders.iter().map(|entry| entry.uuid[0]).collect();
+        assert_eq!(uuids, vec![6, 5, 4, 3, 2, 1, 0, 0]);
+    }
+
+    #[test]
+    fn a_resize_holds_the_entry_bound() {
+        let mut bytes = legacy_bytes(&Pubkey::new_unique(), 8, &[]);
+        let mut lamports = 0;
+        let key = Pubkey::new_unique();
+        let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+        let mut snapshot = SignedMsgUserOrdersSnapshot::read(&info).unwrap();
+
+        assert_eq!(snapshot.resize(0), Err(ErrorCode::DefaultError));
+        assert_eq!(snapshot.resize(129), Err(ErrorCode::DefaultError));
+        assert!(snapshot.resize(128).is_ok());
+        // The account still has its legacy size, so the write refuses it.
+        assert_eq!(snapshot.write(&info), Err(ErrorCode::DefaultError));
+    }
+
+    #[test]
+    fn a_resize_of_a_current_account_keeps_entry_positions() {
+        let mut orders = SignedMsgUserOrders {
+            authority_pubkey: Pubkey::new_unique(),
+            version: SIGNED_MSG_USER_ORDERS_VERSION,
+            signed_msg_order_data: vec![SignedMsgOrderId::default(); 4],
+        };
+
+        orders.signed_msg_order_data[2] = SignedMsgOrderId::new([2; 8], 50, 1);
+        let mut bytes = SignedMsgUserOrders::DISCRIMINATOR.to_vec();
+        bytes.extend_from_slice(&borsh::to_vec(&orders).unwrap());
+        bytes.resize(SignedMsgUserOrders::space(4), 0);
+        let mut lamports = 0;
+        let key = Pubkey::new_unique();
+
+        let mut snapshot = {
+            let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+            SignedMsgUserOrdersSnapshot::read(&info).unwrap()
+        };
+
+        snapshot.resize(6).unwrap();
+        bytes.resize(SignedMsgUserOrders::space(6), 0);
+        let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
+        snapshot.write(&info).unwrap();
+
+        let orders = info.load().unwrap();
+        assert_eq!(orders.len(), 6);
+        assert_eq!(orders.get(2), &SignedMsgOrderId::new([2; 8], 50, 1));
     }
 }

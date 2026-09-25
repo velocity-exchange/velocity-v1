@@ -30214,7 +30214,11 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
-            "name": "padding",
+            "name": "version",
+            "docs": [
+              "The entry layout. Version 1 stores 40-byte entries. Version 0 at the",
+              "`legacy_space` size stores 24-byte entries."
+            ],
             "type": "u32"
           },
           {

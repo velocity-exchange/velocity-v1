@@ -6290,7 +6290,7 @@ pub mod types {
     )]
     pub struct SignedMsgUserOrders {
         pub authority_pubkey: Pubkey,
-        pub padding: u32,
+        pub version: u32,
         pub signed_msg_order_data: Vec<SignedMsgOrderId>,
     }
     #[repr(C)]
@@ -8477,7 +8477,7 @@ pub mod accounts {
     )]
     pub struct SignedMsgUserOrders {
         pub authority_pubkey: Pubkey,
-        pub padding: u32,
+        pub version: u32,
         pub signed_msg_order_data: Vec<SignedMsgOrderId>,
     }
     #[automatically_derived]

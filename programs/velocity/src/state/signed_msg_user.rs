@@ -1,9 +1,30 @@
+//! The per-authority record of signed messages, `SignedMsgUserOrders`.
+//!
+//! The record is authority-scoped, so every subaccount shares it. Each entry
+//! is replay protection for one message and the routing state of the order
+//! that message became. See [`SignedMsgOrderId`].
+//!
+//! The header's `version` names the entry layout. Version 1 stores 40-byte
+//! entries. An account created before the version field stores 24-byte
+//! entries with no routing state. It has version 0 and exactly
+//! [`SignedMsgUserOrders::legacy_space`] bytes, and [`is_legacy_layout`] is
+//! the only test for it. An account created at 40 bytes before the version
+//! field has version 0 at another size, so it reads as current. Both sizes
+//! have 28 bytes after the entries that no layout reads.
+//!
+//! A legacy account migrates in place on its first mutable load. The size and
+//! the lamports stay the same, so the account then holds fewer entries: the
+//! capacity becomes the entry bytes over 40. The migration keeps every entry
+//! that is not empty, or fails when they do not fit. Dropping an entry could
+//! re-admit a message that is still placeable. A resize migrates as well and
+//! restores the capacity the owner asks for.
+
 use {
     crate::{
         error::{ErrorCode, VelocityResult},
         math::{
             safe_unwrap::SafeUnwrap,
-            time::{Millis, SlotClock},
+            time::{Millis, SlotClock, SLOT_DURATION_TRANSITION_MS},
         },
         msg, validate, ID,
     },
@@ -116,9 +137,21 @@ impl SignedMsgOrderId {
 #[derive(Default, Eq, PartialEq, Debug)]
 pub struct SignedMsgUserOrders {
     pub authority_pubkey: Pubkey,
-    pub padding: u32,
+    /// The entry layout. Version 1 stores 40-byte entries. Version 0 at the
+    /// `legacy_space` size stores 24-byte entries.
+    pub version: u32,
     pub signed_msg_order_data: Vec<SignedMsgOrderId>,
 }
+
+/// The entry layout of an account that this program writes.
+pub const SIGNED_MSG_USER_ORDERS_VERSION: u32 = 1;
+
+pub const MAX_SIGNED_MSG_USER_ORDERS: usize = 128;
+
+/// The discriminator and [`SignedMsgUserOrdersFixed`]. The entries start here.
+const HEADER_LEN: usize = 8 + std::mem::size_of::<SignedMsgUserOrdersFixed>();
+
+const ENTRY_LEN: usize = std::mem::size_of::<SignedMsgOrderId>();
 
 impl SignedMsgUserOrders {
     /// 8 orders - 396 bytes - 0.00364704 SOL for rent
@@ -126,17 +159,25 @@ impl SignedMsgUserOrders {
     /// 32 orders - 1356 bytes - 0.01032864 SOL for rent
     /// 64 orders - 2636 bytes - 0.01923744 SOL for rent
     pub fn space(num_orders: usize) -> usize {
-        8 + 32 + 4 + 32 + num_orders * std::mem::size_of::<SignedMsgOrderId>()
+        8 + 32 + 4 + 32 + num_orders * ENTRY_LEN
+    }
+
+    /// The size of a legacy account with `num_orders` entries.
+    pub fn legacy_space(num_orders: usize) -> usize {
+        8 + 32 + 4 + 32 + num_orders * LEGACY_ENTRY_LEN
     }
 
     pub fn validate(&self) -> VelocityResult<()> {
-        validate!(
-            !self.signed_msg_order_data.is_empty() && self.signed_msg_order_data.len() <= 128,
-            ErrorCode::DefaultError,
-            "SignedMsgUserOrders len must be between 1 and 128"
-        )?;
-        Ok(())
+        validate_len(self.signed_msg_order_data.len())
     }
+}
+
+fn validate_len(len: usize) -> VelocityResult {
+    validate!(
+        (1..=MAX_SIGNED_MSG_USER_ORDERS).contains(&len),
+        ErrorCode::DefaultError,
+        "SignedMsgUserOrders len must be between 1 and 128"
+    )
 }
 
 #[zero_copy(unsafe)]
@@ -144,12 +185,126 @@ impl SignedMsgUserOrders {
 #[repr(C)]
 pub struct SignedMsgUserOrdersFixed {
     pub user_pubkey: Pubkey,
-    pub padding: u32,
+    pub version: u32,
     pub len: u32,
 }
 
 unsafe impl bytemuck::Pod for SignedMsgUserOrdersFixed {}
 unsafe impl bytemuck::Zeroable for SignedMsgUserOrdersFixed {}
+
+/// The entry of an account created before layout version 1.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct LegacySignedMsgOrderId {
+    uuid: [u8; 8],
+    max_slot: u64,
+    order_id: u32,
+    padding: u32,
+}
+
+unsafe impl bytemuck::Pod for LegacySignedMsgOrderId {}
+unsafe impl bytemuck::Zeroable for LegacySignedMsgOrderId {}
+
+const LEGACY_ENTRY_LEN: usize = std::mem::size_of::<LegacySignedMsgOrderId>();
+
+static_assertions::const_assert_eq!(LEGACY_ENTRY_LEN, 24);
+
+/// Slots added to the `max_slot` of a migrated entry. A legacy auction order
+/// had a deadline at the end of its auction. This program places the same
+/// message until `SIGNED_MSG_FILL_WINDOW` past its slot. The count is that
+/// window at the shortest slot duration, so the uuid outlives the message.
+/// allow-verbose: a replay bound that the arithmetic below cannot show.
+const LEGACY_DEADLINE_EXTENSION_SLOTS: u64 = SIGNED_MSG_FILL_WINDOW
+    .as_ms()
+    .div_ceil(SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64);
+
+impl LegacySignedMsgOrderId {
+    fn migrated(self) -> SignedMsgOrderId {
+        let max_slot = self
+            .max_slot
+            .saturating_add(LEGACY_DEADLINE_EXTENSION_SLOTS);
+
+        SignedMsgOrderId::new(self.uuid, max_slot, self.order_id)
+    }
+}
+
+/// Whether an account of `data_len` bytes stores legacy 24-byte entries. A
+/// migrated account can keep the legacy size, so version 1 is always current.
+pub fn is_legacy_layout(fixed: &SignedMsgUserOrdersFixed, data_len: usize) -> bool {
+    fixed.version == 0 && data_len == SignedMsgUserOrders::legacy_space(fixed.len as usize)
+}
+
+/// The entries of a legacy account that are not empty, newest first.
+fn legacy_live_entries(entries: &[u8], legacy_len: u32) -> Vec<SignedMsgOrderId> {
+    let mut live: Vec<SignedMsgOrderId> = entries[..legacy_len as usize * LEGACY_ENTRY_LEN]
+        .chunks_exact(LEGACY_ENTRY_LEN)
+        .map(bytemuck::pod_read_unaligned::<LegacySignedMsgOrderId>)
+        .filter(|entry| entry.max_slot != 0)
+        .map(LegacySignedMsgOrderId::migrated)
+        .collect();
+    live.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.max_slot));
+
+    live
+}
+
+/// Write `entries` at the current stride and zero every byte after them.
+fn write_entries(data: &mut [u8], entries: &[SignedMsgOrderId]) {
+    data.fill(0);
+    data.chunks_exact_mut(ENTRY_LEN)
+        .zip(entries)
+        .for_each(|(slot, entry)| slot.copy_from_slice(bytemuck::bytes_of(entry)));
+}
+
+/// Rewrite a legacy account at the current stride, with no change of size.
+///
+/// Every entry that is not empty must fit, because a dropped entry can hold
+/// the uuid of a message that is still placeable. When they do not fit, the
+/// load fails and placement fails with it until the owner resizes.
+fn migrate_legacy_in_place(
+    fixed: &mut SignedMsgUserOrdersFixed,
+    data: &mut [u8],
+) -> VelocityResult {
+    let live = legacy_live_entries(data, fixed.len);
+    let capacity = data.len() / ENTRY_LEN;
+    validate!(
+        live.len() <= capacity,
+        ErrorCode::SignedMsgUserOrdersAccountFull,
+        "legacy signed msg user orders hold {} entries but migrate to {} slots; resize the account",
+        live.len(),
+        capacity
+    )?;
+
+    write_entries(data, &live);
+    msg!(
+        "signed msg user orders migrated to version {}: {} of {} entries kept, {} slots",
+        SIGNED_MSG_USER_ORDERS_VERSION,
+        live.len(),
+        fixed.len,
+        capacity
+    );
+
+    fixed.len = capacity as u32;
+    fixed.version = SIGNED_MSG_USER_ORDERS_VERSION;
+
+    Ok(())
+}
+
+/// The bytes that `len` current entries take. A header that names more
+/// entries than `available` bytes hold is an error, not a read past the data.
+fn current_entries_len(
+    fixed: &SignedMsgUserOrdersFixed,
+    available: usize,
+) -> VelocityResult<usize> {
+    let entries_len = fixed.len as usize * ENTRY_LEN;
+    validate!(
+        entries_len <= available,
+        ErrorCode::DefaultError,
+        "signed msg user orders len {} exceeds the account data",
+        fixed.len
+    )?;
+
+    Ok(entries_len)
+}
 
 fn entry_at(data: &[u8], index: u32) -> &SignedMsgOrderId {
     let size = std::mem::size_of::<SignedMsgOrderId>();
@@ -169,8 +324,10 @@ pub struct SignedMsgUserOrdersZeroCopy<'a> {
 }
 
 impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
+    /// The entries this view holds. The view of a legacy account holds none,
+    /// whatever its header says.
     pub fn len(&self) -> u32 {
-        self.fixed.len
+        (self.data.len() / ENTRY_LEN) as u32
     }
 
     pub fn get(&self, index: u32) -> &SignedMsgOrderId {
@@ -353,59 +510,158 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
 }
 
 pub trait SignedMsgUserOrdersLoader<'a> {
+    /// A legacy account loads with no entries, because it holds no route.
     fn load(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopy<'_>>;
+    /// A legacy account migrates first. See `migrate_legacy_in_place`.
     fn load_mut(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopyMut<'_>>;
+}
+
+fn validate_record_owner_and_len(account: &AccountInfo) -> VelocityResult {
+    validate!(
+        account.owner == &ID,
+        ErrorCode::DefaultError,
+        "invalid signed_msg user orders owner",
+    )?;
+
+    validate!(
+        account.data_len() >= HEADER_LEN,
+        ErrorCode::DefaultError,
+        "signed_msg user orders account too small",
+    )
+}
+
+fn validate_discriminator(discriminator: &[u8]) -> VelocityResult {
+    validate!(
+        discriminator == SignedMsgUserOrders::DISCRIMINATOR,
+        ErrorCode::DefaultError,
+        "invalid signed_msg user orders discriminator",
+    )
+}
+
+/// The header and every byte after it, in either layout.
+fn load_untrimmed<'b>(account: &'b AccountInfo) -> VelocityResult<SignedMsgUserOrdersZeroCopy<'b>> {
+    validate_record_owner_and_len(account)?;
+
+    let data = account.try_borrow_data().safe_unwrap()?;
+    let (discriminator, data) = Ref::map_split(data, |d| d.split_at(8));
+    validate_discriminator(&discriminator)?;
+
+    let (fixed, data) = Ref::map_split(data, |d| d.split_at(40));
+    Ok(SignedMsgUserOrdersZeroCopy {
+        fixed: Ref::map(fixed, |b| bytemuck::from_bytes(b)),
+        data,
+    })
+}
+
+fn load_mut_untrimmed<'b>(
+    account: &'b AccountInfo,
+) -> VelocityResult<SignedMsgUserOrdersZeroCopyMut<'b>> {
+    validate_record_owner_and_len(account)?;
+
+    let data = account.try_borrow_mut_data().safe_unwrap()?;
+    let (discriminator, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
+    validate_discriminator(&discriminator)?;
+
+    let (fixed, data) = RefMut::map_split(data, |d| d.split_at_mut(40));
+    Ok(SignedMsgUserOrdersZeroCopyMut {
+        fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
+        data,
+    })
+}
+
+/// Check that `account` is a record in either layout.
+pub fn validate_signed_msg_user_orders_account(account: &AccountInfo) -> VelocityResult {
+    load_untrimmed(account).map(drop)
 }
 
 impl<'a> SignedMsgUserOrdersLoader<'a> for AccountInfo<'a> {
     fn load(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopy<'_>> {
-        let owner = self.owner;
+        let record = load_untrimmed(self)?;
+        let entries_len = if is_legacy_layout(&record.fixed, HEADER_LEN + record.data.len()) {
+            0
+        } else {
+            current_entries_len(&record.fixed, record.data.len())?
+        };
 
-        validate!(
-            owner == &ID,
-            ErrorCode::DefaultError,
-            "invalid signed_msg user orders owner",
-        )?;
-
-        let data = self.try_borrow_data().safe_unwrap()?;
-
-        let (discriminator, data) = Ref::map_split(data, |d| d.split_at(8));
-        validate!(
-            discriminator.as_ref() == SignedMsgUserOrders::DISCRIMINATOR,
-            ErrorCode::DefaultError,
-            "invalid signed_msg user orders discriminator",
-        )?;
-
-        let (fixed, data) = Ref::map_split(data, |d| d.split_at(40));
         Ok(SignedMsgUserOrdersZeroCopy {
-            fixed: Ref::map(fixed, |b| bytemuck::from_bytes(b)),
-            data,
+            fixed: record.fixed,
+            data: Ref::map(record.data, |d| &d[..entries_len]),
         })
     }
 
     fn load_mut(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopyMut<'_>> {
-        let owner = self.owner;
+        let mut record = load_mut_untrimmed(self)?;
+        if is_legacy_layout(&record.fixed, HEADER_LEN + record.data.len()) {
+            migrate_legacy_in_place(&mut record.fixed, &mut record.data)?;
+        }
 
-        validate!(
-            owner == &ID,
-            ErrorCode::DefaultError,
-            "invalid signed_msg user orders owner",
-        )?;
-
-        let data = self.try_borrow_mut_data().safe_unwrap()?;
-
-        let (discriminator, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
-        validate!(
-            discriminator.as_ref() == SignedMsgUserOrders::DISCRIMINATOR,
-            ErrorCode::DefaultError,
-            "invalid signed_msg user orders discriminator",
-        )?;
-
-        let (fixed, data) = RefMut::map_split(data, |d| d.split_at_mut(40));
+        let entries_len = current_entries_len(&record.fixed, record.data.len())?;
         Ok(SignedMsgUserOrdersZeroCopyMut {
-            fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
-            data,
+            fixed: record.fixed,
+            data: RefMut::map(record.data, |d| &mut d[..entries_len]),
         })
+    }
+}
+
+/// Every entry of a record, read out so a resize can write the account again
+/// at a new size. A legacy record reads as its entries that are not empty,
+/// newest first, so a shrink drops its oldest entries.
+pub struct SignedMsgUserOrdersSnapshot {
+    pub user_pubkey: Pubkey,
+    /// In a legacy record this can exceed `entries.len()`.
+    pub header_len: u32,
+    pub entries: Vec<SignedMsgOrderId>,
+}
+
+impl SignedMsgUserOrdersSnapshot {
+    pub fn read(account: &AccountInfo) -> VelocityResult<Self> {
+        let record = load_untrimmed(account)?;
+        let entries = if is_legacy_layout(&record.fixed, HEADER_LEN + record.data.len()) {
+            legacy_live_entries(&record.data, record.fixed.len)
+        } else {
+            let entries_len = current_entries_len(&record.fixed, record.data.len())?;
+            record.data[..entries_len]
+                .chunks_exact(ENTRY_LEN)
+                .map(bytemuck::pod_read_unaligned)
+                .collect()
+        };
+
+        Ok(Self {
+            user_pubkey: record.fixed.user_pubkey,
+            header_len: record.fixed.len,
+            entries,
+        })
+    }
+
+    /// Keep the first `num_orders` entries, and add empty ones to reach it.
+    pub fn resize(&mut self, num_orders: usize) -> VelocityResult {
+        validate_len(num_orders)?;
+        self.entries
+            .resize_with(num_orders, SignedMsgOrderId::default);
+
+        Ok(())
+    }
+
+    /// Write the record at the current layout. The account must already have
+    /// `SignedMsgUserOrders::space` bytes for the entries.
+    pub fn write(&self, account: &AccountInfo) -> VelocityResult {
+        let mut record = load_mut_untrimmed(account)?;
+        validate!(
+            HEADER_LEN + record.data.len() == SignedMsgUserOrders::space(self.entries.len()),
+            ErrorCode::DefaultError,
+            "signed msg user orders account size does not match {} entries",
+            self.entries.len()
+        )?;
+
+        *record.fixed = SignedMsgUserOrdersFixed {
+            user_pubkey: self.user_pubkey,
+            version: SIGNED_MSG_USER_ORDERS_VERSION,
+            len: self.entries.len() as u32,
+        };
+
+        write_entries(&mut record.data, &self.entries);
+
+        Ok(())
     }
 }
 

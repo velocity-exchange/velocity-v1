@@ -358,6 +358,11 @@ The route digest is eight bytes on `SignedMsgUserOrders`, next to the CLOB order
 rests under. `getRouteDigest(route)` mirrors it, which a filler needs because the program rejects a
 fill whose claimed route does not digest to what the order carries.
 
+`SignedMsgOrderId` is 40 bytes, and `SignedMsgUserOrdersAccount` gains `version`. An account
+created before the upgrade stores 24-byte entries. The program migrates it in place with fewer
+entries, and `resizeSignedMsgUserOrders` restores its capacity. `decodeSignedMsgUserOrdersAccount`
+reads both layouts, and the signed-message subscribers decode with it.
+
 The entry must take or rest. A post-only entry fails with `InvalidOrderPostOnly`, and a trigger
 entry with `InvalidSignedMsgOrderParam`. `signSignedMsgOrderParamsMessage` throws on both, and
 `signedMsgEntryOrderRefusal` mirrors the check. An entry that neither fills nor rests fails with

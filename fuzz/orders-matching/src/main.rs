@@ -15,7 +15,6 @@ use {
     velocity::{
         controller::position::PositionDirection,
         math::{
-            constants::DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION,
             orders::{
                 is_multiple_of_step_size, is_new_order_risk_increasing, is_order_position_reducing,
                 standardize_base_asset_amount, standardize_base_asset_amount_ceil,
@@ -23,7 +22,7 @@ use {
             },
             worst_price::derive_worst_price,
         },
-        state::{oracle::OraclePriceData, user::Order},
+        state::{oracle::OraclePriceData, perp_market::ContractTier, user::Order},
     },
 };
 
@@ -142,8 +141,8 @@ fn prop_standardize_price(
 }
 
 /// Property 2 (Family IV): a named worst price is returned unchanged. An
-/// unnamed one sits `oracle / DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` through
-/// the oracle, on the side that lets a taker in `direction` cross.
+/// unnamed one sits a tier's percentage of the oracle through the oracle, on
+/// the side that lets a taker in `direction` cross.
 #[cfg(feature = "prop_worst_price")]
 #[crucible_fuzz]
 fn prop_worst_price(
@@ -152,22 +151,31 @@ fn prop_worst_price(
     // keeps the sign of a negative raw value.
     #[range(1..1_000_000_000_000u64)] oracle_price: u64,
     #[range(0..2_000_000_000_000u64)] named_price: u64,
+    #[range(0..6u64)] tier_index: u64,
     is_long: bool,
 ) {
     let _ = &fixture.ctx;
 
+    let (tier, slippage_percent) = match tier_index {
+        0 => (ContractTier::A, 2),
+        1 => (ContractTier::B, 5),
+        2 => (ContractTier::C, 5),
+        3 => (ContractTier::Speculative, 10),
+        4 => (ContractTier::HighlySpeculative, 20),
+        _ => (ContractTier::Isolated, 20),
+    };
     let oracle = OraclePriceData {
         price: oracle_price as i64,
         ..OraclePriceData::default()
     };
-    let worst = derive_worst_price(&oracle, dir(is_long), named_price).unwrap();
+    let worst = derive_worst_price(&oracle, tier, dir(is_long), named_price).unwrap();
 
     if named_price > 0 {
         fuzz_assert_eq!(worst, named_price);
         return;
     }
 
-    let slippage = oracle_price / DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION as u64;
+    let slippage = oracle_price * slippage_percent / 100;
     let expected = if is_long {
         oracle_price + slippage
     } else {

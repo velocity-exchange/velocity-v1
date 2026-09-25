@@ -384,7 +384,6 @@ impl Fixture {
             state: self.state_pda(),
             authority: filler.keypair.pubkey(),
             filler: filler.user_pda,
-            filler_stats: filler.stats_pda,
             user: self.users[target_idx].user_pda,
             quoter_slab: self.clob.quoter_slab,
             clob_market: self.clob.book,

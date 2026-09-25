@@ -109,7 +109,8 @@
 //! Eight budgets fit on the wire, so a maker this fill cannot hurt should not
 //! take one of them. Aggregates alone decide that. The most base this maker
 //! can give up is the smaller of what it has resting on the swept side and
-//! what the taker asked for. The most one base can cost it is the oracle
+//! what the taker asked for. A maker that rests only reduce-only orders gives
+//! up no more than its position. The most one base can cost it is the oracle
 //! price. A budget above that product is a budget this fill cannot reach, so
 //! the maker goes out unconstrained.
 //!
@@ -526,7 +527,12 @@ impl CapInputs<'_, '_> {
         // quotes the other way. This fill cannot cost them anything, so they are answered before any walk
         // is spent on them.
         let position = maker.get_perp_position(market_index).ok();
-        let resting = clob_resting_base(&maker, market_index, resting_side)?.min(taker_size);
+        let resting = self.reachable_book_base(
+            &maker,
+            market_index,
+            resting_side,
+            clob_resting_base(&maker, market_index, resting_side)?.min(taker_size),
+        );
         if resting == 0 {
             return Ok(u64::MAX);
         }
@@ -690,6 +696,29 @@ impl CapInputs<'_, '_> {
         Ok(self.market_is_reduce_only(market_index)?
             && rests_ordinary_clob_orders(maker, market_index)
             && resting > position_cover(maker, market_index, resting_side))
+    }
+
+    /// The most of `resting` the book can fill for this maker.
+    ///
+    /// The book holds reduce-only orders to the cover `base_cap` carries. A
+    /// maker that rests only reduce-only orders therefore fills no further
+    /// than its position on this side. Such a fill only reduces, so the fill
+    /// judges it at the reducing tier. An ordinary order has no such bound.
+    fn reachable_book_base(
+        &self,
+        maker: &crate::state::user::User,
+        market_index: u16,
+        resting_side: SideV0,
+        resting: u64,
+    ) -> u64 {
+        let rests_reduce_only = maker
+            .get_perp_position(market_index)
+            .is_ok_and(|position| position.has_reduce_only_clob());
+        if !rests_reduce_only || rests_ordinary_clob_orders(maker, market_index) {
+            return resting;
+        }
+
+        resting.min(position_cover(maker, market_index, resting_side))
     }
 
     /// Whether the maker has an equity floor that the exchange oracle cannot

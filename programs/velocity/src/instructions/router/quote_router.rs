@@ -48,8 +48,8 @@ use {
         state::{
             perp_market_map::MarketSet,
             prop_amm::{
-                find_account, occupied_slots, DirectionV0, L3ArgsV0, QuoteArgsV0, QuoterSlabExt,
-                QuoterSlabV0, QuoterType, UserRefV0,
+                DirectionV0, L3ArgsV0, QuoteArgsV0, QuoterSlabExt, QuoterSlabV0, QuoterType,
+                UserRefV0,
             },
             quoter::MarketQuoteInputs,
             router_quote::{QuotedRowV0, QuotedSourceKind, RouterQuoteBufferV0},
@@ -309,13 +309,9 @@ fn quote_externals<'info>(
     let market_index = args.market_index;
     let taker_direction = PositionDirection::from(args.direction);
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let consulted: Vec<usize> = {
-        let slots = slab_loader.slots()?;
-        occupied_slots(&slots)
-            .filter(|(_, slot)| find_account(accounts, &slot.config.response_account).is_some())
-            .map(|(index, _)| index)
-            .collect()
-    };
+    // The fill's own rule, so the view consults the slots a fill would and
+    // refuses a tail a fill would refuse.
+    let consulted = slab_loader.consulted_slots(accounts)?;
 
     for slot_index in consulted {
         let Some(quoted) =

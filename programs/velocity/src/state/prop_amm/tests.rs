@@ -962,22 +962,27 @@ fn slab_space_counts_whole_slots() {
     assert!(config.validate_clob_book(7, &book).is_err());
 }
 
-/// A slab account for `market` whose slot 0 is a book on `book`. Words back
-/// the bytes, so the slot region is 8-aligned as the reader requires.
-fn slab_with_book(market: u16, book: Pubkey) -> Vec<u64> {
-    let space = QuoterSlabV0::space(1);
+/// A slab account for `market` that holds `slots`. Words back the bytes, so
+/// the slot region is 8-aligned as the reader requires.
+fn slab_with_slots(market: u16, book: Pubkey, slots: &[QuoterSlotV0]) -> Vec<u64> {
+    let space = QuoterSlabV0::space(slots.len());
     let mut words = vec![0u64; space.div_ceil(8)];
     let bytes = &mut bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..space];
     bytes[..8].copy_from_slice(QuoterSlabV0::DISCRIMINATOR);
 
     let header = QuoterSlabV0 {
         market,
-        capacity: 1,
+        capacity: slots.len() as u16,
         clob_market: book,
         ..Default::default()
     };
     bytes[8..8 + std::mem::size_of::<QuoterSlabV0>()].copy_from_slice(bytemuck::bytes_of(&header));
+    bytes[QuoterSlabV0::SLOT_REGION_OFFSET..].copy_from_slice(bytemuck::cast_slice(slots));
+    words
+}
 
+/// A slab account for `market` whose slot 0 is a book on `book`.
+fn slab_with_book(market: u16, book: Pubkey) -> Vec<u64> {
     let slot = QuoterSlotV0 {
         entry: Pubkey::new_unique(),
         config: QuoterConfigV0 {
@@ -989,8 +994,7 @@ fn slab_with_book(market: u16, book: Pubkey) -> Vec<u64> {
         },
         ..Default::default()
     };
-    bytes[QuoterSlabV0::SLOT_REGION_OFFSET..].copy_from_slice(bytemuck::bytes_of(&slot));
-    words
+    slab_with_slots(market, book, &[slot])
 }
 
 /// `from_slab` binds the program as well as the book. Every CPI signs with
@@ -1049,4 +1053,58 @@ fn a_book_binds_only_to_the_program_its_slot_runs() {
     let slab = AccountLoader::<QuoterSlabV0>::try_from(&slab_info).unwrap();
     assert!(ClobMarket::from_slab(&slab, 3, &book_info, &clob_info).is_ok());
     assert!(ClobMarket::from_slab(&slab, 3, &book_info, &other_info).is_err());
+}
+
+/// A route consults a slot when its response account rides the tail, and at
+/// most `MAX_ROUTE_QUOTERS` of them. The fill and the `quote_router` view
+/// both read this one rule.
+#[test]
+fn a_route_consults_at_most_the_route_quoter_limit() {
+    let slots: Vec<QuoterSlotV0> = (0..=MAX_ROUTE_QUOTERS)
+        .map(|_| QuoterSlotV0 {
+            entry: Pubkey::new_unique(),
+            config: QuoterConfigV0 {
+                response_account: Pubkey::new_unique(),
+                market: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .collect();
+    let space = QuoterSlabV0::space(slots.len());
+    let mut words = slab_with_slots(3, Pubkey::default(), &slots);
+    let slab_key = Pubkey::new_unique();
+    let mut slab_lamports = 0u64;
+    let slab_info = AccountInfo::new(
+        &slab_key,
+        false,
+        true,
+        &mut slab_lamports,
+        &mut bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..space],
+        &crate::ID,
+        false,
+    );
+    let slab = AccountLoader::<QuoterSlabV0>::try_from(&slab_info).unwrap();
+
+    let keys: Vec<Pubkey> = slots
+        .iter()
+        .map(|slot| slot.config.response_account)
+        .collect();
+    let owner = Pubkey::default();
+    let mut lamports = vec![0u64; keys.len()];
+    let mut data: Vec<Vec<u8>> = vec![vec![]; keys.len()];
+    let tail: Vec<AccountInfo> = keys
+        .iter()
+        .zip(lamports.iter_mut())
+        .zip(data.iter_mut())
+        .map(|((key, lamports), data)| {
+            AccountInfo::new(key, false, false, lamports, data, &owner, false)
+        })
+        .collect();
+
+    assert!(slab.consulted_slots(&tail).is_err());
+    assert_eq!(
+        slab.consulted_slots(&tail[1..]).unwrap(),
+        (1..=MAX_ROUTE_QUOTERS).collect::<Vec<_>>()
+    );
 }

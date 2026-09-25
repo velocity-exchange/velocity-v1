@@ -19,6 +19,11 @@
 //! position left to reduce, it is cancelled with
 //! `ReduceOnlyOrderIncreasedPosition` and the keeper earns nothing.
 //!
+//! A fired order the book would refuse, for its size, step, price, expiry or a
+//! full side, is cancelled rather than placed, and the keeper earns the flat
+//! reward. A refused placement would revert every crank and hold the owner's
+//! later triggers behind it.
+//!
 //! Re-triggering after an eviction runs behind an edge gate, which is
 //! [`OrderBitFlag::AwaitingTriggerRecross`]. While the flag is set, a crank
 //! that observes the price on the non-trigger side clears it and places
@@ -46,6 +51,7 @@
 //! fills first. A fired limit rests whole.
 
 use {
+    super::helpers::placement::{rest_admission, RestAdmission, RestRefusal},
     crate::{
         controller::{
             orders::{cancel_order, pay_keeper_flat_reward_for_perps},
@@ -76,7 +82,8 @@ use {
             oracle_map::OracleMap,
             perp_market_map::{MarketSet, PerpMarketMap},
             prop_amm::{
-                ClobMarket, ClobOrderRefV0, PlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0,
+                ClobMarket, ClobOrderRefV0, OrderRulesV0, PlaceOrderArgsV0, QuoterSlabExt,
+                QuoterSlabV0, SideV0, UserRefV0,
             },
             state::State,
             user::{
@@ -186,7 +193,6 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     let slot = clock.slot;
     let state = ctx.accounts.state.load()?;
     let user_key = ctx.accounts.user.key();
-    let filler_key = ctx.accounts.filler.key();
 
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
     let mut maps: AccountMaps = load_maps(
@@ -215,7 +221,20 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         )?
     };
 
-    let (
+    // Read before the account is borrowed, so the gate tests the book's rules
+    // without holding a borrow across the CPI.
+    let rules = clob.reader().order_rules()?;
+    let crank = TriggerLimitCrank {
+        user: &ctx.accounts.user,
+        user_stats: &ctx.accounts.user_stats,
+        filler: &ctx.accounts.filler,
+        state: &state,
+        market_index,
+        order_id,
+        clock: &clock,
+    };
+
+    let TriggerPlacement {
         side,
         price,
         base_asset_amount,
@@ -224,102 +243,24 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         user_ref,
         is_isolated_position,
         filler_reward,
-    ) = {
-        let user = &mut load_mut!(ctx.accounts.user)?;
-        let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
-
-        let order_index = find_armed_trigger_limit(user, order_id, market_index)?;
-
-        // An armed trigger past its own `max_ts` is dead. `should_expire_order`
-        // exempts it, so the sweep never removes it, and firing would pay the
-        // keeper and then revert. This is a no-op rather than a refusal, since
-        // reverting would starve every armed trigger behind it on this account.
-        let order_max_ts = user.orders[order_index].max_ts;
-        if order_max_ts != 0 && now > order_max_ts {
-            msg!(
-                "Order max_ts {} passed (now {}); nothing to trigger",
-                order_max_ts,
-                now
+    } = match crank.decide(&mut maps, &rules)? {
+        TriggerLimitStep::NoWork => return Ok(()),
+        TriggerLimitStep::Settled { keeper_reward } => {
+            return super::helpers::crank_common::finish_trigger_crank(
+                &ctx.accounts.state,
+                &ctx.accounts.filler,
+                &ctx.accounts.authority,
+                &ctx.accounts.user,
+                &ctx.accounts.trigger_conditions,
+                &ctx.accounts.crank_conditions,
+                &super::helpers::crank_common::CrankedTrigger {
+                    market_index,
+                    order_id,
+                    keeper_reward,
+                },
             );
-
-            return Ok(());
         }
-
-        validate_user_not_being_liquidated(user, &mut maps, state.liquidation_margin_buffer_ratio)?;
-        validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
-
-        let TriggerPrices {
-            oracle_price,
-            trigger_price,
-        } = read_trigger_prices(
-            &maps.perp_market_map,
-            &mut maps.oracle_map,
-            &state,
-            &user.orders[order_index],
-            now,
-        )?;
-
-        if !observe_trigger_condition(user, order_index, order_id, trigger_price, slot)? {
-            return Ok(());
-        }
-
-        // The gate below exempts a reduce-only order. The book is
-        // position-blind, but the router sends it an authoritative `base_cover`
-        // per user, and the book clamps every reduce-only fill to that cover.
-        let Some(reserved) = reserve_and_gate_trigger(
-            user,
-            user_stats,
-            order_index,
-            market_index,
-            oracle_price,
-            &mut maps,
-            &user_key,
-            &filler_key,
-            now,
-            slot,
-        )?
-        else {
-            return Ok(());
-        };
-
-        // The trigger is accepted, so pay the keeper the flat reward out of
-        // the user.
-        let filler_reward = pay_trigger_keeper(
-            user,
-            &ctx.accounts.filler,
-            &maps.perp_market_map,
-            market_index,
-            state.perp_fee_structure.flat_filler_fee,
-            &user_key,
-            &filler_key,
-            slot,
-        )?;
-
-        // The reservation above holds `open_orders` on the position, so the
-        // order's margin regime is fixed from here on and the records can
-        // state it.
-        let is_isolated_position = user.get_perp_position(market_index)?.is_isolated();
-        crate::controller::orders::TriggerRecord {
-            fired: fired_view(&user.orders[order_index]),
-            user: user_key,
-            filler: filler_key,
-            filler_reward,
-            oracle_price,
-            trigger_price,
-            is_isolated_position,
-        }
-        .emit(now)?;
-
-        (
-            SideV0::from(reserved.direction),
-            user.orders[order_index].price,
-            reserved.base_asset_amount,
-            user.orders[order_index].max_ts,
-            reserved.reduce_only,
-            user.clob_user_ref(),
-            is_isolated_position,
-            filler_reward,
-        )
+        TriggerLimitStep::Place(placement) => placement,
     };
 
     let order_ref = clob.place(PlaceOrderArgsV0 {
@@ -392,6 +333,273 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         user_key
     );
 
+    Ok(())
+}
+
+/// What one trigger crank reads, fixed for the whole crank.
+struct TriggerLimitCrank<'a, 'info> {
+    user: &'a AccountLoader<'info, User>,
+    user_stats: &'a AccountLoader<'info, UserStats>,
+    filler: &'a AccountLoader<'info, User>,
+    state: &'a State,
+    market_index: u16,
+    order_id: u32,
+    clock: &'a Clock,
+}
+
+/// What the crank does once the owner's account is released.
+enum TriggerLimitStep {
+    /// Nothing moved, and the keeper earns nothing.
+    NoWork,
+    /// The crank ended the trigger's work without a placement, and collected
+    /// this reward from the owner.
+    Settled { keeper_reward: u64 },
+    /// The order rests on the book at these terms.
+    Place(TriggerPlacement),
+}
+
+/// The terms the fired order rests on the book at.
+struct TriggerPlacement {
+    side: SideV0,
+    price: u64,
+    base_asset_amount: u64,
+    max_ts: i64,
+    reduce_only: bool,
+    user_ref: UserRefV0,
+    is_isolated_position: bool,
+    filler_reward: u64,
+}
+
+impl TriggerLimitCrank<'_, '_> {
+    /// Run every gate that can decide against placing, while the owner's
+    /// account is borrowed: the trigger condition, the reservation, the
+    /// book's rules and the reward.
+    fn decide(
+        &self,
+        maps: &mut AccountMaps<'_>,
+        rules: &OrderRulesV0,
+    ) -> Result<TriggerLimitStep> {
+        let now = self.clock.unix_timestamp;
+        let user_key = self.user.key();
+        let filler_key = self.filler.key();
+        let user = &mut load_mut!(self.user)?;
+        let user_stats = &mut load_mut!(self.user_stats)?;
+
+        let Some(fired) = self.fire(user, maps)? else {
+            return Ok(TriggerLimitStep::NoWork);
+        };
+
+        let Some(reserved) = reserve_and_gate_trigger(
+            user,
+            user_stats,
+            fired.order_index,
+            self.market_index,
+            fired.prices.oracle_price,
+            maps,
+            &user_key,
+            &filler_key,
+            now,
+            self.clock.slot,
+        )?
+        else {
+            return Ok(TriggerLimitStep::NoWork);
+        };
+
+        let admission = rest_admission(
+            rules,
+            reserved.direction,
+            user.orders[fired.order_index].price,
+            reserved.base_asset_amount,
+            user.orders[fired.order_index].max_ts,
+            None,
+            now,
+        );
+
+        let filler_reward = pay_trigger_keeper(
+            user,
+            self.filler,
+            &maps.perp_market_map,
+            self.market_index,
+            self.state.perp_fee_structure.flat_filler_fee,
+            &user_key,
+            &filler_key,
+            self.clock.slot,
+        )?;
+
+        let price = match admission {
+            RestAdmission::Admitted { price } => price,
+            RestAdmission::Refused(reason) => {
+                cancel_refused_trigger(
+                    user,
+                    fired.order_index,
+                    &reserved,
+                    reason,
+                    maps,
+                    &TriggerCancel {
+                        market_index: self.market_index,
+                        user_key: &user_key,
+                        filler_key: &filler_key,
+                        filler_reward,
+                        clock: self.clock,
+                    },
+                )?;
+
+                return Ok(TriggerLimitStep::Settled {
+                    keeper_reward: filler_reward,
+                });
+            }
+        };
+
+        self.placement(user, &fired, &reserved, price, filler_reward)
+            .map(TriggerLimitStep::Place)
+    }
+
+    /// Find the armed order and hold it to the trigger condition. `None` is
+    /// no payable work.
+    fn fire(
+        &self,
+        user: &mut User,
+        maps: &mut AccountMaps<'_>,
+    ) -> Result<Option<FiredTriggerLimit>> {
+        let now = self.clock.unix_timestamp;
+        let order_index = find_armed_trigger_limit(user, self.order_id, self.market_index)?;
+
+        // An armed trigger past its own `max_ts` is dead. `should_expire_order`
+        // exempts it, so the sweep never removes it, and firing would pay the
+        // keeper and then revert. This is a no-op rather than a refusal, since
+        // reverting would starve every armed trigger behind it on this account.
+        let order_max_ts = user.orders[order_index].max_ts;
+        if order_max_ts != 0 && now > order_max_ts {
+            msg!(
+                "Order max_ts {} passed (now {}); nothing to trigger",
+                order_max_ts,
+                now
+            );
+
+            return Ok(None);
+        }
+
+        validate_user_not_being_liquidated(user, maps, self.state.liquidation_margin_buffer_ratio)?;
+        validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
+
+        let prices = read_trigger_prices(
+            &maps.perp_market_map,
+            &mut maps.oracle_map,
+            self.state,
+            &user.orders[order_index],
+            now,
+        )?;
+
+        let fired = observe_trigger_condition(
+            user,
+            order_index,
+            self.order_id,
+            prices.trigger_price,
+            self.clock.slot,
+        )?;
+
+        Ok(fired.then_some(FiredTriggerLimit {
+            order_index,
+            prices,
+        }))
+    }
+
+    /// Record the trigger and state the terms the order rests at.
+    fn placement(
+        &self,
+        user: &User,
+        fired: &FiredTriggerLimit,
+        reserved: &ReservedTrigger,
+        price: u64,
+        filler_reward: u64,
+    ) -> Result<TriggerPlacement> {
+        // The reservation holds `open_orders` on the position, so the order's
+        // margin regime is fixed from here on and the records can state it.
+        let is_isolated_position = user.get_perp_position(self.market_index)?.is_isolated();
+        crate::controller::orders::TriggerRecord {
+            fired: fired_view(&user.orders[fired.order_index]),
+            user: self.user.key(),
+            filler: self.filler.key(),
+            filler_reward,
+            oracle_price: fired.prices.oracle_price,
+            trigger_price: fired.prices.trigger_price,
+            is_isolated_position,
+        }
+        .emit(self.clock.unix_timestamp)?;
+
+        Ok(TriggerPlacement {
+            side: SideV0::from(reserved.direction),
+            price,
+            base_asset_amount: reserved.base_asset_amount,
+            max_ts: user.orders[fired.order_index].max_ts,
+            reduce_only: reserved.reduce_only,
+            user_ref: user.clob_user_ref(),
+            is_isolated_position,
+            filler_reward,
+        })
+    }
+}
+
+/// The armed order a crank fired, and the prices it fired at.
+struct FiredTriggerLimit {
+    order_index: usize,
+    prices: TriggerPrices,
+}
+
+/// Who cancels a trigger, and what the cancel record states.
+struct TriggerCancel<'a> {
+    market_index: u16,
+    user_key: &'a Pubkey,
+    filler_key: &'a Pubkey,
+    filler_reward: u64,
+    clock: &'a Clock,
+}
+
+/// Cancel a fired trigger that the book would refuse to hold.
+///
+/// The book fails a placement it refuses, and the failure reverts the crank.
+/// The trigger then stays armed and due, and the resolver stages it ahead of
+/// every later trigger of the owner. A clamped reduce-only order below the
+/// book's minimum or off its step is refused on every crank. The book
+/// reservation that the gate took moves back to the slot before the cancel
+/// releases it.
+fn cancel_refused_trigger(
+    user: &mut User,
+    order_index: usize,
+    reserved: &ReservedTrigger,
+    reason: RestRefusal,
+    maps: &mut AccountMaps<'_>,
+    cancel: &TriggerCancel,
+) -> Result<()> {
+    msg!(
+        "book refuses trigger order {} ({:?}); cancelling it",
+        user.orders[order_index].order_id,
+        reason
+    );
+
+    let armed = OrderReservation::of_order(&user.orders[order_index])?;
+    let placed = OrderReservation::book_order(
+        cancel.market_index,
+        reserved.direction,
+        reserved.base_asset_amount,
+        reserved.reduce_only,
+    );
+    user.replace_reservation(&placed, &armed)?;
+
+    cancel_order(
+        order_index,
+        user,
+        cancel.user_key,
+        maps,
+        cancel.clock.unix_timestamp,
+        cancel.clock.slot,
+        reason.cancel_explanation(),
+        Some(cancel.filler_key),
+        cancel.filler_reward,
+        false,
+    )?;
+
+    user.update_last_active_slot(cancel.clock.slot);
     Ok(())
 }
 
@@ -575,6 +783,10 @@ struct ReservedTrigger {
 ///
 /// `None` means the gate cancelled the order instead of placing it. The order
 /// is never re-armed, so an underfunded stop cannot repeat forever.
+///
+/// The margin gate exempts a reduce-only order. The book is position-blind,
+/// but the router sends it an authoritative `base_cover` per user, and the
+/// book clamps every reduce-only fill to that cover.
 ///
 /// The subaccount may already sit below its raw floor when a risk cancel
 /// succeeds, so that cancel trips the equity breaker inline.
@@ -869,4 +1081,177 @@ pub fn handle_resolve_trigger_limit_order_v1(
             })?,
         ))
     })
+}
+
+#[cfg(test)]
+mod refused_placement_tests {
+    use {
+        super::{
+            cancel_refused_trigger, gate_trigger, rest_admission, RestAdmission, RestRefusal,
+            TriggerCancel, TriggerGate,
+        },
+        crate::{
+            controller::position::PositionDirection,
+            create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
+            math::{
+                constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION},
+                time::SlotClock,
+            },
+            state::{
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                prop_amm::OrderRulesV0,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market_map::SpotMarketMap,
+                user::{
+                    MarketType, Order, OrderReservation, OrderStatus, OrderTriggerCondition,
+                    OrderType, PerpPosition, User, UserStats,
+                },
+            },
+            test_utils::{get_positions, get_pyth_price},
+        },
+        anchor_lang::prelude::{Clock, Pubkey},
+        std::str::FromStr,
+    };
+
+    fn rules() -> OrderRulesV0 {
+        OrderRulesV0 {
+            min_order_size: BASE_PRECISION_I64 as u64,
+            blocking_min_size: 0,
+            default_activation_delay_slots: 0,
+            max_activation_delay_slots: 10,
+            place_authority: [0; 32],
+            tick_size: 1,
+            step_size: 1,
+            side_order_counts: [0, 0],
+            arena_capacity: 512,
+            evict_threshold_per_side: 200,
+            authority: [0; 32],
+        }
+    }
+
+    /// A market at $100 whose maps carry what a cancel record reads.
+    fn market_maps<'a>(
+        oracle_info: &'a anchor_lang::prelude::AccountInfo<'a>,
+        market_info: &'a anchor_lang::prelude::AccountInfo<'a>,
+    ) -> AccountMaps<'a> {
+        let oracle_map = OracleMap::load_one(oracle_info, 0, SlotClock::baseline(), None).unwrap();
+        let market_map = PerpMarketMap::load_one(market_info, true).unwrap();
+        AccountMaps::new(market_map, SpotMarketMap::empty(), oracle_map)
+    }
+
+    fn market(oracle_key: Pubkey, oracle_price: i64) -> PerpMarket {
+        PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Active,
+            oracle: oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: oracle_price,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default()
+        }
+    }
+
+    /// A reduce-only stop-loss for 1 base, armed on a long of 0.5.
+    fn armed_on_half_a_long() -> (Order, User) {
+        let armed = Order {
+            order_id: 7,
+            status: OrderStatus::Open,
+            order_type: OrderType::TriggerLimit,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_I64 as u64,
+            price: 90_000_000,
+            trigger_price: 95_000_000,
+            trigger_condition: OrderTriggerCondition::Below,
+            reduce_only: true,
+            ..Order::default()
+        };
+        let mut user = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            ..User::default()
+        };
+
+        user.orders[0] = armed;
+        user.reserve_orders(&OrderReservation::of_order(&armed).unwrap())
+            .unwrap();
+        (armed, user)
+    }
+
+    /// The gate clamps the stop to 0.5, which is under the book's minimum
+    /// of 1.
+    #[test]
+    fn a_trigger_the_book_refuses_is_cancelled_and_its_reservation_released() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut market = market(oracle_key, oracle_price.price);
+        create_anchor_account_info!(market, PerpMarket, market_info);
+        let mut maps = market_maps(&oracle_info, &market_info);
+        let (armed, mut user) = armed_on_half_a_long();
+
+        let TriggerGate::Rest(reserved) =
+            gate_trigger(&mut user, &UserStats::default(), 0, 0, 100_000_000, &mut maps).unwrap()
+        else {
+            panic!("a reduce-only trigger with a position to reduce rests");
+        };
+        assert_eq!(reserved.base_asset_amount, BASE_PRECISION_I64 as u64 / 2);
+
+        let RestAdmission::Refused(reason) = rest_admission(
+            &rules(),
+            reserved.direction,
+            armed.price,
+            reserved.base_asset_amount,
+            armed.max_ts,
+            None,
+            0,
+        ) else {
+            panic!("the book refuses a rest under its minimum");
+        };
+        assert_eq!(reason, RestRefusal::SizeBelowMinimum);
+
+        cancel_refused_trigger(
+            &mut user,
+            0,
+            &reserved,
+            reason,
+            &mut maps,
+            &TriggerCancel {
+                market_index: 0,
+                user_key: &Pubkey::new_unique(),
+                filler_key: &Pubkey::new_unique(),
+                filler_reward: 0,
+                clock: &Clock::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(user.orders[0].status, OrderStatus::Canceled);
+        let position = user.get_perp_position(0).unwrap();
+        assert_eq!(position.open_asks, 0);
+        assert_eq!(position.open_orders, 0);
+        assert_eq!(user.open_orders, 0);
+    }
 }

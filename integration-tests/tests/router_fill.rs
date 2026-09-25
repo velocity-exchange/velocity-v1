@@ -7079,8 +7079,9 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
     // One sync for the whole block, remaining accounts as an integrator
     // passes them: maps, then the crank inputs, then the quoter entry.
     let conditions = user_conditions_pda(&user);
+    // The admin may set paid self-sync terms on another user's block.
     let mut accounts = velocity::accounts::SyncUserConditions {
-        payer: fixture.keeper.pubkey(),
+        payer: fixture.admin.pubkey(),
         state: state_pda(),
         user,
         user_conditions: conditions,
@@ -7106,8 +7107,8 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
         }
         .data(),
     };
-    let keeper = fixture.keeper.insecure_clone();
-    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let admin = fixture.admin.insecure_clone();
+    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
 
     // The stored list: prefix, maps, then the tail the parser never
     // reaches — the quoter must not sit inside the map section.
@@ -7172,8 +7173,9 @@ fn sync_liq_conditions(
     sync_cost_units: u32,
 ) -> Pubkey {
     let conditions = user_conditions_pda(&user);
+    // The admin may set paid self-sync terms on another user's block.
     let mut accounts = velocity::accounts::SyncLiqConditions {
-        payer: fixture.keeper.pubkey(),
+        payer: fixture.admin.pubkey(),
         state: state_pda(),
         user,
         liq_conditions: conditions,
@@ -7202,8 +7204,8 @@ fn sync_liq_conditions(
         }
         .data(),
     };
-    let keeper = fixture.keeper.insecure_clone();
-    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let admin = fixture.admin.insecure_clone();
+    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
     conditions
 }
 

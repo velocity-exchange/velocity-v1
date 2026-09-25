@@ -1,8 +1,9 @@
 //! Rewrite a user's relay liquidation-condition block from their live
 //! positions.
 //!
-//! Writing the block is permissionless and idempotent. This is the opt-in
-//! entry point. It creates the account, so it takes a `payer: Signer`. Relay's
+//! Writing the block is permissionless and idempotent. Only the user's
+//! authority, its delegate or the admin sets or clears paid self-sync terms,
+//! because the protocol treasury pays them. This is the opt-in entry point. It creates the account, so it takes a `payer: Signer`. Relay's
 //! self-maintenance path is a separate instruction,
 //! [`super::resync_liq_conditions`], which names no signer at all. A staged
 //! executor is submitted unsigned, because relay's turner marks every meta
@@ -160,6 +161,55 @@ pub fn price_sync_terms(
     Ok(terms)
 }
 
+/// Who runs an opt-in sync, and the block it writes.
+///
+/// The treasury pays a block's self-sync terms, and a block with no terms has no
+/// self-maintenance. So only the user's authority, its delegate or the admin
+/// may set paid terms or clear them. Anyone else may still refresh an unpaid
+/// block.
+pub struct SyncCaller<'a, 'info> {
+    pub payer: &'a Signer<'info>,
+    pub state: &'a AccountLoader<'info, State>,
+    pub user: &'a AccountLoader<'info, User>,
+    pub conditions: &'a AccountLoader<'info, UserConditionsV0>,
+}
+
+impl SyncCaller<'_, '_> {
+    /// Price `args`, and refuse terms this caller may not write.
+    pub fn authorized_terms(&self, args: &SyncLiqConditionsArgs) -> Result<SyncLiqConditionsTerms> {
+        let terms = price_sync_terms(&self.state.load()?.transaction_fee_rails, args)?;
+        let may_set_terms =
+            crate::instructions::constraints::can_sign_for_user(self.user, self.payer)?
+                || crate::auth::check_warm(self.payer.key, self.state)?;
+        // A block this instruction creates has no discriminator yet, so its
+        // load fails. Such a block holds no terms.
+        let stored_payment = self
+            .conditions
+            .load()
+            .map_or(0, |conditions| conditions.sync_payment_lamports);
+
+        validate_terms_change(may_set_terms, stored_payment, &terms)?;
+        Ok(terms)
+    }
+}
+
+/// Refuse a third party that would set paid terms or clear stored ones.
+pub fn validate_terms_change(
+    may_set_terms: bool,
+    stored_payment: u64,
+    terms: &SyncLiqConditionsTerms,
+) -> Result<()> {
+    validate!(
+        may_set_terms || (stored_payment == 0 && terms.sync_payment_lamports == 0),
+        ErrorCode::SelfSyncTermsNeedUserAuthority,
+        "a sync by a third party cannot change the paid terms ({} lamports stored, {} asked)",
+        stored_payment,
+        terms.sync_payment_lamports
+    )?;
+
+    Ok(())
+}
+
 /// What one market's reservoir pays the cranks the liveness poll stages.
 ///
 /// The poll stages whichever of the two the resolver finds work for, so the
@@ -189,8 +239,13 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     ctx: Context<'info, SyncLiqConditions<'info>>,
     args: SyncLiqConditionsArgs,
 ) -> Result<()> {
-    let state_rails = ctx.accounts.state.load()?.transaction_fee_rails;
-    let terms = price_sync_terms(&state_rails, &args)?;
+    let terms = SyncCaller {
+        payer: &ctx.accounts.payer,
+        state: &ctx.accounts.state,
+        user: &ctx.accounts.user,
+        conditions: &ctx.accounts.liq_conditions,
+    }
+    .authorized_terms(&args)?;
     // `stamp_sync_slot` is true because this sync brings the block up to date,
     // so a fresh account does not read as overdue from slot zero. The rewrite
     // stamps the slot itself, because a second load in the same instruction

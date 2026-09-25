@@ -122,9 +122,9 @@ pub struct UserConditionsV0 {
     pub trigger_resolvers: [u8; TRIGGER_RESOLVERS_LEN],
     /// The `User` these conditions watch.
     pub user: Pubkey,
-    /// Fee the sync executor pays its keeper out of the protocol crank treasury. Stated by
-    /// whoever opts in and capped at [`LIQ_SYNC_MAX_COST_UNITS`], because opting in is
-    /// permissionless and the payer is protocol funds. A block below
+    /// Fee the sync executor pays its keeper out of the protocol crank treasury. Set only by
+    /// the user's authority, its delegate or the admin, and capped at
+    /// [`LIQ_SYNC_MAX_COST_UNITS`], because the payer is protocol funds. A block below
     /// [`LIQ_SYNC_MIN_FALLBACK_SLOTS`] pays nothing.
     pub sync_payment_lamports: u64,
     /// The fallback poll interval.
@@ -426,5 +426,39 @@ mod merged_size_tests {
                 sync_fallback_slots: fallback_slots,
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod sync_terms_authority_tests {
+    use crate::instructions::{validate_terms_change, SyncLiqConditionsTerms};
+
+    fn terms(sync_payment_lamports: u64) -> SyncLiqConditionsTerms {
+        SyncLiqConditionsTerms {
+            sync_payment_lamports,
+            sync_fallback_slots: super::LIQ_SYNC_MIN_FALLBACK_SLOTS,
+        }
+    }
+
+    /// The treasury pays a block's terms, so a third party cannot opt a user
+    /// into a paid resync.
+    #[test]
+    fn a_third_party_cannot_set_paid_terms() {
+        assert!(validate_terms_change(false, 0, &terms(5_000)).is_err());
+        assert!(validate_terms_change(true, 0, &terms(5_000)).is_ok());
+    }
+
+    /// Clearing the terms turns off the block's self-maintenance, so a third
+    /// party cannot clear them either.
+    #[test]
+    fn a_third_party_cannot_clear_paid_terms() {
+        assert!(validate_terms_change(false, 5_000, &terms(0)).is_err());
+        assert!(validate_terms_change(false, 5_000, &terms(5_000)).is_err());
+        assert!(validate_terms_change(true, 5_000, &terms(0)).is_ok());
+    }
+
+    #[test]
+    fn a_third_party_may_refresh_an_unpaid_block() {
+        assert!(validate_terms_change(false, 0, &terms(0)).is_ok());
     }
 }

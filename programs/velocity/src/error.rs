@@ -997,6 +997,8 @@ pub enum ErrorCode {
     TriggerMarketHasNoClob,
     #[msg("The CLOB order rests inside the maker oracle band, so no keeper may cancel it")]
     ClobOrderInsideOracleBand,
+    #[msg("Only the user's authority, its delegate or the admin sets or clears a paid self-sync")]
+    SelfSyncTermsNeedUserAuthority,
 }
 
 #[macro_export]

@@ -38,6 +38,16 @@ pub struct RouterConfig {
     pub _reserved: [u8; 128],
 }
 
+/// The treasury's ATA must not alias the router ATA or the redemption vault,
+/// and the default key would leave the treasury share unreachable.
+pub fn treasury_is_valid(
+    treasury: &Pubkey,
+    router_config: &Pubkey,
+    redemption_config: &Pubkey,
+) -> bool {
+    *treasury != Pubkey::default() && treasury != router_config && treasury != redemption_config
+}
+
 impl RouterConfig {
     pub fn active_tiers(&self) -> &[Tier] {
         &self.tiers[..self.tier_count as usize]
@@ -127,6 +137,19 @@ mod tests {
         assert_eq!(config.tier_count, 3);
         assert_eq!(config.active_tiers().len(), 3);
         assert_eq!(config.tiers[3], Tier::default());
+    }
+
+    #[test]
+    fn treasury_is_valid_rejects_the_default_key_and_both_legs() {
+        let (router, redemption, wallet) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        assert!(treasury_is_valid(&wallet, &router, &redemption));
+        assert!(!treasury_is_valid(&Pubkey::default(), &router, &redemption));
+        assert!(!treasury_is_valid(&router, &router, &redemption));
+        assert!(!treasury_is_valid(&redemption, &router, &redemption));
     }
 
     #[test]

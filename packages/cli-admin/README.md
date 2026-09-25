@@ -103,6 +103,11 @@ velocity-admin fees sweep <market>                               # permissionles
 velocity-admin fees settle-revenue-share <market> [escrowAuthority] [--all] # permissionless; pays accrued builder/referrer fees out of the pnl pool. --all settles every escrow still owed on the market, which delisting now requires
 velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
 
+velocity-admin router show                                       # RouterConfig: authorities, tier ladder, period and lifetime counters, router ATA balance
+velocity-admin router initialize <admin> <cranker> <treasury> --tiers <threshold:poolBps,...> [--usdt-mint <pubkey>]  # one-time; the init authority signs; direct send only
+velocity-admin router update-config [--admin <k>] [--cranker <k>] [--treasury <k>] [--tiers <threshold:poolBps,...>]  # router admin; omitted fields keep their value; tiers lock for the rest of a day that already distributed
+velocity-admin router distribute                                 # cranker key; split the router ATA between the recovery pool and the treasury (the fee collector bot does this daily)
+
 velocity-admin user init <name> [--sub-accounts <n>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority must sign on mainnet; one proposal with --multisig, vault pays rent
 velocity-admin user set-delegate <delegate> [--sub-accounts <n>] [--allow-transfer <bool>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority signs; one proposal with --multisig
 velocity-admin user set-special-status <user> <flags>

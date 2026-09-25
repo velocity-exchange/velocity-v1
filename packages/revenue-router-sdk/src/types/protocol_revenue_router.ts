@@ -527,13 +527,77 @@ export type ProtocolRevenueRouter = {
 					signer: true;
 					relations: ['config'];
 				},
+				{
+					name: 'redemptionConfig';
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [99, 111, 110, 102, 105, 103];
+							},
+						];
+						program: {
+							kind: 'const';
+							value: [
+								12,
+								182,
+								230,
+								179,
+								197,
+								130,
+								96,
+								52,
+								110,
+								202,
+								3,
+								235,
+								74,
+								170,
+								167,
+								197,
+								70,
+								141,
+								235,
+								46,
+								61,
+								200,
+								152,
+								253,
+								111,
+								105,
+								234,
+								245,
+								235,
+								80,
+								14,
+								28,
+							];
+						};
+					};
+				},
+				{
+					name: 'newAdmin';
+					optional: true;
+				},
+				{
+					name: 'newCranker';
+					optional: true;
+				},
+				{
+					name: 'newTreasury';
+					optional: true;
+				},
 			];
 			args: [
 				{
-					name: 'args';
+					name: 'tiers';
 					type: {
-						defined: {
-							name: 'updateConfigArgs';
+						option: {
+							vec: {
+								defined: {
+									name: 'tier';
+								};
+							};
 						};
 					};
 				},
@@ -609,7 +673,7 @@ export type ProtocolRevenueRouter = {
 		{
 			code: 6009;
 			name: 'invalidTreasury';
-			msg: 'Treasury cannot be the router config or the redemption config';
+			msg: 'Treasury cannot be the default key, the router config or the redemption config';
 		},
 		{
 			code: 6010;
@@ -932,47 +996,6 @@ export type ProtocolRevenueRouter = {
 					{
 						name: 'poolBps';
 						type: 'u16';
-					},
-				];
-			};
-		},
-		{
-			name: 'updateConfigArgs';
-			docs: [
-				'Every field is optional: `None` keeps the stored value, `Some` replaces it.',
-			];
-			type: {
-				kind: 'struct';
-				fields: [
-					{
-						name: 'admin';
-						type: {
-							option: 'pubkey';
-						};
-					},
-					{
-						name: 'cranker';
-						type: {
-							option: 'pubkey';
-						};
-					},
-					{
-						name: 'treasury';
-						type: {
-							option: 'pubkey';
-						};
-					},
-					{
-						name: 'tiers';
-						type: {
-							option: {
-								vec: {
-									defined: {
-										name: 'tier';
-									};
-								};
-							};
-						};
 					},
 				];
 			};

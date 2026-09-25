@@ -1,1060 +1,713 @@
 {
-  "address": "39PAxdVaWHYH62bR5AWTkMVd52Y4QeJLjQ8TChupghgT",
-  "metadata": {
-    "name": "protocol_revenue_router",
-    "version": "0.1.0",
-    "spec": "0.1.0",
-    "description": "Routes Velocity perp protocol fees between the DFX recovery pool and the treasury"
-  },
-  "instructions": [
-    {
-      "name": "distribute",
-      "discriminator": [
-        191,
-        44,
-        223,
-        207,
-        164,
-        236,
-        126,
-        61
-      ],
-      "accounts": [
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  111,
-                  117,
-                  116,
-                  101,
-                  114,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "cranker",
-          "signer": true
-        },
-        {
-          "name": "usdt_mint"
-        },
-        {
-          "name": "router_ata",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "config"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "usdt_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "treasury"
-        },
-        {
-          "name": "treasury_ata",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "treasury"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "usdt_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "redemption_config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                12,
-                182,
-                230,
-                179,
-                197,
-                130,
-                96,
-                52,
-                110,
-                202,
-                3,
-                235,
-                74,
-                170,
-                167,
-                197,
-                70,
-                141,
-                235,
-                46,
-                61,
-                200,
-                152,
-                253,
-                111,
-                105,
-                234,
-                245,
-                235,
-                80,
-                14,
-                28
-              ]
-            }
-          }
-        },
-        {
-          "name": "redemption_ledger",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  116,
-                  114,
-                  105,
-                  98,
-                  117,
-                  116,
-                  105,
-                  111,
-                  110,
-                  95,
-                  108,
-                  101,
-                  100,
-                  103,
-                  101,
-                  114
-                ]
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                12,
-                182,
-                230,
-                179,
-                197,
-                130,
-                96,
-                52,
-                110,
-                202,
-                3,
-                235,
-                74,
-                170,
-                167,
-                197,
-                70,
-                141,
-                235,
-                46,
-                61,
-                200,
-                152,
-                253,
-                111,
-                105,
-                234,
-                245,
-                235,
-                80,
-                14,
-                28
-              ]
-            }
-          }
-        },
-        {
-          "name": "redemption_vault",
-          "writable": true
-        },
-        {
-          "name": "dfx_redemption_program",
-          "address": "rdemKHu2ueeKkhwmM2GfJFaqD3zsrj7s3oGMN3dQMJT"
-        },
-        {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "associated_token_program",
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "initialize",
-      "discriminator": [
-        175,
-        175,
-        109,
-        31,
-        13,
-        152,
-        155,
-        237
-      ],
-      "accounts": [
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  111,
-                  117,
-                  116,
-                  101,
-                  114,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "usdt_mint"
-        },
-        {
-          "name": "redemption_config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                12,
-                182,
-                230,
-                179,
-                197,
-                130,
-                96,
-                52,
-                110,
-                202,
-                3,
-                235,
-                74,
-                170,
-                167,
-                197,
-                70,
-                141,
-                235,
-                46,
-                61,
-                200,
-                152,
-                253,
-                111,
-                105,
-                234,
-                245,
-                235,
-                80,
-                14,
-                28
-              ]
-            }
-          }
-        },
-        {
-          "name": "admin"
-        },
-        {
-          "name": "cranker"
-        },
-        {
-          "name": "treasury"
-        },
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "tiers",
-          "type": {
-            "vec": {
-              "defined": {
-                "name": "Tier"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "update_config",
-      "discriminator": [
-        29,
-        158,
-        252,
-        191,
-        10,
-        83,
-        219,
-        99
-      ],
-      "accounts": [
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  111,
-                  117,
-                  116,
-                  101,
-                  114,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "admin",
-          "signer": true,
-          "relations": [
-            "config"
-          ]
-        }
-      ],
-      "args": [
-        {
-          "name": "args",
-          "type": {
-            "defined": {
-              "name": "UpdateConfigArgs"
-            }
-          }
-        }
-      ]
-    }
-  ],
-  "accounts": [
-    {
-      "name": "RouterConfig",
-      "discriminator": [
-        147,
-        20,
-        81,
-        135,
-        46,
-        251,
-        46,
-        139
-      ]
-    }
-  ],
-  "events": [
-    {
-      "name": "FeesDistributed",
-      "discriminator": [
-        209,
-        24,
-        174,
-        200,
-        236,
-        90,
-        154,
-        55
-      ]
-    },
-    {
-      "name": "RouterConfigUpdated",
-      "discriminator": [
-        75,
-        159,
-        47,
-        177,
-        162,
-        44,
-        127,
-        69
-      ]
-    },
-    {
-      "name": "RouterInitialized",
-      "discriminator": [
-        2,
-        194,
-        31,
-        191,
-        122,
-        98,
-        112,
-        243
-      ]
-    }
-  ],
-  "errors": [
-    {
-      "code": 6000,
-      "name": "Unauthorized",
-      "msg": "Signer is not authorized for this instruction"
-    },
-    {
-      "code": 6001,
-      "name": "InvalidAuthority",
-      "msg": "Authority key cannot be the default pubkey"
-    },
-    {
-      "code": 6002,
-      "name": "EmptyTiers",
-      "msg": "At least one tier is required"
-    },
-    {
-      "code": 6003,
-      "name": "TooManyTiers",
-      "msg": "Too many tiers"
-    },
-    {
-      "code": 6004,
-      "name": "FirstTierThresholdNotZero",
-      "msg": "The first tier must start at threshold 0"
-    },
-    {
-      "code": 6005,
-      "name": "TiersNotIncreasing",
-      "msg": "Tier thresholds must strictly increase"
-    },
-    {
-      "code": 6006,
-      "name": "InvalidBps",
-      "msg": "Tier pool_bps must be at most 10000"
-    },
-    {
-      "code": 6007,
-      "name": "TiersLockedForPeriod",
-      "msg": "Tiers cannot change after a distribution in the current period"
-    },
-    {
-      "code": 6008,
-      "name": "ArithmeticOverflow",
-      "msg": "Arithmetic overflow"
-    },
-    {
-      "code": 6009,
-      "name": "InvalidTreasury",
-      "msg": "Treasury cannot be the router config or the redemption config"
-    },
-    {
-      "code": 6010,
-      "name": "UsdtMintMismatch",
-      "msg": "USDT mint does not match the redemption config's mint"
-    }
-  ],
-  "types": [
-    {
-      "name": "Config",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "bump",
-            "type": "u8"
-          },
-          {
-            "name": "admin",
-            "type": "pubkey"
-          },
-          {
-            "name": "dfx_mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "usdt_mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "usdt_vault",
-            "type": "pubkey"
-          },
-          {
-            "name": "total_exploited_amount",
-            "type": "u64"
-          },
-          {
-            "name": "redemption_threshold",
-            "type": "u64"
-          },
-          {
-            "name": "lifetime_recognized_backing",
-            "type": "u64"
-          },
-          {
-            "name": "recognized_backing_remaining",
-            "type": "u64"
-          },
-          {
-            "name": "total_redeemed_usdt",
-            "type": "u64"
-          },
-          {
-            "name": "redemption_started",
-            "type": "bool"
-          },
-          {
-            "name": "paused",
-            "type": "bool"
-          }
-        ]
-      }
-    },
-    {
-      "name": "ContributionLedger",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "bump",
-            "type": "u8"
-          },
-          {
-            "name": "depositors",
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "Depositor"
-                  }
-                },
-                6
-              ]
-            }
-          },
-          {
-            "name": "router_program",
-            "type": "pubkey"
-          },
-          {
-            "name": "router_config",
-            "type": "pubkey"
-          },
-          {
-            "name": "cumulative_protocol_fees",
-            "type": "u64"
-          },
-          {
-            "name": "cumulative_tether",
-            "type": "u64"
-          },
-          {
-            "name": "cumulative_seed_capital",
-            "type": "u64"
-          },
-          {
-            "name": "cumulative_other",
-            "type": "u64"
-          },
-          {
-            "name": "_reserved",
-            "type": {
-              "array": [
-                "u8",
-                96
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
-      "name": "Depositor",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "key",
-            "type": "pubkey"
-          },
-          {
-            "name": "allowed_sources",
-            "type": "u8"
-          }
-        ]
-      }
-    },
-    {
-      "name": "FeesDistributed",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "total",
-            "type": "u64"
-          },
-          {
-            "name": "to_pool",
-            "type": "u64"
-          },
-          {
-            "name": "to_treasury",
-            "type": "u64"
-          },
-          {
-            "name": "cap_room_after",
-            "type": "u64"
-          },
-          {
-            "name": "period_day",
-            "type": "i64"
-          },
-          {
-            "name": "period_fees_after",
-            "type": "u64"
-          },
-          {
-            "name": "lifetime_fees_after",
-            "type": "u64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "RouterConfig",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "bump",
-            "type": "u8"
-          },
-          {
-            "name": "admin",
-            "type": "pubkey"
-          },
-          {
-            "name": "cranker",
-            "type": "pubkey"
-          },
-          {
-            "name": "usdt_mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "treasury",
-            "type": "pubkey"
-          },
-          {
-            "name": "tiers",
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "Tier"
-                  }
-                },
-                8
-              ]
-            }
-          },
-          {
-            "name": "tier_count",
-            "type": "u8"
-          },
-          {
-            "name": "period_day",
-            "type": "i64"
-          },
-          {
-            "name": "period_fees",
-            "type": "u64"
-          },
-          {
-            "name": "lifetime_fees",
-            "type": "u64"
-          },
-          {
-            "name": "lifetime_to_pool",
-            "type": "u64"
-          },
-          {
-            "name": "lifetime_to_treasury",
-            "type": "u64"
-          },
-          {
-            "name": "_reserved",
-            "type": {
-              "array": [
-                "u8",
-                128
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
-      "name": "RouterConfigUpdated",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "admin",
-            "type": "pubkey"
-          },
-          {
-            "name": "cranker",
-            "type": "pubkey"
-          },
-          {
-            "name": "treasury",
-            "type": "pubkey"
-          },
-          {
-            "name": "tier_count",
-            "type": "u8"
-          }
-        ]
-      }
-    },
-    {
-      "name": "RouterInitialized",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "admin",
-            "type": "pubkey"
-          },
-          {
-            "name": "cranker",
-            "type": "pubkey"
-          },
-          {
-            "name": "treasury",
-            "type": "pubkey"
-          },
-          {
-            "name": "usdt_mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "tier_count",
-            "type": "u8"
-          }
-        ]
-      }
-    },
-    {
-      "name": "Tier",
-      "docs": [
-        "One slice of the marginal ladder: gross from `threshold` up to the next",
-        "tier's threshold is split `pool_bps` to the recovery pool."
-      ],
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "threshold",
-            "type": "u64"
-          },
-          {
-            "name": "pool_bps",
-            "type": "u16"
-          }
-        ]
-      }
-    },
-    {
-      "name": "UpdateConfigArgs",
-      "docs": [
-        "Every field is optional: `None` keeps the stored value, `Some` replaces it."
-      ],
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "admin",
-            "type": {
-              "option": "pubkey"
-            }
-          },
-          {
-            "name": "cranker",
-            "type": {
-              "option": "pubkey"
-            }
-          },
-          {
-            "name": "treasury",
-            "type": {
-              "option": "pubkey"
-            }
-          },
-          {
-            "name": "tiers",
-            "type": {
-              "option": {
-                "vec": {
-                  "defined": {
-                    "name": "Tier"
-                  }
-                }
-              }
-            }
-          }
-        ]
-      }
-    }
-  ]
+	"address": "39PAxdVaWHYH62bR5AWTkMVd52Y4QeJLjQ8TChupghgT",
+	"metadata": {
+		"name": "protocol_revenue_router",
+		"version": "0.1.0",
+		"spec": "0.1.0",
+		"description": "Routes Velocity perp protocol fees between the DFX recovery pool and the treasury"
+	},
+	"instructions": [
+		{
+			"name": "distribute",
+			"discriminator": [191, 44, 223, 207, 164, 236, 126, 61],
+			"accounts": [
+				{
+					"name": "config",
+					"writable": true,
+					"pda": {
+						"seeds": [
+							{
+								"kind": "const",
+								"value": [
+									114, 111, 117, 116, 101, 114, 95, 99, 111, 110, 102, 105, 103
+								]
+							}
+						]
+					}
+				},
+				{
+					"name": "cranker",
+					"signer": true
+				},
+				{
+					"name": "usdt_mint"
+				},
+				{
+					"name": "router_ata",
+					"writable": true,
+					"pda": {
+						"seeds": [
+							{
+								"kind": "account",
+								"path": "config"
+							},
+							{
+								"kind": "const",
+								"value": [
+									6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206,
+									235, 121, 172, 28, 180, 133, 237, 95, 91, 55, 145, 58, 140,
+									245, 133, 126, 255, 0, 169
+								]
+							},
+							{
+								"kind": "account",
+								"path": "usdt_mint"
+							}
+						],
+						"program": {
+							"kind": "const",
+							"value": [
+								140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142,
+								13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216,
+								219, 233, 248, 89
+							]
+						}
+					}
+				},
+				{
+					"name": "treasury"
+				},
+				{
+					"name": "treasury_ata",
+					"writable": true,
+					"pda": {
+						"seeds": [
+							{
+								"kind": "account",
+								"path": "treasury"
+							},
+							{
+								"kind": "const",
+								"value": [
+									6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206,
+									235, 121, 172, 28, 180, 133, 237, 95, 91, 55, 145, 58, 140,
+									245, 133, 126, 255, 0, 169
+								]
+							},
+							{
+								"kind": "account",
+								"path": "usdt_mint"
+							}
+						],
+						"program": {
+							"kind": "const",
+							"value": [
+								140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142,
+								13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216,
+								219, 233, 248, 89
+							]
+						}
+					}
+				},
+				{
+					"name": "payer",
+					"writable": true,
+					"signer": true
+				},
+				{
+					"name": "redemption_config",
+					"writable": true,
+					"pda": {
+						"seeds": [
+							{
+								"kind": "const",
+								"value": [99, 111, 110, 102, 105, 103]
+							}
+						],
+						"program": {
+							"kind": "const",
+							"value": [
+								12, 182, 230, 179, 197, 130, 96, 52, 110, 202, 3, 235, 74, 170,
+								167, 197, 70, 141, 235, 46, 61, 200, 152, 253, 111, 105, 234,
+								245, 235, 80, 14, 28
+							]
+						}
+					}
+				},
+				{
+					"name": "redemption_ledger",
+					"writable": true,
+					"pda": {
+						"seeds": [
+							{
+								"kind": "const",
+								"value": [
+									99, 111, 110, 116, 114, 105, 98, 117, 116, 105, 111, 110, 95,
+									108, 101, 100, 103, 101, 114
+								]
+							}
+						],
+						"program": {
+							"kind": "const",
+							"value": [
+								12, 182, 230, 179, 197, 130, 96, 52, 110, 202, 3, 235, 74, 170,
+								167, 197, 70, 141, 235, 46, 61, 200, 152, 253, 111, 105, 234,
+								245, 235, 80, 14, 28
+							]
+						}
+					}
+				},
+				{
+					"name": "redemption_vault",
+					"writable": true
+				},
+				{
+					"name": "dfx_redemption_program",
+					"address": "rdemKHu2ueeKkhwmM2GfJFaqD3zsrj7s3oGMN3dQMJT"
+				},
+				{
+					"name": "token_program",
+					"address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+				},
+				{
+					"name": "associated_token_program",
+					"address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+				},
+				{
+					"name": "system_program",
+					"address": "11111111111111111111111111111111"
+				}
+			],
+			"args": []
+		},
+		{
+			"name": "initialize",
+			"discriminator": [175, 175, 109, 31, 13, 152, 155, 237],
+			"accounts": [
+				{
+					"name": "config",
+					"writable": true,
+					"pda": {
+						"seeds": [
+							{
+								"kind": "const",
+								"value": [
+									114, 111, 117, 116, 101, 114, 95, 99, 111, 110, 102, 105, 103
+								]
+							}
+						]
+					}
+				},
+				{
+					"name": "usdt_mint"
+				},
+				{
+					"name": "redemption_config",
+					"pda": {
+						"seeds": [
+							{
+								"kind": "const",
+								"value": [99, 111, 110, 102, 105, 103]
+							}
+						],
+						"program": {
+							"kind": "const",
+							"value": [
+								12, 182, 230, 179, 197, 130, 96, 52, 110, 202, 3, 235, 74, 170,
+								167, 197, 70, 141, 235, 46, 61, 200, 152, 253, 111, 105, 234,
+								245, 235, 80, 14, 28
+							]
+						}
+					}
+				},
+				{
+					"name": "admin"
+				},
+				{
+					"name": "cranker"
+				},
+				{
+					"name": "treasury"
+				},
+				{
+					"name": "payer",
+					"writable": true,
+					"signer": true
+				},
+				{
+					"name": "system_program",
+					"address": "11111111111111111111111111111111"
+				}
+			],
+			"args": [
+				{
+					"name": "tiers",
+					"type": {
+						"vec": {
+							"defined": {
+								"name": "Tier"
+							}
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "update_config",
+			"discriminator": [29, 158, 252, 191, 10, 83, 219, 99],
+			"accounts": [
+				{
+					"name": "config",
+					"writable": true,
+					"pda": {
+						"seeds": [
+							{
+								"kind": "const",
+								"value": [
+									114, 111, 117, 116, 101, 114, 95, 99, 111, 110, 102, 105, 103
+								]
+							}
+						]
+					}
+				},
+				{
+					"name": "admin",
+					"signer": true,
+					"relations": ["config"]
+				},
+				{
+					"name": "redemption_config",
+					"pda": {
+						"seeds": [
+							{
+								"kind": "const",
+								"value": [99, 111, 110, 102, 105, 103]
+							}
+						],
+						"program": {
+							"kind": "const",
+							"value": [
+								12, 182, 230, 179, 197, 130, 96, 52, 110, 202, 3, 235, 74, 170,
+								167, 197, 70, 141, 235, 46, 61, 200, 152, 253, 111, 105, 234,
+								245, 235, 80, 14, 28
+							]
+						}
+					}
+				},
+				{
+					"name": "new_admin",
+					"optional": true
+				},
+				{
+					"name": "new_cranker",
+					"optional": true
+				},
+				{
+					"name": "new_treasury",
+					"optional": true
+				}
+			],
+			"args": [
+				{
+					"name": "tiers",
+					"type": {
+						"option": {
+							"vec": {
+								"defined": {
+									"name": "Tier"
+								}
+							}
+						}
+					}
+				}
+			]
+		}
+	],
+	"accounts": [
+		{
+			"name": "RouterConfig",
+			"discriminator": [147, 20, 81, 135, 46, 251, 46, 139]
+		}
+	],
+	"events": [
+		{
+			"name": "FeesDistributed",
+			"discriminator": [209, 24, 174, 200, 236, 90, 154, 55]
+		},
+		{
+			"name": "RouterConfigUpdated",
+			"discriminator": [75, 159, 47, 177, 162, 44, 127, 69]
+		},
+		{
+			"name": "RouterInitialized",
+			"discriminator": [2, 194, 31, 191, 122, 98, 112, 243]
+		}
+	],
+	"errors": [
+		{
+			"code": 6000,
+			"name": "Unauthorized",
+			"msg": "Signer is not authorized for this instruction"
+		},
+		{
+			"code": 6001,
+			"name": "InvalidAuthority",
+			"msg": "Authority key cannot be the default pubkey"
+		},
+		{
+			"code": 6002,
+			"name": "EmptyTiers",
+			"msg": "At least one tier is required"
+		},
+		{
+			"code": 6003,
+			"name": "TooManyTiers",
+			"msg": "Too many tiers"
+		},
+		{
+			"code": 6004,
+			"name": "FirstTierThresholdNotZero",
+			"msg": "The first tier must start at threshold 0"
+		},
+		{
+			"code": 6005,
+			"name": "TiersNotIncreasing",
+			"msg": "Tier thresholds must strictly increase"
+		},
+		{
+			"code": 6006,
+			"name": "InvalidBps",
+			"msg": "Tier pool_bps must be at most 10000"
+		},
+		{
+			"code": 6007,
+			"name": "TiersLockedForPeriod",
+			"msg": "Tiers cannot change after a distribution in the current period"
+		},
+		{
+			"code": 6008,
+			"name": "ArithmeticOverflow",
+			"msg": "Arithmetic overflow"
+		},
+		{
+			"code": 6009,
+			"name": "InvalidTreasury",
+			"msg": "Treasury cannot be the default key, the router config or the redemption config"
+		},
+		{
+			"code": 6010,
+			"name": "UsdtMintMismatch",
+			"msg": "USDT mint does not match the redemption config's mint"
+		}
+	],
+	"types": [
+		{
+			"name": "Config",
+			"type": {
+				"kind": "struct",
+				"fields": [
+					{
+						"name": "bump",
+						"type": "u8"
+					},
+					{
+						"name": "admin",
+						"type": "pubkey"
+					},
+					{
+						"name": "dfx_mint",
+						"type": "pubkey"
+					},
+					{
+						"name": "usdt_mint",
+						"type": "pubkey"
+					},
+					{
+						"name": "usdt_vault",
+						"type": "pubkey"
+					},
+					{
+						"name": "total_exploited_amount",
+						"type": "u64"
+					},
+					{
+						"name": "redemption_threshold",
+						"type": "u64"
+					},
+					{
+						"name": "lifetime_recognized_backing",
+						"type": "u64"
+					},
+					{
+						"name": "recognized_backing_remaining",
+						"type": "u64"
+					},
+					{
+						"name": "total_redeemed_usdt",
+						"type": "u64"
+					},
+					{
+						"name": "redemption_started",
+						"type": "bool"
+					},
+					{
+						"name": "paused",
+						"type": "bool"
+					}
+				]
+			}
+		},
+		{
+			"name": "ContributionLedger",
+			"type": {
+				"kind": "struct",
+				"fields": [
+					{
+						"name": "bump",
+						"type": "u8"
+					},
+					{
+						"name": "depositors",
+						"type": {
+							"array": [
+								{
+									"defined": {
+										"name": "Depositor"
+									}
+								},
+								6
+							]
+						}
+					},
+					{
+						"name": "router_program",
+						"type": "pubkey"
+					},
+					{
+						"name": "router_config",
+						"type": "pubkey"
+					},
+					{
+						"name": "cumulative_protocol_fees",
+						"type": "u64"
+					},
+					{
+						"name": "cumulative_tether",
+						"type": "u64"
+					},
+					{
+						"name": "cumulative_seed_capital",
+						"type": "u64"
+					},
+					{
+						"name": "cumulative_other",
+						"type": "u64"
+					},
+					{
+						"name": "_reserved",
+						"type": {
+							"array": ["u8", 96]
+						}
+					}
+				]
+			}
+		},
+		{
+			"name": "Depositor",
+			"type": {
+				"kind": "struct",
+				"fields": [
+					{
+						"name": "key",
+						"type": "pubkey"
+					},
+					{
+						"name": "allowed_sources",
+						"type": "u8"
+					}
+				]
+			}
+		},
+		{
+			"name": "FeesDistributed",
+			"type": {
+				"kind": "struct",
+				"fields": [
+					{
+						"name": "ts",
+						"type": "i64"
+					},
+					{
+						"name": "total",
+						"type": "u64"
+					},
+					{
+						"name": "to_pool",
+						"type": "u64"
+					},
+					{
+						"name": "to_treasury",
+						"type": "u64"
+					},
+					{
+						"name": "cap_room_after",
+						"type": "u64"
+					},
+					{
+						"name": "period_day",
+						"type": "i64"
+					},
+					{
+						"name": "period_fees_after",
+						"type": "u64"
+					},
+					{
+						"name": "lifetime_fees_after",
+						"type": "u64"
+					}
+				]
+			}
+		},
+		{
+			"name": "RouterConfig",
+			"type": {
+				"kind": "struct",
+				"fields": [
+					{
+						"name": "bump",
+						"type": "u8"
+					},
+					{
+						"name": "admin",
+						"type": "pubkey"
+					},
+					{
+						"name": "cranker",
+						"type": "pubkey"
+					},
+					{
+						"name": "usdt_mint",
+						"type": "pubkey"
+					},
+					{
+						"name": "treasury",
+						"type": "pubkey"
+					},
+					{
+						"name": "tiers",
+						"type": {
+							"array": [
+								{
+									"defined": {
+										"name": "Tier"
+									}
+								},
+								8
+							]
+						}
+					},
+					{
+						"name": "tier_count",
+						"type": "u8"
+					},
+					{
+						"name": "period_day",
+						"type": "i64"
+					},
+					{
+						"name": "period_fees",
+						"type": "u64"
+					},
+					{
+						"name": "lifetime_fees",
+						"type": "u64"
+					},
+					{
+						"name": "lifetime_to_pool",
+						"type": "u64"
+					},
+					{
+						"name": "lifetime_to_treasury",
+						"type": "u64"
+					},
+					{
+						"name": "_reserved",
+						"type": {
+							"array": ["u8", 128]
+						}
+					}
+				]
+			}
+		},
+		{
+			"name": "RouterConfigUpdated",
+			"type": {
+				"kind": "struct",
+				"fields": [
+					{
+						"name": "ts",
+						"type": "i64"
+					},
+					{
+						"name": "admin",
+						"type": "pubkey"
+					},
+					{
+						"name": "cranker",
+						"type": "pubkey"
+					},
+					{
+						"name": "treasury",
+						"type": "pubkey"
+					},
+					{
+						"name": "tier_count",
+						"type": "u8"
+					}
+				]
+			}
+		},
+		{
+			"name": "RouterInitialized",
+			"type": {
+				"kind": "struct",
+				"fields": [
+					{
+						"name": "ts",
+						"type": "i64"
+					},
+					{
+						"name": "admin",
+						"type": "pubkey"
+					},
+					{
+						"name": "cranker",
+						"type": "pubkey"
+					},
+					{
+						"name": "treasury",
+						"type": "pubkey"
+					},
+					{
+						"name": "usdt_mint",
+						"type": "pubkey"
+					},
+					{
+						"name": "tier_count",
+						"type": "u8"
+					}
+				]
+			}
+		},
+		{
+			"name": "Tier",
+			"docs": [
+				"One slice of the marginal ladder: gross from `threshold` up to the next",
+				"tier's threshold is split `pool_bps` to the recovery pool."
+			],
+			"type": {
+				"kind": "struct",
+				"fields": [
+					{
+						"name": "threshold",
+						"type": "u64"
+					},
+					{
+						"name": "pool_bps",
+						"type": "u16"
+					}
+				]
+			}
+		}
+	]
 }

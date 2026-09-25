@@ -24,8 +24,8 @@ pub mod protocol_revenue_router {
         instructions::initialize::initialize(ctx, tiers)
     }
 
-    pub fn update_config(ctx: Context<UpdateConfig>, args: UpdateConfigArgs) -> Result<()> {
-        instructions::update_config::update_config(ctx, args)
+    pub fn update_config(ctx: Context<UpdateConfig>, tiers: Option<Vec<Tier>>) -> Result<()> {
+        instructions::update_config::update_config(ctx, tiers)
     }
 
     pub fn distribute(ctx: Context<Distribute>) -> Result<()> {

@@ -3,7 +3,7 @@ use {
         dfx_redemption,
         errors::RouterError,
         events::RouterInitialized,
-        state::{RouterConfig, Tier, MAX_TIERS, ROUTER_CONFIG_SEED},
+        state::{treasury_is_valid, RouterConfig, Tier, MAX_TIERS, ROUTER_CONFIG_SEED},
     },
     anchor_lang::prelude::*,
     anchor_spl::token::Mint,
@@ -32,10 +32,11 @@ pub struct Initialize<'info> {
     pub cranker: UncheckedAccount<'info>,
     /// CHECK: only its key is stored; its ATA must not alias either distribute leg
     #[account(
-        constraint = treasury.key() != Pubkey::default() @ RouterError::InvalidAuthority,
-        constraint = treasury.key() != config.key()
-            && treasury.key() != redemption_config.key()
-            @ RouterError::InvalidTreasury
+        constraint = treasury_is_valid(
+            &treasury.key(),
+            &config.key(),
+            &redemption_config.key()
+        ) @ RouterError::InvalidTreasury
     )]
     pub treasury: UncheckedAccount<'info>,
     // The singleton init is locked to a fixed key only on a real mainnet build,

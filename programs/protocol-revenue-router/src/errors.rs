@@ -22,7 +22,7 @@ pub enum RouterError {
     TiersLockedForPeriod,
     #[msg("Arithmetic overflow")]
     ArithmeticOverflow,
-    #[msg("Treasury cannot be the router config or the redemption config")]
+    #[msg("Treasury cannot be the default key, the router config or the redemption config")]
     InvalidTreasury,
     #[msg("USDT mint does not match the redemption config's mint")]
     UsdtMintMismatch,

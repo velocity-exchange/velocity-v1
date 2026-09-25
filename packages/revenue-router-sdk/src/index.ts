@@ -1,4 +1,4 @@
-import { AnchorProvider, IdlAccounts, Program } from '@coral-xyz/anchor';
+import { AnchorProvider, BN, IdlAccounts, Program } from '@coral-xyz/anchor';
 import { Connection, PublicKey, TransactionInstruction } from '@solana/web3.js';
 
 import { ProtocolRevenueRouter } from './types/protocol_revenue_router';
@@ -11,6 +11,11 @@ export const DFX_REDEMPTION_PROGRAM_ID = new PublicKey(
 	'rdemKHu2ueeKkhwmM2GfJFaqD3zsrj7s3oGMN3dQMJT'
 );
 
+export const MAINNET_USDT_MINT = new PublicKey(
+	'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
+);
+
+const SYSTEM_PROGRAM_ID = new PublicKey('11111111111111111111111111111111');
 const TOKEN_PROGRAM_ID = new PublicKey(
 	'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 );
@@ -20,6 +25,10 @@ const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
 
 export type RouterConfigAccount =
 	IdlAccounts<ProtocolRevenueRouter>['routerConfig'];
+
+/** One rung of the marginal ladder: `threshold` is the day's cumulative gross
+ *  (USDT base units) at which `poolBps` starts to apply. */
+export type Tier = { threshold: BN; poolBps: number };
 
 export function getRouterConfigPda(): PublicKey {
 	return PublicKey.findProgramAddressSync(
@@ -103,7 +112,59 @@ export async function getDistributeIx(args: {
 			dfxRedemptionProgram: DFX_REDEMPTION_PROGRAM_ID,
 			tokenProgram: TOKEN_PROGRAM_ID,
 			associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-			systemProgram: new PublicKey('11111111111111111111111111111111'),
+			systemProgram: SYSTEM_PROGRAM_ID,
+		})
+		.instruction();
+}
+
+/** One-time creation of the RouterConfig singleton. On mainnet `payer` must be
+ *  the init authority baked into the program. */
+export async function getInitializeIx(args: {
+	connection: Connection;
+	payer: PublicKey;
+	admin: PublicKey;
+	cranker: PublicKey;
+	treasury: PublicKey;
+	usdtMint: PublicKey;
+	tiers: Tier[];
+}): Promise<TransactionInstruction> {
+	return await getRevenueRouterProgram({
+		connection: args.connection,
+	} as AnchorProvider)
+		.methods.initialize(args.tiers)
+		.accountsStrict({
+			config: getRouterConfigPda(),
+			usdtMint: args.usdtMint,
+			redemptionConfig: getRedemptionConfigPda(),
+			admin: args.admin,
+			cranker: args.cranker,
+			treasury: args.treasury,
+			payer: args.payer,
+			systemProgram: SYSTEM_PROGRAM_ID,
+		})
+		.instruction();
+}
+
+/** Admin-only. Every field left undefined keeps its stored value. */
+export async function getUpdateConfigIx(args: {
+	connection: Connection;
+	admin: PublicKey;
+	newAdmin?: PublicKey;
+	newCranker?: PublicKey;
+	newTreasury?: PublicKey;
+	tiers?: Tier[];
+}): Promise<TransactionInstruction> {
+	return await getRevenueRouterProgram({
+		connection: args.connection,
+	} as AnchorProvider)
+		.methods.updateConfig(args.tiers ?? null)
+		.accountsStrict({
+			config: getRouterConfigPda(),
+			admin: args.admin,
+			redemptionConfig: getRedemptionConfigPda(),
+			newAdmin: args.newAdmin ?? null,
+			newCranker: args.newCranker ?? null,
+			newTreasury: args.newTreasury ?? null,
 		})
 		.instruction();
 }

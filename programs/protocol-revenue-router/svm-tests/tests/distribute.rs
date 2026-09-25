@@ -17,7 +17,6 @@ use {
     },
     protocol_revenue_router::{
         accounts as router_accounts, dfx_redemption, instruction as router_args,
-        instructions::UpdateConfigArgs,
         state::{RouterConfig, Tier, ROUTER_CONFIG_SEED, SECONDS_PER_DAY},
         ID as ROUTER_ID,
     },
@@ -63,6 +62,15 @@ fn ladder() -> Vec<Tier> {
             pool_bps: 9000,
         },
     ]
+}
+
+/// One `update_config` call: every field left `None` keeps its stored value.
+#[derive(Default)]
+struct ConfigUpdate {
+    admin: Option<Pubkey>,
+    cranker: Option<Pubkey>,
+    treasury: Option<Pubkey>,
+    tiers: Option<Vec<Tier>>,
 }
 
 struct Env {
@@ -199,32 +207,42 @@ impl Env {
         )
     }
 
-    fn update_config(&mut self, args: UpdateConfigArgs) -> TxResult {
+    fn update_config(&mut self, update: ConfigUpdate) -> TxResult {
         let admin = self.admin.insecure_clone();
-        self.update_config_as(&admin, args)
+        self.update_config_as(&admin, update)
     }
 
-    fn update_config_as(&mut self, signer: &Keypair, args: UpdateConfigArgs) -> TxResult {
+    fn update_config_as(&mut self, signer: &Keypair, update: ConfigUpdate) -> TxResult {
         let accounts = router_accounts::UpdateConfig {
             config: self.router_config,
             admin: signer.pubkey(),
+            redemption_config: self.redemption_config,
+            new_admin: update.admin,
+            new_cranker: update.cranker,
+            new_treasury: update.treasury,
         };
         let signer = signer.insecure_clone();
         self.send(
-            &[ix(ROUTER_ID, accounts, router_args::UpdateConfig { args })],
+            &[ix(
+                ROUTER_ID,
+                accounts,
+                router_args::UpdateConfig {
+                    tiers: update.tiers,
+                },
+            )],
             &[&signer],
         )
     }
 
     fn set_tiers(&mut self, tiers: Vec<Tier>) -> TxResult {
-        self.update_config(UpdateConfigArgs {
+        self.update_config(ConfigUpdate {
             tiers: Some(tiers),
             ..Default::default()
         })
     }
 
     fn set_treasury(&mut self, treasury: Pubkey) -> TxResult {
-        self.update_config(UpdateConfigArgs {
+        self.update_config(ConfigUpdate {
             treasury: Some(treasury),
             ..Default::default()
         })
@@ -462,7 +480,7 @@ fn update_config_leaves_unset_fields_alone() {
     let mut env = setup();
     let new_cranker = Pubkey::new_unique();
 
-    env.update_config(UpdateConfigArgs {
+    env.update_config(ConfigUpdate {
         cranker: Some(new_cranker),
         ..Default::default()
     })
@@ -485,11 +503,11 @@ fn update_config_rejects_a_signer_other_than_the_admin() {
 
     let stranger = Keypair::new();
     env.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
-    let args = UpdateConfigArgs {
+    let update = ConfigUpdate {
         treasury: Some(Pubkey::new_unique()),
         ..Default::default()
     };
-    assert_error(env.update_config_as(&stranger, args), "Unauthorized");
+    assert_error(env.update_config_as(&stranger, update), "Unauthorized");
     assert_eq!(env.router_config().treasury, env.treasury);
 }
 

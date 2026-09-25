@@ -244,19 +244,16 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
 
     /// Take the free slot, or reclaim an expired retained one.
     ///
-    /// A retained entry describes an order that may rest forever, because a
-    /// signed limit order carries no expiry. Without a second pass those
-    /// entries fill the account and the user can no longer trade. A full
-    /// account therefore reclaims the entry whose `max_slot` is oldest, among
-    /// the entries already past the eviction buffer.
+    /// A signed limit order carries no expiry, so without a second pass the
+    /// retained entries fill the account and the user can no longer trade. A
+    /// full account therefore reclaims the entry whose `max_slot` is oldest,
+    /// among the entries already past the eviction buffer.
     ///
-    /// The expiry test is what makes the reclaim safe. An entry carries the
-    /// uuid that `check_exists_and_prune_stale_signed_msg_order_ids` matches
-    /// on, so reclaiming a live entry would re-admit its message and fill the
-    /// same signed order a second time. An entry past `max_slot` plus the
-    /// buffer cannot be re-admitted anyway, because placement refuses a
-    /// message whose `max_slot` is behind the current slot. Releasing such an
-    /// entry costs its resting order the route, and the fill then treats the
+    /// An entry carries the uuid `check_exists_and_prune_stale_signed_msg_order_ids` matches
+    /// on, so reclaiming a live entry would re-admit its message and fill the same signed order
+    /// a second time. An entry past `max_slot` plus the buffer cannot be re-admitted anyway,
+    /// because placement refuses a message whose `max_slot` is behind the current slot.
+    /// Releasing such an entry costs its resting order the route, and the fill then treats the
     /// order as unrouted. The taker's own limit price still bounds that fill.
     ///
     /// Returns the index of the entry written. A retained entry can hold the

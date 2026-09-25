@@ -232,6 +232,7 @@ mod prefix {
             fee_denominator: 1_000,
             ..crate::state::state::FeeTier::default()
         };
+
         assert_eq!(prefix.estimated_surplus(&fee(0)), 10);
         assert_eq!(prefix.estimated_surplus(&fee(4)), 10 - 4 - 5);
         assert_eq!(prefix.estimated_surplus(&fee(5)), 0);

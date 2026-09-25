@@ -329,6 +329,7 @@ fn stage_liquidate_perp<'info>(
         &stored[map_section..],
         market_index,
     )?;
+
     crate::instructions::StagedCall::new::<crate::instruction::LiquidatePerpWithFill>(
         crate::accounts::LiquidatePerp {
             state: state_key,
@@ -535,6 +536,7 @@ mod tests {
             open_bids: 1,
             ..PerpPosition::default()
         };
+
         create_anchor_account_info!(user, User, user_account_info);
         let user_loader = AccountLoader::<User>::try_from(&user_account_info).unwrap();
         let mut maps = AccountMaps::new(

@@ -465,6 +465,7 @@ mod tests {
             Some(100),
             5,
         );
+
         assert_eq!(price, Some(95));
     }
 
@@ -477,6 +478,7 @@ mod tests {
             Some(100),
             5,
         );
+
         assert_eq!(price, Some(105));
     }
 

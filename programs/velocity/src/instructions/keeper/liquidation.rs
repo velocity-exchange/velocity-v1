@@ -353,6 +353,7 @@ impl controller::liquidation::BookOrderSweep for LiquidationBookAccounts<'_> {
                 "the book or the clob program of market {} is absent",
                 market_index
             );
+
             return Ok(None);
         };
 

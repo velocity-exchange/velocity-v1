@@ -454,6 +454,7 @@ fn a_reduce_only_market_excludes_a_maker_whose_ordinary_orders_grow_it() {
         clob_orders: 1,
         ..thin_maker()
     };
+
     assert_eq!(budget(flat_with_an_ordinary_order), 0);
 
     // Every order is reduce-only, so the book holds each one to its cover.
@@ -594,6 +595,7 @@ mod quoter_base_room {
             latched: true,
             ..Case::default()
         });
+
         assert_eq!(reducing, SHORT.unsigned_abs());
 
         assert_eq!(

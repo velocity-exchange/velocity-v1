@@ -589,6 +589,7 @@ impl<'info> QuotedRoute<'info> {
             "quoter slot {} rests depth outside the oracle band; the fill skips it",
             index
         );
+
         self.levels.truncate(run.start);
         Ok(None)
     }
@@ -631,6 +632,7 @@ impl<'info> QuotedRoute<'info> {
                     ),
                 }
             }
+
             // Every other quoter fills from the single `user` in its own
             // registry slot. The report arms the filler obligation, so it is
             // zeroed here rather than trusted.

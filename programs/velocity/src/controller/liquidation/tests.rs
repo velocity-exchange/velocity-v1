@@ -12282,6 +12282,7 @@ pub mod set_user_status_to_being_liquidated {
             &state,
             &mut crate::controller::liquidation::NoBooks,
         );
+
         assert_eq!(result, Err(ErrorCode::SufficientCollateral));
     }
     #[test]
@@ -12328,6 +12329,7 @@ pub mod set_user_status_to_being_liquidated {
             &state,
             &mut crate::controller::liquidation::NoBooks,
         );
+
         assert_eq!(result, Err(ErrorCode::UserBankrupt));
         user.remove_user_status(UserStatus::Bankrupt);
         user.add_user_status(UserStatus::BeingLiquidated);
@@ -12338,6 +12340,7 @@ pub mod set_user_status_to_being_liquidated {
             &state,
             &mut crate::controller::liquidation::NoBooks,
         );
+
         assert_eq!(result, Err(ErrorCode::UserIsBeingLiquidated));
     }
     #[test]
@@ -12433,6 +12436,7 @@ pub mod set_user_status_to_being_liquidated {
             &state,
             &mut crate::controller::liquidation::NoBooks,
         );
+
         assert_eq!(user.status, UserStatus::BeingLiquidated as u8);
         assert_eq!(result, Ok(()));
     }

@@ -219,6 +219,7 @@ fn a_reducing_book_order_no_longer_blocks_liquidation() {
         PythLazerOracle,
         oracle_account_info
     );
+
     let oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
     let mut market = test_perp_market(0, oracle_price_key, oracle_price.price);
@@ -301,6 +302,7 @@ fn orders_left_on_the_book_stop_the_liquidation_after_the_cancel() {
         PythLazerOracle,
         oracle_account_info
     );
+
     let oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
     let mut market = test_perp_market(0, oracle_price_key, oracle_price.price);
@@ -378,6 +380,7 @@ fn an_out_of_scope_book_order_no_longer_blocks_liquidation() {
         PythLazerOracle,
         oracle_account_info
     );
+
     let oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
     let mut market = test_perp_market(0, oracle_price_key, oracle_price.price);
@@ -403,6 +406,7 @@ fn an_out_of_scope_book_order_no_longer_blocks_liquidation() {
         has_open_order: true,
         ..User::default()
     };
+
     user.perp_positions[0] = PerpPosition {
         market_index: 0,
         base_asset_amount: BASE_PRECISION_I64,
@@ -412,12 +416,14 @@ fn an_out_of_scope_book_order_no_longer_blocks_liquidation() {
         position_flag: PositionFlag::IsolatedPosition as u8,
         ..PerpPosition::default()
     };
+
     user.perp_positions[1] = PerpPosition {
         market_index: 1,
         open_orders: 1,
         open_bids: BASE_PRECISION_I64 / 10,
         ..PerpPosition::default()
     };
+
     let mut liquidator = funded_liquidator();
     let mut books = FakeBooks::default();
 

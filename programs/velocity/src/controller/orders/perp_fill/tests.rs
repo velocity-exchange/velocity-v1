@@ -504,6 +504,7 @@ fn a_maker_in_a_reduce_only_market_may_only_reduce() {
         market_status: MarketStatus::ReduceOnly,
         ..Case::default()
     });
+
     assert_eq!(flat.unwrap_err(), ErrorCode::QuoterReportExceedsReservation);
 
     // A long of one covers the whole sale.
@@ -512,6 +513,7 @@ fn a_maker_in_a_reduce_only_market_may_only_reduce() {
         maker_position_base: BASE_PRECISION_I64,
         ..Case::default()
     });
+
     assert_eq!(long.unwrap().base, BASE_PRECISION_U64);
     assert_eq!(scenario.maker().perp_positions[0].base_asset_amount, 0);
 }
@@ -526,6 +528,7 @@ fn the_mark_twap_records_the_price_the_fill_traded_at() {
             book_price: Some(price),
             ..Case::default()
         });
+
         assert_eq!(filled.unwrap().base, BASE_PRECISION_U64);
         assert_eq!(scenario.book.requested, BASE_PRECISION_U64);
         let ask_twap = scenario.market().market_stats.last_ask_price_twap;

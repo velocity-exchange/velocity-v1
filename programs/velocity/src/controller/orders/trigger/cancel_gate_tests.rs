@@ -57,6 +57,7 @@ fn five_dollar_user_holding(armed: &Order) -> User {
         }),
         ..User::default()
     };
+
     user.orders[0] = *armed;
     user.reserve_orders(&OrderReservation::of_order(armed).unwrap())
         .unwrap();
@@ -98,6 +99,7 @@ fn initial_margin_counts_the_fired_order() {
         },
         ..PerpMarket::default()
     };
+
     create_anchor_account_info!(market, PerpMarket, market_info);
     let market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
 
@@ -112,6 +114,7 @@ fn initial_margin_counts_the_fired_order() {
         maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
         ..SpotMarket::default()
     };
+
     create_anchor_account_info!(usdc, SpotMarket, usdc_info);
     let spot_market_map = SpotMarketMap::load_one(&usdc_info, true).unwrap();
     let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);

@@ -340,6 +340,7 @@ mod surplus_floor {
             },
             ..ClobCrankConditionsV0::default()
         };
+
         create_anchor_account_info!(conditions, ClobCrankConditionsV0, conditions_info);
         let conditions = AccountLoader::try_from(&conditions_info).unwrap();
 
@@ -353,6 +354,7 @@ mod surplus_floor {
             },
             ..SpotMarket::default()
         };
+
         create_anchor_account_info!(sol_market, SpotMarket, sol_market_info);
         let spot_market_map = match sol_twap {
             Some(_) => SpotMarketMap::load_one(&sol_market_info, true).unwrap(),
@@ -363,6 +365,7 @@ mod surplus_floor {
             sol_spot_market_index,
             ..State::default()
         };
+
         cross_surplus_floor(
             &conditions,
             &state,

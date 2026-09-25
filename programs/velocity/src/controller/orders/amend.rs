@@ -191,6 +191,7 @@ fn slot_order_to_cancel(user: &User, order_id: u32) -> VelocityResult<Option<usi
             "order id {} is not an open slot order; a book order cancels through cancel_order_v1",
             order_id
         );
+
         return Err(ErrorCode::OrderDoesNotExist);
     }
 
@@ -683,6 +684,7 @@ mod tests {
             next_order_id,
             ..User::default()
         };
+
         user.orders[2] = trigger(5, 0);
         user
     }

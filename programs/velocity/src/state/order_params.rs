@@ -185,11 +185,10 @@ pub struct SignedMsgOrderParamsMessage {
     pub isolated_position_deposit: Option<u64>,
     /// [`SIGNED_MSG_NETWORK_MAINNET`] / [`SIGNED_MSG_NETWORK_DEVNET`].
     pub network: Option<u8>,
-    /// The route the taker signed for: the `QuoterV0` entries of the custom
-    /// quoters (PropAMMs) the taker wants used. The CLOB and vAMM are the
-    /// mandatory baseline of every router fill, so they are implicit and
-    /// never named here. The keeper that places the order must carry every
-    /// quoter it names, and the order's record keeps its digest for a later fill.
+    /// The `QuoterV0` entries of the custom quoters the taker signed for. The
+    /// CLOB and vAMM are the baseline of every router fill, so no route names
+    /// them. The placing keeper must carry every quoter the route names, and
+    /// the order's record keeps the route digest for a later fill.
     pub route: Option<Vec<Pubkey>>,
 }
 

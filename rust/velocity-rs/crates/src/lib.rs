@@ -3349,6 +3349,7 @@ impl<'a> TransactionBuilder<'a> {
             in_amount,
             user_account,
         );
+
         // Begin and end must carry the same accounts, so both carry the books.
         self = self.with_liquidation_books(books);
         self.ixs.push(swap_instruction);
@@ -3523,6 +3524,7 @@ impl<'a> TransactionBuilder<'a> {
             in_amount,
             user_account,
         );
+
         // Begin and end must carry the same accounts, so both carry the books.
         self = self.with_liquidation_books(books);
         self.ixs.extend(swap_instructions);

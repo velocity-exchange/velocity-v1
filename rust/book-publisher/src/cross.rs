@@ -276,6 +276,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         spot_market_pda(velocity, quote_spot_market_index),
         false,
     ));
+
     // The executor prices its keeper payment off the SOL spot market, and
     // refuses a cross that carries no SOL price.
     if state.sol_spot_market_index != 0 && state.sol_spot_market_index != quote_spot_market_index {

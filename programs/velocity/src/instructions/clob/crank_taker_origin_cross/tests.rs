@@ -327,6 +327,7 @@ mod pair_size {
             aggressor: true,
             ..NEITHER
         };
+
         assert_eq!(
             size(
                 position(-(UNIT as i64) / 4, UNIT),
@@ -344,6 +345,7 @@ mod pair_size {
             counterparty: true,
             ..NEITHER
         };
+
         assert_eq!(
             size(position(0, UNIT), position(UNIT as i64 / 2, 0), reduce_only),
             Ok(UNIT / 2)
@@ -356,6 +358,7 @@ mod pair_size {
             aggressor: true,
             ..NEITHER
         };
+
         assert_eq!(
             size(position(0, UNIT), position(0, 0), reduce_only),
             Err(ErrorCode::NoTakerOriginCross.into())
@@ -402,6 +405,7 @@ mod cranker_rules {
             referrer_status: ReferrerStatus::BuilderReferral as u8,
             ..UserStats::default()
         };
+
         assert_eq!(
             require_referral_escrow(false, &referred),
             Err(ErrorCode::UnableToLoadRevenueShareAccount.into())
@@ -431,6 +435,7 @@ mod stalled_cross {
             reduce_only: false,
             placed_slot,
         };
+
         Cross {
             bid: row(bid_slot),
             ask: row(ask_slot),
@@ -521,6 +526,7 @@ mod settled_match {
             }),
             ..User::default()
         };
+
         create_anchor_account_info!(taker, User, taker_info);
         let taker_loader = AccountLoader::try_from(&taker_info).unwrap();
         let mut taker_stats = UserStats::default();
@@ -598,6 +604,7 @@ mod settled_match {
             max_open_interest: BASE_PRECISION_I64 as u128 / 2,
             ..ORDINARY
         };
+
         assert_eq!(run(over_cap, true), Err(ErrorCode::MaxOpenInterest));
     }
 
@@ -607,6 +614,7 @@ mod settled_match {
             fill_price: 150 * PRICE_PRECISION_I64 as u64,
             ..ORDINARY
         };
+
         assert_eq!(run(off_band, true), Err(ErrorCode::PriceBandsBreached));
     }
 
@@ -617,6 +625,7 @@ mod settled_match {
             oracle_twap_5min: 40 * PRICE_PRECISION_I64,
             ..ORDINARY
         };
+
         assert_eq!(
             run(divergent, false),
             Ok(Observed {

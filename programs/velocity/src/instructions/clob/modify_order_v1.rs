@@ -676,6 +676,7 @@ mod replacement_rules_tests {
             &params(false),
             &terms(base_asset_amount, price, reduce_only),
         );
+
         validate_replacement_against_market(&market(), &order, 1_000, 1)
     }
 
@@ -722,6 +723,7 @@ mod replacement_rules_tests {
             taker_origin: true,
             ..terms(50, 1_000, false)
         };
+
         assert!(!replacement_order(&params(true), &taker_remainder).post_only);
     }
 

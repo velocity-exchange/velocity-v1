@@ -552,6 +552,7 @@ impl CapInputs<'_, '_> {
             self.maps,
             tier.risk_increasing,
         )?;
+
         if gate.refuses_risk {
             return Ok(0);
         }

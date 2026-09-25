@@ -244,6 +244,7 @@ pub fn crank_clob_removal(
         } else {
             CrankPaymentsV0::expiry_escalation(removed.max_ts, clock.unix_timestamp)
         };
+
         ClobCrankConditionsV0::pay_crank(
             conditions,
             &ctx.accounts.authority.to_account_info(),
@@ -337,6 +338,7 @@ fn unwind_removed_order(
         removed.base_asset_amount,
         slot,
     )?;
+
     let armed = OrderReservation::of_order(&user.orders[slot_index])?;
     user.reserve_orders(&armed)?;
     Ok(user.release_orders(&removed_order, ReleaseCheck::ClampedForExit)?)
@@ -820,6 +822,7 @@ mod removal_tests {
             exchange_status,
             ..State::default()
         };
+
         state.perp_fee_structure.flat_filler_fee = FEE;
         state
     }
@@ -868,6 +871,7 @@ mod removal_tests {
             pool_id: 1,
             ..User::default()
         };
+
         assert_eq!(
             charge(&state(0), Some(&mut filler)).unwrap_err(),
             ErrorCode::InvalidPoolId.into()

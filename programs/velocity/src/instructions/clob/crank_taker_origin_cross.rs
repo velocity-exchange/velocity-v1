@@ -273,6 +273,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             remaining_accounts_iter,
             &taker_authority,
         )?;
+
         require_referral_escrow(escrow.is_some(), &*load!(ctx.accounts.taker_stats)?)?;
         escrow
     } else {
@@ -841,6 +842,7 @@ fn report_fills_to_book<'info>(
                 cx.taker_direction.opposite(),
             ),
         };
+
         owner.close_book_order(
             &OrderReservation::book_order(
                 cx.market_index,
@@ -985,6 +987,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         &mut order,
         cx.clock,
     )?;
+
     admit_pair_match(cx, &pair, &settled, maps)?;
 
     let facts = pair_fill_facts(cx, &order, &pricing)?;

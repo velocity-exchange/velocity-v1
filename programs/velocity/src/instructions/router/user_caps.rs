@@ -218,9 +218,9 @@ pub fn build_user_caps<'info>(
     let sized_quoters = unreserved_quoters(slab, tail)?;
 
     let mut rooms = QuoterRooms::NONE;
-    if let Some(slot) = sized_quoters.slot_for(ctx.taker_key) {
-        rooms.push(slot, 0);
-    }
+    sized_quoters
+        .slots_for(ctx.taker_key)
+        .for_each(|slot| rooms.push(slot, 0));
 
     let mut caps: Vec<UserCapV0> = Vec::with_capacity(USER_CAPS_CAPACITY);
     for (index, user_ref) in inputs.users.iter().enumerate() {
@@ -264,28 +264,25 @@ pub fn build_user_caps<'info>(
         // margin carries. This is priced only for a user that some consulted
         // quoter settles for. Nobody else is reachable that way, and the walk
         // is not free.
-        let quoter_room = match sized_quoters.slot_for(&key) {
-            Some(slot) => {
-                // The taker's own quoter slot is zeroed above, where the
-                // taker is skipped. A user that reaches here is some other
-                // account, so it is sized on its own margin.
-                let room =
-                    ctx.quoter_base_room(&key, inputs.market_index, inputs.maker_direction())?;
-                // The book's claim on this user is taken first, so the quoter
-                // is offered what survives it.
-                let room = room.saturating_sub(base_funded_by(
-                    quote_cap,
-                    inputs.reference_price,
-                    inputs.margin_ratio_initial,
-                )?);
+        let quoter_room = if sized_quoters.slots_for(&key).next().is_none() {
+            u64::MAX
+        } else {
+            // The taker's own quoter slots are zeroed above, where the taker
+            // is skipped. A user that reaches here is some other account, so
+            // it is sized on its own margin.
+            let room = ctx.quoter_base_room(&key, inputs.market_index, inputs.maker_direction())?;
+            // The book's claim on this user is taken first, so the quoter
+            // is offered what survives it.
+            let room = room.saturating_sub(base_funded_by(
+                quote_cap,
+                inputs.reference_price,
+                inputs.margin_ratio_initial,
+            )?);
 
-                // Kept by slot as well. The quote step trims the ladder to
-                // this value and reaches it by slot, because it cannot resolve
-                // a user there.
-                rooms.push(slot, room);
-                room
-            }
-            None => u64::MAX,
+            // Kept by slot as well. The quote step trims the ladder to this
+            // value and reaches it by slot, because it cannot resolve a user
+            // there.
+            rooms.share(&sized_quoters, &key, room)
         };
         let base_cap = reduce_cover.min(quoter_room);
 
@@ -345,6 +342,15 @@ impl QuoterRooms {
             self.entries[self.len as usize] = (slot_index as u16, room);
             self.len += 1;
         }
+    }
+
+    /// Split `room` evenly over every slot that settles for `key`, and
+    /// return one share. One fill can allocate to each of those slots.
+    fn share(&mut self, users: &QuoterUsers, key: &Pubkey, room: u64) -> u64 {
+        let slots = users.slots_for(key).count() as u64;
+        let share = room / slots.max(1);
+        users.slots_for(key).for_each(|slot| self.push(slot, share));
+        share
     }
 }
 
@@ -457,11 +463,12 @@ impl QuoterUsers {
         len: 0,
     };
 
-    /// The slab slot this user quotes for, if any consulted quoter does.
-    fn slot_for(&self, key: &Pubkey) -> Option<usize> {
+    /// Every consulted slab slot that settles for this user. Entries are
+    /// keyed by program as well as user, so one user can hold several.
+    fn slots_for<'a>(&'a self, key: &'a Pubkey) -> impl Iterator<Item = usize> + 'a {
         self.entries[..self.len as usize]
             .iter()
-            .find(|(_, user)| user == key)
+            .filter(move |(_, user)| user == key)
             .map(|(slot, _)| *slot as usize)
     }
 
@@ -888,6 +895,30 @@ fn clob_resting_base(
 
 #[cfg(test)]
 mod tests;
+
+/// How a user that several consulted entries settle for is sized.
+#[cfg(test)]
+mod shared_room_tests {
+    use {
+        super::{QuoterRooms, QuoterUsers},
+        anchor_lang::prelude::Pubkey,
+    };
+
+    #[test]
+    fn two_entries_for_one_user_split_its_room() {
+        let (shared, other) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let mut users = QuoterUsers::NONE;
+        users.push(1, shared);
+        users.push(3, shared);
+        users.push(4, other);
+
+        let mut rooms = QuoterRooms::NONE;
+        assert_eq!(rooms.share(&users, &shared, 10), 5);
+        assert_eq!(rooms.room(1), 5);
+        assert_eq!(rooms.room(3), 5);
+        assert_eq!(rooms.room(4), u64::MAX);
+    }
+}
 
 /// What a book's claim takes from an unreserved quoter that shares its user.
 #[cfg(test)]

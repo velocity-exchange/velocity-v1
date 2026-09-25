@@ -58,6 +58,7 @@ velocity-admin show state   # every field of the State account, with the exchang
 velocity-admin show fees    # every fee users pay: trading tiers, filler reward, split, per-market adjustments + liquidation fees
 velocity-admin show perp-markets [market]  # per-market risk + quoting params: OI cap, margins, spreads + spread adjustments, jit/curve intensity, funding clamp, fee/pnl pool balances (the vAMM capital view)
 velocity-admin show spot-markets [market]  # per-market lending params: deposit cap + headroom, weights, rate curve, withdraw guard, IF vault balance
+velocity-admin show user [authority] [--vault-index n]  # UserStats plus each sub-account: delegate, status, collateral, health, leverage, spot balances, perp positions
 
 velocity-admin audit withdrawals [market] [--hours <n>] [--min-usd <n>] [--limit <n>] [--history-pages <n>] [--json]  # read-only; the Spot Withdraw Breaker alert dump: breaker consumption per market at Grafana parity, then every withdrawal on the audited market attributed to the Velocity sub-account that made it (not the fee payer, which is usually our sponsor wallet), with each withdrawer's lifetime flows, PnL decomposition, live positions, 30d volume and account age. Facts only, no verdict. Defaults to the worst-consumed market
 

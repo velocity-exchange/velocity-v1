@@ -553,6 +553,9 @@ pub struct CrankedTrigger {
     pub market_index: u16,
     pub order_id: u32,
     pub keeper_reward: u64,
+    /// False when the crank already pointed the slot at the order's next due
+    /// side, so the slot must stay armed.
+    pub release_slot: bool,
 }
 
 /// The shared tail of the trigger cranks `trigger_market_order_v1` and
@@ -575,6 +578,7 @@ pub fn finish_trigger_crank<'info>(
         market_index,
         order_id,
         keeper_reward,
+        release_slot,
     } = *cranked;
 
     if let Some(conditions) = trigger_conditions {
@@ -587,7 +591,9 @@ pub fn finish_trigger_crank<'info>(
             user.key()
         )?;
 
-        conditions.release_slot(market_index, order_id);
+        if release_slot {
+            conditions.release_slot(market_index, order_id);
+        }
     }
 
     let program_keeper_mode = program_keeper_mode(filler, state, crank_conditions.is_some())?;

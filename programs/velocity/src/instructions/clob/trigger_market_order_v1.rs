@@ -222,6 +222,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
             keeper_reward: filler_reward,
+            release_slot: true,
         },
     )?;
 

@@ -259,6 +259,31 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
                     market_index,
                     order_id,
                     keeper_reward,
+                    release_slot: true,
+                },
+            );
+        }
+        TriggerLimitStep::Rearmed { keeper_reward } => {
+            rewatch_rearmed_trigger(
+                &ctx.accounts.user,
+                &ctx.accounts.trigger_conditions,
+                &maps,
+                market_index,
+                order_id,
+            )?;
+
+            return super::helpers::crank_common::finish_trigger_crank(
+                &ctx.accounts.state,
+                &ctx.accounts.filler,
+                &ctx.accounts.authority,
+                &ctx.accounts.user,
+                &ctx.accounts.trigger_conditions,
+                &ctx.accounts.crank_conditions,
+                &super::helpers::crank_common::CrankedTrigger {
+                    market_index,
+                    order_id,
+                    keeper_reward,
+                    release_slot: false,
                 },
             );
         }
@@ -324,6 +349,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
             keeper_reward: filler_reward,
+            release_slot: true,
         },
     )?;
 
@@ -356,6 +382,10 @@ enum TriggerLimitStep {
     /// The crank ended the trigger's work without a placement, and collected
     /// this reward from the owner.
     Settled { keeper_reward: u64 },
+    /// The crank observed an evicted order's recross and re-armed it, and
+    /// collected this reward from the owner. The relay watch must move back to
+    /// the trigger side.
+    Rearmed { keeper_reward: u64 },
     /// The order rests on the book at these terms.
     Place(TriggerPlacement),
 }
@@ -510,7 +540,7 @@ impl TriggerLimitCrank<'_, '_> {
             self.clock.slot,
         )?;
 
-        Ok(TriggerFire::Done(TriggerLimitStep::Settled {
+        Ok(TriggerFire::Done(TriggerLimitStep::Rearmed {
             keeper_reward,
         }))
     }
@@ -1004,6 +1034,42 @@ fn pay_trigger_keeper(
     )?)
 }
 
+/// Point the relay watch of a re-armed order back at its trigger side.
+///
+/// The slot watched the non-trigger side while the order waited for its
+/// recross. Without this, relay never wakes the crank that fires the order.
+fn rewatch_rearmed_trigger(
+    user_loader: &AccountLoader<'_, User>,
+    trigger_conditions: &Option<AccountLoader<'_, crate::state::user_conditions::UserConditionsV0>>,
+    maps: &AccountMaps<'_>,
+    market_index: u16,
+    order_id: u32,
+) -> Result<()> {
+    let Some(conditions) = trigger_conditions else {
+        return Ok(());
+    };
+
+    let user = crate::load!(user_loader)?;
+    let order_index = find_armed_trigger_limit(&user, order_id, market_index)?;
+    let market = maps.perp_market_map.get_ref(&market_index)?;
+    let oracle = maps.oracle_map.get_account_info(&market.oracle)?;
+    let mut conditions = load_mut!(conditions)?;
+    validate!(
+        conditions.user == user_loader.key(),
+        ErrorCode::InvalidUserAccount,
+        "trigger conditions are for user {}, crank is for {}",
+        conditions.user,
+        user_loader.key()
+    )?;
+
+    crate::instructions::trigger_relay::sync_trigger_conditions::rewatch_trigger_slot(
+        &mut conditions,
+        &user.orders[order_index],
+        &market,
+        &oracle,
+    )
+}
+
 /// Marks the armed slot as the shadow of the order that now rests on the book.
 ///
 /// The slot keeps the trigger parameters and takes the CLOB handle. It stays
@@ -1325,7 +1391,7 @@ mod crank_tests {
             .unwrap();
         assert!(matches!(
             fire,
-            TriggerFire::Done(TriggerLimitStep::Settled {
+            TriggerFire::Done(TriggerLimitStep::Rearmed {
                 keeper_reward: FLAT_FILLER_FEE
             })
         ));

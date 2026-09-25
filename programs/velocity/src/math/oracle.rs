@@ -200,16 +200,15 @@ pub fn is_oracle_valid_for_action(
                         | OracleValidity::InsufficientDataPoints
                 )
             }
-            VelocityAction::MarginCalc => !matches!(
+            // A fire pays the keeper and moves the order out of its armed
+            // state, and neither can be undone. The trigger therefore judges
+            // its price by the set the fill it starts uses.
+            VelocityAction::MarginCalc | VelocityAction::TriggerOrder => !matches!(
                 oracle_validity,
                 OracleValidity::NonPositive
                     | OracleValidity::TooVolatile
                     | OracleValidity::TooUncertain
                     | OracleValidity::StaleForMargin
-            ),
-            VelocityAction::TriggerOrder => !matches!(
-                oracle_validity,
-                OracleValidity::NonPositive | OracleValidity::TooVolatile
             ),
             VelocityAction::SettlePnl => matches!(
                 oracle_validity,

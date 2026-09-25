@@ -615,16 +615,30 @@ mod cancel_gate_tests;
 #[cfg(test)]
 mod gate_tests {
     use {
-        super::{find_triggerable_order, trigger_market_gates, trigger_market_status},
+        super::{
+            find_triggerable_order, trigger_market_gates, trigger_market_preflight,
+            trigger_market_status,
+        },
         crate::{
+            create_anchor_account_info,
             error::ErrorCode,
+            math::{
+                constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+                time::SlotClock,
+            },
             state::{
                 market_status::MarketStatus,
+                oracle::OracleSource,
+                oracle_map::OracleMap,
                 paused_operations::PerpOperation,
-                perp_market::PerpMarket,
+                perp_market::{ContractTier, PerpMarket},
+                pyth_lazer_oracle::PythLazerOracle,
+                state::State,
                 user::{MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, User},
             },
+            test_utils::get_pyth_price,
         },
+        anchor_lang::prelude::Pubkey,
     };
 
     const MARKET: u16 = 3;
@@ -772,6 +786,63 @@ mod gate_tests {
         assert_eq!(
             trigger_market_gates(&market, 100).err().unwrap(),
             ErrorCode::MarketPlaceOrderPaused
+        );
+    }
+
+    const SLOT: u64 = 1_000;
+
+    /// Run the preflight against a $100 Pyth Lazer feed posted at
+    /// `posted_slot` with confidence `conf`, in `PRICE_PRECISION`.
+    fn preflight_at(posted_slot: u64, conf: u64) -> Result<u64, ErrorCode> {
+        let mut oracle = get_pyth_price(100, 6);
+        oracle.posted_slot = posted_slot;
+        oracle.conf = conf;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle, &oracle_key, PythLazerOracle, oracle_account_info);
+
+        let state = State::default();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            SLOT,
+            SlotClock::baseline(),
+            Some(state.oracle_guard_rails),
+        )
+        .unwrap();
+
+        let mut market = active_market();
+        market.oracle = oracle_key;
+        market.oracle_source = OracleSource::PythLazer;
+        market.contract_tier = ContractTier::A;
+        market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap = 100 * PRICE_PRECISION_I64;
+        market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap_5min = 100 * PRICE_PRECISION_I64;
+
+        trigger_market_preflight(&state, &market, &mut oracle_map, 0)
+            .map(|prices| prices.trigger_price)
+    }
+
+    #[test]
+    fn a_fresh_certain_oracle_fires() {
+        assert_eq!(preflight_at(SLOT, 0), Ok(100 * PRICE_PRECISION_U64));
+    }
+
+    /// Margin refuses a price this old, so a stop must not fire on it.
+    #[test]
+    fn a_stale_for_margin_oracle_does_not_fire() {
+        assert_eq!(preflight_at(0, 0), Err(ErrorCode::InvalidOracle));
+    }
+
+    /// A 5% confidence band is wider than the 2% a tier A market admits.
+    #[test]
+    fn a_too_uncertain_oracle_does_not_fire() {
+        assert_eq!(
+            preflight_at(SLOT, 5 * PRICE_PRECISION_U64),
+            Err(ErrorCode::InvalidOracle)
         );
     }
 }

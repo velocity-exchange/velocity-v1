@@ -407,3 +407,50 @@ fn fill_order_match_admits_the_same_set_as_margin_calc() {
         );
     }
 }
+
+#[test]
+fn trigger_order_admits_the_same_set_as_fill_order_match() {
+    let states = [
+        OracleValidity::NonPositive,
+        OracleValidity::TooVolatile,
+        OracleValidity::TooUncertain,
+        OracleValidity::StaleForMargin,
+        OracleValidity::InsufficientDataPoints,
+        OracleValidity::StaleForAMM {
+            immediate: true,
+            low_risk: true,
+        },
+        OracleValidity::StaleForAMM {
+            immediate: true,
+            low_risk: false,
+        },
+        OracleValidity::Valid,
+    ];
+
+    for validity in states {
+        assert_eq!(
+            is_oracle_valid_for_action(validity, Some(VelocityAction::TriggerOrder)).unwrap(),
+            is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderMatch)).unwrap(),
+            "TriggerOrder and FillOrderMatch disagree on {:?}",
+            validity
+        );
+    }
+}
+
+#[test]
+fn a_stale_for_margin_oracle_fires_no_trigger() {
+    assert!(!is_oracle_valid_for_action(
+        OracleValidity::StaleForMargin,
+        Some(VelocityAction::TriggerOrder)
+    )
+    .unwrap());
+}
+
+#[test]
+fn a_too_uncertain_oracle_fires_no_trigger() {
+    assert!(!is_oracle_valid_for_action(
+        OracleValidity::TooUncertain,
+        Some(VelocityAction::TriggerOrder)
+    )
+    .unwrap());
+}

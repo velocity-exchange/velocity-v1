@@ -689,3 +689,13 @@ export function isOracleValidForMarginCalc(validity: OracleValidity): boolean {
 		validity === OracleValidity.StaleForMargin
 	);
 }
+
+/**
+ * True when `validity` lets an armed trigger fire, mirroring `VelocityAction::TriggerOrder` in `is_oracle_valid_for_action`.
+ * A trigger admits the `MarginCalc` set, which is also the set the fill it starts admits.
+ */
+export function isOracleValidForTriggerOrder(
+	validity: OracleValidity
+): boolean {
+	return isOracleValidForMarginCalc(validity);
+}

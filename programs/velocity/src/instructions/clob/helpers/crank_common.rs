@@ -670,9 +670,10 @@ pub fn find_fired_trigger(
         market.market_index
     )?;
 
-    // The executors judge the median trigger price when `State` sets the flag.
-    // A resolver cannot read `State`, so an order due at either price is
-    // staged, and the executor's simulation refuses the wrong one.
+    // The executors judge the median trigger price when `State` sets the flag,
+    // and judge oracle validity with the `State` guard rails. A resolver cannot
+    // read `State`, so it stages at either price, and the executor's simulation
+    // refuses a fire that the executor would not make.
     let oracle_price =
         crate::state::oracle::get_oracle_price(&market.oracle_source, oracle_info, slot)?.price;
     let raw_price = oracle_price.max(0) as u64;

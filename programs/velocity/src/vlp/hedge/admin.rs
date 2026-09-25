@@ -7,7 +7,10 @@ use {
         },
         error::ErrorCode,
         ids::{lighthouse, marinade_mainnet, WHITELISTED_SWAP_PROGRAMS},
-        instructions::optional_accounts::{get_token_interface, get_token_mint},
+        instructions::{
+            constraints::fill_not_paused,
+            optional_accounts::{get_token_interface, get_token_mint},
+        },
         load_mut,
         math::{
             constants::{PRICE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX},
@@ -16,6 +19,7 @@ use {
         },
         perp_market_valid,
         state::{
+            paused_operations::ConstituentLpOperation,
             perp_market::PerpMarket,
             spot_market::SpotMarket,
             state::{HotRole, State},
@@ -192,6 +196,15 @@ pub fn handle_initialize_constituent<'info>(
     new_constituent_correlations: Vec<i64>,
 ) -> Result<()> {
     validate_oracle_staleness_threshold(oracle_staleness_threshold)?;
+
+    // Constituent decimals must match the bound spot market: target/notional
+    // math scales by 10^constituent.decimals (state.rs) while balances use
+    // spot precision, so a mismatch silently misprices everything.
+    validate!(
+        ctx.accounts.spot_market.load()?.decimals == decimals as u32,
+        ErrorCode::InvalidConstituent,
+        "constituent decimals must match spot market decimals",
+    )?;
 
     let mut constituent = ctx.accounts.constituent.load_init()?;
     let mut lp_pool = ctx.accounts.lp_pool.load_mut()?;
@@ -688,13 +701,23 @@ pub fn handle_update_constituent_correlation_data(
     Ok(())
 }
 
+#[access_control(fill_not_paused(&ctx.accounts.state))]
 pub fn handle_begin_lp_swap<'c: 'info, 'info>(
     ctx: Context<'info, LPTakerSwap<'info>>,
     in_market_index: u16,
     out_market_index: u16,
     amount_in: u64,
 ) -> Result<()> {
-    // Tier check is enforced at the Anchor context level via check_hot(LpSwap).
+    // Mirror the pause gates of the normal swap path (handle_lp_pool_swap):
+    // exchange pause (via access_control above), the LP-pool swap kill switch,
+    // and per-constituent operation gates. Without these a hot signer could
+    // flash-borrow while swaps are paused or a constituent is gated.
+    let state = ctx.accounts.state.load()?;
+    validate!(
+        state.allow_swap_lp_pool(),
+        ErrorCode::DefaultError,
+        "Swapping with LP Pool is disabled"
+    )?;
 
     let ixs = ctx.accounts.instructions.as_ref();
     let current_index = instructions::load_current_index_checked(ixs)? as usize;
@@ -737,6 +760,12 @@ pub fn handle_begin_lp_swap<'c: 'info, 'info>(
         ErrorCode::InvalidSwap,
         "begin_lp_swap ended in invalid state"
     )?;
+
+    // Tier check is enforced at the Anchor context level via check_hot(LpSwap).
+    // Per-constituent operation gates (mirrored from handle_lp_pool_swap),
+    // checked before any state mutation.
+    in_constituent.does_constituent_allow_operation(ConstituentLpOperation::Swap)?;
+    out_constituent.does_constituent_allow_operation(ConstituentLpOperation::Swap)?;
 
     in_constituent.flash_loan_initial_token_amount = ctx.accounts.signer_in_token_account.amount;
     out_constituent.flash_loan_initial_token_amount = ctx.accounts.signer_out_token_account.amount;

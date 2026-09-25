@@ -70,11 +70,18 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
     let oracle_price_data = *oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     validate!(
-        user.pool_id == spot_market.pool_id,
+        user.pool_id == spot_market.pool_id && user.pool_id == perp_market.pool_id,
         ErrorCode::InvalidPoolId,
         "user pool id ({}) != market pool id ({})",
         user.pool_id,
         spot_market.pool_id
+    )?;
+
+    validate!(
+        !spot_market.is_operation_paused(SpotOperation::Deposit),
+        ErrorCode::MarketActionPaused,
+        "spot market {} deposits paused",
+        spot_market_index
     )?;
 
     validate!(
@@ -276,6 +283,17 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
     if amount > 0 {
         let mut spot_market = spot_market_map.get_ref_mut(&spot_market_index)?;
 
+        // Deposit direction only: moving cross-margin collateral into the
+        // isolated position must respect the market Deposit pause (mirror of
+        // handle_deposit). The exit direction (amount < 0) stays ungated so
+        // isolated collateral can always leave, like the withdraw path.
+        validate!(
+            !spot_market.is_operation_paused(SpotOperation::Deposit),
+            ErrorCode::MarketActionPaused,
+            "spot market {} deposits paused",
+            spot_market_index
+        )?;
+
         let spot_position_index = user.force_get_spot_position_index(spot_market.market_index)?;
         update_spot_balances_and_cumulative_deposits(
             amount as u128,
@@ -432,8 +450,18 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             perp_market.quote_spot_market_index,
             spot_market_index
         )?;
-
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
+
+        // Three-way pool check, mirrored from the transfer path: the isolated
+        // position must belong to the same pool as the user and the market.
+        validate!(
+            user.pool_id == spot_market.pool_id && user.pool_id == perp_market.pool_id,
+            ErrorCode::InvalidPoolId,
+            "user pool id ({}) != market pool id ({})",
+            user.pool_id,
+            spot_market.pool_id
+        )?;
+
         let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
 
         // Accrue interest, but pass `None` so this instruction does NOT advance the

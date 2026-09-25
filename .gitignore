@@ -39,3 +39,4 @@ vendor
 /devnet_program_admin.json
 /deploy-scripts/out/
 .ci-local-logs/
+tmp/

@@ -64,6 +64,62 @@ pub(super) fn settleable(
     Settleable::Withheld
 }
 
+/// The caller's user set sorted by a key prefix, so a walk resolves each
+/// order's owner with a binary search rather than a scan of the whole set.
+pub(super) struct UserLookup<'a> {
+    users: &'a [UserRefV0],
+    /// Sorted by prefix, then by set position. Heap, because 48 entries would
+    /// crowd the walk's stack frame.
+    by_prefix: Vec<PrefixedPosition>,
+}
+
+#[derive(Clone, Copy)]
+struct PrefixedPosition {
+    prefix: u64,
+    position: u8,
+}
+
+impl<'a> UserLookup<'a> {
+    pub(super) fn new(users: &'a [UserRefV0]) -> Self {
+        let mut by_prefix: Vec<PrefixedPosition> = users
+            .iter()
+            .enumerate()
+            .map(|(position, user)| PrefixedPosition {
+                prefix: authority_prefix(user.authority.as_ref()),
+                position: position as u8,
+            })
+            .collect();
+        by_prefix.sort_unstable_by_key(|entry| (entry.prefix, entry.position));
+
+        Self { users, by_prefix }
+    }
+
+    pub(super) fn users(&self) -> &'a [UserRefV0] {
+        self.users
+    }
+
+    /// The owner's first position in the caller's set, as a scan would find
+    /// it, or `None` when the set does not name it.
+    #[inline(always)]
+    pub(super) fn position(&self, node: &OrderNodeV0) -> Option<usize> {
+        let prefix = authority_prefix(node.authority.as_ref());
+        let start = self
+            .by_prefix
+            .partition_point(|entry| entry.prefix < prefix);
+        self.by_prefix[start..]
+            .iter()
+            .take_while(|entry| entry.prefix == prefix)
+            .map(|entry| entry.position as usize)
+            .find(|&position| node.is_owned_by(&self.users[position]))
+    }
+}
+
+/// The first eight bytes of an authority. Keys are hashes, so two distinct
+/// users share a prefix only by chance, and the lookup then compares both.
+fn authority_prefix(authority: &[u8]) -> u64 {
+    u64::from_le_bytes(authority[..8].try_into().expect("an address is 32 bytes"))
+}
+
 /// One user's remaining room in the current sweep.
 #[derive(Clone, Copy)]
 struct UserRoom {

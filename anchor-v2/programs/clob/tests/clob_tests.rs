@@ -3180,3 +3180,64 @@ fn the_order_rules_report_what_the_sides_hold() {
         err_code(clob::error::ClobError::SideAtCapacity),
     );
 }
+
+/// A full side of orders that every walk passes over. The orders here are under
+/// the blocking floor and their owners are not carried, so each one is stepped
+/// over. The walk visits all of them, and the owner lookup keeps each hop cheap.
+#[test]
+fn cu_benchmark_a_side_of_stepped_over_orders() {
+    let mut ctx = setup();
+    set_blocking_min_size(&mut ctx, 100);
+
+    for _ in 0..PER_SIDE - 8 {
+        let ix = place_ix(
+            &ctx,
+            place_args(SideV0::Ask, 100, 1),
+            addr(Pubkey::new_unique()),
+        );
+        send(&mut ctx, ix).unwrap();
+    }
+
+    let honest = addr(Pubkey::new_unique());
+    place(&mut ctx, place_args(SideV0::Ask, 200, 10), honest);
+    advance_slot(&mut ctx, 10);
+
+    let mut users: Vec<Address> = (0..47).map(|_| addr(Pubkey::new_unique())).collect();
+    users.push(honest);
+    let set = user_set(Some(users));
+
+    let ix = instruction::QuoteV0 {
+        args: QuoteArgsV0 {
+            users: &set,
+            ..quote_args(DirectionV0::Long, 5)
+        },
+    }
+    .to_instruction(accounts::ResponseMarketV0 {
+        market: addr(ctx.market),
+    });
+    let quote_cu = send_with_budget(&mut ctx, ix, Some(1_400_000))
+        .unwrap()
+        .compute_units_consumed;
+
+    let ix = instruction::ExecuteV0 {
+        args: ExecuteArgsV0 {
+            users: &set,
+            ..execute_args(DirectionV0::Long, 5)
+        },
+    }
+    .to_instruction(accounts::GatedMarketV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    });
+    let execute_cu = send_with_budget(&mut ctx, ix, Some(1_400_000))
+        .unwrap()
+        .compute_units_consumed;
+
+    println!("CU — quote(stepped-over side, 48 users): {quote_cu}, execute: {execute_cu}");
+    // A scan of the user set per order measured 212k for the quote and 222k
+    // for the execute.
+    assert!(
+        quote_cu < 150_000 && execute_cu < 160_000,
+        "quote {quote_cu}, execute {execute_cu}"
+    );
+}

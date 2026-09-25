@@ -26,7 +26,13 @@
 //! cannot spin forever.
 //!
 //! `quote` and `execute` ask one [`walk::SweepGate`] what a caller may take of each
-//! order, so the ladder a quote publishes ends where the fill would end.
+//! order, so the ladder a quote publishes ends where the fill would end. Both
+//! walks end after the first order they take in part.
+//!
+//! No count of passed-over orders ends a walk. Anyone can rest orders that
+//! every caller passes over, such as orders not yet active. Velocity allows 32
+//! per sub-account, so a cap would hide the depth behind it for the price of a
+//! few sub-accounts. The arena capacity bounds the walk instead.
 //!
 //! ## Invariants
 //!

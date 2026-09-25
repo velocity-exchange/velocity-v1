@@ -5,7 +5,7 @@
 use {
     super::{
         arena::unlink_order,
-        budget::{settleable, DistinctUsers, Settleable, UserBudget},
+        budget::{settleable, DistinctUsers, Settleable, UserBudget, UserLookup},
         hints::holds_expiry_hint,
         reservation::CrossReservation,
         BookHeader, ClobBook, NodeArena,
@@ -339,7 +339,7 @@ impl<'a> From<&'a ExecuteArgsV0<'_>> for SweepRequest<'a> {
 /// it. `quote` and `execute` ask it at the same point of their walks, so a
 /// ladder never promises depth the fill would decline.
 struct SweepGate<'a> {
-    users: &'a [UserRefV0],
+    users: UserLookup<'a>,
     taker: Option<&'a UserRefV0>,
     slot: u64,
     now: i64,
@@ -398,7 +398,7 @@ impl<'a> SweepGate<'a> {
 
         let include_reserved = request.include_taker_origin_reservations;
         Ok(Self {
-            users: request.users,
+            users: UserLookup::new(request.users),
             taker: request.taker,
             slot,
             now,
@@ -427,9 +427,9 @@ impl<'a> SweepGate<'a> {
             return Ok(Offer::Skip);
         }
 
-        let owner = self.users.iter().position(|u| node.is_owned_by(u));
+        let owner = self.users.position(node);
         match settleable(
-            self.users,
+            self.users.users(),
             owner,
             node,
             book.unknown_user_grace_slots,

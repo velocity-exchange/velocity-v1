@@ -806,7 +806,7 @@ fn a_reduce_only_order_fills_only_what_the_owners_earlier_fills_left() {
                 0,
             )
             .unwrap();
-        assert_eq!(levels(&mut book, pointer), expected_ladder);
+        assert_eq!(levels(&book, pointer), expected_ladder);
 
         let outcome = book
             .execute(
@@ -1517,4 +1517,33 @@ fn the_eviction_threshold_is_bounded_by_the_per_side_cap() {
 
     crate::book::validate_evict_threshold(7, market.book().capacity() as u32)
         .expect("an update below the cap is accepted");
+}
+
+/// Orders nobody can take yet do not hide the depth behind them, however many
+/// there are. A stranger can rest them at no cost beyond margin, so a cap on
+/// the orders a walk passes over would let that stranger empty the side.
+#[test]
+fn any_number_of_unactivated_orders_leaves_the_depth_behind_on_offer() {
+    let (stranger, maker) = (user(1), user(2));
+    let market = TestMarket::new(crate::tests::market::MAX_CAPACITY);
+    let mut book = market.book();
+    let unactivated = CANCEL_ALL_ORDERS_CEILING as u64 + 2;
+    for _ in 0..unactivated {
+        book.place(PlaceOrderParams {
+            activation_slot: 1_000,
+            ..params(SideV0::Ask, 100, 1, stranger)
+        })
+        .expect("placement succeeds");
+    }
+
+    place(&mut book, SideV0::Ask, 101, 5, maker);
+
+    let pointer = book.quote(&quote_args(DirectionV0::Long, 5), 0, 0).unwrap();
+    assert_eq!(levels(&book, pointer), vec![(101, 5)]);
+
+    let outcome = book
+        .execute(&execute_args(DirectionV0::Long, 5), 0, 0)
+        .unwrap();
+    let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+    assert_eq!(filled, 5);
 }

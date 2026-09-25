@@ -932,7 +932,9 @@
           {
             "name": "size_step",
             "docs": [
-              "Quoted sizes floor to a multiple of this (base precision)."
+              "Quoted sizes floor to a multiple of this (base precision). It must be a",
+              "multiple of the velocity market's step. Otherwise velocity floors a rung",
+              "that execute fills whole, and the fill misses the quoted notional."
             ],
             "type": "u64"
           },
@@ -1476,10 +1478,10 @@
           {
             "name": "base_cap",
             "docs": [
-              "The most base this user may give up on the swept side. `u64::MAX` is",
-              "unbounded. A book enforces it at match time and will not fill a reduce-only",
-              "order whose owner has no cap here, so for a book this field is a trust",
-              "boundary. Every other quoter reads it as advisory."
+              "The most base this user may give up on the swept side. `u64::MAX` is unbounded.",
+              "A book binds reduce-only orders to it and draws it down by every fill of the user.",
+              "A book fills no reduce-only order whose owner has no cap here, so for a book this",
+              "field is a trust boundary. Every other quoter reads it as advisory."
             ],
             "type": "u64"
           },

@@ -8613,7 +8613,11 @@ fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
         &fixture.clob_maker_authority.pubkey(),
     );
 
-    place_clob_ask(&mut fixture, 99 * PRICE, 2 * UNIT);
+    // The unattested order rests as a crossing bid and claims the first ask
+    // whole. A walk passes over an order that a claim covers in part, so the
+    // attested fill needs a second, unclaimed ask.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
     set_clob_default_activation_delay(&mut fixture, 5);
 
     let flow = Keypair::new();

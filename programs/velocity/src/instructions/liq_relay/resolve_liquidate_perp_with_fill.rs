@@ -137,10 +137,9 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
 }
 
 /// Stage one of the ladder. Finds a book that still holds a risk-increasing
-/// side this account may no longer rest. The grounds are recomputed here, from
-/// the initial margin requirement and a provable floor breach. The executor
-/// accepts a third ground, the authority-wide equity breaker, which this
-/// resolver does not read.
+/// side this account may no longer rest. The grounds are the initial margin
+/// requirement and a provable floor breach. The executor measures them with the
+/// same `ForceCancelGrounds::measure`, so the two agree on every account.
 fn find_cancel_target(
     user_loader: &AccountLoader<'_, User>,
     maps: &mut AccountMaps,

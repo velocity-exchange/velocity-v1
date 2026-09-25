@@ -12,6 +12,8 @@ import {
 	VelocityClient,
 	VelocityEnv,
 	Wallet,
+	ZERO,
+	deriveWorstPrice,
 	getMarketOrderParams,
 	loadKeypair,
 } from '@velocity-exchange/sdk';
@@ -51,11 +53,22 @@ async function main() {
 			throw new Error('SOL-PERP not listed on this deployment');
 		}
 
-		const txSig = await client.placePerpOrder(
+		// A market order names its worst price. This one takes the contract tier's
+		// bound from the oracle, which is the bound an unnamed price gets.
+		const direction = PositionDirection.LONG;
+		const worstPrice = deriveWorstPrice(
+			client.getOracleDataForPerpMarket(solMarket.marketIndex).price,
+			client.getPerpMarketAccount(solMarket.marketIndex)!.contractTier,
+			direction,
+			ZERO
+		);
+
+		const txSig = await client.placeAndTakePerpOrder(
 			getMarketOrderParams({
 				marketIndex: solMarket.marketIndex,
-				direction: PositionDirection.LONG,
+				direction,
 				baseAssetAmount: new BN(1).mul(BASE_PRECISION),
+				price: worstPrice,
 			})
 		);
 		console.log(`placed 1 SOL-PERP long: ${txSig}`);

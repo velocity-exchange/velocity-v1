@@ -347,28 +347,9 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         env.state,
     )?;
 
-    let Some(mut admitted) = signed_msg_order_slot(&mut taker, &message, env)? else {
+    let Some(mut admitted) = admit_message(&mut taker, &message, env)? else {
         return Ok((escrow_zc, None));
     };
-
-    apply_message_position_settings(&mut taker, &message, env)?;
-
-    // Place nothing when the main taker order would soft-skip on an already-expired `max_ts`. The
-    // reduce-only sidecars below are trigger orders, so `max_ts` expiry does not apply to them, and
-    // they would otherwise install as standalone triggers with no main entry, breaking the bundle's
-    // atomicity. The check runs before the main order is placed, so the sidecars keep their ids,
-    // and the main order keeps the trailing id that clients and `SignedMsgOrderRecord` rely on.
-    if let Some(max_ts) = message.signed_msg_order_params.max_ts {
-        if max_ts != 0 && max_ts < env.clock.unix_timestamp {
-            msg!(
-                "signed msg main order max_ts {} expired (< now {}); skipping bundle",
-                max_ts,
-                env.clock.unix_timestamp
-            );
-
-            return Ok((escrow_zc, None));
-        }
-    }
 
     let mut builder = BuilderRows {
         escrow: &mut escrow_zc,
@@ -397,6 +378,40 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     // in the same instruction and completes orders of its own, so the caller
     // revokes once, after it.
     Ok((escrow_zc, Some(placed)))
+}
+
+/// Decide whether the message may be placed, and apply its position settings
+/// when it may.
+///
+/// An expired `max_ts` places nothing. The reduce-only sidecars are trigger
+/// orders that `max_ts` does not end, so they would otherwise stand with no
+/// entry. The check runs before the position settings. An expired message
+/// does not spend its uuid, so a setting applied first applies again at each
+/// replay, for example an isolated-position deposit.
+fn admit_message(
+    taker: &mut SignedMsgTaker<'_, '_>,
+    message: &VerifiedMessage,
+    env: &mut PlacementEnv<'_, '_>,
+) -> Result<Option<AdmittedMessage>> {
+    let Some(admitted) = signed_msg_order_slot(taker, message, env)? else {
+        return Ok(None);
+    };
+
+    if let Some(max_ts) = message.signed_msg_order_params.max_ts {
+        if max_ts != 0 && max_ts < env.clock.unix_timestamp {
+            msg!(
+                "signed msg main order max_ts {} expired (< now {}); skipping bundle",
+                max_ts,
+                env.clock.unix_timestamp
+            );
+
+            return Ok(None);
+        }
+    }
+
+    apply_message_position_settings(taker, message, env)?;
+
+    Ok(Some(admitted))
 }
 
 /// Authenticate the message and bind it to the taker account it names.

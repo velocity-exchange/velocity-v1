@@ -11454,8 +11454,10 @@ export type Velocity = {
         {
           "name": "userStats",
           "docs": [
-            "Read for the authority-wide equity breaker in the margin gate."
-          ]
+            "Read for the authority-wide equity breaker in the margin gate. A cancel",
+            "by that gate can trip the breaker."
+          ],
+          "writable": true
         },
         {
           "name": "quoterSlab",
@@ -21733,6 +21735,11 @@ export type Velocity = {
       "code": 6459,
       "name": "signedMsgEntryNeitherFilledNorRested",
       "msg": "A signed-message entry that neither fills nor rests places nothing of its bundle"
+    },
+    {
+      "code": 6460,
+      "name": "triggerMarketHasNoClob",
+      "msg": "The market has no CLOB, so no crank can fire a trigger order on it"
     }
   ],
   "types": [
@@ -23358,7 +23365,7 @@ export type Velocity = {
           {
             "name": "trigger",
             "docs": [
-              "`trigger_order` / `trigger_limit_order_v1` in program-keeper mode."
+              "`trigger_market_order_v1` / `trigger_limit_order_v1` in program-keeper mode."
             ],
             "type": "u32"
           },
@@ -32064,9 +32071,8 @@ export type Velocity = {
           {
             "name": "quoterSlab",
             "docs": [
-              "The market's quoter slab, book and program. They are set when this",
-              "slot's executor is `trigger_limit_order_v1`, and zeroed for",
-              "`trigger_order`."
+              "The market's quoter slab, book and program. Both executors,",
+              "`trigger_limit_order_v1` and `trigger_market_order_v1`, fire onto them."
             ],
             "type": "pubkey"
           },

@@ -20733,7 +20733,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.user_stats,
                     is_signer: false,
-                    is_writable: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.quoter_slab,
@@ -32796,6 +32796,8 @@ pub mod errors {
         SelfSyncIntervalTooShort,
         #[msg("A signed-message entry that neither fills nor rests places nothing of its bundle")]
         SignedMsgEntryNeitherFilledNorRested,
+        #[msg("The market has no CLOB, so no crank can fire a trigger order on it")]
+        TriggerMarketHasNoClob,
     }
 }
 pub mod events {

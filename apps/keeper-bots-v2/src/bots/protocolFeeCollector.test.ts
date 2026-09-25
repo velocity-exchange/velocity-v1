@@ -243,7 +243,7 @@ describe('revenue-router SDK', () => {
 	it('derives a deterministic router config PDA', () => {
 		const expected = PublicKey.findProgramAddressSync(
 			[Buffer.from('router_config')],
-			new PublicKey('39PAxdVaWHYH62bR5AWTkMVd52Y4QeJLjQ8TChupghgT')
+			new PublicKey('rout8Eh6aU911sDDyJaDWGY61mSfVhSNXqk1Bw9xeNn')
 		)[0];
 		expect(getRouterConfigPda().toBase58()).to.equal(expected.toBase58());
 	});

@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/protocol_revenue_router.json`.
  */
 export type ProtocolRevenueRouter = {
-	address: '39PAxdVaWHYH62bR5AWTkMVd52Y4QeJLjQ8TChupghgT';
+	address: 'rout8Eh6aU911sDDyJaDWGY61mSfVhSNXqk1Bw9xeNn';
 	metadata: {
 		name: 'protocolRevenueRouter';
 		version: '0.1.0';

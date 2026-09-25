@@ -12,7 +12,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("39PAxdVaWHYH62bR5AWTkMVd52Y4QeJLjQ8TChupghgT");
+declare_id!("rout8Eh6aU911sDDyJaDWGY61mSfVhSNXqk1Bw9xeNn");
 
 declare_program!(dfx_redemption);
 

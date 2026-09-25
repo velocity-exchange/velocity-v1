@@ -273,6 +273,21 @@ impl UserConditionsV0 {
         }
     }
 
+    /// The trigger slot watching `(market_index, order_id)`, if one does.
+    pub fn trigger_slot_index(&self, market_index: u16, order_id: u32) -> Option<usize> {
+        self.trigger_slots
+            .iter()
+            .position(|meta| meta.market_index == market_index && meta.order_id == order_id)
+    }
+
+    /// Rewrite trigger slot `index`'s wake in place. Its resolver list and
+    /// keeper payment stay as the sync wrote them.
+    pub fn set_trigger_wake(&mut self, index: usize, wake: relay_spec::WakeView) -> Result<()> {
+        ConditionBlock::condition_mut(&mut self.relay, TRIGGER_SLOT_BASE + index)
+            .map(|condition| condition.set_wake(wake))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
+    }
+
     /// Store the shared sync account list and describe where it landed. Every
     /// condition on this account points relay at that list.
     pub fn write_sync_accounts(

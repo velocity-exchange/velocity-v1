@@ -43,3 +43,130 @@ fn the_watch_moves_the_threshold_by_the_band_at_most() {
     assert_eq!(above, Some(97_560));
     assert_eq!(below, Some(102_564));
 }
+
+mod coverage_and_direction {
+    use {
+        super::super::{
+            rewatch_trigger_slot, validate_trigger_coverage, watch_direction, MarketInputs,
+        },
+        crate::{
+            create_anchor_account_info,
+            state::{
+                oracle::OracleSource,
+                oracle_watch::WatchDirection,
+                perp_market::PerpMarket,
+                pyth_lazer_oracle::PythLazerOracle,
+                user::{Order, OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType, User},
+                user_conditions::{TriggerSlotMetaV0, UserConditionsV0, TRIGGER_SLOT_BASE},
+            },
+            test_utils::get_pyth_price,
+        },
+        anchor_lang::prelude::Pubkey,
+        relay_spec::{ConditionBlock, WakeView},
+        std::collections::BTreeMap,
+    };
+
+    fn stop_above() -> Order {
+        Order {
+            order_id: 7,
+            status: OrderStatus::Open,
+            order_type: OrderType::TriggerMarket,
+            market_index: 0,
+            trigger_price: 100_000_000,
+            trigger_condition: OrderTriggerCondition::Above,
+            ..Order::default()
+        }
+    }
+
+    fn user_with(order: Order) -> User {
+        let mut user = User::default();
+        user.orders[0] = order;
+        user
+    }
+
+    fn clob_market(has_slab: bool) -> BTreeMap<u16, MarketInputs> {
+        BTreeMap::from([(
+            0,
+            MarketInputs {
+                oracle: Some(Pubkey::new_unique()),
+                has_clob: true,
+                has_slab,
+                keeper_payment_lamports: Some(1),
+                ..MarketInputs::default()
+            },
+        )])
+    }
+
+    /// Omitting the slab would skip the order and clear the slot that
+    /// watched it, so the call is refused instead.
+    #[test]
+    fn a_trigger_on_a_clob_market_needs_its_slab() {
+        let user = user_with(stop_above());
+        assert!(validate_trigger_coverage(&user, &clob_market(false), 0).is_err());
+        assert!(validate_trigger_coverage(&user, &clob_market(true), 0).is_ok());
+        assert!(validate_trigger_coverage(&user, &BTreeMap::new(), 0).is_err());
+    }
+
+    /// A market with no CLOB has nowhere to fire, so its order stays skipped.
+    #[test]
+    fn a_trigger_on_a_market_without_a_clob_is_skipped() {
+        let user = user_with(stop_above());
+        let mut markets = clob_market(false);
+        markets.get_mut(&0).unwrap().has_clob = false;
+        assert!(validate_trigger_coverage(&user, &markets, 0).is_ok());
+    }
+
+    /// An evicted order is due on the non-trigger side until it recrosses.
+    #[test]
+    fn an_order_awaiting_its_recross_watches_the_other_side() {
+        let mut order = stop_above();
+        assert_eq!(watch_direction(&order), Some(WatchDirection::AtOrAbove));
+
+        order.add_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
+        assert_eq!(watch_direction(&order), Some(WatchDirection::AtOrBelow));
+
+        order.trigger_condition = OrderTriggerCondition::Below;
+        assert_eq!(watch_direction(&order), Some(WatchDirection::AtOrAbove));
+    }
+
+    /// Once the recross clears the flag, the slot must watch the trigger side
+    /// again, or the order never fires.
+    #[test]
+    fn a_recrossed_order_watches_the_trigger_side_again() {
+        let oracle_key = Pubkey::new_unique();
+        let mut oracle: PythLazerOracle = get_pyth_price(100, 6);
+        create_anchor_account_info!(oracle, &oracle_key, PythLazerOracle, oracle_info);
+        let market = PerpMarket {
+            oracle: oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+
+        let mut conditions = Box::new(UserConditionsV0::default());
+        conditions.init_block().unwrap();
+        conditions.trigger_slots[0] = TriggerSlotMetaV0 {
+            order_id: 7,
+            ..TriggerSlotMetaV0::default()
+        };
+
+        let mut evicted = stop_above();
+        evicted.add_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
+        let wake_cmp = |conditions: &UserConditionsV0| match ConditionBlock::read_condition(
+            &conditions.relay,
+            TRIGGER_SLOT_BASE,
+        )
+        .unwrap()
+        .wake()
+        .unwrap()
+        {
+            WakeView::OnValueCross { cmp, .. } => cmp,
+            other => panic!("expected OnValueCross, got {other:?}"),
+        };
+
+        rewatch_trigger_slot(&mut conditions, &evicted, &market, &oracle_info).unwrap();
+        assert_eq!(wake_cmp(&conditions), WatchDirection::AtOrBelow.cmp());
+
+        rewatch_trigger_slot(&mut conditions, &stop_above(), &market, &oracle_info).unwrap();
+        assert_eq!(wake_cmp(&conditions), WatchDirection::AtOrAbove.cmp());
+    }
+}

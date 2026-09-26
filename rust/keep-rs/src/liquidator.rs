@@ -13,7 +13,7 @@ use {
             DashboardState, DashboardStateRef, HighRiskUser, MarginStatus, Metrics,
             OraclePriceInfo, UserMarginStatus,
         },
-        util::{preview_pyth_lazer_oracle, PerpFillFallback, PythPriceUpdate, TxIntent},
+        util::{project_perp_oracle, PerpFillFallback, PythPriceUpdate, TxIntent},
         Config, UseMarkets,
     },
     anchor_lang::Discriminator,
@@ -46,10 +46,7 @@ use {
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
         program::math::{
-            oracle::{
-                is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
-                VelocityAction,
-            },
+            oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction},
             time::{Millis, SlotClock, SlotDuration},
         },
         titan::{self, TitanSwapApi},
@@ -2049,84 +2046,12 @@ impl PrimaryLiquidationStrategy {
         pyth_price_update: Option<&PythPriceUpdate>,
     ) -> Option<PerpOracleRoutePolicy> {
         let market = velocity.try_get_perp_market_account(market_index).ok()?;
-        let state = velocity.state_account().ok()?;
-        let oracle = velocity.try_get_oracle_price_data_and_slot(MarketId::perp(market_index))?;
-        let mut exchange_oracle = oracle.data;
-        let elapsed_slots = slot.saturating_sub(oracle.slot);
-        exchange_oracle.delay = exchange_oracle
-            .delay
-            .saturating_add(i64::try_from(elapsed_slots).unwrap_or(i64::MAX));
-
-        // Model the update the tx would actually post. The program accepts a
-        // post on feed-timestamp freshness alone (a same-price message still
-        // refreshes staleness), so the preview keys on freshness too, and the
-        // previewed oracle is parsed from the retained signed message with
-        // the same confidence the program would store, not fabricated from
-        // the scaled price.
-        let previewed_oracle = pyth_price_update
-            .filter(|update| {
-                update.market_type == MarketType::Perp && update.market_id == market_index
-            })
-            .and_then(|update| preview_pyth_lazer_oracle(update, &market.oracle_source));
-        let uses_pyth_update = previewed_oracle.as_ref().is_some_and(|preview| {
-            match (preview.sequence_id, exchange_oracle.sequence_id) {
-                (Some(next), Some(current)) => next > current,
-                (Some(_), None) => true,
-                (None, _) => false,
-            }
-        });
-        if uses_pyth_update {
-            exchange_oracle = previewed_oracle?;
-        }
-
-        let validity_guard_rails: velocity_rs::program::state::state::ValidityGuardRails =
-            unsafe { std::mem::transmute_copy(&state.oracle_guard_rails.validity) };
-        let slot_clock = velocity.slot_clock();
-        let exchange_validity = oracle_validity(
-            MarketType::Perp,
-            market.market_index,
-            market
-                .market_stats
-                .historical_oracle_data
-                .last_oracle_price_twap,
-            &exchange_oracle,
-            &validity_guard_rails,
-            market.get_max_confidence_interval_multiplier().ok()?,
-            &market.oracle_source,
-            LogMode::ExchangeOracle,
-            market.oracle_slot_delay_override,
-            false,
-            market.oracle_low_risk_slot_delay_override,
-            slot,
-            slot_clock,
+        let projected = project_perp_oracle(velocity, &market, slot, pyth_price_update)?;
+        Self::route_policy_from_validities(
+            projected.exchange_validity,
+            projected.safe_validity,
+            projected.uses_pyth_update,
         )
-        .ok()?;
-
-        let mm_oracle = market
-            .get_mm_oracle_price_data(exchange_oracle, slot, &validity_guard_rails, slot_clock)
-            .ok()?;
-        let safe_oracle = mm_oracle.get_safe_oracle_price_data();
-        let safe_validity = oracle_validity(
-            MarketType::Perp,
-            market.market_index,
-            market
-                .market_stats
-                .historical_oracle_data
-                .last_oracle_price_twap,
-            &safe_oracle,
-            &validity_guard_rails,
-            market.get_max_confidence_interval_multiplier().ok()?,
-            &market.oracle_source,
-            LogMode::SafeMMOracle,
-            market.oracle_slot_delay_override,
-            mm_oracle.is_safe_price_mm_sourced(),
-            market.oracle_low_risk_slot_delay_override,
-            slot,
-            slot_clock,
-        )
-        .ok()?;
-
-        Self::route_policy_from_validities(exchange_validity, safe_validity, uses_pyth_update)
     }
 
     /// Whether the liquidatee can participate in a DLOB match at all under

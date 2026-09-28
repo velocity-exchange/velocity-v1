@@ -280,6 +280,15 @@ impl UserConditionsV0 {
             .position(|meta| meta.market_index == market_index && meta.order_id == order_id)
     }
 
+    /// The keeper payment the slot watching `(market_index, order_id)` asks
+    /// relay to assert.
+    pub fn trigger_min_payment(&self, market_index: u16, order_id: u32) -> Option<u64> {
+        let index = self.trigger_slot_index(market_index, order_id)?;
+        ConditionBlock::read_condition(&self.relay, TRIGGER_SLOT_BASE + index)
+            .ok()
+            .map(|condition| condition.min_payment())
+    }
+
     /// Rewrite trigger slot `index`'s wake in place. Its resolver list and
     /// keeper payment stay as the sync wrote them.
     pub fn set_trigger_wake(&mut self, index: usize, wake: relay_spec::WakeView) -> Result<()> {

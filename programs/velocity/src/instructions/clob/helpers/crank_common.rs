@@ -624,8 +624,8 @@ pub struct CrankedTrigger {
     pub market_index: u16,
     pub order_id: u32,
     pub keeper_reward: u64,
-    /// False when the crank already pointed the slot at the order's next due
-    /// side, so the slot must stay armed.
+    /// False when the crank already re-pointed or parked the slot, so the
+    /// slot must stay.
     pub release_slot: bool,
 }
 
@@ -634,6 +634,11 @@ pub struct CrankedTrigger {
 /// trigger conditions so that its level-triggered wake goes quiet. In
 /// program-keeper mode it also pays the caller from the fired market's
 /// reservoir, for a crank that collected its reward.
+///
+/// The payment is at least what the slot asks relay to assert. The sync
+/// stores the payment of its time, so after the admin lowers it, a slot that
+/// was not synced again would fail every fire. The raise is bounded by a
+/// payment the admin once set.
 pub fn finish_trigger_crank<'info>(
     state: &AccountLoader<'info, State>,
     filler: &AccountLoader<'info, User>,
@@ -652,6 +657,7 @@ pub fn finish_trigger_crank<'info>(
         release_slot,
     } = *cranked;
 
+    let mut slot_min_payment = None;
     if let Some(conditions) = trigger_conditions {
         let mut conditions = load_mut!(conditions)?;
         validate!(
@@ -662,6 +668,7 @@ pub fn finish_trigger_crank<'info>(
             user.key()
         )?;
 
+        slot_min_payment = conditions.trigger_min_payment(market_index, order_id);
         if release_slot {
             conditions.release_slot(market_index, order_id);
         }
@@ -685,11 +692,16 @@ pub fn finish_trigger_crank<'info>(
         )?;
 
         ClobCrankConditionsV0::pay_crank(reservoir, &authority.to_account_info(), |payments| {
-            u64::from(payments.trigger)
+            trigger_payment(u64::from(payments.trigger), slot_min_payment)
         })?;
     }
 
     Ok(())
+}
+
+/// The market's current trigger payment, raised to what the slot asserts.
+fn trigger_payment(market_payment: u64, slot_min_payment: Option<u64>) -> u64 {
+    market_payment.max(slot_min_payment.unwrap_or(0))
 }
 
 /// Which resolver a fired trigger slot belongs to.
@@ -1114,6 +1126,16 @@ mod removal_tests {
         let keeper = anchor_lang::prelude::Pubkey::new_unique();
         let owner = anchor_lang::prelude::Pubkey::new_unique();
         assert!(!earns_crank_lamports(0, &keeper, &owner));
+    }
+
+    /// A slot synced before the admin lowered the payment still asks relay
+    /// for the old figure, so the crank pays that figure and lands.
+    #[test]
+    fn a_trigger_crank_pays_at_least_what_its_slot_asserts() {
+        use super::trigger_payment;
+        assert_eq!(trigger_payment(3_000, Some(5_000)), 5_000);
+        assert_eq!(trigger_payment(7_000, Some(5_000)), 7_000);
+        assert_eq!(trigger_payment(3_000, None), 3_000);
     }
 
     #[test]

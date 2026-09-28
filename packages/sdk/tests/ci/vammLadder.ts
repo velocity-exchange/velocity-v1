@@ -25,6 +25,19 @@ const RUST_CAPPED_TOTAL = BASE_PRECISION.muln(25); // TS_MIRROR: 40-base take ca
 const RUST_SHORT =
 	'49382716:1250000000,48178259:1250000000,47017337:1250000000,45897877:1250000000,44817927:1250000000,43775649:1250000000,42769312:1250000000,41797283:1250000000';
 
+/** `TS_MIRROR long_rival`: 0.1 base of rival depth at +1%. */
+const RUST_LONG_RIVAL =
+	'50198930:396280980,50500000:100000000,50885447:753719020,51931192:1250000000,53280053:1250000000,54682160:1250000000,56140352:1250000000,57657658:1250000000,59237320:1250000000,60882801:1250000000';
+/** `TS_MIRROR long_dust_rival_shallow`: 0.001 base of rival depth at +1%. */
+const RUST_LONG_DUST_RIVAL_SHALLOW =
+	'50248875:495280980,50500000:1000000,50885447:753719020,51931192:1250000000,53280053:1250000000,54682160:1250000000,56140352:1250000000,57657658:1250000000,59237320:1250000000,60882801:1250000000';
+/** `TS_MIRROR long_dust_rival`: 1M-reserve AMM, 0.001 base at +4.9%. */
+const RUST_LONG_DUST_RIVAL_DEEP =
+	'50000626:12500000000,50001876:12500000000,50003126:12500000000,50004376:12500000000,50005626:12500000000,50006876:12500000000,50008126:12500000000,50009377:12499000000,52450000:1000000';
+/** `TS_MIRROR short_dust_rival`: 1M-reserve AMM, 0.001 base at -4.9%. */
+const RUST_SHORT_DUST_RIVAL_DEEP =
+	'49999374:12500000000,49998125:12500000000,49996875:12500000000,49995625:12500000000,49994375:12500000000,49993125:12500000000,49991876:12500000000,49990626:12499000000,47550000:1000000';
+
 function parse(dump: string): { price: BN; size: BN }[] {
 	return dump.split(',').map((pair) => {
 		const [price, size] = pair.split(':');
@@ -37,8 +50,8 @@ function parse(dump: string): { price: BN; size: BN }[] {
  * spread (`seed_no_spread_quote_state`), reserve bounds 50-200,
  * `max_fill_reserve_fraction` 4 so a 10-unit take clears the per-fill cap.
  */
-function ammFixture(): AMM {
-	const reserves = AMM_RESERVE_PRECISION.muln(100);
+function ammFixture(reserveUnits = 100): AMM {
+	const reserves = AMM_RESERVE_PRECISION.muln(reserveUnits);
 	return {
 		...mockAMM,
 		baseAssetReserve: reserves,
@@ -46,8 +59,8 @@ function ammFixture(): AMM {
 		terminalQuoteAssetReserve: reserves,
 		sqrtK: reserves,
 		pegMultiplier: PEG_PRECISION.muln(50),
-		minBaseAssetReserve: AMM_RESERVE_PRECISION.muln(50),
-		maxBaseAssetReserve: AMM_RESERVE_PRECISION.muln(200),
+		minBaseAssetReserve: reserves.divn(2),
+		maxBaseAssetReserve: reserves.muln(2),
 		maxFillReserveFraction: 4,
 		// No-spread quote state: spread reserves equal the underlying reserves
 		// and both spreads are zero.
@@ -165,5 +178,87 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 			step
 		);
 		assertLadderMatches(shortLevels, parse(RUST_SHORT), 'short');
+	});
+
+	it('shades only the rival depth and matches the Rust dump exactly', () => {
+		const mmOraclePriceData = {
+			price: PRICE_PRECISION.muln(50),
+			confidence: ZERO,
+		};
+		const top = PRICE_PRECISION.muln(50);
+		const rivalLadder = (
+			reserveUnits: number,
+			direction: PositionDirection,
+			size: BN,
+			price: BN,
+			depth: BN
+		) =>
+			vammQuoteLevels(
+				ammFixture(reserveUnits),
+				mockMarketStats,
+				mmOraclePriceData,
+				direction,
+				size,
+				new BN(1),
+				[
+					{
+						priority: 10,
+						levels: [{ price, size: depth }],
+						withheld: { price: ZERO, size: ZERO },
+					},
+				]
+			);
+
+		const plusOnePercent = top.muln(101).divn(100);
+		const cases: [string, { price: BN; size: BN }[], string][] = [
+			[
+				'long_rival',
+				rivalLadder(
+					100,
+					PositionDirection.LONG,
+					BASE_PRECISION.muln(10),
+					plusOnePercent,
+					BASE_PRECISION.divn(10)
+				),
+				RUST_LONG_RIVAL,
+			],
+			[
+				'long_dust_rival_shallow',
+				rivalLadder(
+					100,
+					PositionDirection.LONG,
+					BASE_PRECISION.muln(10),
+					plusOnePercent,
+					BASE_PRECISION.divn(1000)
+				),
+				RUST_LONG_DUST_RIVAL_SHALLOW,
+			],
+			[
+				'long_dust_rival',
+				rivalLadder(
+					1_000_000,
+					PositionDirection.LONG,
+					BASE_PRECISION.muln(100),
+					top.add(top.muln(49).divn(1000)),
+					BASE_PRECISION.divn(1000)
+				),
+				RUST_LONG_DUST_RIVAL_DEEP,
+			],
+			[
+				'short_dust_rival',
+				rivalLadder(
+					1_000_000,
+					PositionDirection.SHORT,
+					BASE_PRECISION.muln(100),
+					top.sub(top.muln(49).divn(1000)),
+					BASE_PRECISION.divn(1000)
+				),
+				RUST_SHORT_DUST_RIVAL_DEEP,
+			],
+		];
+
+		for (const [label, actual, dump] of cases) {
+			assertLadderMatches(actual, parse(dump), label);
+		}
 	});
 });

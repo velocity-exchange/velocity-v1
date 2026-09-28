@@ -12,8 +12,9 @@
  *    marginal price.
  *  - A rival price within {@link LAST_LOOK_BAND} of the vAMM's top becomes a rung, priced at the
  *    rival's price; the vAMM wins the tie on tier priority. A client that ignores rival books
- *    under-estimates what the taker pays. A rung reprices no more base than the rivals at that
- *    price offer, so rival size matters as much as rival price.
+ *    under-estimates what the taker pays. A rung reprices only the last base before the curve
+ *    reaches the rival's price, and no more of it than the rivals at that price offer, so rival
+ *    size matters as much as rival price.
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -210,15 +211,24 @@ export function vammQuoteLevels(
 
 	// Checkpoints: [cumulative base, shading price if this is a rival rung].
 	//
-	// A rung shades only as far as the rivals at that price or better can
-	// supply. `rivalDepth` is that running total. Past it the taker's
-	// alternative is not this rung but a worse one, so the curve is priced
-	// honestly there and a later rung shades it if one carries the depth.
+	// A rung shades the last base before the curve reaches its price. It shades
+	// no more base than the rivals at that price or better still supply,
+	// floored to the step. The honest slice before the rung is cheaper and the
+	// slice after it is dearer, so the book stays monotone. Equal-size
+	// checkpoints price the rest of the curve honestly. The emit loop skips a
+	// checkpoint that does not advance the ladder.
+	const chunk = BN.max(total.divn(VAMM_QUOTE_CHECKPOINTS), new BN(1));
+	const gridPoint = (k: number) =>
+		k === VAMM_QUOTE_CHECKPOINTS ? total : BN.min(total, chunk.muln(k));
+
 	const checkpoints: [BN, BN | undefined][] = [];
+	let gridIndex = 1;
 	let rivalDepth = ZERO;
+	let shadedBase = ZERO;
+	let covered = ZERO;
 	for (const rung of rivalRungs) {
 		rivalDepth = rivalDepth.add(rung.size);
-		const [cumulative, tradeDirection] = calculateMaxBaseAssetAmountToTrade(
+		const [reach, tradeDirection] = calculateMaxBaseAssetAmountToTrade(
 			amm,
 			marketStats,
 			rung.price,
@@ -230,28 +240,42 @@ export function vammQuoteLevels(
 			continue;
 		}
 
-		const capped = BN.min(BN.min(cumulative, total), rivalDepth);
-		checkpoints.push([capped, rung.price]);
-		if (capped.eq(total)) {
-			break;
+		const shadeEnd = standardizeBaseAssetAmount(BN.min(reach, total), step);
+		const unshadedDepth = standardizeBaseAssetAmount(
+			rivalDepth.sub(shadedBase),
+			step
+		);
+		const shadeStart = BN.max(
+			BN.max(shadeEnd.sub(unshadedDepth), ZERO),
+			covered
+		);
+		if (shadeStart.gte(shadeEnd)) {
+			continue;
 		}
+
+		while (
+			gridIndex <= VAMM_QUOTE_CHECKPOINTS &&
+			gridPoint(gridIndex).lt(shadeStart)
+		) {
+			checkpoints.push([gridPoint(gridIndex), undefined]);
+			gridIndex++;
+		}
+
+		while (
+			gridIndex <= VAMM_QUOTE_CHECKPOINTS &&
+			gridPoint(gridIndex).lte(shadeEnd)
+		) {
+			gridIndex++;
+		}
+
+		checkpoints.push([shadeStart, undefined]);
+		checkpoints.push([shadeEnd, rung.price]);
+		shadedBase = shadedBase.add(shadeEnd.sub(shadeStart));
+		covered = shadeEnd;
 	}
 
-	// Beyond the last rival rung the curve is priced honestly: equal-size
-	// checkpoints, priced below from the swap math.
-	const covered = checkpoints.length
-		? checkpoints[checkpoints.length - 1][0]
-		: ZERO;
-	if (covered.lt(total)) {
-		const filler = Math.max(VAMM_QUOTE_CHECKPOINTS - checkpoints.length, 1);
-		const chunk = BN.max(total.sub(covered).divn(filler), new BN(1));
-		for (let k = 1; k <= filler; k++) {
-			const cumulative = BN.min(covered.add(chunk.muln(k)), total);
-			checkpoints.push([cumulative, undefined]);
-			if (cumulative.eq(total)) {
-				break;
-			}
-		}
+	for (; gridIndex <= VAMM_QUOTE_CHECKPOINTS; gridIndex++) {
+		checkpoints.push([gridPoint(gridIndex), undefined]);
 	}
 
 	const spreadReserves = calculateUpdatedAMMSpreadReserves(
@@ -262,8 +286,9 @@ export function vammQuoteLevels(
 	);
 
 	// Emit step-aligned rungs priced off the swap math that executes the fill.
-	// A running bound keeps the book monotone under shading. The split
-	// truncates a book at its first non-monotone level.
+	// A running bound keeps the book monotone where rounding puts a slice past
+	// the rung before it. The split truncates a book at its first non-monotone
+	// level.
 	const levels: RouterPriceLevel[] = [];
 	let previous = ZERO;
 	let previousNotional = ZERO;

@@ -91,13 +91,7 @@ export class SwiftOrderSubscriber {
 
 	subscribed = false;
 
-	/**
-	 * Retained so a reconnect resubscribes with the caller's original options.
-	 * The previous implementation re-entered `subscribe(onOrder)` with no
-	 * further arguments, so after any disconnect a subscriber silently reverted
-	 * to rejecting sanitized orders and deposit trades.
-	 */
-	private acceptSanitized = false;
+	/** Kept so that a reconnect subscribes again with the caller's option. */
 	private acceptDepositTrade = false;
 
 	constructor(private config: SwiftOrderSubscriberConfig) {
@@ -195,7 +189,6 @@ export class SwiftOrderSubscriber {
 		acceptDepositTrade = false
 	): Promise<void> {
 		this.onOrder = onOrder;
-		this.acceptSanitized = acceptSanitized;
 		this.acceptDepositTrade = acceptDepositTrade;
 		this.stopped = false;
 
@@ -343,11 +336,7 @@ export class SwiftOrderSubscriber {
 			// replacement socket may itself fail before opening, and that failure
 			// has to be able to schedule the next attempt.
 			this.reconnectTimeout = null;
-			this.subscribe(
-				this.onOrder!,
-				this.acceptSanitized,
-				this.acceptDepositTrade
-			).catch((error) => {
+			this.subscribe(this.onOrder!, this.acceptDepositTrade).catch((error) => {
 				console.error('Swift resubscribe failed:', error);
 				this.scheduleReconnect();
 			});

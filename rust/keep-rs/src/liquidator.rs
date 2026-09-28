@@ -88,10 +88,21 @@ const FAILURE_COOLDOWN_MAX_MS: u64 = 300_000;
 /// the DLOB makers, the margin map and the quoter section.
 const CLOB_LIQUIDATION_MAKERS: usize = 3;
 
+/// The book owners a with-fill liquidation carries, out of the owners its size
+/// reaches.
+struct BookMakers {
+    makers: Vec<User>,
+    /// An owner the size reaches is not in `makers`.
+    withholds: bool,
+}
+
 /// What a with-fill liquidation routes through. It holds the counterparties the
 /// liquidation may settle against, and the quoter section that reaches the book.
 struct LiquidationMatch {
     makers: Vec<User>,
+    /// The book reaches an owner this route does not carry. The program then
+    /// refuses the fill, because the transaction has room for that owner.
+    book_withholds: bool,
     /// The market's slab, its book and the book's program, in the order the
     /// fill's account tail expects. Empty for a market with no book.
     quoter_metas: Vec<AccountMeta>,
@@ -1949,6 +1960,26 @@ struct PerpOracleRoutePolicy {
     uses_pyth_update: bool,
 }
 
+/// The owners a with-fill liquidation carries, out of the distinct owners a book
+/// reports for the liquidation's size, best price first.
+struct BookMakerRefs {
+    carried: Vec<UserRefV0>,
+    /// An owner past the carry cap is reachable. The book withholds at that owner.
+    left_out: bool,
+}
+
+/// The liquidatee is never carried. The liquidation cancels its book orders
+/// before the fill, so they cannot withhold.
+fn select_book_makers(reachable: Vec<UserRefV0>, liquidatee: UserRefV0) -> BookMakerRefs {
+    let mut others = reachable.into_iter().filter(|maker| *maker != liquidatee);
+    let carried: Vec<UserRefV0> = others.by_ref().take(CLOB_LIQUIDATION_MAKERS).collect();
+
+    BookMakerRefs {
+        carried,
+        left_out: others.next().is_some(),
+    }
+}
+
 /// Takeover routings a fallback marker may drive before it is dropped.
 const PERP_FILL_FALLBACK_MAX_ATTEMPTS: u32 = 3;
 /// The lifetime of a fallback marker. A marker this old describes a book and an
@@ -2648,7 +2679,8 @@ impl PrimaryLiquidationStrategy {
     /// The fill stops at the first owner the transaction did not carry, so these
     /// come off the side the liquidation sweeps, best price first. A maker the
     /// fill would skip for its own equity floor is dropped here, because
-    /// carrying it spends two account locks the fill cannot use.
+    /// carrying it spends two account locks the fill cannot use. Any owner the
+    /// size reaches that is not carried marks the route as one the book withholds.
     async fn find_book_makers(
         velocity: &VelocityClient,
         book: &QuoterConfigV0,
@@ -2656,7 +2688,7 @@ impl PrimaryLiquidationStrategy {
         base_asset_amount: i64,
         exchange_match_allowed: bool,
         liquidatee: &User,
-    ) -> Vec<User> {
+    ) -> BookMakers {
         let direction = if Self::liquidation_makers_are_bids(base_asset_amount) {
             // The liquidation sells the position, and a seller sweeps the bids.
             velocity_router_sim::DirectionV0::Short
@@ -2676,7 +2708,10 @@ impl PrimaryLiquidationStrategy {
             Ok(makers) => makers,
             Err(err) => {
                 log::warn!(target: TARGET, "clob makers for market {market_index}: {err:#}");
-                return Vec::new();
+                return BookMakers {
+                    makers: Vec::new(),
+                    withholds: false,
+                };
             }
         };
 
@@ -2684,17 +2719,22 @@ impl PrimaryLiquidationStrategy {
             authority: liquidatee.authority,
             sub_account_id: liquidatee.sub_account_id,
         };
+        let candidates = select_book_makers(reachable, liquidatee_ref);
 
-        reachable
-            .into_iter()
-            .filter(|maker| *maker != liquidatee_ref)
-            .take(CLOB_LIQUIDATION_MAKERS)
+        let makers: Vec<User> = candidates
+            .carried
+            .iter()
             .filter_map(|maker| {
                 let key = Wallet::derive_user_account(&maker.authority, maker.sub_account_id);
                 velocity.try_get_account::<User>(&key).ok()
             })
             .filter(|maker| Self::maker_matchable(maker, exchange_match_allowed))
-            .collect()
+            .collect();
+
+        BookMakers {
+            withholds: candidates.left_out || makers.len() < candidates.carried.len(),
+            makers,
+        }
     }
 
     /// Everything a with-fill liquidation needs beyond the liquidatee. That is the
@@ -2711,6 +2751,7 @@ impl PrimaryLiquidationStrategy {
         liquidatee: &User,
     ) -> Option<LiquidationMatch> {
         let mut makers: Vec<User> = Vec::new();
+        let mut book_withholds = false;
 
         // An unreadable slab abandons the attempt rather than filling without the
         // book. The market's canonical CLOB is a mandatory baseline, so a fill that
@@ -2725,17 +2766,17 @@ impl PrimaryLiquidationStrategy {
         };
         let quoter_metas = match clob_slot_config(&slots) {
             Some(book) => {
-                makers.extend(
-                    Self::find_book_makers(
-                        velocity,
-                        &book,
-                        market_index,
-                        base_asset_amount,
-                        exchange_match_allowed,
-                        liquidatee,
-                    )
-                    .await,
-                );
+                let book_makers = Self::find_book_makers(
+                    velocity,
+                    &book,
+                    market_index,
+                    base_asset_amount,
+                    exchange_match_allowed,
+                    liquidatee,
+                )
+                .await;
+                makers.extend(book_makers.makers);
+                book_withholds = book_makers.withholds;
 
                 quoter_cpi_section(market_index, &slots, |slot| {
                     slot.config.response_account == book.response_account
@@ -2761,6 +2802,7 @@ impl PrimaryLiquidationStrategy {
 
         Some(LiquidationMatch {
             makers,
+            book_withholds,
             quoter_metas,
         })
     }
@@ -3027,13 +3069,19 @@ impl PrimaryLiquidationStrategy {
             collateral_required,
             current_time_millis(),
         );
+        // A fill that the book withholds reverts, so a takeover goes first when one
+        // is possible. The fill stays the last resort, because the size the keeper
+        // reads can be larger than the order the program places.
+        let fill_withheld = makers.as_ref().is_some_and(|route| route.book_withholds);
+        let takeover_possible =
+            policy.liquidation_allowed && free_collateral >= collateral_required;
         let method = Self::decide_perp_method(
             free_collateral,
             collateral_required,
             makers.is_some(),
             policy.safe_match_allowed,
             policy.liquidation_allowed,
-            force_takeover,
+            force_takeover || (fill_withheld && takeover_possible),
         );
         let pyth_update = pyth_price_update.filter(|_| policy.uses_pyth_update);
 
@@ -4197,6 +4245,35 @@ mod tests {
             PrimaryLiquidationStrategy::decide_perp_method(100, 100, true, true, true, true),
             LiquidationType::PerpTakeover
         );
+    }
+
+    #[test]
+    fn book_makers_past_the_cap_mark_the_route_withheld() {
+        let liquidatee = UserRefV0 {
+            authority: Pubkey::new_unique(),
+            sub_account_id: 0,
+        };
+        let owner = |sub_account_id| UserRefV0 {
+            authority: liquidatee.authority,
+            sub_account_id,
+        };
+
+        // The liquidatee's own orders never count toward the cap.
+        let reachable: Vec<UserRefV0> = std::iter::once(liquidatee)
+            .chain((1..=CLOB_LIQUIDATION_MAKERS as u16).map(owner))
+            .collect();
+        let refs = select_book_makers(reachable, liquidatee);
+        assert_eq!(refs.carried.len(), CLOB_LIQUIDATION_MAKERS);
+        assert!(!refs.carried.contains(&liquidatee));
+        assert!(!refs.left_out);
+
+        // One more sub-account of the same authority rests in reach.
+        let reachable: Vec<UserRefV0> = (1..=CLOB_LIQUIDATION_MAKERS as u16 + 1)
+            .map(owner)
+            .collect();
+        let refs = select_book_makers(reachable, liquidatee);
+        assert_eq!(refs.carried.len(), CLOB_LIQUIDATION_MAKERS);
+        assert!(refs.left_out);
     }
 
     #[test]

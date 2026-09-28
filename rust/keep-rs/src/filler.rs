@@ -1862,6 +1862,23 @@ fn is_revert_fill_error(error: &UiTransactionError) -> bool {
     )
 }
 
+/// A with-fill liquidation that fails with one of these codes cannot succeed with the
+/// same account list. The withheld-depth codes mean the book reached an owner the
+/// transaction does not carry, and the transaction cannot fit enough makers to pass.
+fn is_takeover_fallback_error(code: u32) -> bool {
+    use velocity_rs::program::error::ErrorCode;
+
+    [
+        ErrorCode::LiquidationOrderFailedToFill,
+        ErrorCode::FillerOmittedReachableMaker,
+        ErrorCode::FillerPaddedTheUserSet,
+        ErrorCode::FillerObligationUncountable,
+        ErrorCode::FillerCarriedUnroutedQuoter,
+    ]
+    .into_iter()
+    .any(|error| code == error as u32 + anchor_lang::error::ERROR_CODE_OFFSET)
+}
+
 fn record_perp_fill_fallback(
     intent: &TxIntent,
     error: &TransactionError,
@@ -1870,9 +1887,7 @@ fn record_perp_fill_fallback(
     let TransactionError::InstructionError(_, InstructionError::Custom(code)) = error else {
         return;
     };
-    let expected = velocity_rs::program::error::ErrorCode::LiquidationOrderFailedToFill as u32
-        + anchor_lang::error::ERROR_CODE_OFFSET;
-    if *code != expected {
+    if !is_takeover_fallback_error(*code) {
         return;
     }
     let TxIntent::LiquidateWithFill {
@@ -2154,6 +2169,29 @@ mod tests {
         let fallbacks = std::sync::Arc::new(dashmap::DashMap::new());
         let error_code = velocity_rs::program::error::ErrorCode::LiquidationOrderFailedToFill
             as u32
+            + anchor_lang::error::ERROR_CODE_OFFSET;
+
+        record_perp_fill_fallback(
+            &intent,
+            &TransactionError::InstructionError(2, InstructionError::Custom(error_code)),
+            Some(&fallbacks),
+        );
+
+        assert!(fallbacks.contains_key(&(liquidatee, 7)));
+    }
+
+    /// A book that withholds depth from a keeper fill reverts it. The same account
+    /// list fails again, so the next attempt must take the position over.
+    #[test]
+    fn withheld_liquidation_fill_records_takeover_fallback() {
+        let liquidatee = Pubkey::new_unique();
+        let intent = TxIntent::LiquidateWithFill {
+            market_index: 7,
+            liquidatee,
+            slot: 42,
+        };
+        let fallbacks = std::sync::Arc::new(dashmap::DashMap::new());
+        let error_code = velocity_rs::program::error::ErrorCode::FillerOmittedReachableMaker as u32
             + anchor_lang::error::ERROR_CODE_OFFSET;
 
         record_perp_fill_fallback(

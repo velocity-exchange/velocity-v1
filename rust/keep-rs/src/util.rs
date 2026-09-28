@@ -578,8 +578,8 @@ pub struct PythPriceUpdate {
     pub ts: TimestampUs,
 }
 
-/// A marker recorded when a liquidate-with-fill transaction fails on chain with
-/// `LiquidationOrderFailedToFill`. It routes the next attempt on that liquidatee
+/// A marker recorded when a liquidate-with-fill transaction fails with
+/// `LiquidationOrderFailedToFill` or a withheld-depth error. It routes the next attempt on that liquidatee
 /// and market straight to a collateral takeover. It survives until a takeover
 /// transaction is sent.
 #[derive(Clone, Copy, Debug)]

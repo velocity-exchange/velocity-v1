@@ -9,7 +9,7 @@
 # download here — unlike the pre-velocity keep-rs Dockerfile.
 
 ARG APP_BIN
-ARG RUST_IMAGE=rust:1.91.1
+ARG RUST_IMAGE=rust:1.95.0
 
 FROM ${RUST_IMAGE} AS builder
 WORKDIR /repo

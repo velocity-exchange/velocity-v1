@@ -37,7 +37,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.91.1
+  RUST_TOOLCHAIN: 1.95.0
   ANCHOR_VERSION: 1.0.2
   # Matches main.yml. This job builds the .so through deploy-scripts/build-sbf.sh,
   # which needs a cargo-build-sbf that can emit SBPFv3.

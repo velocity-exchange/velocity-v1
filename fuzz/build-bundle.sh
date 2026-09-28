@@ -471,7 +471,7 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
 
   # (2) Harness binaries + staging in the rust toolchain image.
   toolchain="$(sed -nE 's/^channel = "([^"]+)".*/\1/p' "$here/rust-toolchain.toml" 2>/dev/null | head -1)"
-  img="${image:-rust:${toolchain:-1.91.1}-bookworm}"
+  img="${image:-rust:${toolchain:-1.95.0}-bookworm}"
   # Map an optional subset targets file (must be inside the repo) to its /src path.
   container_tf="/src/fuzz/bundle/targets.txt"
   if [ -n "${FUZZ_TARGETS_FILE:-}" ]; then

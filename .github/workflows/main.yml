@@ -26,7 +26,7 @@ defaults:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.91.1
+  RUST_TOOLCHAIN: 1.95.0
   # Pinned nightly for `cargo fmt` only (rustfmt.toml uses the nightly-only
   # imports_granularity/group_imports options). Builds/clippy stay on stable.
   RUST_NIGHTLY_TOOLCHAIN: nightly-2026-07-25

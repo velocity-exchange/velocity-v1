@@ -45,7 +45,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.91.1
+  RUST_TOOLCHAIN: 1.95.0
   # Pinned nightly for `cargo fmt` only (rustfmt.toml uses nightly-only import
   # merging options). Must match RUST_NIGHTLY_TOOLCHAIN in main.yml.
   RUST_NIGHTLY_TOOLCHAIN: nightly-2026-07-25

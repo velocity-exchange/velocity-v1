@@ -108,7 +108,6 @@ services:
       dockerfile: docker/rust-app.Dockerfile
       args:
         APP_BIN: book-publisher
-        RUST_IMAGE: rust:1.95
     user: '0'
     depends_on: &after-bootstrap
       bootstrap:
@@ -189,7 +188,7 @@ services:
     build:
       context: ${RELAY_SRC:-${HOME}/.cache/velocity-e2e/relay}
       dockerfile_inline: |
-        FROM rust:1.95 AS builder
+        FROM rust:1.95.0 AS builder
         WORKDIR /relay
         COPY . .
         RUN --mount=type=cache,target=/relay/target,id=relay-target \
@@ -222,7 +221,6 @@ services:
       dockerfile: docker/rust-app.Dockerfile
       args:
         APP_BIN: swift-server
-        RUST_IMAGE: rust:1.95
     user: '0'
     depends_on: *after-bootstrap
     ports:

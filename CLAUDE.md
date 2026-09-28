@@ -42,8 +42,9 @@ version.
 
 Develop and test with Rust 1.77 or newer anyway. That way x86_64 exercises real 16-byte u128
 alignment, and a future struct change that breaks the invariant fires the `const_assert_eq!` guards
-locally instead of diverging onchain. Anchor 1.0 branches require Rust 1.89 or newer, which is the
-Anchor 1.0 MSRV. [`docs/alignment-and-native-offsets.md`](./docs/alignment-and-native-offsets.md)
+locally instead of diverging onchain. Anchor 1.0 branches require Rust 1.93 or newer. The Anchor
+1.0 MSRV is 1.89, but velocity uses `Box::new_zeroed` (1.92) and the `rust/` workspace locks
+`solana-syscalls` 4.2 (1.93). CI pins 1.95.0. [`docs/alignment-and-native-offsets.md`](./docs/alignment-and-native-offsets.md)
 has the full invariant rules and covers adding fields to zero-copy structs.
 
 **For the Solana programs, use the `program:*` scripts in the root package.json.** They encode the

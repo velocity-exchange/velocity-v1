@@ -17,6 +17,9 @@ use {
     },
 };
 
+#[cfg(test)]
+mod tests;
+
 pub fn handle_initialize_signed_msg_user_orders<'c: 'info, 'info>(
     ctx: Context<'info, InitializeSignedMsgUserOrders<'info>>,
     num_orders: u16,
@@ -39,13 +42,11 @@ pub fn handle_resize_signed_msg_user_orders<'c: 'info, 'info>(
 ) -> Result<()> {
     let account = ctx.accounts.signed_msg_user_orders.to_account_info();
     let mut snapshot = SignedMsgUserOrdersSnapshot::read(&account)?;
-    // SignedMsgUserOrders is authority-scoped and shared across the authority's subaccounts, and
-    // its replay-protection UUIDs cover every one. Shrinking it evicts active UUIDs of other
-    // subaccounts and re-enables replay of their signed orders, so only the authority may shrink
-    // it, not a per-subaccount delegate. Anyone else may only grow it and pays the rent.
+    // A shrink can evict the live uuids of every subaccount, and it refunds rent to the payer.
+    // Only the authority may shrink the record. Anyone else may only grow it and pays the rent.
     if ctx.accounts.payer.key != ctx.accounts.authority.key {
         validate!(
-            num_orders as usize >= snapshot.header_len as usize,
+            is_growth(snapshot.header_len, account.data_len(), num_orders),
             ErrorCode::InvalidSignedMsgUserOrdersResize,
             "Invalid shrinking resize for payer != user authority"
         )?;
@@ -62,6 +63,16 @@ pub fn handle_resize_signed_msg_user_orders<'c: 'info, 'info>(
     snapshot.write(&account)?;
 
     Ok(())
+}
+
+/// Whether a resize to `num_orders` keeps every entry and every byte.
+///
+/// Both checks are needed. A legacy record has 24-byte entries, so a count
+/// below its header can still fit its bytes. A record migrated in place can
+/// hold more bytes than its header count needs.
+fn is_growth(header_len: u32, data_len: usize, num_orders: u16) -> bool {
+    num_orders as usize >= header_len as usize
+        && SignedMsgUserOrders::space(num_orders as usize) >= data_len
 }
 
 /// Resize `account` the way Anchor's `realloc` constraint does. The payer

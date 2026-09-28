@@ -20,7 +20,7 @@
 
 use {
     crate::{
-        controller,
+        controller::{self, position::PositionDirection},
         error::ErrorCode,
         instructions::constraints::*,
         load,
@@ -28,9 +28,9 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             fill_mode::FillMode,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{QuoterSlabExt, QuoterSlabV0},
+            prop_amm::{ClobMarket, OrderRulesV0, QuoterSlabExt, QuoterSlabV0},
             state::State,
-            user::{Order, User, UserStats},
+            user::{Order, OrderStatus, User, UserStats},
         },
         validate,
     },
@@ -169,6 +169,8 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         market_index
     )?;
 
+    require_room_to_rest(&ctx, market_index, order_id)?;
+
     // Fire the trigger. This validates it, turns a copy of the slot order into
     // a live market order, frees the slot, and pays the flat reward. `None`
     // means there was no payable work. The order was past its `max_ts`, or a
@@ -227,6 +229,56 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     )?;
 
     Ok(())
+}
+
+/// Refuse to fire a stop-market onto a full side of the book.
+///
+/// A fired order cannot go back to its slot, so a remainder the book refuses
+/// is lost. A full side is a state of the book that an eviction clears. The
+/// crank therefore fails and the trigger stays armed.
+fn require_room_to_rest<'info>(
+    ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
+    market_index: u16,
+    order_id: u32,
+) -> Result<()> {
+    // A missing order fails in the fire, with its own error.
+    let Some(direction) = load!(ctx.accounts.user)?
+        .orders
+        .iter()
+        .find(|order| order.order_id == order_id && order.status == OrderStatus::Open)
+        .map(|order| order.direction)
+    else {
+        return Ok(());
+    };
+
+    let rules = ClobMarket::from_slab(
+        &ctx.accounts.quoter_slab,
+        market_index,
+        &ctx.accounts.clob_market,
+        &ctx.accounts.clob_program,
+    )?
+    .reader()
+    .order_rules()?;
+
+    validate!(
+        side_has_room(&rules, direction),
+        ErrorCode::MaxNumberOfOrders,
+        "market {}'s book side is full; the trigger stays armed",
+        market_index
+    )?;
+
+    Ok(())
+}
+
+/// Whether the side `direction` rests on holds fewer orders than the book
+/// allows. The arena is shared, so each side holds at most half of it.
+fn side_has_room(rules: &OrderRulesV0, direction: PositionDirection) -> bool {
+    let side = match direction {
+        PositionDirection::Long => 0,
+        PositionDirection::Short => 1,
+    };
+
+    rules.side_order_counts[side] < rules.arena_capacity / 2
 }
 
 /// Routes the fired order against the book, and fills what the route reaches.
@@ -467,4 +519,34 @@ pub fn handle_resolve_trigger_market_order_v1(
             })?,
         ))
     })
+}
+
+#[cfg(test)]
+mod side_room_tests {
+    use {
+        super::side_has_room,
+        crate::{controller::position::PositionDirection, state::prop_amm::OrderRulesV0},
+    };
+
+    /// A stop-market that would rest on a full side is not fired, so it
+    /// stays armed until an eviction frees room.
+    #[test]
+    fn a_full_side_has_no_room_and_the_other_side_does() {
+        let rules = OrderRulesV0 {
+            min_order_size: 0,
+            blocking_min_size: 0,
+            default_activation_delay_slots: 0,
+            max_activation_delay_slots: 0,
+            place_authority: [0; 32],
+            tick_size: 1,
+            step_size: 1,
+            side_order_counts: [255, 256],
+            arena_capacity: 512,
+            evict_threshold_per_side: 200,
+            authority: [0; 32],
+        };
+
+        assert!(side_has_room(&rules, PositionDirection::Long));
+        assert!(!side_has_room(&rules, PositionDirection::Short));
+    }
 }

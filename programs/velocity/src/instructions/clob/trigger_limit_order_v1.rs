@@ -21,10 +21,11 @@
 //! position left to reduce, it is cancelled with
 //! `ReduceOnlyOrderIncreasedPosition` and the keeper earns nothing.
 //!
-//! A fired order the book would refuse, for its size, step, price, expiry or a
-//! full side, is cancelled rather than placed, and the keeper earns the flat
-//! reward. A refused placement would revert every crank and hold the owner's
-//! later triggers behind it.
+//! A fired order the book would refuse for its size, step, price or expiry is
+//! cancelled rather than placed, and the keeper earns the flat reward. Those
+//! refusals come from the order, so every later crank would meet them again.
+//! A full side is a state of the book that an eviction clears. The crank then
+//! fails and the trigger stays armed.
 //!
 //! Re-triggering after an eviction runs behind an edge gate, which is
 //! [`OrderBitFlag::AwaitingTriggerRecross`]. While the flag is set, a crank
@@ -444,6 +445,14 @@ impl TriggerLimitCrank<'_, '_> {
             None,
             now,
         );
+
+        if let RestAdmission::Refused(RestRefusal::SideAtCapacity) = admission {
+            msg!(
+                "the book side is full; trigger order {} stays armed",
+                self.order_id
+            );
+            return Err(RestRefusal::SideAtCapacity.error_code().into());
+        }
 
         let filler_reward = pay_trigger_keeper(
             user,
@@ -1180,6 +1189,7 @@ mod crank_tests {
         crate::{
             controller::position::PositionDirection,
             create_anchor_account_info,
+            error::ErrorCode,
             instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION},
@@ -1403,6 +1413,48 @@ mod crank_tests {
         assert_eq!(
             filler_loader.load().unwrap().perp_positions[0].quote_asset_amount,
             FLAT_FILLER_FEE as i64
+        );
+    }
+
+    /// A full side is a state of the book, not of the order. The fired stop
+    /// fails the crank and stays armed, so it fires once an eviction frees
+    /// room.
+    #[test]
+    fn a_full_book_side_leaves_the_trigger_armed() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut market = market(oracle_key, oracle_price.price);
+        create_anchor_account_info!(market, PerpMarket, market_info);
+        let mut maps = market_maps(&oracle_info, &market_info);
+
+        let (_, mut user) = armed_on_half_a_long();
+        user.orders[0].trigger_price = 105_000_000;
+        let (user_key, filler_key) = (Pubkey::new_unique(), Pubkey::new_unique());
+        create_anchor_account_info!(user, &user_key, User, user_info);
+        create_anchor_account_info!(User::default(), &filler_key, User, filler_info);
+        create_anchor_account_info!(UserStats::default(), UserStats, user_stats_info);
+
+        let state = State::default();
+        let user_loader = AccountLoader::<User>::try_from(&user_info).unwrap();
+        let crank = TriggerLimitCrank {
+            user: &user_loader,
+            user_stats: &AccountLoader::try_from(&user_stats_info).unwrap(),
+            filler: &AccountLoader::<User>::try_from(&filler_info).unwrap(),
+            state: &state,
+            market_index: 0,
+            order_id: 7,
+            clock: &Clock::default(),
+        };
+
+        let mut full_asks = rules();
+        full_asks.min_order_size = 0;
+        full_asks.side_order_counts[1] = full_asks.arena_capacity / 2;
+        let refused = crank.decide(&mut maps, &full_asks).err().unwrap();
+        assert_eq!(refused, ErrorCode::MaxNumberOfOrders.into());
+        assert_eq!(
+            user_loader.load().unwrap().orders[0].status,
+            OrderStatus::Open
         );
     }
 }

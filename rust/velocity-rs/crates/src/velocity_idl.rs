@@ -6242,7 +6242,7 @@ pub mod types {
         pub clob_order_id: u64,
         pub order_id: u32,
         pub market_index: u16,
-        pub padding: u16,
+        pub sub_account_id: u16,
         pub route_digest: [u8; 8],
     }
     #[repr(C)]
@@ -6981,6 +6981,7 @@ pub mod types {
     )]
     pub struct UpdateQuoterApprovedArgs {
         pub approved: bool,
+        pub staged_config_hash: [u8; 32],
     }
     #[repr(C)]
     #[derive(
@@ -13728,6 +13729,7 @@ pub mod accounts {
         pub perp_market: Pubkey,
         pub state: Pubkey,
         pub quoter_slab: Pubkey,
+        pub clob_market: Pubkey,
         pub quoter_program: Pubkey,
         pub user: Pubkey,
         pub rent: Pubkey,
@@ -13776,6 +13778,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
                     is_signer: false,
                     is_writable: false,
                 },

@@ -4980,6 +4980,14 @@ export type Velocity = {
           }
         },
         {
+          "name": "clobMarket",
+          "docs": [
+            "account. The handler asks the book for its placement rules before the",
+            "market names it. Every other registration omits it."
+          ],
+          "optional": true
+        },
+        {
           "name": "quoterProgram"
         },
         {
@@ -15549,8 +15557,8 @@ export type Velocity = {
         {
           "name": "responseAccount",
           "docs": [
-            "approval needs it, because the handler reads the instance. Every other",
-            "entry may omit it."
+            "needs it, because the handler requires the quoter program to own it. A",
+            "revocation omits it."
           ],
           "optional": true
         },
@@ -30167,7 +30175,11 @@ export type Velocity = {
             "type": "u16"
           },
           {
-            "name": "padding",
+            "name": "subAccountId",
+            "docs": [
+              "The subaccount that placed the message. [`ANY_SUB_ACCOUNT`] marks an",
+              "entry migrated from the legacy layout, which did not record it."
+            ],
             "type": "u16"
           },
           {
@@ -32543,6 +32555,20 @@ export type Velocity = {
               "True copies the staged config into the slab. False pulls the copy."
             ],
             "type": "bool"
+          },
+          {
+            "name": "stagedConfigHash",
+            "docs": [
+              "[`staged_config_hash`] of the staged config the admin reviewed.",
+              "Approval refuses a staged config with another hash. A revocation",
+              "ignores it."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }

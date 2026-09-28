@@ -8,12 +8,24 @@
  *
  *   bun run deploy-scripts/migrate.ts --url <rpc> --keypair <path> [--dry-run]
  *
+ * The keypair must hold the warm or cold admin role. Before anything is sent, the script
+ * refuses to run unless the CLOB program is deployed at the id velocity pins, and unless
+ * `State.transactionFeeRails` prices a crank above zero. With zero rails every crank
+ * payment and every sync payment is zero, and relay turners take none of that work.
+ *
  * Steps:
  *   1. resize: grow every velocity-owned zero-copy account whose struct gained fields.
  *      `extend_account` resolves the target size from the discriminator, so this step covers
  *      past and future growth the same way. Then create the singletons and the per-market
  *      accounts the new code loads: the relay scratch, the crank treasury, and the quoter slab
  *      of every perp market that predates it.
+ *
+ *      Then give every perp market that has no book its CLOB book. Every order path requires
+ *      the market's book account, so a market without one takes no order. The bring-up
+ *      creates the book, registers and approves its quoter entry, and attaches it, which
+ *      creates the market's crank conditions. It stops when the crank treasury is not
+ *      priced, because the attach stores the treasury's refill watermark on the market.
+ *      This comes before step 2, so a trigger that step 2 arms has a book to fire into.
  *   2. liq coverage: create and sync relay liquidation conditions for every user with exposure,
  *      backfilling users that predate `initialize_user` creating them automatically. The same
  *      `sync_user_conditions` call arms the user's trigger orders, because relay is the only
@@ -50,16 +62,21 @@ import {
 	Transaction,
 	TransactionInstruction,
 } from '@solana/web3.js';
-import { AnchorProvider, Program } from '@coral-xyz/anchor';
+import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
 import {
+	BASE_PRECISION,
+	decodeQuoterSlab,
 	getClobCrankConditionsPublicKey,
 	getCrankTreasuryPublicKey,
+	getProgramDataAddress,
+	getQuoterPublicKey,
 	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
 	getPerpMarketPublicKeySync,
 	getQuoterSlabPublicKey,
 	getVelocityStateAccountPublicKey,
 	getSpotMarketPublicKeySync,
+	quoterConfigHash,
 	UserStatus,
 	positionIsAvailable,
 	Wallet,
@@ -82,6 +99,11 @@ const BLOCK_OFFSET = 8;
  * `positions_digest`, `last_paid_sync_slot`, and the 64-byte tail reserve, measured from the account's end so a field added ahead of the payment does not move it.
  */
 const BYTES_AFTER_SYNC_PAYMENT = 8 + 8 + 72;
+/** `clob_state::ORDERS_OFFSET` and `clob_state::NODE_BYTES`: a book is its header, then one node per order. */
+const CLOB_ORDERS_OFFSET = 9648;
+const CLOB_NODE_BYTES = 104;
+/** `BOOK_BLOCKING_FLOOR_MIN_ORDERS` in velocity. The attach refuses a lower blocking floor. */
+const BOOK_BLOCKING_FLOOR_MIN_ORDERS = 10;
 
 type Args = {
 	url: string;
@@ -90,7 +112,17 @@ type Args = {
 	limit: number;
 	syncCostUnits: number;
 	fallbackSlots: bigint;
+	bookCapacity: number;
+	crankCostUnits: number;
+	expireFallbackSlots: number;
+	minCrossSurplus: number;
 };
+
+type Act = (
+	label: string,
+	ixs: TransactionInstruction[],
+	signers?: Keypair[]
+) => Promise<void>;
 
 function parseArgs(): Args {
 	const argv = process.argv.slice(2);
@@ -108,6 +140,15 @@ function parseArgs(): Args {
 		limit: Number.parseInt(get('--limit', '0'), 10),
 		syncCostUnits: Number.parseInt(get('--sync-cost-units', '20000'), 10),
 		fallbackSlots: BigInt(get('--fallback-slots', '3000')),
+		// The CLOB refuses more than 512 orders a side.
+		bookCapacity: Number.parseInt(get('--book-capacity', '1024'), 10),
+		// The admin CLI's ceiling for a crank nobody has measured yet.
+		crankCostUnits: Number.parseInt(get('--crank-cu', '250000'), 10),
+		expireFallbackSlots: Number.parseInt(
+			get('--expire-fallback-slots', '1500'),
+			10
+		),
+		minCrossSurplus: Number.parseInt(get('--min-cross-surplus', '10000'), 10),
 	};
 }
 
@@ -188,6 +229,10 @@ async function main() {
 
 	console.log(`velocity ${velocity.toBase58()} @ ${args.url}`);
 	console.log(args.dryRun ? '(dry run — nothing will be sent)\n' : '');
+
+	const clobProgram = clobProgramId(idl);
+	await assertClobDeployed(connection, clobProgram);
+	await assertCranksPriced(connection, program, statePda);
 
 	// 1. resize
 	// `program.idl` is camelCased by the Anchor client; `idl` is the raw JSON,
@@ -289,15 +334,13 @@ async function main() {
 		],
 	});
 	const marketOracles = new Map<number, PublicKey>();
-	const clobMarkets = new Set<number>();
+	const decodedPerpMarkets = new Map<number, any>();
 	for (const { account } of perpMarkets) {
 		// Decode through the IDL rather than by byte offset. Layouts move, and
 		// a migration that reads the wrong field is worse than one that fails.
 		const decoded: any = program.coder.accounts.decode('perpMarket', account.data);
 		marketOracles.set(decoded.marketIndex, decoded.oracle);
-		if (!decoded.clobMarket.equals(PublicKey.default)) {
-			clobMarkets.add(decoded.marketIndex);
-		}
+		decodedPerpMarkets.set(decoded.marketIndex, decoded);
 	}
 
 	const spotMarkets = await connection.getProgramAccounts(velocity, {
@@ -318,6 +361,12 @@ async function main() {
 		payer,
 		[...marketOracles.keys()],
 		act
+	);
+
+	await assertTreasuryPriced(connection, program, treasury, args.dryRun);
+	const clobMarkets = await bringUpBooks(
+		{ connection, program, payer, state: statePda, clobProgram, args, act },
+		decodedPerpMarkets
 	);
 
 	// 2. liquidation coverage
@@ -521,7 +570,7 @@ async function main() {
 async function flagVaultUsers(
 	provider: AnchorProvider,
 	payer: Keypair,
-	users: { pubkey: PublicKey; account: { data: Buffer } }[],
+	users: readonly { pubkey: PublicKey; account: { data: Buffer } }[],
 	program: Program,
 	act: (label: string, ixs: TransactionInstruction[]) => Promise<void>
 ) {
@@ -625,6 +674,393 @@ async function createMissingQuoterSlabs(
 				.instruction(),
 		]);
 	}
+}
+
+/** The CLOB program id velocity pins, as the IDL records it on the attach. */
+function clobProgramId(idl: any): PublicKey {
+	const attach = (idl.instructions ?? []).find(
+		(ix: any) => ix.name === 'update_perp_market_clob_quoter'
+	);
+	const address = attach?.accounts?.find(
+		(account: any) => account.name === 'clob_program'
+	)?.address;
+	if (!address) {
+		throw new Error('the IDL does not pin a clob_program on the attach');
+	}
+
+	return new PublicKey(address);
+}
+
+async function assertClobDeployed(
+	connection: Connection,
+	clobProgram: PublicKey
+): Promise<void> {
+	const info = await connection.getAccountInfo(clobProgram);
+	if (!info?.executable) {
+		throw new Error(
+			`the CLOB program ${clobProgram.toBase58()} is not deployed. Every order path ` +
+				`requires a book, so deploy the CLOB before the velocity upgrade and this migration.`
+		);
+	}
+
+	console.log(`clob ${clobProgram.toBase58()}: deployed`);
+}
+
+/** Mirrors `TransactionFeeRails::transaction_cost` for one signature: zero only
+ * when no rail charges anything. */
+async function assertCranksPriced(
+	connection: Connection,
+	program: Program,
+	statePda: PublicKey
+): Promise<void> {
+	const info = await connection.getAccountInfo(statePda);
+	if (!info) throw new Error(`state ${statePda.toBase58()} not found`);
+	const rails = (program.coder.accounts.decode('state', info.data) as any)
+		.transactionFeeRails;
+	const chargesCostUnits =
+		rails.resourceFeeNumerator > 0 && rails.resourceFeeDenominator > 0;
+	if (
+		rails.inclusionLamports === 0 &&
+		rails.signatureLamports === 0 &&
+		!chargesCostUnits
+	) {
+		throw new Error(
+			'State.transactionFeeRails prices every crank at zero, and relay turners take no unpaid ' +
+				'work. Set them first: velocity-admin fees set-transaction-rails <inclusionLamports> ' +
+				'<signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>'
+		);
+	}
+
+	console.log(`fee rails: ${JSON.stringify(rails)}`);
+}
+
+/** The attach stores the treasury's refill watermark on the market, so an
+ * inert treasury leaves the market's reservoir with no refill. */
+async function assertTreasuryPriced(
+	connection: Connection,
+	program: Program,
+	treasury: PublicKey,
+	dryRun: boolean
+): Promise<void> {
+	const info = await connection.getAccountInfo(treasury);
+	if (!info && dryRun) {
+		console.log('\ntreasury: not created yet; the book step needs it priced');
+		return;
+	}
+
+	const decoded: any = info
+		? program.coder.accounts.decode('crankTreasuryV0', info.data)
+		: undefined;
+	if (!decoded?.refillTargetCranks || !decoded?.refillWatermarkCranks) {
+		throw new Error(
+			`the crank treasury ${treasury.toBase58()} is not priced. Run velocity-admin fees ` +
+				`set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>, fund it with SOL, ` +
+				`and run this migration again.`
+		);
+	}
+
+	console.log(
+		`\ntreasury: refills to ${decoded.refillTargetCranks} cranks at ${decoded.refillWatermarkCranks}, holds ${info?.lamports} lamports`
+	);
+}
+
+type BookBringUp = {
+	connection: Connection;
+	program: Program;
+	payer: Keypair;
+	state: PublicKey;
+	clobProgram: PublicKey;
+	args: Args;
+	act: Act;
+};
+
+/**
+ * Give every perp market its book. Returns the markets that have one. A dry run
+ * sends nothing, so it returns only the books that already exist.
+ */
+async function bringUpBooks(
+	ctx: BookBringUp,
+	perpMarkets: Map<number, any>
+): Promise<Set<number>> {
+	console.log('');
+	for (const [marketIndex, market] of perpMarkets) {
+		await bringUpBook(ctx, marketIndex, market);
+	}
+
+	return new Set<number>(
+		[...perpMarkets].flatMap(([marketIndex, market]) =>
+			ctx.args.dryRun && market.clobMarket.equals(PublicKey.default)
+				? []
+				: [marketIndex]
+		)
+	);
+}
+
+/**
+ * Give a perp market its CLOB book, as `velocity-admin clob-market init`
+ * does. Each stage reads chain first, so a run that stops part way resumes.
+ * The book account and its quoter registration land in one transaction, because
+ * the book is a fresh keypair and the market names it once.
+ */
+async function bringUpBook(
+	ctx: BookBringUp,
+	marketIndex: number,
+	market: any
+): Promise<void> {
+	const { connection, program, clobProgram, args, act } = ctx;
+	const velocity = program.programId;
+	const quoter = getQuoterPublicKey(
+		velocity,
+		marketIndex,
+		clobProgram,
+		PublicKey.default
+	);
+
+	let book: PublicKey = market.clobMarket;
+	if (book.equals(PublicKey.default)) {
+		const bookKeypair = Keypair.generate();
+		book = bookKeypair.publicKey;
+		console.log(`book market ${marketIndex}: creating ${book.toBase58()}`);
+		await act(
+			`create and register book ${book.toBase58()} for market ${marketIndex}`,
+			await designateBookIxs(ctx, marketIndex, market, book, quoter),
+			[bookKeypair]
+		);
+	} else if (!(await connection.getAccountInfo(quoter))) {
+		throw new Error(
+			`perp market ${marketIndex} names book ${book.toBase58()} but quoter entry ` +
+				`${quoter.toBase58()} does not exist. Finish that bring-up by hand.`
+		);
+	}
+
+	const slabInfo = await connection.getAccountInfo(
+		getQuoterSlabPublicKey(velocity, marketIndex)
+	);
+	const approved =
+		slabInfo !== null &&
+		decodeQuoterSlab(slabInfo.data).slots.some((slot) =>
+			slot.entry.equals(quoter)
+		);
+	if (!approved) {
+		// The approval carries the hash of the staged entry, so it is read after
+		// the registration lands. A dry run has no entry to read.
+		const quoterInfo = await connection.getAccountInfo(quoter);
+		if (!quoterInfo && !args.dryRun) {
+			throw new Error(`quoter entry ${quoter.toBase58()} did not land`);
+		}
+
+		console.log(`book market ${marketIndex}: approving ${quoter.toBase58()}`);
+		await act(
+			`approve book quoter ${quoter.toBase58()} for market ${marketIndex}`,
+			quoterInfo
+				? [await approveBookIx(ctx, marketIndex, book, quoter, quoterInfo.data)]
+				: []
+		);
+	}
+
+	const conditions = getClobCrankConditionsPublicKey(velocity, marketIndex);
+	if (await connection.getAccountInfo(conditions)) {
+		console.log(`book market ${marketIndex}: attached`);
+		return;
+	}
+
+	console.log(`book market ${marketIndex}: attaching`);
+	await act(`attach book for market ${marketIndex}`, [
+		await attachBookIx(ctx, marketIndex, book, quoter),
+	]);
+}
+
+/** Create the book, initialize it on the CLOB with the market's slab as both
+ * authorities, register its quoter entry, and set the entry's account list. */
+async function designateBookIxs(
+	ctx: BookBringUp,
+	marketIndex: number,
+	market: any,
+	book: PublicKey,
+	quoter: PublicKey
+): Promise<TransactionInstruction[]> {
+	const { connection, program, payer, clobProgram, args } = ctx;
+	const velocity = program.programId;
+	const quoterSlab = getQuoterSlabPublicKey(velocity, marketIndex);
+	const space = CLOB_ORDERS_OFFSET + args.bookCapacity * CLOB_NODE_BYTES;
+
+	const createBook = SystemProgram.createAccount({
+		fromPubkey: payer.publicKey,
+		newAccountPubkey: book,
+		lamports: await connection.getMinimumBalanceForRentExemption(space),
+		space,
+		programId: clobProgram,
+	});
+
+	const initBook = new TransactionInstruction({
+		programId: clobProgram,
+		keys: [
+			{ pubkey: quoterSlab, isSigner: false, isWritable: false },
+			{ pubkey: quoterSlab, isSigner: false, isWritable: false },
+			{ pubkey: book, isSigner: true, isWritable: true },
+		],
+
+		data: Buffer.concat([
+			ixDiscriminator('initialize_market_v0'),
+			bookConfig(marketIndex, market, args.bookCapacity),
+		]),
+	});
+
+	const registerQuoter = await program.methods
+		.initializeQuoter({
+			marketIndex,
+			quoterType: { clob: {} },
+			responseAccount: book,
+			quoteV0Discriminator: Array.from(ixDiscriminator('quote_v0')),
+			quoteL3V0Discriminator: Array.from(ixDiscriminator('quote_l3_v0')),
+			executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
+		})
+		.accountsStrict({
+			payer: payer.publicKey,
+			authority: payer.publicKey,
+			quoter,
+			perpMarket: getPerpMarketPublicKeySync(velocity, marketIndex),
+			state: ctx.state,
+			quoterSlab,
+			clobMarket: book,
+			quoterProgram: clobProgram,
+			user: PublicKey.default,
+			rent: SYSVAR_RENT_PUBKEY,
+			systemProgram: SystemProgram.programId,
+		})
+		.instruction();
+
+	// The quote legs read the book. The execute leg also carries the slab,
+	// whose signature the book checks.
+	const registerAccounts = await program.methods
+		.updateQuoterAccounts({
+			metas: [
+				{ pubkey: book, isWritable: true },
+				{ pubkey: quoterSlab, isWritable: false },
+			],
+			quoteIndexes: Buffer.from([0]),
+			executeIndexes: Buffer.from([0, 1]),
+		})
+		.accountsStrict({
+			authority: payer.publicKey,
+			quoter,
+			state: ctx.state,
+		})
+		.instruction();
+
+	return [createBook, initBook, registerQuoter, registerAccounts];
+}
+
+/**
+ * Borsh `MarketConfigV0`. The book takes the market's grid, because the attach
+ * requires the book's tick and step to equal the market's and its minimum to
+ * sit at or under the market's. The remaining settings are the admin CLI's
+ * defaults.
+ */
+function bookConfig(marketIndex: number, market: any, capacity: number): Buffer {
+	const step: BN = market.orderStepSize;
+	const marketMinimum: BN = market.marketStats.minOrderSize;
+	const bookMinimum = marketMinimum.isZero()
+		? step
+		: marketMinimum.div(step).mul(step);
+	if (bookMinimum.isZero()) {
+		throw new Error(
+			`perp market ${marketIndex}: minimum order size ${marketMinimum} is under its step ${step}`
+		);
+	}
+
+	const blockingFloor = BN.max(bookMinimum, marketMinimum).muln(
+		BOOK_BLOCKING_FLOOR_MIN_ORDERS
+	);
+	const u16 = (v: number) => new BN(v).toArrayLike(Buffer, 'le', 2);
+	const u32 = (v: number) => new BN(v).toArrayLike(Buffer, 'le', 4);
+	const u64 = (v: BN) => v.toArrayLike(Buffer, 'le', 8);
+	return Buffer.concat([
+		u16(marketIndex),
+		u64(BASE_PRECISION),
+		u64(market.orderTickSize),
+		u64(step),
+		u64(bookMinimum),
+		u64(blockingFloor),
+		u32(1), // default_activation_delay_slots
+		u32(20), // max_activation_delay_slots
+		u32(2), // unknown_user_grace_slots
+		// The CLOB requires the eviction cap under half the arena.
+		u32(Math.floor(capacity / 4)),
+		u16(128), // max_quote_levels
+		u16(64), // max_execute_fills
+		u16(32), // max_execute_users
+	]);
+}
+
+async function approveBookIx(
+	ctx: BookBringUp,
+	marketIndex: number,
+	book: PublicKey,
+	quoter: PublicKey,
+	quoterData: Buffer
+): Promise<TransactionInstruction> {
+	const { program, payer, clobProgram } = ctx;
+	const velocity = program.programId;
+	return await program.methods
+		.updateQuoterApproved({
+			approved: true,
+			stagedConfigHash: quoterConfigHash(quoterData),
+		})
+		.accountsStrict({
+			admin: payer.publicKey,
+			state: ctx.state,
+			quoter,
+			perpMarket: getPerpMarketPublicKeySync(velocity, marketIndex),
+			quoterSlab: getQuoterSlabPublicKey(velocity, marketIndex),
+			quoterProgram: clobProgram,
+			quoterProgramData: getProgramDataAddress(clobProgram),
+			clobMarket: book,
+			responseAccount: book,
+			systemProgram: SystemProgram.programId,
+		})
+		.instruction();
+}
+
+/** The attach prices every crank from the rails and the one cost-unit figure
+ * the run was given, and creates the market's crank conditions. */
+async function attachBookIx(
+	ctx: BookBringUp,
+	marketIndex: number,
+	book: PublicKey,
+	quoter: PublicKey
+): Promise<TransactionInstruction> {
+	const { program, payer, clobProgram, args } = ctx;
+	const velocity = program.programId;
+	const units = args.crankCostUnits;
+	return await program.methods
+		.updatePerpMarketClobQuoter({
+			crankCostUnits: {
+				removal: units,
+				cross: units,
+				takerOriginCross: units,
+				trigger: units,
+				liquidation: units,
+				forceCancel: units,
+				refill: units,
+			},
+			expireFallbackSlots: new BN(args.expireFallbackSlots),
+			minCrossSurplus: new BN(args.minCrossSurplus),
+		})
+		.accountsStrict({
+			admin: payer.publicKey,
+			state: ctx.state,
+			perpMarket: getPerpMarketPublicKeySync(velocity, marketIndex),
+			quoter,
+			quoterSlab: getQuoterSlabPublicKey(velocity, marketIndex),
+			clobMarket: book,
+			clobProgram,
+			crankConditions: getClobCrankConditionsPublicKey(velocity, marketIndex),
+			treasury: getCrankTreasuryPublicKey(velocity),
+			rent: SYSVAR_RENT_PUBKEY,
+			systemProgram: SystemProgram.programId,
+		})
+		.instruction();
 }
 
 /** Register a relay watch over a conditions block, unless the registry

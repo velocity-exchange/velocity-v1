@@ -239,6 +239,42 @@ thresholds disagree until an `update_perp_fee_structure` call lands. Fees are wr
 directions during that window. Treat the admin call as part of the upgrade itself. Stage it alongside
 the Squads proposal, or send it immediately after the swap on devnet, rather than as a follow-up.
 
+### Upgrades that need the migration script
+
+`deploy-scripts/migrate.ts` applies the on-chain changes that a program upgrade needs. Every step
+reads chain state first and skips what is already correct, so run it again until it sends nothing.
+It sends directly and does not propose, because a new book is a fresh keypair that must co-sign.
+The keypair must hold the warm or cold admin role.
+
+Every order path requires the market's CLOB book. A market without a book takes no order, and it
+fires no trigger. The first upgrade to the book order flow therefore runs in this order:
+
+```bash
+# 1. Deploy the CLOB program at the id velocity pins (clob_program::id() in
+#    programs/velocity/src/ids.rs, BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU).
+#    migrate.ts refuses to run until it is deployed.
+# 2. Upgrade velocity, as in "Cutting a mainnet release".
+# 3. Price the relay cranks. With zero rails every crank pays 0 lamports, and no
+#    turner takes the work. migrate.ts refuses to run while the rails price nothing.
+velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports> \
+  <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>
+# 4. Create, price and fund the crank treasury. The book attach stores the
+#    treasury's refill watermark on the market, so migrate.ts stops before the
+#    books while the treasury is not priced.
+velocity-admin fees init-crank-treasury
+velocity-admin fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>
+solana transfer <treasury> <sol> -u "$RPC"
+# 5. Read the plan, then run it.
+bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <warm-admin.json> --dry-run
+bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <warm-admin.json>
+```
+
+The script gives every market its book before it syncs any user, because the sync arms the user's
+trigger orders and an armed trigger needs a book to fire into. Each book takes the market's tick,
+step and minimum order size. Its blocking floor is ten minimum orders, which is the least the attach
+accepts. Every crank is priced from one `--crank-cu` figure, 250000 by default. After the cranks are
+measured, re-price a market with `velocity-admin quoter set-market-clob`.
+
 ### Verifying a buffer before signing the Squads proposal
 
 Before approving an upgrade in the Squads UI, confirm the staged buffer is what the source compiles

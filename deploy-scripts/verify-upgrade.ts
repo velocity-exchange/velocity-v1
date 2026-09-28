@@ -232,8 +232,19 @@ async function main() {
 		}
 	}
 
-	// migrate.ts covers a user with an open perp position, so only that user's
-	// conditions need a watch. A new user's conditions exist before it trades.
+	await requireWatchesOnExposedUsers(verifier, program, accounts);
+
+	printReport(verifier, accounts.length);
+	if (verifier.failures.length > 0) process.exit(1);
+}
+
+/** migrate.ts covers a user with an open perp position, so only that user's conditions need a
+ * watch. A user created after the upgrade has conditions before it trades. */
+async function requireWatchesOnExposedUsers(
+	verifier: Verifier,
+	program: Program,
+	accounts: readonly { pubkey: PublicKey; account: { data: Buffer } }[]
+): Promise<void> {
 	const users = new Map(
 		accounts
 			.filter(({ account }) => nameIs(program, account.data, 'User'))
@@ -257,9 +268,6 @@ async function main() {
 			?.perpPositions.some((position) => !positionIsAvailable(position));
 		if (exposed) await verifier.requireWatch('user conditions', pubkey);
 	}
-
-	printReport(verifier, accounts.length);
-	if (verifier.failures.length > 0) process.exit(1);
 }
 
 function nameIs(program: Program, data: Buffer, name: string): boolean {

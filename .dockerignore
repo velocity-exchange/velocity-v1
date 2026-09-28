@@ -9,3 +9,5 @@
 docs
 tests
 **/*.log
+# Source, not build output. The admin CLI keeps its helpers under src/lib.
+!packages/cli-admin/src/lib

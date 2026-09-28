@@ -290,6 +290,17 @@ async function main() {
 		}
 	}
 
+	const spotMarkets = await connection.getProgramAccounts(velocity, {
+		filters: [
+			{ memcmp: { offset: 0, bytes: bs58(discriminator('SpotMarket')) } },
+		],
+	});
+	const spotMarketOracles = new Map<number, PublicKey>();
+	for (const { account } of spotMarkets) {
+		const decoded: any = program.coder.accounts.decode('spotMarket', account.data);
+		spotMarketOracles.set(decoded.marketIndex, decoded.oracle);
+	}
+
 	console.log('');
 	await createMissingQuoterSlabs(
 		connection,
@@ -315,12 +326,25 @@ async function main() {
 		if (marketIndexes.length === 0) continue;
 		const userConditions = getUserConditionsPublicKey(velocity, user);
 		const existing = await connection.getAccountInfo(userConditions);
+		// Market 0 rides along unconditionally: liquidation settles quote PnL
+		// against it. `validate_market_coverage` requires every other spot
+		// market the user holds a position in.
+		const spotMarketIndexes = new Set<number>([
+			0,
+			...exposedSpotMarkets(decodedUser),
+		]);
 		// The sync refuses an account passed twice, so markets that share an
 		// oracle pass it once.
 		const oracles = new Map<string, PublicKey>();
 		for (const marketIndex of marketIndexes) {
 			const oracle = marketOracles.get(marketIndex);
 			if (oracle) oracles.set(oracle.toBase58(), oracle);
+		}
+		for (const marketIndex of spotMarketIndexes) {
+			const oracle = spotMarketOracles.get(marketIndex);
+			if (oracle && !oracle.equals(PublicKey.default)) {
+				oracles.set(oracle.toBase58(), oracle);
+			}
 		}
 
 		const syncAccounts: AccountMeta[] = [...oracles.values()].map((oracle) => ({
@@ -334,11 +358,11 @@ async function main() {
 		const bookMarkets = marketIndexes.filter((marketIndex) => clobMarkets.has(marketIndex));
 
 		syncAccounts.push(
-			{
-				pubkey: getSpotMarketPublicKeySync(velocity, 0),
+			...[...spotMarketIndexes].map((marketIndex) => ({
+				pubkey: getSpotMarketPublicKeySync(velocity, marketIndex),
 				isSigner: false,
 				isWritable: true,
-			},
+			})),
 			...marketIndexes.map((marketIndex) => ({
 				pubkey: getPerpMarketPublicKeySync(velocity, marketIndex),
 				isSigner: false,
@@ -659,6 +683,20 @@ function exposedPerpMarkets(user: any): number[] {
 		const base = new BN(position.baseAssetAmount ?? 0);
 		const quote = new BN(position.quoteAssetAmount ?? 0);
 		if (!base.isZero() || !quote.isZero()) markets.push(position.marketIndex);
+	}
+
+	return [...new Set(markets)];
+}
+
+/** Spot markets the user holds a balance or an open order in, matching the
+ * program's own `SpotPosition::is_available`. */
+function exposedSpotMarkets(user: any): number[] {
+	const markets: number[] = [];
+	for (const position of user.spotPositions ?? []) {
+		const balance = new BN(position.scaledBalance ?? 0);
+		if (!balance.isZero() || (position.openOrders ?? 0) !== 0) {
+			markets.push(position.marketIndex);
+		}
 	}
 
 	return [...new Set(markets)];

@@ -401,6 +401,7 @@ pub struct ResolveTriggerMarketOrderV1<'info> {
 
 pub fn handle_resolve_trigger_market_order_v1(
     ctx: Context<ResolveTriggerMarketOrderV1>,
+    fired: super::FiredConditionArgV0,
 ) -> Result<()> {
     crate::instructions::constraints::require_view_accounts(
         &ctx.accounts.to_account_infos(),
@@ -413,12 +414,15 @@ pub fn handle_resolve_trigger_market_order_v1(
             let user = load!(ctx.accounts.user)?;
             let market = ctx.accounts.perp_market.load()?;
             super::helpers::crank_common::find_fired_trigger(
-                &conditions,
+                super::helpers::crank_common::fired_trigger_slot(
+                    &conditions,
+                    &ctx.accounts.trigger_conditions.key(),
+                    &fired,
+                )?,
                 &user,
                 &market,
                 &ctx.accounts.oracle,
-                clock.slot,
-                clock.unix_timestamp,
+                &clock,
                 super::helpers::crank_common::TriggerResolverKind::ClobFill,
             )?
         };

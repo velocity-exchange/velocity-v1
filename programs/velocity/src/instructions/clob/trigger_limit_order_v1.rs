@@ -13,7 +13,9 @@
 //! `InsufficientFreeCollateral` rather than placed when the account fails
 //! initial margin, the buffered equity floor, or the authority equity breaker.
 //! Such an order is never re-armed, so an underfunded stop cannot repeat
-//! forever. The keeper earns the same flat reward from the user.
+//! forever. The keeper earns nothing for that cancel, so relay cannot land it.
+//! The order then stays armed in its own relay slot and holds up no other
+//! trigger, because each slot's resolver stages only that slot's order.
 //!
 //! A reduce-only trigger rests at most the position it can reduce. With no
 //! position left to reduce, it is cancelled with
@@ -80,7 +82,6 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
             margin_calculation::MarginContext,
-            market_status::MarketStatus,
             oracle_map::OracleMap,
             perp_market_map::{MarketSet, PerpMarketMap},
             prop_amm::{
@@ -719,11 +720,7 @@ fn read_trigger_prices(
 ) -> Result<TriggerPrices> {
     let perp_market = perp_market_map.get_ref(&armed.market_index)?;
     validate!(
-        match perp_market.status {
-            MarketStatus::Active => true,
-            MarketStatus::ReduceOnly => armed.reduce_only,
-            _ => false,
-        },
+        super::helpers::crank_common::market_status_admits_trigger(perp_market.status, armed),
         ErrorCode::MarketPlaceOrderPaused,
         "market takes no trigger of this order (status {:?}, reduce only {})",
         perp_market.status,
@@ -1115,6 +1112,7 @@ pub struct ResolveTriggerLimitOrderV1<'info> {
 
 pub fn handle_resolve_trigger_limit_order_v1(
     ctx: Context<ResolveTriggerLimitOrderV1>,
+    fired: super::FiredConditionArgV0,
 ) -> Result<()> {
     crate::instructions::constraints::require_view_accounts(
         &ctx.accounts.to_account_infos(),
@@ -1127,12 +1125,15 @@ pub fn handle_resolve_trigger_limit_order_v1(
             let user = crate::load!(ctx.accounts.user)?;
             let market = ctx.accounts.perp_market.load()?;
             super::helpers::crank_common::find_fired_trigger(
-                &conditions,
+                super::helpers::crank_common::fired_trigger_slot(
+                    &conditions,
+                    &ctx.accounts.trigger_conditions.key(),
+                    &fired,
+                )?,
                 &user,
                 &market,
                 &ctx.accounts.oracle,
-                clock.slot,
-                clock.unix_timestamp,
+                &clock,
                 super::helpers::crank_common::TriggerResolverKind::ClobRest,
             )?
         };

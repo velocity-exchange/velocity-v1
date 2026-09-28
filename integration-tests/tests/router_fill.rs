@@ -6792,7 +6792,15 @@ fn run_trigger_market_resolver(
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::ResolveTriggerMarketOrderV1 {}.data(),
+        // Each test arms one trigger, so it sits in the first trigger slot.
+        data: velocity::instruction::ResolveTriggerMarketOrderV1 {
+            fired: fired_condition(
+                conditions,
+                velocity::state::user_conditions::USER_CONDITIONS_BLOCK_OFFSET as u32,
+                velocity::state::user_conditions::TRIGGER_SLOT_BASE as u8,
+            ),
+        }
+        .data(),
     };
     let keeper = fixture.keeper.insecure_clone();
     let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();

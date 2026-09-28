@@ -2508,17 +2508,23 @@ pub mod velocity {
     }
 
     /// Relay resolver for `trigger_limit_order_v1`. Simulate it rather than
-    /// landing it.
-    pub fn resolve_trigger_limit_order_v1(ctx: Context<ResolveTriggerLimitOrderV1>) -> Result<()> {
-        handle_resolve_trigger_limit_order_v1(ctx)
+    /// landing it. `fired` names the trigger slot that woke, and the resolver
+    /// stages only that slot's order.
+    pub fn resolve_trigger_limit_order_v1(
+        ctx: Context<ResolveTriggerLimitOrderV1>,
+        fired: FiredConditionArgV0,
+    ) -> Result<()> {
+        handle_resolve_trigger_limit_order_v1(ctx, fired)
     }
 
     /// Relay resolver for `trigger_market_order_v1`. Simulate it rather than
-    /// landing it.
+    /// landing it. `fired` names the trigger slot that woke, and the resolver
+    /// stages only that slot's order.
     pub fn resolve_trigger_market_order_v1(
         ctx: Context<ResolveTriggerMarketOrderV1>,
+        fired: FiredConditionArgV0,
     ) -> Result<()> {
-        handle_resolve_trigger_market_order_v1(ctx)
+        handle_resolve_trigger_market_order_v1(ctx, fired)
     }
 
     /// Rewrite only the liquidation half of a user's condition block. Prefer

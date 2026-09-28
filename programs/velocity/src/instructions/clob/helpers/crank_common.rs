@@ -645,8 +645,55 @@ pub fn trigger_crank_is_due(order: &crate::state::user::Order, oracle_price: u64
     Ok(satisfied != awaiting_recross)
 }
 
-/// The first armed trigger order on `market` whose crank can land now and whose
-/// synced slot matches the resolver's executor path `want`.
+/// The trigger slot a fired condition names.
+///
+/// Relay tells each resolver which condition fired, so every slot stages only
+/// its own order. An order that its executor refuses then holds up no other
+/// slot. A condition outside this account's trigger range names no slot.
+pub fn fired_trigger_slot(
+    conditions: &crate::state::user_conditions::UserConditionsV0,
+    conditions_key: &Pubkey,
+    fired: &super::super::FiredConditionArgV0,
+) -> Result<crate::state::user_conditions::TriggerSlotMetaV0> {
+    use crate::state::user_conditions::{TRIGGER_CONDITION_SLOTS, TRIGGER_SLOT_BASE};
+    let meta = usize::from(fired.index)
+        .checked_sub(TRIGGER_SLOT_BASE)
+        .filter(|index| *index < TRIGGER_CONDITION_SLOTS && fired.target == *conditions_key)
+        .map(|index| conditions.trigger_slots[index]);
+
+    let Some(meta) = meta else {
+        msg!(
+            "fired condition {} on {} is not a trigger slot of {}",
+            fired.index,
+            fired.target,
+            conditions_key
+        );
+
+        return Err(ErrorCode::UnrecognizedCrankCondition.into());
+    };
+
+    Ok(meta)
+}
+
+/// Whether a market's status admits a fire of `order`. A `ReduceOnly` market
+/// stamps a fired stop-market reduce-only, and it refuses a stop-limit that is
+/// not reduce-only.
+pub(crate) fn market_status_admits_trigger(
+    status: crate::state::market_status::MarketStatus,
+    order: &crate::state::user::Order,
+) -> bool {
+    use crate::state::{market_status::MarketStatus, user::OrderType};
+    match status {
+        MarketStatus::Active => true,
+        MarketStatus::ReduceOnly => {
+            order.reduce_only || order.order_type == OrderType::TriggerMarket
+        }
+        _ => false,
+    }
+}
+
+/// The slot's armed trigger order, when its crank can land now through the
+/// resolver's executor path `want`.
 ///
 /// An ordinary order is due when the oracle satisfies its condition. An order
 /// re-armed after an eviction is due when the oracle does not satisfy it,
@@ -654,12 +701,11 @@ pub fn trigger_crank_is_due(order: &crate::state::user::Order, oracle_price: u64
 /// recross. The executor checks everything again, so a stale sync or a moved
 /// price returns `None` and the turner backs off.
 pub fn find_fired_trigger(
-    conditions: &crate::state::user_conditions::UserConditionsV0,
+    meta: crate::state::user_conditions::TriggerSlotMetaV0,
     user: &User,
     market: &PerpMarket,
     oracle_info: &AccountInfo,
-    slot: u64,
-    now: i64,
+    clock: &Clock,
     want: TriggerResolverKind,
 ) -> Result<Option<crate::state::user_conditions::TriggerSlotMetaV0>> {
     validate!(
@@ -670,66 +716,55 @@ pub fn find_fired_trigger(
         market.market_index
     )?;
 
+    // A synced slot always names a book: `sync_trigger_conditions` refuses
+    // to stage a trigger on a market with no CLOB.
+    if meta.quoter_slab == Pubkey::default() || meta.market_index != market.market_index {
+        return Ok(None);
+    }
+
+    let Some(order) = user.orders.iter().find(|order| {
+        order.order_id == meta.order_id && order.status == crate::state::user::OrderStatus::Open
+    }) else {
+        return Ok(None);
+    };
+
+    // A trigger slot already placed on the CLOB reads as untriggered, so
+    // `triggered()` does not exclude it. An order past its own `max_ts` is
+    // exempt from `should_expire_order`, and stays armed the same way.
+    let expired = order.max_ts != 0 && clock.unix_timestamp > order.max_ts;
+    let kind = if order.order_type == crate::state::user::OrderType::TriggerLimit {
+        TriggerResolverKind::ClobRest
+    } else {
+        TriggerResolverKind::ClobFill
+    };
+
+    if order.market_index != market.market_index
+        || order.is_placed_on_clob()
+        || !order.must_be_triggered()
+        || order.triggered()
+        || expired
+        || kind != want
+        || !market_status_admits_trigger(market.status, order)
+    {
+        return Ok(None);
+    }
+
     // The executors judge the median trigger price when `State` sets the flag,
     // and judge oracle validity with the `State` guard rails. A resolver cannot
     // read `State`, so it stages at either price, and the executor's simulation
     // refuses a fire that the executor would not make.
     let oracle_price =
-        crate::state::oracle::get_oracle_price(&market.oracle_source, oracle_info, slot)?.price;
+        crate::state::oracle::get_oracle_price(&market.oracle_source, oracle_info, clock.slot)?
+            .price;
     let raw_price = oracle_price.max(0) as u64;
     let median_price = market
-        .get_trigger_price(oracle_price, now, true)
+        .get_trigger_price(oracle_price, clock.unix_timestamp, true)
         .unwrap_or(raw_price);
-
-    for order in user.orders.iter() {
-        // A trigger slot already placed on the CLOB reads as untriggered, so
-        // `triggered()` does not exclude it. Staging it anyway makes
-        // `trigger_limit_order_v1` reject the crank with `OrderPlacedOnClob`,
-        // which spends turner work and starves triggers behind it. An order
-        // past its own `max_ts` is exempt from `should_expire_order` too, and stays armed the same way.
-        let expired = order.max_ts != 0 && now > order.max_ts;
-        if order.status != crate::state::user::OrderStatus::Open
-            || order.market_index != market.market_index
-            || order.is_placed_on_clob()
-            || !order.must_be_triggered()
-            || order.triggered()
-            || expired
-        {
-            continue;
-        }
-
-        if !trigger_crank_is_due(order, raw_price)? && !trigger_crank_is_due(order, median_price)? {
-            continue;
-        }
-
-        let Some(meta) = conditions
-            .trigger_slots
-            .iter()
-            .find(|meta| meta.market_index == order.market_index && meta.order_id == order.order_id)
-            .copied()
-        else {
-            continue;
-        };
-
-        // A synced slot always names a book: `sync_trigger_conditions` refuses
-        // to stage a trigger on a market with no CLOB, because such a trigger
-        // has nowhere to fire.
-        if meta.quoter_slab == Pubkey::default() {
-            continue;
-        }
-
-        let kind = if order.order_type == crate::state::user::OrderType::TriggerLimit {
-            TriggerResolverKind::ClobRest
-        } else {
-            TriggerResolverKind::ClobFill
-        };
-
-        if kind == want {
-            return Ok(Some(meta));
-        }
+    if !trigger_crank_is_due(order, raw_price)? && !trigger_crank_is_due(order, median_price)? {
+        return Ok(None);
     }
 
-    Ok(None)
+    Ok(Some(meta))
 }
 
 /// Rows read from one side when measuring whether its depth has rested. The
@@ -1127,5 +1162,129 @@ mod trigger_crank_is_due_tests {
         let order = stop_below(100, true);
         assert!(!trigger_crank_is_due(&order, 99).unwrap());
         assert!(trigger_crank_is_due(&order, 101).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod fired_trigger_tests {
+    use {
+        super::{find_fired_trigger, fired_trigger_slot, TriggerResolverKind},
+        crate::{
+            controller::position::PositionDirection,
+            create_anchor_account_info,
+            error::ErrorCode,
+            instructions::FiredConditionArgV0,
+            math::constants::BASE_PRECISION_I64,
+            state::{
+                market_status::MarketStatus,
+                oracle::OracleSource,
+                perp_market::PerpMarket,
+                pyth_lazer_oracle::PythLazerOracle,
+                user::{MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, User},
+                user_conditions::{TriggerSlotMetaV0, UserConditionsV0, TRIGGER_SLOT_BASE},
+            },
+            test_utils::get_pyth_price,
+        },
+        anchor_lang::prelude::{Clock, Pubkey},
+    };
+
+    fn stop(order_id: u32, reduce_only: bool) -> Order {
+        Order {
+            order_id,
+            status: OrderStatus::Open,
+            order_type: OrderType::TriggerLimit,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_I64 as u64,
+            price: 90_000_000,
+            trigger_price: 105_000_000,
+            trigger_condition: OrderTriggerCondition::Below,
+            reduce_only,
+            ..Order::default()
+        }
+    }
+
+    fn meta(order_id: u32) -> TriggerSlotMetaV0 {
+        TriggerSlotMetaV0 {
+            quoter_slab: Pubkey::new_unique(),
+            order_id,
+            ..TriggerSlotMetaV0::default()
+        }
+    }
+
+    fn fired(target: Pubkey, slot_index: usize) -> FiredConditionArgV0 {
+        FiredConditionArgV0 {
+            target,
+            block_offset: 0,
+            index: (TRIGGER_SLOT_BASE + slot_index) as u8,
+        }
+    }
+
+    /// A market in `ReduceOnly` refuses the first stop, which is not
+    /// reduce-only. The stop-loss in the next slot still resolves, because
+    /// each slot stages only its own order.
+    #[test]
+    fn an_order_the_executor_refuses_holds_up_no_other_slot() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let market = PerpMarket {
+            status: MarketStatus::ReduceOnly,
+            oracle: oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+
+        let mut user = User::default();
+        user.orders[0] = stop(1, false);
+        user.orders[1] = stop(2, true);
+        let conditions_key = Pubkey::new_unique();
+        let mut conditions = Box::<UserConditionsV0>::default();
+        conditions.trigger_slots[0] = meta(1);
+        conditions.trigger_slots[1] = meta(2);
+
+        let resolve = |slot_index: usize| {
+            let fired = fired(conditions_key, slot_index);
+            let meta = fired_trigger_slot(&conditions, &conditions_key, &fired).unwrap();
+            find_fired_trigger(
+                meta,
+                &user,
+                &market,
+                &oracle_info,
+                &Clock::default(),
+                TriggerResolverKind::ClobRest,
+            )
+            .unwrap()
+            .map(|meta| meta.order_id)
+        };
+
+        assert_eq!(resolve(0), None);
+        assert_eq!(resolve(1), Some(2));
+    }
+
+    /// A condition on another account, or outside the trigger range, names
+    /// no trigger slot.
+    #[test]
+    fn a_condition_outside_the_trigger_slots_is_refused() {
+        let conditions_key = Pubkey::new_unique();
+        let conditions = Box::<UserConditionsV0>::default();
+        let refused = |fired: FiredConditionArgV0| {
+            fired_trigger_slot(&conditions, &conditions_key, &fired).unwrap_err()
+        };
+
+        let wrong_account = fired(Pubkey::new_unique(), 0);
+        let liquidation_slot = FiredConditionArgV0 {
+            target: conditions_key,
+            block_offset: 0,
+            index: 0,
+        };
+
+        let past_the_last_slot = fired(conditions_key, 8);
+        for condition in [wrong_account, liquidation_slot, past_the_last_slot] {
+            assert_eq!(
+                refused(condition),
+                ErrorCode::UnrecognizedCrankCondition.into()
+            );
+        }
     }
 }

@@ -351,8 +351,11 @@ impl WsConnection {
                                 "{}: trying to subscribe to topic not found: {topic}",
                                 self.pubkey,
                             );
+                            // `subscribe`, not `auth`: this is a subscribe
+                            // failure, and a client watching the wrong channel
+                            // silently treats an unusable feed as healthy.
                             self.send_message(
-                                WsMessage::auth()
+                                WsMessage::subscribe()
                                     .set_error(&format!("Couldn't subscribe: {:?}", topic)),
                             )?;
                             // the topic is expected to exist at this point

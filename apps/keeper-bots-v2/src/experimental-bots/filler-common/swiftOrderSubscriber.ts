@@ -170,12 +170,17 @@ export class SwiftOrderSubscriber {
 				// unknown market, or a topic it has no channel for), so a
 				// rejection is the one chance to notice that this feed is
 				// authenticated but will never deliver that market's orders.
-				// Without this the parent reports healthy on a silent feed.
+				//
+				// Keyed on "already authenticated" rather than on the channel:
+				// every error the server can send after auth is a subscribe
+				// failure, and it has sent them on both `subscribe` and `auth`
+				// (the latter until the fix in this change, which older servers
+				// still in a rolling deploy will not have).
 				if (message['error']) {
 					console.error(
 						`Swift server rejected a request on channel ${message['channel']}: ${message['error']}`
 					);
-					if (message['channel'] === 'subscribe') {
+					if (this.subscribed) {
 						this.subscribeRejected = true;
 						this.sendLivenessCheck(false);
 					}

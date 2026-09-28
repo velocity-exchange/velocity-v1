@@ -62,9 +62,6 @@ the scheme, and web3.js moves it to the next port, so each port has to answer bo
 Known gaps:
 
 - `/batchPriorityFees` returns nothing, because its publisher calls a Helius-only RPC method.
-- `sync_user_conditions` runs out of velocity's 32 KB heap for a user exposed in three book
-  markets. `migrate.ts` stops at the first such user, so the users after it have no relay
-  liquidation coverage here. The bootstrap reports this and continues.
 
 ## Reset
 

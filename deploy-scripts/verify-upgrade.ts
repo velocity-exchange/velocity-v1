@@ -27,6 +27,7 @@ import {
 	getQuoterSlabPublicKey,
 	getRelayScratchPublicKey,
 	getVelocityStateAccountPublicKey,
+	positionIsAvailable,
 	Wallet,
 } from '@velocity-exchange/sdk';
 
@@ -231,11 +232,30 @@ async function main() {
 		}
 	}
 
+	// migrate.ts covers a user with an open perp position, so only that user's
+	// conditions need a watch. A new user's conditions exist before it trades.
+	const users = new Map(
+		accounts
+			.filter(({ account }) => nameIs(program, account.data, 'User'))
+			.map(({ pubkey, account }) => [
+				pubkey.toBase58(),
+				decodeUser(account.data),
+			])
+	);
 	const conditions = accounts.filter(({ account }) =>
 		nameIs(program, account.data, 'UserConditionsV0')
 	);
-	for (const { pubkey } of conditions) {
-		await verifier.requireWatch('user conditions', pubkey);
+	for (const { pubkey, account } of conditions) {
+		const { user } = program.coder.accounts.decode(
+			'userConditionsV0',
+			account.data
+		) as {
+			user: PublicKey;
+		};
+		const exposed = users
+			.get(user.toBase58())
+			?.perpPositions.some((position) => !positionIsAvailable(position));
+		if (exposed) await verifier.requireWatch('user conditions', pubkey);
 	}
 
 	printReport(verifier, accounts.length);

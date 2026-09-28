@@ -16,6 +16,7 @@ import {
 	Keypair,
 	LAMPORTS_PER_SOL,
 	PublicKey,
+	sendAndConfirmTransaction,
 	SystemProgram,
 	Transaction,
 } from '@solana/web3.js';
@@ -70,9 +71,11 @@ async function fundTrader(
 			lamports: 10 * LAMPORTS_PER_SOL,
 		});
 
-		await connection.sendTransaction(new Transaction().add(transfer), [
-			authority,
-		]);
+		await sendAndConfirmTransaction(
+			connection,
+			new Transaction().add(transfer),
+			[authority]
+		);
 	}
 
 	const faucet = new TokenFaucet(
@@ -134,9 +137,16 @@ async function main() {
 	const tokenAccount = await fundTrader(connection, authority, trader);
 	const client = await connectClient(connection, trader);
 
-	const user = getUserAccountPublicKeySync(client.program.programId, trader.publicKey, 0);
+	const user = getUserAccountPublicKeySync(
+		client.program.programId,
+		trader.publicKey,
+		0
+	);
 	if (!(await connection.getAccountInfo(user))) {
-		await client.initializeUserAccountAndDepositCollateral(DEPOSIT, tokenAccount);
+		await client.initializeUserAccountAndDepositCollateral(
+			DEPOSIT,
+			tokenAccount
+		);
 	}
 
 	await client.addUser(0);

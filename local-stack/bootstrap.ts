@@ -5,10 +5,11 @@
  * state first and skips what is already done, so the service runs again on every `up`.
  *
  *   1. Create and fund the service keys in /state/keys.
- *   2. Run migrate.ts, which the upgrade needs anyway.
- *   3. Give every perp market a CLOB book, then run migrate.ts again so the liquidation
- *      conditions name the books.
- *   4. Price and fund the crank treasury, and make swift's key the flow authority.
+ *   2. Run migrate.ts. On a new ledger it creates the crank treasury inert and stops, because
+ *      it attaches no book to a treasury that cannot refill it.
+ *   3. Price and fund the crank treasury, then run migrate.ts again. It creates every perp
+ *      market's CLOB book and the users' liquidation conditions.
+ *   4. Make swift's key the flow authority.
  *   5. Mint dUSDT to the keeper for the insurance-fund stake the mark TWAP crank needs.
  *   6. Write the keeper config and the UI's env file into /state.
  */
@@ -37,7 +38,6 @@ const UI_RPC_URL = process.env.UI_RPC_URL ?? 'http://localhost:8899';
 const STATE = '/state';
 const KEYS = path.join(STATE, 'keys');
 const AUTHORITY_PATH = path.join(STATE, 'snapshot', 'authority.json');
-const CLOB_PROGRAM = 'BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU';
 const TOKEN_FAUCET = new PublicKey(
 	'V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB'
 );
@@ -55,7 +55,6 @@ const SERVICE_SOL = 100;
 /** Crank budget the treasury refills each reservoir to, and the level that triggers a refill. */
 const TREASURY_REFILL_CRANKS = { target: 1000, watermark: 100 };
 const TREASURY_SOL = 500;
-const BOOK_EVICT_THRESHOLD = 256;
 const KEEPER_DUSDT = new BN(10_000_000_000);
 
 type ServiceKey = (typeof SERVICE_KEYS)[number];
@@ -113,11 +112,8 @@ function admin(args: string[]): void {
 	]);
 }
 
-/**
- * A user exposed in three book markets fails the sync on velocity's 32 KB heap, and migrate.ts
- * stops there. Those users go without relay liquidation coverage rather than stopping the stack.
- */
-function migrate(label: string): void {
+/** A run that may stop early warns rather than failing the bootstrap. */
+function migrate(label: string, mayStop: boolean): void {
 	try {
 		run(label, 'bun', [
 			'run',
@@ -127,44 +123,11 @@ function migrate(label: string): void {
 			'--keypair',
 			AUTHORITY_PATH,
 		]);
-	} catch {
-		console.log('\nwarning: migrate.ts stopped early; see the log above');
-	}
-}
-
-/** Markets whose `clob_market` is unset, with the order rules the book copies from them. */
-async function marketsWithoutBook(program: Program) {
-	const markets = (await (program.account as any).perpMarket.all()) as {
-		account: any;
-	}[];
-	return markets
-		.map(({ account }) => account)
-		.filter((market) => market.clobMarket.equals(PublicKey.default))
-		.sort((a, b) => a.marketIndex - b.marketIndex);
-}
-
-async function createBooks(program: Program): Promise<void> {
-	for (const market of await marketsWithoutBook(program)) {
-		const minOrderSize: BN = market.marketStats.minOrderSize;
-		admin([
-			'clob-market',
-			'init',
-			String(market.marketIndex),
-			'--clob-program',
-			CLOB_PROGRAM,
-			'--tick-size',
-			market.orderTickSize.toString(),
-			'--step-size',
-			market.orderStepSize.toString(),
-			'--min-order-size',
-			minOrderSize.toString(),
-			'--blocking-min-size',
-			minOrderSize.muln(10).toString(),
-			// The CLI's default of 3072 is above the 512 orders a side of the default arena holds,
-			// and the book refuses a threshold at or above that.
-			'--evict-threshold',
-			String(BOOK_EVICT_THRESHOLD),
-		]);
+	} catch (error) {
+		if (!mayStop) throw error;
+		console.log(
+			'\nmigrate.ts stopped early; the run after the treasury is priced finishes it'
+		);
 	}
 }
 
@@ -304,11 +267,10 @@ async function main() {
 		);
 	}
 
-	migrate('migrate');
-	await createBooks(program);
-	migrate('migrate, after the books exist');
+	migrate('migrate', true);
 
 	await fundTreasury(provider, program);
+	migrate('migrate, after the treasury is priced', false);
 	admin([
 		'auth',
 		'set-hot-admin',

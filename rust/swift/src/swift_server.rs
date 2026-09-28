@@ -220,11 +220,9 @@ pub async fn process_order_wrapper(
             let payload = order_metadata.encode();
             // The order is now attestable. A keeper may request the
             // flow-authority attestation once the hold window elapses.
-            server_params.attest.record(
-                order_metadata.uuid,
-                order_metadata.ts,
-                order_metadata.order_signature,
-            );
+            server_params
+                .attest
+                .record(order_metadata.order_signature, order_metadata.ts);
 
             server_params
                 .publish_order(

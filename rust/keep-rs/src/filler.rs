@@ -913,7 +913,7 @@ async fn try_swift_place(
     };
 
     let flow_attestation: Option<FlowAttestationV0> = match attest {
-        Some(client) => match client.attest(swift_order.order_uuid_str()).await {
+        Some(client) => match client.attest(swift_order.signature.as_array()).await {
             Ok(attestation) => Some(attestation),
             Err(reason) => {
                 log::warn!(

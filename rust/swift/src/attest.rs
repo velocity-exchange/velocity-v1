@@ -18,6 +18,11 @@
 //! authorizes exactly one thing, costs no signature fee, and needs no
 //! custody of the keeper's transaction: the endpoint returns the same blob
 //! to every asker, and the order still fills only once on-chain.
+//!
+//! A held order is keyed by the taker's order signature and not by its uuid.
+//! The taker chooses the uuid, and replay protection scopes it to one taker,
+//! so a second taker can submit an order with the same uuid. Keyed by uuid,
+//! that order would replace the first one's entry.
 
 use {
     axum::{extract::State, http::StatusCode, response::IntoResponse, Json},
@@ -39,7 +44,6 @@ fn now_ms() -> u64 {
 
 struct HeldOrder {
     received_ms: u64,
-    order_signature: [u8; 64],
 }
 
 pub struct AttestContext {
@@ -49,7 +53,7 @@ pub struct AttestContext {
     keypair: Option<Keypair>,
     hold_ms: u64,
     expiry_ms: u64,
-    held: DashMap<[u8; 8], HeldOrder>,
+    held: DashMap<[u8; 64], HeldOrder>,
 }
 
 impl AttestContext {
@@ -91,8 +95,9 @@ impl AttestContext {
 
     /// Record a verified, published order as attestable. Called by the
     /// order intake on the publish path; the hold clock is the intake's
-    /// receive timestamp, not this call.
-    pub fn record(&self, uuid: [u8; 8], received_ms: u64, order_signature: [u8; 64]) {
+    /// receive timestamp, not this call. A second receipt of the same order
+    /// keeps the first timestamp, so a resubmission cannot move the expiry.
+    pub fn record(&self, order_signature: [u8; 64], received_ms: u64) {
         if self.keypair.is_none() {
             return;
         }
@@ -103,13 +108,9 @@ impl AttestContext {
             self.held.retain(|_, held| held.received_ms >= horizon);
         }
 
-        self.held.insert(
-            uuid,
-            HeldOrder {
-                received_ms,
-                order_signature,
-            },
-        );
+        self.held
+            .entry(order_signature)
+            .or_insert(HeldOrder { received_ms });
     }
 }
 
@@ -127,8 +128,8 @@ pub fn attestation_message(order_signature: &[u8; 64], expiry_ts: i64) -> Vec<u8
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestRequest {
-    /// The order's uuid, as delivered in the keeper feed.
-    uuid: String,
+    /// The taker's order signature, base64, as delivered in the keeper feed.
+    order_signature: String,
 }
 
 #[derive(Serialize)]
@@ -154,11 +155,15 @@ pub async fn attest(
             "attestation is not enabled",
         );
     };
-    let Ok(uuid): Result<[u8; 8], _> = request.uuid.as_bytes().try_into() else {
-        return err(StatusCode::BAD_REQUEST, "uuid must be exactly 8 bytes");
+    let Some(order_signature) = decode_order_signature(&request.order_signature) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "orderSignature must be 64 bytes of base64",
+        );
     };
-    let Some(held) = ctx.held.get(&uuid) else {
-        return err(StatusCode::NOT_FOUND, "unknown order uuid");
+
+    let Some(held) = ctx.held.get(&order_signature) else {
+        return err(StatusCode::NOT_FOUND, "unknown order signature");
     };
 
     let now = now_ms();
@@ -185,7 +190,7 @@ pub async fn attest(
     // served the hold, until this time", and the order fills once on-chain
     // regardless of how many keepers hold the blob.
     let expiry_ts = (expiry_at / 1_000) as i64;
-    let signature = keypair.sign_message(&attestation_message(&held.order_signature, expiry_ts));
+    let signature = keypair.sign_message(&attestation_message(&order_signature, expiry_ts));
 
     (
         StatusCode::OK,
@@ -202,6 +207,14 @@ pub async fn attest(
         .into_response()
 }
 
+fn decode_order_signature(encoded: &str) -> Option<[u8; 64]> {
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?
+        .try_into()
+        .ok()
+}
+
 fn err(status: StatusCode, message: &str) -> axum::response::Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
@@ -212,6 +225,42 @@ mod tests {
         super::*,
         velocity_rs::program::{verify_flow_attestation, FlowAttestationV0},
     };
+
+    fn enabled_context() -> AttestContext {
+        AttestContext {
+            keypair: Some(Keypair::new()),
+            hold_ms: 300,
+            expiry_ms: 30_000,
+            held: DashMap::new(),
+        }
+    }
+
+    /// Two takers can sign orders with the same uuid. Each order keeps its
+    /// own entry, and a resubmission does not move the first receipt.
+    #[test]
+    fn an_order_is_held_by_its_own_signature() {
+        let ctx = enabled_context();
+        let victim = [1u8; 64];
+        let attacker = [2u8; 64];
+
+        ctx.record(victim, 1_000);
+        ctx.record(attacker, 2_000);
+        ctx.record(victim, 3_000);
+
+        assert_eq!(ctx.held.len(), 2);
+        assert_eq!(ctx.held.get(&victim).unwrap().received_ms, 1_000);
+        assert_eq!(ctx.held.get(&attacker).unwrap().received_ms, 2_000);
+    }
+
+    #[test]
+    fn an_order_signature_decodes_only_at_64_bytes() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode([7u8; 64]);
+        assert_eq!(decode_order_signature(&encoded), Some([7u8; 64]));
+
+        let short = base64::engine::general_purpose::STANDARD.encode([7u8; 8]);
+        assert_eq!(decode_order_signature(&short), None);
+        assert_eq!(decode_order_signature("not base64!"), None);
+    }
 
     /// What this endpoint signs is what velocity's verifier accepts — bound
     /// to the order signature, the key, and the expiry, and refused for any

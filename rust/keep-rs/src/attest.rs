@@ -77,15 +77,18 @@ impl AttestClient {
         })
     }
 
-    /// Ask swift for the flow attestation on `uuid`. Retries through the
-    /// hold window (425 plus `retryAfterMs`).
-    pub async fn attest(&self, uuid: &str) -> Result<FlowAttestationV0, String> {
+    /// Ask swift for the flow attestation on the order that `order_signature`
+    /// signs. Swift keys held orders by that signature, because another taker
+    /// can reuse the uuid. Retries through the hold window (425 plus
+    /// `retryAfterMs`).
+    pub async fn attest(&self, order_signature: &[u8; 64]) -> Result<FlowAttestationV0, String> {
         let endpoint = format!("{}/attest", self.url);
+        let order_signature = base64::engine::general_purpose::STANDARD.encode(order_signature);
         for attempt in 0..MAX_ATTEMPTS {
             let response = self
                 .http
                 .post(&endpoint)
-                .json(&serde_json::json!({ "uuid": uuid }))
+                .json(&serde_json::json!({ "orderSignature": order_signature }))
                 .send()
                 .await
                 .map_err(|e| format!("attest request failed: {e}"))?;
@@ -107,7 +110,7 @@ impl AttestClient {
             if status.as_u16() == 425 && attempt + 1 < MAX_ATTEMPTS {
                 let wait =
                     Duration::from_millis(err.retry_after_ms.unwrap_or(150)).min(MAX_RETRY_WAIT);
-                log::debug!(target: TARGET, "hold window: waiting {wait:?} (uuid={uuid})");
+                log::debug!(target: TARGET, "hold window: waiting {wait:?} (order_signature={order_signature})");
                 tokio::time::sleep(wait).await;
                 continue;
             }

@@ -2570,7 +2570,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		).catch(() => {
 			throw new Error(`swift intake refused: ${lastRejection}`);
 		});
-		const { uuid, signed } = accepted;
+		const { signed } = accepted;
 
 		// The keeper's side, wire for wire what a filler does. It polls /attest
 		// through the hold window, then carries the detached attestation as an
@@ -2584,7 +2584,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			const res = await fetch(`${SWIFT_URL}/attest`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ uuid: Buffer.from(uuid).toString() }),
+				body: JSON.stringify({
+					orderSignature: signed.signature.toString('base64'),
+				}),
 			});
 			const body = await res.text();
 			if (res.status === 425) {

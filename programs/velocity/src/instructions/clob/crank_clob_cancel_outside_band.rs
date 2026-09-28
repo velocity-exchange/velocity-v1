@@ -258,7 +258,7 @@ impl MakerBand {
 
     /// Whether a maker order at `price` on the `maker_direction` side is one
     /// the router refuses.
-    fn refuses(&self, price: u64, maker_direction: PositionDirection) -> Result<bool> {
+    pub(super) fn refuses(&self, price: u64, maker_direction: PositionDirection) -> Result<bool> {
         Ok(limit_price_breaches_maker_oracle_price_bands(
             price,
             maker_direction,

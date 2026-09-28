@@ -959,3 +959,92 @@ mod subject_claim_order {
         );
     }
 }
+
+/// Which rows the crank removes instead of routing, and what their owner pays.
+mod unfillable_rows {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    const UNIT: i64 = BASE_PRECISION_I64;
+
+    fn row(reduce_only: bool) -> RestingOrder {
+        RestingOrder {
+            order_ref: ClobOrderRefV0 {
+                node_index: 1,
+                order_id: 1,
+            },
+            user: UserRefV0::ZERO,
+            price: 100,
+            base_asset_amount: 5,
+            taker_origin: true,
+            reduce_only,
+            placed_slot: 0,
+        }
+    }
+
+    /// A reduce-only buy whose short closed through another order. Every
+    /// fill clamps it to zero, so the crank removes it.
+    #[test]
+    fn a_reduce_only_row_with_a_flat_position_cannot_fill() {
+        assert!(has_nothing_to_reduce(
+            &row(true),
+            0,
+            PositionDirection::Long
+        ));
+    }
+
+    /// A reduce-only buy against a long would increase the position.
+    #[test]
+    fn a_reduce_only_row_on_the_side_of_its_position_cannot_fill() {
+        assert!(has_nothing_to_reduce(
+            &row(true),
+            UNIT,
+            PositionDirection::Long
+        ));
+    }
+
+    #[test]
+    fn a_reduce_only_row_with_a_position_to_reduce_fills() {
+        assert!(!has_nothing_to_reduce(
+            &row(true),
+            -UNIT,
+            PositionDirection::Long
+        ));
+        assert!(!has_nothing_to_reduce(
+            &row(true),
+            UNIT,
+            PositionDirection::Short
+        ));
+    }
+
+    #[test]
+    fn a_row_that_is_not_reduce_only_is_routed() {
+        assert!(!has_nothing_to_reduce(
+            &row(false),
+            0,
+            PositionDirection::Long
+        ));
+    }
+
+    /// The reservoir pays the keeper, so the owner pays at least that value.
+    #[test]
+    fn a_priced_keeper_payment_raises_the_fee() {
+        assert_eq!(unfillable_row_fee(10_000, Some(14_000)), 14_000);
+    }
+
+    #[test]
+    fn the_fee_never_falls_below_the_flat_fee() {
+        assert_eq!(unfillable_row_fee(10_000, Some(1)), 10_000);
+        assert_eq!(unfillable_row_fee(10_000, None), 10_000);
+    }
+
+    /// The raised fee always clears the payment floor, so relay is paid for
+    /// the removal.
+    #[test]
+    fn the_raised_fee_covers_the_keeper_payment() {
+        let payment_quote = Some(14_000);
+        assert!(collected_covers_payment(
+            unfillable_row_fee(10_000, payment_quote),
+            payment_quote
+        ));
+    }
+}

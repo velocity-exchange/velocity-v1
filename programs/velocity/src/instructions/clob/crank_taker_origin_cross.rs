@@ -35,6 +35,13 @@
 //! does not. One side is the aggressor by construction, the improvement belongs
 //! to it, and the only cut anyone takes is the cranker's reward.
 //!
+//! A reduce-only row whose owner holds nothing to reduce can never fill, but
+//! the book still reports it at full size. As the oldest claimant on its side,
+//! it holds back every newer remainder there. The crank cancels such a row on
+//! either side of the cross instead of routing it. The owner pays the flat
+//! removal fee. In program-keeper mode the fee rises to the keeper payment's
+//! value, so the reservoir pays no more than the crank collects.
+//!
 //! ## Discovery
 //!
 //! The crank needs no condition slot or watch of its own. It only ever resolves
@@ -86,13 +93,14 @@ use {
         msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
-            events::TakerOriginCrossRecordV1,
+            events::{OrderActionExplanation, TakerOriginCrossRecordV1},
             fill_mode::FillMode,
             order_params::NO_ROUTE_DIGEST,
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             prop_amm::{
-                ClobMarket, ClobReader, FillArgsV0, FillRequestV0, QuoterSlabExt, SideV0, UserRefV0,
+                CancelOrderArgsV0, ClobMarket, ClobReader, FillArgsV0, FillRequestV0,
+                QuoterSlabExt, SideV0, UserRefV0,
             },
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
@@ -345,6 +353,10 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         referrer_is_accelerated,
     };
 
+    if let Some(row) = unfillable_row(&cx, &subject_order, &counterparty)? {
+        return cancel_unfillable_row(&cx, &row, &mut maps);
+    }
+
     // Two crossed remainders are the one case the router cannot reach. The
     // book holds both back, because each is taker-origin and each is crossed
     // by the other, so the gate passes over whichever one a fill tries to
@@ -564,6 +576,214 @@ fn subject_cross(crosses: &[Cross], taker_ref: UserRefV0) -> VelocityResult<Subj
         cross: subject,
         order: subject_order,
         counterparty: counterparty_of(&subject, aggressor_side),
+    })
+}
+
+/// A row of the subject cross that can never fill.
+struct UnfillableRow<'a> {
+    order: &'a RestingOrder,
+    /// The owner's margin account, as the user map keys it. `None` is the
+    /// taker.
+    owner: Option<Pubkey>,
+}
+
+/// Whether a reduce-only row has nothing left to reduce. The book reports
+/// such a row at its full size, but every fill of it clamps to zero.
+fn has_nothing_to_reduce(
+    order: &RestingOrder,
+    position_base: i64,
+    direction: PositionDirection,
+) -> bool {
+    order.reduce_only && crate::math::orders::reduce_only_cover(position_base, direction) == 0
+}
+
+/// The row of the subject cross that can never fill, if there is one.
+///
+/// A counterparty whose owner the transaction does not carry is left to the
+/// fill.
+fn unfillable_row<'a>(
+    cx: &TakerOriginContext<'_, '_>,
+    subject: &'a RestingOrder,
+    counterparty: &'a RestingOrder,
+) -> Result<Option<UnfillableRow<'a>>> {
+    let position_base = |user: &User| {
+        user.get_perp_position(cx.market_index)
+            .map(|position| position.base_asset_amount)
+            .unwrap_or(0)
+    };
+
+    let taker_base = position_base(&*load!(cx.accounts.taker)?);
+    if has_nothing_to_reduce(subject, taker_base, cx.taker_direction) {
+        return Ok(Some(UnfillableRow {
+            order: subject,
+            owner: None,
+        }));
+    }
+
+    if !counterparty.reduce_only {
+        return Ok(None);
+    }
+
+    let user = counterparty.user;
+    let Some(key) = cx
+        .makers_and_referrer
+        .user_ref_index()?
+        .get(&(user.authority, user.sub_account_id))
+        .copied()
+    else {
+        return Ok(None);
+    };
+
+    let counterparty_base = position_base(&*cx.makers_and_referrer.get_ref(&key)?);
+    Ok(has_nothing_to_reduce(
+        counterparty,
+        counterparty_base,
+        cx.taker_direction.opposite(),
+    )
+    .then_some(UnfillableRow {
+        order: counterparty,
+        owner: Some(key),
+    }))
+}
+
+/// What removing an unfillable row charges its owner: the flat fee, raised to
+/// the keeper payment's value in quote when the reservoir pays one.
+fn unfillable_row_fee(flat_filler_fee: u64, payment_quote: Option<u64>) -> u64 {
+    payment_quote.map_or(flat_filler_fee, |payment_quote| {
+        payment_quote.max(flat_filler_fee)
+    })
+}
+
+/// Remove a row that can never fill, and charge its owner for the crank.
+///
+/// Such a row can be the oldest claimant on its side, and every crank of its
+/// cross reverts. Nothing else removes it while it stays near the market, so
+/// this crank does.
+fn cancel_unfillable_row<'info>(
+    cx: &TakerOriginContext<'_, 'info>,
+    row: &UnfillableRow<'_>,
+    maps: &mut AccountMaps<'info>,
+) -> Result<()> {
+    let payment_lamports = match (cx.program_keeper_mode, &cx.accounts.crank_conditions) {
+        (true, Some(conditions)) => Some(u64::from(
+            conditions.load()?.crank_payments.taker_origin_cross,
+        )),
+        _ => None,
+    };
+    let payment_quote =
+        payment_lamports.and_then(|lamports| taker_origin_payment_quote(cx.state, maps, lamports));
+
+    // A bound remainder refuses a plain cancel while its claim holds.
+    let removed = ClobMarket::from_slab(
+        &cx.accounts.quoter_slab,
+        cx.market_index,
+        &cx.accounts.clob_market,
+        &cx.accounts.clob_program,
+    )?
+    .cancel(CancelOrderArgsV0 {
+        order_ref: row.order.order_ref,
+        user: row.order.user,
+        force: true,
+    })?;
+    validate!(
+        removed.user == row.order.user,
+        ErrorCode::InvalidUserAccount,
+        "the book cancelled an order of another user"
+    )?;
+
+    let charged = close_unfillable_row(
+        cx,
+        row,
+        &removed,
+        unfillable_row_fee(cx.state.perp_fee_structure.flat_filler_fee, payment_quote),
+        maps,
+    )?;
+
+    if row.owner.is_none() {
+        cx.release_taker_route(removed.order_id);
+    }
+
+    if let (Some(lamports), Some(conditions)) = (payment_lamports, &cx.accounts.crank_conditions) {
+        if super::helpers::earns_crank_lamports(
+            charged.fee,
+            &cx.accounts.authority.key(),
+            &charged.owner_authority,
+        ) && collected_covers_payment(charged.fee, payment_quote)
+        {
+            ClobCrankConditionsV0::pay_keeper(
+                conditions,
+                &cx.accounts.authority.to_account_info(),
+                lamports,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// What the owner of a removed row paid.
+struct UnfillableRowCharge {
+    fee: u64,
+    owner_authority: Pubkey,
+}
+
+/// Charge the owner the fee, then unwind the removed row and record it. The
+/// fee comes first, because unwinding an otherwise-empty position frees the
+/// slot the fee resolves in.
+fn close_unfillable_row(
+    cx: &TakerOriginContext<'_, '_>,
+    row: &UnfillableRow<'_>,
+    removed: &crate::state::prop_amm::RemovedOrderV0,
+    fee: u64,
+    maps: &AccountMaps,
+) -> Result<UnfillableRowCharge> {
+    let (mut owner, owner_key) = match row.owner {
+        None => (load_mut!(cx.accounts.taker)?, cx.accounts.taker.key()),
+        Some(key) => (cx.makers_and_referrer.get_ref_mut(&key)?, key),
+    };
+    let mut market = maps.perp_market_map.get_ref_mut(&cx.market_index)?;
+
+    let fee = {
+        let mut filler = load_mut!(cx.accounts.filler)?;
+        if cranker_earns_reward(&filler, &owner.authority)? {
+            controller::orders::pay_keeper_flat_reward_for_perps(
+                &mut owner,
+                Some(&mut filler),
+                &mut market,
+                fee,
+                cx.clock.slot,
+            )?
+        } else {
+            0
+        }
+    };
+
+    let position_index = owner.close_book_order(
+        &OrderReservation::book_order(
+            cx.market_index,
+            PositionDirection::from(removed.side),
+            removed.base_asset_amount,
+            removed.reduce_only,
+        ),
+        ReleaseCheck::ClampedForExit,
+        removed.order_id,
+        OrderStatus::Canceled,
+    )?;
+
+    super::helpers::emit_clob_cancel_record(
+        cx.clock.unix_timestamp,
+        market.market_stats.historical_oracle_data.last_oracle_price,
+        &owner_key,
+        super::helpers::ClobOrderFacts::from_removed(removed, cx.market_index, cx.clock.slot),
+        OrderActionExplanation::ReduceOnlyOrderIncreasedPosition,
+        Some(cx.accounts.filler.key()),
+        Some(fee),
+        owner.perp_positions[position_index].is_isolated(),
+    )?;
+
+    Ok(UnfillableRowCharge {
+        fee,
+        owner_authority: owner.authority,
     })
 }
 
@@ -799,8 +1019,8 @@ fn require_referral_escrow(has_escrow: bool, taker_stats: &UserStats) -> Result<
 /// oracle, and a price outside the band. A refusal must leave the book as it
 /// was.
 ///
-/// The pre-flight's own mm-oracle price is dropped. The match and the maker
-/// band use the plain oracle price, as the router pass does.
+/// The pre-flight's own mm-oracle price is dropped. The match uses the plain
+/// oracle price, as the router pass does.
 fn price_cross<'info>(
     cx: &TakerOriginContext<'_, 'info>,
     rested: &RestingOrder,
@@ -1372,13 +1592,13 @@ fn admit_pair_parties<'info>(
 /// A fill skips while the oracle has run too far from its 5-minute TWAP. A
 /// party with an equity floor matches only while the raw exchange oracle
 /// admits a match, because that oracle values the floor. The price comes off
-/// the book's own rows, so the counterparty's price is held to the maker band
-/// the router holds an external leg to.
+/// the book's own rows, so the counterparty's price is held to the book
+/// entry's band at the MM oracle, as the router holds a book leg.
 fn admit_pair_match(
     cx: &TakerOriginContext<'_, '_>,
     pair: &RemainderPair<'_>,
     settled: &controller::orders::SettledMatch,
-    maps: &AccountMaps,
+    maps: &mut AccountMaps,
 ) -> Result<()> {
     validate!(
         !settled.oracle_too_divergent_with_twap(cx.state)?,
@@ -1398,21 +1618,18 @@ fn admit_pair_match(
         "the exchange oracle does not admit a match for a floored party"
     )?;
 
-    let margin_ratio_initial = maps
-        .perp_market_map
-        .get_ref(&cx.market_index)?
-        .margin_ratio_initial;
+    let band = super::crank_clob_cancel_outside_band::MakerBand::at_placement(
+        cx.state,
+        maps,
+        &cx.accounts.quoter_slab,
+        cx.market_index,
+        cx.clock.slot,
+    )?;
     validate!(
-        !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
-            pair.counterparty.price,
-            cx.taker_direction.opposite(),
-            settled.oracle_price(),
-            margin_ratio_initial,
-        )?,
+        !band.refuses(pair.counterparty.price, cx.taker_direction.opposite())?,
         ErrorCode::QuoterFillOffQuote,
-        "the book rested the counterparty at {}, outside the oracle band around {}",
-        pair.counterparty.price,
-        settled.oracle_price()
+        "the book rested the counterparty at {}, outside the maker oracle band",
+        pair.counterparty.price
     )?;
 
     Ok(())

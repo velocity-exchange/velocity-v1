@@ -9,8 +9,9 @@
 # download here — unlike the pre-velocity keep-rs Dockerfile.
 
 ARG APP_BIN
+ARG RUST_IMAGE=rust:1.91.1
 
-FROM rust:1.91.1 AS builder
+FROM ${RUST_IMAGE} AS builder
 WORKDIR /repo
 RUN rustup component add rustfmt
 COPY . .

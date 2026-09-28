@@ -41,7 +41,7 @@ use {
         },
         validate,
     },
-    anchor_lang::{prelude::*, Discriminator},
+    anchor_lang::{prelude::*, Discriminator, ZeroCopy},
     relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0},
     std::collections::{BTreeMap, BTreeSet},
 };
@@ -404,7 +404,7 @@ fn collect_sync_inputs<'info>(
 
     for info in remaining_accounts {
         if info.owner == &crate::ID {
-            if let Ok(loader) = AccountLoader::<PerpMarket>::try_from(info) {
+            if let Some(loader) = loader_of::<PerpMarket>(info) {
                 let market = loader.load()?;
                 let entry = perps.entry(market.market_index).or_default();
                 entry.market = Some(*info.key);
@@ -413,14 +413,14 @@ fn collect_sync_inputs<'info>(
                 entry.has_clob = market.clob_market != Pubkey::default();
                 continue;
             }
-            if let Ok(loader) = AccountLoader::<SpotMarket>::try_from(info) {
+            if let Some(loader) = loader_of::<SpotMarket>(info) {
                 let market = loader.load()?;
                 let entry = spots.entry(market.market_index).or_default();
                 entry.market = Some(*info.key);
                 entry.oracle = Some(market.oracle);
                 continue;
             }
-            if let Ok(loader) = AccountLoader::<ClobCrankConditionsV0>::try_from(info) {
+            if let Some(loader) = loader_of::<ClobCrankConditionsV0>(info) {
                 let conditions = loader.load()?;
                 perps
                     .entry(conditions.market_index)
@@ -441,7 +441,7 @@ fn collect_sync_inputs<'info>(
             // a slab filed among the oracles cuts the markets off from every
             // staged executor. Storing slabs after the markets, where the
             // parser never reaches, keeps them available to a staged resync.
-            if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
+            if let Some(loader) = loader_of::<QuoterSlabV0>(info) {
                 perps.entry(loader.load()?.market).or_default().has_slab = true;
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 // The book and its program ride with the slab. The resolver
@@ -634,6 +634,22 @@ impl MarketCoverage {
     }
 }
 
+/// An `AccountLoader` over `info` when it holds a `T`. A refused `try_from` builds its error
+/// on a heap the bump allocator never frees, and classification refuses most types it tries.
+/// That ran a sync for a user in three book markets out of the 32 KB heap.
+pub fn loader_of<'info, T: ZeroCopy + Owner>(
+    info: &'info AccountInfo<'info>,
+) -> Option<AccountLoader<'info, T>> {
+    let holds_t = info.owner == &T::owner()
+        && info
+            .try_borrow_data()
+            .is_ok_and(|data| data.starts_with(T::DISCRIMINATOR));
+
+    holds_t
+        .then(|| AccountLoader::try_from(info).ok())
+        .flatten()
+}
+
 /// Refuse an account passed twice. A second copy of a market makes
 /// `load_maps` fail over the stored list, so no staged executor could load it.
 pub fn refuse_duplicate_accounts(remaining_accounts: &[AccountInfo]) -> Result<()> {
@@ -800,10 +816,15 @@ pub fn validate_sync_args(args: &SyncLiqConditionsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use {
-        super::{refuse_duplicate_accounts, validate_market_coverage, MarketCoverage},
+        super::{loader_of, refuse_duplicate_accounts, validate_market_coverage, MarketCoverage},
         crate::{
             create_anchor_account_info,
-            state::user::{PerpPosition, User},
+            state::{
+                perp_market::PerpMarket,
+                spot_market::SpotMarket,
+                user::{PerpPosition, User},
+            },
+            test_utils::{create_account_info, get_anchor_account_bytes},
         },
         anchor_lang::prelude::{AccountInfo, AccountLoader, Pubkey},
         std::collections::{BTreeMap, BTreeSet},
@@ -1060,5 +1081,26 @@ mod tests {
 
         assert_eq!(first.len(), 4 + 6);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn a_loader_is_offered_for_the_type_the_account_holds() {
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_info);
+
+        assert!(loader_of::<PerpMarket>(&perp_info).is_some());
+        assert!(loader_of::<SpotMarket>(&perp_info).is_none());
+    }
+
+    #[test]
+    fn an_account_another_program_owns_is_not_offered() {
+        let mut perp_market = PerpMarket::default();
+        let key = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let mut lamports = 0;
+        let mut data = get_anchor_account_bytes(&mut perp_market);
+        let perp_info = create_account_info(&key, true, &mut lamports, &mut data[..], &owner);
+
+        assert!(loader_of::<PerpMarket>(&perp_info).is_none());
     }
 }

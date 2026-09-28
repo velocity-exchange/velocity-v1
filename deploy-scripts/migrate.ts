@@ -7,12 +7,13 @@
  * dependency order.
  *
  *   bun run deploy-scripts/migrate.ts --url <rpc> --keypair <path> \
- *     [--multisig <pda> [--vault-index <n>]] [--dry-run]
+ *     [--multisig <pda> [--vault-index <n>]] [--fee-rails <i,s,num,den,maxPriority>] [--dry-run]
  *
  * The keypair is the payer and can be any funded key. The admin is the keypair, or with
  * `--multisig` the multisig's vault, and it must hold the warm or cold role. Before anything is
- * sent, the script refuses to run unless the CLOB program is deployed at the id velocity pins,
- * and unless `State.transactionFeeRails` prices a crank above zero. With zero rails every crank
+ * sent, the script refuses to run unless the CLOB program is deployed at the id velocity pins.
+ * When `State.transactionFeeRails` prices every crank at zero, it writes `--fee-rails` first,
+ * which defaults to `TransactionFeeRails::FLAT_PER_SIGNATURE`. With zero rails every crank
  * payment and every sync payment is zero, and relay turners take none of that work.
  *
  * Without `--multisig`, every instruction sends directly. With it, every warm-admin instruction
@@ -177,6 +178,7 @@ type Args = {
 	multisig?: PublicKey;
 	vaultIndex: number;
 	proposalScan: number;
+	feeRails: FeeRails;
 };
 
 type Act = (
@@ -198,6 +200,44 @@ type RunReport = {
 type ProposalMatch = { discriminators: Buffer[]; account: PublicKey };
 
 type DispatchOutcome = 'sent' | 'awaiting';
+
+type FeeRails = {
+	inclusionLamports: number;
+	signatureLamports: number;
+	resourceFeeNumerator: number;
+	resourceFeeDenominator: number;
+	maxPriorityMicroLamportsPerCu: number;
+};
+
+/** `TransactionFeeRails::FLAT_PER_SIGNATURE`, which `initialize` writes on a new deployment. */
+const DEFAULT_FEE_RAILS = '0,5000,0,0,0';
+
+function parseFeeRails(raw: string): FeeRails {
+	const values = raw.split(',').map((value) => Number.parseInt(value, 10));
+	if (
+		values.length !== 5 ||
+		values.some((value) => !Number.isInteger(value) || value < 0)
+	) {
+		throw new Error(
+			'--fee-rails takes five non-negative integers: inclusion,signature,numerator,denominator,maxPriority'
+		);
+	}
+
+	const [
+		inclusionLamports,
+		signatureLamports,
+		resourceFeeNumerator,
+		resourceFeeDenominator,
+		maxPriorityMicroLamportsPerCu,
+	] = values;
+	return {
+		inclusionLamports,
+		signatureLamports,
+		resourceFeeNumerator,
+		resourceFeeDenominator,
+		maxPriorityMicroLamportsPerCu,
+	};
+}
 
 function parseArgs(): Args {
 	const argv = process.argv.slice(2);
@@ -229,6 +269,7 @@ function parseArgs(): Args {
 			: undefined,
 		vaultIndex: Number.parseInt(get('--vault-index', '0'), 10),
 		proposalScan: Number.parseInt(get('--proposal-scan', '256'), 10),
+		feeRails: parseFeeRails(get('--fee-rails', DEFAULT_FEE_RAILS)),
 	};
 }
 
@@ -570,7 +611,12 @@ async function migrate(ctx: Migration, idl: any) {
 	await assertClobDeployed(connection, clobProgram);
 	const stateAccount = await loadState(connection, program, statePda);
 	assertAdminHoldsWarm(stateAccount, admin.key);
-	assertCranksPriced(stateAccount);
+	if ((await ensureFeeRails(ctx, statePda, stateAccount)) === 'awaiting') {
+		console.log(
+			'\nfee rails: awaiting the proposal. Every later step prices a crank from them, so run again once it executes.'
+		);
+		return;
+	}
 
 	// 1. resize
 	// `program.idl` is camelCased by the Anchor client; `idl` is the raw JSON,
@@ -1091,7 +1137,24 @@ async function flagVaultUsers(
 		])
 	);
 
-	const vaultAccounts = await (vaults.account as any).vault.all();
+	const vaultDiscriminator = vaultsIdl.accounts.find(
+		(account: any) => account.name === 'Vault'
+	).discriminator;
+	const vaultAccounts: { publicKey: PublicKey; account: any }[] = [];
+	for (const { pubkey, account } of await provider.connection.getProgramAccounts(
+		vaults.programId,
+		{ filters: [{ memcmp: { offset: 0, bytes: bs58(Buffer.from(vaultDiscriminator)) } }] }
+	)) {
+		try {
+			vaultAccounts.push({
+				publicKey: pubkey,
+				account: vaults.coder.accounts.decode('vault', account.data),
+			});
+		} catch {
+			console.log(`vault ${pubkey.toBase58()}: does not decode under the current layout, skipped`);
+		}
+	}
+
 	let unflagged = 0;
 	for (const { publicKey: vault, account } of vaultAccounts) {
 		const status = statusByUser.get(account.user.toBase58());
@@ -1212,25 +1275,36 @@ async function assertClobDeployed(
 	console.log(`clob ${clobProgram.toBase58()}: deployed`);
 }
 
-/** Mirrors `TransactionFeeRails::transaction_cost` for one signature: zero only
- * when no rail charges anything. */
-function assertCranksPriced(stateAccount: any): void {
+/** Write the fee rails when they price every crank at zero, which is what an
+ * upgrade leaves: `State` reads them from former padding. The priced test
+ * mirrors `TransactionFeeRails::transaction_cost` for one signature. */
+async function ensureFeeRails(
+	ctx: Migration,
+	statePda: PublicKey,
+	stateAccount: any
+): Promise<DispatchOutcome> {
 	const rails = stateAccount.transactionFeeRails;
 	const chargesCostUnits =
 		rails.resourceFeeNumerator > 0 && rails.resourceFeeDenominator > 0;
-	if (
-		rails.inclusionLamports === 0 &&
-		rails.signatureLamports === 0 &&
-		!chargesCostUnits
-	) {
-		throw new Error(
-			'State.transactionFeeRails prices every crank at zero, and relay turners take no unpaid ' +
-				'work. Set them first: velocity-admin fees set-transaction-rails <inclusionLamports> ' +
-				'<signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>'
-		);
+	if (rails.inclusionLamports > 0 || rails.signatureLamports > 0 || chargesCostUnits) {
+		console.log(`fee rails: ${JSON.stringify(rails)}`);
+		return 'sent';
 	}
 
-	console.log(`fee rails: ${JSON.stringify(rails)}`);
+	console.log(`fee rails: unpriced, writing ${JSON.stringify(ctx.args.feeRails)}`);
+	return await ctx.admin.run(
+		'migrate: set transaction fee rails',
+		[
+			await ctx.program.methods
+				.updateTransactionFeeRails(ctx.args.feeRails)
+				.accounts({ admin: ctx.admin.key, state: statePda })
+				.instruction(),
+		],
+		{
+			discriminators: [ixDiscriminator('update_transaction_fee_rails')],
+			account: statePda,
+		}
+	);
 }
 
 /** The attach stores the treasury's refill watermark on the market, so an

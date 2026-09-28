@@ -31,15 +31,11 @@ use {
 /// both, but a plain lamport transfer into the reservoir writes only the
 /// balance. The wake is therefore a hint, and this is the check.
 pub(super) fn stage_refill(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
-    let (market_index, watermark, _target) = {
+    let (market_index, watermark) = {
         let conditions = ctx.accounts.crank_conditions.load()?;
         (
             conditions.market_index,
             conditions.refill_watermark_lamports,
-            ctx.accounts
-                .treasury
-                .load()?
-                .refill_target(conditions.crank_payments.max_payment())?,
         )
     };
     let conditions_info = ctx.accounts.crank_conditions.to_account_info();
@@ -98,7 +94,10 @@ pub fn handle_refill_crank_reservoir(
         (
             u64::from(conditions.crank_payments.refill),
             conditions.refill_watermark_lamports,
-            treasury.refill_target(conditions.crank_payments.max_payment())?,
+            treasury.refill_target(
+                conditions.crank_payments.max_payment(),
+                conditions.refill_watermark_lamports,
+            )?,
         )
     };
 

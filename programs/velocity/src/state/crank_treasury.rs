@@ -77,12 +77,21 @@ impl Default for CrankTreasuryV0 {
 impl CrankTreasuryV0 {
     pub const SIZE: usize = 8 + 8 + 8 + 8 + 2 + 2 + 36;
 
-    /// The balance a refill takes a reservoir to, given the most expensive crank it pays. Returns zero
-    /// on an unpriced treasury, staging no refill. A target at or below the wake level would leave the
-    /// reservoir still due after a refill, stuck against an executor that can only revert.
-    /// `handle_update_crank_treasury` refuses that target, so a priced treasury always progresses.
-    pub fn refill_target(&self, max_crank_payment: u64) -> VelocityResult<u64> {
-        max_crank_payment.safe_mul(u64::from(self.refill_target_cranks))
+    /// The balance a refill takes a reservoir to. Returns zero on an unpriced treasury.
+    ///
+    /// A market stores its watermark at attach, and a later update can lower the target under it.
+    /// The target then rises to one crank above that watermark, so a refill still clears the wake.
+    pub fn refill_target(
+        &self,
+        max_crank_payment: u64,
+        stored_watermark: u64,
+    ) -> VelocityResult<u64> {
+        let configured_target = max_crank_payment.safe_mul(u64::from(self.refill_target_cranks))?;
+        if configured_target == 0 {
+            return Ok(0);
+        }
+
+        Ok(configured_target.max(stored_watermark.safe_add(max_crank_payment)?))
     }
 
     /// The balance a reservoir wakes its refill at, resolved to lamports for
@@ -147,7 +156,12 @@ mod tests {
     /// can only revert.
     #[test]
     fn an_unpriced_treasury_has_no_target() {
-        assert_eq!(CrankTreasuryV0::default().refill_target(10_000).unwrap(), 0);
+        assert_eq!(
+            CrankTreasuryV0::default()
+                .refill_target(10_000, 50_000)
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -157,10 +171,10 @@ mod tests {
             ..CrankTreasuryV0::default()
         };
 
-        assert_eq!(treasury.refill_target(10_000).unwrap(), 640_000);
+        assert_eq!(treasury.refill_target(10_000, 0).unwrap(), 640_000);
         // A market whose cranks cost twice as much holds twice the balance
         // from the same setting.
-        assert_eq!(treasury.refill_target(20_000).unwrap(), 1_280_000);
+        assert_eq!(treasury.refill_target(20_000, 0).unwrap(), 1_280_000);
     }
 
     /// Both levels scale with the same market price, so the target stays
@@ -173,9 +187,31 @@ mod tests {
             ..CrankTreasuryV0::default()
         };
 
-        assert!(treasury.refill_target(1_000).unwrap() > treasury.refill_watermark(1_000).unwrap());
         assert!(
-            treasury.refill_target(50_000).unwrap() > treasury.refill_watermark(50_000).unwrap()
+            treasury.refill_target(1_000, 100_000).unwrap()
+                > treasury.refill_watermark(1_000).unwrap()
+        );
+        assert!(
+            treasury.refill_target(50_000, 5_000_000).unwrap()
+                > treasury.refill_watermark(50_000).unwrap()
+        );
+    }
+
+    /// A market keeps the watermark from its last attach. A later update that
+    /// lowers the target under it must still leave a refill above that
+    /// watermark, or every refill reverts.
+    #[test]
+    fn the_target_clears_a_stale_stored_watermark() {
+        let treasury = CrankTreasuryV0 {
+            refill_target_cranks: 10,
+            refill_watermark_cranks: 5,
+            ..CrankTreasuryV0::default()
+        };
+        let stale_watermark = 200_000;
+
+        assert_eq!(
+            treasury.refill_target(10_000, stale_watermark).unwrap(),
+            210_000
         );
     }
 }

@@ -44,7 +44,9 @@
 use {
     crate::{
         error::ErrorCode,
-        instructions::{refuse_duplicate_accounts, validate_market_coverage, MarketCoverage},
+        instructions::{
+            loader_of, refuse_duplicate_accounts, validate_market_coverage, MarketCoverage,
+        },
         state::{
             clob_crank::ClobCrankConditionsV0,
             oracle::OracleSource,
@@ -345,7 +347,7 @@ fn collect_trigger_inputs<'info>(
 
     for info in remaining_accounts {
         if info.owner == &crate::ID {
-            if let Ok(loader) = AccountLoader::<PerpMarket>::try_from(info) {
+            if let Some(loader) = loader_of::<PerpMarket>(info) {
                 let market = loader.load()?;
                 let inputs = markets.entry(market.market_index).or_default();
                 inputs.oracle = Some(market.oracle);
@@ -357,13 +359,13 @@ fn collect_trigger_inputs<'info>(
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
-            if let Ok(loader) = AccountLoader::<SpotMarket>::try_from(info) {
+            if let Some(loader) = loader_of::<SpotMarket>(info) {
                 let market = loader.load()?;
                 spot_oracles.insert(market.market_index, market.oracle);
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
-            if let Ok(loader) = AccountLoader::<ClobCrankConditionsV0>::try_from(info) {
+            if let Some(loader) = loader_of::<ClobCrankConditionsV0>(info) {
                 let conditions = loader.load()?;
                 markets
                     .entry(conditions.market_index)
@@ -372,7 +374,7 @@ fn collect_trigger_inputs<'info>(
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 continue;
             }
-            if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
+            if let Some(loader) = loader_of::<QuoterSlabV0>(info) {
                 let market = loader.load()?.market;
                 markets.entry(market).or_default().has_slab = true;
                 let slots = loader.slots()?;

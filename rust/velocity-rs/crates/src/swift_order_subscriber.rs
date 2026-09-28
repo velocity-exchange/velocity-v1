@@ -40,6 +40,17 @@ pub const SWIFT_MSG_PREFIX: [u8; 8] =
 pub const SWIFT_DELEGATE_MSG_PREFIX: [u8; 8] =
     program::state::order_params::SignedMsgOrderParamsDelegateMessage::PAYLOAD_DISCRIMINATOR;
 
+/// Upper bound on an encoded signed message. It is computed by hand, because the signed
+/// route is a borsh `Vec` with no fixed size. It covers the discriminator, every field
+/// before the route, and a full-length route.
+pub const MAX_SIGNED_MSG_BORSH_LEN: usize = 8 + SIGNED_MSG_FIXED_LEN + SIGNED_MSG_ROUTE_MAX_LEN;
+/// Borsh length of the delegate message with every `Option` present and no route. This is
+/// the widest fixed part that either message type can have.
+const SIGNED_MSG_FIXED_LEN: usize = 512;
+/// `Option` tag, vec length prefix, and `MAX_SIGNED_MSG_ROUTE_LEN` pubkeys.
+const SIGNED_MSG_ROUTE_MAX_LEN: usize =
+    1 + 4 + program::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN * 32;
+
 pub const SWIFT_DEVNET_WS_URL: &str = "wss://swift.master.velocity.exchange";
 pub const SWIFT_MAINNET_WS_URL: &str = "wss://swift.velocity.exchange";
 
@@ -646,34 +657,43 @@ where
     D: serde::Deserializer<'de>,
 {
     let payload: std::borrow::Cow<String> = serde::Deserialize::deserialize(deserializer)?;
+    decode_signed_msg_payload(payload.as_str()).map_err(serde::de::Error::custom)
+}
+
+/// Decode a hex signed message payload. The length is checked before the hex decode, so
+/// a request from an unknown sender cannot make the parser allocate or index past a bound.
+/// A short payload is zero-padded the same way the program verifier pads it.
+pub fn decode_signed_msg_payload(payload: &str) -> Result<SignedOrderType, String> {
     if !payload.len().is_multiple_of(2) {
-        return Err(serde::de::Error::custom("Hex string length must be even"));
-    }
-    if payload.is_empty() {
-        return Err(serde::de::Error::custom("invalid signed message hex"));
+        return Err("Hex string length must be even".into());
     }
 
-    // decode expecting the largest possible variant
-    let mut borsh_buf = [0u8; std::mem::size_of::<SignedDelegateOrder>() + 8];
-    hex::decode_to_slice(payload.as_bytes(), &mut borsh_buf[..payload.len() / 2])
-        .map_err(serde::de::Error::custom)?;
+    let borsh_len = payload.len() / 2;
+    if borsh_len < SWIFT_MSG_PREFIX.len() {
+        return Err("invalid signed message hex".into());
+    }
 
-    // this is basically the same as if we derived AnchorDeserialize on `SignedOrderType` _expect_ it does not
-    // add a u8 to distinguish the enum
+    if borsh_len > MAX_SIGNED_MSG_BORSH_LEN {
+        return Err(format!(
+            "signed message is {borsh_len} bytes, max {MAX_SIGNED_MSG_BORSH_LEN}"
+        ));
+    }
+
+    let mut borsh_buf = hex::decode(payload).map_err(|err| err.to_string())?;
+    let padded_len = std::mem::size_of::<SignedDelegateOrder>() + 8;
+    if borsh_buf.len() < padded_len {
+        borsh_buf.resize(padded_len, 0);
+    }
+
+    let raw = Some(payload.to_string());
     if borsh_buf[..8] == SWIFT_DELEGATE_MSG_PREFIX {
         AnchorDeserialize::deserialize(&mut &borsh_buf[8..])
-            .map(|x| SignedOrderType::Delegated {
-                raw: Some(payload.to_string()),
-                inner: x,
-            })
-            .map_err(serde::de::Error::custom)
+            .map(|inner| SignedOrderType::Delegated { raw, inner })
+            .map_err(|err| err.to_string())
     } else {
         AnchorDeserialize::deserialize(&mut &borsh_buf[8..])
-            .map(|x| SignedOrderType::Authority {
-                raw: Some(payload.to_string()),
-                inner: x,
-            })
-            .map_err(serde::de::Error::custom)
+            .map(|inner| SignedOrderType::Authority { raw, inner })
+            .map_err(|err| err.to_string())
     }
 }
 

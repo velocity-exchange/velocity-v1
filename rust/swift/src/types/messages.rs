@@ -10,22 +10,13 @@ use {
     solana_transaction::versioned::VersionedTransaction,
     std::str::FromStr,
     velocity_rs::{
-        swift_order_subscriber::{deser_signed_msg_type, SignedMessageInfo, SignedOrderType},
+        swift_order_subscriber::{
+            deser_signed_msg_type, SignedMessageInfo, SignedOrderType, MAX_SIGNED_MSG_BORSH_LEN,
+        },
         types::{market_type_from_str, MarketType},
     },
 };
 
-/// Upper bound on an encoded signed message, hand-computed rather than
-/// derived from `InitSpace` since the signed route (`Vec<Pubkey>`) has no
-/// fixed size. Covers everything before the route plus a full-length
-/// route.
-pub const MAX_SIGNED_MSG_BORSH_LEN: usize = SIGNED_MSG_FIXED_LEN + SIGNED_MSG_ROUTE_MAX_LEN + 8;
-/// Borsh length of the delegate message with every `Option` present and no
-/// route. This is the widest fixed part either variant can have.
-const SIGNED_MSG_FIXED_LEN: usize = 512;
-/// `Option` tag + vec length prefix + [`MAX_SIGNED_MSG_ROUTE_LEN`] pubkeys.
-const SIGNED_MSG_ROUTE_MAX_LEN: usize =
-    1 + 4 + velocity_rs::program::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN * 32;
 pub const MAX_SIGNED_MSG_HEX_LEN: usize = MAX_SIGNED_MSG_BORSH_LEN * 2;
 
 #[derive(serde::Deserialize, Clone, Debug, PartialEq)]
@@ -771,5 +762,77 @@ mod tests {
             }
             SignedOrderType::Delegated { .. } => panic!("expected Authority variant"),
         }
+    }
+
+    fn full_delegate_message(route_len: usize) -> SignedMsgOrderParamsDelegateMessage {
+        let trigger = SignedMsgTriggerOrderParams {
+            trigger_price: u64::MAX,
+            base_asset_amount: u64::MAX,
+        };
+        let mut params = sample_order_params();
+        params.max_ts = Some(i64::MAX);
+        params.trigger_price = Some(u64::MAX);
+        params.oracle_price_offset = Some(i64::MAX);
+        params.activation_delay_slots = Some(u32::MAX);
+        params.builder_idx = Some(u8::MAX);
+        params.builder_fee_tenth_bps = Some(u16::MAX);
+
+        SignedMsgOrderParamsDelegateMessage {
+            signed_msg_order_params: params,
+            taker_pubkey: test_keypair(22).pubkey(),
+            slot: u64::MAX,
+            uuid: [115, 56, 108, 117, 74, 76, 90, 101],
+            take_profit_order_params: Some(trigger.clone()),
+            stop_loss_order_params: Some(trigger),
+            max_margin_ratio: Some(u16::MAX),
+            builder_fee_tenth_bps: Some(u16::MAX),
+            builder_idx: Some(u8::MAX),
+            isolated_position_deposit: Some(u64::MAX),
+            network: Some(b'd'),
+            route: Some((0..route_len).map(|_| Pubkey::new_unique()).collect()),
+        }
+    }
+
+    /// A route at the program's cap is valid, and its borsh form is longer than the
+    /// in-memory message. The parser must decode it and not panic.
+    #[test]
+    fn deserialize_incoming_signed_message_with_full_route() {
+        let signer = test_keypair(41);
+        let max_route = velocity_rs::program::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN;
+        let expected = full_delegate_message(max_route);
+        let hex_msg = encode_message(&SignedOrderType::delegated(expected.clone()));
+        assert!(hex_msg.len() <= MAX_SIGNED_MSG_HEX_LEN);
+
+        let signature = sign_hex(&signer, &hex_msg);
+        let message = format!(
+            r#"{{"message": "{hex_msg}", "signature": "{signature}", "signing_authority": "{}"}}"#,
+            signer.pubkey()
+        );
+
+        let actual: IncomingSignedMessage = serde_json::from_str(&message).expect("deserializes");
+        assert!(actual.verify_signature().is_ok());
+        match actual.order() {
+            SignedOrderType::Delegated { inner, .. } => assert_eq!(inner, expected),
+            SignedOrderType::Authority { .. } => panic!("expected Delegated variant"),
+        }
+    }
+
+    /// A payload past the bound, or shorter than a discriminator, is refused with an
+    /// error and not a panic.
+    #[test]
+    fn deserialize_incoming_signed_message_bad_length_is_refused() {
+        let hex_msg = encode_message(&SignedOrderType::delegated(full_delegate_message(64)));
+        assert!(hex_msg.len() > MAX_SIGNED_MSG_HEX_LEN);
+
+        let signature = sign_hex(&test_keypair(42), &hex_msg);
+        let oversized = format!(r#"{{"message": "{hex_msg}", "signature": "{signature}"}}"#);
+        let result: std::result::Result<IncomingSignedMessage, _> =
+            serde_json::from_str(&oversized);
+        assert!(result.is_err());
+
+        let too_short = format!(r#"{{"message": "00ff", "signature": "{signature}"}}"#);
+        let result: std::result::Result<IncomingSignedMessage, _> =
+            serde_json::from_str(&too_short);
+        assert!(result.is_err());
     }
 }

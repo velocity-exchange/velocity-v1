@@ -58,6 +58,7 @@ use {
                 MarketConfigFlag, MarketStats, PerpMarket, PoolBalance, AMM,
             },
             perp_market_map::{get_writable_perp_market_set, MarketSet},
+            prop_amm::{occupied_slots, QuoterSlabExt, QuoterSlabV0},
             pyth_lazer_oracle::{PythLazerOracle, PYTH_LAZER_ORACLE_SEED},
             spot_market::{
                 AssetTier, InsuranceFund, SpotBalanceType, SpotMarket, TokenProgramFlag,
@@ -911,8 +912,8 @@ pub fn handle_initialize_perp_market(
     Ok(())
 }
 
-pub fn handle_delete_initialized_perp_market(
-    ctx: Context<DeleteInitializedPerpMarket>,
+pub fn handle_delete_initialized_perp_market<'info>(
+    ctx: Context<'info, DeleteInitializedPerpMarket<'info>>,
     market_index: u16,
 ) -> Result<()> {
     let perp_market = &mut ctx.accounts.perp_market.load()?;
@@ -947,9 +948,34 @@ pub fn handle_delete_initialized_perp_market(
         perp_market.market_index
     )?;
 
+    // The book, its crank conditions and the slab outlive the market. A new
+    // market at this index would adopt them.
+    validate!(
+        perp_market.clob_market == Pubkey::default(),
+        ErrorCode::InvalidMarketAccountforDeletion,
+        "perp market names book {}",
+        perp_market.clob_market
+    )?;
+    validate!(
+        quoter_slab_is_vacant(&ctx.accounts.quoter_slab)?,
+        ErrorCode::InvalidMarketAccountforDeletion,
+        "quoter slab holds an approved quoter; revoke it first"
+    )?;
+
     safe_decrement!(state.number_of_markets, 1);
 
     Ok(())
+}
+
+/// True when the slab does not exist or holds no approved quoter.
+fn quoter_slab_is_vacant<'info>(quoter_slab: &'info UncheckedAccount<'info>) -> Result<bool> {
+    if quoter_slab.data_is_empty() {
+        return Ok(true);
+    }
+
+    let slab = AccountLoader::<QuoterSlabV0>::try_from(quoter_slab.as_ref())?;
+    let vacant = occupied_slots(&slab.slots()?).next().is_none();
+    Ok(vacant)
 }
 
 pub fn handle_delete_initialized_spot_market(
@@ -3105,6 +3131,18 @@ pub fn handle_update_perp_market_step_size_and_tick_size(
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     msg!("perp market {}", perp_market.market_index);
 
+    write_perp_market_order_grid(perp_market, step_size, tick_size)?;
+    crate::instructions::clob::validate_attached_book_grid(perp_market, ctx.remaining_accounts)
+}
+
+/// A market with an attached book changes its grid through
+/// `update_perp_market_clob_book_config`, which also calls this. That one
+/// instruction moves both grids, and each grid must equal the other.
+pub(crate) fn write_perp_market_order_grid(
+    perp_market: &mut PerpMarket,
+    step_size: u64,
+    tick_size: u64,
+) -> Result<()> {
     validate!(step_size > 0 && tick_size > 0, ErrorCode::DefaultError)?;
     validate!(step_size <= 2000000000, ErrorCode::DefaultError)?; // below i32 max for lp's remainder_base_asset
 
@@ -3122,7 +3160,7 @@ pub fn handle_update_perp_market_step_size_and_tick_size(
 
     perp_market.order_step_size = step_size;
     perp_market.order_tick_size = tick_size;
-    crate::instructions::clob::validate_attached_book_grid(perp_market, ctx.remaining_accounts)
+    Ok(())
 }
 
 #[access_control(
@@ -4934,6 +4972,10 @@ pub struct DeleteInitializedPerpMarket<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut, close = admin)]
     pub perp_market: AccountLoader<'info, PerpMarket>,
+    /// The market's quoter slab, which may not exist yet.
+    /// CHECK: bound to the market's slab. The handler reads it.
+    #[account(address = perp_market.load()?.quoter_slab)]
+    pub quoter_slab: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

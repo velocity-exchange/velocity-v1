@@ -279,7 +279,7 @@ fn clob_market_config(market_index: u16) -> Vec<u8> {
     v.extend_from_slice(&1u64.to_le_bytes()); // order_tick_size
     v.extend_from_slice(&1000u64.to_le_bytes()); // order_step_size (matches the perp market step)
     v.extend_from_slice(&1000u64.to_le_bytes()); // min_order_size (one step)
-    v.extend_from_slice(&2000u64.to_le_bytes()); // blocking_min_size (above the minimum)
+    v.extend_from_slice(&10_000u64.to_le_bytes()); // blocking_min_size (ten minimum orders)
     v.extend_from_slice(&0u32.to_le_bytes()); // default_activation_delay
     v.extend_from_slice(&20u32.to_le_bytes()); // max_activation_delay
     v.extend_from_slice(&2u32.to_le_bytes()); // unknown_user_grace_slots

@@ -8,7 +8,9 @@ use {
         auth::check_warm,
         error::ErrorCode,
         instructions::constraints::perp_market_valid,
-        load_mut, msg,
+        load_mut,
+        math::safe_math::SafeMath,
+        msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CrankCostUnitsV0, CrankPaymentsV0},
             perp_market::PerpMarket,
@@ -279,17 +281,35 @@ pub(super) fn mirror_book_placement_rules(
     Ok(())
 }
 
-/// Hold the book's size floor and grid to the market's.
+pub const BOOK_BLOCKING_FLOOR_MIN_ORDERS: u64 = 10;
+
+/// Hold the book's size floors and grid to the market's.
 ///
 /// The book's minimum must sit at or under the market's, because the fill
 /// bounds a culled remainder's release by the market's minimum. A market with
 /// no minimum of its own has nothing to bound. The book's tick and step must
 /// equal the market's, so a remainder aligned to the market can always rest.
 /// An off-tick or off-step remainder reverts the whole fill that carried it.
+///
+/// The blocking floor is at least [`BOOK_BLOCKING_FLOOR_MIN_ORDERS`] minimum
+/// orders. A walk ends at an order at or over the floor whose owner the caller
+/// does not carry, and a caller carries at most 48 owners. So 49 such orders
+/// keep the book out of every fill, and each of them locks ten orders of margin.
 pub(crate) fn validate_book_fits_market(
     rules: &crate::state::prop_amm::OrderRulesV0,
     perp_market: &PerpMarket,
 ) -> Result<()> {
+    let min_order_size = rules
+        .min_order_size
+        .max(perp_market.market_stats.min_order_size);
+    validate!(
+        rules.blocking_min_size >= min_order_size.safe_mul(BOOK_BLOCKING_FLOOR_MIN_ORDERS)?,
+        ErrorCode::InvalidQuoterConfig,
+        "book blocking floor {} is under {} minimum orders of {}",
+        rules.blocking_min_size,
+        BOOK_BLOCKING_FLOOR_MIN_ORDERS,
+        min_order_size
+    )?;
     validate!(
         perp_market.market_stats.min_order_size == 0
             || rules.min_order_size <= perp_market.market_stats.min_order_size,
@@ -422,7 +442,7 @@ mod book_grid_tests {
     fn rules() -> crate::state::prop_amm::OrderRulesV0 {
         crate::state::prop_amm::OrderRulesV0 {
             min_order_size: 100,
-            blocking_min_size: 0,
+            blocking_min_size: 5_000,
             default_activation_delay_slots: 0,
             max_activation_delay_slots: 0,
             place_authority: [0; 32],
@@ -457,6 +477,21 @@ mod book_grid_tests {
             validate_book_fits_market(&rules(), &market(99, 10, 100)).unwrap_err(),
             ErrorCode::InvalidQuoterConfig.into()
         );
+    }
+
+    /// The floor counts orders of the larger of the book's and the market's minimum.
+    #[test]
+    fn a_blocking_floor_under_ten_minimum_orders_is_refused() {
+        let mut rules = rules();
+        rules.blocking_min_size = 999;
+        assert_eq!(
+            validate_book_fits_market(&rules, &market(0, 10, 100)).unwrap_err(),
+            ErrorCode::InvalidQuoterConfig.into()
+        );
+
+        rules.blocking_min_size = 1_000;
+        assert!(validate_book_fits_market(&rules, &market(0, 10, 100)).is_ok());
+        assert!(validate_book_fits_market(&rules, &market(500, 10, 100)).is_err());
     }
 
     #[test]

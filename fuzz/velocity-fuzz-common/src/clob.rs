@@ -124,7 +124,7 @@ fn book_config(order_step_size: u64, min_order_size: u64) -> Vec<u8> {
     v.extend_from_slice(&1u64.to_le_bytes()); // order_tick_size
     v.extend_from_slice(&order_step_size.to_le_bytes());
     v.extend_from_slice(&min_order_size.to_le_bytes());
-    v.extend_from_slice(&(2 * min_order_size).to_le_bytes()); // blocking_min_size
+    v.extend_from_slice(&(10 * min_order_size).to_le_bytes()); // blocking_min_size
     v.extend_from_slice(&0u32.to_le_bytes()); // default_activation_delay
     v.extend_from_slice(&20u32.to_le_bytes()); // max_activation_delay
     v.extend_from_slice(&2u32.to_le_bytes()); // unknown_user_grace_slots

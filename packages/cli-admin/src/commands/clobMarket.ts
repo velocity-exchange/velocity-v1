@@ -372,7 +372,7 @@ export function registerClobMarket(parent: Command): void {
 			)
 			.option(
 				'--blocking-min-size <n>',
-				'floor on the size of an order that may end a fill walk when its owner is not carried. Must exceed the minimum order size',
+				'floor on the size of an order that may end a fill walk when its owner is not carried. Velocity requires at least ten times the larger of the book minimum and the market minimum order size',
 				'1000000'
 			)
 			.option(
@@ -389,7 +389,7 @@ export function registerClobMarket(parent: Command): void {
 			.option(
 				'--evict-threshold <n>',
 				'per-side soft cap enabling the evict crank',
-				'3072'
+				'256'
 			)
 			.option('--max-quote-levels <n>', 'quote response level cap', '128')
 			.option('--max-execute-fills <n>', 'execute response fill cap', '64')
@@ -699,14 +699,14 @@ export function registerClobMarket(parent: Command): void {
 		clobMarket
 			.command('update-config <market>')
 			.description(
-				"Change an existing book's mutable config through velocity's update_perp_market_clob_book_config, which CPIs the CLOB's update_market_v0 as the book's config authority and rewrites velocity's copy of the book's rules in the same instruction. The signer must hold the warm or cold admin role. Only the flags passed are written, and the rest keep their current setting. base_precision, market_index and place_authority are immutable, so this command does not offer them. The book, its program and its quoter entry come from chain, so no program id is needed."
+				"Change an existing book's mutable config through velocity's update_perp_market_clob_book_config, which CPIs the CLOB's update_market_v0 as the book's config authority and rewrites velocity's copy of the book's rules in the same instruction. The signer must hold the warm or cold admin role. Only the flags passed are written, and the rest keep their current setting. A new --tick-size or --step-size is written to the perp market too, because the market and its book share one grid. This is the only way to change the grid of a market with an attached book. base_precision, market_index and place_authority are immutable, so this command does not offer them. The book, its program and its quoter entry come from chain, so no program id is needed."
 			)
 			.option('--tick-size <n>', 'price tick (PRICE_PRECISION)')
 			.option('--step-size <n>', 'size step (base precision)')
 			.option('--min-order-size <n>', 'minimum order size (base precision)')
 			.option(
 				'--blocking-min-size <n>',
-				'floor on the size of an order that may end a fill walk when its owner is not carried. Must exceed the minimum order size'
+				'floor on the size of an order that may end a fill walk when its owner is not carried. Velocity requires at least ten times the larger of the book minimum and the market minimum order size'
 			)
 			.option('--default-activation-delay <slots>', 'default taker speed bump')
 			.option('--max-activation-delay <slots>', 'max caller-chosen delay')

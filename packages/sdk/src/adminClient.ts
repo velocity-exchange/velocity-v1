@@ -961,7 +961,8 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Builds the `deleteInitializedPerpMarket` instruction without sending it. See
-	 * `deleteInitializedPerpMarket` for the on-chain preconditions.
+	 * `deleteInitializedPerpMarket` for the on-chain preconditions. The market must also name
+	 * no book, and its quoter slab must hold no approved quoter.
 	 * @param marketIndex - Index of the perp market to delete.
 	 * @returns The unsigned `deleteInitializedPerpMarket` instruction.
 	 */
@@ -982,6 +983,10 @@ export class AdminClient extends VelocityClient {
 						? this.getStateAccount().coldAdmin
 						: this.wallet.publicKey,
 					perpMarket: perpMarketPublicKey,
+					quoterSlab: getQuoterSlabPublicKey(
+						this.program.programId,
+						marketIndex
+					),
 				},
 			}
 		);

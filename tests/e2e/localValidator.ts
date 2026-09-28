@@ -748,7 +748,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						orderTickSize: market.orderTickSize,
 						orderStepSize: market.orderStepSize,
 						minOrderSize: market.orderStepSize,
-						blockingMinSize: market.orderStepSize.muln(2),
+						// Velocity's attach requires ten minimum orders.
+						blockingMinSize: anchor.BN.max(
+							market.orderStepSize,
+							market.marketStats.minOrderSize
+						).muln(10),
 						defaultActivationDelaySlots: 0,
 						maxActivationDelaySlots: 20,
 						unknownUserGraceSlots: 2,

@@ -930,8 +930,8 @@ pub mod velocity {
         handle_update_initial_amm_cache_info(ctx)
     }
 
-    pub fn delete_initialized_perp_market(
-        ctx: Context<DeleteInitializedPerpMarket>,
+    pub fn delete_initialized_perp_market<'info>(
+        ctx: Context<'info, DeleteInitializedPerpMarket<'info>>,
         market_index: u16,
     ) -> Result<()> {
         handle_delete_initialized_perp_market(ctx, market_index)

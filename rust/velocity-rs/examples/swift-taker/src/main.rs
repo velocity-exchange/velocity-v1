@@ -176,7 +176,7 @@ async fn swift_deposit_trade(
     // .add_ix(additional_setup_ixs)
     .add_ix(create_ata_ix)
     .deposit(deposit_amount, deposit_market_index, None, None)
-    .place_swift_order(&signed_order_info, &taker_account_data, clob, None)
+    .place_swift_order(&signed_order_info, &taker_account_data, &[], clob, None)
     // .add_ix(additional_clean_up_ixs)
     .build();
     let signed_tx = velocity

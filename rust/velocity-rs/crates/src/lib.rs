@@ -2115,6 +2115,20 @@ fn liquidation_book_pairs(books: &[ClobFillAccounts]) -> impl Iterator<Item = Ac
     })
 }
 
+/// The writable `(User, UserStats)` metas of `makers`, the pairs the program's
+/// user section reads.
+fn maker_account_metas(makers: &[User]) -> impl Iterator<Item = AccountMeta> + '_ {
+    makers.iter().flat_map(|maker| {
+        [
+            AccountMeta::new(
+                Wallet::derive_user_account(&maker.authority, maker.sub_account_id),
+                false,
+            ),
+            AccountMeta::new(Wallet::derive_stats_account(&maker.authority), false),
+        ]
+    })
+}
+
 impl ForceMarkets {
     /// Set given `markets` as readable, enforcing there inclusion in a final Tx
     pub fn with_readable(&mut self, markets: &[MarketId]) -> &mut Self {
@@ -2971,6 +2985,10 @@ impl<'a> TransactionBuilder<'a> {
                 .iter()
                 .chain(self.force_markets.writeable.iter()),
         );
+
+        // The program reads the user section directly after the maps. A fill
+        // settles only against users loaded there.
+        accounts.extend(maker_account_metas(makers));
 
         // Upstream drift removed User.margin_mode; high-leverage mode now
         // comes exclusively from individual OrderParams flags.
@@ -4126,15 +4144,7 @@ impl<'a> TransactionBuilder<'a> {
             .collect();
         accounts.extend(liquidation_book_pairs(&other_books));
 
-        for maker in makers {
-            accounts.extend([
-                AccountMeta::new(
-                    Wallet::derive_user_account(&maker.authority, maker.sub_account_id),
-                    false,
-                ),
-                AccountMeta::new(Wallet::derive_stats_account(&maker.authority), false),
-            ]);
-        }
+        accounts.extend(maker_account_metas(makers));
 
         if let Some(book) = other_books.first() {
             accounts.push(AccountMeta::new_readonly(book.clob_program, false));
@@ -4677,5 +4687,65 @@ mod tests {
 
         let high_leverage_account = *high_leverage_mode_account();
         assert!(tx.static_account_keys().contains(&high_leverage_account));
+    }
+
+    /// A book fill settles only against users the program loaded, so the
+    /// placement carries each maker's `User` and `UserStats` as writable metas.
+    #[test]
+    fn place_swift_order_carries_book_makers() {
+        let program_data = ProgramData::new(
+            vec![SpotMarket::default()],
+            vec![PerpMarket::default()],
+            vec![],
+            State::default(),
+        );
+        let filler = Pubkey::new_unique();
+        let builder =
+            TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false);
+
+        let taker_authority = Pubkey::new_unique();
+        let signed_order = crate::swift_order_subscriber::SignedOrder {
+            signed_msg_order_params: OrderParams {
+                market_type: MarketType::Perp,
+                ..Default::default()
+            },
+            uuid: *b"makers00",
+            ..Default::default()
+        };
+        let order_info = crate::swift_order_subscriber::SignedOrderInfo::authority(
+            taker_authority,
+            signed_order,
+            Signature::default(),
+        );
+        let maker = User {
+            authority: Pubkey::new_unique(),
+            sub_account_id: 3,
+            ..Default::default()
+        };
+        let clob = ClobFillAccounts {
+            market_index: 0,
+            quoter_slab: Pubkey::new_unique(),
+            clob_market: Pubkey::new_unique(),
+            clob_program: Pubkey::new_unique(),
+            crank_conditions: None,
+        };
+
+        let builder = builder.place_swift_order(
+            &order_info,
+            &User::default(),
+            std::slice::from_ref(&maker),
+            clob,
+            None,
+        );
+
+        let accounts = &builder.ixs().last().unwrap().accounts;
+        let maker_user = Wallet::derive_user_account(&maker.authority, maker.sub_account_id);
+        let maker_stats = Wallet::derive_stats_account(&maker.authority);
+        let user_index = accounts
+            .iter()
+            .position(|meta| meta.pubkey == maker_user && meta.is_writable)
+            .expect("maker user meta");
+        assert_eq!(accounts[user_index + 1].pubkey, maker_stats);
+        assert!(accounts[user_index + 1].is_writable);
     }
 }

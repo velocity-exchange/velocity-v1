@@ -65,6 +65,20 @@ runs:
     # deploy (see deploy-scripts/README.md) — CI only ever updates it via the
     # official squads action's single-tx SetData, so no pre-flight check here.
 
+    # Anything that runs agave-install (avm does, on anchor invocations) can swap
+    # the active Solana CLI mid-job. An older CLI rejects SBPFv3 during the local
+    # ELF check with "sbpf_version ... not enabled", so fail on the version here.
+    - name: Solana CLI is the pinned version
+      shell: bash
+      run: |
+        set -euo pipefail
+        GOT="$(solana --version | awk '{print $2}')"
+        echo "solana $GOT at $(command -v solana)"
+        if [ "$GOT" != "$SOLANA_VERSION" ]; then
+          echo "::error::solana CLI is $GOT, expected $SOLANA_VERSION. Something re-ran agave-install after setup-solana."
+          exit 1
+        fi
+
     - name: Prepare Squads release (program + metadata buffers)
       id: prepare
       uses: solana-foundation/github-actions/prepare-squads-release@f0ddc2234ac4ac19c5c17f520b60bc2d7308744f # v0.2.11

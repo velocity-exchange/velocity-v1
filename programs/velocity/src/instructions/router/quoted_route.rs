@@ -134,24 +134,34 @@ fn trim_to_quoter_room(
 /// the band would fill before any level inside it. The band cuts the
 /// taker-favourable end, so such a level leads the ladder. The fill must then
 /// take nothing from this book, or the band check after the fill reverts it.
-fn book_rests_outside_band(
+pub(super) fn book_rests_outside_band(
     levels: &[PriceLevelV0],
     maker_direction: PositionDirection,
     band_oracle_price: i64,
     oracle_band: u32,
 ) -> Result<bool> {
-    for level in levels {
+    Ok(levels_inside_band(levels, maker_direction, band_oracle_price, oracle_band)? < levels.len())
+}
+
+/// How many leading levels of a ladder sit inside the oracle band.
+pub(super) fn levels_inside_band(
+    levels: &[PriceLevelV0],
+    maker_direction: PositionDirection,
+    band_oracle_price: i64,
+    oracle_band: u32,
+) -> Result<usize> {
+    for (index, level) in levels.iter().enumerate() {
         if crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
             level.price,
             maker_direction,
             band_oracle_price,
             oracle_band,
         )? {
-            return Ok(true);
+            return Ok(index);
         }
     }
 
-    Ok(false)
+    Ok(levels.len())
 }
 
 /// The market's slab, found on the account tail.

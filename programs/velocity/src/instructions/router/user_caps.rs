@@ -651,7 +651,7 @@ impl CapInputs<'_, '_> {
     /// them to a book maker. A user under liquidation gets no room. A tripped
     /// breaker, an unverifiable or breached floor, or a `ReduceOnly` market
     /// leaves only the room that reduces the position.
-    fn quoter_base_room(
+    pub(super) fn quoter_base_room(
         &mut self,
         quoter_user_key: &Pubkey,
         market_index: u16,

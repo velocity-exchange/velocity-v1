@@ -1819,6 +1819,117 @@
       ]
     },
     {
+      "name": "deposit_into_perp_market_pnl_pool",
+      "discriminator": [
+        224,
+        20,
+        50,
+        106,
+        186,
+        1,
+        182,
+        15
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "writable": true
+        },
+        {
+          "name": "perp_market",
+          "writable": true
+        },
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "source_vault",
+          "writable": true
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
+          "name": "quote_spot_market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "deposit_into_spot_market_revenue_pool",
       "discriminator": [
         92,
@@ -3540,129 +3651,12 @@
       ],
       "args": [
         {
-          "name": "market_index",
-          "type": "u16"
-        },
-        {
-          "name": "amm_base_asset_reserve",
-          "type": "u128"
-        },
-        {
-          "name": "amm_quote_asset_reserve",
-          "type": "u128"
-        },
-        {
-          "name": "amm_periodicity",
-          "type": "i64"
-        },
-        {
-          "name": "amm_peg_multiplier",
-          "type": "u128"
-        },
-        {
-          "name": "oracle_source",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "OracleSource"
+              "name": "InitializePerpMarketArgs"
             }
           }
-        },
-        {
-          "name": "contract_tier",
-          "type": {
-            "defined": {
-              "name": "ContractTier"
-            }
-          }
-        },
-        {
-          "name": "margin_ratio_initial",
-          "type": "u32"
-        },
-        {
-          "name": "margin_ratio_maintenance",
-          "type": "u32"
-        },
-        {
-          "name": "liquidator_fee",
-          "type": "u32"
-        },
-        {
-          "name": "if_liquidation_fee",
-          "type": "u32"
-        },
-        {
-          "name": "imf_factor",
-          "type": "u32"
-        },
-        {
-          "name": "active_status",
-          "type": "bool"
-        },
-        {
-          "name": "base_spread",
-          "type": "u32"
-        },
-        {
-          "name": "max_spread",
-          "type": "u32"
-        },
-        {
-          "name": "max_open_interest",
-          "type": "u128"
-        },
-        {
-          "name": "max_revenue_withdraw_per_period",
-          "type": "u64"
-        },
-        {
-          "name": "quote_max_insurance",
-          "type": "u64"
-        },
-        {
-          "name": "order_step_size",
-          "type": "u64"
-        },
-        {
-          "name": "order_tick_size",
-          "type": "u64"
-        },
-        {
-          "name": "min_order_size",
-          "type": "u64"
-        },
-        {
-          "name": "concentration_coef_scale",
-          "type": "u128"
-        },
-        {
-          "name": "curve_update_intensity",
-          "type": "u8"
-        },
-        {
-          "name": "amm_jit_intensity",
-          "type": "u8"
-        },
-        {
-          "name": "name",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        },
-        {
-          "name": "lp_pool_id",
-          "type": "u8"
-        },
-        {
-          "name": "funding_clamp_threshold",
-          "type": "u32"
-        },
-        {
-          "name": "funding_ramp_slope",
-          "type": "u32"
         }
       ]
     },
@@ -4291,92 +4285,11 @@
       ],
       "args": [
         {
-          "name": "optimal_utilization",
-          "type": "u32"
-        },
-        {
-          "name": "optimal_borrow_rate",
-          "type": "u32"
-        },
-        {
-          "name": "max_borrow_rate",
-          "type": "u32"
-        },
-        {
-          "name": "oracle_source",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "OracleSource"
+              "name": "InitializeSpotMarketArgs"
             }
-          }
-        },
-        {
-          "name": "initial_asset_weight",
-          "type": "u32"
-        },
-        {
-          "name": "maintenance_asset_weight",
-          "type": "u32"
-        },
-        {
-          "name": "initial_liability_weight",
-          "type": "u32"
-        },
-        {
-          "name": "maintenance_liability_weight",
-          "type": "u32"
-        },
-        {
-          "name": "imf_factor",
-          "type": "u32"
-        },
-        {
-          "name": "liquidator_fee",
-          "type": "u32"
-        },
-        {
-          "name": "if_liquidation_fee",
-          "type": "u32"
-        },
-        {
-          "name": "active_status",
-          "type": "bool"
-        },
-        {
-          "name": "asset_tier",
-          "type": {
-            "defined": {
-              "name": "AssetTier"
-            }
-          }
-        },
-        {
-          "name": "scale_initial_asset_weight_start",
-          "type": "u64"
-        },
-        {
-          "name": "withdraw_guard_threshold",
-          "type": "u64"
-        },
-        {
-          "name": "order_tick_size",
-          "type": "u64"
-        },
-        {
-          "name": "order_step_size",
-          "type": "u64"
-        },
-        {
-          "name": "if_total_factor",
-          "type": "u32"
-        },
-        {
-          "name": "name",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
           }
         }
       ]
@@ -19077,6 +18990,268 @@
           },
           {
             "name": "VammQuoteManagement"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InitializePerpMarketArgs",
+      "docs": [
+        "Arguments to `initialize_perp_market`.",
+        "",
+        "Named rather than positional: twenty-eight arguments with adjacent",
+        "same-typed pairs that nothing cross-checks, so a transposition lists a",
+        "market with the wrong risk profile and no error. Named fields make it a",
+        "compile error. Borsh is still positional, so adding a field needs a new",
+        "instruction."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "amm_base_asset_reserve",
+            "type": "u128"
+          },
+          {
+            "name": "amm_quote_asset_reserve",
+            "type": "u128"
+          },
+          {
+            "name": "amm_periodicity",
+            "type": "i64"
+          },
+          {
+            "name": "amm_peg_multiplier",
+            "type": "u128"
+          },
+          {
+            "name": "oracle_source",
+            "type": {
+              "defined": {
+                "name": "OracleSource"
+              }
+            }
+          },
+          {
+            "name": "contract_tier",
+            "type": {
+              "defined": {
+                "name": "ContractTier"
+              }
+            }
+          },
+          {
+            "name": "margin_ratio_initial",
+            "type": "u32"
+          },
+          {
+            "name": "margin_ratio_maintenance",
+            "type": "u32"
+          },
+          {
+            "name": "liquidator_fee",
+            "type": "u32"
+          },
+          {
+            "name": "if_liquidation_fee",
+            "type": "u32"
+          },
+          {
+            "name": "imf_factor",
+            "type": "u32"
+          },
+          {
+            "name": "active_status",
+            "type": "bool"
+          },
+          {
+            "name": "base_spread",
+            "type": "u32"
+          },
+          {
+            "name": "max_spread",
+            "type": "u32"
+          },
+          {
+            "name": "max_open_interest",
+            "type": "u128"
+          },
+          {
+            "name": "max_revenue_withdraw_per_period",
+            "type": "u64"
+          },
+          {
+            "name": "quote_max_insurance",
+            "type": "u64"
+          },
+          {
+            "name": "order_step_size",
+            "type": "u64"
+          },
+          {
+            "name": "order_tick_size",
+            "type": "u64"
+          },
+          {
+            "name": "min_order_size",
+            "type": "u64"
+          },
+          {
+            "name": "concentration_coef_scale",
+            "type": "u128"
+          },
+          {
+            "name": "curve_update_intensity",
+            "type": "u8"
+          },
+          {
+            "name": "amm_jit_intensity",
+            "type": "u8"
+          },
+          {
+            "name": "name",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "lp_pool_id",
+            "type": "u8"
+          },
+          {
+            "name": "funding_clamp_threshold",
+            "type": "u32"
+          },
+          {
+            "name": "funding_ramp_slope",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InitializeSpotMarketArgs",
+      "docs": [
+        "Arguments to `initialize_spot_market`.",
+        "",
+        "Named rather than positional: twenty-one arguments, mostly `u32`, with",
+        "adjacent same-typed pairs like `initial_asset_weight` and",
+        "`maintenance_asset_weight`. Transposed positionally, a pair compiles and",
+        "lists a market with the wrong risk profile. Named fields make it a compile",
+        "error. Borsh is still positional, so adding a field needs a new instruction."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "optimal_utilization",
+            "type": "u32"
+          },
+          {
+            "name": "optimal_borrow_rate",
+            "type": "u32"
+          },
+          {
+            "name": "max_borrow_rate",
+            "type": "u32"
+          },
+          {
+            "name": "min_borrow_rate",
+            "docs": [
+              "precision: X/200, so 1 is 0.5%. 0 disables the floor."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "oracle_source",
+            "type": {
+              "defined": {
+                "name": "OracleSource"
+              }
+            }
+          },
+          {
+            "name": "initial_asset_weight",
+            "type": "u32"
+          },
+          {
+            "name": "maintenance_asset_weight",
+            "type": "u32"
+          },
+          {
+            "name": "initial_liability_weight",
+            "type": "u32"
+          },
+          {
+            "name": "maintenance_liability_weight",
+            "type": "u32"
+          },
+          {
+            "name": "imf_factor",
+            "type": "u32"
+          },
+          {
+            "name": "liquidator_fee",
+            "type": "u32"
+          },
+          {
+            "name": "if_liquidation_fee",
+            "type": "u32"
+          },
+          {
+            "name": "active_status",
+            "type": "bool"
+          },
+          {
+            "name": "asset_tier",
+            "type": {
+              "defined": {
+                "name": "AssetTier"
+              }
+            }
+          },
+          {
+            "name": "scale_initial_asset_weight_start",
+            "type": "u64"
+          },
+          {
+            "name": "withdraw_guard_threshold",
+            "type": "u64"
+          },
+          {
+            "name": "order_tick_size",
+            "type": "u64"
+          },
+          {
+            "name": "order_step_size",
+            "type": "u64"
+          },
+          {
+            "name": "if_total_factor",
+            "type": "u32"
+          },
+          {
+            "name": "max_token_deposits",
+            "docs": [
+              "precision: token mint precision. 0 is no limit."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "name",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }

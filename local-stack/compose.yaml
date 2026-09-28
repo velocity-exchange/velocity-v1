@@ -72,6 +72,18 @@ services:
     volumes:
       - ./rpc.nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
+  oracle:
+    <<: *ts-tools
+    command: ['bun', 'run', 'local-stack/oracle.ts']
+    restart: unless-stopped
+    depends_on:
+      rpc:
+        condition: service_started
+    ports:
+      - '7070:7070'
+    environment:
+      RPC_URL: http://rpc:8899
+
   redis:
     image: redis:7.4
     # The TypeScript redis client only speaks cluster mode without TLS, so this

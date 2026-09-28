@@ -11,7 +11,8 @@
  * Lazer storage account, each mint's faucet config, and the vaults and faucet programs.
  *
  * Every admin and hot-role key in `State` becomes the local key in `<dir>/authority.json`, so
- * the rehearsal can sign admin instructions. `manifest.json` records the slot and the old keys.
+ * the rehearsal can sign admin instructions. The Lazer storage account also trusts the key in
+ * `<dir>/lazer-signer.json`, so a local service can sign oracle updates. `manifest.json` records the slot and the old keys.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -168,17 +169,49 @@ function writeAccount(
 	);
 }
 
-function loadAuthority(out: string): Keypair {
-	const file = path.join(out, 'authority.json');
+function loadKeypair(out: string, name: string): Keypair {
+	const file = path.join(out, name);
 	if (fs.existsSync(file)) {
 		return Keypair.fromSecretKey(
 			Uint8Array.from(JSON.parse(fs.readFileSync(file, 'utf-8')))
 		);
 	}
 
-	const authority = Keypair.generate();
-	fs.writeFileSync(file, JSON.stringify(Array.from(authority.secretKey)));
-	return authority;
+	const keypair = Keypair.generate();
+	fs.writeFileSync(file, JSON.stringify(Array.from(keypair.secretKey)));
+	return keypair;
+}
+
+/** Byte offsets in the Pyth Lazer `Storage` account, past its discriminator. */
+const LAZER_NUM_SIGNERS_OFFSET = 80;
+const LAZER_SIGNERS_OFFSET = 81;
+const LAZER_SIGNER_BYTES = 40;
+const LAZER_SIGNER_SLOTS = 5;
+/** 2100-01-01. A signer is trusted only until its `expires_at`. */
+const LAZER_SIGNER_EXPIRES_AT = 4102444800n;
+
+/**
+ * Trust `signer` in the dumped Lazer storage account, so a local service can sign oracle
+ * updates. It takes the first empty slot, or slot 0 when all are full, and keeps the signers
+ * devnet already trusts.
+ */
+function trustLazerSigner(
+	unreferenced: OwnedAccount[],
+	signer: PublicKey
+): void {
+	const storage = unreferenced.find(({ pubkey }) =>
+		pubkey.equals(PYTH_LAZER_STORAGE)
+	);
+	if (!storage)
+		throw new Error('the Pyth Lazer storage account is missing from the dump');
+
+	const data = storage.account.data;
+	const count = data.readUInt8(LAZER_NUM_SIGNERS_OFFSET);
+	const slot = count < LAZER_SIGNER_SLOTS ? count : 0;
+	const at = LAZER_SIGNERS_OFFSET + slot * LAZER_SIGNER_BYTES;
+	signer.toBuffer().copy(data, at);
+	data.writeBigInt64LE(LAZER_SIGNER_EXPIRES_AT, at + 32);
+	data.writeUInt8(Math.max(count, slot + 1), LAZER_NUM_SIGNERS_OFFSET);
 }
 
 /** What decoding the owned accounts found: the keys they name, and the keys the State patch replaced. */
@@ -286,7 +319,8 @@ async function main() {
 	const accountsDir = path.join(args.out, 'accounts');
 	fs.rmSync(accountsDir, { recursive: true, force: true });
 	fs.mkdirSync(accountsDir, { recursive: true });
-	const authority = loadAuthority(args.out);
+	const authority = loadKeypair(args.out, 'authority.json');
+	const lazerSigner = loadKeypair(args.out, 'lazer-signer.json');
 	const velocityDecoder = new ProgramDecoder(
 		readIdl('packages/sdk/src/idl/velocity.json')
 	);
@@ -311,6 +345,7 @@ async function main() {
 		owned,
 		velocityDecoder
 	);
+	trustLazerSigner(unreferenced, lazerSigner.publicKey);
 	[...owned, ...dependencies, ...unreferenced].forEach(({ pubkey, account }) =>
 		writeAccount(accountsDir, pubkey, account)
 	);
@@ -331,6 +366,7 @@ async function main() {
 		createdAt: new Date().toISOString(),
 		authority: authority.publicKey.toBase58(),
 		patchedAuthorities: scan.patchedAuthorities,
+		lazerSigner: lazerSigner.publicKey.toBase58(),
 		ownedAccounts: owned.length,
 		dependencyAccounts: dependencies.length,
 		unreferencedAccounts: unreferenced.map(({ pubkey }) => pubkey.toBase58()),

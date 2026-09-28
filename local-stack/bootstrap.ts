@@ -27,7 +27,6 @@ import {
 } from '@solana/web3.js';
 import {
 	DevnetPerpMarkets,
-	DevnetSpotMarkets,
 	getCrankTreasuryPublicKey,
 	TokenFaucet,
 	Wallet,
@@ -168,9 +167,6 @@ async function mintKeeperDusdt(
 }
 
 function writeKeeperConfig(): void {
-	const lazerIds = [...DevnetPerpMarkets, ...DevnetSpotMarkets]
-		.map((market) => market.pythLazerId)
-		.filter((id): id is number => id !== undefined);
 	const config = {
 		global: {
 			velocityEnv: 'devnet',
@@ -184,10 +180,9 @@ function writeKeeperConfig(): void {
 		enabledBots: [
 			'fundingRateUpdater',
 			'userPnlSettler',
-			// Both read Pyth Lazer and refuse to start without a token.
-			...(process.env.PYTH_LAZER_TOKEN
-				? ['markTwapCrank', 'pythLazerCranker']
-				: []),
+			// The TWAP crank bundles a live Pyth Lazer update into each crank, so it needs a token.
+			// The oracle service posts every feed locally, so the Lazer cranker never runs here.
+			...(process.env.PYTH_LAZER_TOKEN ? ['markTwapCrank'] : []),
 		],
 		botConfigs: {
 			fundingRateUpdater: { botId: 'funding', dryRun: false },
@@ -200,13 +195,6 @@ function writeKeeperConfig(): void {
 				crankIntervalToMarketIndicies: {
 					15000: DevnetPerpMarkets.map((m) => m.marketIndex),
 				},
-			},
-			pythLazerCranker: {
-				botId: 'pyth-lazer',
-				dryRun: false,
-				intervalMs: 400,
-				skipSimulation: true,
-				pythLazerIdsByChannel: { 'fixed_rate@200ms': [...new Set(lazerIds)] },
 			},
 		},
 	};

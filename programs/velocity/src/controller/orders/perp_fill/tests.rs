@@ -7,8 +7,9 @@ use {
     super::{
         super::{FillerSide, PricingRules, TakerSide},
         context::{FillConditions, FillParties, OfferedLiquidity},
-        fill_perp_order, fill_within_taker_risk_limits, FillAmounts, FillRequest, MatchOracle,
-        PerpFillAccounts,
+        fill_perp_order, fill_within_taker_risk_limits,
+        liquidity::idle_loaded_users,
+        FillAmounts, FillRequest, MatchOracle, PerpFillAccounts,
     },
     crate::{
         controller::position::PositionDirection,
@@ -709,6 +710,46 @@ fn a_vamm_past_its_reserve_bound_refuses_the_fill() {
     });
 
     assert_eq!(filled.unwrap_err(), ErrorCode::InvalidAmmForFillDetected);
+}
+
+/// A loaded user that filled nothing counts as idle even when the taker's
+/// referrer owns it. The fill never reads a referrer `User`, so a padded
+/// transaction cannot spend its locks on the referrer's subaccounts.
+#[test]
+fn a_subaccount_of_the_takers_referrer_holds_no_role_in_the_fill() {
+    let referrer_authority = Pubkey::new_unique();
+    let mut users = UserMap::empty();
+    for sub_account_id in 0..3 {
+        let key = Pubkey::new_unique();
+        let user = User {
+            authority: referrer_authority,
+            sub_account_id,
+            ..User::default()
+        };
+        users.0.insert(key, loader_at(user, key));
+    }
+
+    let book = MockBook {
+        quoter_type: QuoterType::Custom,
+        maker: Pubkey::new_unique(),
+        maker_ref: UserRefV0::default(),
+        price: 0,
+        completed: Vec::new(),
+        requested: 0,
+    };
+    let idle = idle_loaded_users(
+        &users,
+        0,
+        &Pubkey::new_unique(),
+        &Pubkey::new_unique(),
+        &book,
+    );
+
+    assert_eq!(idle, 3);
+}
+
+fn loader_at<T: ZeroCopy + Owner>(account: T, key: Pubkey) -> AccountLoader<'static, T> {
+    AccountLoader::try_from(leak_account(account, key)).unwrap()
 }
 
 fn loader<T: ZeroCopy + Owner>(account: T) -> AccountLoader<'static, T> {

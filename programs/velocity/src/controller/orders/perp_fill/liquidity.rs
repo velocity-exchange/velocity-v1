@@ -27,7 +27,10 @@ use {
             events::OrderActionExplanation,
             oracle_map::OracleMap,
             perp_market::PerpMarket,
-            prop_amm::{DirectionV0, PriceLevelV0, QuoterType, UserRefV0},
+            prop_amm::{
+                DirectionV0, ExternalQuoterExecutor, PriceLevelV0, QuoterType, UserRefV0,
+                MAX_ROUTE_QUOTERS,
+            },
             quoter::{MarketQuoteInputs as QuoteInputs, QuoterFill, RouterQuoter},
             user::{OrderReservation, OrderStatus, ReleaseCheck, User, UserStats},
             user_map::{UserMap, UserStatsMap},
@@ -1322,9 +1325,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.tally.settled_users,
             &self.taker.key,
             filler_key,
-            self.taker.stats.referrer,
             &*venue.router.executor,
-        )?;
+        );
 
         crate::math::router::withheld_obligation(
             &venue.router.standing.obligation,
@@ -1513,42 +1515,30 @@ fn maker_stats_for<'m>(
 
 /// Loaded users that the fill did not move and that hold no role in it.
 ///
-/// A role is one of four: the taker, the filler, the taker's referrer, or the
-/// account a registered quoter fills for. Each of those has to be loaded whether
-/// or not it receives a balance change. Everything else in the map is there to
-/// be filled, and one that filled nothing spent two account locks for nothing.
-fn idle_loaded_users<'info>(
+/// A role is one of three: the taker, the filler, or the account a registered
+/// quoter fills for. Each of those has to be loaded whether or not it receives
+/// a balance change. Everything else in the map is there to be filled, and one
+/// that filled nothing spent two account locks for nothing.
+///
+/// The taker's referrer holds no role. The fill pays the referrer through the
+/// revenue-share escrow and never reads a referrer `User`.
+pub(super) fn idle_loaded_users<'info>(
     makers_and_referrer: &UserMap,
     settled_users: u64,
     taker_key: &Pubkey,
     filler_key: &Pubkey,
-    referrer_authority: Pubkey,
-    executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor<'info>,
-) -> VelocityResult<usize> {
-    let mut idle = 0usize;
-    for (index, (key, loader)) in makers_and_referrer.0.iter().enumerate() {
-        if index < u64::BITS as usize && settled_users & (1u64 << index) != 0 {
-            continue;
-        }
-        if key == taker_key || key == filler_key {
-            continue;
-        }
+    executor: &dyn ExternalQuoterExecutor<'info>,
+) -> usize {
+    let quoter_fills_for =
+        |key: &Pubkey| (0..MAX_ROUTE_QUOTERS).any(|index| executor.quoter_user(index) == *key);
 
-        let authority = loader
-            .load()
-            .map_err(|_| ErrorCode::UnableToLoadAccountLoader)?
-            .authority;
-        if authority == referrer_authority && referrer_authority != Pubkey::default() {
-            continue;
-        }
-        if (0..crate::state::prop_amm::MAX_ROUTE_QUOTERS).any(|i| executor.quoter_user(i) == *key) {
-            continue;
-        }
-
-        idle = idle.saturating_add(1);
-    }
-
-    Ok(idle)
+    makers_and_referrer
+        .0
+        .keys()
+        .enumerate()
+        .filter(|(index, _)| *index >= u64::BITS as usize || settled_users & (1u64 << *index) == 0)
+        .filter(|(_, key)| *key != taker_key && *key != filler_key && !quoter_fills_for(key))
+        .count()
 }
 
 /// How many of a quoter's own orders one balance change merges, as the

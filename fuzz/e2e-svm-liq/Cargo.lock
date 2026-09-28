@@ -6054,7 +6054,7 @@ dependencies = [
 
 [[package]]
 name = "velocity"
-version = "2.168.0"
+version = "2.169.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",

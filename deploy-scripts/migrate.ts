@@ -180,8 +180,10 @@ async function main() {
 	console.log(args.dryRun ? '(dry run — nothing will be sent)\n' : '');
 
 	// 1. resize
+	// `program.idl` is camelCased by the Anchor client; `idl` is the raw JSON,
+	// which keeps the Rust type names the discriminator hashes.
 	assertNamesAreReal(
-		program.idl,
+		idl,
 		RESIZABLE.map(({ name }) => name)
 	);
 

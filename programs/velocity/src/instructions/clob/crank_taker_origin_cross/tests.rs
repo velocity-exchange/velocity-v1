@@ -34,6 +34,8 @@ use {
 
 const NOW: i64 = 0;
 const SLOT: u64 = 0;
+/// A zero buffer reads every account under liquidation as able to exit it.
+const LIQUIDATION_MARGIN_BUFFER_RATIO: u32 = 200;
 
 /// One market at 100, one aggressor that just bought a whole unit from flat,
 /// and the counterparty that sold it.
@@ -54,6 +56,28 @@ fn pair_post_checks(breaker_tripped: bool) -> VelocityResult {
 }
 
 fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityResult {
+    pair_checks(breaker_tripped, isolated, Parties::default())
+}
+
+/// The liquidation state of each side, and the aggressor's cross deposit.
+#[derive(Clone, Copy)]
+struct Parties {
+    aggressor_status: u8,
+    counterparty_status: u8,
+    aggressor_deposit_quote: u64,
+}
+
+impl Default for Parties {
+    fn default() -> Self {
+        Self {
+            aggressor_status: 0,
+            counterparty_status: 0,
+            aggressor_deposit_quote: 10_000,
+        }
+    }
+}
+
+fn pair_checks(breaker_tripped: bool, isolated: Isolated, parties: Parties) -> VelocityResult {
     let mut oracle_price = get_pyth_price(100, 6);
     let oracle_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
     create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
@@ -117,9 +141,10 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
         spot_positions: get_spot_positions(SpotPosition {
             market_index: 0,
             balance_type: SpotBalanceType::Deposit,
-            scaled_balance: 10_000 * SPOT_BALANCE_PRECISION_U64,
+            scaled_balance: parties.aggressor_deposit_quote * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         }),
+        status: parties.aggressor_status,
         ..User::default()
     };
 
@@ -160,6 +185,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
             scaled_balance: 10_000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         }),
+        status: parties.counterparty_status,
         ..User::default()
     };
 
@@ -173,6 +199,14 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
 
     create_anchor_account_info!(counterparty_stats, UserStats, counterparty_stats_info);
     let makers_and_referrer_stats = UserStatsMap::load_one(&counterparty_stats_info).unwrap();
+
+    super::admit_pair_parties(
+        &taker_loader,
+        &makers_and_referrer,
+        &counterparty_key,
+        LIQUIDATION_MARGIN_BUFFER_RATIO,
+        &mut maps,
+    )?;
 
     super::post_checks::check_pair_fill(
         &taker_loader,
@@ -269,6 +303,67 @@ fn an_isolated_counterparty_is_checked_against_its_own_collateral() {
         ),
         Ok(())
     );
+}
+
+/// A pair is held to the liquidation gates a routed fill applies to its taker
+/// and its maker.
+mod pair_parties {
+    use {super::*, crate::state::user::UserStatus};
+
+    const LIQUIDATED: u8 = UserStatus::BeingLiquidated as u8;
+    const BANKRUPT: u8 = UserStatus::Bankrupt as u8;
+
+    fn checks(parties: Parties) -> VelocityResult {
+        pair_checks(false, Isolated::default(), parties)
+    }
+
+    #[test]
+    fn an_underwater_aggressor_under_liquidation_is_refused() {
+        let parties = Parties {
+            aggressor_status: LIQUIDATED,
+            aggressor_deposit_quote: 0,
+            ..Parties::default()
+        };
+
+        assert_eq!(checks(parties), Err(ErrorCode::UserIsBeingLiquidated));
+    }
+
+    /// A routed fill clears the flag of a taker that is back above the
+    /// liquidation margin, and the pair does the same.
+    #[test]
+    fn a_recovered_aggressor_settles() {
+        let parties = Parties {
+            aggressor_status: LIQUIDATED,
+            ..Parties::default()
+        };
+
+        assert_eq!(checks(parties), Ok(()));
+    }
+
+    #[test]
+    fn a_bankrupt_aggressor_is_refused() {
+        let parties = Parties {
+            aggressor_status: BANKRUPT,
+            ..Parties::default()
+        };
+
+        assert_eq!(checks(parties), Err(ErrorCode::UserBankrupt));
+    }
+
+    #[test]
+    fn a_counterparty_under_liquidation_is_refused() {
+        let liquidated = Parties {
+            counterparty_status: LIQUIDATED,
+            ..Parties::default()
+        };
+        let bankrupt = Parties {
+            counterparty_status: BANKRUPT,
+            ..Parties::default()
+        };
+
+        assert_eq!(checks(liquidated), Err(ErrorCode::UserIsBeingLiquidated));
+        assert_eq!(checks(bankrupt), Err(ErrorCode::UserBankrupt));
+    }
 }
 
 /// The size a pair settles, before either position moves.

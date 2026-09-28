@@ -1135,6 +1135,13 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, aggressor);
     bind_builder_order(cx, rev_share_escrow, aggressor, &mut order)?;
     let pair = bind_pair(cx, cross, aggressor, counterparty, &mut order, maps)?;
+    admit_pair_parties(
+        &cx.accounts.taker,
+        cx.makers_and_referrer,
+        &pair.maker_key,
+        cx.state.liquidation_margin_buffer_ratio,
+        maps,
+    )?;
 
     // The pre-flight comes first, because a refusal must leave the book as it
     // was. The facts it reports are inputs to the post-fill checks below.
@@ -1318,6 +1325,46 @@ fn pair_fill_size(
     )?;
 
     Ok(base)
+}
+
+/// Refuse a pair whose parties a routed fill would not match.
+///
+/// A routed fill skips a bankrupt taker, and a taker still under liquidation
+/// after a fresh margin check. It refuses a maker under liquidation. Without
+/// these checks, an account under liquidation can trade back above maintenance
+/// and avoid the liquidation penalty.
+fn admit_pair_parties<'info>(
+    taker_loader: &AccountLoader<'info, User>,
+    makers_and_referrer: &UserMap<'info>,
+    counterparty_key: &Pubkey,
+    liquidation_margin_buffer_ratio: u32,
+    maps: &mut AccountMaps<'info>,
+) -> VelocityResult {
+    {
+        let mut taker = load_mut!(taker_loader)?;
+        validate!(!taker.is_bankrupt(), ErrorCode::UserBankrupt)?;
+        crate::math::liquidation::validate_user_not_being_liquidated(
+            &mut taker,
+            maps,
+            liquidation_margin_buffer_ratio,
+        )?;
+    }
+
+    let counterparty = makers_and_referrer.get_ref(counterparty_key)?;
+    validate!(
+        !counterparty.is_bankrupt(),
+        ErrorCode::UserBankrupt,
+        "counterparty {} is bankrupt",
+        counterparty_key
+    )?;
+    validate!(
+        !counterparty.is_being_liquidated(),
+        ErrorCode::UserIsBeingLiquidated,
+        "counterparty {} is being liquidated",
+        counterparty_key
+    )?;
+
+    Ok(())
 }
 
 /// The oracle gates a routed fill applies before it matches.

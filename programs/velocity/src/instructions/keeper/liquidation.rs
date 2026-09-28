@@ -428,6 +428,9 @@ impl LiquidationProgress {
 }
 
 /// Pay the caller out of the market's reservoir for a liquidation crank.
+///
+/// The liquidated user's own wallet earns nothing. A user in liquidation
+/// could otherwise collect the sweep payment for its own book orders.
 fn pay_liquidation_crank<'info>(
     ctx: &Context<'info, LiquidatePerp<'info>>,
     state: &State,
@@ -435,6 +438,11 @@ fn pay_liquidation_crank<'info>(
     market_index: u16,
     progress: LiquidationProgress,
 ) -> Result<()> {
+    if pays_the_liquidated_user(&*ctx.accounts.user.load()?, ctx.accounts.authority.key) {
+        msg!("the liquidated user's own wallet cranked; the reservoir pays nothing");
+        return Ok(());
+    }
+
     let reservoir =
         ctx.accounts
             .crank_conditions
@@ -479,6 +487,10 @@ fn pay_liquidation_crank<'info>(
     )?;
 
     Ok(())
+}
+
+fn pays_the_liquidated_user(user: &User, payout: &Pubkey) -> bool {
+    *payout == user.authority || *payout == user.delegate
 }
 
 /// What the protocol adds to a liquidation crank's flat payment. It is the
@@ -879,8 +891,10 @@ pub struct SetUserStatusToBeingLiquidated<'info> {
 #[cfg(test)]
 mod tests {
     use {
-        super::{liquidation_reimbursement, LiquidationProgress},
-        crate::state::{oracle_map::OracleMap, spot_market_map::SpotMarketMap, state::State},
+        super::{liquidation_reimbursement, pays_the_liquidated_user, LiquidationProgress},
+        crate::state::{
+            oracle_map::OracleMap, spot_market_map::SpotMarketMap, state::State, user::User,
+        },
         anchor_lang::prelude::{AccountInfo, Pubkey, UncheckedAccount},
     };
 
@@ -904,6 +918,19 @@ mod tests {
         assert!(!progress(0, 0).made_any());
         assert_eq!(progress(20_000_000, 128).flat_payment(&payments), 9_000);
         assert_eq!(progress(1, 0).flat_payment(&payments), 0);
+    }
+
+    #[test]
+    fn the_liquidated_users_own_wallet_is_not_paid() {
+        let user = User {
+            authority: Pubkey::new_unique(),
+            delegate: Pubkey::new_unique(),
+            ..User::default()
+        };
+
+        assert!(pays_the_liquidated_user(&user, &user.authority));
+        assert!(pays_the_liquidated_user(&user, &user.delegate));
+        assert!(!pays_the_liquidated_user(&user, &Pubkey::new_unique()));
     }
 
     /// The reimbursement is extra to the flat payment, so an instructions

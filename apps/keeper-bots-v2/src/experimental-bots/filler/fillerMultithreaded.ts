@@ -252,6 +252,10 @@ const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana
 const MAX_POSITIONS_PER_USER = 8;
 export const SETTLE_POSITIVE_PNL_COOLDOWN_MS = 60_000;
 export const CONFIRM_TX_INTERVAL_MS = 5_000;
+// 2x the child's 10s health-report interval: a silent hang should read as
+// unhealthy, not just an explicit unhealthy message (same reasoning as
+// swiftOrderSubscriber's own heartbeat-timeout-triggers-reconnect).
+const SWIFT_ORDER_SUBSCRIBER_HEALTH_STALE_MS = 20_000;
 const SIM_CU_ESTIMATE_MULTIPLIER = 3;
 // wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
 const JITO_LEADER_LEAD_MS = 1_600;
@@ -283,6 +287,7 @@ enum METRIC_TYPES {
 	estimated_tx_cu_histogram = 'estimated_tx_cu_histogram',
 	simulate_tx_duration_histogram = 'simulate_tx_duration_histogram',
 	expired_nodes_set_size = 'expired_nodes_set_size',
+	swift_feed_healthy = 'swift_feed_healthy',
 }
 
 type DLOBBuilderWithProcess = {
@@ -458,6 +463,8 @@ export class FillerMultithreaded {
 	private dlobHealthy = true;
 	private orderSubscriberHealthy = true;
 	private swiftOrderSubscriberHealth = true;
+	// Grace period until the first health message arrives, same as the boolean above.
+	private swiftOrderSubscriberHealthAt = Date.now();
 	private simulateTxForCUEstimate?: boolean;
 
 	// SignedMsg orders
@@ -493,6 +500,7 @@ export class FillerMultithreaded {
 	protected evictedPendingTxSigsToConfirmCounter?: CounterValue;
 	protected expiredNodesSetSize?: GaugeValue;
 	protected jitoConnectedGauge?: GaugeValue;
+	protected swiftFeedHealthyGauge?: GaugeValue;
 	protected jitoBundlesAcceptedGauge?: GaugeValue;
 	protected jitoBundlesSimulationFailureGauge?: GaugeValue;
 	protected jitoDroppedBundleGauge?: GaugeValue;
@@ -901,6 +909,8 @@ export class FillerMultithreaded {
 		// SignedMsg Subscriber process
 		const swiftOrderSubscriberFileName =
 			'swiftOrderSubscriber' + (isTsRuntime() ? '.ts' : '.js');
+		// Start the staleness grace when the child exists, not when init() began.
+		this.swiftOrderSubscriberHealthAt = Date.now();
 		const swiftOrderSubscriberProcess = spawnChild(
 			path.join(
 				__dirname,
@@ -925,6 +935,7 @@ export class FillerMultithreaded {
 						break;
 					case 'health':
 						this.swiftOrderSubscriberHealth = msg.data.healthy;
+						this.swiftOrderSubscriberHealthAt = Date.now();
 						break;
 				}
 			}
@@ -963,6 +974,9 @@ export class FillerMultithreaded {
 				setInterval(this.recordJitoBundleStats.bind(this), 10_000)
 			);
 		}
+		this.intervalIds.push(
+			setInterval(this.recordSwiftFeedHealth.bind(this), 10_000)
+		);
 	}
 
 	routeMessageToDlobBuilder = (msg: any) => {
@@ -1104,6 +1118,10 @@ export class FillerMultithreaded {
 			JITO_METRIC_TYPES.jito_connected,
 			'Whether the jito bundle sender is connected'
 		);
+		this.swiftFeedHealthyGauge = this.metrics.addGauge(
+			METRIC_TYPES.swift_feed_healthy,
+			'Whether the swift order feed is connected and subscribed'
+		);
 		this.jitoBundlesAcceptedGauge = this.metrics.addGauge(
 			JITO_METRIC_TYPES.jito_bundles_accepted,
 			'Count of jito bundles that were accepted'
@@ -1138,14 +1156,41 @@ export class FillerMultithreaded {
 		if (!this.orderSubscriberHealthy) {
 			logger.error(`${logPrefix} Order subscriber not healthy`);
 		}
-		if (!this.swiftOrderSubscriberHealth) {
+		// Swift feed state is deliberately absent here — see
+		// `recordSwiftFeedHealth`. It is exported as the
+		// `swift_feed_healthy` gauge, because this method backs a liveness
+		// probe and a restart cannot fix an unreachable upstream.
+		return this.dlobHealthy && this.orderSubscriberHealthy;
+	}
+
+	/**
+	 * True while the child reports a live feed *and* is still reporting at all.
+	 * A child that dies or wedges stops sending, and the parent would otherwise
+	 * stay latched on the last value it saw.
+	 */
+	protected swiftFeedHealthy(): boolean {
+		const stale =
+			Date.now() - this.swiftOrderSubscriberHealthAt >
+			SWIFT_ORDER_SUBSCRIBER_HEALTH_STALE_MS;
+		return this.swiftOrderSubscriberHealth && !stale;
+	}
+
+	/**
+	 * Deliberately a metric rather than an input to `healthCheck()`.
+	 *
+	 * `/health` is this pod's **liveness** probe, so gating it on the swift feed
+	 * would restart the whole filler — non-swift filling included — whenever
+	 * swift is down for longer than the probe's failure window, or permanently
+	 * if one configured market is rejected. Restarting fixes neither. Alert on
+	 * this gauge instead; that is the dead-feed signal the crash-restarts used
+	 * to provide.
+	 */
+	protected recordSwiftFeedHealth() {
+		const healthy = this.swiftFeedHealthy();
+		this.swiftFeedHealthyGauge?.setLatestValue(healthy ? 1 : 0, {});
+		if (!healthy) {
 			logger.error(`${logPrefix} SignedMsg order subscriber not healthy`);
 		}
-		return (
-			this.dlobHealthy &&
-			this.orderSubscriberHealthy &&
-			this.swiftOrderSubscriberHealth
-		);
 	}
 
 	protected recordJitoBundleStats() {

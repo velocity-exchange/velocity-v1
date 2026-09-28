@@ -312,6 +312,26 @@ impl UserConditionsV0 {
         let refs = self.relay.resolver_refs();
         refs.get(LIQ_RESOLVER_PREFIX..).unwrap_or(&[]).to_vec()
     }
+
+    /// The stored margin map without the crank tail that follows it. An
+    /// executor that parses a quoter tail after its maps needs the map alone.
+    pub fn read_margin_map_accounts(&self) -> Vec<relay_spec::AccountRefV0> {
+        let mut stored = self.read_sync_accounts();
+        stored.truncate(margin_map_len(&stored));
+        stored
+    }
+}
+
+/// A sync stores readonly oracles, then writable markets, then a crank tail
+/// that starts with a readonly crank account or quoter slab.
+pub fn margin_map_len(stored: &[relay_spec::AccountRefV0]) -> usize {
+    let oracles = stored.iter().take_while(|r| r.writable == 0).count();
+    let markets = stored[oracles..]
+        .iter()
+        .take_while(|r| r.writable != 0)
+        .count();
+
+    oracles + markets
 }
 
 const _: () = assert!((UserConditionsV0::SIZE - 8).is_multiple_of(16));
@@ -322,6 +342,29 @@ const _: () = assert!(USER_CONDITIONS_BLOCK_OFFSET.is_multiple_of(8));
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two oracles, three markets, then a slab, its book and program, and a
+    /// crank account. The map is the first five.
+    #[test]
+    fn the_margin_map_stops_before_the_crank_tail() {
+        use relay_spec::AccountRefV0;
+        let key = || Pubkey::new_unique().to_bytes();
+        let stored = [
+            AccountRefV0::readonly(key()),
+            AccountRefV0::readonly(key()),
+            AccountRefV0::writable(key()),
+            AccountRefV0::writable(key()),
+            AccountRefV0::writable(key()),
+            AccountRefV0::readonly(key()),
+            AccountRefV0::writable(key()),
+            AccountRefV0::readonly(key()),
+            AccountRefV0::readonly(key()),
+        ];
+
+        assert_eq!(margin_map_len(&stored), 5);
+        assert_eq!(margin_map_len(&stored[..5]), 5);
+        assert_eq!(margin_map_len(&[]), 0);
+    }
 
     #[test]
     fn size_matches_the_layout() {

@@ -106,26 +106,11 @@ impl StagedCall {
 
     /// The margin-map section for an executor that names the perp market in
     /// its own accounts struct. It appends the oracle as readonly, then the
-    /// quote spot market. The order matters, as it does in
-    /// [`Self::map_section`].
+    /// quote spot market. `load_maps` reads these by order rather than by
+    /// name, so the order lives here once instead of in each resolver.
     pub fn map_section_named_perp(self, oracle: Pubkey, quote_spot_market_index: u16) -> Self {
         self.account(oracle, false)
             .account(pdas::spot_market(quote_spot_market_index), true)
-    }
-
-    /// Append the margin-map section every executor's `load_maps` call parses.
-    /// It holds the oracle as readonly, the quote spot market, then the perp
-    /// market. `load_maps` reads these by order rather than by name, so the
-    /// ordering lives here once instead of in each resolver.
-    pub fn map_section(
-        self,
-        oracle: Pubkey,
-        quote_spot_market_index: u16,
-        perp_market_index: u16,
-    ) -> Self {
-        self.account(oracle, false)
-            .account(pdas::spot_market(quote_spot_market_index), true)
-            .account(pdas::perp_market(perp_market_index), true)
     }
 
     /// Append the `(User, UserStats)` pairs of maker identities read off a

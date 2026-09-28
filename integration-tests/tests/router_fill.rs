@@ -7015,6 +7015,151 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
     );
 }
 
+/// A risk-increasing stop-market on an account that also holds a second perp
+/// market fires through its resolver. The fire runs a margin check over every
+/// position, so the staged executor must carry every market and oracle the
+/// account holds, not only the fired market.
+#[test]
+fn trigger_market_resolver_stages_every_market_the_user_holds() {
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 25_000);
+    set_protocol_user(&mut fixture.svm);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+
+    let second_oracle = add_bookless_perp_market(&mut fixture);
+    let user = two_market_stop_user(&mut fixture);
+    sync_two_market_triggers(&mut fixture, user, market_conditions, second_oracle);
+
+    fixture.svm.warp_to_slot(13);
+    for oracle in [fixture.oracle, second_oracle] {
+        set_oracle(&mut fixture.svm, oracle, (100 * PRICE_PRECISION) as i64, 13);
+    }
+
+    let resolved = run_trigger_market_resolver(&mut fixture, user)
+        .expect("crossed threshold stages the fire-to-book executor");
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::TriggerMarketOrderV1::DISCRIMINATOR,
+        Pubkey::new_unique(),
+    );
+
+    let triggered: User = read_zero_copy(&fixture.svm, &user);
+    assert_eq!(
+        triggered.perp_positions[0].open_bids, UNIT as i64,
+        "the fired order rests on the book"
+    );
+    assert_eq!(
+        triggered.perp_positions[1].base_asset_amount, UNIT as i64,
+        "the second market keeps its position"
+    );
+}
+
+/// Perp market 1, a copy of market 0 on its own oracle and with no CLOB.
+/// Returns the new oracle.
+fn add_bookless_perp_market(fixture: &mut Fixture) -> Pubkey {
+    let oracle = Pubkey::new_unique();
+    set_oracle(&mut fixture.svm, oracle, (100 * PRICE_PRECISION) as i64, 10);
+
+    let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    market.market_index = 1;
+    market.oracle = anchor_lang::prelude::Pubkey::new_from_array(oracle.to_bytes());
+    market.clob_market = anchor_lang::prelude::Pubkey::default();
+    market.quoter_slab = anchor_lang::prelude::Pubkey::default();
+    set_zero_copy_account(
+        &mut fixture.svm,
+        perp_market_pda(1),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+
+    oracle
+}
+
+/// A user with a long in perp market 1 and a buy-stop armed on market 0 at 99.
+fn two_market_stop_user(fixture: &mut Fixture) -> Pubkey {
+    let authority = Keypair::new();
+    let (user, _) = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    );
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.direction = PositionDirection::Long;
+    order.base_asset_amount = UNIT;
+    order.trigger_price = 99 * PRICE;
+    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    order.max_ts = clock.unix_timestamp + 1_000;
+
+    let mut state = armed_trigger_user(
+        &authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        order,
+    );
+    let second = &mut state.perp_positions[1];
+    second.market_index = 1;
+    second.base_asset_amount = UNIT as i64;
+    second.quote_asset_amount = -((100 * PRICE) as i64);
+    second.quote_entry_amount = -((100 * PRICE) as i64);
+    second.quote_break_even_amount = -((100 * PRICE) as i64);
+    set_user_account(&mut fixture.svm, user, &state);
+
+    let (user_stats, _) = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    );
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+    user
+}
+
+/// Sync the triggers of a user that holds perp markets 0 and 1.
+fn sync_two_market_triggers(
+    fixture: &mut Fixture,
+    user: Pubkey,
+    market_conditions: Pubkey,
+    second_oracle: Pubkey,
+) {
+    let mut accounts = velocity::accounts::SyncTriggerConditions {
+        payer: fixture.keeper.pubkey(),
+        user,
+        trigger_conditions: user_conditions_pda(&user),
+        rent: "SysvarRent111111111111111111111111111111111"
+            .parse()
+            .unwrap(),
+        system_program: "11111111111111111111111111111111".parse().unwrap(),
+    }
+    .to_account_metas(None);
+    accounts.extend([
+        AccountMeta::new_readonly(fixture.oracle, false),
+        AccountMeta::new_readonly(second_oracle, false),
+        AccountMeta::new(spot_market_pda(0), false),
+        AccountMeta::new(perp_market_pda(0), false),
+        AccountMeta::new(perp_market_pda(1), false),
+        AccountMeta::new_readonly(market_conditions, false),
+        AccountMeta::new_readonly(fixture.quoter_slab, false),
+    ]);
+
+    let sync = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::SyncTriggerConditions {}.data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, sync, &[]).unwrap();
+}
+
 /// The merged sync, called the way the localnet harness calls it — quoter
 /// entry and crank-conditions account in the remaining accounts alongside
 /// the margin maps. The liquidation pass writes the shared account list

@@ -408,22 +408,19 @@ pub fn handle_resolve_trigger_market_order_v1(
     )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
-        let (fired, quote_spot_market_index) = {
+        let fired = {
             let conditions = ctx.accounts.trigger_conditions.load()?;
             let user = load!(ctx.accounts.user)?;
             let market = ctx.accounts.perp_market.load()?;
-            (
-                super::helpers::crank_common::find_fired_trigger(
-                    &conditions,
-                    &user,
-                    &market,
-                    &ctx.accounts.oracle,
-                    clock.slot,
-                    clock.unix_timestamp,
-                    super::helpers::crank_common::TriggerResolverKind::ClobFill,
-                )?,
-                market.quote_spot_market_index,
-            )
+            super::helpers::crank_common::find_fired_trigger(
+                &conditions,
+                &user,
+                &market,
+                &ctx.accounts.oracle,
+                clock.slot,
+                clock.unix_timestamp,
+                super::helpers::crank_common::TriggerResolverKind::ClobFill,
+            )?
         };
         let Some(meta) = fired else {
             return Ok(None);
@@ -450,13 +447,14 @@ pub fn handle_resolve_trigger_market_order_v1(
                 // No fill, so no filler-obligation read of the sysvar.
                 ix_sysvar: None,
             })
-            // The margin map for the rest holds the fired market and the
-            // quote spot market. No quoter tail follows, so the executor rests
-            // the whole order rather than routing it.
-            .map_section(
-                ctx.accounts.oracle.key(),
-                quote_spot_market_index,
-                meta.market_index,
+            // The margin gate of a risk-increasing fire loads every market the
+            // user holds, so the stored map rides whole. Its crank tail does
+            // not, so the executor rests the whole order rather than routing it.
+            .refs(
+                ctx.accounts
+                    .trigger_conditions
+                    .load()?
+                    .read_margin_map_accounts(),
             )
             .arg(TriggerMarketOrderV1Args {
                 market_index: meta.market_index,

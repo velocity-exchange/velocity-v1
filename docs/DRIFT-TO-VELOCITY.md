@@ -4258,8 +4258,11 @@ the withdraw bundle records both revert codes.
       1. Deploy the CLOB program at `BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU`, the id
          velocity pins.
       2. Upgrade velocity.
-      3. Price the relay cranks with `velocity-admin fees set-transaction-rails`. With zero rails
-         every crank pays 0 lamports, and no turner takes the work.
+      3. Decide the relay crank prices. With zero rails every crank pays 0 lamports, and no
+         turner takes the work. An upgrade leaves the rails at zero, and `migrate.ts` then writes
+         `TransactionFeeRails::FLAT_PER_SIGNATURE`, the value `initialize` writes, or the value
+         `--fee-rails` names. Run `velocity-admin fees set-transaction-rails` first only to price
+         the cranks some other way.
       4. Run `velocity-admin fees init-crank-treasury` and
          `fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>`, then fund the
          treasury with a SOL transfer. The book attach stores the treasury's refill watermark on
@@ -4267,8 +4270,9 @@ the withdraw bundle records both revert codes.
       5. Run `deploy-scripts/migrate.ts --dry-run`, then run it for real. Run it again until it
          sends and proposes nothing, because each step reads chain state first and skips what
          is correct.
-    - `migrate.ts` refuses to run until the CLOB program is deployed and the rails price the
-      cranks, and it stops before the books while the treasury is not priced. It creates the
+    - `migrate.ts` refuses to run until the CLOB program is deployed. It writes the fee rails when
+      they price every crank at zero, and under `--multisig` it proposes that write and stops
+      until the proposal executes. It stops before the books while the treasury is not priced. It creates the
       quoter slab of every perp market that predates `PerpMarket.quoter_slab`. It then creates,
       registers, approves and attaches a CLOB book for every perp market without one, with the
       market's tick, step and minimum order size and a blocking floor of ten minimum orders.

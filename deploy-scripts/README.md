@@ -261,7 +261,9 @@ before the next step.
 #    migrate.ts refuses to run until it is deployed.
 # 2. Upgrade velocity, as in "Cutting a mainnet release".
 # 3. Price the relay cranks. With zero rails every crank pays 0 lamports, and no
-#    turner takes the work. migrate.ts refuses to run while the rails price nothing.
+#    turner takes the work. An upgrade leaves them at zero, and migrate.ts then
+#    proposes FLAT_PER_SIGNATURE, or the value --fee-rails names. Set them here
+#    only to price the cranks some other way.
 velocity-admin --multisig "$MULTISIG" fees set-transaction-rails <inclusionLamports> \
   <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>
 # 4. Create, price and fund the crank treasury. The book attach stores the

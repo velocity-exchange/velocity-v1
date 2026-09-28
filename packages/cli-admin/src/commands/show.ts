@@ -458,9 +458,7 @@ export function registerShow(parent: Command): void {
 		const client = await buildAdminClient(opts);
 		try {
 			const key = (value: PublicKey) =>
-				value.equals(PublicKey.default)
-					? pc.dim('(unset)')
-					: value.toBase58();
+				value.equals(PublicKey.default) ? pc.dim('(unset)') : value.toBase58();
 			const quote = (raw: BN) => usd(Number(raw.toString()) / 1e6);
 
 			const userStats = await fetchUserStatsAccount(

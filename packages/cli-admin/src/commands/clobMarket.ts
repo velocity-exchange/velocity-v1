@@ -59,14 +59,36 @@ type ClobConfigFlags = {
 	defaultActivationDelay: string;
 	maxActivationDelay: string;
 	unknownUserGraceSlots: string;
-	evictThreshold: string;
+	evictThreshold?: string;
 	maxQuoteLevels: string;
 	maxExecuteFills: string;
 	maxExecuteUsers: string;
 };
 
+/**
+ * The book refuses an eviction threshold at or above the orders one side holds,
+ * which is half the arena. A quarter of it is what migrate.ts writes.
+ */
+function evictThresholdFor(flag: string | undefined, capacity: number): number {
+	const threshold =
+		flag === undefined ? Math.floor(capacity / 4) : Number.parseInt(flag, 10);
+	if (!(threshold > 0 && threshold < Math.floor(capacity / 2))) {
+		throw new Error(
+			`--evict-threshold ${threshold} must be above zero and below ${Math.floor(
+				capacity / 2
+			)}, the orders one side of a ${capacity}-node book holds`
+		);
+	}
+
+	return threshold;
+}
+
 /** Borsh wire of the CLOB's `MarketConfigV0`. */
-function clobMarketConfig(marketIndex: number, flags: ClobConfigFlags): Buffer {
+function clobMarketConfig(
+	marketIndex: number,
+	flags: ClobConfigFlags,
+	capacity: number
+): Buffer {
 	const u16 = (v: number) => {
 		const b = Buffer.alloc(2);
 		b.writeUInt16LE(v);
@@ -88,7 +110,7 @@ function clobMarketConfig(marketIndex: number, flags: ClobConfigFlags): Buffer {
 		u32(Number.parseInt(flags.defaultActivationDelay, 10)),
 		u32(Number.parseInt(flags.maxActivationDelay, 10)),
 		u32(Number.parseInt(flags.unknownUserGraceSlots, 10)),
-		u32(Number.parseInt(flags.evictThreshold, 10)),
+		u32(evictThresholdFor(flags.evictThreshold, capacity)),
 		u16(Number.parseInt(flags.maxQuoteLevels, 10)),
 		u16(Number.parseInt(flags.maxExecuteFills, 10)),
 		u16(Number.parseInt(flags.maxExecuteUsers, 10)),
@@ -388,8 +410,7 @@ export function registerClobMarket(parent: Command): void {
 			)
 			.option(
 				'--evict-threshold <n>',
-				'per-side soft cap enabling the evict crank',
-				'256'
+				'per-side soft cap enabling the evict crank. Must be above zero and below half of --capacity (default: a quarter of --capacity)'
 			)
 			.option('--max-quote-levels <n>', 'quote response level cap', '128')
 			.option('--max-execute-fills <n>', 'execute response fill cap', '64')
@@ -435,6 +456,12 @@ export function registerClobMarket(parent: Command): void {
 				);
 			}
 
+			// Refuse a threshold the book would refuse, before anything is sent.
+			evictThresholdFor(
+				flags.evictThreshold,
+				Number.parseInt(flags.capacity, 10)
+			);
+
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
@@ -477,7 +504,11 @@ export function registerClobMarket(parent: Command): void {
 
 					data: Buffer.concat([
 						ixDiscriminator('initialize_market_v0'),
-						clobMarketConfig(marketIndex, flags),
+						clobMarketConfig(
+							marketIndex,
+							flags,
+							Number.parseInt(flags.capacity, 10)
+						),
 					]),
 				});
 

@@ -873,7 +873,9 @@ set paid resync terms when it syncs another user's conditions, as the warm admin
 The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`.
 `clob-market update-config` retunes a live book's mutable config through velocity, and
 `clob-market resize` grows its arena, to at most 1024 slots. `clob-market init` defaults
-`--capacity` to 1024, `--evict-threshold` to 256 and `--blocking-min-size` to 1000000. The
+`--capacity` to 1024, `--evict-threshold` to a quarter of `--capacity`, and `--blocking-min-size`
+to 1000000. It refuses an `--evict-threshold` that is not above zero and below half of
+`--capacity`, which the book refuses, before it sends anything. The
 blocking floor must be at least ten times the larger of the book's and the market's minimum order
 size.
 The CLI creates a market's slab before it registers that market's book, and passes the registry's

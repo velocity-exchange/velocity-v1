@@ -12,6 +12,7 @@ mod book;
 mod config;
 mod emit;
 mod market;
+mod next_removal;
 mod parity;
 mod prefix;
 mod randomized;

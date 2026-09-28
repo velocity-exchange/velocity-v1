@@ -45,10 +45,10 @@ pub fn handle_next_removal_v0(
 /// This walks the arena rather than a side, since expiry has no book
 /// ordering and keeping one would cost every placement. The walk reads the
 /// book's own memory only in simulation, so the cost never lands on chain.
-fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
+pub(crate) fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
     for index in 0..market.len() as u32 {
         let node = market.read_node(index)?;
-        if !node.is_bit_flag_set(OrderBitFlag::Open) || node.max_ts == 0 || node.max_ts > now {
+        if !node.is_bit_flag_set(OrderBitFlag::Open) || !node.is_expired(now) {
             continue;
         }
 

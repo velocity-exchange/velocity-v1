@@ -804,3 +804,63 @@ mod builder_binding {
         assert!(!order.is_bit_flag_set(OrderBitFlag::HasBuilder));
     }
 }
+
+/// Which remainder a crank may settle when several on one side cross.
+mod subject_claim_order {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    fn user(owner: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([owner; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn row(order_id: u64, price: u64, owner: u8, taker_origin: bool) -> RestingOrder {
+        RestingOrder {
+            order_ref: ClobOrderRefV0 {
+                node_index: order_id as u32,
+                order_id,
+            },
+            user: user(owner),
+            price,
+            base_asset_amount: 5,
+            taker_origin,
+            reduce_only: false,
+            placed_slot: order_id,
+        }
+    }
+
+    /// Two bid remainders cross one ask. The book reserves the ask for the
+    /// older remainder, so a crank for the newer one must fail.
+    #[test]
+    fn only_the_oldest_remainder_on_a_side_is_settled() {
+        let bids = [row(10, 101, 0xA, true), row(30, 101, 0xC, true)];
+        let asks = [row(5, 99, 0xB, false)];
+        let crosses = resolve_crosses(&bids, &asks, MAX_CROSSES_PER_CRANK);
+
+        let older = subject_cross(&crosses, user(0xA)).unwrap();
+        assert_eq!(older.order.order_ref.order_id, 10);
+
+        assert_eq!(
+            subject_cross(&crosses, user(0xC)).err(),
+            Some(ErrorCode::NoTakerOriginCross)
+        );
+    }
+
+    /// A counterparty with depth for both still settles the older first. The
+    /// fill takes the whole remainder, so the newer one must wait.
+    #[test]
+    fn a_newer_remainder_waits_even_when_depth_covers_both() {
+        let bids = [row(10, 101, 0xA, true), row(30, 101, 0xC, true)];
+        let mut ask = row(5, 99, 0xB, false);
+        ask.base_asset_amount = 10;
+        let crosses = resolve_crosses(&bids, &[ask], MAX_CROSSES_PER_CRANK);
+
+        assert!(subject_cross(&crosses, user(0xA)).is_ok());
+        assert_eq!(
+            subject_cross(&crosses, user(0xC)).err(),
+            Some(ErrorCode::NoTakerOriginCross)
+        );
+    }
+}

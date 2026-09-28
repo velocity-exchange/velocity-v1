@@ -519,10 +519,20 @@ fn resolve_subject_cross<'info>(
     )?;
 
     let crosses = resolve_crosses(&bids, &asks, MAX_CROSSES_PER_CRANK);
+    Ok(subject_cross(&crosses, taker_ref)?)
+}
 
-    // This crank settles the remainder whose accounts the transaction carries.
-    // The rest of the pass is another crank's work, which bounds one
-    // transaction's account list.
+/// The first cross in `crosses` that `taker_ref` aggresses.
+///
+/// This crank settles the remainder whose accounts the transaction carries.
+/// The rest of the pass is another crank's work, which bounds one transaction's
+/// account list.
+///
+/// The fill reads the book with every claim ignored and takes the whole
+/// remainder. The book serves claims oldest first, so only the oldest crossing
+/// remainder on a side may do that. A newer one waits until the older one
+/// leaves, or else it takes depth the book reserves for the older one.
+fn subject_cross(crosses: &[Cross], taker_ref: UserRefV0) -> VelocityResult<SubjectCross> {
     let subject = crosses
         .iter()
         .find(|cross| {
@@ -538,6 +548,16 @@ fn resolve_subject_cross<'info>(
         .aggressor_side()
         .ok_or(ErrorCode::NoTakerOriginCross)?;
     let subject_order = aggressor_of(&subject, aggressor_side);
+
+    let first_claimant = crosses
+        .iter()
+        .find(|cross| cross.kind.aggressor_side() == Some(aggressor_side))
+        .map(|cross| aggressor_of(cross, aggressor_side).order_ref);
+    validate!(
+        first_claimant == Some(subject_order.order_ref),
+        ErrorCode::NoTakerOriginCross,
+        "an older remainder on this side holds the first claim on the depth it crosses"
+    )?;
 
     Ok(SubjectCross {
         aggressor_side,

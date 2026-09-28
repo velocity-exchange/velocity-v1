@@ -199,14 +199,14 @@ fn next_cross(bids: &[RestingOrder], asks: &[RestingOrder]) -> Option<(usize, us
             };
 
             // A taker's own improvement outranks arbitrage the protocol would
-            // take. Among taker crosses the latest to rest goes first. Its
-            // improvement is the one at stake, and settling it can free a pair
-            // behind it.
+            // take. Among taker crosses the earliest to rest goes first. The
+            // book serves claims in rest order, so this allocation matches the
+            // depth the book reserves for each remainder.
             let rank = (
                 kind.is_taker_origin(),
                 match kind {
-                    CrossKind::BidAggresses => bid.order_ref.order_id,
-                    CrossKind::AskAggresses => ask.order_ref.order_id,
+                    CrossKind::BidAggresses => u64::MAX - bid.order_ref.order_id,
+                    CrossKind::AskAggresses => u64::MAX - ask.order_ref.order_id,
                     // The flag above orders these against the taker crosses.
                     // Among maker pairs the deepest cross goes first.
                     CrossKind::ProtocolMiddles => bid.price.saturating_sub(ask.price),

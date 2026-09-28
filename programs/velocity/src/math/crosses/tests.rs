@@ -91,13 +91,13 @@ fn two_makers_are_middled() {
 /// pass settles them in the right order instead of refusing.
 #[test]
 fn a_taker_cross_outranks_a_maker_cross() {
-    let bids = [remainder(30, 101, 5, 0xA), maker(11, 100, 5, 0xC)];
-    let asks = [remainder(10, 99, 5, 0xB), maker(12, 98, 5, 0xD)];
+    let bids = [remainder(30, 101, 5, 0xA), maker(11, 100, 10, 0xC)];
+    let asks = [remainder(10, 99, 5, 0xB), maker(12, 98, 10, 0xD)];
     let crosses = resolve_crosses(&bids, &asks, 8);
 
-    assert_eq!(
+    assert_ne!(
         crosses[0].kind,
-        CrossKind::BidAggresses,
+        CrossKind::ProtocolMiddles,
         "the remainder's improvement is settled before any arbitrage"
     );
 
@@ -116,12 +116,26 @@ fn several_crossed_remainders_resolve_in_one_pass() {
     let crosses = resolve_crosses(&bids, &asks, 8);
 
     assert_eq!(crosses.len(), 2);
-    // The latest to rest goes first, and takes the best price it can reach.
-    assert_eq!(crosses[0].ask.order_ref.order_id, 40);
+    // The earliest aggressor to rest goes first, and takes the best price it
+    // can reach.
+    assert_eq!(crosses[0].ask.order_ref.order_id, 20);
     assert_eq!(crosses[0].settlement_price(), Some(101));
-    // Then the next latest, against what is left.
-    assert_eq!(crosses[1].bid.order_ref.order_id, 30);
-    assert_eq!(crosses[1].settlement_price(), Some(99));
+    // Then the next earliest, against what is left.
+    assert_eq!(crosses[1].ask.order_ref.order_id, 40);
+    assert_eq!(crosses[1].settlement_price(), Some(100));
+}
+
+/// Two remainders on one side compete for one counterparty. The book serves
+/// claims in rest order, so the older remainder gets the depth.
+#[test]
+fn the_older_remainder_on_a_side_is_allocated_first() {
+    let bids = [remainder(10, 101, 5, 0xC), remainder(30, 101, 5, 0xA)];
+    let asks = [maker(5, 99, 5, 0xB)];
+    let crosses = resolve_crosses(&bids, &asks, 8);
+
+    assert_eq!(crosses.len(), 1);
+    assert_eq!(crosses[0].bid.order_ref.order_id, 10);
+    assert_eq!(crosses[0].base_asset_amount, 5);
 }
 
 /// An aggressor bigger than its best counterparty takes the next one too, and

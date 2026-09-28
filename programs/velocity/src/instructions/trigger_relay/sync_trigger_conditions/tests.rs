@@ -44,6 +44,51 @@ fn the_watch_moves_the_threshold_by_the_band_at_most() {
     assert_eq!(below, Some(102_564));
 }
 
+/// `load_maps` reads spot markets only until the first perp market. A call
+/// that passes the perp market first must still store the quote spot market
+/// where the parser reads it.
+#[test]
+fn markets_are_stored_spot_first_whatever_the_call_order() {
+    use {
+        super::collect_trigger_inputs,
+        crate::{
+            create_anchor_account_info,
+            instructions::optional_accounts::load_maps,
+            math::time::SlotClock,
+            state::{perp_market::PerpMarket, perp_market_map::MarketSet, spot_market::SpotMarket},
+        },
+        anchor_lang::prelude::Pubkey,
+    };
+
+    let (perp_key, spot_key) = (Pubkey::new_unique(), Pubkey::new_unique());
+    let mut perp = PerpMarket::default();
+    create_anchor_account_info!(perp, &perp_key, PerpMarket, perp_info);
+    let mut spot = SpotMarket::default();
+    create_anchor_account_info!(spot, &spot_key, SpotMarket, spot_info);
+
+    let passed = [perp_info.clone(), spot_info.clone()];
+    let inputs = collect_trigger_inputs(&passed).unwrap();
+    let stored: Vec<Pubkey> = inputs
+        .market_refs()
+        .iter()
+        .map(|account| Pubkey::new_from_array(account.address))
+        .collect();
+    assert_eq!(stored, vec![spot_key, perp_key]);
+
+    let replayed = [spot_info, perp_info];
+    let maps = load_maps(
+        &mut replayed.iter().peekable(),
+        &MarketSet::new(),
+        &MarketSet::new(),
+        0,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
+    assert!(maps.spot_market_map.get_ref(&0).is_ok());
+    assert!(maps.perp_market_map.get_ref(&0).is_ok());
+}
+
 mod coverage_and_direction {
     use {
         super::super::{

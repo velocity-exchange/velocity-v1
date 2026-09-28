@@ -96,6 +96,9 @@ pub struct SyncTriggerConditions<'info> {
 /// The per-market inputs the sync collects from `remaining_accounts`.
 #[derive(Default)]
 struct MarketInputs {
+    /// The perp market account. `None` when only its crank account or slab
+    /// rode along.
+    market: Option<Pubkey>,
     oracle: Option<Pubkey>,
     oracle_source: Option<OracleSource>,
     quote_spot_market_index: Option<u16>,
@@ -163,7 +166,7 @@ pub fn rewrite_trigger_conditions<'info>(
             conditions_key,
             user_key,
             oracle_refs,
-            inputs.market_refs,
+            inputs.market_refs(),
             inputs.tail_refs,
         );
 
@@ -294,7 +297,7 @@ struct TriggerInputs<'info> {
     market_oracles: BTreeMap<Pubkey, u16>,
     /// Oracle each given spot market names. Read by the coverage rule only.
     spot_oracles: BTreeMap<u16, Pubkey>,
-    market_refs: Vec<AccountRefV0>,
+    spot_markets: BTreeMap<u16, Pubkey>,
     /// The crank accounts the stored list carries after the margin map, in the
     /// same order and shape the liquidation pass stores them.
     tail_refs: Vec<AccountRefV0>,
@@ -302,6 +305,18 @@ struct TriggerInputs<'info> {
 }
 
 impl TriggerInputs<'_> {
+    /// Every spot market by index, then every perp market by index, whatever
+    /// the call order. `load_maps` reads spot markets only until the first
+    /// perp market, so a perp first would drop the quote spot market.
+    fn market_refs(&self) -> Vec<AccountRefV0> {
+        self.spot_markets
+            .values()
+            .copied()
+            .chain(self.markets.values().filter_map(|inputs| inputs.market))
+            .map(|key| AccountRefV0::writable(key.to_bytes()))
+            .collect()
+    }
+
     /// The view the shared coverage rule answers over.
     fn coverage(&self) -> MarketCoverage {
         MarketCoverage {
@@ -347,7 +362,7 @@ fn collect_trigger_inputs<'info>(
     let mut markets: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut market_oracles: BTreeMap<Pubkey, u16> = BTreeMap::new();
     let mut spot_oracles: BTreeMap<u16, Pubkey> = BTreeMap::new();
-    let mut market_refs: Vec<AccountRefV0> = Vec::new();
+    let mut spot_markets: BTreeMap<u16, Pubkey> = BTreeMap::new();
     let mut tail_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracle_infos: BTreeMap<Pubkey, &AccountInfo<'info>> = BTreeMap::new();
     let mut slab_books: Vec<Pubkey> = Vec::new();
@@ -362,14 +377,14 @@ fn collect_trigger_inputs<'info>(
                 inputs.quote_spot_market_index = Some(market.quote_spot_market_index);
                 inputs.trigger_price_clamp_divisor = market.trigger_price_clamp_divisor();
                 inputs.has_clob = market.clob_market != Pubkey::default();
+                inputs.market = Some(*info.key);
                 market_oracles.insert(market.oracle, market.market_index);
-                market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
             if let Ok(loader) = AccountLoader::<SpotMarket>::try_from(info) {
                 let market = loader.load()?;
                 spot_oracles.insert(market.market_index, market.oracle);
-                market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
+                spot_markets.insert(market.market_index, *info.key);
                 continue;
             }
             if let Ok(loader) = AccountLoader::<ClobCrankConditionsV0>::try_from(info) {
@@ -415,7 +430,7 @@ fn collect_trigger_inputs<'info>(
         markets,
         market_oracles,
         spot_oracles,
-        market_refs,
+        spot_markets,
         tail_refs,
         oracle_infos,
     })

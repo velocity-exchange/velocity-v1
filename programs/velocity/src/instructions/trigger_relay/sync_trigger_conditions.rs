@@ -1,8 +1,9 @@
 //! Rewrite a user's relay trigger-condition block from their live orders.
 //!
-//! The pass is permissionless and idempotent. The block is a hint set, and this is
-//! its only writer besides the trigger cranks' slot release. Anyone can call it, and
-//! the first caller pays the rent. Each armed trigger order up to the slot cap gets
+//! The pass is permissionless and idempotent. The block is a hint set. Besides this
+//! pass, only the trigger and eviction cranks write it, one slot at a time. Anyone
+//! can call it, and the first caller pays the rent. Each armed trigger order up to
+//! the slot cap gets
 //! one `OnValueCross` condition on the market oracle's raw price. The threshold is
 //! the oracle price at which the median trigger price can first reach the trigger,
 //! so relay turners pay nothing while the price is away from the trigger.
@@ -16,16 +17,18 @@
 //! is silent: one unstageable order must not stop the rest of the user's from arming.
 //! A skip must come from the market, never from the caller's account list. So the
 //! pass refuses a call that leaves out the market, oracle, crank account or quoter
-//! slab of any stageable order.
+//! slab of any watched order.
 //!
 //! A book that is suspended or inactive still arms its market's triggers. The
 //! executors refuse to fire while the book takes no flow, so each trigger stays
 //! armed. A sync during a suspension would otherwise clear every watch on the
 //! market, and nothing arms them again when the book resumes.
 //!
-//! An order evicted from the book waits for the price to cross back before it can
-//! fire again. Its watch fires on the non-trigger side until a crank observes that
-//! recross.
+//! A stop-limit that rests on the book keeps its slot, parked. The slot is
+//! inactive and points at the non-trigger side. An eviction re-arms the order and
+//! wakes the slot, and the order then waits for the price to cross back before
+//! it can fire again. A crank that observes that recross points the watch back
+//! at the trigger side.
 //!
 //! Each fired trigger routes to one of two executors by order type. A trigger-limit
 //! rests whole on the book (`trigger_limit_order_v1`). A stop-market fires and
@@ -205,6 +208,10 @@ pub fn rewrite_trigger_conditions<'info>(
             ),
         )?;
 
+        if order.is_placed_on_clob() {
+            conditions.set_trigger_slot_active(slot_index, false)?;
+        }
+
         conditions.trigger_slots[slot_index] = meta;
         slot_index += 1;
     }
@@ -231,11 +238,11 @@ fn checked_trigger_inputs<'info>(
     Ok(inputs)
 }
 
-/// Refuse a call that leaves out an account a stageable trigger order needs.
+/// Refuse a call that leaves out an account a watched trigger order needs.
 ///
 /// The pass skips an order it cannot arm, and the skip also clears the slot
 /// that watched it. So a caller that omits a market's slab would disarm every
-/// trigger on that market. Each stageable order must bring its market, the
+/// trigger on that market. Each watched order must bring its market, the
 /// market's oracle, and, when the market has a CLOB, its crank account and
 /// quoter slab. A market without a CLOB has nowhere to fire, so its orders
 /// stay skipped.
@@ -244,7 +251,7 @@ fn validate_trigger_coverage(
     markets: &BTreeMap<u16, MarketInputs>,
     now: i64,
 ) -> Result<()> {
-    for order in user.orders.iter().filter(|order| is_stageable(order, now)) {
+    for order in user.orders.iter().filter(|order| is_watched(order, now)) {
         let index = order.market_index;
         let inputs = markets.get(&index);
         let has_market = inputs.is_some_and(|inputs| inputs.oracle.is_some());
@@ -271,15 +278,12 @@ fn validate_trigger_coverage(
     Ok(())
 }
 
-/// An open, untriggered trigger order within its `max_ts` that does not rest
-/// on a book. A resting trigger reads as untriggered, so without that skip its
-/// watch re-fires every round and `trigger_limit_order_v1` rejects each crank.
-fn is_stageable(order: &crate::state::user::Order, now: i64) -> bool {
+/// An open, untriggered trigger order within its `max_ts`. A stop-limit that
+/// rests on the book is watched too, with its slot parked, so an eviction can
+/// wake it.
+fn is_watched(order: &crate::state::user::Order, now: i64) -> bool {
     let expired = order.max_ts != 0 && now > order.max_ts;
-    order.status == OrderStatus::Open
-        && order.must_be_triggered()
-        && !order.is_placed_on_clob()
-        && !expired
+    order.status == OrderStatus::Open && order.must_be_triggered() && !expired
 }
 
 /// The classified `remaining_accounts`: the per-market inputs a trigger
@@ -494,7 +498,7 @@ fn trigger_watch_for_order(
     markets: &BTreeMap<u16, MarketInputs>,
     now: i64,
 ) -> Option<TriggerWatch> {
-    if !is_stageable(order, now) {
+    if !is_watched(order, now) {
         return None;
     }
 
@@ -582,12 +586,28 @@ pub fn rewatch_trigger_slot(
     }
 }
 
+/// Park the slot of a stop-limit that now rests on the book. The slot points
+/// at the recross side and stays quiet until an eviction wakes it.
+pub fn park_trigger_slot(
+    conditions: &mut UserConditionsV0,
+    order: &crate::state::user::Order,
+    market: &PerpMarket,
+    oracle: &AccountInfo,
+) -> Result<()> {
+    rewatch_trigger_slot(conditions, order, market, oracle)?;
+    match conditions.trigger_slot_index(order.market_index, order.order_id) {
+        Some(index) => conditions.set_trigger_slot_active(index, false),
+        None => Ok(()),
+    }
+}
+
 /// The side of the trigger a crank on `order` is due at.
 ///
 /// An order evicted from the book carries `AwaitingTriggerRecross`. Its crank
 /// is due on the non-trigger side, where it observes the recross and clears the
-/// flag. So its watch fires on that side. An ordinary order's watch fires on
-/// the trigger side.
+/// flag. So its watch fires on that side. A placed order's parked watch points
+/// there too, because an eviction wakes it without an oracle to re-point it.
+/// An ordinary order's watch fires on the trigger side.
 fn watch_direction(order: &crate::state::user::Order) -> Option<WatchDirection> {
     let trigger_side = match order.trigger_condition {
         crate::state::user::OrderTriggerCondition::Above => WatchDirection::AtOrAbove,
@@ -595,7 +615,9 @@ fn watch_direction(order: &crate::state::user::Order) -> Option<WatchDirection> 
         _ => return None,
     };
 
-    if !order.is_bit_flag_set(crate::state::user::OrderBitFlag::AwaitingTriggerRecross) {
+    if !order.is_bit_flag_set(crate::state::user::OrderBitFlag::AwaitingTriggerRecross)
+        && !order.is_placed_on_clob()
+    {
         return Some(trigger_side);
     }
 

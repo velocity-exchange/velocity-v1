@@ -1879,6 +1879,7 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             crank_conditions: None,
+            trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobRemoveExpired {
@@ -1933,6 +1934,7 @@ fn crank_evict_unwinds_the_tails_aggregates() {
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             crank_conditions: None,
+            trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobEvict {
@@ -3167,7 +3169,7 @@ fn trigger_limit_order_v1_ix(
     maker_stats: Pubkey,
 ) -> Instruction {
     let mut accounts = velocity::accounts::TriggerLimitOrderV1 {
-        trigger_conditions: None,
+        trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
         state: state_pda(),
         authority: fixture.keeper.pubkey(),
         filler,
@@ -3320,6 +3322,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             crank_conditions: None,
+            trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobEvict {
@@ -3399,6 +3402,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             crank_conditions: None,
+            trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobRemoveExpired {

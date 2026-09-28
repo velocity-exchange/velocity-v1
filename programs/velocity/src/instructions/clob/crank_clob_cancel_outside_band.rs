@@ -151,6 +151,7 @@ pub fn handle_crank_clob_cancel_outside_band<'info>(
             clob_program: &accounts.clob_program,
             crank_conditions: &accounts.crank_conditions,
             signed_msg_record: ctx.remaining_accounts.first(),
+            trigger_conditions: None,
         },
         market_index,
         ClobRemoval::OutsideBand(CancelOrderArgsV0 {

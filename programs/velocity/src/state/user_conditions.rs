@@ -288,6 +288,27 @@ impl UserConditionsV0 {
             .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
+    /// Silence or wake trigger slot `index`. Its wake, resolver list and
+    /// keeper payment stay as written, so a woken slot fires where it pointed.
+    pub fn set_trigger_slot_active(&mut self, index: usize, active: bool) -> Result<()> {
+        let condition = ConditionBlock::condition_mut(&mut self.relay, TRIGGER_SLOT_BASE + index)
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))?;
+        if !active {
+            condition.deactivate();
+            return Ok(());
+        }
+
+        let wake = condition
+            .wake()
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))?;
+        let mut woken =
+            relay_spec::ConditionV0::every_slots(0, condition.crank_spec(), condition.resolvers());
+
+        woken.set_wake(wake);
+        *condition = woken;
+        Ok(())
+    }
+
     /// Store the shared sync account list and describe where it landed. Every
     /// condition on this account points relay at that list.
     pub fn write_sync_accounts(

@@ -35,7 +35,8 @@
 //! the trigger fails. This is the on-chain approximation of a price that must
 //! cross back through the trigger. An evicted stop-limit sits near the tail by
 //! definition, and the gate stops it from re-placing into an immediate second
-//! eviction.
+//! eviction. The placement parks the order's relay slot on the recross side,
+//! and the eviction crank wakes it, so relay observes the recross unaided.
 //!
 //! The placed order rests taker-origin. A fired trigger is an order that came
 //! to trade, so it gets what any other taker remainder gets. A cross settles at
@@ -160,9 +161,11 @@ pub struct TriggerLimitOrderV1<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
-    /// The user's relay trigger conditions. The handler releases the fired
-    /// slot, which silences its level-triggered wake. It is optional, like
-    /// every relay-side account.
+    /// CHECK: the user's relay trigger conditions. The crank releases,
+    /// re-points or parks the slot of the order it cranked. It is required, so
+    /// a caller cannot leave the watch on the wrong side by omitting it. A
+    /// user created before the block existed has none, and the `seeds` pin the
+    /// address.
     #[account(
         mut,
         seeds = [
@@ -172,8 +175,7 @@ pub struct TriggerLimitOrderV1<'info> {
 
         bump
     )]
-    pub trigger_conditions:
-        Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
+    pub trigger_conditions: UncheckedAccount<'info>,
 }
 
 /// Fires an armed stop-limit trigger onto the book as a taker-origin order.
@@ -192,11 +194,16 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         market_index,
         order_id,
     } = args;
+    // Shared for `'info`, because the conditions loader borrows its account
+    // for that long.
+    let accounts: &'info TriggerLimitOrderV1<'info> = ctx.accounts;
+    let trigger_conditions =
+        super::helpers::crank_common::user_conditions_loader(&accounts.trigger_conditions)?;
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
-    let state = ctx.accounts.state.load()?;
-    let user_key = ctx.accounts.user.key();
+    let state = accounts.state.load()?;
+    let user_key = accounts.user.key();
 
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
     let mut maps: AccountMaps = load_maps(
@@ -209,7 +216,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     )?;
 
     let clob = {
-        let slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
+        let slot = accounts.quoter_slab.clob_slot(market_index)?;
         validate!(
             slot.quotes(),
             ErrorCode::ClobQuoterNotActive,
@@ -218,10 +225,10 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
 
         drop(slot);
         ClobMarket::from_slab(
-            &ctx.accounts.quoter_slab,
+            &accounts.quoter_slab,
             market_index,
-            &ctx.accounts.clob_market,
-            &ctx.accounts.clob_program,
+            &accounts.clob_market,
+            &accounts.clob_program,
         )?
     };
 
@@ -229,9 +236,9 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     // without holding a borrow across the CPI.
     let rules = clob.reader().order_rules()?;
     let crank = TriggerLimitCrank {
-        user: &ctx.accounts.user,
-        user_stats: &ctx.accounts.user_stats,
-        filler: &ctx.accounts.filler,
+        user: &accounts.user,
+        user_stats: &accounts.user_stats,
+        filler: &accounts.filler,
         state: &state,
         market_index,
         order_id,
@@ -251,12 +258,12 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         TriggerLimitStep::NoWork => return Ok(()),
         TriggerLimitStep::Settled { keeper_reward } => {
             return super::helpers::crank_common::finish_trigger_crank(
-                &ctx.accounts.state,
-                &ctx.accounts.filler,
-                &ctx.accounts.authority,
-                &ctx.accounts.user,
-                &ctx.accounts.trigger_conditions,
-                &ctx.accounts.crank_conditions,
+                &accounts.state,
+                &accounts.filler,
+                &accounts.authority,
+                &accounts.user,
+                &trigger_conditions,
+                &accounts.crank_conditions,
                 &super::helpers::crank_common::CrankedTrigger {
                     market_index,
                     order_id,
@@ -266,21 +273,21 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             );
         }
         TriggerLimitStep::Rearmed { keeper_reward } => {
-            rewatch_rearmed_trigger(
-                &ctx.accounts.user,
-                &ctx.accounts.trigger_conditions,
+            rewatch_trigger(
+                &accounts.user,
+                &trigger_conditions,
                 &maps,
                 market_index,
                 order_id,
             )?;
 
             return super::helpers::crank_common::finish_trigger_crank(
-                &ctx.accounts.state,
-                &ctx.accounts.filler,
-                &ctx.accounts.authority,
-                &ctx.accounts.user,
-                &ctx.accounts.trigger_conditions,
-                &ctx.accounts.crank_conditions,
+                &accounts.state,
+                &accounts.filler,
+                &accounts.authority,
+                &accounts.user,
+                &trigger_conditions,
+                &accounts.crank_conditions,
                 &super::helpers::crank_common::CrankedTrigger {
                     market_index,
                     order_id,
@@ -317,8 +324,16 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         reduce_only,
     })?;
 
-    // Mark the slot as the placed shadow.
-    mark_slot_placed(&ctx.accounts.user, order_id, &order_ref, slot)?;
+    // Mark the slot as the placed shadow, and park its watch where an
+    // eviction would leave the order due.
+    mark_slot_placed(&accounts.user, order_id, &order_ref, slot)?;
+    rewatch_trigger(
+        &accounts.user,
+        &trigger_conditions,
+        &maps,
+        market_index,
+        order_id,
+    )?;
 
     // A trigger that fired is an order that started resting, and it rests
     // under the id it armed under. The slot it came from is now a shadow, so
@@ -341,17 +356,17 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     )?;
 
     super::helpers::crank_common::finish_trigger_crank(
-        &ctx.accounts.state,
-        &ctx.accounts.filler,
-        &ctx.accounts.authority,
-        &ctx.accounts.user,
-        &ctx.accounts.trigger_conditions,
-        &ctx.accounts.crank_conditions,
+        &accounts.state,
+        &accounts.filler,
+        &accounts.authority,
+        &accounts.user,
+        &trigger_conditions,
+        &accounts.crank_conditions,
         &super::helpers::crank_common::CrankedTrigger {
             market_index,
             order_id,
             keeper_reward: filler_reward,
-            release_slot: true,
+            release_slot: false,
         },
     )?;
 
@@ -1040,11 +1055,12 @@ fn pay_trigger_keeper(
     )?)
 }
 
-/// Point the relay watch of a re-armed order back at its trigger side.
+/// Point the relay watch of `order_id` at the side it is due at next.
 ///
-/// The slot watched the non-trigger side while the order waited for its
-/// recross. Without this, relay never wakes the crank that fires the order.
-fn rewatch_rearmed_trigger(
+/// A re-armed order watches its trigger side again once its recross is seen.
+/// A placed order parks its slot on the recross side, where an eviction wakes
+/// it. Without this, relay never wakes the crank that fires the order again.
+fn rewatch_trigger(
     user_loader: &AccountLoader<'_, User>,
     trigger_conditions: &Option<AccountLoader<'_, crate::state::user_conditions::UserConditionsV0>>,
     maps: &AccountMaps<'_>,
@@ -1056,7 +1072,13 @@ fn rewatch_rearmed_trigger(
     };
 
     let user = crate::load!(user_loader)?;
-    let order_index = find_armed_trigger_limit(&user, order_id, market_index)?;
+    let order = user
+        .orders
+        .iter()
+        .find(|order| {
+            order.order_id == order_id && order.status == crate::state::user::OrderStatus::Open
+        })
+        .ok_or(ErrorCode::OrderDoesNotExist)?;
     let market = maps.perp_market_map.get_ref(&market_index)?;
     let oracle = maps.oracle_map.get_account_info(&market.oracle)?;
     let mut conditions = load_mut!(conditions)?;
@@ -1068,12 +1090,14 @@ fn rewatch_rearmed_trigger(
         user_loader.key()
     )?;
 
-    crate::instructions::trigger_relay::sync_trigger_conditions::rewatch_trigger_slot(
-        &mut conditions,
-        &user.orders[order_index],
-        &market,
-        &oracle,
-    )
+    use crate::instructions::trigger_relay::sync_trigger_conditions::{
+        park_trigger_slot, rewatch_trigger_slot,
+    };
+    if order.is_placed_on_clob() {
+        return park_trigger_slot(&mut conditions, order, &market, &oracle);
+    }
+
+    rewatch_trigger_slot(&mut conditions, order, &market, &oracle)
 }
 
 /// Marks the armed slot as the shadow of the order that now rests on the book.
@@ -1168,7 +1192,7 @@ pub fn handle_resolve_trigger_limit_order_v1(
                     meta.market_index,
                 )),
 
-                trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
+                trigger_conditions: ctx.accounts.trigger_conditions.key(),
             })
             .refs(ctx.accounts.trigger_conditions.load()?.read_sync_accounts())
             .arg(TriggerLimitOrderV1Args {

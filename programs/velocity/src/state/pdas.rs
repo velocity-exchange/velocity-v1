@@ -45,6 +45,19 @@ pub fn user(authority: &Pubkey, sub_account_id: u16) -> Pubkey {
     .0
 }
 
+/// A user's relay conditions block, which holds its liquidation and trigger
+/// watches.
+pub fn user_conditions(user: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            crate::state::user_conditions::USER_CONDITIONS_PDA_SEED,
+            user.as_ref(),
+        ],
+        &crate::ID,
+    )
+    .0
+}
+
 pub fn user_stats(authority: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"user_stats", authority.as_ref()], &crate::ID).0
 }

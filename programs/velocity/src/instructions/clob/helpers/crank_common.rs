@@ -112,6 +112,33 @@ pub struct CrankClobOrderRemoval<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// CHECK: the maker's relay trigger conditions. An eviction of a placed
+    /// stop-limit wakes its parked slot here. It is required, so a caller
+    /// cannot re-arm the order without its watch. See
+    /// [`user_conditions_loader`] for a user that has none.
+    #[account(
+        mut,
+        seeds = [
+            crate::state::user_conditions::USER_CONDITIONS_PDA_SEED,
+            user.key().as_ref(),
+        ],
+
+        bump
+    )]
+    pub trigger_conditions: UncheckedAccount<'info>,
+}
+
+/// The user's relay conditions block at its pinned address, or `None` for a
+/// user created before `initialize_user` made one. The caller pins the address
+/// with `seeds`.
+pub fn user_conditions_loader<'info>(
+    info: &'info AccountInfo<'info>,
+) -> Result<Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>> {
+    if info.data_is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(AccountLoader::try_from(info)?))
 }
 
 /// The accounts one removal crank reads. Each removal instruction names them
@@ -129,16 +156,20 @@ pub struct RemovalAccounts<'a, 'info> {
     /// The owner's signed-message record, which a taker-origin removal
     /// releases its entry in.
     pub signed_msg_record: Option<&'a AccountInfo<'info>>,
+    /// The owner's relay trigger conditions, which an eviction wakes a parked
+    /// slot in. `None` for a removal that re-arms nothing.
+    pub trigger_conditions: Option<&'info AccountInfo<'info>>,
 }
 
 impl<'info> CrankClobOrderRemoval<'info> {
     /// The removal accounts, with the owner's signed-message record as the
     /// first remaining account.
-    pub fn removal_accounts<'a>(
-        &'a self,
-        remaining_accounts: &'a [AccountInfo<'info>],
-    ) -> RemovalAccounts<'a, 'info> {
+    pub fn removal_accounts(
+        &'info self,
+        remaining_accounts: &'info [AccountInfo<'info>],
+    ) -> RemovalAccounts<'info, 'info> {
         RemovalAccounts {
+            trigger_conditions: Some(&self.trigger_conditions),
             state: &self.state,
             authority: &self.authority,
             filler: &self.filler,
@@ -262,8 +293,16 @@ pub fn crank_clob_removal(
 
         drop(filler);
 
+        let re_armed_order_id = is_evict
+            .then(|| user.find_placed_trigger_slot(market_index, removed.order_id))
+            .flatten()
+            .map(|slot_index| user.orders[slot_index].order_id);
         let position_index =
             unwind_removed_order(&mut user, &removed, market_index, is_evict, clock.slot)?;
+
+        if let Some(order_id) = re_armed_order_id {
+            wake_parked_trigger(accounts, market_index, order_id)?;
+        }
 
         // An eviction reads differently from a cancel. The order left the book
         // because the book ran out of room, and a placed trigger re-arms rather
@@ -309,6 +348,36 @@ pub fn crank_clob_removal(
     );
 
     Ok(())
+}
+
+/// Wake the parked relay slot of a stop-limit that an eviction re-armed.
+///
+/// The slot already points at the recross side, where the re-armed order is
+/// due. A slot that a sync never parked stays as it is, and the owner's next
+/// sync arms the order.
+fn wake_parked_trigger(accounts: &RemovalAccounts, market_index: u16, order_id: u32) -> Result<()> {
+    let Some(loader) = accounts
+        .trigger_conditions
+        .map(user_conditions_loader)
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+
+    let mut conditions = load_mut!(loader)?;
+    validate!(
+        conditions.user == accounts.user.key(),
+        ErrorCode::InvalidUserAccount,
+        "trigger conditions are for user {}, crank is for {}",
+        conditions.user,
+        accounts.user.key()
+    )?;
+
+    match conditions.trigger_slot_index(market_index, order_id) {
+        Some(index) => conditions.set_trigger_slot_active(index, true),
+        None => Ok(()),
+    }
 }
 
 /// Charge the maker the flat removal fee, and return what the keeper got.
@@ -528,12 +597,14 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
 ) -> Result<StagedCall> {
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    let user = pdas::user(&found.user.authority, found.user.sub_account_id);
     let call = StagedCall::new::<I>(crate::accounts::CrankClobOrderRemoval {
         state: ctx.accounts.state.key(),
         authority: pdas::keeper_placeholder(),
         filler: protocol_user,
         filler_stats: protocol_user_stats,
-        user: pdas::user(&found.user.authority, found.user.sub_account_id),
+        user,
+        trigger_conditions: pdas::user_conditions(&user),
         perp_market: pdas::perp_market(market_index),
         quoter_slab: ctx.accounts.quoter_slab.key(),
         clob_market: ctx.accounts.clob_market.key(),

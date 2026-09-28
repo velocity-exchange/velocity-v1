@@ -189,4 +189,73 @@ mod coverage_and_direction {
         rewatch_trigger_slot(&mut conditions, &stop_above(), &market, &oracle_info).unwrap();
         assert_eq!(wake_cmp(&conditions), WatchDirection::AtOrAbove.cmp());
     }
+
+    /// Placing a stop-limit parks its slot on the recross side, quiet. An
+    /// eviction wakes the slot, and the re-armed order is then due where the
+    /// slot points, so relay observes its recross without a new sync.
+    #[test]
+    fn a_placed_stop_limit_keeps_a_parked_slot_that_an_eviction_wakes() {
+        use {
+            super::super::park_trigger_slot,
+            relay_spec::{ConditionV0, CrankSpecV0, ResolverListV0, WatchValue, WatchedRegion},
+        };
+
+        let oracle_key = Pubkey::new_unique();
+        let mut oracle: PythLazerOracle = get_pyth_price(100, 6);
+        create_anchor_account_info!(oracle, &oracle_key, PythLazerOracle, oracle_info);
+        let market = PerpMarket {
+            oracle: oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+
+        let mut conditions = Box::new(UserConditionsV0::default());
+        conditions.init_block().unwrap();
+        let armed = ConditionV0::on_value_cross(
+            WatchedRegion::new(oracle_key.to_bytes(), 0, 8),
+            WatchValue::Signed(0),
+            WatchDirection::AtOrAbove.cmp(),
+            CrankSpecV0 {
+                resolver_program: [1; 32],
+                resolver_disc: [2; 8],
+                min_payment: 5_000,
+            },
+            ResolverListV0::new(0, 5),
+        );
+
+        conditions.set_condition(TRIGGER_SLOT_BASE, &armed).unwrap();
+        conditions.trigger_slots[0] = TriggerSlotMetaV0 {
+            order_id: 7,
+            ..TriggerSlotMetaV0::default()
+        };
+
+        let mut placed = stop_above();
+        placed.order_type = OrderType::TriggerLimit;
+        placed.add_bit_flag(OrderBitFlag::PlacedOnClob);
+        park_trigger_slot(&mut conditions, &placed, &market, &oracle_info).unwrap();
+
+        let slot = |conditions: &UserConditionsV0| {
+            ConditionBlock::read_condition(&conditions.relay, TRIGGER_SLOT_BASE).unwrap()
+        };
+
+        let parked = slot(&conditions);
+        assert!(!parked.is_active());
+        assert_eq!(conditions.trigger_slot_index(0, 7), Some(0));
+
+        conditions.set_trigger_slot_active(0, true).unwrap();
+        let woken = slot(&conditions);
+        assert!(woken.is_active());
+        assert_eq!(woken.crank_spec().min_payment, 5_000);
+        assert_eq!(woken.wake().unwrap(), parked.wake().unwrap());
+        match woken.wake().unwrap() {
+            WakeView::OnValueCross { cmp, .. } => {
+                assert_eq!(cmp, WatchDirection::AtOrBelow.cmp())
+            }
+            other => panic!("expected OnValueCross, got {:?}", other),
+        }
+
+        let mut evicted = stop_above();
+        evicted.add_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
+        assert_eq!(watch_direction(&evicted), Some(WatchDirection::AtOrBelow));
+    }
 }

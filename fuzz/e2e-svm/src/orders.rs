@@ -326,6 +326,9 @@ impl Fixture {
             clob_market: self.clob.book,
             clob_program: self.clob.program,
             crank_conditions: None,
+            trigger_conditions: velocity::state::pdas::user_conditions(
+                &self.users[order.owner_idx].user_pda,
+            ),
         }
         .to_account_metas(None);
         accounts.extend(self.market_ras(true));
@@ -360,6 +363,9 @@ impl Fixture {
             clob_market: self.clob.book,
             clob_program: self.clob.program,
             crank_conditions: None,
+            trigger_conditions: velocity::state::pdas::user_conditions(
+                &self.users[owner_idx].user_pda,
+            ),
         }
         .to_account_metas(None);
         accounts.extend(self.market_ras(true));
@@ -467,7 +473,7 @@ impl Fixture {
             clob_market: self.clob.book,
             clob_program: self.clob.program,
             crank_conditions: None,
-            trigger_conditions: None,
+            trigger_conditions: velocity::state::pdas::user_conditions(&user.user_pda),
         }
         .to_account_metas(None);
         accounts.extend(self.market_ras(true));

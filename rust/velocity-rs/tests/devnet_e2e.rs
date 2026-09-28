@@ -731,7 +731,12 @@ async fn swift_taker_filled_by_deployed_maker() {
     };
     let signed = SignedOrderType::authority(msg);
     let hex_msg = hex::encode(signed.to_borsh());
-    let signature = ctx.wallet.sign_message(hex_msg.as_bytes()).expect("sign");
+    let signature = ctx
+        .wallet
+        .sign_message(
+            &velocity_rs::swift_order_subscriber::signed_msg_signing_bytes(hex_msg.as_bytes()),
+        )
+        .expect("sign");
     let body = serde_json::json!({
         "message": hex_msg,
         "taker_authority": ctx.authority().to_string(),

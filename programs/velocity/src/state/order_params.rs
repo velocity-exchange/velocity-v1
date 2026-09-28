@@ -119,6 +119,18 @@ pub const fn expected_signed_msg_network() -> u8 {
     }
 }
 
+/// The bytes a taker signs ahead of the hex payload. The prefix names this program, so the
+/// signature is valid for no other program. Its first byte is not a hex digit. A verifier that
+/// hex-decodes the signed bytes, as Drift does, therefore refuses a Velocity message.
+/// `signed_msg_domain_prefix_names_this_program` holds it equal to the program id.
+pub const SIGNED_MSG_DOMAIN_PREFIX: &[u8] =
+    b"velocity-signed-msg:vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P:";
+
+/// The bytes a taker signs for `hex_payload`: [`SIGNED_MSG_DOMAIN_PREFIX`], then the payload.
+pub fn signed_msg_signing_bytes(hex_payload: &[u8]) -> Vec<u8> {
+    [SIGNED_MSG_DOMAIN_PREFIX, hex_payload].concat()
+}
+
 /// Cap on a signed route. See [`SignedMsgOrderParamsMessage::route`]. A message naming more
 /// custom quoters than this is refused, not truncated, and it bounds the message length for
 /// off-chain buffers. It matches [`crate::state::prop_amm::MAX_ROUTE_QUOTERS`], since a taker

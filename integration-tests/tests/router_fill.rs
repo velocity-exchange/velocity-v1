@@ -1045,7 +1045,8 @@ fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
     let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
     message.serialize(&mut borsh_body).unwrap();
     let hex_msg = hex_lower(&borsh_body);
-    let signature = taker.authority.sign_message(hex_msg.as_bytes());
+    let signed_bytes = velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+    let signature = taker.authority.sign_message(&signed_bytes);
     let mut envelope = Vec::new();
     envelope.extend_from_slice(signature.as_ref());
     envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());
@@ -8474,7 +8475,8 @@ fn signed_market_order_envelope(taker: &Party, uuid: [u8; 8], slot: u64) -> Vec<
     let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
     message.serialize(&mut borsh_body).unwrap();
     let hex_msg = hex_lower(&borsh_body);
-    let signature = taker.authority.sign_message(hex_msg.as_bytes());
+    let signed_bytes = velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+    let signature = taker.authority.sign_message(&signed_bytes);
 
     let mut envelope = Vec::new();
     envelope.extend_from_slice(signature.as_ref());
@@ -8684,7 +8686,8 @@ fn signed_msg_taker_signature_is_verified_in_program() {
     let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
     message.serialize(&mut borsh_body).unwrap();
     let hex_msg = hex_lower(&borsh_body);
-    let signature = taker.authority.sign_message(hex_msg.as_bytes());
+    let signed_bytes = velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+    let signature = taker.authority.sign_message(&signed_bytes);
 
     let taker_pubkey = taker.authority.pubkey().to_bytes();
     let envelope = |sig: &[u8]| {
@@ -8851,7 +8854,9 @@ fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
         let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
         message.serialize(&mut borsh_body).unwrap();
         let hex_msg = hex_lower(&borsh_body);
-        let signature = taker.authority.sign_message(hex_msg.as_bytes());
+        let signed_bytes =
+            velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+        let signature = taker.authority.sign_message(&signed_bytes);
         let mut envelope = Vec::new();
         envelope.extend_from_slice(signature.as_ref());
         envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());
@@ -10055,7 +10060,8 @@ fn signed_bid_envelope(taker: &Party, uuid: [u8; 8], price: u64, slot: u64) -> V
     let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
     message.serialize(&mut borsh_body).unwrap();
     let hex_msg = hex_lower(&borsh_body);
-    let signature = taker.authority.sign_message(hex_msg.as_bytes());
+    let signed_bytes = velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+    let signature = taker.authority.sign_message(&signed_bytes);
     let mut envelope = Vec::new();
     envelope.extend_from_slice(signature.as_ref());
     envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());

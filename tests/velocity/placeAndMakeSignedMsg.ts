@@ -28,6 +28,7 @@ import {
 	loadKeypair,
 	getMarketOrderParams,
 	MarketType,
+	signedMsgSigningBytes,
 } from '../../packages/sdk/src';
 
 import {
@@ -373,7 +374,10 @@ describe('place and make signedMsg order', () => {
 				takerOrderParamsMessage
 			);
 		const takerOrderParamsSig = takerVelocityClient.signMessage(
-			Buffer.from(takerOrderParamsMessageEncoded.toString('hex')),
+			signedMsgSigningBytes(
+				takerVelocityClient.program.programId,
+				Buffer.from(takerOrderParamsMessageEncoded.toString('hex'))
+			),
 			makerVelocityClient.wallet.payer
 		);
 
@@ -507,7 +511,10 @@ describe('place and make signedMsg order', () => {
 				takerOrderParamsMessage
 			);
 		const takerOrderParamsSig = takerVelocityClient.signMessage(
-			Buffer.from(takerOrderParamsMessageEncoded.toString('hex')),
+			signedMsgSigningBytes(
+				takerVelocityClient.program.programId,
+				Buffer.from(takerOrderParamsMessageEncoded.toString('hex'))
+			),
 			makerVelocityClient.wallet.payer
 		);
 

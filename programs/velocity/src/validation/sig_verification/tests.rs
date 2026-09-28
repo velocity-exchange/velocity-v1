@@ -4,8 +4,9 @@ mod sig_verification {
             controller::position::PositionDirection,
             state::{
                 order_params::{
-                    expected_signed_msg_network, OrderParams, SignedMsgOrderParamsDelegateMessage,
-                    SignedMsgOrderParamsMessage, SignedMsgTriggerOrderParams,
+                    expected_signed_msg_network, signed_msg_signing_bytes, OrderParams,
+                    SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+                    SignedMsgTriggerOrderParams, SIGNED_MSG_DOMAIN_PREFIX,
                 },
                 user::{MarketType, OrderType},
             },
@@ -87,20 +88,20 @@ mod sig_verification {
         payload
     }
 
-    /// The in-program verifier accepts a real signature over the hex payload,
-    /// and refuses a wrong signer or a tampered signature — the checks the
-    /// native ed25519 precompile used to make.
+    /// The in-program verifier accepts a real signature over the domain prefix
+    /// and the hex payload. It refuses a wrong signer or a tampered signature.
     #[test]
     fn verify_and_decode_signed_msg_checks_a_real_signature() {
         use ed25519_dalek::{Signer, SigningKey};
 
-        // A valid non-delegate order, hex-encoded: the taker signs the hex.
         let order = non_delegate_payload(|_| {});
         let hex_payload = hex::encode(&order).into_bytes();
 
         let signing = SigningKey::from_bytes(&[7u8; 32]);
         let pubkey = signing.verifying_key().to_bytes();
-        let signature = signing.sign(&hex_payload).to_bytes();
+        let signature = signing
+            .sign(&signed_msg_signing_bytes(&hex_payload))
+            .to_bytes();
         let message = pack_message(&signature, &pubkey, &hex_payload);
 
         // The right signer: verified and decoded.
@@ -127,6 +128,48 @@ mod sig_verification {
         assert!(verify_and_decode_signed_msg(&forged, &other_pk, false).is_err());
     }
 
+    /// Drift signs the same hex envelope and ignores bytes it does not read. A
+    /// signature over the bare hex, or over another program's prefix, is refused.
+    #[test]
+    fn a_signature_without_this_programs_domain_prefix_is_refused() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let hex_payload = hex::encode(non_delegate_payload(|_| {})).into_bytes();
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let pubkey = signing.verifying_key().to_bytes();
+        let refused = |signed: &[u8]| {
+            let signature = signing.sign(signed).to_bytes();
+            let message = pack_message(&signature, &pubkey, &hex_payload);
+            verify_and_decode_signed_msg(&message, &pubkey, false).unwrap_err()
+        };
+
+        let sig_failed =
+            anchor_lang::error::Error::from(crate::error::ErrorCode::SigVerificationFailed);
+        assert_eq!(refused(&hex_payload), sig_failed);
+
+        let other_program = format!("velocity-signed-msg:{}:", Pubkey::new_unique());
+        let other_program_bytes = [other_program.as_bytes(), &hex_payload].concat();
+        assert_eq!(refused(&other_program_bytes), sig_failed);
+    }
+
+    /// Drift hex-decodes the signed bytes. The prefixed bytes do not decode, so
+    /// Drift refuses a Velocity signature before it reads the order.
+    #[test]
+    fn the_signed_bytes_do_not_hex_decode() {
+        let hex_payload = hex::encode(non_delegate_payload(|_| {})).into_bytes();
+        assert!(hex::decode(&hex_payload).is_ok());
+        assert!(hex::decode(signed_msg_signing_bytes(&hex_payload)).is_err());
+        assert!(!SIGNED_MSG_DOMAIN_PREFIX[0].is_ascii_hexdigit());
+    }
+
+    #[test]
+    fn signed_msg_domain_prefix_names_this_program() {
+        assert_eq!(
+            SIGNED_MSG_DOMAIN_PREFIX,
+            format!("velocity-signed-msg:{}:", crate::ID).as_bytes()
+        );
+    }
+
     /// The all-zero key is a point of order four. `R = sB - kA` then verifies
     /// under the cofactorless equation whenever the challenge is `k` modulo
     /// four, so a forger needs about four tries and no private key.
@@ -143,7 +186,7 @@ mod sig_verification {
             brine_ed25519::verify(
                 &brine_ed25519::Address::new_from_array(zero_key),
                 signature,
-                &[&hex_payload],
+                &[SIGNED_MSG_DOMAIN_PREFIX, &hex_payload],
             )
             .is_ok()
         };

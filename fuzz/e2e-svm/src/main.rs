@@ -294,7 +294,9 @@ fn build_signed_msg_envelope(signer: &Keypair, borsh_message: &[u8]) -> Vec<u8> 
     payload.extend_from_slice(borsh_message);
     let hex_payload = hex_encode(&payload);
 
-    let signature = signer.sign_message(&hex_payload);
+    let signature = signer.sign_message(&velocity::state::order_params::signed_msg_signing_bytes(
+        &hex_payload,
+    ));
 
     let mut msg = Vec::with_capacity(SIGNED_MSG_PAYLOAD_OFF as usize + hex_payload.len());
     msg.extend_from_slice(signature.as_ref());

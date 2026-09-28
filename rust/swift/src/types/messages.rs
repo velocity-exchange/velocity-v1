@@ -11,7 +11,8 @@ use {
     std::str::FromStr,
     velocity_rs::{
         swift_order_subscriber::{
-            deser_signed_msg_type, SignedMessageInfo, SignedOrderType, MAX_SIGNED_MSG_BORSH_LEN,
+            deser_signed_msg_type, signed_msg_signing_bytes, SignedMessageInfo, SignedOrderType,
+            MAX_SIGNED_MSG_BORSH_LEN,
         },
         types::{market_type_from_str, MarketType},
     },
@@ -45,7 +46,8 @@ impl IncomingSignedMessage {
     pub fn order(&self) -> SignedOrderType {
         self.message.clone()
     }
-    /// Verify taker signature against hex encoded `message`
+    /// Verify the taker signature over the domain prefix and the hex `message`,
+    /// as the program does.
     pub fn verify_signature(&self) -> Result<()> {
         let pubkey = if self.signing_authority != Pubkey::default() {
             PublicKey::from_bytes(self.signing_authority.as_array())
@@ -58,7 +60,10 @@ impl IncomingSignedMessage {
         // expect: the raw payload should be populated
         let signed_msg = self.message.raw().as_ref().expect("msg exists");
         pubkey
-            .verify(signed_msg.as_bytes(), &self.signature)
+            .verify(
+                &signed_msg_signing_bytes(signed_msg.as_bytes()),
+                &self.signature,
+            )
             .context("Signature did not verify")
     }
     pub fn verify_and_get_signed_message(&self) -> Result<&SignedOrderType> {
@@ -350,10 +355,10 @@ mod tests {
         faster_hex::hex_string(order.to_borsh().as_slice())
     }
 
-    /// Sign the hex message bytes with a solana keypair (ed25519) and base64-encode,
+    /// Sign the hex message behind the domain prefix and base64-encode it,
     /// matching what `deser_signature` + `verify_signature` expect.
     fn sign_hex(kp: &Keypair, hex_msg: &str) -> String {
-        let sig = kp.sign_message(hex_msg.as_bytes());
+        let sig = kp.sign_message(&signed_msg_signing_bytes(hex_msg.as_bytes()));
         base64::prelude::BASE64_STANDARD.encode(sig.as_ref())
     }
 
@@ -815,6 +820,23 @@ mod tests {
             SignedOrderType::Delegated { inner, .. } => assert_eq!(inner, expected),
             SignedOrderType::Authority { .. } => panic!("expected Delegated variant"),
         }
+    }
+
+    /// A signature over the bare hex message is refused. The program verifies the
+    /// domain prefix, so the server must not accept an order the program refuses.
+    #[test]
+    fn a_signature_without_the_domain_prefix_is_refused() {
+        let signer = test_keypair(43);
+        let hex_msg = encode_message(&SignedOrderType::delegated(full_delegate_message(0)));
+        let bare = signer.sign_message(hex_msg.as_bytes());
+        let signature = base64::prelude::BASE64_STANDARD.encode(bare.as_ref());
+        let message = format!(
+            r#"{{"message": "{hex_msg}", "signature": "{signature}", "signing_authority": "{}"}}"#,
+            signer.pubkey()
+        );
+
+        let actual: IncomingSignedMessage = serde_json::from_str(&message).expect("deserializes");
+        assert!(actual.verify_signature().is_err());
     }
 
     /// A payload past the bound, or shorter than a discriminator, is refused with an

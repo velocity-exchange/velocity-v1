@@ -8660,7 +8660,7 @@ export class VelocityClient {
 
 	/**
 	 * Borsh-encodes a swift/signed-msg order message and signs the resulting hex-encoded buffer
-	 * with `signMessage` (this client's wallet keypair by default). The returned payload is what a
+	 * behind `signedMsgDomainPrefix`, with `signMessage` (this client's wallet keypair by default). The returned payload is what a
 	 * swift/signed-msg service or a taker-facing `placeSignedMsgTakerOrder` expects.
 	 * @param orderParamsMessage - The order message to sign; use `SignedMsgOrderParamsDelegateMessage`
 	 * when signing on behalf of a delegated authority (`delegateSigner: true`), otherwise
@@ -8668,7 +8668,7 @@ export class VelocityClient {
 	 * @param delegateSigner - Whether `orderParamsMessage` is the delegate-signer variant; must match
 	 * the message's actual shape or encoding/decoding elsewhere will misinterpret the buffer.
 	 * @returns `{ orderParams, signature }` — `orderParams` is the hex-encoded borsh buffer as a
-	 * `Buffer`, `signature` is the detached ed25519 signature over it.
+	 * `Buffer`, `signature` is the detached ed25519 signature over `signedMsgSigningBytes` of it.
 	 */
 	public signSignedMsgOrderParamsMessage(
 		orderParamsMessage:
@@ -8690,7 +8690,12 @@ export class VelocityClient {
 		const orderParams = Buffer.from(borshBuf.toString('hex'));
 		return {
 			orderParams,
-			signature: this.signMessage(Buffer.from(borshBuf.toString('hex'))),
+			signature: this.signMessage(
+				VelocityCore.signedMsg.signedMsgSigningBytes(
+					this.program.programId,
+					orderParams
+				)
+			),
 		};
 	}
 

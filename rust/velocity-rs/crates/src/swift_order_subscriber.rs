@@ -31,6 +31,10 @@ pub const fn expected_network_tag() -> u8 {
     program::state::order_params::expected_signed_msg_network()
 }
 
+/// A taker signs [`signed_msg_signing_bytes`] of the hex message, not the hex message alone. The
+/// prefix names the program, so the signature is valid for no other program.
+pub use program::state::order_params::{signed_msg_signing_bytes, SIGNED_MSG_DOMAIN_PREFIX};
+
 /// Swift message discriminator, `sha256("global:SignedMsgOrderParamsMessage")[..8]`.
 /// The program refuses a payload that does not start with it.
 pub const SWIFT_MSG_PREFIX: [u8; 8] =
@@ -264,7 +268,8 @@ impl SignedOrderInfo {
             SignedOrderType::Delegated { inner, .. } => inner.taker_pubkey,
         }
     }
-    /// serialize the order message for onchain use e.g. signature verification
+    /// The hex order message the instruction carries. The signature covers
+    /// [`signed_msg_signing_bytes`] of it.
     pub fn encode_for_signing(&self) -> Vec<u8> {
         // the swift message format can change
         // if the message was received from an external source then we have to preserve the serialization
@@ -883,7 +888,7 @@ mod tests {
         let hex_message = hex::encode(&message_bytes);
 
         let signer = Keypair::new_from_array([7u8; 32]);
-        let signature = signer.sign_message(hex_message.as_bytes());
+        let signature = signer.sign_message(&signed_msg_signing_bytes(hex_message.as_bytes()));
 
         let mut payload: Vec<u8> = Vec::new();
         payload.extend_from_slice(signature.as_ref());

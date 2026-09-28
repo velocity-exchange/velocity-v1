@@ -425,9 +425,11 @@ mod regr_271_pause {
 
         // Envelope: signature[64] | pubkey[32] | size u16 | message.
         // The velocity program verifies this signature in-program (brine), so
-        // it must be a REAL ed25519 signature by `signer` over the message
-        // region (the ASCII-hex bytes).
-        let signature = signer_kp.sign_message(hex_msg.as_bytes());
+        // it must be a REAL ed25519 signature by `signer` over the domain
+        // prefix and the ASCII-hex message.
+        let signature = signer_kp.sign_message(
+            &velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes()),
+        );
         let mut envelope = Vec::new();
         envelope.extend_from_slice(signature.as_ref()); // signature (64 bytes)
         envelope.extend_from_slice(&signer.to_bytes()); // pubkey

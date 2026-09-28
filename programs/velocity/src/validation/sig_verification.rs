@@ -3,7 +3,7 @@ use {
         error::ErrorCode,
         state::order_params::{
             OrderParams, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
-            SignedMsgTriggerOrderParams,
+            SignedMsgTriggerOrderParams, SIGNED_MSG_DOMAIN_PREFIX,
         },
     },
     anchor_lang::prelude::*,
@@ -258,10 +258,11 @@ pub fn verify_flow_attestation(
 ///
 /// `message_bytes` is the `place_signed_msg_taker_order` argument, packed as
 /// `[signature: 64][public key: 32][payload size: 2 LE][payload]`. The payload
-/// is the hex text the taker signed. `signer` is the taker's on-chain
-/// authority (or delegate) the public key must equal.
+/// is hex text. The taker signs [`SIGNED_MSG_DOMAIN_PREFIX`] followed by the
+/// payload. `signer` is the taker's on-chain authority (or delegate) the
+/// public key must equal.
 ///
-/// The signature is checked over the payload with
+/// The signature is checked with
 /// `brine_ed25519::verify_strict`, which refuses a small-order public key or
 /// `R`, as the native ed25519 precompile did. No sibling instruction and no
 /// instructions sysvar are needed.
@@ -300,7 +301,7 @@ pub fn verify_and_decode_signed_msg(
     brine_ed25519::verify_strict(
         &brine_ed25519::Address::new_from_array(public_key),
         &signature,
-        &[payload],
+        &[SIGNED_MSG_DOMAIN_PREFIX, payload],
     )
     .map_err(|_| ErrorCode::SigVerificationFailed)?;
 

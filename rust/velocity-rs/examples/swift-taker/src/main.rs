@@ -73,7 +73,12 @@ async fn main() {
     };
     let swift_order_type = SignedOrderType::authority(signed_order_params);
     let signed_msg = hex::encode(swift_order_type.to_borsh());
-    let signature = velocity.wallet.sign_message(signed_msg.as_bytes()).unwrap();
+    let signature = velocity
+        .wallet
+        .sign_message(
+            &velocity_rs::swift_order_subscriber::signed_msg_signing_bytes(signed_msg.as_bytes()),
+        )
+        .unwrap();
 
     let swift_order_request = serde_json::json!({
         "message": signed_msg,

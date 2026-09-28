@@ -1,4 +1,5 @@
 import { sha256 } from '@noble/hashes/sha256';
+import type { PublicKey } from '@solana/web3.js';
 import type {
 	SignedMsgOrderParamsDelegateMessage,
 	SignedMsgOrderParamsMessage,
@@ -13,6 +14,27 @@ export type AnchorTypesCoder = {
 	encode: (typeName: string, value: any) => Buffer;
 	decode: (typeName: string, buffer: Buffer) => any;
 };
+
+/**
+ * The prefix a taker signs ahead of the hex message. It names the program, so the signature is
+ * valid for no other program. Its first byte is not a hex digit, so a verifier that hex-decodes
+ * the signed bytes, as Drift does, refuses a Velocity message.
+ */
+export function signedMsgDomainPrefix(programId: PublicKey): Buffer {
+	return Buffer.from(`velocity-signed-msg:${programId.toBase58()}:`);
+}
+
+/**
+ * The bytes a taker signs for `orderParams`, the hex message the instruction carries: the domain
+ * prefix, then the message. The instruction carries only the message. The program adds the
+ * prefix when it verifies.
+ */
+export function signedMsgSigningBytes(
+	programId: PublicKey,
+	orderParams: Uint8Array
+): Buffer {
+	return Buffer.concat([signedMsgDomainPrefix(programId), orderParams]);
+}
 
 /**
  * Borsh-encodes a Swift signed-order message envelope: an 8-byte Anchor type

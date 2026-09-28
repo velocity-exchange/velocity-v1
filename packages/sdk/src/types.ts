@@ -2732,7 +2732,8 @@ export type SignedMsgOrderId = {
 	orderId: number;
 	/** the market whose book `clobOrderId` names. Each book numbers its own orders */
 	marketIndex: number;
-	padding: number;
+	/** the subaccount that placed the message; its uuid is spent only for that subaccount. `0xffff` marks an entry migrated from the legacy layout, which refuses its uuid to every subaccount */
+	subAccountId: number;
 	/** digest of the quoter entries the taker's signed route named; all-zero when the message named no route. See `getRouteDigest`. */
 	routeDigest: number[];
 };

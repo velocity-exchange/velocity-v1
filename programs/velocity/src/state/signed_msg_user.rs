@@ -2,7 +2,9 @@
 //!
 //! The record is authority-scoped, so every subaccount shares it. Each entry
 //! is replay protection for one message and the routing state of the order
-//! that message became. See [`SignedMsgOrderId`].
+//! that message became. An entry refuses its uuid only to the subaccount that
+//! placed it, so one subaccount cannot spend the uuid of another. See
+//! [`SignedMsgOrderId`].
 //!
 //! The header's `version` names the entry layout. Version 1 stores 40-byte
 //! entries. An account created before the version field stores 24-byte
@@ -109,11 +111,16 @@ pub struct SignedMsgOrderId {
     /// The market whose book `clob_order_id` names. Each book numbers its own
     /// orders, so the id alone can name an order on another market.
     pub market_index: u16,
-    pub padding: u16,
+    /// The subaccount that placed the message. [`ANY_SUB_ACCOUNT`] marks an
+    /// entry migrated from the legacy layout, which did not record it.
+    pub sub_account_id: u16,
     /// [`crate::state::order_params::route_digest`] of the quoter entries the
     /// taker's signed route named. Zero when the message named no route.
     pub route_digest: [u8; crate::state::order_params::ROUTE_DIGEST_LEN],
 }
+
+/// The subaccount of an entry that refuses its uuid to every subaccount.
+pub const ANY_SUB_ACCOUNT: u16 = u16::MAX;
 
 unsafe impl bytemuck::Pod for SignedMsgOrderId {}
 unsafe impl bytemuck::Zeroable for SignedMsgOrderId {}
@@ -131,7 +138,7 @@ impl SignedMsgOrderId {
             clob_order_id: 0,
             order_id,
             market_index: 0,
-            padding: 0,
+            sub_account_id: 0,
             route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
         }
     }
@@ -139,6 +146,13 @@ impl SignedMsgOrderId {
     /// Whether this entry still describes an order resting on a book.
     pub fn rests_on_clob(&self) -> bool {
         self.clob_order_id != 0
+    }
+
+    /// Whether this entry refuses `message` as a replay.
+    fn claims_uuid_of(&self, message: &SignedMsgOrderId) -> bool {
+        self.uuid == message.uuid
+            && (self.sub_account_id == message.sub_account_id
+                || self.sub_account_id == ANY_SUB_ACCOUNT)
     }
 
     fn rests_as(&self, market_index: u16, clob_order_id: u64) -> bool {
@@ -244,7 +258,10 @@ impl LegacySignedMsgOrderId {
             .max_slot
             .saturating_add(SIGNED_MSG_FILL_WINDOW_MAX_SLOTS);
 
-        SignedMsgOrderId::new(self.uuid, max_slot, self.order_id)
+        SignedMsgOrderId {
+            sub_account_id: ANY_SUB_ACCOUNT,
+            ..SignedMsgOrderId::new(self.uuid, max_slot, self.order_id)
+        }
     }
 }
 
@@ -413,8 +430,9 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     /// the route from here. Only the pressure `add_signed_msg_order_id`
     /// describes reclaims such an entry, and only once it is past the buffer.
     ///
-    /// This is the replay guard. It matches on the uuid, so an entry must
-    /// outlive every slot at which its own message can still be placed.
+    /// This is the replay guard. It matches on the uuid and the subaccount, so
+    /// an entry must outlive every slot at which its own message can still be
+    /// placed.
     pub fn check_exists_and_prune_stale_signed_msg_order_ids(
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
@@ -426,7 +444,7 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
             let existing_signed_msg_order_id = self.get_mut(i);
             let expired = slot_clock.elapsed(existing_signed_msg_order_id.max_slot, current_slot)
                 > SIGNED_MSG_EVICTION_BUFFER;
-            if existing_signed_msg_order_id.uuid == signed_msg_order_id.uuid && !expired {
+            if existing_signed_msg_order_id.claims_uuid_of(&signed_msg_order_id) && !expired {
                 uuid_exists = true;
             } else if expired && !existing_signed_msg_order_id.rests_on_clob() {
                 *existing_signed_msg_order_id = SignedMsgOrderId::default();

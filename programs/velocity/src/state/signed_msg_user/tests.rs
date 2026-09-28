@@ -199,7 +199,7 @@ mod zero_copy {
                 max_slot: 0,
                 order_id: i as u32,
                 market_index: 0,
-                padding: 0,
+                sub_account_id: 0,
                 clob_order_id: 0,
                 route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
             });
@@ -225,7 +225,7 @@ mod zero_copy {
                     max_slot: 0,
                     order_id: i,
                     market_index: 0,
-                    padding: 0,
+                    sub_account_id: 0,
                     clob_order_id: 0,
                     route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
                 }
@@ -272,7 +272,7 @@ mod zero_copy {
                 max_slot: 0,
                 order_id: i as u32,
                 market_index: 0,
-                padding: 0,
+                sub_account_id: 0,
                 clob_order_id: 0,
                 route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
             });
@@ -299,7 +299,7 @@ mod zero_copy {
                     max_slot: 0,
                     order_id: i,
                     market_index: 0,
-                    padding: 0,
+                    sub_account_id: 0,
                     clob_order_id: 0,
                     route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
                 }
@@ -834,6 +834,42 @@ mod signed_msg_max_slot {
             );
         }
     }
+
+    /// The record is shared by every subaccount of the authority. A message
+    /// that a delegate of one subaccount places must not spend the uuid of a
+    /// message for another subaccount.
+    #[test]
+    fn a_uuid_is_spent_only_for_the_subaccount_that_placed_it() {
+        let fixed = RefCell::new(SignedMsgUserOrdersFixed {
+            user_pubkey: Pubkey::default(),
+            version: 1,
+            len: 4,
+        });
+        let data = RefCell::new([0u8; 160]);
+        let mut orders = SignedMsgUserOrdersZeroCopyMut {
+            fixed: fixed.borrow_mut(),
+            data: data.borrow_mut(),
+        };
+
+        let for_sub_account = |sub_account_id: u16| SignedMsgOrderId {
+            sub_account_id,
+            ..SignedMsgOrderId::new([5; 8], 100, 1)
+        };
+        orders
+            .add_signed_msg_order_id(for_sub_account(1), 10, SlotClock::baseline())
+            .unwrap();
+
+        assert!(orders.check_exists_and_prune_stale_signed_msg_order_ids(
+            for_sub_account(1),
+            10,
+            SlotClock::baseline()
+        ));
+        assert!(!orders.check_exists_and_prune_stale_signed_msg_order_ids(
+            for_sub_account(0),
+            10,
+            SlotClock::baseline()
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -1016,6 +1052,17 @@ mod legacy_layout {
         let current_slot = legacy_max_slot + 40;
         assert!(orders.check_exists_and_prune_stale_signed_msg_order_ids(
             replay,
+            current_slot,
+            SlotClock::baseline()
+        ));
+
+        // A legacy entry did not record its subaccount, so it refuses all of them.
+        let replay_for_other_sub_account = SignedMsgOrderId {
+            sub_account_id: 3,
+            ..replay
+        };
+        assert!(orders.check_exists_and_prune_stale_signed_msg_order_ids(
+            replay_for_other_sub_account,
             current_slot,
             SlotClock::baseline()
         ));

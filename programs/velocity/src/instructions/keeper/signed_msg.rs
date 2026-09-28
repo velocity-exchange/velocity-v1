@@ -555,11 +555,14 @@ fn signed_msg_order_slot(
         return Ok(None);
     }
 
-    let signed_msg_order_id = SignedMsgOrderId::new(
-        message.uuid,
-        crate::state::signed_msg_user::signed_msg_retention_slot(order_slot, is_resting_limit),
-        0,
-    );
+    let signed_msg_order_id = SignedMsgOrderId {
+        sub_account_id: taker.user.sub_account_id,
+        ..SignedMsgOrderId::new(
+            message.uuid,
+            crate::state::signed_msg_user::signed_msg_retention_slot(order_slot, is_resting_limit),
+            0,
+        )
+    };
     if taker
         .orders
         .check_exists_and_prune_stale_signed_msg_order_ids(

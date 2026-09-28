@@ -17,6 +17,8 @@ const HEADER_LEN = 8 + 32 + 4 + 4;
 const ENTRY_LEN = 40;
 const LEGACY_ENTRY_LEN = 24;
 const ROUTE_DIGEST_LEN = 8;
+/** Mirrors `ANY_SUB_ACCOUNT`. A legacy entry did not record its subaccount. */
+const ANY_SUB_ACCOUNT = 0xffff;
 
 /** The account size before the entries, which `space` counts on chain. */
 const SPACE_BASE = 8 + 32 + 4 + 32;
@@ -47,7 +49,7 @@ function decodeEntry(data: Buffer, offset: number): SignedMsgOrderId {
 		clobOrderId: new BN(data.subarray(offset + 16, offset + 24), 'le'),
 		orderId: data.readUInt32LE(offset + 24),
 		marketIndex: data.readUInt16LE(offset + 28),
-		padding: data.readUInt16LE(offset + 30),
+		subAccountId: data.readUInt16LE(offset + 30),
 		routeDigest: Array.from(data.subarray(offset + 32, offset + 40)),
 	};
 }
@@ -59,7 +61,7 @@ function decodeLegacyEntry(data: Buffer, offset: number): SignedMsgOrderId {
 		clobOrderId: new BN(0),
 		orderId: data.readUInt32LE(offset + 16),
 		marketIndex: 0,
-		padding: 0,
+		subAccountId: ANY_SUB_ACCOUNT,
 		routeDigest: new Array(ROUTE_DIGEST_LEN).fill(0),
 	};
 }

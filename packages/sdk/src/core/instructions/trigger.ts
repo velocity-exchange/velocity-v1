@@ -1,4 +1,8 @@
-import { SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js';
+import {
+	SystemProgram,
+	SYSVAR_INSTRUCTIONS_PUBKEY,
+	SYSVAR_RENT_PUBKEY,
+} from '@solana/web3.js';
 import type {
 	AccountMeta,
 	PublicKey,
@@ -79,4 +83,30 @@ export async function buildTriggerMarketOrderV1Instruction(
 			remainingAccounts: args.remainingAccounts,
 		}
 	);
+}
+
+/**
+ * Builds a `syncTriggerConditions` instruction, which arms a relay watch for each trigger
+ * order of `user`. Relay is the only executor that fires a trigger.
+ * @param args.remainingAccounts the user's margin map, then the crank conditions and
+ *   quoter slab of each exposed perp market that has a CLOB.
+ */
+export async function buildSyncTriggerConditionsInstruction(args: {
+	program: VelocityProgram;
+	payer: PublicKey;
+	user: PublicKey;
+	userConditions: PublicKey;
+	remainingAccounts: AccountMeta[];
+}): Promise<TransactionInstruction> {
+	return await (args.program.instruction as any).syncTriggerConditions({
+		accounts: {
+			payer: args.payer,
+			user: args.user,
+			triggerConditions: args.userConditions,
+			rent: SYSVAR_RENT_PUBKEY,
+			systemProgram: SystemProgram.programId,
+		},
+
+		remainingAccounts: args.remainingAccounts,
+	});
 }

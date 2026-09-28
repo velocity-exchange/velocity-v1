@@ -15,7 +15,9 @@
  *      accounts the new code loads: the relay scratch, the crank treasury, and the quoter slab
  *      of every perp market that predates it.
  *   2. liq coverage: create and sync relay liquidation conditions for every user with exposure,
- *      backfilling users that predate `initialize_user` creating them automatically.
+ *      backfilling users that predate `initialize_user` creating them automatically. The same
+ *      `sync_user_conditions` call arms the user's trigger orders, because relay is the only
+ *      executor that fires one.
  *   3. watches: register the relay `WatchV0` records that make the blocks from steps 1 and 2
  *      discoverable: the market crank conditions, the per-quoter cross conditions, and the
  *      per-user liquidation conditions.
@@ -48,7 +50,7 @@ import {
 	Transaction,
 	TransactionInstruction,
 } from '@solana/web3.js';
-import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
+import { AnchorProvider, Program } from '@coral-xyz/anchor';
 import {
 	getClobCrankConditionsPublicKey,
 	getCrankTreasuryPublicKey,
@@ -59,6 +61,7 @@ import {
 	getVelocityStateAccountPublicKey,
 	getSpotMarketPublicKeySync,
 	UserStatus,
+	positionIsAvailable,
 	Wallet,
 } from '@velocity-exchange/sdk';
 
@@ -394,7 +397,7 @@ async function main() {
 		argsBuf.writeUInt32LE(args.syncCostUnits, 0);
 		argsBuf.writeBigUInt64LE(args.fallbackSlots, 4);
 		await act(
-			`${existing ? 'sync' : 'create+sync'} liq conditions for ${user.toBase58()}`,
+			`${existing ? 'sync' : 'create+sync'} user conditions for ${user.toBase58()}`,
 			[
 				new TransactionInstruction({
 					programId: velocity,
@@ -413,7 +416,7 @@ async function main() {
 					],
 
 					data: Buffer.concat([
-						ixDiscriminator('sync_liq_conditions'),
+						ixDiscriminator('sync_user_conditions'),
 						argsBuf,
 					]),
 				}),
@@ -744,14 +747,13 @@ function reportLegacyOrders(
 	}
 }
 
-/** Perp markets the user has a live position in. */
+/** The perp markets the sync requires. That is every position the program
+ * does not read as available, which includes one that holds only trigger
+ * orders. */
 function exposedPerpMarkets(user: any): number[] {
-	const markets: number[] = [];
-	for (const position of user.perpPositions ?? []) {
-		const base = new BN(position.baseAssetAmount ?? 0);
-		const quote = new BN(position.quoteAssetAmount ?? 0);
-		if (!base.isZero() || !quote.isZero()) markets.push(position.marketIndex);
-	}
+	const markets: number[] = (user.perpPositions ?? [])
+		.filter((position: any) => !positionIsAvailable(position))
+		.map((position: any) => position.marketIndex);
 
 	return [...new Set(markets)];
 }

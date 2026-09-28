@@ -55,4 +55,39 @@ describe('VelocityCore trigger builders', () => {
 		expect(accounts.crankConditions).toBe(programId);
 		expect(accounts.triggerConditions).toBe(programId);
 	});
+
+	test('buildSyncTriggerConditionsInstruction names every IDL account', async () => {
+		const called: any[] = [];
+		const program = {
+			programId: pk(),
+			instruction: {
+				syncTriggerConditions: async (...args: any[]) => {
+					called.push(args);
+					return {};
+				},
+			},
+		};
+
+		const userConditions = pk();
+		const slab = { pubkey: pk(), isSigner: false, isWritable: false };
+		await VelocityCore.buildSyncTriggerConditionsInstruction({
+			program: program as any,
+			payer: pk(),
+			user: pk(),
+			userConditions,
+			remainingAccounts: [slab],
+		});
+
+		// The instruction takes no arguments, so the context is the only one.
+		expect(called[0].length).toBe(1);
+		const context = called[0][0];
+		const idlAccounts = VelocityCore.defaultIdl()
+			.instructions.find((ix) => ix.name === 'sync_trigger_conditions')
+			.accounts.map((account) =>
+				account.name.replace(/_(\w)/g, (_, c) => c.toUpperCase())
+			);
+		expect(Object.keys(context.accounts).sort()).toEqual(idlAccounts.sort());
+		expect(context.accounts.triggerConditions).toBe(userConditions);
+		expect(context.remainingAccounts).toEqual([slab]);
+	});
 });

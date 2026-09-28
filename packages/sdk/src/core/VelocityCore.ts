@@ -15,7 +15,10 @@ import { fetchAccount } from '../accounts/fetch';
 import { buildDepositInstruction } from './instructions/deposit';
 import { buildWithdrawInstruction } from './instructions/withdraw';
 import { buildCancelOrdersInstruction } from './instructions/orders';
-import { buildTriggerMarketOrderV1Instruction } from './instructions/trigger';
+import {
+	buildSyncTriggerConditionsInstruction,
+	buildTriggerMarketOrderV1Instruction,
+} from './instructions/trigger';
 import { buildSettlePnlInstruction } from './instructions/settlement';
 import { buildLiquidatePerpInstruction } from './instructions/liquidation';
 import { buildUpdateFundingRateInstruction } from './instructions/funding';
@@ -120,6 +123,10 @@ export class VelocityCore {
 	/** Re-export of {@link buildTriggerMarketOrderV1Instruction}, which documents the arguments. */
 	static readonly buildTriggerMarketOrderV1Instruction =
 		buildTriggerMarketOrderV1Instruction;
+
+	/** Re-export of {@link buildSyncTriggerConditionsInstruction}, which documents the arguments. */
+	static readonly buildSyncTriggerConditionsInstruction =
+		buildSyncTriggerConditionsInstruction;
 
 	/** Re-export of {@link buildSettlePnlInstruction}, which documents the arguments. */
 	static readonly buildSettlePnlInstruction = buildSettlePnlInstruction;

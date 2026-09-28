@@ -282,6 +282,7 @@ import { ConstituentMap } from './constituentMap/constituentMap';
 import {
 	clobResidentOpenOrders,
 	hasBuilder,
+	mustBeTriggered,
 	signedMsgEntryOrderRefusal,
 } from './math/orders';
 import { getMarketFeesForFeeTier, getPerpFeeTierIndex } from './math/fees';
@@ -6243,7 +6244,8 @@ export class VelocityClient {
 	 * program returns `OrderTypeNotConditional` otherwise. A live order rests on the
 	 * market's book: use `placeAndTakePerpOrder` to take, or `placeAndMakePerpOrder` to
 	 * make. One margin check covers the whole batch, which is what lets a stop loss and a
-	 * take profit arrive together.
+	 * take profit arrive together. The same transaction then runs `syncTriggerConditions`,
+	 * because relay fires only the triggers that the sync arms.
 	 * @param orderParams - Triggers to arm; `baseAssetAmount` is BASE_PRECISION (1e9),
 	 * `price` / `triggerPrice` are PRICE_PRECISION (1e6).
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
@@ -6275,9 +6277,18 @@ export class VelocityClient {
 			);
 		}
 
+		const triggerMarketIndexes = orderParams.map(
+			(params) => params.marketIndex
+		);
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getPlaceTriggerOrdersIx(orderParams, subAccountId),
+				[
+					await this.getPlaceTriggerOrdersIx(orderParams, subAccountId),
+					await this.getSyncTriggerConditionsIx(
+						triggerMarketIndexes,
+						subAccountId
+					),
+				],
 				txParams,
 				undefined,
 				undefined,
@@ -6489,6 +6500,88 @@ export class VelocityClient {
 			authority: this.wallet.publicKey,
 			remainingAccounts,
 		});
+	}
+
+	/**
+	 * Builds the `syncTriggerConditions` instruction, which arms a relay watch for each
+	 * trigger order of the sub-account. Relay is the only executor that fires a trigger,
+	 * so send this after any instruction that places a trigger order.
+	 * @param newPerpMarketIndexes - Perp markets that an earlier instruction of the same
+	 * transaction opens exposure in. The cached user account does not show them yet.
+	 * @param subAccountId - Sub-account to sync; defaults to the active sub-account.
+	 * @returns The instruction.
+	 */
+	public async getSyncTriggerConditionsIx(
+		newPerpMarketIndexes: number[],
+		subAccountId?: number
+	): Promise<TransactionInstruction> {
+		const userAccount = this.getUserAccountOrThrow(subAccountId);
+		const user = await this.getUserAccountPublicKey(subAccountId);
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts: [userAccount],
+			readablePerpMarketIndex: newPerpMarketIndexes,
+		});
+
+		const exposedPerpMarketIndexes = new Set([
+			...userAccount.perpPositions
+				.filter((position) => !positionIsAvailable(position))
+				.map((position) => position.marketIndex),
+			...newPerpMarketIndexes,
+		]);
+
+		// The program refuses a sync that leaves out the crank conditions or the
+		// quoter slab of an exposed market that has a CLOB.
+		for (const marketIndex of exposedPerpMarketIndexes) {
+			const market = this.getPerpMarketAccountOrThrow(marketIndex);
+			if (market.clobMarket.equals(PublicKey.default)) {
+				continue;
+			}
+
+			remainingAccounts.push(
+				{
+					pubkey: getClobCrankConditionsPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+					isSigner: false,
+					isWritable: false,
+				},
+				{
+					pubkey: getQuoterSlabPublicKey(this.program.programId, marketIndex),
+					isSigner: false,
+					isWritable: false,
+				}
+			);
+		}
+
+		return await VelocityCore.buildSyncTriggerConditionsInstruction({
+			program: this.program,
+			payer: this.wallet.publicKey,
+			user,
+			userConditions: getUserConditionsPublicKey(this.program.programId, user),
+			remainingAccounts,
+		});
+	}
+
+	/**
+	 * A modify replaces the order under a new order id, so the relay watch of a
+	 * modified trigger order must be armed again.
+	 */
+	private async getTriggerResyncIxs(
+		order: Order | undefined,
+		subAccountId?: number
+	): Promise<TransactionInstruction[]> {
+		if (
+			!order ||
+			!mustBeTriggered(order) ||
+			!isVariant(order.marketType, 'perp')
+		) {
+			return [];
+		}
+
+		return [
+			await this.getSyncTriggerConditionsIx([order.marketIndex], subAccountId),
+		];
 	}
 
 	public async updateAMMs(
@@ -8189,6 +8282,15 @@ export class VelocityClient {
 					subAccountId
 				);
 				placeAndTakeIxs.push(bracketOrdersIx);
+				placeAndTakeIxs.push(
+					await this.getSyncTriggerConditionsIx(
+						[
+							orderParams.marketIndex,
+							...bracketOrdersParams.map((params) => params.marketIndex),
+						],
+						subAccountId
+					)
+				);
 			}
 
 			// Optional extra ixs can be appended at the front
@@ -9105,9 +9207,13 @@ export class VelocityClient {
 		txParams?: TxParams,
 		subAccountId?: number
 	): Promise<TransactionSignature> {
+		const order = this.getUser(subAccountId).getOrder(orderParams.orderId);
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getModifyOrderIx(orderParams, subAccountId),
+				[
+					await this.getModifyOrderIx(orderParams, subAccountId),
+					...(await this.getTriggerResyncIxs(order, subAccountId)),
+				],
 				txParams
 			),
 			[],
@@ -9243,9 +9349,15 @@ export class VelocityClient {
 		txParams?: TxParams,
 		subAccountId?: number
 	): Promise<TransactionSignature> {
+		const order = this.getUser(subAccountId).getOrderByUserOrderId(
+			orderParams.userOrderId
+		);
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getModifyOrderByUserIdIx(orderParams, subAccountId),
+				[
+					await this.getModifyOrderByUserIdIx(orderParams, subAccountId),
+					...(await this.getTriggerResyncIxs(order, subAccountId)),
+				],
 				txParams
 			),
 			[],

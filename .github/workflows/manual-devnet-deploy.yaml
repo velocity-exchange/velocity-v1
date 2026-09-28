@@ -67,6 +67,10 @@ jobs:
         id: buffer-deploy
         uses: ./.github/actions/buffer-deploy/
         with:
+          # Paced writes: `solana program write-buffer` overruns the RPC rate
+          # limit and never recovers (deploy-scripts/upload-program-buffer.cjs).
+          uploader: paced
+          cluster: devnet
           program: ${{ inputs.program }}
           program-id: ${{ steps.pid.outputs.program-id }}
           rpc-url: ${{ secrets.DEVNET_RPC_ENDPOINT }}

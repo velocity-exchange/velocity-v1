@@ -3716,7 +3716,7 @@ impl<'a> TransactionBuilder<'a> {
             program_id: constants::PROGRAM_ID,
             accounts,
             data: InstructionData::data(&program::instruction::InitializeSignedMsgUserOrders {
-                num_orders: 16,
+                num_orders: 32,
             }),
         };
         self.ixs.push(ix);

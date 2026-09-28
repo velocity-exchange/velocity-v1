@@ -148,6 +148,15 @@ impl SignedMsgOrderId {
         self.clob_order_id != 0
     }
 
+    /// Whether dropping this entry can re-admit its message or cost its
+    /// resting order the route. [`EVICTION_BUFFER_MAX_SLOTS`] holds at every
+    /// slot duration, so no slot clock is needed.
+    pub fn is_live(&self, current_slot: u64) -> bool {
+        self.max_slot != 0
+            && (self.rests_on_clob()
+                || current_slot.saturating_sub(self.max_slot) <= EVICTION_BUFFER_MAX_SLOTS)
+    }
+
     /// Whether this entry refuses `message` as a replay.
     fn claims_uuid_of(&self, message: &SignedMsgOrderId) -> bool {
         self.uuid == message.uuid
@@ -243,10 +252,10 @@ const LEGACY_ENTRY_LEN: usize = std::mem::size_of::<LegacySignedMsgOrderId>();
 
 static_assertions::const_assert_eq!(LEGACY_ENTRY_LEN, 24);
 
-/// Slots past a migrated `max_slot` after which the entry is expired at any
-/// slot duration. The shortest slot sets the bound, because a longer slot only
+/// Slots past `max_slot` after which an entry is expired at any slot
+/// duration. The shortest slot sets the bound, because a longer slot only
 /// makes the elapsed time greater.
-const LEGACY_EXPIRY_SLOTS: u64 = SIGNED_MSG_EVICTION_BUFFER.as_ms()
+const EVICTION_BUFFER_MAX_SLOTS: u64 = SIGNED_MSG_EVICTION_BUFFER.as_ms()
     / SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64;
 
 impl LegacySignedMsgOrderId {
@@ -273,7 +282,7 @@ pub fn is_legacy_layout(fixed: &SignedMsgUserOrdersFixed, data_len: usize) -> bo
 
 /// The entries of a legacy account that are not empty, newest first.
 ///
-/// An entry past its migrated `max_slot` by more than [`LEGACY_EXPIRY_SLOTS`]
+/// An entry past its migrated `max_slot` by more than [`EVICTION_BUFFER_MAX_SLOTS`]
 /// at `current_slot` is dropped. The replay check would clear it on the next
 /// placement, and a legacy account clears expired entries only then, so a busy
 /// account can hold stale entries that do not fit the new stride. Without a
@@ -290,7 +299,7 @@ fn legacy_live_entries(
         .map(LegacySignedMsgOrderId::migrated)
         .filter(|entry| {
             current_slot
-                .is_none_or(|slot| slot.saturating_sub(entry.max_slot) <= LEGACY_EXPIRY_SLOTS)
+                .is_none_or(|slot| slot.saturating_sub(entry.max_slot) <= EVICTION_BUFFER_MAX_SLOTS)
         })
         .collect();
     live.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.max_slot));
@@ -692,9 +701,34 @@ impl SignedMsgUserOrdersSnapshot {
         })
     }
 
-    /// Keep the first `num_orders` entries, and add empty ones to reach it.
-    pub fn resize(&mut self, num_orders: usize) -> VelocityResult {
+    /// The entries that a delete or a shrink must not drop. See
+    /// [`SignedMsgOrderId::is_live`].
+    pub fn live_entries(&self, current_slot: u64) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_live(current_slot))
+            .count()
+    }
+
+    /// Keep the first `num_orders` entries, and add empty ones to reach it. A
+    /// shrink first moves the live entries to the front, and it refuses to
+    /// drop a live entry.
+    pub fn resize(&mut self, num_orders: usize, current_slot: u64) -> VelocityResult {
         validate_len(num_orders)?;
+        if num_orders < self.entries.len() {
+            let live = self.live_entries(current_slot);
+            validate!(
+                live <= num_orders,
+                ErrorCode::InvalidSignedMsgUserOrdersResize,
+                "signed msg user orders hold {} live entries; cannot shrink to {}",
+                live,
+                num_orders
+            )?;
+
+            self.entries
+                .sort_by_key(|entry| !entry.is_live(current_slot));
+        }
+
         self.entries
             .resize_with(num_orders, SignedMsgOrderId::default);
 

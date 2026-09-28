@@ -3870,8 +3870,8 @@ export class VelocityClient {
 
 	/**
 	 * Builds one transaction that deposits collateral, then places a pre-signed SignedMsg taker perp
-	 * order. It optionally initializes the taker's `SignedMsgUserOrders` account, with 8 order slots,
-	 * first.
+	 * order. It optionally initializes the taker's `SignedMsgUserOrders` account, with
+	 * `DEFAULT_SIGNED_MSG_USER_ORDERS_LEN` order slots, first.
 	 * @param takerInfo - Taker's user/user-stats accounts, loaded `UserAccount` data, and the signing
 	 * authority for the order message.
 	 * @param depositAmount - Amount to deposit, in `depositSpotMarketIndex`'s token precision.
@@ -3916,7 +3916,7 @@ export class VelocityClient {
 				const [, initializeSignedMsgUserOrdersAccountIx] =
 					await this.getInitializeSignedMsgUserOrdersAccountIx(
 						this.wallet.publicKey,
-						8
+						VelocityCore.signedMsg.DEFAULT_SIGNED_MSG_USER_ORDERS_LEN
 					);
 
 				instructions.push(initializeSignedMsgUserOrdersAccountIx);
@@ -3989,7 +3989,7 @@ export class VelocityClient {
 				const [, initializeSignedMsgUserOrdersAccountIx] =
 					await this.getInitializeSignedMsgUserOrdersAccountIx(
 						this.wallet.publicKey,
-						8
+						VelocityCore.signedMsg.DEFAULT_SIGNED_MSG_USER_ORDERS_LEN
 					);
 
 				instructions.push(initializeSignedMsgUserOrdersAccountIx);
@@ -4431,7 +4431,7 @@ export class VelocityClient {
 			const [, initializeSignedMsgUserOrdersAccountIx] =
 				await this.getInitializeSignedMsgUserOrdersAccountIx(
 					this.authority,
-					8,
+					VelocityCore.signedMsg.DEFAULT_SIGNED_MSG_USER_ORDERS_LEN,
 					overrides
 				);
 			ixs.push(initializeSignedMsgUserOrdersAccountIx);

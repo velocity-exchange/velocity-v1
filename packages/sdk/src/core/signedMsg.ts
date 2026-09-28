@@ -16,6 +16,13 @@ export type AnchorTypesCoder = {
 };
 
 /**
+ * The entries a new `SignedMsgUserOrders` record gets. A market or IOC message holds its entry for
+ * the fill window at the shortest slot duration, about 64 s at 400 ms slots. The record refuses a
+ * new message while every entry is held, so 32 entries allow one such order per 2 s.
+ */
+export const DEFAULT_SIGNED_MSG_USER_ORDERS_LEN = 32;
+
+/**
  * The prefix a taker signs ahead of the hex message. It names the program, so the signature is
  * valid for no other program. Its first byte is not a hex digit, so a verifier that hex-decodes
  * the signed bytes, as Drift does, refuses a Velocity message.

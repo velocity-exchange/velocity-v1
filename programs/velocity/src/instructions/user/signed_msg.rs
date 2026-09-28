@@ -11,10 +11,7 @@
 
 use {
     super::*,
-    crate::state::signed_msg_user::{
-        validate_signed_msg_user_orders_account, SignedMsgUserOrdersSnapshot,
-        SIGNED_MSG_USER_ORDERS_VERSION,
-    },
+    crate::state::signed_msg_user::{SignedMsgUserOrdersSnapshot, SIGNED_MSG_USER_ORDERS_VERSION},
 };
 
 #[cfg(test)]
@@ -42,8 +39,8 @@ pub fn handle_resize_signed_msg_user_orders<'c: 'info, 'info>(
 ) -> Result<()> {
     let account = ctx.accounts.signed_msg_user_orders.to_account_info();
     let mut snapshot = SignedMsgUserOrdersSnapshot::read(&account)?;
-    // A shrink can evict the live uuids of every subaccount, and it refunds rent to the payer.
-    // Only the authority may shrink the record. Anyone else may only grow it and pays the rent.
+    // A shrink refunds rent to the payer. Only the authority may shrink the record.
+    // Anyone else may only grow it and pays the rent.
     if ctx.accounts.payer.key != ctx.accounts.authority.key {
         validate!(
             is_growth(snapshot.header_len, account.data_len(), num_orders),
@@ -52,7 +49,7 @@ pub fn handle_resize_signed_msg_user_orders<'c: 'info, 'info>(
         )?;
     }
 
-    snapshot.resize(num_orders as usize)?;
+    snapshot.resize(num_orders as usize, Clock::get()?.slot)?;
     resize_paid_by(
         &account,
         &ctx.accounts.payer.to_account_info(),
@@ -143,9 +140,18 @@ pub fn handle_change_signed_msg_ws_delegate_status<'c: 'info, 'info>(
 
 /// Close the record to the authority, the way Anchor's `close` constraint
 /// does. The record is read unchecked, so a legacy record closes too.
+///
+/// Anyone can create the record again, empty. A delete while an entry is live
+/// would then re-admit its message, so the delete is refused.
 pub fn handle_delete_signed_msg_user_orders(ctx: Context<DeleteSignedMsgUserOrders>) -> Result<()> {
     let account = ctx.accounts.signed_msg_user_orders.to_account_info();
-    validate_signed_msg_user_orders_account(&account)?;
+    let live = SignedMsgUserOrdersSnapshot::read(&account)?.live_entries(Clock::get()?.slot);
+    validate!(
+        live == 0,
+        ErrorCode::InvalidSignedMsgUserOrdersResize,
+        "signed msg user orders hold {} live entries; cannot delete",
+        live
+    )?;
 
     let authority = ctx.accounts.authority.to_account_info();
     let closed_lamports = account.lamports();

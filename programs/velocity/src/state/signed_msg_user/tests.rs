@@ -883,8 +883,9 @@ mod legacy_layout {
                 signed_msg_user::{
                     is_legacy_layout, legacy_live_entries, validate_signed_msg_user_orders_account,
                     SignedMsgOrderId, SignedMsgUserOrders, SignedMsgUserOrdersFixed,
-                    SignedMsgUserOrdersLoader, SignedMsgUserOrdersSnapshot, LEGACY_EXPIRY_SLOTS,
-                    SIGNED_MSG_FILL_WINDOW_MAX_SLOTS, SIGNED_MSG_USER_ORDERS_VERSION,
+                    SignedMsgUserOrdersLoader, SignedMsgUserOrdersSnapshot,
+                    EVICTION_BUFFER_MAX_SLOTS, SIGNED_MSG_FILL_WINDOW_MAX_SLOTS,
+                    SIGNED_MSG_USER_ORDERS_VERSION,
                 },
             },
             test_utils::create_account_info,
@@ -1008,7 +1009,7 @@ mod legacy_layout {
     #[test]
     fn a_migration_drops_entries_expired_at_every_slot_duration() {
         let fresh = 10_000;
-        let at_bound = fresh - SIGNED_MSG_FILL_WINDOW_MAX_SLOTS - LEGACY_EXPIRY_SLOTS;
+        let at_bound = fresh - SIGNED_MSG_FILL_WINDOW_MAX_SLOTS - EVICTION_BUFFER_MAX_SLOTS;
         let mut live: Vec<LegacyEntry> = (1..=5).map(|i| entry(i, 100 + i as u64)).collect();
         live.push(entry(6, at_bound));
         live.push(entry(7, at_bound - 1));
@@ -1104,7 +1105,7 @@ mod legacy_layout {
         assert_eq!(snapshot.header_len, 8);
         assert_eq!(snapshot.entries.len(), 6);
 
-        snapshot.resize(8).unwrap();
+        snapshot.resize(8, 0).unwrap();
         bytes.resize(SignedMsgUserOrders::space(8), 0);
         let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
         snapshot.write(&info).unwrap();
@@ -1125,9 +1126,9 @@ mod legacy_layout {
         let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
         let mut snapshot = SignedMsgUserOrdersSnapshot::read(&info).unwrap();
 
-        assert_eq!(snapshot.resize(0), Err(ErrorCode::DefaultError));
-        assert_eq!(snapshot.resize(129), Err(ErrorCode::DefaultError));
-        assert!(snapshot.resize(128).is_ok());
+        assert_eq!(snapshot.resize(0, 0), Err(ErrorCode::DefaultError));
+        assert_eq!(snapshot.resize(129, 0), Err(ErrorCode::DefaultError));
+        assert!(snapshot.resize(128, 0).is_ok());
         // The account still has its legacy size, so the write refuses it.
         assert_eq!(snapshot.write(&info), Err(ErrorCode::DefaultError));
     }
@@ -1152,7 +1153,7 @@ mod legacy_layout {
             SignedMsgUserOrdersSnapshot::read(&info).unwrap()
         };
 
-        snapshot.resize(6).unwrap();
+        snapshot.resize(6, 0).unwrap();
         bytes.resize(SignedMsgUserOrders::space(6), 0);
         let info = create_account_info(&key, true, &mut lamports, &mut bytes, &ID);
         snapshot.write(&info).unwrap();
@@ -1160,5 +1161,72 @@ mod legacy_layout {
         let orders = info.load().unwrap();
         assert_eq!(orders.len(), 6);
         assert_eq!(orders.get(2), &SignedMsgOrderId::new([2; 8], 50, 1));
+    }
+}
+
+#[cfg(test)]
+mod live_entries {
+    use crate::{
+        error::ErrorCode,
+        state::signed_msg_user::{
+            SignedMsgOrderId, SignedMsgUserOrdersSnapshot, EVICTION_BUFFER_MAX_SLOTS,
+        },
+    };
+
+    const NOW: u64 = 10_000;
+
+    fn resting(uuid: u8, max_slot: u64) -> SignedMsgOrderId {
+        SignedMsgOrderId {
+            clob_order_id: 7,
+            ..SignedMsgOrderId::new([uuid; 8], max_slot, 1)
+        }
+    }
+
+    fn snapshot(entries: Vec<SignedMsgOrderId>) -> SignedMsgUserOrdersSnapshot {
+        SignedMsgUserOrdersSnapshot {
+            user_pubkey: Default::default(),
+            header_len: entries.len() as u32,
+            entries,
+        }
+    }
+
+    #[test]
+    fn an_entry_is_live_until_expired_at_every_slot_duration_or_while_it_rests() {
+        let bound = NOW - EVICTION_BUFFER_MAX_SLOTS;
+        assert!(!SignedMsgOrderId::default().is_live(NOW));
+        assert!(SignedMsgOrderId::new([1; 8], bound, 1).is_live(NOW));
+        assert!(!SignedMsgOrderId::new([1; 8], bound - 1, 1).is_live(NOW));
+        assert!(resting(1, 1).is_live(NOW));
+    }
+
+    #[test]
+    fn a_shrink_keeps_the_live_entries_and_refuses_to_drop_one() {
+        let live = SignedMsgOrderId::new([2; 8], NOW, 1);
+        let mut orders = snapshot(vec![
+            SignedMsgOrderId::new([1; 8], 100, 1),
+            live,
+            SignedMsgOrderId::default(),
+            resting(3, 100),
+        ]);
+
+        assert_eq!(
+            orders.resize(1, NOW),
+            Err(ErrorCode::InvalidSignedMsgUserOrdersResize)
+        );
+
+        orders.resize(2, NOW).unwrap();
+        assert_eq!(orders.entries, vec![live, resting(3, 100)]);
+    }
+
+    #[test]
+    fn a_record_with_a_live_entry_counts_it_for_the_delete() {
+        let expired = snapshot(vec![
+            SignedMsgOrderId::new([1; 8], 100, 1),
+            SignedMsgOrderId::default(),
+        ]);
+        assert_eq!(expired.live_entries(NOW), 0);
+
+        let with_resting = snapshot(vec![resting(1, 100), SignedMsgOrderId::default()]);
+        assert_eq!(with_resting.live_entries(NOW), 1);
     }
 }

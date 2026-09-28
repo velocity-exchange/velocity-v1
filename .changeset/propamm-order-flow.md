@@ -866,6 +866,10 @@ the velocity signer PDA, and `payer` must be the cold or warm admin. New PDA hel
 `getQuoterCrossConditionsPublicKey` and `getProgramDataAddress`, beside the exported
 `BPF_LOADER_UPGRADEABLE_ID`.
 
+`HotRole.ConditionsSync` is a new hot role, stored in `StateAccount.hotConditionsSync`. Its key may
+set paid resync terms when it syncs another user's conditions, as the warm admin may.
+`auth set-hot-admin conditionsSync <key>` sets it.
+
 The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`.
 `clob-market update-config` retunes a live book's mutable config through velocity, and
 `clob-market resize` grows its arena, to at most 1024 slots. `clob-market init` defaults

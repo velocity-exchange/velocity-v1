@@ -9232,6 +9232,8 @@ export enum HotRole {
 	/** vAMM active-management authority for the spread, JIT, curve and related quoting controls. */
 	VammQuoteManagement = 'vammQuoteManagement',
 	FlowAuthority = 'flowAuthority',
+	/** May set paid resync terms when it syncs another user's conditions. */
+	ConditionsSync = 'conditionsSync',
 }
 
 /** Anchor encodes Rust enums as `{ <variant>: {} }`. */

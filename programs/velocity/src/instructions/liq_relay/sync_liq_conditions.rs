@@ -177,7 +177,11 @@ impl SyncCaller<'_, '_> {
         let terms = price_sync_terms(&self.state.load()?.transaction_fee_rails, args)?;
         let may_set_terms =
             crate::instructions::constraints::can_sign_for_user(self.user, self.payer)?
-                || crate::auth::check_warm(self.payer.key, self.state)?;
+                || crate::auth::check_hot(
+                    self.payer.key,
+                    self.state,
+                    crate::state::state::HotRole::ConditionsSync,
+                )?;
         // A block this instruction creates has no discriminator yet, so its
         // load fails. Such a block holds no terms.
         let stored_payment = self

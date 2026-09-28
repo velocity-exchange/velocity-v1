@@ -16,10 +16,10 @@
  * payment and every sync payment is zero, and relay turners take none of that work.
  *
  * Without `--multisig`, every instruction sends directly. With it, every warm-admin instruction
- * becomes a Squads proposal, and the vault pays that instruction's rent: the crank treasury, each
- * book's quoter entry, slab slot and crank conditions, and each new user conditions account. The
- * payer still sends what needs no admin, and it must hold the `accountExtension` hot role when an
- * account needs a resize. A book signs its own creation and is too large to create inside a vault
+ * becomes a Squads proposal, and the vault pays that instruction's rent: the crank treasury, and
+ * each book's quoter entry, slab slot and crank conditions. The payer still sends what needs no
+ * admin. With the `conditionsSync` hot role it also syncs every user directly and pays for the user
+ * conditions accounts. It must hold the `accountExtension` hot role when an account needs a resize. A book signs its own creation and is too large to create inside a vault
  * transaction, so the payer creates it and the multisig registers it later. A market's bring-up
  * then takes two proposals, because the approval carries the hash of the entry the first one
  * stages. Its users sync only after both execute. So run, approve and execute the proposals, and
@@ -625,7 +625,13 @@ async function migrate(ctx: Migration, idl: any) {
 	const users = await connection.getProgramAccounts(velocity, {
 		filters: [{ memcmp: { offset: 0, bytes: bs58(discriminator('User')) } }],
 	});
-	await coverUsers(ctx, statePda, users, { perpMarkets, spotMarkets, books });
+	await coverUsers(
+		ctx,
+		statePda,
+		users,
+		{ perpMarkets, spotMarkets, books },
+		holdsConditionsSync(stateAccount, payer.publicKey)
+	);
 
 	// 3. watches for the market and quoter conditions
 	await watchMarketsAndQuoters(ctx, perpMarkets);
@@ -800,6 +806,16 @@ function assertCanExtend(stateAccount: any, payer: PublicKey): void {
 	}
 }
 
+/** Mirrors `State::is_hot` for `HotRole::ConditionsSync`. The holder may set
+ * paid terms on another user's conditions, so it syncs without a proposal. */
+function holdsConditionsSync(stateAccount: any, payer: PublicKey): boolean {
+	return [
+		stateAccount.coldAdmin,
+		stateAccount.warmAdmin,
+		stateAccount.hotConditionsSync,
+	].some((key: PublicKey) => !key.equals(PublicKey.default) && key.equals(payer));
+}
+
 /**
  * The treasury every market's crank reservoir refills from. The CLOB crank
  * resolver and the liquidation-conditions resync both name it, so it has to
@@ -849,19 +865,28 @@ type MarketsAndBooks = {
 
 /**
  * Create and sync relay liquidation conditions for every user with exposure.
- * A sync that writes paid terms needs the user's authority or the warm admin,
- * so under a multisig the syncs are proposed, packed several to a proposal.
- * There, a user whose conditions already hold paid terms gets no new sync,
- * and only its reservoir and watch are topped up.
+ * A sync that writes paid terms needs the user's authority, the warm admin or
+ * the `conditionsSync` hot role. A payer with that role sends every sync
+ * directly. Otherwise, under a multisig, the syncs are proposed, packed several
+ * to a proposal, and a user whose conditions already hold paid terms gets no
+ * new sync. Its reservoir and watch are still topped up.
  */
 async function coverUsers(
 	ctx: Migration,
 	statePda: PublicKey,
 	users: readonly { pubkey: PublicKey; account: { data: Buffer } }[],
-	markets: MarketsAndBooks
+	markets: MarketsAndBooks,
+	payerSyncs: boolean
 ): Promise<void> {
 	const { connection, provider, program, payer, admin, args, act } = ctx;
 	console.log(`\nliq coverage: ${users.length} user accounts`);
+	const proposesSyncs = admin.proposes && !payerSyncs;
+	const syncer = payerSyncs ? payer.publicKey : admin.key;
+	if (admin.proposes && payerSyncs) {
+		console.log(
+			`liq coverage: ${syncer.toBase58()} holds conditionsSync and syncs directly`
+		);
+	}
 
 	let covered = 0;
 	let deferred = 0;
@@ -886,11 +911,12 @@ async function coverUsers(
 			user,
 			decodedUser,
 			marketIndexes,
-			markets
+			markets,
+			syncer
 		);
 		covered += 1;
 
-		if (admin.proposes && !(existing && syncPayment(existing.data) > 0)) {
+		if (proposesSyncs && !(existing && syncPayment(existing.data) > 0)) {
 			const pending = admin.pendingIndex({
 				discriminators: [ixDiscriminator('sync_user_conditions')],
 				account: userConditions,
@@ -900,7 +926,7 @@ async function coverUsers(
 			continue;
 		}
 
-		if (!admin.proposes) {
+		if (!proposesSyncs) {
 			await act(
 				`${existing ? 'sync' : 'create+sync'} user conditions for ${user.toBase58()}`,
 				[ix]
@@ -976,15 +1002,17 @@ function syncCoverageAccounts(
 	];
 }
 
-/** `sync_user_conditions` for one user. The admin pays, because a sync that
- * writes paid terms needs the user's authority or the warm admin. */
+/** `sync_user_conditions` for one user. `syncer` signs and pays, because a
+ * sync that writes paid terms needs the user's authority, the warm admin or the
+ * `conditionsSync` hot role. */
 function syncUserConditionsIx(
 	ctx: Migration,
 	statePda: PublicKey,
 	user: PublicKey,
 	decodedUser: any,
 	marketIndexes: number[],
-	markets: MarketsAndBooks
+	markets: MarketsAndBooks,
+	syncer: PublicKey
 ): TransactionInstruction {
 	const velocity = ctx.program.programId;
 	// `SyncLiqConditionsArgs` is the cost units as a u32, then the fallback
@@ -996,7 +1024,7 @@ function syncUserConditionsIx(
 	return new TransactionInstruction({
 		programId: velocity,
 		keys: [
-			{ pubkey: ctx.admin.key, isSigner: true, isWritable: true },
+			{ pubkey: syncer, isSigner: true, isWritable: true },
 			accountMeta(statePda, false),
 			accountMeta(user, false),
 			accountMeta(getUserConditionsPublicKey(velocity, user), true),
@@ -1702,7 +1730,8 @@ async function printReport(
 	const vaultLamports = await connection.getBalance(admin.key);
 	console.log(
 		`\nvault ${admin.key.toBase58()} holds ${vaultLamports / 1e9} SOL. It pays about ` +
-			`${perBook / 1e9} SOL per book and ${perUser / 1e9} SOL per user conditions account.`
+			`${perBook / 1e9} SOL per book, and ${perUser / 1e9} SOL per user conditions ` +
+			'account it proposes. A payer with the conditionsSync hot role pays for those instead.'
 	);
 
 	if (report.proposed.length + report.awaiting.length > 0) {

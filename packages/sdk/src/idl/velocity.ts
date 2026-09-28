@@ -24809,6 +24809,9 @@ export type Velocity = {
           },
           {
             "name": "flowAuthority"
+          },
+          {
+            "name": "conditionsSync"
           }
         ]
       }
@@ -31874,17 +31877,26 @@ export type Velocity = {
             }
           },
           {
+            "name": "hotConditionsSync",
+            "docs": [
+              "May set paid resync terms on another user's conditions, as warm may.",
+              "A keeper holds it so a migration syncs every user without a multisig",
+              "proposal per batch."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "docs": [
               "Former padding, now sized so the quote-management key, the slot-duration",
-              "archive and the fee-rails fields all fit while `size_of::<State>()` stays",
-              "1744 on x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below",
-              "pin it."
+              "archive, the fee-rails fields and the conditions-sync key all fit while",
+              "`size_of::<State>()` stays 1744 on x86_64 (u128 align 16) and SBF (u128",
+              "align 8). The offsets below pin it."
             ],
             "type": {
               "array": [
                 "u8",
-                110
+                78
               ]
             }
           }

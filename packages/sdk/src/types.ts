@@ -1450,6 +1450,8 @@ export type StateAccount = {
 	liquidationCrankReimbursementBps: number;
 	/** spot market whose oracle prices SOL, for converting a quote-denominated reimbursement into lamports; 0 disables it */
 	solSpotMarketIndex: number;
+	/** hot key that may set paid resync terms when it syncs another user's conditions, as warm may */
+	hotConditionsSync: PublicKey;
 	/** treasury PERP protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes perp fee withdrawals inert */
 	protocolFeeRecipientPerp: PublicKey;
 	/** treasury SPOT protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes spot fee withdrawals inert */

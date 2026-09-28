@@ -1144,9 +1144,12 @@ suspended: bool, padding: [u8; 7], config: QuoterConfigV0 }` starting at byte 16
 TransactionFeeRails`, which is `{ inclusion_lamports: u32, signature_lamports: u32,
 resource_fee_numerator: u32, resource_fee_denominator: u32,
 max_priority_micro_lamports_per_cu: u32 }`, 20 bytes, alongside `hot_flow_authority: Pubkey`
-  (32), `liquidation_crank_reimbursement_bps: u16`, `sol_spot_market_index: u16` and 2 bytes of
-  trailing filler. All of it comes out of tail `padding`, which shrinks to 110 bytes; `State`
-  stays 1752 bytes and no existing field moved. `initialize` writes a flat 5,000 lamports per
+  (32), `liquidation_crank_reimbursement_bps: u16`, `sol_spot_market_index: u16`, 2 bytes of
+  filler and `hot_conditions_sync: Pubkey` at offset 1634. All of it comes out of tail
+  `padding`, which shrinks to 78 bytes; `State` stays 1752 bytes and no existing field moved.
+  `hot_conditions_sync` is the key of the new `HotRole::ConditionsSync`, appended after
+  `FlowAuthority` and set with `update_hot_admin`. Its holder may set paid resync terms when it
+  syncs another user's conditions, as the warm admin may. `initialize` writes a flat 5,000 lamports per
   signature and nothing else, which is what the network charges today; a zero denominator
   prices cost units at nothing. New warm/cold-admin instruction
   `update_transaction_fee_rails(rails)` over `AdminUpdateState`. Every relay crank payment is
@@ -4276,7 +4279,8 @@ the withdraw bundle records both revert codes.
       funded key. With `--multisig <pda>`, the multisig's vault is the warm admin: the payer
       creates each book directly, and every warm-admin instruction becomes a proposal. A book
       then takes two proposals, and its users sync after both execute, so approve, execute and
-      run again. See `deploy-scripts/README.md`.
+      run again. Give the payer `HotRole.ConditionsSync` first, so it sends the user syncs
+      directly instead of proposing them. See `deploy-scripts/README.md`.
     - Deploy swift and keep-rs together. keep-rs requests `POST /attest` by order signature,
       and a swift that keys held orders by uuid refuses that body.
     - Replace any CLOB book whose arena is over 1024 slots, such as one created at the old

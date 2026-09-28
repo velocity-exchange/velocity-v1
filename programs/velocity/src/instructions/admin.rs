@@ -183,7 +183,8 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         // liquidation crank pays its flat figure and nothing more.
         sol_spot_market_index: 0,
         padding_0: [0; 2],
-        padding: [0; 110],
+        hot_conditions_sync: Pubkey::default(),
+        padding: [0; 78],
     };
 
     Ok(())

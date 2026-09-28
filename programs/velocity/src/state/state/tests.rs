@@ -89,3 +89,33 @@ mod escrow_period_before_transfer {
         assert_eq!(state.escrow_period_before_transfer().unwrap(), 1);
     }
 }
+
+mod conditions_sync_role {
+    use {
+        crate::state::state::{HotRole, State},
+        anchor_lang::prelude::Pubkey,
+    };
+
+    #[test]
+    fn the_role_key_and_the_admins_may_sync_and_no_one_else() {
+        let cold = Pubkey::new_unique();
+        let warm = Pubkey::new_unique();
+        let keeper = Pubkey::new_unique();
+        let mut state = State {
+            cold_admin: cold,
+            warm_admin: warm,
+            ..State::default()
+        };
+
+        assert!(!state.is_hot(&keeper, HotRole::ConditionsSync));
+        assert!(!state.is_hot(&Pubkey::default(), HotRole::ConditionsSync));
+
+        state.set_hot_key(HotRole::ConditionsSync, keeper);
+
+        assert!(state.is_hot(&keeper, HotRole::ConditionsSync));
+        assert!(state.is_hot(&warm, HotRole::ConditionsSync));
+        assert!(state.is_hot(&cold, HotRole::ConditionsSync));
+        assert!(!state.is_hot(&keeper, HotRole::AccountExtension));
+        assert!(!state.is_hot(&Pubkey::new_unique(), HotRole::ConditionsSync));
+    }
+}

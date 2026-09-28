@@ -4270,6 +4270,7 @@ pub mod types {
         AccountExtension,
         VammQuoteManagement,
         FlowAuthority,
+        ConditionsSync,
     }
     #[repr(C)]
     #[derive(
@@ -6612,8 +6613,9 @@ pub mod types {
         pub sol_spot_market_index: u16,
         #[serde(skip)]
         pub padding_0: Padding<2>,
+        pub hot_conditions_sync: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<110>,
+        pub padding: Padding<78>,
     }
     #[repr(C)]
     #[derive(
@@ -8777,8 +8779,9 @@ pub mod accounts {
         pub sol_spot_market_index: u16,
         #[serde(skip)]
         pub padding_0: Padding<2>,
+        pub hot_conditions_sync: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<110>,
+        pub padding: Padding<78>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {

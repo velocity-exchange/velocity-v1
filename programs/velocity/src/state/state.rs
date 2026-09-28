@@ -174,11 +174,15 @@ pub struct State {
     /// sit 4-aligned behind `hot_flow_authority`, so no slack is needed ahead
     /// of them.
     pub padding_0: [u8; 2],
+    /// May set paid resync terms on another user's conditions, as warm may.
+    /// A keeper holds it so a migration syncs every user without a multisig
+    /// proposal per batch.
+    pub hot_conditions_sync: Pubkey,
     /// Former padding, now sized so the quote-management key, the slot-duration
-    /// archive and the fee-rails fields all fit while `size_of::<State>()` stays
-    /// 1744 on x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below
-    /// pin it.
-    pub padding: [u8; 110],
+    /// archive, the fee-rails fields and the conditions-sync key all fit while
+    /// `size_of::<State>()` stays 1744 on x86_64 (u128 align 16) and SBF (u128
+    /// align 8). The offsets below pin it.
+    pub padding: [u8; 78],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -201,6 +205,7 @@ pub enum HotRole {
     /// Appended to preserve every existing role's serialized ordinal.
     VammQuoteManagement,
     FlowAuthority,
+    ConditionsSync,
 }
 
 #[derive(BitFlags, Clone, Copy, PartialEq, Debug, Eq)]
@@ -296,7 +301,8 @@ impl Default for State {
             liquidation_crank_reimbursement_bps: 0,
             sol_spot_market_index: 0,
             padding_0: [0; 2],
-            padding: [0; 110],
+            hot_conditions_sync: Pubkey::default(),
+            padding: [0; 78],
         }
     }
 }
@@ -544,6 +550,7 @@ impl State {
             HotRole::AccountExtension => self.hot_account_extension,
             HotRole::VammQuoteManagement => self.hot_vamm_quote_management,
             HotRole::FlowAuthority => self.hot_flow_authority,
+            HotRole::ConditionsSync => self.hot_conditions_sync,
         }
     }
 
@@ -563,6 +570,7 @@ impl State {
             HotRole::AccountExtension => self.hot_account_extension = key,
             HotRole::VammQuoteManagement => self.hot_vamm_quote_management = key,
             HotRole::FlowAuthority => self.hot_flow_authority = key,
+            HotRole::ConditionsSync => self.hot_conditions_sync = key,
         }
     }
 
@@ -728,6 +736,7 @@ static_assertions::const_assert_eq!(std::mem::size_of::<State>(), 1744);
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_vamm_quote_management), 1544);
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_flow_authority), 1576);
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, transaction_fee_rails), 1608);
+static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_conditions_sync), 1634);
 
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 #[repr(C)]

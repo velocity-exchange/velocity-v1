@@ -220,6 +220,9 @@ struct CrankPayment {
 /// One market's inputs, collected from `remaining_accounts`.
 #[derive(Default, Clone, Copy)]
 struct MarketInputs {
+    /// The market account. `None` when only its crank account or slab rode
+    /// along.
+    market: Option<Pubkey>,
     oracle: Option<Pubkey>,
     quote_spot_market_index: Option<u16>,
     /// True when the market has a CLOB attached. A market with a CLOB has a
@@ -286,7 +289,7 @@ pub fn rewrite_liq_conditions<'info>(
         liq_conditions.key(),
         user_key,
         oracle_refs,
-        inputs.market_refs,
+        inputs.market_refs(),
         inputs.tail_refs,
     );
 
@@ -322,12 +325,25 @@ pub fn rewrite_liq_conditions<'info>(
 struct SyncInputs {
     perps: BTreeMap<u16, MarketInputs>,
     spots: BTreeMap<u16, MarketInputs>,
-    market_refs: Vec<AccountRefV0>,
     tail_refs: Vec<AccountRefV0>,
     oracles: BTreeSet<Pubkey>,
 }
 
 impl SyncInputs {
+    /// Every spot market by index, then every perp market by index.
+    ///
+    /// `load_maps` reads spot markets only until the first perp market. The
+    /// caller's order is therefore not stored. A perp market before the quote
+    /// spot market would drop the quote market from every staged executor.
+    fn market_refs(&self) -> Vec<AccountRefV0> {
+        self.spots
+            .values()
+            .chain(self.perps.values())
+            .filter_map(|inputs| inputs.market)
+            .map(|key| AccountRefV0::writable(key.to_bytes()))
+            .collect()
+    }
+
     /// The view [`validate_market_coverage`] answers over.
     fn coverage(&self) -> MarketCoverage {
         MarketCoverage {
@@ -378,7 +394,6 @@ fn collect_sync_inputs<'info>(
 ) -> Result<SyncInputs> {
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut spots: BTreeMap<u16, MarketInputs> = BTreeMap::new();
-    let mut market_refs: Vec<AccountRefV0> = Vec::new();
     let mut tail_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracles: BTreeSet<Pubkey> = BTreeSet::new();
     let mut slab_books: BTreeSet<Pubkey> = BTreeSet::new();
@@ -388,17 +403,17 @@ fn collect_sync_inputs<'info>(
             if let Ok(loader) = AccountLoader::<PerpMarket>::try_from(info) {
                 let market = loader.load()?;
                 let entry = perps.entry(market.market_index).or_default();
+                entry.market = Some(*info.key);
                 entry.oracle = Some(market.oracle);
                 entry.quote_spot_market_index = Some(market.quote_spot_market_index);
                 entry.has_clob = market.clob_market != Pubkey::default();
-                market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
             if let Ok(loader) = AccountLoader::<SpotMarket>::try_from(info) {
                 let market = loader.load()?;
                 let entry = spots.entry(market.market_index).or_default();
+                entry.market = Some(*info.key);
                 entry.oracle = Some(market.oracle);
-                market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
             if let Ok(loader) = AccountLoader::<ClobCrankConditionsV0>::try_from(info) {
@@ -456,7 +471,6 @@ fn collect_sync_inputs<'info>(
     Ok(SyncInputs {
         perps,
         spots,
-        market_refs,
         tail_refs,
         oracles,
     })
@@ -881,6 +895,51 @@ mod tests {
         assert!(refuse_duplicate_accounts(&[first, second]).is_err());
     }
 
+    /// `load_maps` reads spot markets only until the first perp market. A call
+    /// that passes the perp market first must still store the quote spot
+    /// market where the parser reads it.
+    #[test]
+    fn markets_are_stored_spot_first_whatever_the_call_order() {
+        use {
+            super::collect_sync_inputs,
+            crate::{
+                instructions::optional_accounts::load_maps,
+                math::time::SlotClock,
+                state::{
+                    perp_market::PerpMarket, perp_market_map::MarketSet, spot_market::SpotMarket,
+                },
+            },
+        };
+
+        let (perp_key, spot_key) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let mut perp = PerpMarket::default();
+        create_anchor_account_info!(perp, &perp_key, PerpMarket, perp_info);
+        let mut spot = SpotMarket::default();
+        create_anchor_account_info!(spot, &spot_key, SpotMarket, spot_info);
+
+        let passed = [perp_info.clone(), spot_info.clone()];
+        let inputs = collect_sync_inputs(&passed).unwrap();
+        let stored: Vec<Pubkey> = inputs
+            .market_refs()
+            .iter()
+            .map(|account| Pubkey::new_from_array(account.address))
+            .collect();
+        assert_eq!(stored, vec![spot_key, perp_key]);
+
+        let replayed = [spot_info, perp_info];
+        let maps = load_maps(
+            &mut replayed.iter().peekable(),
+            &MarketSet::new(),
+            &MarketSet::new(),
+            0,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
+        assert!(maps.spot_market_map.get_ref(&0).is_ok());
+        assert!(maps.perp_market_map.get_ref(&0).is_ok());
+    }
+
     /// A resync replays the list a sync stored, which carries the slab's book
     /// and program. The replay must classify to the same list.
     #[test]
@@ -973,7 +1032,7 @@ mod tests {
                 Pubkey::default(),
                 Pubkey::default(),
                 oracle_refs,
-                inputs.market_refs,
+                inputs.market_refs(),
                 inputs.tail_refs,
             )
         };

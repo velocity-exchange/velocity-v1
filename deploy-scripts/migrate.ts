@@ -11,7 +11,9 @@
  * Steps:
  *   1. resize: grow every velocity-owned zero-copy account whose struct gained fields.
  *      `extend_account` resolves the target size from the discriminator, so this step covers
- *      past and future growth the same way. Then create the singletons and the per-market
+ *      past and future growth the same way. Then set the transaction fee rails when they read
+ *      zero. An upgraded `State` reads them from former padding, and every crank priced from
+ *      zero rails pays nothing, so no turner takes it. Then create the singletons and the per-market
  *      accounts the new code loads: the relay scratch, the crank treasury, and the quoter slab
  *      of every perp market that predates it.
  *   2. liq coverage: create and sync relay liquidation conditions for every user with exposure,
@@ -90,7 +92,46 @@ type Args = {
 	limit: number;
 	syncCostUnits: number;
 	fallbackSlots: bigint;
+	feeRails: FeeRails;
 };
+
+type FeeRails = {
+	inclusionLamports: number;
+	signatureLamports: number;
+	resourceFeeNumerator: number;
+	resourceFeeDenominator: number;
+	maxPriorityMicroLamportsPerCu: number;
+};
+
+/** `TransactionFeeRails::FLAT_PER_SIGNATURE`, which `initialize` writes on a new deployment. */
+const DEFAULT_FEE_RAILS = '0,5000,0,0,0';
+
+function parseFeeRails(raw: string): FeeRails {
+	const values = raw.split(',').map((value) => Number.parseInt(value, 10));
+	if (
+		values.length !== 5 ||
+		values.some((value) => !Number.isInteger(value) || value < 0)
+	) {
+		throw new Error(
+			'--fee-rails takes five non-negative integers: inclusion,signature,numerator,denominator,maxPriority'
+		);
+	}
+
+	const [
+		inclusionLamports,
+		signatureLamports,
+		resourceFeeNumerator,
+		resourceFeeDenominator,
+		maxPriorityMicroLamportsPerCu,
+	] = values;
+	return {
+		inclusionLamports,
+		signatureLamports,
+		resourceFeeNumerator,
+		resourceFeeDenominator,
+		maxPriorityMicroLamportsPerCu,
+	};
+}
 
 function parseArgs(): Args {
 	const argv = process.argv.slice(2);
@@ -108,6 +149,7 @@ function parseArgs(): Args {
 		limit: Number.parseInt(get('--limit', '0'), 10),
 		syncCostUnits: Number.parseInt(get('--sync-cost-units', '20000'), 10),
 		fallbackSlots: BigInt(get('--fallback-slots', '3000')),
+		feeRails: parseFeeRails(get('--fee-rails', DEFAULT_FEE_RAILS)),
 	};
 }
 
@@ -237,6 +279,8 @@ async function main() {
 			]);
 		}
 	}
+
+	await setFeeRailsIfUnset(program, payer, statePda, args.feeRails, act);
 
 	// Every resolver names this account. Until it exists, every relay crank in
 	// the program fails simulation with an owner error. The account therefore
@@ -587,6 +631,35 @@ async function flagVaultUsers(
 	console.log(
 		`\nvault users: ${vaultAccounts.length} vaults, ${unflagged} unflagged`
 	);
+}
+
+/** Write `rails` when every rail reads zero, which is the state an upgrade
+ * leaves. Rails an operator already set stay. */
+async function setFeeRailsIfUnset(
+	program: Program,
+	payer: Keypair,
+	statePda: PublicKey,
+	rails: FeeRails,
+	act: (label: string, ixs: TransactionInstruction[]) => Promise<void>
+) {
+	const info = await program.provider.connection.getAccountInfo(statePda);
+	const state = program.coder.accounts.decode('state', info!.data) as {
+		transactionFeeRails: FeeRails;
+	};
+	if (
+		Object.values(state.transactionFeeRails).some((value) => Number(value) !== 0)
+	) {
+		console.log('\nfee rails: already set');
+		return;
+	}
+
+	console.log(`\nfee rails: unset, writing ${JSON.stringify(rails)}`);
+	await act('set transaction fee rails', [
+		await program.methods
+			.updateTransactionFeeRails(rails)
+			.accounts({ admin: payer.publicKey, state: statePda })
+			.instruction(),
+	]);
 }
 
 /** The book account the perp market names. */

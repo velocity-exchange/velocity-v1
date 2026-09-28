@@ -5,8 +5,7 @@
  * state first and skips what is already done, so the service runs again on every `up`.
  *
  *   1. Create and fund the service keys in /state/keys.
- *   2. Set the transaction fee rails when they read zero, then run migrate.ts. An upgraded
- *      State reads zero rails, and a crank priced at zero is work no turner takes.
+ *   2. Run migrate.ts, which the upgrade needs anyway.
  *   3. Give every perp market a CLOB book, then run migrate.ts again so the liquidation
  *      conditions name the books.
  *   4. Price and fund the crank treasury, and make swift's key the flow authority.
@@ -29,7 +28,6 @@ import {
 	DevnetPerpMarkets,
 	DevnetSpotMarkets,
 	getCrankTreasuryPublicKey,
-	getVelocityStateAccountPublicKey,
 	TokenFaucet,
 	Wallet,
 } from '@velocity-exchange/sdk';
@@ -113,15 +111,6 @@ function admin(args: string[]): void {
 		'devnet',
 		'--yes',
 	]);
-}
-
-/** `TransactionFeeRails::FLAT_PER_SIGNATURE`, which `initialize` writes on a new deployment. */
-async function setFeeRailsIfUnset(program: Program): Promise<void> {
-	const state: any = await (program.account as any).state.fetch(
-		await getVelocityStateAccountPublicKey(program.programId)
-	);
-	if (state.transactionFeeRails.signatureLamports !== 0) return;
-	admin(['fees', 'set-transaction-rails', '0', '5000', '0', '0', '0']);
 }
 
 /**
@@ -233,7 +222,9 @@ function writeKeeperConfig(): void {
 			'fundingRateUpdater',
 			'userPnlSettler',
 			// Both read Pyth Lazer and refuse to start without a token.
-			...(process.env.PYTH_LAZER_TOKEN ? ['markTwapCrank', 'pythLazerCranker'] : []),
+			...(process.env.PYTH_LAZER_TOKEN
+				? ['markTwapCrank', 'pythLazerCranker']
+				: []),
 		],
 		botConfigs: {
 			fundingRateUpdater: { botId: 'funding', dryRun: false },
@@ -313,7 +304,6 @@ async function main() {
 		);
 	}
 
-	await setFeeRailsIfUnset(program);
 	migrate('migrate');
 	await createBooks(program);
 	migrate('migrate, after the books exist');

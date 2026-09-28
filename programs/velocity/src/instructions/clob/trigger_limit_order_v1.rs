@@ -461,14 +461,6 @@ impl TriggerLimitCrank<'_, '_> {
             now,
         );
 
-        if let RestAdmission::Refused(RestRefusal::SideAtCapacity) = admission {
-            msg!(
-                "the book side is full; trigger order {} stays armed",
-                self.order_id
-            );
-            return Err(RestRefusal::SideAtCapacity.error_code().into());
-        }
-
         let filler_reward = pay_trigger_keeper(
             user,
             self.filler,
@@ -482,6 +474,10 @@ impl TriggerLimitCrank<'_, '_> {
 
         let price = match admission {
             RestAdmission::Admitted { price } => price,
+            // A full side is not the order's fault, so the trigger stays armed.
+            RestAdmission::Refused(RestRefusal::SideAtCapacity) => {
+                return Err(RestRefusal::SideAtCapacity.error_code().into());
+            }
             RestAdmission::Refused(reason) => {
                 cancel_refused_trigger(
                     user,

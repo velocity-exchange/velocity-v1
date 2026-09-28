@@ -90,6 +90,7 @@ pub struct SyncTriggerConditions<'info> {
 struct MarketInputs {
     oracle: Option<Pubkey>,
     oracle_source: Option<OracleSource>,
+    quote_spot_market_index: Option<u16>,
     /// `PerpMarket::trigger_price_clamp_divisor`, which bounds how far the
     /// median trigger price sits from the oracle.
     trigger_price_clamp_divisor: u64,
@@ -300,6 +301,11 @@ impl TriggerInputs<'_> {
                 .iter()
                 .filter_map(|(index, inputs)| Some((*index, inputs.oracle?)))
                 .collect(),
+            perp_quote_markets: self
+                .markets
+                .iter()
+                .filter_map(|(index, inputs)| Some((*index, inputs.quote_spot_market_index?)))
+                .collect(),
             spot_oracles: self.spot_oracles.clone(),
             perp_books: self
                 .markets
@@ -344,6 +350,7 @@ fn collect_trigger_inputs<'info>(
                 let inputs = markets.entry(market.market_index).or_default();
                 inputs.oracle = Some(market.oracle);
                 inputs.oracle_source = Some(market.oracle_source);
+                inputs.quote_spot_market_index = Some(market.quote_spot_market_index);
                 inputs.trigger_price_clamp_divisor = market.trigger_price_clamp_divisor();
                 inputs.has_clob = market.clob_market != Pubkey::default();
                 market_oracles.insert(market.oracle, market.market_index);

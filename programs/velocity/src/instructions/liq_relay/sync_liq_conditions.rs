@@ -221,6 +221,7 @@ struct CrankPayment {
 #[derive(Default, Clone, Copy)]
 struct MarketInputs {
     oracle: Option<Pubkey>,
+    quote_spot_market_index: Option<u16>,
     /// True when the market has a CLOB attached. A market with a CLOB has a
     /// crank conditions account, and is the only kind of market the staged
     /// liquidation can fill against.
@@ -335,6 +336,11 @@ impl SyncInputs {
                 .iter()
                 .filter_map(|(index, inputs)| Some((*index, inputs.oracle?)))
                 .collect(),
+            perp_quote_markets: self
+                .perps
+                .iter()
+                .filter_map(|(index, inputs)| Some((*index, inputs.quote_spot_market_index?)))
+                .collect(),
             spot_oracles: self
                 .spots
                 .iter()
@@ -383,6 +389,7 @@ fn collect_sync_inputs<'info>(
                 let market = loader.load()?;
                 let entry = perps.entry(market.market_index).or_default();
                 entry.oracle = Some(market.oracle);
+                entry.quote_spot_market_index = Some(market.quote_spot_market_index);
                 entry.has_clob = market.clob_market != Pubkey::default();
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
@@ -475,6 +482,9 @@ fn collect_sync_inputs<'info>(
 /// only from a `ClobCrankConditionsV0` sets no oracle, so the `PerpMarket`
 /// itself must be present. The quote market's default oracle needs no account.
 ///
+/// Each exposed perp market also needs its quote spot market, because the
+/// margin calculation loads it for every perp position.
+///
 /// A market with a CLOB must also bring its crank conditions account, which
 /// prices the liveness poll, and its quoter slab, without which a staged
 /// liquidation cannot sweep the user's book orders.
@@ -511,6 +521,15 @@ pub fn validate_market_coverage(
             oracle_present(&coverage.perp_oracles[&index]),
             ErrorCode::InvalidUserConditionsSync,
             "sync is missing the oracle account for perp market {}",
+            index
+        )?;
+        validate!(
+            coverage
+                .perp_quote_markets
+                .get(&index)
+                .is_some_and(|quote| coverage.spot_oracles.contains_key(quote)),
+            ErrorCode::InvalidUserConditionsSync,
+            "sync is missing the quote spot market of perp market {}",
             index
         )?;
         validate!(
@@ -559,6 +578,8 @@ pub struct MarketCoverage {
     /// Oracle each given perp market names. A market absent here had no
     /// `PerpMarket` account in the call.
     pub perp_oracles: BTreeMap<u16, Pubkey>,
+    /// Quote spot market each given perp market names.
+    pub perp_quote_markets: BTreeMap<u16, u16>,
     pub spot_oracles: BTreeMap<u16, Pubkey>,
     /// Given perp markets with a CLOB attached.
     pub perp_books: BTreeSet<u16>,
@@ -571,12 +592,15 @@ pub struct MarketCoverage {
 }
 
 impl MarketCoverage {
-    /// Refuse an oracle candidate that no passed market names.
+    /// Refuse an oracle candidate that no passed market names. The quote
+    /// market names the default key, which is the System Program and no
+    /// oracle, so that name does not count.
     fn refuse_unnamed_oracles(&self) -> Result<()> {
         let named: BTreeSet<&Pubkey> = self
             .perp_oracles
             .values()
             .chain(self.spot_oracles.values())
+            .filter(|oracle| **oracle != Pubkey::default())
             .collect();
 
         match self.oracles.iter().find(|oracle| !named.contains(oracle)) {
@@ -774,7 +798,8 @@ mod tests {
     fn full_coverage() -> MarketCoverage {
         MarketCoverage {
             perp_oracles: BTreeMap::from([(0, ORACLE)]),
-            spot_oracles: BTreeMap::new(),
+            perp_quote_markets: BTreeMap::from([(0, 0)]),
+            spot_oracles: BTreeMap::from([(0, Pubkey::default())]),
             perp_books: BTreeSet::from([0]),
             perp_cranks: BTreeSet::from([0]),
             perp_slabs: BTreeSet::from([0]),
@@ -815,6 +840,15 @@ mod tests {
     fn a_clob_market_without_its_slab_is_refused() {
         let mut coverage = full_coverage();
         coverage.perp_slabs.clear();
+        assert!(!check(&coverage));
+    }
+
+    /// The margin calculation loads the quote spot market of every perp
+    /// position, so a list without it fails every staged executor.
+    #[test]
+    fn a_perp_market_without_its_quote_spot_market_is_refused() {
+        let mut coverage = full_coverage();
+        coverage.spot_oracles.clear();
         assert!(!check(&coverage));
     }
 

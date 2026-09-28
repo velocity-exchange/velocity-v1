@@ -109,7 +109,8 @@ pub fn withheld_obligation(
 
     // A quoter entry costs locks, so carrying one the taker did not ask for spends the
     // room a maker needed and prices the fill against that entry. Extra entries stay free
-    // while nothing is withheld, because they can only lose at their own quoted prices.
+    // while nothing is withheld. Such an entry fills only at its own quoted prices, but
+    // its ladder can move the vAMM price inside the last-look band and the taker's limit.
     validate!(
         obligation.unrouted_quoters == 0,
         ErrorCode::FillerCarriedUnroutedQuoter,

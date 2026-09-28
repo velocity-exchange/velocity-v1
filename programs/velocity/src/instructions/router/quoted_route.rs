@@ -757,9 +757,11 @@ impl<'info> QuotedRoute<'info> {
     ///
     /// Every claimed entry must then be consulted, unless its slab slot cannot
     /// quote anyway. A route signed before an admin pulled a quoter must still
-    /// fill. Consulted quoters the route did not name are allowed, because the
-    /// router allocates by price and an execute is bound to its own quote, so
-    /// an uninvited quoter can only lose.
+    /// fill. Consulted quoters the route did not name are allowed. An execute
+    /// is bound to its own quote, so such a quoter fills only at prices it
+    /// quoted. Its ladder still feeds the vAMM last look, so it can move the
+    /// vAMM price toward its own quote, inside the last-look band and the
+    /// taker's limit.
     pub fn require_signed_route(&self, claimed: &[Pubkey], digest: RouteDigest) -> Result<()> {
         validate!(
             crate::state::order_params::route_digest(claimed) == digest,

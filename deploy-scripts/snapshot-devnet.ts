@@ -7,6 +7,9 @@
  *
  *   bun run deploy-scripts/snapshot-devnet.ts --url <rpc> --out <dir>
  *
+ * It also writes the accounts and binaries that velocity reaches without naming them: the Pyth
+ * Lazer storage account, each mint's faucet config, and the vaults and faucet programs.
+ *
  * Every admin and hot-role key in `State` becomes the local key in `<dir>/authority.json`, so
  * the rehearsal can sign admin instructions. `manifest.json` records the slot and the old keys.
  */
@@ -17,6 +20,15 @@ import { AccountInfo, Connection, Keypair, PublicKey } from '@solana/web3.js';
 
 const VELOCITY = new PublicKey('vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P');
 const VAULTS = new PublicKey('vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR');
+const TOKEN_FAUCET = new PublicKey(
+	'V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB'
+);
+/** `post_pyth_lazer_oracle_update` checks the signer against this account's trusted signers. */
+const PYTH_LAZER_STORAGE = new PublicKey(
+	'3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL'
+);
+/** Bytes ahead of the ELF in an upgradeable program's data account. */
+const PROGRAM_DATA_HEADER = 45;
 
 /** Zero bytes appended before a decode. An account the upgrade has not grown
  * yet is shorter than the new layout, and borsh fails on a short buffer. */
@@ -169,26 +181,14 @@ function loadAuthority(out: string): Keypair {
 	return authority;
 }
 
-async function main() {
-	const args = parseArgs();
-	const connection = new Connection(args.url, 'confirmed');
-	const accountsDir = path.join(args.out, 'accounts');
-	fs.rmSync(accountsDir, { recursive: true, force: true });
-	fs.mkdirSync(accountsDir, { recursive: true });
-	const authority = loadAuthority(args.out);
+/** What decoding the owned accounts found: the keys they name, and the keys the State patch replaced. */
+type OwnedScan = {
+	referenced: Set<string>;
+	undecodable: string[];
+	patchedAuthorities: string[];
+};
 
-	const decoders = new Map<string, ProgramDecoder>([
-		[
-			VELOCITY.toBase58(),
-			new ProgramDecoder(readIdl('packages/sdk/src/idl/velocity.json')),
-		],
-		[
-			VAULTS.toBase58(),
-			new ProgramDecoder(readIdl('packages/vaults-sdk/src/idl/vaults.json')),
-		],
-	]);
-
-	const slot = await connection.getSlot('confirmed');
+async function fetchOwned(connection: Connection): Promise<OwnedAccount[]> {
 	const owned: OwnedAccount[] = [];
 	for (const program of [VELOCITY, VAULTS]) {
 		const accounts = await connection.getProgramAccounts(program, {
@@ -198,85 +198,192 @@ async function main() {
 		owned.push(...accounts);
 	}
 
-	const ownedKeys = new Set(owned.map(({ pubkey }) => pubkey.toBase58()));
-	const referenced = new Set<string>();
-	const undecodable: string[] = [];
-	let patchedAuthorities: string[] = [];
+	return owned;
+}
+
+function scanOwned(
+	owned: OwnedAccount[],
+	decoders: Map<string, ProgramDecoder>,
+	authority: PublicKey
+): OwnedScan {
+	const scan: OwnedScan = {
+		referenced: new Set(),
+		undecodable: [],
+		patchedAuthorities: [],
+	};
 	for (const entry of owned) {
 		const decoder = decoders.get(entry.account.owner.toBase58())!;
+		const name = decoder.nameOf(entry.account.data);
 		let decoded: unknown;
 		try {
 			decoded = decoder.decode(entry.account.data);
 		} catch (error) {
-			undecodable.push(
-				`${entry.pubkey.toBase58()} ${decoder.nameOf(
-					entry.account.data
-				)}: ${error}`
-			);
+			scan.undecodable.push(`${entry.pubkey.toBase58()} ${name}: ${error}`);
 			continue;
 		}
 
-		collectPubkeys(decoded, referenced);
-		if (
-			decoder.nameOf(entry.account.data) === 'State' &&
-			entry.account.owner.equals(VELOCITY)
-		) {
-			patchedAuthorities = patchStateAuthorities(
+		collectPubkeys(decoded, scan.referenced);
+		if (name === 'State' && entry.account.owner.equals(VELOCITY)) {
+			scan.patchedAuthorities = patchStateAuthorities(
 				entry,
 				decoded as Record<string, unknown>,
-				authority.publicKey
+				authority
 			);
 		}
 	}
 
-	const dependencyKeys = [...referenced]
+	return scan;
+}
+
+/** The accounts the owned accounts name, less programs and less the owned accounts themselves. */
+async function fetchDependencies(
+	connection: Connection,
+	owned: OwnedAccount[],
+	referenced: Set<string>
+): Promise<OwnedAccount[]> {
+	const ownedKeys = new Set(owned.map(({ pubkey }) => pubkey.toBase58()));
+	const keys = [...referenced]
 		.filter((key) => !ownedKeys.has(key))
 		.map((key) => new PublicKey(key));
-	const dependencyInfos = await getMultipleChunked(connection, dependencyKeys);
-	const dependencies = dependencyKeys
-		.map((pubkey, i) => ({ pubkey, account: dependencyInfos[i] }))
+	const infos = await getMultipleChunked(connection, keys);
+	return keys
+		.map((pubkey, i) => ({ pubkey, account: infos[i] }))
 		.filter(
 			(entry): entry is OwnedAccount =>
 				entry.account !== null && !entry.account.executable
 		);
+}
 
-	[...owned, ...dependencies].forEach(({ pubkey, account }) =>
+function report(
+	scan: OwnedScan,
+	dependencies: number,
+	slot: number,
+	authority: PublicKey
+): void {
+	console.log(`${dependencies} dependency accounts, slot ${slot}`);
+	console.log(
+		`State authorities ${
+			scan.patchedAuthorities.join(', ') || 'none'
+		} -> ${authority.toBase58()}`
+	);
+	if (scan.undecodable.length > 0) {
+		console.log(
+			`${scan.undecodable.length} accounts did not decode, so their dependencies are missing:`
+		);
+		scan.undecodable.forEach((line) => console.log(`  ${line}`));
+	}
+
+	if (scan.patchedAuthorities.length === 0) {
+		throw new Error(
+			'no State authority was patched; the rehearsal could not sign admin instructions'
+		);
+	}
+}
+
+async function main() {
+	const args = parseArgs();
+	const connection = new Connection(args.url, 'confirmed');
+	const accountsDir = path.join(args.out, 'accounts');
+	fs.rmSync(accountsDir, { recursive: true, force: true });
+	fs.mkdirSync(accountsDir, { recursive: true });
+	const authority = loadAuthority(args.out);
+	const velocityDecoder = new ProgramDecoder(
+		readIdl('packages/sdk/src/idl/velocity.json')
+	);
+	const decoders = new Map<string, ProgramDecoder>([
+		[VELOCITY.toBase58(), velocityDecoder],
+		[
+			VAULTS.toBase58(),
+			new ProgramDecoder(readIdl('packages/vaults-sdk/src/idl/vaults.json')),
+		],
+	]);
+
+	const slot = await connection.getSlot('confirmed');
+	const owned = await fetchOwned(connection);
+	const scan = scanOwned(owned, decoders, authority.publicKey);
+	const dependencies = await fetchDependencies(
+		connection,
+		owned,
+		scan.referenced
+	);
+	const unreferenced = await fetchUnreferenced(
+		connection,
+		owned,
+		velocityDecoder
+	);
+	[...owned, ...dependencies, ...unreferenced].forEach(({ pubkey, account }) =>
 		writeAccount(accountsDir, pubkey, account)
 	);
+
+	for (const [name, program] of [
+		['vaults', VAULTS],
+		['token_faucet', TOKEN_FAUCET],
+	] as const) {
+		fs.writeFileSync(
+			path.join(args.out, `${name}-devnet.so`),
+			await programBinary(connection, program)
+		);
+	}
 
 	const manifest = {
 		url: args.url,
 		slot,
 		createdAt: new Date().toISOString(),
 		authority: authority.publicKey.toBase58(),
-		patchedAuthorities,
+		patchedAuthorities: scan.patchedAuthorities,
 		ownedAccounts: owned.length,
 		dependencyAccounts: dependencies.length,
-		undecodable,
+		unreferencedAccounts: unreferenced.map(({ pubkey }) => pubkey.toBase58()),
+		undecodable: scan.undecodable,
 	};
 
 	fs.writeFileSync(
 		path.join(args.out, 'manifest.json'),
 		JSON.stringify(manifest, null, 2)
 	);
-	console.log(`${dependencies.length} dependency accounts, slot ${slot}`);
-	console.log(
-		`State authorities ${
-			patchedAuthorities.join(', ') || 'none'
-		} -> ${authority.publicKey.toBase58()}`
-	);
-	if (undecodable.length > 0) {
-		console.log(
-			`${undecodable.length} accounts did not decode, so their dependencies are missing:`
-		);
-		undecodable.forEach((line) => console.log(`  ${line}`));
-	}
+	report(scan, dependencies.length, slot, authority.publicKey);
+}
 
-	if (patchedAuthorities.length === 0) {
-		throw new Error(
-			'no State authority was patched; the rehearsal could not sign admin instructions'
+/** The Pyth Lazer storage account, and the faucet config of every spot market's mint. */
+async function fetchUnreferenced(
+	connection: Connection,
+	owned: OwnedAccount[],
+	velocityDecoder: ProgramDecoder
+): Promise<OwnedAccount[]> {
+	const mints = owned
+		.filter(
+			({ account }) => velocityDecoder.nameOf(account.data) === 'SpotMarket'
+		)
+		.map(
+			({ account }) =>
+				(velocityDecoder.decode(account.data) as { mint: PublicKey }).mint
 		);
-	}
+	const keys = [
+		PYTH_LAZER_STORAGE,
+		...mints.map(
+			(mint) =>
+				PublicKey.findProgramAddressSync(
+					[Buffer.from('faucet_config'), mint.toBuffer()],
+					TOKEN_FAUCET
+				)[0]
+		),
+	];
+	const infos = await getMultipleChunked(connection, keys);
+	return keys
+		.map((pubkey, i) => ({ pubkey, account: infos[i] }))
+		.filter((entry): entry is OwnedAccount => entry.account !== null);
+}
+
+async function programBinary(
+	connection: Connection,
+	program: PublicKey
+): Promise<Buffer> {
+	const programAccount = await connection.getAccountInfo(program);
+	if (!programAccount)
+		throw new Error(`program ${program.toBase58()} is not deployed`);
+	const programData = new PublicKey(programAccount.data.subarray(4, 36));
+	const programDataAccount = await connection.getAccountInfo(programData);
+	return programDataAccount!.data.subarray(PROGRAM_DATA_HEADER);
 }
 
 function readIdl(file: string): Idl {

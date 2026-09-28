@@ -82,10 +82,7 @@ else
   echo "== reusing the dump in $SNAPSHOT =="
 fi
 
-for program in "velocity $VELOCITY_ID" "vaults $VAULTS_ID"; do
-  set -- $program
-  [ -e "$SNAPSHOT/$1-devnet.so" ] || solana program dump -u "$DEVNET_RPC_URL" "$2" "$SNAPSHOT/$1-devnet.so"
-done
+[ -e "$SNAPSHOT/velocity-devnet.so" ] || solana program dump -u "$DEVNET_RPC_URL" "$VELOCITY_ID" "$SNAPSHOT/velocity-devnet.so"
 
 AUTHORITY="$SNAPSHOT/authority.json"
 AUTHORITY_PUBKEY="$(solana-keygen pubkey "$AUTHORITY")"

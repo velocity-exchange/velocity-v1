@@ -4262,7 +4262,8 @@ the withdraw bundle records both revert codes.
          treasury with a SOL transfer. The book attach stores the treasury's refill watermark on
          the market.
       5. Run `deploy-scripts/migrate.ts --dry-run`, then run it for real. Run it again until it
-         sends nothing, because each step reads chain state first and skips what is correct.
+         sends and proposes nothing, because each step reads chain state first and skips what
+         is correct.
     - `migrate.ts` refuses to run until the CLOB program is deployed and the rails price the
       cranks, and it stops before the books while the treasury is not priced. It creates the
       quoter slab of every perp market that predates `PerpMarket.quoter_slab`. It then creates,
@@ -4271,9 +4272,11 @@ the withdraw bundle records both revert codes.
       After that it runs `sync_user_conditions` for every user with exposure, which arms
       existing trigger orders, and it calls `mark_user_vault_owned` for each vault whose `User`
       lacks the flag. That call needs the vault manager or the vaults admin, so the script
-      reports a vault its keypair cannot sign for. The script sends directly and does not
-      propose, because each new book keypair co-signs, so `--keypair` must be a warm or cold
-      admin keypair.
+      reports a vault its keypair cannot sign for. `--keypair` is the payer and can be any
+      funded key. With `--multisig <pda>`, the multisig's vault is the warm admin: the payer
+      creates each book directly, and every warm-admin instruction becomes a proposal. A book
+      then takes two proposals, and its users sync after both execute, so approve, execute and
+      run again. See `deploy-scripts/README.md`.
     - Deploy swift and keep-rs together. keep-rs requests `POST /attest` by order signature,
       and a swift that keys held orders by uuid refuses that body.
     - Replace any CLOB book whose arena is over 1024 slots, such as one created at the old

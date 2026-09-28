@@ -242,12 +242,17 @@ the Squads proposal, or send it immediately after the swap on devnet, rather tha
 ### Upgrades that need the migration script
 
 `deploy-scripts/migrate.ts` applies the on-chain changes that a program upgrade needs. Every step
-reads chain state first and skips what is already correct, so run it again until it sends nothing.
-It sends directly and does not propose, because a new book is a fresh keypair that must co-sign.
-The keypair must hold the warm or cold admin role.
+reads chain state first and skips what is already correct, so run it again until it sends and
+proposes nothing. `--keypair` is the payer and can be any funded key. The admin is that keypair,
+or with `--multisig <pda>` the vault of that Squads multisig, and it must hold the warm or cold
+role. Under `--multisig`, the script sends what needs no admin with the payer and proposes every
+warm-admin instruction. The payer also needs the `accountExtension` hot role when an account needs
+a resize.
 
 Every order path requires the market's CLOB book. A market without a book takes no order, and it
-fires no trigger. The first upgrade to the book order flow therefore runs in this order:
+fires no trigger. The first upgrade to the book order flow therefore runs in this order. On mainnet
+every admin command takes `--multisig <pda>`, which makes it a proposal to approve and execute
+before the next step.
 
 ```bash
 # 1. Deploy the CLOB program at the id velocity pins (clob_program::id() in
@@ -256,18 +261,50 @@ fires no trigger. The first upgrade to the book order flow therefore runs in thi
 # 2. Upgrade velocity, as in "Cutting a mainnet release".
 # 3. Price the relay cranks. With zero rails every crank pays 0 lamports, and no
 #    turner takes the work. migrate.ts refuses to run while the rails price nothing.
-velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports> \
-  <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>
+velocity-admin --multisig "$MULTISIG" fees set-transaction-rails <inclusionLamports> \
+  <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>
 # 4. Create, price and fund the crank treasury. The book attach stores the
 #    treasury's refill watermark on the market, so migrate.ts stops before the
 #    books while the treasury is not priced.
-velocity-admin fees init-crank-treasury
-velocity-admin fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>
+velocity-admin --multisig "$MULTISIG" fees init-crank-treasury
+velocity-admin --multisig "$MULTISIG" fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>
 solana transfer <treasury> <sol> -u "$RPC"
-# 5. Read the plan, then run it.
-bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <warm-admin.json> --dry-run
-bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <warm-admin.json>
+# 5. Let the payer resize accounts. Skip this when no account needs a resize.
+velocity-admin --multisig "$MULTISIG" auth set-hot-admin accountExtension <payer>
+# 6. Fund the vault for the rent it pays. See below for the amount.
+solana transfer <vault> <sol> -u "$RPC"
+# 7. Read the plan, then run it.
+bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG" --dry-run
+bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG"
+# 8. Approve and execute the proposals, then run it again. Repeat until a run
+#    sends and proposes nothing.
+velocity-admin --multisig "$MULTISIG" multisig proposals
+velocity-admin --multisig "$MULTISIG" --keypair <member.json> multisig execute <index> --cu-limit 1400000
 ```
+
+On devnet, leave out `--multisig` and pass a warm admin keypair. Every step then sends directly and
+one run does the whole migration.
+
+Under a multisig a run proposes in rounds, and the next round needs the previous one executed:
+
+1. The first run creates each book directly and proposes its registration, `migrate: book A market
+   <index>`. The registration names the book on the market and stages the quoter entry.
+2. The next run proposes the approval and the attach, `migrate: book B market <index>`. The approval
+   carries the hash of the staged entry, so it cannot be built before round A executes.
+3. The next run proposes the user syncs, several users to a proposal. A sync arms the user's
+   triggers, so a user waits until every market it trades has an attached book.
+4. The last run tops up the sync reservoirs from the payer and registers the watches.
+
+A rerun reads the last 256 proposals and skips a step that a pending proposal already does. It also
+reuses an empty book that an earlier run created. Each run ends with a summary of what it sent,
+what it proposed, and what waits on approval.
+
+The vault pays the rent of what the admin creates: about 0.0134 SOL per book, for the quoter entry,
+one slab slot and the crank conditions, and about 0.0313 SOL per user conditions account. These are
+the figures at 5080 lamports per byte. Each run prints the figures from the live rent and the vault's
+balance. The payer pays for each book, about 0.59 SOL at the default capacity, for the other
+accounts that need no admin, and for the proposal accounts. `multisig close-accounts` reclaims the
+proposal rent.
 
 The script gives every market its book before it syncs any user, because the sync arms the user's
 trigger orders and an armed trigger needs a book to fire into. Each book takes the market's tick,

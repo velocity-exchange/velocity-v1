@@ -173,6 +173,46 @@ export async function sendOrPropose(
 	};
 }
 
+export const PROPOSAL_TX_LIMIT = 1232;
+
+/**
+ * The size of the transaction that proposes `message`. It carries the whole
+ * inner message inline, so a batch that compiles can still exceed the
+ * transaction limit at propose time.
+ */
+export function proposalTransactionSize(
+	provider: AnchorProvider,
+	message: TransactionMessage,
+	multisigPda: PublicKey,
+	transactionIndex: bigint,
+	vaultIndex: number,
+	altAccounts: AddressLookupTableAccount[],
+	memo: string,
+	blockhash: string
+): number {
+	const createIx = multisig.instructions.vaultTransactionCreate({
+		multisigPda,
+		transactionIndex,
+		creator: provider.wallet.publicKey,
+		vaultIndex,
+		ephemeralSigners: 0,
+		transactionMessage: message,
+		addressLookupTableAccounts: altAccounts,
+		memo,
+	});
+	const proposeIx = multisig.instructions.proposalCreate({
+		multisigPda,
+		transactionIndex,
+		creator: provider.wallet.publicKey,
+	});
+	const outer = new Transaction().add(createIx, proposeIx);
+	outer.recentBlockhash = blockhash;
+	outer.feePayer = provider.wallet.publicKey;
+	// The serialized message, plus the compact-u16 signature count, plus one
+	// 64-byte signature.
+	return outer.serializeMessage().length + 1 + 64;
+}
+
 /**
  * Print what a `sendOrPropose` call with the same arguments would do, without
  * sending anything: the instruction list, the dispatch mode, and the expected
@@ -233,31 +273,16 @@ export async function reportDryRun(
 		(await provider.connection.getMinimumBalanceForRentExemption(vaultTxSize)) +
 		(await provider.connection.getMinimumBalanceForRentExemption(proposalSize));
 
-	// The proposal-create transaction carries the whole inner message inline, so
-	// a batch that compiles can still exceed the 1232-byte transaction limit at
-	// propose time. Measure the size here rather than let the send fail.
-	const createIx = multisig.instructions.vaultTransactionCreate({
+	const outerSize = proposalTransactionSize(
+		provider,
+		message,
 		multisigPda,
 		transactionIndex,
-		creator: provider.wallet.publicKey,
 		vaultIndex,
-		ephemeralSigners: 0,
-		transactionMessage: message,
-		addressLookupTableAccounts: altAccounts,
+		altAccounts,
 		memo,
-	});
-	const proposeIx = multisig.instructions.proposalCreate({
-		multisigPda,
-		transactionIndex,
-		creator: provider.wallet.publicKey,
-	});
-	const outer = new Transaction().add(createIx, proposeIx);
-	outer.recentBlockhash = blockhash;
-	outer.feePayer = provider.wallet.publicKey;
-	// The serialized message, plus the compact-u16 signature count, plus one
-	// 64-byte signature.
-	const outerSize = outer.serializeMessage().length + 1 + 64;
-	const TX_LIMIT = 1232;
+		blockhash
+	);
 
 	ui.kv(
 		'dispatch',
@@ -267,15 +292,15 @@ export async function reportDryRun(
 	ui.kv('vault', `${pc.dim(vaultPda.toBase58())} ${pc.dim(`(${vaultIndex})`)}`);
 	ui.kv(
 		'size',
-		outerSize > TX_LIMIT
+		outerSize > PROPOSAL_TX_LIMIT
 			? pc.red(
 					`${outerSize} bytes, ${
-						outerSize - TX_LIMIT
-					} over the ${TX_LIMIT} limit: this will fail to propose, split the batch`
+						outerSize - PROPOSAL_TX_LIMIT
+					} over the ${PROPOSAL_TX_LIMIT} limit: this will fail to propose, split the batch`
 			  )
-			: `${ui.count(outerSize)} of ${ui.count(TX_LIMIT)} bytes ${pc.dim(
-					`(${TX_LIMIT - outerSize} spare)`
-			  )}`
+			: `${ui.count(outerSize)} of ${ui.count(
+					PROPOSAL_TX_LIMIT
+			  )} bytes ${pc.dim(`(${PROPOSAL_TX_LIMIT - outerSize} spare)`)}`
 	);
 	ui.kv(
 		'proposer rent',

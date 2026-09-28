@@ -1863,8 +1863,8 @@ fn is_revert_fill_error(error: &UiTransactionError) -> bool {
 }
 
 /// A with-fill liquidation that fails with one of these codes cannot succeed with the
-/// same account list. The withheld-depth codes mean the book reached an owner the
-/// transaction does not carry, and the transaction cannot fit enough makers to pass.
+/// same account list. The program exempts a liquidation from the withheld-depth codes,
+/// so they stay in the list only for a program that predates that exemption.
 fn is_takeover_fallback_error(code: u32) -> bool {
     use velocity_rs::program::error::ErrorCode;
 

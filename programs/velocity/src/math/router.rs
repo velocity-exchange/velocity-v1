@@ -64,10 +64,14 @@ pub struct FillerObligation {
     /// Zero when the order signed no route, because the taker named no entries and none
     /// is uninvited. A taker that wants this test signs a route.
     pub unrouted_quoters: usize,
+    /// The fill is a liquidation, so the program wrote the order and its limit price.
+    pub liquidation: bool,
 }
 
-/// Whether a filler that left a book short of an owner met its obligation. Four outcomes,
-/// and only the last one fills.
+/// Whether a filler that left a book short of an owner met its obligation. A taker that
+/// signed owes itself nothing. A liquidation stops short at the makers it carries, because
+/// its limit price already holds the liquidated user to the liquidator fee, which a
+/// takeover also charges. Otherwise there are four outcomes, and only the last one fills.
 ///
 /// - The transaction had room for another maker, so the filler owed that maker.
 /// - It is full, but carries a loaded user that filled nothing and holds no role. Those
@@ -84,7 +88,7 @@ pub fn withheld_obligation(
     idle_loaded_users: usize,
     attributable_locks: usize,
 ) -> VelocityResult<()> {
-    if obligation.taker_signed {
+    if obligation.taker_signed || obligation.liquidation {
         return Ok(());
     }
 
@@ -692,9 +696,24 @@ mod tests {
             taker_signed: true,
             tx_accounts: None,
             unrouted_quoters: 0,
+            liquidation: false,
         };
 
         assert!(withheld_obligation(&signed, 7, 0).is_ok());
+    }
+
+    /// A liquidation fills short at the makers it carries, whatever the
+    /// transaction holds.
+    #[test]
+    fn a_liquidation_stops_short_of_a_withheld_book() {
+        let liquidation = FillerObligation {
+            taker_signed: false,
+            tx_accounts: None,
+            unrouted_quoters: 1,
+            liquidation: true,
+        };
+
+        assert!(withheld_obligation(&liquidation, 1, 0).is_ok());
     }
 
     /// A fill that withholds and cannot count the transaction fails closed.
@@ -705,6 +724,7 @@ mod tests {
             taker_signed: false,
             tx_accounts: None,
             unrouted_quoters: 0,
+            liquidation: false,
         };
 
         assert_eq!(
@@ -722,6 +742,7 @@ mod tests {
                 taker_signed: false,
                 tx_accounts: Some(accounts),
                 unrouted_quoters: 0,
+                liquidation: false,
             };
 
             assert_eq!(
@@ -740,6 +761,7 @@ mod tests {
             taker_signed: false,
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 1,
+            liquidation: false,
         };
 
         assert_eq!(
@@ -756,6 +778,7 @@ mod tests {
             taker_signed: false,
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
+            liquidation: false,
         };
 
         assert!(withheld_obligation(&honest, 0, TX_WRITABLE_LOCK_BUDGET).is_ok());
@@ -769,6 +792,7 @@ mod tests {
             taker_signed: false,
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
+            liquidation: false,
         };
 
         assert_eq!(
@@ -791,6 +815,7 @@ mod tests {
             taker_signed: false,
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET * 2),
             unrouted_quoters: 0,
+            liquidation: false,
         };
         let shallow = FILL_FIXED_WRITABLE_LOCKS + MAKER_ACCOUNT_COST;
         assert_eq!(

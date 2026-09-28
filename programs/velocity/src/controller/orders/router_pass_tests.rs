@@ -391,6 +391,7 @@ pub mod amm_jit {
                     taker_signed: true,
                     tx_accounts: None,
                     unrouted_quoters: 0,
+                    liquidation: false,
                 },
             },
 
@@ -781,6 +782,7 @@ pub mod amm_jit {
                     taker_signed: true,
                     tx_accounts: None,
                     unrouted_quoters: 0,
+                    liquidation: false,
                 },
             },
 

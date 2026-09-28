@@ -292,6 +292,7 @@ fn taker_signed_standing() -> crate::instructions::FillerStanding {
             taker_signed: true,
             tx_accounts: None,
             unrouted_quoters: 0,
+            liquidation: false,
         },
     }
 }

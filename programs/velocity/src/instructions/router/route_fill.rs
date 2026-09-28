@@ -276,6 +276,7 @@ impl<'info> RouteFill<'_, 'info> {
                 taker_signed: route.filler.taker_signed,
                 tx_accounts: route.filler.tx_accounts,
                 unrouted_quoters: quoted.unrouted_quoters,
+                liquidation: fill.mode.is_liquidation(),
             },
             taker_exposure_closed_by_caller: route.filler.taker_exposure_closed_by_caller,
         });

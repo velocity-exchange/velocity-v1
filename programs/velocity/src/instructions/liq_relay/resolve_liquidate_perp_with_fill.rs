@@ -784,3 +784,32 @@ mod pay_check_tests {
         assert!(can_pay(SPOT_BALANCE_PRECISION_U64));
     }
 }
+
+#[cfg(test)]
+mod withheld_book_tests {
+    use crate::math::router::{
+        withheld_obligation, FillerObligation, FILL_FIXED_WRITABLE_LOCKS, MAKER_ACCOUNT_COST,
+        TX_WRITABLE_LOCK_BUDGET,
+    };
+
+    /// The most locks a staged liquidation can attribute are the fixed fill
+    /// locks, the makers it carries, the protocol filler and the book's
+    /// response account. That is far below the lock budget, so a book that
+    /// reaches a fifth owner must stop the fill short and not revert it.
+    #[test]
+    fn a_staged_liquidation_fills_short_of_a_withheld_book() {
+        let attributable = FILL_FIXED_WRITABLE_LOCKS
+            + super::MAX_LIQUIDATION_MAKERS * MAKER_ACCOUNT_COST
+            + MAKER_ACCOUNT_COST
+            + 1;
+        assert!(attributable <= TX_WRITABLE_LOCK_BUDGET - MAKER_ACCOUNT_COST);
+
+        let obligation = FillerObligation {
+            taker_signed: false,
+            tx_accounts: Some(64),
+            unrouted_quoters: 0,
+            liquidation: true,
+        };
+        assert_eq!(withheld_obligation(&obligation, 0, attributable), Ok(()));
+    }
+}

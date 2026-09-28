@@ -116,6 +116,7 @@ macro_rules! no_router {
                     taker_signed: true,
                     tx_accounts: None,
                     unrouted_quoters: 0,
+                    liquidation: false,
                 },
             },
 
@@ -3218,6 +3219,7 @@ pub mod builder_fee_margin_gate {
                     taker_signed: true,
                     tx_accounts: None,
                     unrouted_quoters: 0,
+                    liquidation: false,
                 },
             },
 

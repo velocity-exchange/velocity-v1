@@ -101,7 +101,7 @@ struct BookMakers {
 struct LiquidationMatch {
     makers: Vec<User>,
     /// The book reaches an owner this route does not carry. The program then
-    /// refuses the fill, because the transaction has room for that owner.
+    /// fills only the part in front of that owner.
     book_withholds: bool,
     /// The market's slab, its book and the book's program, in the order the
     /// fill's account tail expects. Empty for a market with no book.
@@ -3069,9 +3069,10 @@ impl PrimaryLiquidationStrategy {
             collateral_required,
             current_time_millis(),
         );
-        // A fill that the book withholds reverts, so a takeover goes first when one
-        // is possible. The fill stays the last resort, because the size the keeper
-        // reads can be larger than the order the program places.
+        // A fill that the book withholds stops short, so a takeover goes first when
+        // one is possible, because it closes the whole size. The fill stays the last
+        // resort, because the size the keeper reads can be larger than the order the
+        // program places.
         let fill_withheld = makers.as_ref().is_some_and(|route| route.book_withholds);
         let takeover_possible =
             policy.liquidation_allowed && free_collateral >= collateral_required;

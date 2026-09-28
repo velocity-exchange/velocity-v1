@@ -586,6 +586,12 @@ marketIndex)` (`math/orders`) mirrors `User::clob_resident_open_orders`. velocit
   post-only entry, a trigger entry, and a market entry with a price of 0. velocity-rs takes
   `SWIFT_MSG_PREFIX` and `SWIFT_DELEGATE_MSG_PREFIX` from the program's `PAYLOAD_DISCRIMINATOR`
   constants.
+- `signedMsgDomainPrefix(programId)` and `signedMsgSigningBytes(programId, orderParams)`
+  (`core/signedMsg`, feat/propamm) give the bytes a taker signs: the domain prefix, then the hex
+  message. `signSignedMsgOrderParamsMessage` signs through them. A signer that does not use the
+  client, such as a wallet `signMessage` flow, must sign these bytes (§5.7).
+  `DEFAULT_SIGNED_MSG_USER_ORDERS_LEN` (32) is the entry count the SDK gives a new
+  `SignedMsgUserOrders` record.
 - `unnamedPriceSlippageDivisor(contractTier)` (`math/worstPrice`) gives the tier bound of a
   market order that names no price, and `deriveWorstPrice(oraclePrice, contractTier, direction,
 namedPrice)` takes the tier.
@@ -615,6 +621,10 @@ room, stepSize)` (`math/router`) mirrors the trim of a `Custom` quoter's ladder:
 - velocity-rs signed messages (feat/propamm). `swift_order_subscriber::decode_signed_msg_payload`
   decodes a hex signed-message payload and refuses one shorter than a discriminator or longer
   than `MAX_SIGNED_MSG_BORSH_LEN`, which moves from swift to velocity-rs.
+  `swift_order_subscriber` re-exports the program's `signed_msg_signing_bytes` and
+  `SIGNED_MSG_DOMAIN_PREFIX`, and `encode_for_signing` returns the hex message that the signature
+  covers behind the prefix. `TransactionBuilder` creates a `SignedMsgUserOrders` record with 32
+  entries.
   `TransactionBuilder::place_swift_order` appends the `(User, UserStats)` metas of its `makers`
   after the maps, so a book fill can reach them.
 - `getInitializeProtocolUserIxs(name, payer)` creates the protocol `User` and its `UserStats`.
@@ -1098,7 +1108,13 @@ currentSlot)` and `elapsedMillis` for elapsed intervals. `SLOT_TIME_ESTIMATE_MS`
   for a resting limit, and the message slot plus `SIGNED_MSG_FILL_WINDOW_MAX_SLOTS` (150) for
   any other order, which is at or after the deadline at every slot duration.
   `SignedMsgOrderRecord.signed_msg_order_max_slot` still reports the deadline under the current
-  slot clock.
+  slot clock. The record is the only replay guard, and anyone can create it again empty. So
+  `delete_signed_msg_user_orders` fails with `InvalidSignedMsgUserOrdersResize` while any entry is
+  live, and so does a `resize_signed_msg_user_orders` that shrinks the record below its live
+  entries. An entry is live while its order rests on the CLOB, and until it is more than 20 slots
+  past its `max_slot`. A shrink moves the live entries to the front before it truncates. The SDK
+  and velocity-rs create a new record with 32 entries, because a market or IOC entry holds its
+  slot for about 64 seconds at 400 ms slots.
 - `QuoterV0` (new account, feat/propamm). Zero-copy, 792 bytes including the 8-byte
   discriminator; PDA seeds `["quoter", market_index as u16 LE, quoter_program, user]`. The
   staging half of the registry: `{ config: QuoterConfigV0 (736 bytes), padding: [u8; 48] }`.
@@ -1284,7 +1300,8 @@ max_priority_micro_lamports_per_cu: u32 }`, 20 bytes, alongside `hot_flow_author
 - `place_and_make_signed_msg_perp_order` is removed (feat/propamm). It existed only to match a
   signed-message order already resting in `User.orders`, and no signed-message order rests
   there any more. There is no v0/v1 pair and no frozen second path; velocity controls the
-  fillers. The taker-facing signed message and its broadcast to swift are unchanged.
+  fillers. The signed message and its broadcast to swift keep their format. The taker signs the
+  message behind a domain prefix (§5.7).
 - Liquidation entries take the liquidatee's CLOB books (feat/propamm). `liquidate_perp`,
   `liquidate_spot`, `liquidate_borrow_for_perp_pnl`, `liquidate_perp_pnl_for_deposit`,
   `set_user_status_to_being_liquidated`, `force_delete_user` and
@@ -1347,15 +1364,40 @@ max_priority_micro_lamports_per_cu: u32 }`, 20 bytes, alongside `hot_flow_author
   bring its quote spot market, because the margin calculation loads it for every perp position.
   The default key does not count as a named oracle, so the System Program cannot pass as one.
   A call that breaks a rule fails with `InvalidUserConditionsSync`. Markets that share an oracle
-  pass it once.
+  pass it once. All four syncs store the market accounts spot markets first and then perp
+  markets, each sorted by index, whatever order the caller passes.
+  `load_maps` reads spot markets only until the first perp market, so
+  the stored list must keep that order for a staged executor to load it.
+- `trigger_limit_order_v1`, `crank_clob_evict` and `crank_clob_remove_expired` take the user's
+  `UserConditionsV0` as a required writable `trigger_conditions` account at the PDA
+  `["user_conditions", user]`, after `crank_conditions` (feat/propamm). The crank points or parks
+  the relay slot of the order it touches, so a caller cannot skip that write by leaving the
+  account out. A user created before the account existed passes the empty PDA.
+- `resolve_trigger_limit_order_v1` and `resolve_trigger_market_order_v1` take a
+  `fired: FiredConditionArgV0` argument (feat/propamm). It names the trigger slot that woke, and
+  the resolver stages only that slot's order.
+- `delete_initialized_perp_market` takes the market's `quoter_slab`, read-only and bound to
+  `perp_market.quoter_slab`, after `perp_market` (feat/propamm). The slab may not exist yet. The
+  call fails with `InvalidMarketAccountforDeletion` for a market that names a book, or whose slab
+  holds an approved quoter, because the slab and the book outlive the market and a new market at
+  the same index would adopt them. `AdminClient.getDeleteInitializedPerpMarketIx` passes it.
+- `settle_pnl` and `settle_multiple_pnls` read the user's CLOB books after the revenue-share
+  accounts (feat/propamm). For each market in `Settlement` where the user rests book orders, they
+  take that market's `QuoterSlabV0` (read-only) and its book (writable), then the CLOB program
+  once. The settle of the expired position takes those orders off the book first. Without the
+  accounts it fails with `PerpMarketSettlementUserHasOpenOrders` while book orders remain. SDK
+  `settlePNLIx` and `settleMultiplePNLsIx` attach them.
 
 ### 5.5 New instructions with layout or account implications
 
 - `update_perp_market_clob_book_config` and `resize_perp_market_clob_book` (velocity,
   feat/propamm, warm/cold admin) are the only paths that change an attached book's rules or
   grow its arena, because the market's quoter slab is the book's config authority. Accounts
-  for the config path: `admin`, `state`, `perp_market`, `quoter` (writable), `quoter_slab`
-  (writable), `clob_market` (writable), `clob_program`. The resize path drops `quoter`, takes
+  for the config path: `admin`, `state`, `perp_market` (writable), `quoter` (writable),
+  `quoter_slab` (writable), `clob_market` (writable), `clob_program`. The config path writes a new
+  tick or step to the perp market and the book together, because each grid must equal the other.
+  It is the only way to change the grid of a market with an attached book.
+  The resize path drops `quoter`, takes
   `quoter_slab` read-only and adds `system_program`, and `admin` is writable because it pays
   the rent.
 
@@ -1596,7 +1638,15 @@ true` on every emitted record must re-check the field's value rather than treati
   fails with `SignatureVerificationError::InvalidMessageDataSize`. The program exposes both as
   `PAYLOAD_DISCRIMINATOR`. A message past its `max_ts` places nothing, and its
   `max_margin_ratio` and `isolated_position_deposit` do not apply. swift refuses a market entry
-  with no price and an oracle entry with no offset before it forwards the order.
+  with no price and an oracle entry with no offset before it forwards the order. Drift signs
+  `hex(discriminator || borsh)`. Velocity signs
+  `velocity-signed-msg:vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P:` followed by that hex, and a
+  signature over the bare hex fails. The prefix is an ASCII constant that the program adds when it
+  verifies. It names the program, and its first byte is not a hex digit, so a Velocity signature
+  does not verify as a Drift swift message. Every external signer, including a wallet
+  `signMessage` flow, must sign the prefixed bytes. The instruction data stays
+  `[signature 64][pubkey 32][len u16 LE][hex message]`, and `len` counts the hex message only.
+  swift verifies over the same prefixed bytes.
 - Triggers (feat/propamm). `place_trigger_orders_v1`, the SL/TP sidecars of a signed message
   and a trigger amend refuse a market with no CLOB with `TriggerMarketHasNoClob` (6460).
   `trigger_market_order_v1` refuses an order that is not a `TriggerMarket`
@@ -1608,9 +1658,17 @@ true` on every emitted record must re-check the field's value rather than treati
   `trigger_condition` reads `TriggeredAbove` or `TriggeredBelow`. Relay wakes a trigger where
   the median trigger price can first reach it, and does not stage an expired one.
   `trigger_limit_order_v1` cancels a fired order that the book would refuse, for its size, step,
-  price, expiry or a full side, and pays the keeper the flat reward, where the crank reverted.
-  An evicted stop-limit's watch fires on the non-trigger side. The crank that observes its
-  recross earns the flat reward and points the watch back at the trigger side.
+  price or expiry, and pays the keeper the flat reward, where the crank reverted. A full book side
+  fails both trigger endpoints with `MaxNumberOfOrders` and leaves the trigger armed, because an
+  eviction clears a full side. `trigger_market_order_v1` cancels a reduce-only stop-market with
+  nothing to reduce with `ReduceOnlyOrderIncreasedPosition`, and it pays the keeper nothing. A
+  placed stop-limit keeps its relay slot, parked on the non-trigger side and inactive. An
+  eviction wakes that slot, and the crank that observes the recross earns the flat reward and
+  points the watch back at the trigger side. A relay trigger crank pays at least the
+  `min_payment` its slot stores. `sync_trigger_conditions` arms a watch on a market whose book is
+  suspended, and it arms reduce-only orders first, because the block holds eight slots and a user
+  may hold 32 triggers. A trigger resolver stages only the order of the slot that fired, and it
+  skips an order that the market status refuses.
   `trigger_market_order_v1` fires on an `Active` market, and on a `ReduceOnly` market it stamps
   the fired order reduce-only. It refuses every other status and a market in settlement with
   `MarketPlaceOrderPaused`. Both trigger endpoints refuse with `InvalidOracle` an oracle that
@@ -1638,7 +1696,11 @@ true` on every emitted record must re-check the field's value rather than treati
   level it floors, so every allocation is a prefix that the quoter's `execute_v0` fills at the
   quoted prices. The withheld-depth obligation excuses a loaded user only as the taker, the
   filler, or the user a consulted quoter fills for. A subaccount of the taker's referrer holds
-  no role. `quote_router` applies the fill's oracle gate, band trim, CLOB-run drop and quoter
+  no role. The obligation does not bind a liquidation fill. The program writes that order at the
+  oracle price less the liquidator fee, so the fill stops at the makers the transaction carries,
+  and a later call liquidates the rest. The `FillerCarriedUnroutedQuoter` count reads only the
+  consulted slots that quoted, and it leaves out the market's baseline CLOB book.
+  `quote_router` applies the fill's oracle gate, band trim, CLOB-run drop and quoter
   room, and passes the fill's reference price. It does not apply the per-maker budget cap on
   CLOB depth, because it names no taker and loads no maker set. A
   book that rests a level outside its oracle band quotes nothing to that fill. A vAMM past its reserve bound
@@ -1666,7 +1728,14 @@ true` on every emitted record must re-check the field's value rather than treati
   collected a fee, and never when the payout account is the order owner's authority. The
   taker-origin cross also requires the fees it collected to cover the payment's value in quote.
   `crank_taker_origin_cross` charges the builder fee when the taker's escrow rides the crank,
-  because it reads the velocity order id back from the book row's `client_order_id`. Each
+  because it reads the velocity order id back from the book row's `client_order_id`. It cancels,
+  rather than reverts on, a row with nothing to reduce on either side of the cross: a reduce-only
+  row, or any row in a `ReduceOnly` market, whose owner holds nothing to reduce. The owner pays
+  the flat removal fee. In program-keeper mode that fee is at least the keeper payment's value in
+  quote. The pair branch holds the counterparty price to the book entry's maker band at the MM
+  oracle price, which is the band the router uses. A program-keeper `liquidate_perp_with_fill`
+  draws no reservoir lamports when the payout account is the liquidated user's authority or
+  delegate. Each
   `crank_cross_match` leg is bounded at the last price inside the maker oracle band, and at the
   narrowest band among the quoters it consults.
 - CLOB book walk (feat/propamm). `quote_v0` and `execute_v0` end after the first order they fill
@@ -1676,7 +1745,10 @@ true` on every emitted record must re-check the field's value rather than treati
   walk. `initialize_market_v0` and `resize_market_v0` refuse an arena over 1024 slots, 512 orders
   a side, with `CapacityOverCeiling`, and a book created larger keeps working.
   `initialize_market_v0` and `update_market_v0` fail with `InvalidConfig` unless
-  `blocking_min_size` exceeds `min_order_size`.
+  `blocking_min_size` exceeds `min_order_size`. Velocity requires an attached book's
+  `blocking_min_size` to be at least ten minimum orders, of the larger of the book's and the
+  market's minimum. The attach, `update_perp_market_clob_book_config` and a change to the market's
+  grid or minimum fail with `InvalidQuoterConfig` otherwise.
 - A CLOB rest judges its risk with `is_new_order_risk_increasing`, which counts the orders the
   position already rests (feat/propamm). A rest that adds risk needs initial margin, and any other
   rest needs maintenance margin.
@@ -1954,7 +2026,7 @@ long carry a one-line summary here and a link into §6.2.
 | equity-floor-oracle-validity                | Fix three OtterSec findings (#131, #139, #142) where an equity-floor decision was taken off an oracle price the program had already judged invalid. Introduced a two-sided equity bound, later replaced by `equity-floor-fail-closed`. [Details](#equity-floor-oracle-validity)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | expiry-price-conservation                   | Fix three Medium audit findings (OtterSec #116, #125, #147) on opposite sides of the same expiry-settlement conservation equation, where aggregate user claims must fit the value that backs them. [Details](#expiry-price-conservation)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | expiry-settlement-guards                    | Fix two High audit findings (OtterSec #149, #133). #149: a time-expired perp position could still be liquidated at the live oracle before its fixed settlement price existed. Every ordinary user path already refuses past `expiry_ts` via `is_in_settlement(now)`, so placing, filling, triggering, transferring and settling all gate on it, but `liquidate_perp` and `liquidate_perp_with_fill` did not. For the whole window between `expiry_ts` and a warm admin flipping the status to `Settlement`, a liquidator could take the position at a live price the committed `expiry_price` then supersedes, while the owner had no way to act. Both now reject with `InvalidLiquidation` when the market has expired but is not yet `Settlement` or `Delisted`. They are deliberately not gated on `is_in_settlement` itself, because that is also true once the status is `Settlement` or `Delisted`, by which point `expiry_price` is committed and liquidating during the wind-down is a legitimate way to resolve bad debt. An existing delisting test caught the over-broad first attempt. `resolve_perp_bankruptcy` is likewise untouched, so bad debt on an expired market can always still be cleared. Integrator-visible: liquidating a perp market between `expiry_ts` and its `Settlement` flip now reverts, so run `settle_expired_market` first, then close positions via `settle_expired_position`. #133: a negative committed `expiry_price` was clipped out of margin and equity. `calculate_base_asset_value_and_pnl_with_oracle_price` clamps a non-positive price to zero, which is correct for a live oracle where a negative print is nonsense, but margin reused it for the `Settlement` valuation, so a long's signed base loss was clipped to zero and the position read as merely worthless instead of underwater, letting the owner withdraw collateral. `settle_expired_position` values the same position through `calculate_base_asset_value_with_expiry_price`, which never clamped, and later booked the real negative value as an unsecured quote borrow, and that divergence was the bug. The new `calculate_base_asset_value_and_pnl_with_expiry_price` keeps the sign, and both `Settlement` branches in `math/margin.rs` use it. The live-oracle clamp is deliberately left intact, since it is a real guard against a bogus oracle print and only the expiry-price path is legitimately allowed to be negative. No account-layout, IDL, error-code or SDK-API change, since it reuses `InvalidLiquidation`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| feat/propamm                                | PropAMM order flow. Perps fill through one router across the vAMM, an on-chain CLOB book and external quoter programs. The DLOB, order auctions, AMM JIT and jit-proxy are removed, and every live order is ephemeral: only its unfilled remainder rests, on the book. New accounts `QuoterV0`, `QuoterSlabV0`, `ClobCrankConditionsV0`, `UserConditionsV0` and `CrankTreasuryV0`, new error codes 6375 to 6462, and relay cranks for expiry, eviction, crosses, triggers and liquidations. A signed-message market entry must name its price, and the signed payload must carry its message type's discriminator. Velocity holds every attached book's config authority, and `update_perp_market_clob_book_config` / `resize_perp_market_clob_book` are the only paths that change it. `SignedMsgOrderId` grows from 24 to 40 bytes, and a `version` header field names the layout. A legacy `SignedMsgUserOrders` account migrates in place with fewer entries, and a resize restores its capacity. A CLOB arena holds at most 1024 slots, and a book's `blocking_min_size` must exceed its `min_order_size`. A trigger fires only on an oracle that margin accepts, and a fill's funding update judges the oracle TWAPs from instruction entry. A `Clob` registration names a book that the market's slab places on, and an approval requires a response account the quoter program owns and the hash of the staged config the admin reviewed. A signed-message uuid is spent per subaccount, and swift's `/attest` takes the order signature. A maker CLOB order must rest inside the maker oracle band. The vaults program adds `mark_user_vault_owned`. An upgrade runs `deploy-scripts/migrate.ts`, which creates the quoter slab of every existing perp market (§7). §2, §3, §4 and §5 carry the surface. [Details](#propamm-order-flow)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| feat/propamm                                | PropAMM order flow. Perps fill through one router across the vAMM, an on-chain CLOB book and external quoter programs. The DLOB, order auctions, AMM JIT and jit-proxy are removed, and every live order is ephemeral: only its unfilled remainder rests, on the book. New accounts `QuoterV0`, `QuoterSlabV0`, `ClobCrankConditionsV0`, `UserConditionsV0` and `CrankTreasuryV0`, new error codes 6375 to 6462, and relay cranks for expiry, eviction, crosses, triggers and liquidations. A signed-message market entry must name its price, the signed payload must carry its message type's discriminator, and the taker signs it behind a `velocity-signed-msg:<program id>:` prefix. A `SignedMsgUserOrders` delete or shrink that would drop a live entry fails. Velocity holds every attached book's config authority, and `update_perp_market_clob_book_config` / `resize_perp_market_clob_book` are the only paths that change it. `SignedMsgOrderId` grows from 24 to 40 bytes, and a `version` header field names the layout. A legacy `SignedMsgUserOrders` account migrates in place with fewer entries, and a resize restores its capacity. A CLOB arena holds at most 1024 slots, and velocity requires a book's `blocking_min_size` to be at least ten minimum orders, of the larger of the book and market minimum. `update_perp_market_clob_book_config` moves the market's grid with the book's, and `delete_initialized_perp_market` takes the quoter slab and refuses a market that names a book. `settle_pnl` and `settle_multiple_pnls` take the books of an expired market and sweep the user's orders there. `trigger_limit_order_v1`, `crank_clob_evict` and `crank_clob_remove_expired` require the user's `user_conditions` PDA, and a full book side leaves a fired trigger armed. A trigger fires only on an oracle that margin accepts, and a fill's funding update judges the oracle TWAPs from instruction entry. A `Clob` registration names a book that the market's slab places on, and an approval requires a response account the quoter program owns and the hash of the staged config the admin reviewed. A signed-message uuid is spent per subaccount, and swift's `/attest` takes the order signature. A maker CLOB order must rest inside the maker oracle band. The vaults program adds `mark_user_vault_owned`. An upgrade deploys the CLOB, prices the crank rails and treasury, and runs `deploy-scripts/migrate.ts`, which gives every existing perp market its quoter slab and its CLOB book (§7). §2, §3, §4 and §5 carry the surface. [Details](#propamm-order-flow)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | fee-tier-vip3                               | Adds a fourth perp fee tier, VIP 3, at $200M trailing-30d volume (§3). `PERP_FEE_TIER_MAX_INDEX` goes from 2 to 3, `VOLUME_THRESHOLDS` gains `TWO_HUNDRED_MILLION_QUOTE`, `FeeStructure::perps_default` seeds `fee_tiers[3]`, and `update_promo_fee_tier` accepts 3. No ix, layout, IDL or error-code change, since the slot already existed in the 10-wide array. SDK mirror: `VIP_FEE_TIER_THREE_VOLUME_QUOTE` in `PERP_FEE_TIER_VOLUME_THRESHOLDS`, so `getPerpFeeTierIndex`, `getUserFeeTier` and `getMarketFees` pick tier 3 above $200M. Admin CLI `fees set-schedule` takes four tier fees                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | fill-stale-margin-bad-debt                  | Fix four High audit findings (OtterSec #143, #144 on oracle validity, and #135, #148 on unaccrued interest) in the perp-fill path's post-fill margin checks. Adds the new error `SpotMarketInterestStaleForMargin` (6371). [Details](#fill-stale-margin-bad-debt)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | if-add-exact-share-pricing                  | Follow-up to #253 on the same High finding. Rejecting only the zero-share case still let a deposit be partly captured. Shares are indivisible, so a request worth 1.5 shares minted 1 and donated the remaining half to existing shareholders, and with a donation-inflated share price the forfeited fraction approaches 100%, so the zero-share guard bounded the loss rather than removing it. `add_insurance_fund_stake` now transfers only the portion of the requested amount that prices to whole shares, via `deposit_amount_and_shares_for_if_stake`, which floors the shares and ceils their cost so the fund never sells a share below price, and leaves the remainder, always less than one share price, in the depositor's token account. `IFDepositMintsZeroShares` (6360) now means the request is below the price of one share. `InsuranceFundStakeRecord.amount`, `InsuranceFundStake.cost_basis`, `UserStats.if_staked_quote_asset_amount` and `SpotMarket.if_last_settle_vault_amount` all track the accepted amount rather than the request. Integrators must treat the `amount` argument as an upper bound and read the staked amount from `InsuranceFundStakeRecord`, since the SDK's `fromSubaccount` path leaves any remainder in the wallet's token account. The `vaults` program's `add_insurance_fund_stake` stakes the whole balance of `vault_if_token_account` rather than the requested `amount`, so a remainder left by an earlier add folds into the next one. That account holds nothing else and no instruction sweeps it, so the amount staked can exceed the manager's transfer. No layout, IDL or error-code change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -2900,8 +2972,10 @@ at placement and rests what it cannot fill on the market's book as a taker-origi
 the highest-volume order type in the protocol gets the activation-slot auction instead of
 resting where a landing race decides who fills it. `place_and_make_signed_msg_perp_order` is
 deleted. It existed only to match a signed-message order already resting in `User.orders`. The
-taker-facing signed message and its broadcast to swift are unchanged; the ABI break is on the
-keeper side, which velocity controls. Signed-msg orders carry a `network` tag and an optional
+signed message and its broadcast to swift keep their format, and the taker signs the message behind
+`velocity-signed-msg:<program id>:`, so a Velocity signature is valid for no other program. The
+rest of the ABI break is on the keeper side, which velocity controls.
+Signed-msg orders carry a `network` tag and an optional
 signed route that binds the filler; that route now rides `SignedMsgUserOrders` next to the
 market and CLOB order id it rests under, rather than five spare bytes on `Order`, and is eight
 bytes wide. A
@@ -3222,7 +3296,11 @@ crossing taker remainder claims in part is passed over whole. No count of passed
 ends a walk, and the walk finds each owner by a binary search over the caller's user set. The
 arena capacity bounds the walk instead: `initialize_market_v0` and `resize_market_v0` refuse an
 arena over 1024 slots with `CapacityOverCeiling`, and `blocking_min_size` must exceed
-`min_order_size`, so an order of the minimum size never ends a walk. The expiry-hint repair walked the whole arena per removal and now
+`min_order_size`. Velocity holds an attached book's `blocking_min_size` to at least ten minimum
+orders, of the larger of the book's and the market's minimum. A walk ends at an order at or over
+the floor whose owner the transaction omits, and a caller carries at most 48 owners, so a lower
+floor lets a few small orders keep the book out of every fill.
+The expiry-hint repair walked the whole arena per removal and now
 follows the side lists once per call. `split_across_quoters` spun until the compute budget ran
 out when the taker size was not a step multiple, which a reduce-only order reaches through an
 unstandardised position magnitude. The stored liquidation-conditions account list fits an
@@ -3250,7 +3328,13 @@ costs), and that every loaded user either received a balance change or holds a r
 fill: the taker, the filler, or the user a consulted quoter fills for. A subaccount of the
 taker's referrer holds no role, because the fill pays the referrer through its escrow. A loaded user
 that filled nothing spent locks the missing maker needed, which is how a filler forces a
-withhold and takes the flow on a worse-priced source of its own.
+withhold and takes the flow on a worse-priced source of its own. A liquidation fill is exempt. A
+staged liquidation carries at most four makers, so it cannot meet the lock count, and the
+program writes its order at the oracle price less the liquidator fee. The liquidated user thus
+pays at most that fee on any fill. The fill stops at the makers the transaction carries, and relay
+wakes the account again while it still qualifies. A route that names only a custom quoter does
+not count the market's baseline book, or a consulted slot that did not quote, toward
+`FillerCarriedUnroutedQuoter`.
 
 ABI note (§5). Every path a keeper assembles (`place_signed_msg_taker_order`, the trigger
 cranks, `liquidate_perp_with_fill`) takes an optional `instructions_sysvar` account, read for
@@ -3386,6 +3470,14 @@ client states nothing. Two input aliases, `SignedMsgOrderParamsMessageInput` and
 `VelocityClient.env` defaults to `mainnet-beta`, so a devnet integrator that never set `env`
 now signs a mainnet tag that devnet refuses; the program names both clusters in its log.
 
+A taker signs `velocity-signed-msg:<program id>:` followed by the hex message, and the program
+adds the prefix when it verifies. Drift signs the same hex envelope, skips the discriminator,
+zero-pads a short payload and ignores trailing bytes, so without the prefix a Velocity limit order
+decodes as a valid Drift swift message. The prefix starts with a byte that is not a hex digit, so
+Drift's hex decode refuses it. `SignedMsgUserOrders` is the only replay guard, and anyone can
+create it again empty, so a delete or a shrink that would drop a live entry fails with
+`InvalidSignedMsgUserOrdersResize` (§5.3).
+
 Events. `AcceleratedReferralStatusChangedRecord` becomes
 `AcceleratedReferralStatusChangedRecordV0` and carries a new discriminator.
 
@@ -3424,7 +3516,9 @@ removal reward, as an expiry already did. A taker remainder that does not rest, 
 and fired-stop paths, emits a cancel record rather than disappearing (§5.7), and a reducing remainder is no longer held to a margin gate the old
 matching path never applied. A reduce-only order is sized against the position as each leg
 leaves it, so several of one maker's orders in one fill cannot flip that maker's position. The
-vAMM's last look shades only the depth a rival actually offers. A fill that withholds book
+vAMM's last look shades only the depth a rival actually offers. A rung covers the last base
+before the curve reaches the rival price, and no more base than the rivals at that price or
+better offer. The rest of the curve is priced honestly. A fill that withholds book
 depth is excused only by locks velocity can attribute to accounts it verified. A signed-message
 order id is reclaimed from a full account only once it is past `SIGNED_MSG_EVICTION_BUFFER`;
 the entry carries the uuid and the subaccount the replay guard matches on, and an entry still inside its own
@@ -3478,6 +3572,14 @@ through CPI pays nothing (§5.4). `crank_taker_origin_cross` settles a side's cr
 remainder first, and its pair branch refuses a bankrupt party or one under liquidation (§5.7).
 A refill always clears the market's stored watermark (§5.7). The vaults program adds
 `mark_user_vault_owned` for a vault whose `User` predates the flag (§5.5).
+
+A settle of an expired position takes the user's book orders in that market off the book, so one
+resting order cannot block the settlement or `delist_market` (§5.4). A full book side leaves a
+fired trigger armed, and a placed stop-limit keeps a parked relay slot that an eviction wakes, so
+`trigger_limit_order_v1` and both removal cranks require the user's conditions account (§5.4,
+§5.7). `crank_taker_origin_cross` cancels a row that can never fill instead of reverting behind it
+(§5.7). `delete_initialized_perp_market` refuses a market that still names a book (§5.4), and
+`update_perp_market_clob_book_config` moves the market's grid with the book's (§5.5).
 
 ##### Auctions are gone
 
@@ -4148,19 +4250,37 @@ the withdraw bundle records both revert codes.
     with no protocol share mint. If you index fees, the authoritative flow description is
     [`FEES.md`](./FEES.md).
 13. **Upgrade an existing Velocity deployment to the PropAMM order flow** (feat/propamm).
-    - Run `deploy-scripts/migrate.ts` after the program upgrade. It creates the quoter slab of
-      every perp market that predates `PerpMarket.quoter_slab`. Every order path loads the slab,
-      so those markets take no order until it runs. It also runs `sync_user_conditions` for
-      every user with exposure, which arms existing trigger orders, and it calls
-      `mark_user_vault_owned` for each vault whose `User` lacks the flag. That call needs the
-      vault manager or the vaults admin, so the script reports a vault its keypair cannot sign
-      for.
+    - Upgrade in this order. Every order path requires the market's quoter slab and CLOB book,
+      so a market without them takes no order and fires no trigger.
+      1. Deploy the CLOB program at `BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU`, the id
+         velocity pins.
+      2. Upgrade velocity.
+      3. Price the relay cranks with `velocity-admin fees set-transaction-rails`. With zero rails
+         every crank pays 0 lamports, and no turner takes the work.
+      4. Run `velocity-admin fees init-crank-treasury` and
+         `fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>`, then fund the
+         treasury with a SOL transfer. The book attach stores the treasury's refill watermark on
+         the market.
+      5. Run `deploy-scripts/migrate.ts --dry-run`, then run it for real. Run it again until it
+         sends nothing, because each step reads chain state first and skips what is correct.
+    - `migrate.ts` refuses to run until the CLOB program is deployed and the rails price the
+      cranks, and it stops before the books while the treasury is not priced. It creates the
+      quoter slab of every perp market that predates `PerpMarket.quoter_slab`. It then creates,
+      registers, approves and attaches a CLOB book for every perp market without one, with the
+      market's tick, step and minimum order size and a blocking floor of ten minimum orders.
+      After that it runs `sync_user_conditions` for every user with exposure, which arms
+      existing trigger orders, and it calls `mark_user_vault_owned` for each vault whose `User`
+      lacks the flag. That call needs the vault manager or the vaults admin, so the script
+      reports a vault its keypair cannot sign for. The script sends directly and does not
+      propose, because each new book keypair co-signs, so `--keypair` must be a warm or cold
+      admin keypair.
     - Deploy swift and keep-rs together. keep-rs requests `POST /attest` by order signature,
       and a swift that keys held orders by uuid refuses that body.
     - Replace any CLOB book whose arena is over 1024 slots, such as one created at the old
       4096-slot CLI default. It keeps working, but the CLOB refuses to resize it. A walk visits
       every order on its side at about 250 compute units each, and a router fill pays for both
       the quote walk and the execute walk.
-    - Raise `blocking_min_size` above `min_order_size` on every CLOB book, with
-      `clob-market update-config --blocking-min-size`. `update_market_v0` checks the whole config, so every
-      config update to a book with a lower floor fails with `InvalidConfig` until one raises it.
+    - Raise `blocking_min_size` on every CLOB book to at least ten times the larger of the
+      book's and the market's minimum order size. Use
+      `clob-market update-config --blocking-min-size`. Every config update and every attach to
+      a book with a lower floor fails until one raises it.

@@ -63,8 +63,9 @@ priority tiers in ascending order, the vAMM first, then the book, then custom qu
 pro rata inside a tier. `PerpFulfillmentMethod` and AMM JIT are gone, and the `jit-proxy` package
 and program are deleted. A client that reproduces a fill off chain must model the vAMM as a ladder
 of levels rather than a curve swap. `splitAcrossQuoters` and `vammQuoteLevels` mirror the program's
-math. `vammQuoteLevels` shades the vAMM ladder only for the depth a rival book offers, so a client
-that prices a fill against rival books gets a different answer than before.
+math. In `vammQuoteLevels` a last-look rung reprices only the last base before the curve reaches
+the rival price, and no more base than the rivals at that price or better offer. The rest of the
+ladder is the honest curve, so rival size matters as much as rival price.
 
 `vammQuoteLevels` caps its ladder at the per-fill reserve throttle, exported as
 `calculateAmmAvailableLiquidity`. The cap is `baseAssetReserve / maxFillReserveFraction`, then at
@@ -87,11 +88,15 @@ withholds depth and the taker did not sign the transaction, the fill requires th
 was full and that every loaded user did something. A loaded user counts only as the taker, the
 filler or the user a consulted quoter fills for, so a subaccount of the taker's referrer does not. `FillerOmittedReachableMaker` (6396),
 `FillerPaddedTheUserSet` (6397) and `FillerObligationUncountable` (6398) say which rule failed. The
-rule binds every path a keeper assembles — a signed-message placement, a trigger crank, a
-liquidation — and not `place_and_take_perp_order_v1`, where the taker signs and chose its own
-account list. Those instructions take an optional `instructions_sysvar` account. A fill needs it
-only to be counted, so a taker filling its own order can omit it, but a keeper that omits it is
-refused whenever a book withholds. The SDK and `velocity-rs` builders always pass it.
+rule binds every path a keeper assembles, such as a signed-message placement or a trigger crank. It
+does not bind `place_and_take_perp_order_v1`, where the taker signs and chose its own account list.
+It does not bind a liquidation either. The program writes a liquidation order at the oracle price
+less the liquidator fee, so the fill stops at the makers the transaction carries, and a later call
+liquidates the rest. When a book withholds, a fill that carries a quoter outside its signed route
+fails with `FillerCarriedUnroutedQuoter` (6400). That count reads only the slots that quoted, less
+the market's own book. The keeper paths take an optional `instructions_sysvar` account. A fill
+needs it only to be counted, so a taker filling its own order can omit it, but a keeper that omits
+it is refused whenever a book withholds. The SDK and `velocity-rs` builders always pass it.
 
 A quoter must deliver every unit it won. A quoter that returns less than its allocation, or nothing
 at all, fails with `QuoterFilledShort` (6399).
@@ -149,8 +154,11 @@ arena capacity bounds it instead.
 `initialize_market_v0` and `resize_market_v0` refuse an arena over 1024 slots, which is 512 orders a
 side, with the CLOB error `CapacityOverCeiling`. A book created larger keeps working, but the CLOB
 refuses to resize it. `initialize_market_v0` and `update_market_v0` require `blocking_min_size` to
-exceed `min_order_size`, so an order of the minimum size never ends a walk. The CLOB fails such a
-config with `InvalidConfig`.
+exceed `min_order_size`, and the CLOB fails such a config with `InvalidConfig`. Velocity holds an
+attached book to a higher floor. Its `blocking_min_size` must be at least ten times the larger of
+the book's and the market's minimum order size, so a few minimum-size orders cannot keep the book
+out of every fill. The attach, a book config update and a change to the market's grid or minimum
+check it, and fail with `InvalidQuoterConfig`.
 
 A CLOB rest judges its risk with `is_new_order_risk_increasing`, the predicate every placement uses.
 That predicate counts the orders the position already rests. A rest that adds risk needs initial
@@ -333,7 +341,16 @@ to a market requires a `min_cross_surplus` above zero.
 grid to the attached book's rules, as the attach does. On a market that designated a book they read
 the quoter slab as the first remaining account, and the book and the CLOB program after it once the
 book is attached. The SDK wrappers pass them through the new
-`AdminClient.getAttachedBookGridAccounts(perpMarketIndex)`.
+`AdminClient.getAttachedBookGridAccounts(perpMarketIndex)`. The book's grid must equal the
+market's, so neither of them can move the tick or step of a market with an attached book.
+`update_perp_market_clob_book_config` takes the perp market writable and writes a new tick or step
+to the market and the book together, so it is the only way to change that grid. The CLI form is
+`clob-market update-config --tick-size` or `--step-size`.
+
+`delete_initialized_perp_market` takes the market's quoter slab, and
+`AdminClient.deleteInitializedPerpMarket` passes it. The program refuses to delete a market that
+names a book, or whose slab holds an approved quoter, with `InvalidMarketAccountforDeletion`. The
+slab and the book outlive the market, so a new market at the same index would adopt them.
 
 ## Attested flow and the activation delay
 
@@ -444,6 +461,22 @@ for any other order. That is at or after the deadline at every slot duration.
 `SignedMsgOrderRecord.signedMsgOrderMaxSlot` still reports the deadline under the current slot
 clock.
 
+A taker signs `velocity-signed-msg:<program id base58>:` followed by the hex message. The
+instruction and the swift request carry only the hex message, and the program adds the prefix
+when it verifies. A signature over the bare hex message, or over another program's prefix, fails.
+The prefix names the program, and its first byte is not a hex digit, so a Velocity signature does
+not verify as a Drift swift message. `signSignedMsgOrderParamsMessage` signs the prefixed bytes.
+`signedMsgDomainPrefix(programId)` and `signedMsgSigningBytes(programId, orderParams)` give those
+bytes to a signer that does not use the client, such as a wallet `signMessage`. velocity-rs
+exports `signed_msg_signing_bytes` and `SIGNED_MSG_DOMAIN_PREFIX` from `swift_order_subscriber`.
+
+The record is the replay guard, and anyone can create it again empty. So
+`deleteSignedMsgUserOrders`, and a `resizeSignedMsgUserOrders` that shrinks the record, fail with
+`InvalidSignedMsgUserOrdersResize` while an entry is live. An entry is live while its order rests
+on the book, and until it is more than 20 slots past its `maxSlot`. A shrink keeps the live
+entries. The SDK creates a new record with `DEFAULT_SIGNED_MSG_USER_ORDERS_LEN` (32) entries, and
+velocity-rs creates one with 32.
+
 The signed payload must start with the Anchor discriminator of its message type,
 `sha256("global:SignedMsgOrderParamsMessage")[..8]`, or the delegate message's when
 `isDelegateSigner` is set. Any other payload fails with `InvalidMessageDataSize`. The program
@@ -482,12 +515,32 @@ market it names. `trigger_limit_order_v1` takes `userStats` writable, because a 
 insufficient free collateral trips the equity breaker, and it records the trigger with its keeper
 reward and trigger price before the place record.
 
-`trigger_limit_order_v1` cancels a fired order that the book would refuse, for its size, step,
-price, expiry or a full side, and the keeper earns the flat reward. A refused placement would revert
-every crank and hold the owner's later triggers behind it. An evicted stop-limit fires again only
-after the price crosses back through its trigger. Until then its relay watch fires on the
-non-trigger side. The crank that observes the recross earns the flat reward and points the watch
-back at the trigger side.
+`trigger_limit_order_v1` cancels a fired order that the book would refuse for its size, step,
+price or expiry, and the keeper earns the flat reward. A refused placement would revert every crank
+and hold the owner's later triggers behind it. A full book side is a state of the book, and an
+eviction clears it, so both trigger endpoints fail on a full side with `MaxNumberOfOrders` and the
+trigger stays armed. `trigger_market_order_v1` cancels a reduce-only stop-market with nothing to
+reduce, with `ReduceOnlyOrderIncreasedPosition`, and pays the keeper nothing.
+
+A placed stop-limit keeps its relay slot, parked on the non-trigger side and inactive. An eviction
+re-arms the order and wakes that slot. The stop fires again only after the price crosses back
+through its trigger. The crank that observes the recross earns the flat reward and points the watch
+back at the trigger side. `trigger_limit_order_v1`, `crank_clob_evict` and
+`crank_clob_remove_expired` therefore take the user's `["user_conditions", user]` PDA as a required
+writable `triggerConditions` account, after `crankConditions`. A client that builds one of them
+passes the PDA even when the account does not exist.
+
+`resolveTriggerLimitOrderV1` and `resolveTriggerMarketOrderV1` take a `fired: FiredConditionArgV0`
+argument. Each resolver stages only the order of the slot that fired, so one order that its
+executor refuses does not hold up the other triggers on the market. A resolver also skips an order
+that the market status refuses. A relay trigger crank pays at least the `min_payment` its slot
+stores, so a lower market payment does not revert a slot synced before the change.
+
+`sync_trigger_conditions` arms a watch on a market whose book is suspended, and the executors
+still refuse to fire while the book takes no flow. The block holds eight slots, and the sync arms
+reduce-only orders before the others, so a stop-loss is watched first. Every condition sync stores
+its market accounts spot markets first and then perp markets, each sorted by index, whatever order
+the caller passes.
 
 The unfilled part of a take that does not rest emits `OrderActionRecord(Cancel)`, on the take,
 signed-message and fired stop-market paths alike. Its explanation names the cause: an IOC remainder,
@@ -592,6 +645,13 @@ from the market the way a routed fill does. A row that rested while the market w
 its own stale flag, and a market that has since flipped to `ReduceOnly` must not let that row grow a
 position.
 
+A reduce-only row whose owner holds nothing to reduce fills nothing, and the book still reports it
+at full size. In a `ReduceOnly` market every row counts as reduce-only. `crank_taker_origin_cross`
+cancels such a row when it is either side of the cross, so it does not block the newer remainders
+on its side. The owner pays the flat removal fee. In program-keeper mode that fee is at least the
+keeper payment's value in quote. The two-remainder path holds the counterparty price to the book
+entry's maker band at the MM oracle price, which is the band the router uses.
+
 ## Relay cranks and their funding
 
 Expiry, eviction, crossed books, crossed taker remainders, trigger arming and liquidations all land
@@ -653,7 +713,9 @@ removal. `math/crankFee` mirrors the on-chain arithmetic (`requestedCostUnits`, 
 
 A program-keeper crank draws reservoir lamports only when it collected a fee for the protocol, and
 never when the payout account is the order owner's authority. That covers the removal, trigger and
-force-cancel cranks and `crank_taker_origin_cross`. A full exchange halt waives the fee, so such a
+force-cancel cranks and `crank_taker_origin_cross`. A program-keeper `liquidate_perp_with_fill`
+draws nothing when the payout account is the liquidated user's authority or delegate.
+A full exchange halt waives the fee, so such a
 crank draws nothing. `crank_taker_origin_cross` also requires the fees it collected to cover the
 payment's value in quote, so two wallets that cross each other for no reward draw nothing.
 
@@ -754,6 +816,12 @@ not a step before it. Every liquidation builder, `getSetUserStatusToBeingLiquida
 liquidation latches the account, cancels what it can and succeeds without a transfer, and a later
 call continues. A liquidation with a swap fails with `LiquidationConflictsWithClobOrders` instead.
 
+A settle of an expired position takes the user's book orders in that market off the book first.
+`settle_pnl` and `settle_multiple_pnls` read, after the revenue-share accounts, each market's quoter
+slab (read-only) and book (writable), then the CLOB program once. `settlePNLIx` and
+`settleMultiplePNLsIx` attach them for each market in settlement where the user rests book orders.
+Without them the settle fails with `PerpMarketSettlementUserHasOpenOrders`.
+
 `liquidatePerpWithFill` fills its forced order through the router, so a liquidation reaches the
 market's CLOB and its PropAMM quoters rather than only the makers the caller passes.
 `getLiquidatePerpWithFillIx` appends the market's quoter section to the remaining accounts and takes
@@ -801,7 +869,9 @@ the velocity signer PDA, and `payer` must be the cold or warm admin. New PDA hel
 The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`.
 `clob-market update-config` retunes a live book's mutable config through velocity, and
 `clob-market resize` grows its arena, to at most 1024 slots. `clob-market init` defaults
-`--capacity` to 1024 and `--blocking-min-size` to 1000000, which must exceed the minimum order size.
+`--capacity` to 1024, `--evict-threshold` to 256 and `--blocking-min-size` to 1000000. The
+blocking floor must be at least ten times the larger of the book's and the market's minimum order
+size.
 The CLI creates a market's slab before it registers that market's book, and passes the registry's
 accounts on register, approve, set-active, set-config, set-accounts and set-watch.
 `quoter set-approved` passes the entry's response account and the hash of the entry it reads, and

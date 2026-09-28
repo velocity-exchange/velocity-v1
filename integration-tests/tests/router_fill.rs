@@ -7040,11 +7040,13 @@ fn trigger_market_resolver_stages_every_market_the_user_holds() {
 
     let resolved = run_trigger_market_resolver(&mut fixture, user)
         .expect("crossed threshold stages the fire-to-book executor");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
     run_staged_executor(
         &mut fixture,
         &resolved,
         velocity::instruction::TriggerMarketOrderV1::DISCRIMINATOR,
-        Pubkey::new_unique(),
+        payout,
     );
 
     let triggered: User = read_zero_copy(&fixture.svm, &user);

@@ -52,12 +52,25 @@ fn is_quoter_slab(info: &AccountInfo) -> bool {
             .is_ok_and(|data| data.get(..8) == Some(QuoterSlabV0::DISCRIMINATOR))
 }
 
+/// The quoter's own bounds on the ladder one fill settles against.
+#[derive(Clone, Copy)]
+struct QuoterLadderBounds {
+    maker_direction: PositionDirection,
+    band_oracle_price: i64,
+    oracle_band: u32,
+    /// The base the quoter's account can carry in this fill.
+    room: u64,
+    order_step_size: u64,
+}
+
 /// Cut a custom quoter's ladder to the depth this fill will settle against.
 ///
-/// Two bounds apply, and both are the quoter's own. The ladder ends at its
-/// first level outside the declared oracle band, because the quoter's execute
-/// fills its own ladder best level first. The base its account can carry
-/// truncates what is left.
+/// The quoter's execute fills its own ladder best level first, so only a
+/// prefix is a ladder it can honour. The ladder ends at its first level
+/// outside the declared oracle band. It also ends after its first level that
+/// is not a multiple of the market step. The split skips that sub-step tail,
+/// but execute fills it before the next level. The base the quoter's account
+/// can carry truncates what is left.
 ///
 /// A book is never trimmed here. Its makers rest depth that was margin
 /// reserved at placement, and the caps the call carries size them one per
@@ -72,14 +85,12 @@ fn is_quoter_slab(info: &AccountInfo) -> bool {
 fn trim_to_quoter_room(
     levels: &mut Vec<PriceLevelV0>,
     run: std::ops::Range<usize>,
-    maker_direction: PositionDirection,
-    band_oracle_price: i64,
-    oracle_band: u32,
-    room: u64,
+    bounds: QuoterLadderBounds,
 ) -> Result<std::ops::Range<usize>> {
+    let step = bounds.order_step_size.max(1);
     let start = run.start;
     let mut kept = start;
-    let mut remaining = room;
+    let mut remaining = bounds.room;
     for source in run {
         if remaining == 0 {
             break;
@@ -88,14 +99,19 @@ fn trim_to_quoter_room(
         let level = levels[source];
         if crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
             level.price,
-            maker_direction,
-            band_oracle_price,
-            oracle_band,
+            bounds.maker_direction,
+            bounds.band_oracle_price,
+            bounds.oracle_band,
         )? {
             break;
         }
 
-        let size = level.size.min(remaining);
+        let reachable = level.size.min(remaining);
+        let size = reachable - reachable % step;
+        if size == 0 {
+            break;
+        }
+
         remaining -= size;
         levels[kept] = PriceLevelV0 {
             price: level.price,
@@ -103,6 +119,9 @@ fn trim_to_quoter_room(
         };
 
         kept += 1;
+        if size < level.size {
+            break;
+        }
     }
 
     levels.truncate(kept);
@@ -400,6 +419,8 @@ pub struct QuoteInputs<'a> {
     /// The market's initial margin ratio, which a quoter's declared oracle
     /// band defaults to when it sets none.
     pub margin_ratio_initial: u32,
+    /// The market's `order_step_size`, which the split allocates in.
+    pub order_step_size: u64,
     /// Whether this fill settles a taker-origin cross itself, and so may take
     /// the depth that cross reserves. Only the crank that owes the taker its
     /// improvement passes `true`. Otherwise a caller could fill the cover a
@@ -554,10 +575,13 @@ impl<'info> QuotedRoute<'info> {
         trim_to_quoter_room(
             &mut self.levels,
             run,
-            sized.inputs.maker_direction(),
-            sized.inputs.band_oracle_price,
-            oracle_band,
-            sized.rooms.room(index),
+            QuoterLadderBounds {
+                maker_direction: sized.inputs.maker_direction(),
+                band_oracle_price: sized.inputs.band_oracle_price,
+                oracle_band,
+                room: sized.rooms.room(index),
+                order_step_size: sized.inputs.order_step_size,
+            },
         )
     }
 
@@ -862,14 +886,27 @@ mod trim_tests {
         band: u32,
         room: u64,
     ) -> Vec<(u64, u64)> {
+        trim_on_step(ladder, maker_direction, band, room, 1)
+    }
+
+    fn trim_on_step(
+        ladder: &[(u64, u64)],
+        maker_direction: PositionDirection,
+        band: u32,
+        room: u64,
+        order_step_size: u64,
+    ) -> Vec<(u64, u64)> {
         let (mut levels, run) = pool(ladder);
         let kept = trim_to_quoter_room(
             &mut levels,
             run,
-            maker_direction,
-            (100 * PRICE) as i64,
-            band,
-            room,
+            QuoterLadderBounds {
+                maker_direction,
+                band_oracle_price: (100 * PRICE) as i64,
+                oracle_band: band,
+                room,
+                order_step_size,
+            },
         )
         .unwrap();
         assert_eq!(levels[0], PriceLevelV0 { price: 1, size: 1 });
@@ -945,6 +982,48 @@ mod trim_tests {
             2 * BASE
         )
         .is_empty());
+    }
+
+    #[test]
+    fn the_ladder_ends_after_its_first_level_off_the_step() {
+        // The split skips the one base the step cannot carry. The quoter
+        // fills it before the level at 98, so that level is out of reach.
+        assert_eq!(
+            trim_on_step(
+                &[(99, 3), (98, 4)],
+                PositionDirection::Short,
+                WIDE,
+                u64::MAX,
+                2 * BASE
+            ),
+            [(99, 2)]
+        );
+    }
+
+    #[test]
+    fn a_best_level_below_the_step_drops_the_run() {
+        assert!(trim_on_step(
+            &[(99, 1), (98, 4)],
+            PositionDirection::Short,
+            WIDE,
+            u64::MAX,
+            2 * BASE
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_ladder_on_the_step_is_kept_whole() {
+        assert_eq!(
+            trim_on_step(
+                &[(99, 2), (98, 4)],
+                PositionDirection::Short,
+                WIDE,
+                u64::MAX,
+                2 * BASE
+            ),
+            [(99, 2), (98, 4)]
+        );
     }
 }
 
@@ -1041,6 +1120,7 @@ mod slot_skip_tests {
             limit_price: 0,
             taker_served_window: true,
             margin_ratio_initial: 1_000,
+            order_step_size: 1,
             include_taker_origin_reservations: false,
         }
     }

@@ -3,8 +3,8 @@
 //! The midpoint is a `Custom` quoter, so fills treat it like any other one.
 //! Approval reads three fields of the instance account. A wrong
 //! `execute_authority` quotes and then fails every execute. A `size_step` off
-//! the market's step makes the instance fill a size the router did not
-//! allocate. The instance must also serve the entry's market.
+//! the market's step lets a route use each ladder only up to its first rung
+//! off the step. The instance must also serve the entry's market.
 //!
 //! allow-verbose: the offsets are the midpoint program's account layout,
 //! which lives in another workspace, so they are stated here with their

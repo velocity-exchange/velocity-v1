@@ -488,8 +488,9 @@ export function bookRestsOutsideOracleBand(
 
 /**
  * The part of a custom quoter's ladder a router fill can settle. Mirrors
- * `trim_to_quoter_room`. The ladder ends at its first level outside `band`
- * of `oraclePrice`, because the quoter fills its own ladder best level first.
+ * `trim_to_quoter_room`. The quoter fills its own ladder best level first,
+ * so the ladder ends at its first level outside `band` of `oraclePrice`. It
+ * also ends after its first level that is not a multiple of `stepSize`.
  * `room` then cuts the base that is left, so the last kept level may shrink.
  * `oraclePrice` is the MM oracle price, as for `makerPriceBreachesOracleBand`.
  */
@@ -498,8 +499,10 @@ export function customLadderInRoom(
 	makerDirection: PositionDirection,
 	oraclePrice: BN,
 	band: number,
-	room: BN
+	room: BN,
+	stepSize: BN
 ): RouterPriceLevel[] {
+	const step = BN.max(stepSize, new BN(1));
 	const kept: RouterPriceLevel[] = [];
 	let remaining = room;
 	for (const level of levels) {
@@ -518,9 +521,17 @@ export function customLadderInRoom(
 			break;
 		}
 
-		const size = BN.min(level.size, remaining);
+		const reachable = BN.min(level.size, remaining);
+		const size = reachable.sub(reachable.mod(step));
+		if (size.isZero()) {
+			break;
+		}
+
 		remaining = remaining.sub(size);
 		kept.push({ ...level, size });
+		if (size.lt(level.size)) {
+			break;
+		}
 	}
 
 	return kept;

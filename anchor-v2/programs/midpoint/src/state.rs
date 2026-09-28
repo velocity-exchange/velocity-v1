@@ -171,9 +171,10 @@ pub struct MidpointQuoterV0 {
     /// Quote prices round to a multiple of this, away from mid. It uses the
     /// same price precision as `mid_price`.
     pub price_tick_size: u64,
-    /// Quoted sizes floor to a multiple of this (base precision). It must be a
-    /// multiple of the velocity market's step. Otherwise velocity floors a rung
-    /// that execute fills whole, and the fill misses the quoted notional.
+    /// Quoted sizes floor to a multiple of this (base precision). Velocity
+    /// approves an instance only when this is a multiple of the market's step.
+    /// Off that step, a route uses the ladder only up to its first rung that
+    /// the market step does not divide.
     pub size_step: u64,
     /// The quoter does not quote a level remainder below this. The value is
     /// in base precision. It floors the base size of a rung despite the name.

@@ -236,6 +236,11 @@ impl<'info> RouteFill<'_, 'info> {
             self.clock.slot,
         )?;
         let taker_equity_floor = load!(accounts.user)?.equity_floor;
+        let order_step_size = parties
+            .maps
+            .perp_market_map
+            .get_ref(&fill.order.market_index)?
+            .order_step_size;
         let quoted = quote_route(
             self.tail,
             QuoteInputs {
@@ -250,6 +255,7 @@ impl<'info> RouteFill<'_, 'info> {
                 limit_price: route.order.limit_price,
                 taker_served_window: route.taker_served_window,
                 margin_ratio_initial: route.order.mark.margin_ratio_initial,
+                order_step_size,
                 include_taker_origin_reservations: route.include_taker_origin_reservations,
             },
             route.claim,

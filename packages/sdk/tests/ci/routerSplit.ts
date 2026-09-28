@@ -399,7 +399,7 @@ describe('external quoter bounds', () => {
 		// The cases of `trim_tests` in `quoted_route.rs`: a 5% band at a 100
 		// oracle, for a maker that sells.
 		const band = 500;
-		const trim = (ladder: [number, number][], room: BN) =>
+		const trim = (ladder: [number, number][], room: BN, step = new BN(1)) =>
 			customLadderInRoom(
 				ladder.map(([price, size]) => ({
 					price: PRICE.muln(price),
@@ -408,7 +408,8 @@ describe('external quoter bounds', () => {
 				PositionDirection.SHORT,
 				ORACLE,
 				band,
-				room
+				room,
+				step
 			).map((kept) => [
 				kept.price.div(PRICE).toNumber(),
 				kept.size.div(B).toNumber(),
@@ -450,6 +451,42 @@ describe('external quoter bounds', () => {
 			[]
 		);
 		assert.deepStrictEqual(trim([[99, 2]], new BN(0)), []);
+		assert.deepStrictEqual(
+			trim(
+				[
+					[99, 1],
+					[98, 4],
+				],
+				unbounded,
+				B.muln(2)
+			),
+			[]
+		);
+		assert.deepStrictEqual(
+			trim(
+				[
+					[99, 2],
+					[98, 4],
+				],
+				unbounded,
+				B.muln(2)
+			),
+			[
+				[99, 2],
+				[98, 4],
+			]
+		);
+		assert.deepStrictEqual(
+			trim(
+				[
+					[99, 3],
+					[98, 4],
+				],
+				unbounded,
+				B.muln(2)
+			),
+			[[99, 2]]
+		);
 	});
 
 	it("holds a book's report to the reservation on the side it names", () => {

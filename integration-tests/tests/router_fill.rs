@@ -3009,7 +3009,7 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     clock.unix_timestamp += 20;
     fixture.svm.set_sysvar(&clock);
     let resolved = run_resolver(&mut fixture, conditions, true).expect("expired order is work");
-    assert_eq!(resolved.accounts.len(), 10);
+    assert_eq!(resolved.accounts.len(), 11);
     assert_eq!(
         resolved.accounts[2].address,
         protocol_user.to_bytes(),
@@ -8423,6 +8423,8 @@ fn a_legacy_signed_msg_record_deletes() {
     let owner = party(&mut fixture.svm, 0);
     let authority = owner.authority.pubkey();
     set_legacy_signed_msg_user_orders(&mut fixture.svm, &authority, 8, &[([1; 8], 100)]);
+    // A live entry refuses the delete, so the clock moves past its deadline.
+    fixture.svm.warp_to_slot(1_000);
     let rent = fixture
         .svm
         .get_account(&signed_msg_user_orders_pda(&authority))

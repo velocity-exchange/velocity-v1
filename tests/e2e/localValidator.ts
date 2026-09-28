@@ -639,6 +639,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 							// so an omitted slab travels as the program id.
 							quoterSlab:
 								args.quoterType === QuoterType.CLOB ? quoterSlab : VELOCITY_ID,
+							// The designation asks the book for its place authority.
+							clobMarket:
+								args.quoterType === QuoterType.CLOB
+									? args.responseAccount
+									: VELOCITY_ID,
 							quoterProgram: args.quoterProgram,
 							user: args.user,
 							rent: SYSVAR_RENT_PUBKEY,

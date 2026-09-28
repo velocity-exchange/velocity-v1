@@ -341,19 +341,12 @@ fn validate_book_identity<'info>(
         msg!("approving a book requires the book account");
         error!(ErrorCode::InvalidQuoterConfig)
     })?;
-    let rules = ClobReader {
+
+    ClobReader {
         market: market.as_ref(),
         program: clob_program.as_ref(),
     }
-    .order_rules()?;
-    validate!(
-        rules.place_authority == quoter_slab.to_bytes(),
-        ErrorCode::InvalidQuoterConfig,
-        "book place authority is not the market's quoter slab {}",
-        quoter_slab
-    )?;
-
-    Ok(())
+    .validate_placed_by(quoter_slab)
 }
 
 /// The entry's response account, which the quoter program must own. A route
@@ -669,7 +662,9 @@ mod response_owner_tests {
         for owner in [
             bpf_loader_upgradeable::ID,
             crate::ID,
-            "Sysvar1111111111111111111111111111111111111".parse().unwrap(),
+            "Sysvar1111111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
         ] {
             assert!(!accepts(&owner, false, &program_id));
         }

@@ -49,9 +49,11 @@ fn init_quoter_ix(
             quoter,
             perp_market: perp_market_pda(0),
             // Designating the book is refused when an approved quoter's
-            // account list already names it, so a book registration reads the
-            // slab. No other type does.
+            // account list already names it, or when the account is not a
+            // book placed by the slab. So a book registration reads the slab
+            // and the book. No other type does.
             quoter_slab: matches!(quoter_type, QuoterType::Clob).then(|| quoter_slab_pda(0)),
+            clob_market: matches!(quoter_type, QuoterType::Clob).then_some(response_account),
             quoter_program: clob_id(),
             user,
             rent: rent_sysvar(),
@@ -524,10 +526,10 @@ fn only_the_admin_may_register_a_book() {
     set_user(&mut svm, user, &maker.pubkey());
 
     let quoter = quoter_pda(0, &clob_id(), &user);
-    // A book designation reads the slab, so the slab exists first. The book
-    // account itself is never read at registration, only recorded.
+    // A book designation reads the slab and asks the book for its place
+    // authority, so both exist first.
     create_quoter_slab(&mut svm, &admin, 0);
-    let book = Pubkey::new_unique();
+    let book = init_clob_book(&mut svm, &admin);
     let init = |authority: Pubkey| init_quoter_ix(authority, quoter, user, QuoterType::Clob, book);
 
     assert!(
@@ -548,12 +550,13 @@ fn only_the_admin_may_register_a_book() {
     let other_user = Pubkey::new_unique();
     set_user(&mut svm, other_user, &admin.pubkey());
     let second = quoter_pda(0, &clob_id(), &other_user);
+    let second_book = init_clob_book(&mut svm, &admin);
     let ix = init_quoter_ix(
         admin.pubkey(),
         second,
         other_user,
         QuoterType::Clob,
-        Pubkey::new_unique(),
+        second_book,
     );
 
     assert!(send(&mut svm, &admin, ix, &[]).is_err());
@@ -739,4 +742,32 @@ fn approval_refuses_a_response_account_the_quoter_does_not_own() {
         let err = approve(&mut svm, &admin, quoter, true).unwrap_err();
         assert_velocity_error(&err, ErrorCode::InvalidQuoterConfig);
     }
+}
+
+/// The designation of a book cannot be undone. An account that is not a book
+/// placed by the market's slab would take the market's only book designation
+/// and fail every fill that consults it. Registration refuses such an account
+/// and leaves the market without a book.
+#[test]
+fn a_book_designation_refuses_an_account_that_is_not_the_markets_book() {
+    let mut svm = svm();
+    let admin = Keypair::new();
+    svm.airdrop(&admin.pubkey(), 10_000_000_000).unwrap();
+    set_state(&mut svm, &admin.pubkey());
+    set_perp_market(&mut svm, 0);
+    create_quoter_slab(&mut svm, &admin, 0);
+
+    let not_a_book = [Pubkey::new_unique(), quoter_owned_account(&mut svm)];
+    for account in not_a_book {
+        let user = Pubkey::new_unique();
+        set_user(&mut svm, user, &admin.pubkey());
+        let quoter = quoter_pda(0, &clob_id(), &user);
+        let ix = init_quoter_ix(admin.pubkey(), quoter, user, QuoterType::Clob, account);
+
+        assert!(send(&mut svm, &admin, ix, &[]).is_err());
+    }
+
+    let market: velocity::state::perp_market::PerpMarket =
+        read_zero_copy(&svm, &perp_market_pda(0));
+    assert_eq!(market.clob_market, Pubkey::default());
 }

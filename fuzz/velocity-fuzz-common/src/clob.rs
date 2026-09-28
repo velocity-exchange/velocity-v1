@@ -249,6 +249,7 @@ impl QuoterEntry {
                 quoter: self.quoter,
                 perp_market: self.perp_market,
                 quoter_slab: Some(quoter_slab_pda()),
+                clob_market: Some(self.book),
                 quoter_program: clob_program_id(),
                 user: quoter_user,
                 rent: rent_sysvar_id(),

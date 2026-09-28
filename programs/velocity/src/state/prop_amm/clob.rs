@@ -357,6 +357,30 @@ impl ClobReader<'_, '_> {
         self.ask(discriminator::ORDER_RULES_V0.to_vec(), "order rules")
     }
 
+    /// Check that the market account is a book of this program, and that the
+    /// book takes placements only from `quoter_slab`. The slab derives from
+    /// one market index, so this also binds the book to that perp market. A
+    /// book that fails either check fails every fill that consults it.
+    pub fn validate_placed_by(&self, quoter_slab: &Pubkey) -> Result<()> {
+        validate!(
+            self.market.owner == self.program.key,
+            ErrorCode::InvalidQuoterConfig,
+            "book {} is not owned by the CLOB program {}",
+            self.market.key,
+            self.program.key
+        )?;
+
+        let rules = self.order_rules()?;
+        validate!(
+            rules.place_authority == quoter_slab.to_bytes(),
+            ErrorCode::InvalidQuoterConfig,
+            "book place authority is not the market's quoter slab {}",
+            quoter_slab
+        )?;
+
+        Ok(())
+    }
+
     /// The best matchable order on each side. Matchable means open, activated
     /// and unexpired, and not claimed whole by a crossing taker remainder.
     pub fn next_cross(&self) -> Result<NextCrossV0> {

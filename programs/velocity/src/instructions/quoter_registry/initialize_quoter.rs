@@ -12,10 +12,12 @@
 //! second rule, so the type is a warm-admin decision and it cannot change.
 //!
 //! A `Clob` entry also designates the market's book, once and for good. The
-//! designation is refused when an approved quoter's registered account list
-//! already names that account. Such a quoter would receive the book plus the
-//! slab signature that every quoter CPI carries, and the book gates its whole
-//! authority surface on that signature. See [`crate::signer`].
+//! account must be a book of velocity's CLOB program whose place authority is
+//! the market's slab. The designation is also refused when an approved
+//! quoter's registered account list already names that account. Such a quoter
+//! would receive the book plus the slab signature that every quoter CPI
+//! carries, and the book gates its whole authority surface on that signature.
+//! See [`crate::signer`].
 
 use {
     crate::{
@@ -24,8 +26,8 @@ use {
         state::{
             perp_market::PerpMarket,
             prop_amm::{
-                list_stays_off_the_book, occupied_slots, QuoterSlabExt, QuoterSlabV0, QuoterType,
-                QuoterV0, QUOTER_PDA_SEED, QUOTER_SLAB_PDA_SEED,
+                list_stays_off_the_book, occupied_slots, ClobReader, QuoterSlabExt, QuoterSlabV0,
+                QuoterType, QuoterV0, QUOTER_PDA_SEED, QUOTER_SLAB_PDA_SEED,
             },
             state::State,
             traits::Size,
@@ -75,6 +77,11 @@ pub struct InitializeQuoter<'info> {
         bump
     )]
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
+    /// CHECK: the book a `Clob` entry designates, bound to the entry's response
+    /// account. The handler asks the book for its placement rules before the
+    /// market names it. Every other registration omits it.
+    #[account(address = args.response_account)]
+    pub clob_market: Option<UncheckedAccount<'info>>,
     /// CHECK: the constraint only requires a program. Velocity never trusts it.
     #[account(executable)]
     pub quoter_program: UncheckedAccount<'info>,
@@ -157,6 +164,18 @@ pub fn handle_initialize_quoter(
                 "an approved quoter already names {} on its account list",
                 args.response_account
             )?;
+
+            // The designation cannot be undone, so the account must be a book
+            // that takes placements from this market's slab.
+            let book = ctx.accounts.clob_market.as_ref().ok_or_else(|| {
+                msg!("designating a book requires the book account");
+                error!(ErrorCode::InvalidQuoterConfig)
+            })?;
+            ClobReader {
+                market: book.as_ref(),
+                program: ctx.accounts.quoter_program.as_ref(),
+            }
+            .validate_placed_by(&slab.key())?;
         }
 
         // The market names its book here and nowhere else, and the choice

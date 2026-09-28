@@ -5593,8 +5593,9 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `initializeQuoter` instruction, which creates a market's staging
 	 * `QuoterV0` registry entry. Nothing fills from it until an admin approves it
-	 * into the market's slab. A CLOB entry passes the slab, because the program
-	 * refuses a book an approved entry already names. Any other type passes null.
+	 * into the market's slab. A CLOB entry passes the slab and the book, because the
+	 * program refuses a book an approved entry already names, and a book whose place
+	 * authority is not the market's slab. Any other type passes null for both.
 	 * @param quoterProgram - The program velocity calls the quote and execute legs on.
 	 * @param user - The `User` a Custom entry quotes for. A CLOB entry passes the default pubkey.
 	 * @param authority - Creates and manages the entry, and pays its rent. Defaults to the wallet.
@@ -5638,6 +5639,7 @@ export class AdminClient extends VelocityClient {
 					quoterSlab: isClob
 						? getQuoterSlabPublicKey(this.program.programId, marketIndex)
 						: null,
+					clobMarket: isClob ? args.responseAccount : null,
 					quoterProgram,
 					user,
 					rent: SYSVAR_RENT_PUBKEY,

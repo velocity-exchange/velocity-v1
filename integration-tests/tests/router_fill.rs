@@ -424,6 +424,8 @@ fn register_clob_quoter(
             // A book designation is refused when an approved quoter's account
             // list already names the book, so registration reads the slab.
             quoter_slab: Some(quoter_slab_pda(0)),
+            // The designation asks the book for its place authority.
+            clob_market: Some(market),
             quoter_program: clob_id(),
             user,
             rent: "SysvarRent111111111111111111111111111111111"
@@ -5805,6 +5807,7 @@ fn setup_midpoint_maker_with_flow(
             quoter: entry,
             perp_market: perp_market_pda(0),
             quoter_slab: None,
+            clob_market: None,
             quoter_program: midpoint_id(),
             user,
             rent: "SysvarRent111111111111111111111111111111111"

@@ -209,6 +209,26 @@ fn claimed_entry_is_omitted(slot: Option<(usize, bool)>, consulted: &[usize]) ->
     }
 }
 
+/// Whether `slot` is the book the market names as its baseline. The market
+/// names its book by the account the book answers on.
+fn is_baseline_book(slot: &QuoterSlotV0, required_clob: Pubkey) -> bool {
+    required_clob != Pubkey::default() && slot.config.response_account == required_clob
+}
+
+/// The slots in `quoted` that `claimed` does not name, less the baseline book.
+fn count_unrouted(
+    slots: &[QuoterSlotV0],
+    quoted: &[usize],
+    claimed: &[Pubkey],
+    required_clob: Pubkey,
+) -> usize {
+    quoted
+        .iter()
+        .map(|&index| &slots[index])
+        .filter(|slot| !claimed.contains(&slot.entry) && !is_baseline_book(slot, required_clob))
+        .count()
+}
+
 /// What one slot answered, before the route keeps any of it.
 struct SlotQuote {
     /// The levels, as a run in the route's own level pool.
@@ -298,8 +318,9 @@ pub struct RouteClaim<'a> {
 pub struct RouteQuote<'a, 'info> {
     pub route: QuotedRoute<'info>,
     pub sized: SizedQuote<'a, 'info>,
-    /// Consulted quoters the order's signed route did not name, which arms
-    /// the filler obligation. Zero when the order carries no route.
+    /// Quoted slots the order's signed route did not name, which arms the
+    /// filler obligation. Zero when the order carries no route. See
+    /// [`QuotedRoute::unrouted_quoters`].
     pub unrouted_quoters: usize,
 }
 
@@ -332,7 +353,7 @@ pub fn quote_route<'a, 'info>(
     let unrouted_quoters = match claim {
         Some(claim) => {
             route.require_signed_route(claim.quoters, claim.digest)?;
-            route.unrouted_quoters(claim.quoters, claim.digest)?
+            route.unrouted_quoters(claim.quoters, claim.digest, clob_market)?
         }
         None => 0,
     };
@@ -718,7 +739,7 @@ impl<'info> QuotedRoute<'info> {
         // account. Matching the book's address against entry keys finds
         // nothing and excuses every fill from the baseline.
         let book = crate::state::prop_amm::occupied_slots(&slots)
-            .find(|(_, slot)| slot.config.response_account == required_clob);
+            .find(|(_, slot)| is_baseline_book(slot, required_clob));
         // No slot at all means the book was never approved or was revoked.
         // There is nothing to consult.
         let Some((index, slot)) = book else {
@@ -735,14 +756,24 @@ impl<'info> QuotedRoute<'info> {
         Ok(())
     }
 
-    /// Consulted quoters the signed route did not name.
+    /// Quoted slots the signed route did not name.
     ///
     /// Zero when no route was signed. The taker named nothing, so nothing is
     /// uninvited. [`Self::require_signed_route`] has already refused a claimed
     /// set that does not digest to the order's, so `claimed` here is the
     /// taker's own list. Returns a count rather than a boolean, so the error
     /// can say how many.
-    pub fn unrouted_quoters(&self, claimed: &[Pubkey], digest: RouteDigest) -> Result<usize> {
+    ///
+    /// The market's own book is never counted, because
+    /// [`Self::require_baseline`] forces it into every fill. A consulted slot
+    /// that did not quote is not counted either, because the fill spends no
+    /// lock on it.
+    pub fn unrouted_quoters(
+        &self,
+        claimed: &[Pubkey],
+        digest: RouteDigest,
+        required_clob: Pubkey,
+    ) -> Result<usize> {
         if digest == NO_ROUTE_DIGEST {
             return Ok(0);
         }
@@ -751,11 +782,12 @@ impl<'info> QuotedRoute<'info> {
             return Ok(0);
         };
         let slots = slab.slots()?;
-        Ok(self
-            .consulted
-            .iter()
-            .filter(|&&index| !claimed.contains(&slots[index].entry))
-            .count())
+        Ok(count_unrouted(
+            &slots,
+            &self.quoted_slots,
+            claimed,
+            required_clob,
+        ))
     }
 
     /// Hold the transaction to the route the order's signer chose.
@@ -1109,6 +1141,68 @@ mod claimed_entry_tests {
     #[test]
     fn a_live_approved_entry_left_out_is_the_omission() {
         assert!(claimed_entry_is_omitted(Some((7, true)), &[1, 3, 5]));
+    }
+}
+
+/// Which quoted slots arm the unrouted-quoter rule.
+#[cfg(test)]
+mod unrouted_tests {
+    use super::*;
+
+    const BOOK_RESPONSE: Pubkey = Pubkey::new_from_array([9; 32]);
+    const BOOK: Pubkey = Pubkey::new_from_array([1; 32]);
+    const MIDPOINT: Pubkey = Pubkey::new_from_array([2; 32]);
+    const OTHER: Pubkey = Pubkey::new_from_array([3; 32]);
+
+    fn slot(entry: Pubkey, response_account: Pubkey) -> QuoterSlotV0 {
+        let mut slot = <QuoterSlotV0 as bytemuck::Zeroable>::zeroed();
+        slot.entry = entry;
+        slot.config.response_account = response_account;
+        slot
+    }
+
+    fn slots() -> [QuoterSlotV0; 3] {
+        [
+            slot(BOOK, BOOK_RESPONSE),
+            slot(MIDPOINT, Pubkey::new_from_array([7; 32])),
+            slot(OTHER, Pubkey::new_from_array([8; 32])),
+        ]
+    }
+
+    /// A route that names only a custom entry does not count the book the
+    /// baseline forces into the fill.
+    #[test]
+    fn the_baseline_book_is_not_unrouted() {
+        assert_eq!(
+            count_unrouted(&slots(), &[0, 1], &[MIDPOINT], BOOK_RESPONSE),
+            0
+        );
+    }
+
+    /// A consulted slot that did not quote is absent from `quoted`.
+    #[test]
+    fn a_slot_that_did_not_quote_is_not_unrouted() {
+        assert_eq!(
+            count_unrouted(&slots(), &[1], &[MIDPOINT], BOOK_RESPONSE),
+            0
+        );
+    }
+
+    #[test]
+    fn a_quoted_custom_entry_outside_the_route_is_unrouted() {
+        assert_eq!(
+            count_unrouted(&slots(), &[0, 1, 2], &[MIDPOINT], BOOK_RESPONSE),
+            1
+        );
+    }
+
+    /// A market that names no book has no baseline to leave out.
+    #[test]
+    fn a_book_the_market_does_not_name_is_unrouted() {
+        assert_eq!(
+            count_unrouted(&slots(), &[0, 1], &[MIDPOINT], Pubkey::default()),
+            1
+        );
     }
 }
 

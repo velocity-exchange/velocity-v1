@@ -69,14 +69,23 @@ runs:
       env:
         PROGRAM: ${{ inputs.program }}
         DEVNET: ${{ inputs.devnet }}
+      # --arch v3 and the forced platform-tools match the verified-build job in
+      # main.yml and deploy-scripts/verify-buffer.sh. Without them solana-verify
+      # emits SBPFv0, which SIMD-0500 stops accepting for upgrades, and the
+      # buffer hash never matches verify-buffer.sh.
       run: |
         set -euo pipefail
+        SBF_ARGS=(--arch v3 --cargo-build-sbf-args=--tools-version=v1.57)
         if [ "$PROGRAM" = "velocity" ] && [ "$DEVNET" = "true" ]; then
-          solana-verify build --library-name velocity -b "$VERIFIABLE_BUILD_IMAGE" -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge
+          solana-verify build --library-name velocity -b "$VERIFIABLE_BUILD_IMAGE" "${SBF_ARGS[@]}" -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge
         else
-          solana-verify build --library-name "$PROGRAM" -b "$VERIFIABLE_BUILD_IMAGE"
+          solana-verify build --library-name "$PROGRAM" -b "$VERIFIABLE_BUILD_IMAGE" "${SBF_ARGS[@]}"
         fi
         ls -l target/deploy/
+
+    - name: Artifact is SBPFv3
+      shell: bash
+      run: bash deploy-scripts/assert-sbpf-version.sh "target/deploy/${{ inputs.program }}.so"
 
     - name: Upload .so artifact
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

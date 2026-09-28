@@ -390,7 +390,7 @@ cmd_bump() {
 	mutate git switch -c "$branch" "$MASTER"
 
 	step "set version = \"$target\" in $ppath/Cargo.toml"
-	mutate perl -pi -e "s/^version\\s*=\\s*\"[^\"]+\"/version = \"$target\"/ if !\$done++" "$ppath/Cargo.toml"
+	mutate perl -pi -e "\$done ||= s/^version\\s*=\\s*\"[^\"]+\"/version = \"$target\"/" "$ppath/Cargo.toml"
 
 	step "resync the program workspace lockfile (offline)"
 	# rust/Cargo.lock cannot resolve offline (solana-sdk 3.x tree); the cargo

@@ -83,3 +83,67 @@ before `docker-compose up`.
   reject valid orders (default 10, roughly 4s; `0` always applies the band)
 - `FAST_CHECK`: set to `true` to derive a ws connection's priority from the maker's
   insurance-fund stake. Otherwise every authenticated connection gets fast priority
+- `SHUTDOWN_DRAIN_SECS`: how long health checks report unhealthy after SIGTERM before
+  connections are closed (default 15). See "Shutdown" below
+- `SHUTDOWN_CLOSE_SECS`: grace period for connections to flush their goodbyes once draining
+  ends, after which the process exits (default 5)
+
+## Shutdown
+
+`util/shutdown.rs` drives SIGTERM through three phases, so that an eviction — a rolling
+deploy, a node roll, a cluster autoscaler consolidating — is a reconnect rather than a
+dropped feed or a failed order submission. `main.rs` installs the handler once, before it
+dispatches, so **all three servers** drain.
+
+The phases:
+
+1. **Drain** (`SHUTDOWN_DRAIN_SECS`): every health route starts failing while the server
+   keeps serving normally. This is what gets the pod out of the load balancer's rotation.
+   Without it, a client that reconnects or retries immediately can be routed straight back
+   to the pod that is about to die.
+2. **Close** (`SHUTDOWN_CLOSE_SECS`): the ws server stops accepting and sends every live
+   connection a `Close` frame with code `1001` (going away), so clients reconnect on their
+   own terms instead of inferring a dead feed from a read error. The swift and confirmation
+   servers hand this phase to `axum::serve(..).with_graceful_shutdown(..)`, which stops
+   accepting and lets in-flight requests finish.
+3. **Exit**: the process exits 0.
+
+### Which route to probe
+
+Point the **readiness** probe at the drain-only route, not the health route:
+
+| Server       | Readiness (drain only)  | Health (deep check)        |
+| ------------ | ----------------------- | -------------------------- |
+| ws           | `GET /ws/health`        | same route — it has no dependency checks |
+| swift        | `GET /ready`            | `GET /health`              |
+| confirmation | `GET /confirmation/ready` | `GET /confirmation/health` |
+
+The health routes on the swift and confirmation servers gate on RPC, redis, market subs
+and the slot subscriber — dependencies every replica shares. Wiring one of those to a
+readiness probe means a single dependency blip marks *every* replica NotReady at once and
+the load balancer is left with no targets, which is a harder outage than the degraded
+service it was avoiding. The `/ready` routes report the drain phase and nothing else. Keep
+the health routes for liveness and alerting.
+
+The metrics listeners are deliberately left serving until exit, so a final scrape works.
+
+Two deployment requirements follow:
+
+- `terminationGracePeriodSeconds` must exceed `SHUTDOWN_DRAIN_SECS + SHUTDOWN_CLOSE_SECS`,
+  or the kubelet SIGKILLs the process mid-drain and none of the above happens.
+- `SHUTDOWN_DRAIN_SECS` must cover the time it takes traffic to actually stop arriving:
+  the readiness probe noticing (`failureThreshold x periodSeconds`) plus however long the
+  load balancer takes to stop sending *new* connections to a deregistering target. Note
+  this is **not** the target group's `deregistration_delay` — that bounds how long
+  *existing* connections may linger, and it can safely be far larger than the drain
+  window, since the close phase ends those connections itself.
+
+A drain nobody observes is inert, so at least one probe must be wired to a route that
+reports it.
+
+Clients are expected to reconnect. The in-repo subscribers do: the two TypeScript ones
+(`packages/sdk/src/swift/swiftOrderSubscriber.ts` and
+`apps/keeper-bots-v2/src/experimental-bots/filler-common/swiftOrderSubscriber.ts`) with
+jittered exponential backoff, and `keep-rs`'s filler with capped exponential backoff and no
+jitter (`rust/keep-rs/src/filler.rs`; `velocity-rs`'s `SwiftOrderStream` itself just ends,
+and the filler drives the resubscribe).

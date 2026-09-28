@@ -123,6 +123,19 @@ Both workflows do the same thing on different multisigs.
    verifiable `.so` hash in the run summary, for multisig-side verification. Reproduce that hash with
    [`verify-buffer.sh`](#verifying-a-buffer-before-signing-the-squads-proposal).
 
+   The devnet workflow writes the program buffer with
+   [`upload-program-buffer.cjs`](./upload-program-buffer.cjs) instead (`uploader: paced`), and only the
+   IDL buffer goes through the Solana Foundation action. `solana program write-buffer` sends thousands
+   of writes in parallel and does not log why sends stop landing. On 2026-09-28 a devnet upload through
+   Triton, which allows 1200 requests per 10 seconds per IP, stopped landing after about 1,400 writes
+   while devnet itself was healthy, and it never recovered. The script starts at most 400 requests per
+   10 seconds, pauses all traffic for 10 seconds or more on a 429, sends every transaction with
+   `skipPreflight` and `maxRetries: 0`, and tracks it by signature. It compares the whole buffer with
+   the `.so` before transferring authority to the vault. It logs progress, rate, ETA, resends and 429s
+   every 5 seconds. Every run writes a fresh buffer. A run that dies part way leaves its buffer, and
+   its rent, under the deployer until someone with the deployer key closes it. Tests: `node --test
+   deploy-scripts/upload-program-buffer.test.cjs` (needs the root `bun install`).
+
 3. Propose the Squads transaction with
    [`solana-foundation/squads-program-action`](https://github.com/solana-foundation/squads-program-action),
    which is official and SHA-pinned. Because the IDL metadata account already exists, this is a

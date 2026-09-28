@@ -492,7 +492,7 @@ fn register_clob_quoter(
             quoter_program_data: Some(program_data_pda(&clob_id())),
             // A book approval asks the book for its own placement rules.
             clob_market: Some(market),
-            response_account: None,
+            response_account: Some(market),
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),

@@ -314,7 +314,7 @@ impl QuoterEntry {
                 quoter_program: clob_program_id(),
                 quoter_program_data: Some(program_data_pda(&clob_program_id())),
                 clob_market: Some(self.book),
-                response_account: None,
+                response_account: Some(self.book),
                 system_program: system_program_id(),
             }
             .to_account_metas(None),

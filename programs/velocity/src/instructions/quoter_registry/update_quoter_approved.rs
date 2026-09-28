@@ -15,7 +15,10 @@
 //! book's own entry may name the market's book, which closes the window between
 //! the book's designation and its own approval. A `Clob` approval also asks the
 //! book for its own placement rules, and a midpoint approval reads its
-//! instance, so approval refuses a slot that would fail every fill.
+//! instance, so approval refuses a slot that would fail every fill. The
+//! quoter program must own the response account. A route consults a slot
+//! whenever its response account rides the fill, so this keeps a slot off
+//! fills that carry a program, a sysvar or a velocity account.
 //!
 //! Approval does not require a frozen program, and it does not freeze one. A
 //! maker may upgrade the program behind an approved entry. Three things make
@@ -103,9 +106,9 @@ pub struct UpdateQuoterApproved<'info> {
     /// book for its own placement rules. Every other entry omits it.
     #[account(address = perp_market.load()?.clob_market)]
     pub clob_market: Option<UncheckedAccount<'info>>,
-    /// CHECK: the entry's response account, bound by address. A midpoint
-    /// approval needs it, because the handler reads the instance. Every other
-    /// entry may omit it.
+    /// CHECK: the entry's response account, bound by address. Every approval
+    /// needs it, because the handler requires the quoter program to own it. A
+    /// revocation omits it.
     #[account(address = quoter.load()?.config.response_account)]
     pub response_account: Option<UncheckedAccount<'info>>,
     pub system_program: Program<'info, System>,
@@ -280,9 +283,12 @@ pub fn handle_update_quoter_approved(
         )?;
     }
 
+    let response_account =
+        quoter_owned_response(ctx.accounts.response_account.as_ref(), &config.program_id)?;
+
     if config.program_id == MIDPOINT_PROGRAM_ID {
         validate_midpoint_instance(
-            ctx.accounts.response_account.as_ref(),
+            response_account,
             &ctx.accounts.quoter_slab.key(),
             config.market,
             ctx.accounts.perp_market.load()?.order_step_size,
@@ -350,19 +356,43 @@ fn validate_book_identity<'info>(
     Ok(())
 }
 
+/// The entry's response account, which the quoter program must own. A route
+/// consults every slot whose response account rides the fill. A quoter program
+/// owns no account that every fill carries, such as a program or the market.
+fn quoter_owned_response<'a, 'info>(
+    response_account: Option<&'a UncheckedAccount<'info>>,
+    program_id: &Pubkey,
+) -> Result<&'a UncheckedAccount<'info>> {
+    let response_account = response_account.ok_or_else(|| {
+        msg!("approving a quoter requires its response account");
+        error!(ErrorCode::InvalidQuoterConfig)
+    })?;
+
+    validate_response_owner(response_account, program_id)?;
+    Ok(response_account)
+}
+
+fn validate_response_owner(response_account: &AccountInfo, program_id: &Pubkey) -> Result<()> {
+    validate!(
+        response_account.owner == program_id && !response_account.executable,
+        ErrorCode::InvalidQuoterConfig,
+        "response account {} is not a data account of quoter program {}",
+        response_account.key,
+        program_id
+    )?;
+
+    Ok(())
+}
+
 /// Read the midpoint instance the entry quotes through, and hold it to the
 /// market. An instance that names another execute authority quotes and then
 /// fails every execute.
 fn validate_midpoint_instance(
-    response_account: Option<&UncheckedAccount>,
+    instance: &UncheckedAccount,
     quoter_slab: &Pubkey,
     market_index: u16,
     order_step_size: u64,
 ) -> Result<()> {
-    let instance = response_account.ok_or_else(|| {
-        msg!("approving a midpoint requires its instance account");
-        error!(ErrorCode::InvalidQuoterConfig)
-    })?;
     MidpointInstance::read(instance.as_ref())?.validate_for(
         quoter_slab,
         market_index,
@@ -599,6 +629,57 @@ fn write_approved_slot(
     slots[index].config = *config;
     slots[index].config.approved_program_slot = approved_program_slot;
     Ok(())
+}
+
+#[cfg(test)]
+mod response_owner_tests {
+    use {
+        super::validate_response_owner,
+        anchor_lang::{prelude::*, solana_program::bpf_loader_upgradeable},
+    };
+
+    fn accepts(owner: &Pubkey, executable: bool, program_id: &Pubkey) -> bool {
+        let key = Pubkey::new_unique();
+        let mut lamports = 0;
+        let mut data = [0u8; 8];
+        let info = AccountInfo::new(
+            &key,
+            false,
+            false,
+            &mut lamports,
+            &mut data,
+            owner,
+            executable,
+        );
+
+        validate_response_owner(&info, program_id).is_ok()
+    }
+
+    #[test]
+    fn a_data_account_of_the_quoter_program_is_accepted() {
+        let program_id = Pubkey::new_unique();
+        assert!(accepts(&program_id, false, &program_id));
+    }
+
+    #[test]
+    fn an_account_every_fill_carries_is_refused() {
+        // A program, a velocity account and a sysvar each ride fills that
+        // never consult this quoter.
+        let program_id = Pubkey::new_unique();
+        for owner in [
+            bpf_loader_upgradeable::ID,
+            crate::ID,
+            "Sysvar1111111111111111111111111111111111111".parse().unwrap(),
+        ] {
+            assert!(!accepts(&owner, false, &program_id));
+        }
+    }
+
+    #[test]
+    fn an_executable_account_is_refused() {
+        let program_id = Pubkey::new_unique();
+        assert!(!accepts(&program_id, true, &program_id));
+    }
 }
 
 /// The rule the quoter signing model rests on, per direction.

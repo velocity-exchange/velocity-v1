@@ -98,16 +98,19 @@ fn set_accounts_ix(authority: Pubkey, quoter: Pubkey, response_account: Pubkey) 
     }
 }
 
-/// `clob_market` is the book the market designated, and only a `Clob`
-/// approval takes one: approval asks that account for its own placement rules
-/// before it becomes a fill baseline. Every other call passes `None`, which
-/// includes a revocation, because a revocation reads no book.
+/// Build the approval for the entry as it is staged now. Approval requires
+/// the response account, and a `Clob` approval also takes the book, which is
+/// the same account. A revocation reads neither.
 fn approve_ix(
+    svm: &litesvm::LiteSVM,
     as_admin: Pubkey,
     quoter: Pubkey,
     approved: bool,
-    clob_market: Option<Pubkey>,
 ) -> Instruction {
+    let entry: QuoterV0 = read_zero_copy(svm, &quoter);
+    let response_account: Pubkey = entry.config.response_account.to_bytes().into();
+    let is_book = matches!(entry.config.quoter_type, QuoterType::Clob);
+
     Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::UpdateQuoterApproved {
@@ -118,8 +121,8 @@ fn approve_ix(
             quoter_slab: quoter_slab_pda(0),
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
-            clob_market,
-            response_account: None,
+            clob_market: (approved && is_book).then_some(response_account),
+            response_account: approved.then_some(response_account),
             system_program: system_program(),
         }
         .to_account_metas(None),
@@ -128,6 +131,34 @@ fn approve_ix(
         }
         .data(),
     }
+}
+
+fn approve(
+    svm: &mut litesvm::LiteSVM,
+    signer: &Keypair,
+    quoter: Pubkey,
+    approved: bool,
+) -> Result<litesvm::types::TransactionMetadata, litesvm::types::FailedTransactionMetadata> {
+    let ix = approve_ix(svm, signer.pubkey(), quoter, approved);
+    send(svm, signer, ix, &[])
+}
+
+/// A data account of the quoter program, which is what a response account
+/// must be before approval accepts it.
+fn quoter_owned_account(svm: &mut litesvm::LiteSVM) -> Pubkey {
+    let key = Pubkey::new_unique();
+    svm.set_account(
+        key,
+        Account {
+            lamports: 1_000_000_000,
+            data: vec![0u8; 64],
+            owner: clob_id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+    key
 }
 
 fn slab_ix(payer: Pubkey) -> Instruction {
@@ -220,7 +251,7 @@ fn quoter_registry_lifecycle() {
     set_user(&mut svm, user, &maker.pubkey());
 
     let quoter = quoter_pda(0, &clob_id(), &user);
-    let response_account = Pubkey::new_unique();
+    let response_account = quoter_owned_account(&mut svm);
 
     // Creation is consent: a Custom quoter must be created by the quoted
     // user's authority (clob.so is the executable quoter program).
@@ -244,13 +275,7 @@ fn quoter_registry_lifecycle() {
     assert!(entry.config.is_active);
 
     // Approval needs the slab, and the slab does not exist yet.
-    assert!(send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, true, None),
-        &[]
-    )
-    .is_err());
+    assert!(approve(&mut svm, &admin, quoter, true).is_err());
 
     // Slab creation is permissionless. A slab is born at one slot — slot 0,
     // the book's, vacant — and approval grows it to fit each further quoter.
@@ -259,13 +284,7 @@ fn quoter_registry_lifecycle() {
     assert!(read_slab_slot(&svm, 0, 0).is_vacant());
 
     // Approval is rejected while the account list is empty.
-    assert!(send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, true, None),
-        &[]
-    )
-    .is_err());
+    assert!(approve(&mut svm, &admin, quoter, true).is_err());
 
     // Register the CPI account list (both legs forward the response account).
     // A signer that is not the entry's authority cannot touch it.
@@ -287,20 +306,8 @@ fn quoter_registry_lifecycle() {
     // Admin approves; a non-admin claiming the role can't. The copy lands in
     // slot 1 — slot 0 is reserved for the market's book — and the approval
     // grows the slab to fit it.
-    assert!(send(
-        &mut svm,
-        &maker,
-        approve_ix(maker.pubkey(), quoter, true, None),
-        &[]
-    )
-    .is_err());
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, true, None),
-        &[],
-    )
-    .unwrap();
+    assert!(approve(&mut svm, &maker, quoter, true).is_err());
+    approve(&mut svm, &admin, quoter, true).unwrap();
     assert_eq!(slab_capacity(&svm), 2);
     assert!(read_slab_slot(&svm, 0, 0).is_vacant());
     let slot: QuoterSlotV0 = read_slab_slot(&svm, 0, 1);
@@ -379,7 +386,7 @@ fn quoter_registry_lifecycle() {
 
     // A staging config edit does not reach the live copy until the admin
     // copies it in again.
-    let new_response = Pubkey::new_unique();
+    let new_response = quoter_owned_account(&mut svm);
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::UpdateQuoterConfig {
@@ -416,13 +423,7 @@ fn quoter_registry_lifecycle() {
     // Approval must find the edited response account on the registered list,
     // so re-approving with the stale list fails, and passes once the list
     // names the new account.
-    assert!(send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, true, None),
-        &[]
-    )
-    .is_err());
+    assert!(approve(&mut svm, &admin, quoter, true).is_err());
     send(
         &mut svm,
         &maker,
@@ -430,13 +431,7 @@ fn quoter_registry_lifecycle() {
         &[],
     )
     .unwrap();
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, true, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, quoter, true).unwrap();
     let slot: QuoterSlotV0 = read_slab_slot(&svm, 0, 1);
     assert_eq!(
         slot.config.response_account.to_bytes(),
@@ -448,13 +443,7 @@ fn quoter_registry_lifecycle() {
     // The trailing vacancy goes back — the slab shrinks to slot 0 alone and
     // the freed rent refunds the admin, far more than the transaction fee.
     let balance_before = svm.get_balance(&admin.pubkey()).unwrap();
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, false, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, quoter, false).unwrap();
     assert_eq!(slab_capacity(&svm), 1);
     assert!(svm.get_balance(&admin.pubkey()).unwrap() > balance_before);
     // The staging entry survives revocation.
@@ -493,25 +482,13 @@ fn revoking_the_book_suspends_its_slot() {
         &[],
     )
     .unwrap();
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, true, Some(book)),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, quoter, true).unwrap();
 
     let slot: QuoterSlotV0 = read_slab_slot(&svm, 0, 0);
     assert_eq!(slot.entry.to_bytes(), quoter.to_bytes(), "a book is slot 0");
     assert!(slot.quotes());
 
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, false, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, quoter, false).unwrap();
     let slot: QuoterSlotV0 = read_slab_slot(&svm, 0, 0);
     assert!(!slot.is_vacant(), "the book's config survives revocation");
     assert!(slot.suspended);
@@ -523,13 +500,7 @@ fn revoking_the_book_suspends_its_slot() {
     );
 
     // Re-approval lifts the suspension in place.
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, true, Some(book)),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, quoter, true).unwrap();
     let slot: QuoterSlotV0 = read_slab_slot(&svm, 0, 0);
     assert!(!slot.suspended && slot.quotes());
 }
@@ -614,7 +585,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
         let user = Pubkey::new_unique();
         set_user(svm, user, &maker.pubkey());
         let quoter = quoter_pda(0, &clob_id(), &user);
-        let response = Pubkey::new_unique();
+        let response = quoter_owned_account(svm);
         send(
             svm,
             &maker,
@@ -638,23 +609,11 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     // added rent, which lands on the slab account.
     let balance_before = svm.get_balance(&admin.pubkey()).unwrap();
     let slab_lamports_before = svm.get_account(&quoter_slab_pda(0)).unwrap().lamports;
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), first, true, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, first, true).unwrap();
     assert_eq!(slab_capacity(&svm), 2);
     assert!(svm.get_balance(&admin.pubkey()).unwrap() < balance_before);
     assert!(svm.get_account(&quoter_slab_pda(0)).unwrap().lamports > slab_lamports_before);
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), second, true, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, second, true).unwrap();
     assert_eq!(slab_capacity(&svm), 3);
     assert_eq!(
         read_slab_slot(&svm, 0, 1).entry.to_bytes(),
@@ -666,49 +625,25 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     );
 
     // Revoking the middle slot cannot shrink: the slot behind it never moves.
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), first, false, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, first, false).unwrap();
     assert_eq!(slab_capacity(&svm), 3);
     assert!(read_slab_slot(&svm, 0, 1).is_vacant());
 
     // Re-approval fills the vacancy instead of growing.
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), first, true, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, first, true).unwrap();
     assert_eq!(slab_capacity(&svm), 3);
     assert_eq!(
         read_slab_slot(&svm, 0, 1).entry.to_bytes(),
         first.to_bytes()
     );
 
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), first, false, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, first, false).unwrap();
 
     // Revoking the last occupied slot shrinks past every trailing vacancy —
     // back to slot 0 alone — and the freed rent refunds the admin, far more
     // than the transaction fee.
     let balance_before = svm.get_balance(&admin.pubkey()).unwrap();
-    send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), second, false, None),
-        &[],
-    )
-    .unwrap();
+    approve(&mut svm, &admin, second, false).unwrap();
     assert_eq!(slab_capacity(&svm), 1);
     assert!(svm.get_balance(&admin.pubkey()).unwrap() > balance_before);
 }
@@ -746,7 +681,7 @@ fn a_full_slab_refuses_another_approval() {
     let user = Pubkey::new_unique();
     set_user(&mut svm, user, &maker.pubkey());
     let quoter = quoter_pda(0, &clob_id(), &user);
-    let response = Pubkey::new_unique();
+    let response = quoter_owned_account(&mut svm);
     send(
         &mut svm,
         &maker,
@@ -761,12 +696,47 @@ fn a_full_slab_refuses_another_approval() {
         &[],
     )
     .unwrap();
-    let err = send(
-        &mut svm,
-        &admin,
-        approve_ix(admin.pubkey(), quoter, true, None),
-        &[],
-    )
-    .unwrap_err();
+    let err = approve(&mut svm, &admin, quoter, true).unwrap_err();
     assert_velocity_error(&err, ErrorCode::QuoterSlabFull);
+}
+
+/// A route consults every slot whose response account rides the fill. A
+/// program rides every fill that calls it, so a `Custom` entry that names one
+/// would join every such fill. Approval refuses a response account that the
+/// quoter program does not own.
+#[test]
+fn approval_refuses_a_response_account_the_quoter_does_not_own() {
+    let mut svm = svm();
+    let admin = Keypair::new();
+    let maker = Keypair::new();
+    for key in [&admin, &maker] {
+        svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
+    }
+
+    set_state(&mut svm, &admin.pubkey());
+    set_perp_market(&mut svm, 0);
+    send(&mut svm, &maker, slab_ix(maker.pubkey()), &[]).unwrap();
+
+    for response in [clob_id(), perp_market_pda(0)] {
+        let user = Pubkey::new_unique();
+        set_user(&mut svm, user, &maker.pubkey());
+        let quoter = quoter_pda(0, &clob_id(), &user);
+        send(
+            &mut svm,
+            &maker,
+            init_quoter_ix(maker.pubkey(), quoter, user, QuoterType::Custom, response),
+            &[],
+        )
+        .unwrap();
+        send(
+            &mut svm,
+            &maker,
+            set_accounts_ix(maker.pubkey(), quoter, response),
+            &[],
+        )
+        .unwrap();
+
+        let err = approve(&mut svm, &admin, quoter, true).unwrap_err();
+        assert_velocity_error(&err, ErrorCode::InvalidQuoterConfig);
+    }
 }

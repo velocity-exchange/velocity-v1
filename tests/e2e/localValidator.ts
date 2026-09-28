@@ -697,9 +697,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 								args.quoterType === QuoterType.CLOB
 									? args.responseAccount
 									: VELOCITY_ID,
-							// A midpoint approval reads the instance. The account is
-							// bound to the entry's response account, so every type
-							// can pass it.
+							// Every approval requires the response account, and
+							// refuses one the quoter program does not own.
 							responseAccount: args.responseAccount,
 							systemProgram: SystemProgram.programId,
 						},

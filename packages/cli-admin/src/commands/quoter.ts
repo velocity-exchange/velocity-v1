@@ -472,7 +472,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-approved <quoter> <approved>')
 			.description(
-				"Admin vetting gate for the warm or cold admin. Copies the staging config into the market's slab slot, or revokes that slot. Approval requires a non-empty account list on both legs, and each list must contain the response account. Fills read only the slab copy, so a staged edit serves nothing until it is approved here. <approved> = true|false."
+				"Admin vetting gate for the warm or cold admin. Copies the staging config into the market's slab slot, or revokes that slot. Approval requires a non-empty account list on both legs, and each list must contain the response account, which the quoter program must own. Fills read only the slab copy, so a staged edit serves nothing until it is approved here. <approved> = true|false."
 			)
 			.option(
 				'--admin <pubkey>',
@@ -511,8 +511,8 @@ export function registerQuoter(parent: Command): void {
 						? new PublicKey(entry.config.responseAccount)
 						: null,
 					flags.admin ? new PublicKey(flags.admin) : undefined,
-					// A midpoint approval reads its instance, which is the entry's
-					// response account.
+					// Approval requires the quoter program to own the response
+					// account, and a midpoint approval reads its instance there.
 					new PublicKey(entry.config.responseAccount)
 				);
 				const result = await sendOrPropose(

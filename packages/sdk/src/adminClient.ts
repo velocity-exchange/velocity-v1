@@ -5719,8 +5719,8 @@ export class AdminClient extends VelocityClient {
 	 * A book approval also asks the book for its own placement rules. A midpoint
 	 * approval reads the instance's execute authority and size step.
 	 * @param clobMarket - The book, for approving a CLOB entry. Pass null for every other case.
-	 * @param responseAccount - The entry's response account. A midpoint approval requires it,
-	 * and every other approval may pass it.
+	 * @param responseAccount - The entry's response account. Every approval requires it,
+	 * because the program refuses one the quoter program does not own. A revocation ignores it.
 	 */
 	public async getUpdateQuoterApprovedIx(
 		quoter: PublicKey,

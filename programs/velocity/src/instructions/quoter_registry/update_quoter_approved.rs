@@ -8,6 +8,9 @@
 //! vacancy to the admin. Every reader pays compute per declared slot, so
 //! capacity tracks the roster and not a guess made at creation.
 //!
+//! Approval copies only the config the admin reviewed. The args carry the
+//! staged config's hash, and approval refuses a config that changed since.
+//!
 //! Approval checks that the config is coherent enough to call. Both legs need a
 //! non-empty index list, and each list must forward the response account. The
 //! router reads responses from that account. No reserved key may sit on the
@@ -56,9 +59,10 @@ use {
         error::ErrorCode,
         state::{
             prop_amm::{
-                list_stays_off_the_book, occupied_slots, slot_for_entry, vacant_slot_index,
-                validate_quoter_accounts, ClobReader, MidpointInstance, QuoterConfigV0,
-                QuoterSlabExt, QuoterSlabV0, QuoterType, QuoterV0, MIDPOINT_PROGRAM_ID,
+                list_stays_off_the_book, occupied_slots, slot_for_entry, staged_config_hash,
+                vacant_slot_index, validate_quoter_accounts, ClobReader, MidpointInstance,
+                QuoterConfigV0, QuoterSlabExt, QuoterSlabV0, QuoterType, QuoterV0,
+                MIDPOINT_PROGRAM_ID,
             },
             state::State,
         },
@@ -239,13 +243,20 @@ fn fitted_capacity(slab: &AccountLoader<QuoterSlabV0>) -> Result<u16> {
 pub struct UpdateQuoterApprovedArgs {
     /// True copies the staged config into the slab. False pulls the copy.
     pub approved: bool,
+    /// [`staged_config_hash`] of the staged config the admin reviewed.
+    /// Approval refuses a staged config with another hash. A revocation
+    /// ignores it.
+    pub staged_config_hash: [u8; 32],
 }
 
 pub fn handle_update_quoter_approved(
     ctx: Context<UpdateQuoterApproved>,
     args: UpdateQuoterApprovedArgs,
 ) -> Result<()> {
-    let UpdateQuoterApprovedArgs { approved } = args;
+    let UpdateQuoterApprovedArgs {
+        approved,
+        staged_config_hash: reviewed_hash,
+    } = args;
     let entry_key = ctx.accounts.quoter.key();
     let quoter = ctx.accounts.quoter.load()?;
 
@@ -257,6 +268,11 @@ pub fn handle_update_quoter_approved(
             &entry_key,
         );
     }
+
+    validate_reviewed_config(
+        &ctx.accounts.quoter.to_account_info().try_borrow_data()?,
+        &reviewed_hash,
+    )?;
 
     let config = &quoter.config;
     validate_approvable_config(config)?;
@@ -422,6 +438,19 @@ fn revoke_slab_slot<'info>(
     // tail past the last occupied slot can shrink away.
     let fitted = fitted_capacity(slab)?;
     resize_slab(slab, admin, system_program, fitted)
+}
+
+/// Hold the staged config to the one the admin reviewed. The maker can edit
+/// the staging entry at any time, so without this an edit between review and
+/// approval would reach the slab unreviewed.
+fn validate_reviewed_config(quoter_data: &[u8], reviewed_hash: &[u8; 32]) -> Result<()> {
+    validate!(
+        staged_config_hash(quoter_data)? == *reviewed_hash,
+        ErrorCode::InvalidQuoterConfig,
+        "the staged quoter config changed after review"
+    )?;
+
+    Ok(())
 }
 
 /// Check that the config is coherent enough to call. Both legs name accounts.
@@ -674,6 +703,57 @@ mod response_owner_tests {
     fn an_executable_account_is_refused() {
         let program_id = Pubkey::new_unique();
         assert!(!accepts(&program_id, true, &program_id));
+    }
+}
+
+#[cfg(test)]
+mod reviewed_config_tests {
+    use super::{staged_config_hash, validate_reviewed_config, QuoterConfigV0};
+
+    /// A `QuoterV0` account's data: the discriminator, the config, the padding.
+    fn quoter_data() -> Vec<u8> {
+        vec![0xaa; 8 + std::mem::size_of::<QuoterConfigV0>() + 48]
+    }
+
+    #[test]
+    fn the_hash_matches_the_sdk() {
+        // `packages/sdk/tests/ci/quoterConfigHash.ts` pins the same value. The
+        // response account sits at config offset 88 and the market at 728.
+        let mut data = vec![0u8; 8 + 736 + 48];
+        data[..8].fill(0xaa);
+        data[8 + 88..8 + 120].fill(1);
+        data[8 + 728..8 + 730].copy_from_slice(&7u16.to_le_bytes());
+        let hash = staged_config_hash(&data).unwrap();
+
+        assert_eq!(
+            hash.iter()
+                .map(|byte| format!("{:02x}", byte))
+                .collect::<String>(),
+            "bf8e4cf4c40690cd61432dfb7c7849c5de9d5cf0134685e3cb2b1e2639ea93db"
+        );
+    }
+
+    #[test]
+    fn an_edit_after_review_is_refused() {
+        let mut data = quoter_data();
+        let reviewed_hash = staged_config_hash(&data).unwrap();
+        assert!(validate_reviewed_config(&data, &reviewed_hash).is_ok());
+
+        data[8 + 100] ^= 1;
+        assert!(validate_reviewed_config(&data, &reviewed_hash).is_err());
+    }
+
+    #[test]
+    fn the_hash_ignores_the_discriminator_and_the_padding() {
+        let data = quoter_data();
+        let mut moved = data.clone();
+        moved[0] ^= 1;
+        *moved.last_mut().unwrap() ^= 1;
+
+        assert_eq!(
+            staged_config_hash(&data).unwrap(),
+            staged_config_hash(&moved).unwrap()
+        );
     }
 }
 

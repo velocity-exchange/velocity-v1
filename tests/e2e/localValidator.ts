@@ -67,6 +67,7 @@ import {
 	PRICE_PRECISION,
 	getQuoterSlabPublicKey,
 	QuoterType,
+	quoterConfigHash,
 	RetryTxSender,
 	TestClient,
 	Wallet,
@@ -591,9 +592,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			writableSpotMarketIndexes: [0],
 		});
 
-	/** Register and approve a quoter, the sequence `admin-cli quoter` runs. It
-	 * creates the registry entry, publishes the quoter's unified CPI account
-	 * list, then has the admin approve the surface into the market's slab. */
+	/** Register a quoter, the sequence `admin-cli quoter` runs. It creates the
+	 * registry entry and publishes the quoter's unified CPI account list.
+	 * `approveQuoterIx` then has the admin approve it into the market's slab. */
 	const registerQuoterIxs = async (args: {
 		authority: PublicKey;
 		quoterType: QuoterType;
@@ -670,47 +671,61 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						},
 					}
 				),
-
-				program.instruction.updateQuoterApproved(
-					{ approved: true },
-					{
-						accounts: {
-							admin: payer.publicKey,
-							state: await admin.getStatePublicKey(),
-							quoter,
-							perpMarket,
-							// Approval copies the staging config into the slab slot
-							// that fills read, so the slab has to exist first.
-							// Approval also grows the slab to fit the slot, which
-							// is why the system program is here.
-							quoterSlab,
-							// Approval approves a binary, so the program has to be
-							// frozen. Its program-data account says whether it is.
-							// The harness deploys these programs non-upgradeable.
-							quoterProgram: args.quoterProgram,
-							quoterProgramData: PublicKey.findProgramAddressSync(
-								[args.quoterProgram.toBuffer()],
-								BPF_LOADER_UPGRADEABLE_ID
-							)[0],
-
-							// A book approval asks the book for its own placement
-							// rules, so a slot that would fail every fill is
-							// refused here. No other type reads a book. As above,
-							// an omitted optional account travels as the program
-							// id, because anchor's client reads a null as missing.
-							clobMarket:
-								args.quoterType === QuoterType.CLOB
-									? args.responseAccount
-									: VELOCITY_ID,
-							// Every approval requires the response account, and
-							// refuses one the quoter program does not own.
-							responseAccount: args.responseAccount,
-							systemProgram: SystemProgram.programId,
-						},
-					}
-				),
 			],
 		};
+	};
+
+	/** The admin approval that follows `registerQuoterIxs`. It carries the hash
+	 * of the entry as staged now, so it is built after registration lands. */
+	const approveQuoterIx = async (
+		quoter: PublicKey,
+		args: {
+			quoterType: QuoterType;
+			quoterProgram: PublicKey;
+			responseAccount: PublicKey;
+		}
+	): Promise<TransactionInstruction> => {
+		const entry = await connection.getAccountInfo(quoter, 'confirmed');
+		if (!entry) throw new Error(`quoter entry ${quoter.toBase58()} is missing`);
+
+		return admin.program.instruction.updateQuoterApproved(
+			{
+				approved: true,
+				stagedConfigHash: quoterConfigHash(entry.data),
+			},
+			{
+				accounts: {
+					admin: payer.publicKey,
+					state: await admin.getStatePublicKey(),
+					quoter,
+					perpMarket,
+					// Approval copies the staging config into the slab slot
+					// that fills read, so the slab has to exist first.
+					// Approval also grows the slab to fit the slot, which
+					// is why the system program is here.
+					quoterSlab,
+					// Approval approves a binary, so the program has to be
+					// frozen. Its program-data account says whether it is.
+					// The harness deploys these programs non-upgradeable.
+					quoterProgram: args.quoterProgram,
+					quoterProgramData: PublicKey.findProgramAddressSync(
+						[args.quoterProgram.toBuffer()],
+						BPF_LOADER_UPGRADEABLE_ID
+					)[0],
+
+					// A book approval asks the book for its placement rules.
+					// An omitted optional account travels as the program id.
+					clobMarket:
+						args.quoterType === QuoterType.CLOB
+							? args.responseAccount
+							: VELOCITY_ID,
+					// Every approval requires the response account, and
+					// refuses one the quoter program does not own.
+					responseAccount: args.responseAccount,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
 	};
 
 	/** CLOB bring-up, exactly as `admin-cli clob-market init` does it. */
@@ -792,6 +807,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				}
 			),
 			...registration.ixs,
+		]);
+		await send([
+			await approveQuoterIx(registration.quoter, {
+				quoterType: QuoterType.CLOB,
+				quoterProgram: CLOB_ID,
+				responseAccount: clobBook.publicKey,
+			}),
 		]);
 
 		// Attach as the market's canonical CLOB. The conditions account is
@@ -904,6 +926,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		});
 
 		await send(registration.ixs, [midMakerKp]);
+		await send([
+			await approveQuoterIx(registration.quoter, {
+				quoterType: QuoterType.CUSTOM,
+				quoterProgram: MIDPOINT_ID,
+				responseAccount: midInstance,
+			}),
+		]);
 	};
 
 	const setMidpointMid = async (mid: BN) =>

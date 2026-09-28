@@ -472,17 +472,21 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-approved <quoter> <approved>')
 			.description(
-				"Admin vetting gate for the warm or cold admin. Copies the staging config into the market's slab slot, or revokes that slot. Approval requires a non-empty account list on both legs, and each list must contain the response account, which the quoter program must own. Fills read only the slab copy, so a staged edit serves nothing until it is approved here. <approved> = true|false."
+				"Admin vetting gate for the warm or cold admin. Copies the staging config into the market's slab slot, or revokes that slot. Approval requires a non-empty account list on both legs, and each list must contain the response account, which the quoter program must own. Fills read only the slab copy, so a staged edit serves nothing until it is approved here. Approval carries the hash of the staged config, and the program refuses the approval if the maker edits the entry before it lands. <approved> = true|false."
 			)
 			.option(
 				'--admin <pubkey>',
 				'admin signer (defaults to the wallet; pass the vault PDA with --multisig)'
 			)
+			.option(
+				'--config-hash <hex>',
+				'hash of the staged config that was reviewed; refuses to send if the entry now hashes differently'
+			)
 	).action(
 		async (
 			quoterArg: string,
 			approved: string,
-			flags: { admin?: string },
+			flags: { admin?: string; configHash?: string },
 			cmd: Command
 		) => {
 			const on = parseEnable(approved);
@@ -499,6 +503,14 @@ export function registerQuoter(parent: Command): void {
 				const entry = await (client.program.account as any).quoterV0.fetch(
 					quoterKey
 				);
+				const stagedHash = await client.getStagedQuoterConfigHash(quoterKey);
+				const stagedHex = Buffer.from(stagedHash).toString('hex');
+				if (flags.configHash && flags.configHash.toLowerCase() !== stagedHex) {
+					throw new Error(
+						`staged config hash is ${stagedHex}, not the reviewed ${flags.configHash}`
+					);
+				}
+
 				// A book approval asks the book for its own placement rules, so a slot
 				// that would fail every fill is refused rather than approved. No other
 				// type reads a book.
@@ -513,7 +525,8 @@ export function registerQuoter(parent: Command): void {
 					flags.admin ? new PublicKey(flags.admin) : undefined,
 					// Approval requires the quoter program to own the response
 					// account, and a midpoint approval reads its instance there.
-					new PublicKey(entry.config.responseAccount)
+					new PublicKey(entry.config.responseAccount),
+					stagedHash
 				);
 				const result = await sendOrPropose(
 					provider,
@@ -523,7 +536,9 @@ export function registerQuoter(parent: Command): void {
 				);
 
 				reportDispatch(
-					`quoter ${quoterArg} ${on ? 'approved' : 'unapproved'}`,
+					`quoter ${quoterArg} ${
+						on ? `approved (config hash ${stagedHex})` : 'unapproved'
+					}`,
 					result
 				);
 			} finally {

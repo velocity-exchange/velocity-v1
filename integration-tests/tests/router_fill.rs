@@ -499,7 +499,10 @@ fn register_clob_quoter(
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved {
-            args: velocity::instructions::UpdateQuoterApprovedArgs { approved: true },
+            args: velocity::instructions::UpdateQuoterApprovedArgs {
+                approved: true,
+                staged_config_hash: staged_config_hash(svm, &quoter),
+            },
         }
         .data(),
     };
@@ -1576,7 +1579,10 @@ fn a_maker_cancels_off_a_suspended_book() {
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved {
-            args: UpdateQuoterApprovedArgs { approved: false },
+            args: UpdateQuoterApprovedArgs {
+                approved: false,
+                staged_config_hash: [0; 32],
+            },
         }
         .data(),
     };
@@ -5883,7 +5889,10 @@ fn setup_midpoint_maker_with_flow(
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved {
-            args: UpdateQuoterApprovedArgs { approved: true },
+            args: UpdateQuoterApprovedArgs {
+                approved: true,
+                staged_config_hash: staged_config_hash(&fixture.svm, &entry),
+            },
         }
         .data(),
     };
@@ -6254,7 +6263,10 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved {
-            args: UpdateQuoterApprovedArgs { approved: true },
+            args: UpdateQuoterApprovedArgs {
+                approved: true,
+                staged_config_hash: staged_config_hash(&fixture.svm, &maker.entry),
+            },
         }
         .data(),
     };

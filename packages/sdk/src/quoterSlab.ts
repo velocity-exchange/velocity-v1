@@ -1,5 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
+import { sha256 } from '@noble/hashes/sha256';
 import {
 	AmmAccountMeta,
 	QuoterConfigV0,
@@ -19,6 +20,21 @@ export const QUOTER_SLAB_SLOT_SIZE = 776;
 
 /** Registered accounts one quoter's unified CPI list can hold. */
 export const MAX_QUOTER_ACCOUNTS = 12;
+
+/** Bytes one `QuoterConfigV0` occupies. The struct has no padding. */
+export const QUOTER_CONFIG_SIZE = 736;
+
+/**
+ * The hash `updateQuoterApproved` requires, from a `QuoterV0` account's raw data.
+ * Mirrors `QuoterConfigV0::content_hash`: SHA-256 of the config bytes after the
+ * 8-byte discriminator. Approval refuses a staged config whose hash differs, so
+ * compute it from the config that was reviewed.
+ */
+export function quoterConfigHash(quoterAccountData: Buffer): number[] {
+	return Array.from(
+		sha256(quoterAccountData.subarray(8, 8 + QUOTER_CONFIG_SIZE))
+	);
+}
 
 function readPubkey(data: Buffer, offset: number): PublicKey {
 	return new PublicKey(data.subarray(offset, offset + 32));

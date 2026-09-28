@@ -537,6 +537,12 @@ export function registerClobMarket(parent: Command): void {
 					? []
 					: [await client.getInitializeQuoterSlabIx(marketIndex, wallet)];
 
+				await provider.sendAndConfirm(
+					new Transaction().add(...slabIxs, initQuoter, registerAccounts)
+				);
+
+				// Approval carries the hash of the staged config, so it is built
+				// from the entry the transaction above wrote.
 				const approve = await client.getUpdateQuoterApprovedIx(
 					quoterPda,
 					true,
@@ -544,17 +550,11 @@ export function registerClobMarket(parent: Command): void {
 					clobProgram,
 					book.publicKey,
 					wallet,
-					book.publicKey
+					book.publicKey,
+					await client.getStagedQuoterConfigHash(quoterPda)
 				);
 
-				await provider.sendAndConfirm(
-					new Transaction().add(
-						...slabIxs,
-						initQuoter,
-						registerAccounts,
-						approve
-					)
-				);
+				await provider.sendAndConfirm(new Transaction().add(approve));
 
 				console.log(
 					`quoter ${quoterPda.toBase58()} registered + approved into slab ${quoterSlab.toBase58()}`

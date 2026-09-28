@@ -103,6 +103,7 @@ import { calculateTargetPriceTrade } from './math/trade';
 import { calculateAmmReservesAfterSwap, getSwapDirection } from './math/amm';
 import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
+import { quoterConfigHash } from './quoterSlab';
 
 /**
  * The feature gate whose activation drops the slot to each target duration.
@@ -5715,6 +5716,19 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
+	 * The `quoterConfigHash` of a staging entry as it is stored now. An approval built
+	 * from it copies exactly this config, and fails if the maker edits the entry first.
+	 */
+	public async getStagedQuoterConfigHash(quoter: PublicKey): Promise<number[]> {
+		const info = await this.connection.getAccountInfo(quoter);
+		if (!info) {
+			throw new Error(`quoter entry ${quoter.toBase58()} does not exist`);
+		}
+
+		return quoterConfigHash(info.data);
+	}
+
+	/**
 	 * Builds the `updateQuoterApproved` instruction, which copies a staging entry into the
 	 * market's slab, or pulls that approval. Approval approves the binary behind the entry,
 	 * so it reads the program-data account that records whether the program can redeploy.
@@ -5723,6 +5737,8 @@ export class AdminClient extends VelocityClient {
 	 * @param clobMarket - The book, for approving a CLOB entry. Pass null for every other case.
 	 * @param responseAccount - The entry's response account. Every approval requires it,
 	 * because the program refuses one the quoter program does not own. A revocation ignores it.
+	 * @param stagedConfigHash - `quoterConfigHash` of the staged config that was reviewed.
+	 * Approval refuses a staged config that changed since. A revocation ignores it.
 	 */
 	public async getUpdateQuoterApprovedIx(
 		quoter: PublicKey,
@@ -5731,12 +5747,20 @@ export class AdminClient extends VelocityClient {
 		quoterProgram: PublicKey,
 		clobMarket: PublicKey | null,
 		admin?: PublicKey,
-		responseAccount: PublicKey | null = null
+		responseAccount: PublicKey | null = null,
+		stagedConfigHash: number[] | null = null
 	): Promise<TransactionInstruction> {
+		if (approved && stagedConfigHash === null) {
+			throw new Error('approving a quoter requires the reviewed config hash');
+		}
+
 		const quoterProgramData = getProgramDataAddress(quoterProgram);
 
 		return await this.program.instruction.updateQuoterApproved(
-			{ approved },
+			{
+				approved,
+				stagedConfigHash: stagedConfigHash ?? new Array(32).fill(0),
+			},
 			{
 				accounts: {
 					admin: admin ?? this.wallet.publicKey,

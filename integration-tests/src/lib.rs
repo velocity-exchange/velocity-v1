@@ -433,6 +433,13 @@ pub fn read_zero_copy<T: bytemuck::Pod>(svm: &LiteSVM, address: &Pubkey) -> T {
     bytemuck::pod_read_unaligned(&account.data[8..8 + core::mem::size_of::<T>()])
 }
 
+/// The hash `update_quoter_approved` requires: the staging entry's config as
+/// it is stored now.
+pub fn staged_config_hash(svm: &LiteSVM, quoter: &Pubkey) -> [u8; 32] {
+    let account = svm.get_account(quoter).expect("quoter entry missing");
+    velocity::state::prop_amm::staged_config_hash(&account.data).unwrap()
+}
+
 /// Decode every anchor event of one type out of a transaction's logs.
 ///
 /// Velocity writes its records base64-encoded through `msg!`, which the

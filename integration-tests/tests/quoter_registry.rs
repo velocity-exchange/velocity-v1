@@ -129,7 +129,10 @@ fn approve_ix(
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved {
-            args: UpdateQuoterApprovedArgs { approved },
+            args: UpdateQuoterApprovedArgs {
+                approved,
+                staged_config_hash: staged_config_hash(svm, &quoter),
+            },
         }
         .data(),
     }
@@ -770,4 +773,69 @@ fn a_book_designation_refuses_an_account_that_is_not_the_markets_book() {
     let market: velocity::state::perp_market::PerpMarket =
         read_zero_copy(&svm, &perp_market_pda(0));
     assert_eq!(market.clob_market, Pubkey::default());
+}
+
+/// The maker can edit a staging entry at any time. Approval carries the hash
+/// of the config the admin reviewed, so an edit between review and approval
+/// fails the approval instead of reaching the slab.
+#[test]
+fn approval_refuses_a_config_edited_after_review() {
+    let mut svm = svm();
+    let admin = Keypair::new();
+    let maker = Keypair::new();
+    for key in [&admin, &maker] {
+        svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
+    }
+
+    set_state(&mut svm, &admin.pubkey());
+    set_perp_market(&mut svm, 0);
+    send(&mut svm, &maker, slab_ix(maker.pubkey()), &[]).unwrap();
+
+    let user = Pubkey::new_unique();
+    set_user(&mut svm, user, &maker.pubkey());
+    let quoter = quoter_pda(0, &clob_id(), &user);
+    let response = quoter_owned_account(&mut svm);
+    send(
+        &mut svm,
+        &maker,
+        init_quoter_ix(maker.pubkey(), quoter, user, QuoterType::Custom, response),
+        &[],
+    )
+    .unwrap();
+    send(
+        &mut svm,
+        &maker,
+        set_accounts_ix(maker.pubkey(), quoter, response),
+        &[],
+    )
+    .unwrap();
+
+    let reviewed = approve_ix(&svm, admin.pubkey(), quoter, true);
+    let edit = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateQuoterConfig {
+            authority: maker.pubkey(),
+            quoter,
+            state: None,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateQuoterConfig {
+            args: UpdateQuoterConfigArgs {
+                response_account: None,
+                quote_v0_discriminator: Some([9; 8]),
+                quote_l3_v0_discriminator: None,
+                execute_v0_discriminator: None,
+            },
+        }
+        .data(),
+    };
+
+    send(&mut svm, &maker, edit, &[]).unwrap();
+    let err = send(&mut svm, &admin, reviewed, &[]).unwrap_err();
+    assert_velocity_error(&err, ErrorCode::InvalidQuoterConfig);
+    assert_eq!(slab_capacity(&svm), 1, "a refused approval writes no slot");
+
+    approve(&mut svm, &admin, quoter, true).unwrap();
+    let slot: QuoterSlotV0 = read_slab_slot(&svm, 0, 1);
+    assert_eq!(slot.config.quote_v0_discriminator, [9; 8]);
 }

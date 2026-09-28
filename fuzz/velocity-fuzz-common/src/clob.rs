@@ -302,8 +302,12 @@ impl QuoterEntry {
     }
 
     /// Approval copies the staged entry into the slab, which is the copy fills
-    /// read.
-    fn approve_ix(&self, admin: &Keypair) -> Instruction {
+    /// read. It carries the hash of the entry as staged now.
+    fn approve_ix(&self, ctx: &TestContext, admin: &Keypair) -> Instruction {
+        let entry = ctx.svm.get_account(&self.quoter).expect("quoter entry");
+        let staged_config_hash =
+            velocity::state::prop_amm::staged_config_hash(&entry.data).unwrap();
+
         Instruction {
             program_id: velocity_program_id(),
             accounts: velocity::accounts::UpdateQuoterApproved {
@@ -320,7 +324,10 @@ impl QuoterEntry {
             }
             .to_account_metas(None),
             data: velocity::instruction::UpdateQuoterApproved {
-                args: UpdateQuoterApprovedArgs { approved: true },
+                args: UpdateQuoterApprovedArgs {
+                    approved: true,
+                    staged_config_hash,
+                },
             }
             .data(),
         }
@@ -349,7 +356,7 @@ fn register_book(ctx: &mut TestContext, admin: &Keypair, entry: &QuoterEntry, qu
     );
     send(
         ctx,
-        entry.approve_ix(admin),
+        entry.approve_ix(ctx, admin),
         &[admin],
         "update_quoter_approved",
     );

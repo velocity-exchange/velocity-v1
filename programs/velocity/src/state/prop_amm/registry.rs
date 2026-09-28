@@ -244,6 +244,17 @@ impl Size for QuoterV0 {
 // panics at runtime.
 const_assert_eq!(QuoterV0::SIZE, 8 + std::mem::size_of::<QuoterV0>());
 
+/// SHA-256 of the config bytes in a `QuoterV0` account's data, which follow
+/// the discriminator. Approval compares it to the hash the admin reviewed, so
+/// an edit after review cannot reach the slab.
+pub fn staged_config_hash(quoter_data: &[u8]) -> Result<[u8; 32]> {
+    let config = quoter_data
+        .get(8..8 + std::mem::size_of::<QuoterConfigV0>())
+        .ok_or_else(|| error!(ErrorCode::InvalidQuoterConfig))?;
+
+    Ok(solana_program::hash::hash(config).to_bytes())
+}
+
 /// PDA: one entry per (perp market, quoter program, quoted user).
 pub const QUOTER_PDA_SEED: &[u8] = b"quoter";
 

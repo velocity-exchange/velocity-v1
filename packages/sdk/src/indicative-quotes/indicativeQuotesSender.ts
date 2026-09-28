@@ -81,6 +81,25 @@ export class IndicativeQuotesSender {
 	}
 
 	async connect(): Promise<void> {
+		// A caller subscribing twice, or subscribing while a reconnect is
+		// pending, would otherwise end up with two live sockets and every order
+		// delivered twice. Cancel the pending attempt and drop any existing
+		// socket before opening a new one.
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
+		if (this.heartbeatTimeout) {
+			clearTimeout(this.heartbeatTimeout);
+			this.heartbeatTimeout = null;
+		}
+		if (this.sendQuotesInterval) {
+			clearInterval(this.sendQuotesInterval);
+			this.sendQuotesInterval = null;
+		}
+		this.teardownSocket();
+		this.connected = false;
+
 		const ws = new WebSocket(
 			this.endpoint + '?pubkey=' + this.keypair.publicKey.toBase58()
 		);
@@ -219,6 +238,21 @@ export class IndicativeQuotesSender {
 	}
 
 	/**
+	 * Detach listeners, then drop the socket. Order matters: `terminate()` on a
+	 * live socket emits `close`, which would otherwise re-enter
+	 * `scheduleReconnect()`.
+	 */
+	private teardownSocket() {
+		if (this.ws) {
+			this.ws.removeAllListeners();
+			// terminate() on a CONNECTING socket emits `error` on next tick; unhandled, it crashes.
+			this.ws.on('error', () => {});
+			this.ws.terminate();
+			this.ws = null;
+		}
+	}
+
+	/**
 	 * Tear the current socket down and queue a fresh `connect()`.
 	 *
 	 * Idempotent per disconnect, and safe to call from any of the socket's
@@ -229,15 +263,7 @@ export class IndicativeQuotesSender {
 			return;
 		}
 
-		// Listeners go first: `terminate()` on a live socket emits `close`, which
-		// would otherwise re-enter this method.
-		if (this.ws) {
-			this.ws.removeAllListeners();
-			// terminate() on a CONNECTING socket emits `error` on next tick; unhandled, it crashes.
-			this.ws.on('error', () => {});
-			this.ws.terminate();
-			this.ws = null;
-		}
+		this.teardownSocket();
 		if (this.heartbeatTimeout) {
 			clearTimeout(this.heartbeatTimeout);
 			this.heartbeatTimeout = null;

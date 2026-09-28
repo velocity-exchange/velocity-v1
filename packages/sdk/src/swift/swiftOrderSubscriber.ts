@@ -209,6 +209,21 @@ export class SwiftOrderSubscriber {
 		this.acceptDepositTrade = acceptDepositTrade;
 		this.stopped = false;
 
+		// A caller subscribing twice, or subscribing while a reconnect is
+		// pending, would otherwise end up with two live sockets and every order
+		// delivered twice. Cancel the pending attempt and drop any existing
+		// socket before opening a new one.
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
+		if (this.heartbeatTimeout) {
+			clearTimeout(this.heartbeatTimeout);
+			this.heartbeatTimeout = null;
+		}
+		this.teardownSocket();
+		this.subscribed = false;
+
 		const env = this.config.velocityEnv;
 		const endpoint =
 			this.config.endpoint ??

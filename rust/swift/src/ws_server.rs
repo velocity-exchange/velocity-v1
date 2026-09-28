@@ -476,6 +476,17 @@ impl WsConnection {
 
         // Loop that handles the message forwarding and transmission
         let res = 'handler: loop {
+            // Checked here as well as in the select below, because the select is
+            // `biased` and this connection's shutdown arm is last: a connection
+            // with a continuously non-empty outbox would let the earlier arms win
+            // every pass and never observe the watch, then die at exit with no
+            // Close frame. That is the busiest market makers, i.e. exactly the
+            // ones that most need a clean handover.
+            if shutdown::is_closing() {
+                log::info!(target: "ws", "{log_prefix}: server shutting down, closing connection");
+                break 'handler Ok(());
+            }
+
             let is_fast_ws = self.is_fast();
             let has_subs = !self.subscribed_topics.is_empty();
             let mut topic_subs =
@@ -961,15 +972,12 @@ pub async fn start_server() {
     let shutting_down = lifecycle_rx.wait_for(|phase| *phase >= Lifecycle::Closing);
     tokio::pin!(shutting_down);
 
-    loop {
+    let shutting_down_now = 'accept: loop {
         let accepted = tokio::select! {
             biased;
             _ = &mut shutting_down => {
                 log::info!(target: "ws", "shutting down, no longer accepting connections");
-                // Park rather than return: dropping the runtime here would kill
-                // the connection tasks mid-flush, which is the very thing the
-                // close grace exists for. `shutdown::install` owns the exit.
-                std::future::pending().await
+                break 'accept true;
             }
             accepted = listener.accept() => accepted,
         };
@@ -977,7 +985,7 @@ pub async fn start_server() {
             Ok(pair) => pair,
             Err(err) => {
                 log::error!(target: "ws", "accept failed, stopping listener: {err:?}");
-                break;
+                break 'accept false;
             }
         };
 
@@ -1081,6 +1089,18 @@ pub async fn start_server() {
                     .await;
             }
         });
+    };
+
+    // Release the port on the way out. Left bound, a connect during the close
+    // window completes its TCP handshake and then hangs until the process
+    // exits; refused, the client fails over to another replica immediately.
+    drop(listener);
+
+    if shutting_down_now {
+        // Park rather than return: dropping the runtime here would kill the
+        // connection tasks mid-flush, which is the very thing the close grace
+        // exists for. `shutdown::install` owns the exit.
+        std::future::pending::<()>().await
     }
 }
 

@@ -41,6 +41,22 @@ pub async fn fallback(uri: axum::http::Uri) -> impl axum::response::IntoResponse
     (axum::http::StatusCode::NOT_FOUND, format!("No route {uri}"))
 }
 
+/// Drain-only readiness.
+///
+/// Deliberately *not* the health route: that gates on RPC, redis, market subs
+/// and the slot subscriber, every one of which each replica shares with the
+/// others. Wiring a deep check to a readiness probe means one dependency blip
+/// marks every replica NotReady at once and the load balancer is left with no
+/// targets — a harder outage than the degraded service it was avoiding. The
+/// health route stays the deep check, for liveness and alerting.
+pub async fn readiness_check() -> impl axum::response::IntoResponse {
+    if shutdown::is_serving() {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+    }
+}
+
 pub async fn health_check<T: Clone + AsyncCommands>(
     State(server_params): State<ServerParams<T>>,
 ) -> impl axum::response::IntoResponse {
@@ -196,6 +212,7 @@ pub async fn start_server() {
     let app = Router::new()
         .fallback(fallback)
         .route("/confirmation/health", get(health_check))
+        .route("/confirmation/ready", get(readiness_check))
         .route("/confirmation/hash-status", get(get_hash_status))
         .route("/confirmation/hashes", get(get_all_hashes))
         .with_state(state)

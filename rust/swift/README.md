@@ -108,19 +108,38 @@ The phases:
    accepting and lets in-flight requests finish.
 3. **Exit**: the process exits 0.
 
-Per server, the health route that reports the drain: `GET /ws/health` (ws), `GET /health`
-(swift), `GET /confirmation/health` (confirmation). The metrics listeners are deliberately
-left serving until exit, so a final scrape still works.
+### Which route to probe
 
-Two deployment requirements follow from this:
+Point the **readiness** probe at the drain-only route, not the health route:
+
+| Server       | Readiness (drain only)  | Health (deep check)        |
+| ------------ | ----------------------- | -------------------------- |
+| ws           | `GET /ws/health`        | same route — it has no dependency checks |
+| swift        | `GET /ready`            | `GET /health`              |
+| confirmation | `GET /confirmation/ready` | `GET /confirmation/health` |
+
+The health routes on the swift and confirmation servers gate on RPC, redis, market subs
+and the slot subscriber — dependencies every replica shares. Wiring one of those to a
+readiness probe means a single dependency blip marks *every* replica NotReady at once and
+the load balancer is left with no targets, which is a harder outage than the degraded
+service it was avoiding. The `/ready` routes report the drain phase and nothing else. Keep
+the health routes for liveness and alerting.
+
+The metrics listeners are deliberately left serving until exit, so a final scrape works.
+
+Two deployment requirements follow:
 
 - `terminationGracePeriodSeconds` must exceed `SHUTDOWN_DRAIN_SECS + SHUTDOWN_CLOSE_SECS`,
   or the kubelet SIGKILLs the process mid-drain and none of the above happens.
-- `SHUTDOWN_DRAIN_SECS` must exceed the load balancer's deregistration delay and at least
-  two readiness-probe periods, so a probe is guaranteed to observe the failure.
+- `SHUTDOWN_DRAIN_SECS` must cover the time it takes traffic to actually stop arriving:
+  the readiness probe noticing (`failureThreshold x periodSeconds`) plus however long the
+  load balancer takes to stop sending *new* connections to a deregistering target. Note
+  this is **not** the target group's `deregistration_delay` — that bounds how long
+  *existing* connections may linger, and it can safely be far larger than the drain
+  window, since the close phase ends those connections itself.
 
-Those health routes are therefore *readiness* signals as well as liveness ones. Wiring one
-as a liveness probe alone defeats the drain, because nothing acts on the failure.
+A drain nobody observes is inert, so at least one probe must be wired to a route that
+reports it.
 
 Clients are expected to reconnect. The in-repo subscribers do: the two TypeScript ones
 (`packages/sdk/src/swift/swiftOrderSubscriber.ts` and

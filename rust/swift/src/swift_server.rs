@@ -701,6 +701,22 @@ pub async fn deposit_trade(
     (status, Json(resp))
 }
 
+/// Drain-only readiness.
+///
+/// Deliberately *not* the health route: that gates on RPC, redis, market subs
+/// and the slot subscriber, every one of which each replica shares with the
+/// others. Wiring a deep check to a readiness probe means one dependency blip
+/// marks every replica NotReady at once and the load balancer is left with no
+/// targets — a harder outage than the degraded service it was avoiding. The
+/// health route stays the deep check, for liveness and alerting.
+pub async fn readiness_check() -> impl axum::response::IntoResponse {
+    if shutdown::is_serving() {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+    }
+}
+
 pub async fn health_check(
     State(server_params): State<&'static ServerParams>,
 ) -> impl axum::response::IntoResponse {
@@ -906,6 +922,7 @@ pub async fn start_server() {
         .route("/orders", post(process_order_wrapper))
         .route("/depositTrade", post(deposit_trade))
         .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
         .layer(cors)
         .with_state(state);
 

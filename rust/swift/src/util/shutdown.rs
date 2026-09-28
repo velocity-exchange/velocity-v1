@@ -7,7 +7,14 @@
 //! channel rather than growing its own copy of the phase machine.
 
 use {
-    std::{env, sync::OnceLock, time::Duration},
+    std::{
+        env,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            OnceLock,
+        },
+        time::Duration,
+    },
     tokio::{
         signal::unix::{signal, SignalKind},
         sync::watch,
@@ -32,6 +39,18 @@ pub enum Lifecycle {
 
 static LIFECYCLE: OnceLock<watch::Sender<Lifecycle>> = OnceLock::new();
 
+/// [`Lifecycle::Closing`] mirrored as a plain flag.
+///
+/// The watch channel is the *wake* mechanism; this is the cheap *poll*. A
+/// `select!` arm can be starved — `biased` skips later arms whenever an earlier
+/// one is ready — so a connection with continuous traffic would never observe
+/// the watch and would be killed at exit without its goodbye. An atomic load at
+/// the top of such a loop costs a couple of nanoseconds and cannot be starved.
+///
+/// Stored with release ordering *after* the watch value, so a task that breaks
+/// on this flag and then reads the phase back cannot observe a stale one.
+static CLOSING: AtomicBool = AtomicBool::new(false);
+
 fn channel() -> &'static watch::Sender<Lifecycle> {
     LIFECYCLE.get_or_init(|| watch::channel(Lifecycle::Running).0)
 }
@@ -48,6 +67,14 @@ pub fn subscribe() -> watch::Receiver<Lifecycle> {
 /// while still serving in-flight work.
 pub fn is_serving() -> bool {
     *channel().borrow() == Lifecycle::Running
+}
+
+/// True once the drain window has elapsed and connections should close.
+///
+/// Cheap enough to check on every pass of a hot loop; see [`CLOSING`] for why
+/// a loop that also selects on the watch still wants this.
+pub fn is_closing() -> bool {
+    CLOSING.load(Ordering::Acquire)
 }
 
 /// Resolves once the drain window has elapsed and connections should close.
@@ -86,9 +113,13 @@ fn duration_from_env(key: &str, default_secs: u64) -> Duration {
 /// `terminationGracePeriodSeconds` on the pod must exceed the sum, or the
 /// kubelet SIGKILLs the process mid-drain and nothing has been gained.
 pub fn install() {
+    // Registered on the caller's thread, not inside the task below: a failed
+    // registration should be a panic someone sees at startup rather than one
+    // lost in a detached task.
+    let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler installs");
+    let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler installs");
+
     tokio::spawn(async move {
-        let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler installs");
-        let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler installs");
         tokio::select! {
             _ = sigterm.recv() => log::info!(target: "shutdown", "SIGTERM received"),
             _ = sigint.recv() => log::info!(target: "shutdown", "SIGINT received"),
@@ -98,12 +129,29 @@ pub fn install() {
         let close = duration_from_env("SHUTDOWN_CLOSE_SECS", 5);
         let tx = channel();
 
+        // Waiting out the full drain for a local ctrl-C is just annoying, and an
+        // operator sending a second SIGTERM means it now.
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigterm.recv() => (),
+                _ = sigint.recv() => (),
+            }
+            log::warn!(target: "shutdown", "second signal received, exiting immediately");
+            std::process::exit(0);
+        });
+
+        // `send_replace`, not `send`: `send` is a no-op that returns `Err` when
+        // no receiver exists yet, and receivers are only created once a server
+        // reaches its accept loop. A signal arriving during startup would
+        // otherwise leave the phase latched at `Running` — health reporting
+        // fine, nothing draining — for the whole window.
         log::info!(target: "shutdown", "draining for {drain:?}: health checks now fail");
-        let _ = tx.send(Lifecycle::Draining);
+        tx.send_replace(Lifecycle::Draining);
         tokio::time::sleep(drain).await;
 
         log::info!(target: "shutdown", "drain elapsed, closing connections with {close:?} grace");
-        let _ = tx.send(Lifecycle::Closing);
+        tx.send_replace(Lifecycle::Closing);
+        CLOSING.store(true, Ordering::Release);
         tokio::time::sleep(close).await;
 
         log::info!(target: "shutdown", "shutdown complete");

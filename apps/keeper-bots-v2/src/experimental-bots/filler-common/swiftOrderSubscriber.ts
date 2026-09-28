@@ -44,6 +44,12 @@ export class SwiftOrderSubscriber {
 	private reconnectTimeout: NodeJS.Timeout | null = null;
 	private ws: WebSocket | null = null;
 	subscribed: boolean = false;
+	/**
+	 * Set when the server rejects a market subscription. The connection is fine
+	 * and authenticated, so `subscribed` alone would read as healthy while at
+	 * least one market silently delivers nothing.
+	 */
+	private subscribeRejected = false;
 
 	constructor(private config: SwiftOrderSubscriberConfig) {}
 
@@ -81,6 +87,7 @@ export class SwiftOrderSubscriber {
 			message['message']?.toLowerCase() === 'authenticated'
 		) {
 			this.subscribed = true;
+			this.subscribeRejected = false;
 			// Reset here rather than on `open`: a pod that is mid-shutdown still
 			// completes the TCP handshake, so a successful auth is the first real
 			// proof the connection is usable.
@@ -100,6 +107,21 @@ export class SwiftOrderSubscriber {
 	}
 
 	async subscribe() {
+		// A caller subscribing twice, or subscribing while a reconnect is
+		// pending, would otherwise end up with two live sockets and every order
+		// delivered twice. Cancel the pending attempt and drop any existing
+		// socket before opening a new one.
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
+		if (this.heartbeatTimeout) {
+			clearTimeout(this.heartbeatTimeout);
+			this.heartbeatTimeout = null;
+		}
+		this.teardownSocket();
+		this.subscribed = false;
+
 		const ws = new WebSocket(
 			this.config.endpoint +
 				'?pubkey=' +
@@ -142,6 +164,21 @@ export class SwiftOrderSubscriber {
 
 				if (message['channel'] === 'auth') {
 					this.handleAuthMessage(message);
+				}
+
+				// The server acknowledges a subscribe only when it *fails* (an
+				// unknown market, or a topic it has no channel for), so a
+				// rejection is the one chance to notice that this feed is
+				// authenticated but will never deliver that market's orders.
+				// Without this the parent reports healthy on a silent feed.
+				if (message['error']) {
+					console.error(
+						`Swift server rejected a request on channel ${message['channel']}: ${message['error']}`
+					);
+					if (message['channel'] === 'subscribe') {
+						this.subscribeRejected = true;
+						this.sendLivenessCheck(false);
+					}
 				}
 
 				if (message['order']) {
@@ -232,6 +269,11 @@ export class SwiftOrderSubscriber {
 		return Math.floor(Math.random() * ceiling);
 	}
 
+	/** True only when authenticated *and* every market subscribe was accepted. */
+	isFeedHealthy(): boolean {
+		return this.subscribed && !this.subscribeRejected;
+	}
+
 	/**
 	 * Report feed state to the parent filler, which latches it into
 	 * `swiftOrderSubscriberHealth` and gates its own `healthCheck()` on it.
@@ -307,7 +349,9 @@ async function main() {
 	// state so a child that wedges without emitting either goes stale rather
 	// than leaving the parent latched on a value it can no longer trust.
 	setInterval(() => {
-		swiftOrderSubscriber.sendLivenessCheck(swiftOrderSubscriber.subscribed);
+		swiftOrderSubscriber.sendLivenessCheck(
+			swiftOrderSubscriber.isFeedHealthy()
+		);
 	}, LIVENESS_INTERVAL_MS);
 }
 

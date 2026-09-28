@@ -55,8 +55,9 @@ impl BookOrderSweep for NoBooks {
 pub enum BookCancelScope {
     /// Every perp market that is not isolated.
     Cross,
-    /// One isolated perp market.
-    Isolated(u16),
+    /// One perp market. An isolated liquidation and an expired-position
+    /// settle take this scope.
+    Market(u16),
     /// Every perp market.
     All,
 }
@@ -66,7 +67,7 @@ impl BookCancelScope {
     /// names one market for an isolated mode, and no market for the cross mode.
     pub fn of_liquidation(slot_scope: (Option<MarketType>, Option<u16>)) -> Self {
         match slot_scope.1 {
-            Some(market_index) => Self::Isolated(market_index),
+            Some(market_index) => Self::Market(market_index),
             None => Self::Cross,
         }
     }
@@ -74,7 +75,7 @@ impl BookCancelScope {
     fn covers(&self, position: &PerpPosition) -> bool {
         match self {
             Self::Cross => !position.is_isolated(),
-            Self::Isolated(market_index) => position.market_index == *market_index,
+            Self::Market(market_index) => position.market_index == *market_index,
             Self::All => true,
         }
     }

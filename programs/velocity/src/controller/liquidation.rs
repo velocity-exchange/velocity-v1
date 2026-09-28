@@ -5116,7 +5116,7 @@ pub fn set_user_status_to_being_liquidated(
         if !user.is_isolated_margin_being_liquidated(*market_index)?
             && !isolated_margin_calculation.meets_margin_requirement()
         {
-            latched_scopes.push(BookCancelScope::Isolated(*market_index));
+            latched_scopes.push(BookCancelScope::Market(*market_index));
             user.enter_isolated_margin_liquidation(*market_index, slot)?;
         }
     }

@@ -171,7 +171,7 @@ fn a_market_out_of_scope_is_not_swept() {
     assert_eq!(user.perp_positions[0].open_orders, 2);
 
     let cancel =
-        cancel_book_orders(&mut user, BookCancelScope::Isolated(MARKET), &mut books).unwrap();
+        cancel_book_orders(&mut user, BookCancelScope::Market(MARKET), &mut books).unwrap();
 
     assert_eq!(cancel.orders, 2);
 }

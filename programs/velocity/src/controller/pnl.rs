@@ -2,6 +2,7 @@ use {
     crate::{
         controller::{
             funding::settle_funding_payment,
+            liquidation::{cancel_book_orders, BookCancelScope, BookOrderSweep},
             orders::{cancel_orders, validate_market_within_price_band},
             position::{
                 get_position_index, update_position_and_market, update_quote_asset_amount,
@@ -451,6 +452,10 @@ pub fn settle_pnl(
 /// that matters. It moves builder and referrer fees out of the market's pnl
 /// pool. A paused market must not lose those fees to a call that settled
 /// nothing.
+///
+/// The user's book orders on the market count in `open_orders`. After expiry
+/// only this call removes them, through `books`. `books` is a seventh
+/// argument because only the instruction holds those accounts.
 pub fn settle_expired_position(
     perp_market_index: u16,
     user: &mut User,
@@ -458,6 +463,7 @@ pub fn settle_expired_position(
     maps: &mut AccountMaps,
     clock: &Clock,
     state: &State,
+    books: &mut dyn BookOrderSweep,
 ) -> VelocityResult<bool> {
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
@@ -553,6 +559,8 @@ pub fn settle_expired_position(
         "Market requires {} seconds buffer to settle after expiry_ts",
         state.settlement_duration
     )?;
+
+    cancel_book_orders(user, BookCancelScope::Market(perp_market_index), books)?;
 
     validate!(
         user.perp_positions[position_index].open_orders == 0,

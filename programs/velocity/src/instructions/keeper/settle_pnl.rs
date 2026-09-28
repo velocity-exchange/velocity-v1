@@ -4,6 +4,10 @@
 //! pnl, discharge the revenue share the settle made payable, and return an
 //! isolated-position deposit that the settle freed. [`PnlSettlement`] holds that
 //! body, so the single-market and batch entrypoints cannot drift apart.
+//!
+//! A settle in an expired market also takes the user's book orders in that
+//! market off the book. Each book is its quoter slab, the book and the CLOB
+//! program, after the revenue-share accounts.
 
 use super::*;
 
@@ -37,6 +41,10 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
     )?;
 
     let mut rev_share = RevenueShareSweep::load(&mut remaining_accounts, &user.authority, &state)?;
+    let mut books = super::liquidation::LiquidationBookAccounts::after(
+        ctx.remaining_accounts,
+        &remaining_accounts,
+    );
 
     PnlSettlement {
         state_loader: &ctx.accounts.state,
@@ -48,7 +56,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         meets_margin_requirement: None,
         mode: SettlePnlMode::MustSettle,
     }
-    .settle_market(market_index, user, &mut maps, &mut rev_share)?;
+    .settle_market(market_index, user, &mut maps, &mut rev_share, &mut books)?;
 
     let spot_market = maps.spot_market_map.get_quote_spot_market()?;
     validate_spot_market_vault_amount(&spot_market, ctx.accounts.spot_market_vault.amount)?;
@@ -81,6 +89,10 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
     )?;
 
     let mut rev_share = RevenueShareSweep::load(&mut remaining_accounts, &user.authority, &state)?;
+    let mut books = super::liquidation::LiquidationBookAccounts::after(
+        ctx.remaining_accounts,
+        &remaining_accounts,
+    );
 
     let settlement = PnlSettlement {
         state_loader: &ctx.accounts.state,
@@ -97,7 +109,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
     };
 
     for market_index in market_indexes.iter() {
-        settlement.settle_market(*market_index, user, &mut maps, &mut rev_share)?;
+        settlement.settle_market(*market_index, user, &mut maps, &mut rev_share, &mut books)?;
     }
 
     let spot_market = maps.spot_market_map.get_quote_spot_market()?;
@@ -160,8 +172,9 @@ impl PnlSettlement<'_, '_> {
         user: &mut User,
         maps: &mut AccountMaps<'info>,
         rev_share: &mut RevenueShareSweep<'info>,
+        books: &mut dyn controller::liquidation::BookOrderSweep,
     ) -> Result<()> {
-        let settled = self.settle_one_market(market_index, user, maps)?;
+        let settled = self.settle_one_market(market_index, user, maps, books)?;
         self.discharge_revenue_share(market_index, user, maps, rev_share, settled)?;
         self.return_isolated_deposit(market_index, user, maps)
     }
@@ -179,6 +192,7 @@ impl PnlSettlement<'_, '_> {
         market_index: u16,
         user: &mut User,
         maps: &mut AccountMaps,
+        books: &mut dyn controller::liquidation::BookOrderSweep,
     ) -> Result<bool> {
         let market_in_settlement =
             maps.perp_market_map.get_ref(&market_index)?.status == MarketStatus::Settlement;
@@ -213,6 +227,7 @@ impl PnlSettlement<'_, '_> {
             maps,
             self.clock,
             self.state,
+            books,
         )?;
 
         user.update_last_active_slot(self.clock.slot);

@@ -9709,6 +9709,9 @@ export class VelocityClient {
 			[marketIndex],
 			revenueShareEscrowMap
 		);
+		remainingAccounts.push(
+			...(await this.settlementBookMetas(settleeUserAccount, [marketIndex]))
+		);
 
 		return await VelocityCore.buildSettlePnlInstruction({
 			program: this.program,
@@ -9871,6 +9874,9 @@ export class VelocityClient {
 			settleeUserAccount,
 			marketIndexes,
 			revenueShareEscrowMap
+		);
+		remainingAccounts.push(
+			...(await this.settlementBookMetas(settleeUserAccount, marketIndexes))
 		);
 
 		return await this.program.instruction.settleMultiplePnls(
@@ -13213,6 +13219,40 @@ export class VelocityClient {
 					{ pubkey: books.clobProgram, isWritable: false, isSigner: false },
 			  ]
 			: books.pairs;
+	}
+
+	/**
+	 * The books a settle sweeps: each market in `marketIndexes` that is in settlement and holds the
+	 * account's book orders contributes its quoter slab and its book, then the CLOB program follows.
+	 * The program must take those orders before it settles the expired position.
+	 */
+	private async settlementBookMetas(
+		userAccount: UserAccount,
+		marketIndexes: number[]
+	): Promise<AccountMeta[]> {
+		const metas: AccountMeta[] = [];
+		let clobProgram: PublicKey | undefined;
+		for (const marketIndex of marketIndexes) {
+			const market = this.getPerpMarketAccount(marketIndex);
+			if (
+				!market ||
+				!isVariant(market.status, 'settlement') ||
+				clobResidentOpenOrders(userAccount, marketIndex) === 0
+			) {
+				continue;
+			}
+
+			const clob = await this.getClobAccounts(marketIndex);
+			metas.push(
+				{ pubkey: clob.quoterSlab, isWritable: false, isSigner: false },
+				{ pubkey: clob.clobMarket, isWritable: true, isSigner: false }
+			);
+			clobProgram = clob.clobProgram;
+		}
+
+		return clobProgram
+			? [...metas, { pubkey: clobProgram, isWritable: false, isSigner: false }]
+			: metas;
 	}
 
 	/** The `(slab, book)` pairs of every market, except `excludeMarketIndex`, where the account rests book orders. */

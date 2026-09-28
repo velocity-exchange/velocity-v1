@@ -597,6 +597,15 @@ pub fn tx_reimbursement_claimants(
     Ok(claimants.max(1))
 }
 
+/// False for a call that another program makes through CPI. Such a program
+/// counts as one claimant in [`tx_reimbursement_claimants`] however many calls it makes.
+pub fn is_top_level_call(instructions_sysvar: &AccountInfo, discriminator: &[u8]) -> bool {
+    solana_program::sysvar::instructions::get_instruction_relative(0, instructions_sysvar)
+        .is_ok_and(|instruction| {
+            instruction.program_id == crate::ID && instruction.data.starts_with(discriminator)
+        })
+}
+
 /// Distinct accounts this transaction locks.
 ///
 /// The runtime caps a transaction at 64 account locks, the scarce resource on

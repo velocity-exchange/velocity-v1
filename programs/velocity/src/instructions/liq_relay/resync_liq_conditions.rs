@@ -11,7 +11,8 @@
 //! nothing. The opt-in sync created the account before relay ever stages this.
 //! The keeper is paid from the protocol crank treasury, and only for a resync
 //! that found the user's positions changed. The stored payment prices a whole
-//! transaction, so resyncs batched into one transaction share it.
+//! transaction, so resyncs batched into one transaction share it. A resync
+//! invoked through CPI is not paid, because the transaction cannot count it.
 //!
 //! The treasury pays rather than the user's own conditions account, because a
 //! stale threshold is a protocol problem before it is a user's. A resync that
@@ -112,6 +113,11 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
         return Ok(());
     }
 
+    let share = batch_share(payment, &ctx.accounts.instructions_sysvar);
+    if share == 0 {
+        return Ok(());
+    }
+
     ctx.accounts.liq_conditions.load_mut()?.last_paid_sync_slot = slot;
 
     let treasury = ctx.accounts.treasury.to_account_info();
@@ -124,7 +130,7 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     let paid = CrankTreasuryV0::pay_out(
         &treasury,
         &ctx.accounts.keeper.to_account_info(),
-        batch_share(payment, &ctx.accounts.instructions_sysvar).min(available),
+        share.min(available),
         rent_minimum,
     )?;
     let mut treasury_state = ctx.accounts.treasury.load_mut()?;
@@ -139,9 +145,17 @@ fn resync_earns_payment(payment: u64, digest_before: u64, digest_after: u64) -> 
     payment > 0 && digest_before != digest_after
 }
 
-/// This resync's share of a payment that prices a whole transaction. An
-/// unreadable sysvar counts one claimant.
+/// This resync's share of a payment that prices a whole transaction. A resync
+/// that another program invokes through CPI gets nothing, because the sysvar
+/// cannot count those calls. Relay submits each executor at the top level.
 fn batch_share(payment: u64, instructions_sysvar: &AccountInfo) -> u64 {
+    if !crate::instructions::optional_accounts::is_top_level_call(
+        instructions_sysvar,
+        crate::instruction::ResyncLiqConditions::DISCRIMINATOR,
+    ) {
+        return 0;
+    }
+
     let claimants = crate::instructions::optional_accounts::tx_reimbursement_claimants(
         instructions_sysvar,
         crate::instruction::ResyncLiqConditions::DISCRIMINATOR,
@@ -266,5 +280,8 @@ mod tests {
 
         assert_eq!(share(&[&resync]), 20_000);
         assert_eq!(share(&[&resync, &resync, &other, &resync, &resync]), 5_000);
+        // The current index is 0, so `other` runs at the top level and the
+        // resync is its CPI.
+        assert_eq!(share(&[&other, &resync]), 0);
     }
 }

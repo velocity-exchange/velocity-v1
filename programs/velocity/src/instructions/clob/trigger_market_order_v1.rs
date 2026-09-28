@@ -173,9 +173,9 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 
     // Fire the trigger. This validates it, turns a copy of the slot order into
     // a live market order, frees the slot, and pays the flat reward. `None`
-    // means there was no payable work. The order was past its `max_ts`, or a
-    // risk-increasing trigger on a failing account was cancelled. Either way,
-    // skip the fill and the reservoir payout.
+    // means there was no payable work. The order was past its `max_ts`, or it
+    // was cancelled unpaid because it had nothing to reduce or the account
+    // could not carry it. Either way, skip the fill and the reservoir payout.
     let Some(controller::orders::FiredTrigger {
         order: mut fired,
         filler_reward,

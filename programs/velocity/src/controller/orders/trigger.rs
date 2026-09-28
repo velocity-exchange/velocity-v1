@@ -26,8 +26,9 @@ pub struct TriggerAccounts<'a, 'info> {
 /// count. The remainder the caller rests adds one back for its CLOB order.
 ///
 /// Returns `None` when there is no payable work. That happens when the order
-/// is past its `max_ts`, or when a risk-increasing trigger on a failing
-/// account is cancelled instead of fired. The caller skips the fill and the
+/// is past its `max_ts`, or when the order is cancelled instead of fired: a
+/// reduce-only order with nothing to reduce, or a risk-increasing trigger on a
+/// failing account. The caller skips the fill and the
 /// reservoir payout on `None`, so a failing account's cancel cannot drain the
 /// market reservoir.
 pub fn trigger_and_route_order(
@@ -73,10 +74,14 @@ pub fn trigger_and_route_order(
         fired.reduce_only = true;
     }
 
-    // A risk-increasing trigger on a failing account cancels instead of
-    // firing. The gate runs before any reward.
+    // A reduce-only fire with nothing to reduce moves nothing, and a
+    // risk-increasing trigger on a failing account may not fire. Both cancel
+    // before any reward, so an owner cannot farm the reward through a second
+    // wallet.
     let armed = user.orders[order_index];
-    if fired_order_must_cancel(
+    let explanation = if !reduces_position(user, &fired)? {
+        OrderActionExplanation::ReduceOnlyOrderIncreasedPosition
+    } else if fired_order_must_cancel(
         user,
         &armed,
         &fired,
@@ -84,7 +89,13 @@ pub fn trigger_and_route_order(
         accounts.user_stats,
         maps,
     )? {
-        cancel_trigger_order(user, order_index, accounts, maps, clock)?;
+        OrderActionExplanation::InsufficientFreeCollateral
+    } else {
+        OrderActionExplanation::None
+    };
+
+    if explanation != OrderActionExplanation::None {
+        cancel_trigger_order(user, order_index, accounts, maps, clock, explanation)?;
         return Ok(None);
     }
 
@@ -433,17 +444,32 @@ fn trigger_must_cancel(
         || load!(user_stats_loader)?.is_equity_breaker_tripped())
 }
 
-/// Cancel a risk-increasing trigger the account may not carry.
+/// Whether a fired order can move the position. Only a reduce-only order with
+/// no position left to reduce cannot.
+fn reduces_position(user: &User, fired: &Order) -> VelocityResult<bool> {
+    if !fired.reduce_only {
+        return Ok(true);
+    }
+
+    let position_base = user
+        .get_perp_position(fired.market_index)
+        .map(|position| position.base_asset_amount)
+        .unwrap_or(0);
+    Ok(fired.get_base_asset_amount_unfilled(Some(position_base))? != 0)
+}
+
+/// Cancel a trigger that may not fire, unpaid.
 ///
-/// The subaccount may already sit below its raw floor when the cancel
-/// succeeds, so this trips the equity breaker inline. The keeper's trigger is
-/// what trips it.
+/// After a risk cancel the subaccount may already sit below its raw floor, so
+/// that cancel trips the equity breaker inline. The keeper's trigger is what
+/// trips it.
 fn cancel_trigger_order(
     user: &mut User,
     order_index: usize,
     accounts: &TriggerAccounts,
     maps: &mut AccountMaps,
     clock: &Clock,
+    explanation: OrderActionExplanation,
 ) -> VelocityResult {
     let filler_key = accounts.filler.key();
     cancel_order(
@@ -453,13 +479,16 @@ fn cancel_trigger_order(
         maps,
         clock.unix_timestamp,
         clock.slot,
-        OrderActionExplanation::InsufficientFreeCollateral,
+        explanation,
         Some(&filler_key),
         0,
         false,
     )?;
 
     user.update_last_active_slot(clock.slot);
+    if explanation != OrderActionExplanation::InsufficientFreeCollateral {
+        return Ok(());
+    }
 
     let mut user_stats = load_mut!(accounts.user_stats)?;
     controller::equity_floor::try_lazy_equity_breaker_trip(user, &mut user_stats, maps)
@@ -727,6 +756,32 @@ mod gate_tests {
     #[test]
     fn an_active_market_passes() {
         assert!(trigger_market_gates(&active_market(), 100).is_ok());
+    }
+
+    /// A reduce-only stop with no position to reduce is cancelled unpaid
+    /// rather than fired, so its owner cannot farm the reward.
+    #[test]
+    fn a_reduce_only_fire_with_nothing_to_reduce_moves_nothing() {
+        use crate::{
+            controller::position::PositionDirection, state::user::PerpPosition,
+            test_utils::get_positions,
+        };
+
+        let mut user = user_with_armed_trigger(0);
+        let mut fired = user.orders[0];
+        fired.base_asset_amount = 1;
+        fired.direction = PositionDirection::Short;
+        assert!(super::reduces_position(&user, &fired).unwrap());
+
+        fired.reduce_only = true;
+        assert!(!super::reduces_position(&user, &fired).unwrap());
+
+        user.perp_positions = get_positions(PerpPosition {
+            market_index: MARKET,
+            base_asset_amount: 1,
+            ..PerpPosition::default()
+        });
+        assert!(super::reduces_position(&user, &fired).unwrap());
     }
 
     /// Firing a trigger pays the keeper out of the owner and commits the

@@ -14,7 +14,7 @@ runs:
       run: |
         if ! command -v avm >/dev/null 2>&1; then
           sudo apt update -y && sudo apt install -y libudev-dev pkg-config build-essential
-          cargo install --git https://github.com/coral-xyz/anchor avm --force
+          cargo install --git https://github.com/coral-xyz/anchor --tag v${{ env.ANCHOR_VERSION }} avm --locked --force
         fi
         avm install ${{ env.ANCHOR_VERSION }}
         avm use ${{ env.ANCHOR_VERSION }}

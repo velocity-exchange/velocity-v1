@@ -3656,6 +3656,32 @@ export class VaultClient {
 			.instruction();
 	}
 
+	/**
+	 * Flags a vault created before vault initialization set the vault-owned flag.
+	 * The signer must be the vault manager or the vaults admin.
+	 */
+	public async markUserVaultOwned(
+		vault: PublicKey,
+		uiTxParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getMarkUserVaultOwnedIx(vault);
+		return await this.createAndSendTxn([ix], uiTxParams);
+	}
+
+	public async getMarkUserVaultOwnedIx(
+		vault: PublicKey
+	): Promise<TransactionInstruction> {
+		const vaultAccount = await this.program.account.vault.fetch(vault);
+		return this.program.methods
+			.markUserVaultOwned()
+			.accounts({
+				vault,
+				authority: this.velocityClient.wallet.publicKey,
+				velocityUser: vaultAccount.user,
+			})
+			.instruction();
+	}
+
 	public async managerUpdateFees(
 		vault: PublicKey,
 		params: {

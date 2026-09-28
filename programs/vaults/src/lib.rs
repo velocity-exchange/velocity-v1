@@ -70,6 +70,12 @@ pub mod vaults {
         instructions::update_vault(ctx, params)
     }
 
+    pub fn mark_user_vault_owned<'info>(
+        ctx: Context<'info, MarkUserVaultOwned<'info>>,
+    ) -> Result<()> {
+        instructions::mark_user_vault_owned(ctx)
+    }
+
     pub fn update_vault_manager<'info>(
         ctx: Context<'info, UpdateVault<'info>>,
         manager: Pubkey,

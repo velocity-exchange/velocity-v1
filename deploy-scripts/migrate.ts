@@ -28,6 +28,9 @@
  *      order, and the keeper sweep (`force_cancel_orders`) reaches an account only while it is
  *      below its initial margin requirement. A healthy owner's stale order is therefore theirs
  *      to pull.
+ *   5. vault users: flag each vault's velocity User as vault-owned when the vault predates
+ *      vault initialization setting that flag. Only the vault manager or the vaults admin can
+ *      sign, so a vault the keypair cannot sign for is reported.
  *
  * Every step reads on-chain state first and skips what is already correct, so a run that stops
  * part way is resumed by running it again. A new migration belongs here as a step, not in a
@@ -55,11 +58,15 @@ import {
 	getQuoterSlabPublicKey,
 	getVelocityStateAccountPublicKey,
 	getSpotMarketPublicKeySync,
+	UserStatus,
 	Wallet,
 } from '@velocity-exchange/sdk';
 
 const RELAY_PROGRAM = new PublicKey(
 	process.env.RELAY_PROGRAM_ID ?? '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu'
+);
+const VAULTS_ADMIN = new PublicKey(
+	process.env.VAULTS_ADMIN ?? 'GiMXQkJXLVjScmQDkoLJShBJpTh9SDPvT2AZQq8NyEBf'
 );
 const WATCH_V0_LEN = 112;
 /** `OrderBitFlag::PlacedOnClob`: the slot shadows an order resting on the book. */
@@ -496,9 +503,70 @@ async function main() {
 	// 4. legacy orders
 	reportLegacyOrders(users, program);
 
+	// 5. vault users
+	await flagVaultUsers(provider, payer, users, program, act);
+
 	console.log(`\n${args.dryRun ? 'would run' : 'ran'} ${plan.length} steps`);
 	for (const line of plan.slice(0, 40)) console.log(`  ${line}`);
 	if (plan.length > 40) console.log(`  … ${plan.length - 40} more`);
+}
+
+/**
+ * Without the vault-owned flag, the revenue-share sweep can credit a vault's User. That
+ * dilutes the vault's depositors.
+ */
+async function flagVaultUsers(
+	provider: AnchorProvider,
+	payer: Keypair,
+	users: { pubkey: PublicKey; account: { data: Buffer } }[],
+	program: Program,
+	act: (label: string, ixs: TransactionInstruction[]) => Promise<void>
+) {
+	const vaultsIdl = JSON.parse(
+		fs.readFileSync('packages/vaults-sdk/src/idl/vaults.json', 'utf-8')
+	);
+	const vaults = new Program(vaultsIdl, provider);
+	const statusByUser = new Map<string, number>(
+		users.map(({ pubkey, account }) => [
+			pubkey.toBase58(),
+			(program.coder.accounts.decode('user', account.data) as any).status,
+		])
+	);
+
+	const vaultAccounts = await (vaults.account as any).vault.all();
+	let unflagged = 0;
+	for (const { publicKey: vault, account } of vaultAccounts) {
+		const status = statusByUser.get(account.user.toBase58());
+		if (status === undefined || (status & UserStatus.VAULT_OWNED) !== 0) {
+			continue;
+		}
+
+		unflagged += 1;
+		const canSign =
+			payer.publicKey.equals(account.manager) ||
+			payer.publicKey.equals(VAULTS_ADMIN);
+		if (!canSign) {
+			console.log(
+				`vault ${vault.toBase58()}: unflagged, needs manager ${account.manager.toBase58()} or the vaults admin`
+			);
+			continue;
+		}
+
+		await act(`flag vault user ${account.user.toBase58()}`, [
+			await vaults.methods
+				.markUserVaultOwned()
+				.accounts({
+					vault,
+					authority: payer.publicKey,
+					velocityUser: account.user,
+				})
+				.instruction(),
+		]);
+	}
+
+	console.log(
+		`\nvault users: ${vaultAccounts.length} vaults, ${unflagged} unflagged`
+	);
 }
 
 /** The book account the perp market names. */

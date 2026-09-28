@@ -1225,17 +1225,14 @@ export type Vaults = {
 					name: 'velocityUser';
 					writable: true;
 				},
-
 				{
 					name: 'velocityUserConditions';
 					docs: [
 						"from `velocity_user`. A vault's velocity user holds positions like any",
 						'other, so it carries the same relay liquidation coverage.',
 					];
-
 					writable: true;
 				},
-
 				{
 					name: 'velocityState';
 					writable: true;
@@ -1440,17 +1437,14 @@ export type Vaults = {
 					name: 'velocityUser';
 					writable: true;
 				},
-
 				{
 					name: 'velocityUserConditions';
 					docs: [
 						"from `velocity_user`. A vault's velocity user holds positions like any",
 						'other, so it carries the same relay liquidation coverage.',
 					];
-
 					writable: true;
 				},
-
 				{
 					name: 'velocityState';
 					writable: true;
@@ -1868,9 +1862,9 @@ export type Vaults = {
 				{
 					name: 'velocityState';
 					docs: [
-						"Velocity's `State`, read only for the live slot duration so this",
-						"instruction's oracle staleness windows match every other vault path.",
-						'`State::slot_duration_from_account_info`',
+						"Velocity's `State`. This instruction reads only the slot clock from it, so",
+						'its oracle staleness windows match every other vault path.',
+						'`State::slot_clock_from_account_info`',
 					];
 				},
 			];
@@ -1912,7 +1906,7 @@ export type Vaults = {
 				{
 					name: 'velocityUser';
 					docs: [
-						"Installing a matured update settles the vault's fee first, which needs vault equity.",
+						'A matured update settles the vault fee before it installs, and that needs vault equity.',
 					];
 				},
 				{
@@ -2035,6 +2029,29 @@ export type Vaults = {
 				},
 				{
 					name: 'velocityState';
+				},
+				{
+					name: 'velocityProgram';
+					address: 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
+				},
+			];
+			args: [];
+		},
+		{
+			name: 'markUserVaultOwned';
+			discriminator: [16, 162, 58, 131, 186, 210, 233, 37];
+			accounts: [
+				{
+					name: 'vault';
+				},
+				{
+					name: 'authority';
+					docs: ['The vault manager or the vaults admin.'];
+					signer: true;
+				},
+				{
+					name: 'velocityUser';
+					writable: true;
 				},
 				{
 					name: 'velocityProgram';
@@ -3707,12 +3724,10 @@ export type Vaults = {
 					{
 						name: 'ifFeeFactor';
 						docs: [
-							'Fraction of spot deposit-interest gains carved out to the insurance fund',
-							'(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the',
-							'protocol-vs-staker split was removed — the IF is now 100% staker-owned,',
-							'so this is purely the staker IF carveout.) A cut too small to reach a',
-							'whole unit is carried on `revenue_pool`, not floored away. See',
-							'`split_deposit_interest`.',
+							'Fraction of spot deposit-interest gains carved out to the insurance fund (staker-owned), in',
+							'`IF_FACTOR_PRECISION`. Was `total_factor` before the protocol/staker split was removed; the IF',
+							'is now 100% staker-owned, so this is the whole staker carveout. A cut too small to reach a',
+							'whole unit is carried on the carveout pools, not floored away. See `split_deposit_interest`.',
 						];
 						type: 'u32';
 					},
@@ -4100,18 +4115,20 @@ export type Vaults = {
 						type: 'u64';
 					},
 					{
-						name: 'auctionStartPrice';
+						name: 'clobNodeIndex';
 						docs: [
-							'The start price for the auction. Only relevant for market/oracle orders',
-							'precision: PRICE_PRECISION',
+							"The CLOB node this order's shadow points at, when",
+							'[`OrderBitFlag::PlacedOnClob`] is set. Zero otherwise. Read it through',
+							'[`Order::clob_order_ref`], which casts it back to `u32`. The width is',
+							"what `Order`'s fixed 104-byte layout leaves here.",
 						];
 						type: 'i64';
 					},
 					{
-						name: 'auctionEndPrice';
+						name: 'clobOrderId';
 						docs: [
-							'The end price for the auction. Only relevant for market/oracle orders',
-							'precision: PRICE_PRECISION',
+							"The CLOB order id this order's shadow points at, under the same",
+							'conditions as [`Order::clob_node_index`]. Cast back to `u64`.',
 						];
 						type: 'i64';
 					},
@@ -4223,14 +4240,18 @@ export type Vaults = {
 						};
 					},
 					{
-						name: 'auctionDuration';
-						docs: ['How many slots the auction lasts'];
+						name: 'unusedAuctionDuration';
+						docs: [
+							'Free byte. It held the auction length until an order stopped resting',
+							'to auction. `Order` is 104 bytes with no slack and is an array element',
+							'in `User`, so the byte cannot move.',
+						];
 						type: 'u8';
 					},
 					{
 						name: 'postedSlotTail';
 						docs: [
-							'Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)',
+							'Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)',
 						];
 						type: 'u8';
 					},
@@ -4242,32 +4263,16 @@ export type Vaults = {
 						];
 						type: 'u8';
 					},
-
-					{
-						name: 'routeDigest';
-						docs: [
-							"The route this order's signer chose, as",
-							'[`crate::state::order_params::route_digest`] of the `QuoterV0` entries',
-							'their signed message named. Zero when no route was signed, which is',
-							'every directly-placed order.',
-							'',
-							'A digest rather than the list because an `Order` has no room for',
-							'pubkeys, and stored bytes here cost 32 slots each. The filler supplies',
-							'the list and this pins which list it may supply — the check that the',
-							'fill actually *carried* those entries is then a containment test',
-							'against the transaction. Bytes, not a `u32`, to stay alignment-free in',
-							'the middle of a byte run.',
-						];
-
-						type: {
-							array: ['u8', 4];
-						};
-					},
-
 					{
 						name: 'padding';
+						docs: [
+							'Free bytes. These held a route digest until routing moved to placement',
+							'and `SignedMsgOrderId::route_digest`. `Order` is 104 bytes with no',
+							'slack and is an array element in `User`. Removing them would rewrite',
+							'every existing account.',
+						];
 						type: {
-							array: ['u8', 1];
+							array: ['u8', 5];
 						};
 					},
 				];
@@ -4421,10 +4426,14 @@ export type Vaults = {
 						type: 'u64';
 					},
 					{
-						name: 'padding';
-						type: {
-							array: ['u8', 2];
-						};
+						name: 'reduceOnlyClobOrders';
+						docs: [
+							'The count of reduce-only orders the user rests on the CLOB for this',
+							'market. The book is position-blind, so this is nonzero exactly when',
+							'the router must pass a `base_cover` cap for this user. Velocity arms',
+							'it when it rests a reduce-only order and disarms it when that order leaves the book.',
+						];
+						type: 'u16';
 					},
 					{
 						name: 'maxMarginRatio';
@@ -4473,11 +4482,10 @@ export type Vaults = {
 					{
 						name: 'padding';
 						docs: [
-							'Filler for the alignment gap before the two dust fields. Those fields must',
-							'start at offsets 20 and 24. The host layout and the SBF layout then agree,',
-							'and the packed borsh layout in the IDL reaches the same offsets. This',
-							'field shrank from 14 bytes to 2. The size of the struct and every other',
-							'field offset are unchanged. Do not reorder or resize these fields.',
+							'Filler for the alignment gap before the two dust fields, which must start',
+							'at offsets 20 and 24. The host layout, the SBF layout, and the packed',
+							'borsh layout in the IDL then agree. The struct size and every other field',
+							'offset are unchanged. Do not reorder or resize these fields.',
 						];
 						type: {
 							array: ['u8', 2];
@@ -5145,19 +5153,24 @@ export type Vaults = {
 						docs: [
 							"Protocol's carveout of lending deposit-interest gains, routed to",
 							'`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to',
-							'reach a whole unit is carried on the carveout pools, not floored away. See',
-							'`split_deposit_interest`.',
+							'reach a whole unit is carried on the carveout pools rather than floored',
+							'away. See `split_deposit_interest`.',
 						];
 						type: 'u32';
 					},
 					{
 						name: 'ifLastSettleVaultAmount';
 						docs: [
+							'allow-verbose: the donation-resistance logic and the exact outflow-path list are',
+							'load-bearing invariants for insurance-fund accounting. Cutting them below what an',
+							"auditor needs to verify the cap's donation-proofing would drop real information, not",
+							'restate the code.',
+							'',
 							'Lowest insurance-fund vault balance since the end of the last revenue',
 							'settle. `settle_revenue_to_insurance_fund` starts each period by writing',
 							'the live vault balance plus the amount that settle transfers in, and',
 							'`record_insurance_fund_outflow` lowers it on every path that moves tokens',
-							'out of the vault: `remove_insurance_fund_stake`,',
+							'out of the vault. Those paths are `remove_insurance_fund_stake`,',
 							'`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and',
 							'`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so',
 							'it lags the live vault by up to one `revenue_settle_period`.',
@@ -5165,20 +5178,21 @@ export type Vaults = {
 							'The per-period revenue-settle APR cap is sized off',
 							'`min(live_if_vault, this)`, so it counts only capital the fund held for',
 							'the whole period. A donation spiked into the live vault right before a',
-							'settle is absent from this field and cannot lift the cap. Tracking the',
-							'running minimum is what closes the same trick after a dip: a loss draw',
-							'takes the vault to 100, a donation puts it back to 1000, and a plain',
-							'end-of-period snapshot would read 1000 again. A donation that does',
-							'survive a full period counts, and correctly so — by then it belongs to',
-							'the stakers pro rata, so the fund really is that large.',
+							'settle is absent from this field and cannot lift the cap. The running',
+							'minimum closes the same trick after a dip. A loss draw takes the vault',
+							'to 100 and a donation puts it back to 1000, where a plain end-of-period',
+							'snapshot would read 1000 again. A donation that survives a full period',
+							'does count. By then it belongs to the stakers pro rata, so the fund',
+							'really is that large.',
 							'',
 							'`0` means the market never settled revenue, or settled while the vault',
-							'was empty. Both give a cap base of `0` for one period and then self-heal,',
+							'was empty. Both give a cap base of `0` for one period and then recover,',
 							"because the settle that reads `0` still writes the new period's balance.",
 							'',
-							'(The unstake-cancel share forfeiture is donation-proofed differently — by',
-							'withdraw-and-restake at the active share price — and does *not* read this',
-							'field.) Repurposed from trailing padding — layout and size are unchanged.',
+							'The unstake-cancel share forfeiture does not read this field. It is',
+							'donation-proofed by withdraw-and-restake at the active share price. The',
+							'field was repurposed from trailing padding, so the layout and the size',
+							'are unchanged.',
 						];
 						type: 'u64';
 					},
@@ -5641,12 +5655,14 @@ export type Vaults = {
 					},
 					{
 						name: 'openAuctions';
-						docs: ['number of open orders with auction'];
+						docs: [
+							'Always zero. These counted orders that ran an auction. Nothing',
+							'auctions now, and `User` is a fixed layout, so the two stay.',
+						];
 						type: 'u8';
 					},
 					{
 						name: 'hasOpenAuction';
-						docs: ['Whether or not user has open order with auction'];
 						type: 'bool';
 					},
 					{
@@ -5856,9 +5872,19 @@ export type Vaults = {
 						type: 'u8';
 					},
 					{
+						name: 'acceleratedReferralStatus';
+						docs: [
+							'Persistent referral reward status. See [`AcceleratedReferralStatus`].',
+							'Separate from `referrer_status`, which says whether this authority',
+							'refers or was referred by somebody else. The field comes from former',
+							'padding, so pre-upgrade accounts read `0`, standard status with automatic enrollment allowed.',
+						];
+						type: 'u8';
+					},
+					{
 						name: 'padding';
 						type: {
-							array: ['u8', 62];
+							array: ['u8', 61];
 						};
 					},
 				];

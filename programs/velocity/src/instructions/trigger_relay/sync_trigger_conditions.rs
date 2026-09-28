@@ -19,6 +19,9 @@
 //! pass refuses a call that leaves out the market, oracle, crank account or quoter
 //! slab of any watched order.
 //!
+//! Reduce-only orders take the slots before the others, so a stop-loss is not
+//! left unwatched behind orders that open a position.
+//!
 //! A book that is suspended or inactive still arms its market's triggers. The
 //! executors refuse to fire while the book takes no flow, so each trigger stays
 //! armed. A sync during a suspension would otherwise clear every watch on the
@@ -175,7 +178,7 @@ pub fn rewrite_trigger_conditions<'info>(
 
     let user = crate::load!(user_loader)?;
     let mut slot_index = 0usize;
-    for order in user.orders.iter() {
+    for order in in_watch_priority(&user.orders) {
         if slot_index >= TRIGGER_CONDITION_SLOTS {
             break;
         }
@@ -220,6 +223,16 @@ pub fn rewrite_trigger_conditions<'info>(
     }
 
     clear_unused_trigger_slots(&mut conditions, slot_index)
+}
+
+/// The user's orders, reduce-only first. The slot cap is below the order cap,
+/// so the triggers that close a position take the slots before the triggers
+/// that open one.
+fn in_watch_priority(
+    orders: &[crate::state::user::Order],
+) -> impl Iterator<Item = &crate::state::user::Order> {
+    let reducing = orders.iter().filter(|order| order.reduce_only);
+    reducing.chain(orders.iter().filter(|order| !order.reduce_only))
 }
 
 /// Classify `remaining_accounts` and refuse a call that could weaken the

@@ -172,6 +172,22 @@ mod coverage_and_direction {
         );
     }
 
+    /// Only eight triggers are watched. A stop-loss placed after eight
+    /// entries still takes a slot, because reduce-only orders come first.
+    #[test]
+    fn reduce_only_triggers_take_the_slots_first() {
+        let mut orders = [Order::default(); 10];
+        for (index, order) in orders.iter_mut().enumerate() {
+            order.order_id = index as u32 + 1;
+        }
+
+        orders[9].reduce_only = true;
+        let ids: Vec<u32> = super::super::in_watch_priority(&orders)
+            .map(|order| order.order_id)
+            .collect();
+        assert_eq!(ids, vec![10, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
     /// A market with no CLOB has nowhere to fire, so its order stays skipped.
     #[test]
     fn a_trigger_on_a_market_without_a_clob_is_skipped() {

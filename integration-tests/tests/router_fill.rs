@@ -12223,3 +12223,136 @@ fn a_bid_between_the_mark_and_the_ask_takes_nothing_from_the_vamm() {
         "the unfilled order rested, so the route ran and declined the ask"
     );
 }
+
+/// Rest a reduce-only taker remainder for `party`, which must hold a position
+/// the order reduces.
+fn rest_reduce_only_taker_origin_order(
+    fixture: &mut Fixture,
+    party: &Party,
+    direction: PositionDirection,
+    price: u64,
+    size: u64,
+) {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let ix = take_ix(
+        fixture,
+        party,
+        OrderParams {
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            direction,
+            base_asset_amount: size,
+            price,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            reduce_only: true,
+            ..OrderParams::default()
+        },
+    );
+    let authority = party.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+}
+
+/// Set `party`'s base position in market 0, and nothing else.
+fn set_position_base(fixture: &mut Fixture, party: &Party, base_asset_amount: i64) {
+    let mut user: User = read_zero_copy(&fixture.svm, &party.user);
+    user.perp_positions[0].market_index = 0;
+    user.perp_positions[0].base_asset_amount = base_asset_amount;
+    set_user_account(&mut fixture.svm, party.user, &user);
+}
+
+/// A reduce-only remainder whose owner closed its position elsewhere can never
+/// fill. It is the oldest claimant on its side, so a crank of the newer
+/// remainder behind it fails. The crank of the stuck row cancels it and
+/// charges its owner, and the newer remainder then settles.
+#[test]
+fn an_unfillable_reduce_only_remainder_is_cancelled_and_frees_its_side() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let stuck = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let seller = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    set_position_base(&mut fixture, &stuck, -(UNIT as i64));
+    rest_reduce_only_taker_origin_order(
+        &mut fixture,
+        &stuck,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    set_position_base(&mut fixture, &stuck, 0);
+
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    assert_eq!(clob_bid_count(&fixture), 2);
+
+    place_clob_order_for(
+        &mut fixture,
+        &seller,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let crank = |fixture: &mut Fixture, subject: &Party| {
+        let ix = crank_taker_origin_cross_ix(fixture, &keeper, subject, &[&seller]);
+        send_with_ixs(
+            &mut fixture.svm,
+            &keeper_authority,
+            &[compute_unit_limit_ix(400_000), ix],
+            &[],
+        )
+    };
+
+    let blocked = crank(&mut fixture, &taker).unwrap_err();
+    assert_velocity_error(&blocked, ErrorCode::NoTakerOriginCross);
+
+    crank(&mut fixture, &stuck).expect("the stuck row is cancelled");
+    assert_eq!(
+        clob_bid_count(&fixture),
+        1,
+        "only the newer remainder rests"
+    );
+
+    let stuck_state: User = read_zero_copy(&fixture.svm, &stuck.user);
+    assert_eq!(stuck_state.perp_positions[0].open_bids, 0);
+    assert_eq!(stuck_state.perp_positions[0].open_orders, 0);
+    assert_eq!(stuck_state.perp_positions[0].base_asset_amount, 0);
+
+    let keeper_quote = perp_position(&fixture.svm, &keeper.user).quote_asset_amount;
+    assert_eq!(
+        keeper_quote, -stuck_state.perp_positions[0].quote_asset_amount,
+        "the owner of the stuck row pays the keeper"
+    );
+
+    crank(&mut fixture, &taker).expect("the newer remainder settles");
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        UNIT as i64
+    );
+    assert_eq!(clob_bid_count(&fixture), 0);
+}

@@ -35,8 +35,9 @@
 //! does not. One side is the aggressor by construction, the improvement belongs
 //! to it, and the only cut anyone takes is the cranker's reward.
 //!
-//! A reduce-only row whose owner holds nothing to reduce can never fill, but
-//! the book still reports it at full size. As the oldest claimant on its side,
+//! A row may only reduce when it is reduce-only or its market is `ReduceOnly`.
+//! Such a row can never fill while its owner holds nothing to reduce, but the
+//! book still reports it at full size. As the oldest claimant on its side,
 //! it holds back every newer remainder there. The crank cancels such a row on
 //! either side of the cross instead of routing it. The owner pays the flat
 //! removal fee. In program-keeper mode the fee rises to the keeper payment's
@@ -353,7 +354,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         referrer_is_accelerated,
     };
 
-    if let Some(row) = unfillable_row(&cx, &subject_order, &counterparty)? {
+    if let Some(row) = unfillable_row(&cx, &subject_order, &counterparty, &maps)? {
         return cancel_unfillable_row(&cx, &row, &mut maps);
     }
 
@@ -587,25 +588,32 @@ struct UnfillableRow<'a> {
     owner: Option<Pubkey>,
 }
 
-/// Whether a reduce-only row has nothing left to reduce. The book reports
-/// such a row at its full size, but every fill of it clamps to zero.
+/// Whether a row that fills only in the reduce direction has nothing left to
+/// reduce. The book reports such a row at its full size, but every fill of it
+/// clamps to zero.
 fn has_nothing_to_reduce(
-    order: &RestingOrder,
+    reduces_only: bool,
     position_base: i64,
     direction: PositionDirection,
 ) -> bool {
-    order.reduce_only && crate::math::orders::reduce_only_cover(position_base, direction) == 0
+    reduces_only && crate::math::orders::reduce_only_cover(position_base, direction) == 0
 }
 
 /// The row of the subject cross that can never fill, if there is one.
 ///
-/// A counterparty whose owner the transaction does not carry is left to the
-/// fill.
+/// A `ReduceOnly` market holds every row to the reduce direction, as a routed
+/// fill does. A counterparty whose owner the transaction does not carry is
+/// left to the fill.
 fn unfillable_row<'a>(
     cx: &TakerOriginContext<'_, '_>,
     subject: &'a RestingOrder,
     counterparty: &'a RestingOrder,
+    maps: &AccountMaps,
 ) -> Result<Option<UnfillableRow<'a>>> {
+    let market_is_reduce_only = maps
+        .perp_market_map
+        .get_ref(&cx.market_index)?
+        .is_reduce_only()?;
     let position_base = |user: &User| {
         user.get_perp_position(cx.market_index)
             .map(|position| position.base_asset_amount)
@@ -613,14 +621,18 @@ fn unfillable_row<'a>(
     };
 
     let taker_base = position_base(&*load!(cx.accounts.taker)?);
-    if has_nothing_to_reduce(subject, taker_base, cx.taker_direction) {
+    if has_nothing_to_reduce(
+        subject.reduce_only || market_is_reduce_only,
+        taker_base,
+        cx.taker_direction,
+    ) {
         return Ok(Some(UnfillableRow {
             order: subject,
             owner: None,
         }));
     }
 
-    if !counterparty.reduce_only {
+    if !counterparty.reduce_only && !market_is_reduce_only {
         return Ok(None);
     }
 
@@ -635,15 +647,14 @@ fn unfillable_row<'a>(
     };
 
     let counterparty_base = position_base(&*cx.makers_and_referrer.get_ref(&key)?);
-    Ok(has_nothing_to_reduce(
-        counterparty,
-        counterparty_base,
-        cx.taker_direction.opposite(),
+    Ok(
+        has_nothing_to_reduce(true, counterparty_base, cx.taker_direction.opposite()).then_some(
+            UnfillableRow {
+                order: counterparty,
+                owner: Some(key),
+            },
+        ),
     )
-    .then_some(UnfillableRow {
-        order: counterparty,
-        owner: Some(key),
-    }))
 }
 
 /// What removing an unfillable row charges its owner: the flat fee, raised to

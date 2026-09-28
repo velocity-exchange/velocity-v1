@@ -31,12 +31,6 @@ cd "$(dirname "$0")/.."
 
 RPC_PORT="${RPC_PORT:-8899}"
 REDIS_PORT="${REDIS_PORT:-6399}"
-RELAY_REPO="${RELAY_REPO:-$HOME/source/relay}"
-# `agave-install` points one global symlink at one release, and a machine that
-# also runs relay's own e2e needs a different one. Naming the binary here lets
-# each project have the validator it needs.
-SOLANA_TEST_VALIDATOR="${SOLANA_TEST_VALIDATOR:-solana-test-validator}"
-RELAY_SRC="${RELAY_WORKTREE:-$HOME/.cache/velocity-e2e/relay}"
 # Scratch holds the validator ledger and every service's log — a few hundred
 # MB per run. A caller that names the directory owns it and it is never
 # removed; one this script made is removed on success and kept on failure,
@@ -51,44 +45,8 @@ else
 fi
 export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path 2>/dev/null || true)}"
 
-command -v "$SOLANA_TEST_VALIDATOR" >/dev/null || { echo "$SOLANA_TEST_VALIDATOR not found (set SOLANA_TEST_VALIDATOR)" >&2; exit 1; }
-# Resolve the name to the binary it points at right now, and launch that one.
-# `solana-test-validator` on PATH is usually agave's `active_release` symlink,
-# and `cargo-build-sbf` moves that symlink when it installs platform-tools.
-# The build step below runs it, so a name checked here can be a different
-# binary by the time the validator starts. That swap is silent and costs a
-# whole run: the version gate passes, an older validator starts, and every
-# turner submission is rejected twenty minutes later.
-SOLANA_TEST_VALIDATOR="$(command -v "$SOLANA_TEST_VALIDATOR")"
-while [ -L "$SOLANA_TEST_VALIDATOR" ]; do
-  link_target="$(readlink "$SOLANA_TEST_VALIDATOR")"
-  case "$link_target" in
-    /*) SOLANA_TEST_VALIDATOR="$link_target" ;;
-    *) SOLANA_TEST_VALIDATOR="$(dirname "$SOLANA_TEST_VALIDATOR")/$link_target" ;;
-  esac
-done
-# `active_release` is a symlinked *directory*, so the line above does not reach
-# it. `pwd -P` resolves every component.
-SOLANA_TEST_VALIDATOR="$(cd "$(dirname "$SOLANA_TEST_VALIDATOR")" && pwd -P)/$(basename "$SOLANA_TEST_VALIDATOR")"
-# The relay revision this harness builds signs transaction v1 (SIMD-0385), and
-# only agave 4.2 and later can parse the 0x81 version prefix. An older
-# validator takes the turner's submissions and fails them at the RPC with
-# "failed to deserialize VersionedTransaction: io error: failed to fill whole
-# buffer", after a simulation that looked fine — simulation is local, so it
-# never reaches the validator. Nothing lands, no condition resolves, and every
-# reservoir-funded path then fails with InsufficientCrankReservoir twenty
-# minutes into the run. Say so here instead.
-validator_version="$("$SOLANA_TEST_VALIDATOR" --version | awk '{print $2}')"
-validator_major="${validator_version%%.*}"
-validator_minor="${validator_version#*.}"
-validator_minor="${validator_minor%%.*}"
-if [ "$validator_major" -lt 4 ] || { [ "$validator_major" -eq 4 ] && [ "$validator_minor" -lt 2 ]; }; then
-  echo "solana-test-validator is $validator_version; relay's crank-turner needs agave 4.2 or later" >&2
-  echo "       switch with: agave-install init 4.2.2" >&2
-  echo "       SOLANA_TEST_VALIDATOR=<path> names a different binary without moving the global one" >&2
-  exit 1
-fi
-echo "== validator $validator_version ($SOLANA_TEST_VALIDATOR) =="
+source test-scripts/_localnet.sh
+resolve_test_validator
 command -v redis-server >/dev/null || { echo "redis-server not on PATH (brew install redis)" >&2; exit 1; }
 
 VELOCITY_ID="vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
@@ -97,26 +55,7 @@ CLOB_ID="BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
 MIDPOINT_ID="eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D"
 RELAY_ID="4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu"
 
-[ -d "$RELAY_REPO" ] || { echo "relay checkout not found at $RELAY_REPO (set RELAY_REPO)" >&2; exit 1; }
-
-# The relay revision velocity builds against. relay-spec, relay-anchor and
-# relay-chain-source all pin the same one; the program manifest is the copy
-# this reads.
-RELAY_REV="$(sed -n 's/^relay-spec = .*rev = "\([0-9a-f]\{7,40\}\)".*/\1/p' programs/velocity/Cargo.toml | head -1)"
-[ -n "$RELAY_REV" ] || { echo "no relay rev found in programs/velocity/Cargo.toml" >&2; exit 1; }
-git -C "$RELAY_REPO" cat-file -e "${RELAY_REV}^{commit}" 2>/dev/null || {
-  echo "relay rev $RELAY_REV is not in $RELAY_REPO — run: git -C $RELAY_REPO fetch --all" >&2
-  exit 1
-}
-# A worktree, not a checkout: the relay repository is somebody else's working
-# directory and this must not move it.
-if [ -e "$RELAY_SRC" ]; then
-  git -C "$RELAY_SRC" checkout --detach --quiet "$RELAY_REV"
-else
-  mkdir -p "$(dirname "$RELAY_SRC")"
-  git -C "$RELAY_REPO" worktree add --detach --quiet "$RELAY_SRC" "$RELAY_REV"
-fi
-echo "== relay at $RELAY_REV ($RELAY_SRC) =="
+checkout_pinned_relay
 
 if [ "${1:-}" != "--skip-build" ]; then
   echo "== building programs + publisher =="
@@ -137,8 +76,7 @@ if [ "${1:-}" != "--skip-build" ]; then
   cargo build --manifest-path rust/Cargo.toml -p book-publisher
   cargo build --manifest-path rust/Cargo.toml -p swift-server
   # relay: the program the watches live on, and the turner that cranks them.
-  (cd "$RELAY_SRC/programs" && cargo-build-sbf --arch v3 --tools-version v1.57 --manifest-path relay/Cargo.toml)
-  cargo build --manifest-path "$RELAY_SRC/Cargo.toml" -p relay-crank-turner
+  build_relay
   (cd packages/sdk && bun run build >/dev/null)
 else
   for f in target/deploy/velocity.so target/deploy/pyth.so \
@@ -164,22 +102,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# A validator orphaned by an earlier interrupted run keeps the port and its
-# old ledger, and the suite then fails deep inside init with a confusing
-# "already initialized". Clear the ports first, always.
-for port in "$RPC_PORT" "$REDIS_PORT"; do
-  pids=$(lsof -ti "tcp:$port" 2>/dev/null || true)
-  if [ -n "$pids" ]; then
-    echo "== port $port busy, killing $pids =="
-    kill $pids 2>/dev/null || true
-    sleep 2
-  fi
-
-  if lsof -ti "tcp:$port" >/dev/null 2>&1; then
-    echo "port $port is still held by another process; set RPC_PORT or REDIS_PORT" >&2
-    exit 1
-  fi
-done
+free_ports "$RPC_PORT" "$REDIS_PORT"
 
 echo "== starting redis on :$REDIS_PORT =="
 redis-server --port "$REDIS_PORT" --save '' --appendonly no \
@@ -199,15 +122,7 @@ echo "== starting solana-test-validator on :$RPC_PORT =="
   >"$SCRATCH/validator.log" 2>&1 &
 PIDS+=($!)
 
-echo "== waiting for validator health =="
-for i in $(seq 1 60); do
-  if curl -sf "http://127.0.0.1:$RPC_PORT" -X POST -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | grep -q '"ok"'; then
-    break
-  fi
-  [ "$i" = 60 ] && { echo "validator never became healthy — see $SCRATCH/validator.log" >&2; exit 1; }
-  sleep 1
-done
+wait_for_validator "$RPC_PORT" "$SCRATCH/validator.log"
 
 export E2E_RPC_URL="http://127.0.0.1:$RPC_PORT"
 export E2E_REDIS_URL="redis://127.0.0.1:$REDIS_PORT"

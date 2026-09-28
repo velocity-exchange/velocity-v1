@@ -1526,6 +1526,43 @@
               }
             ]
           }
+        },
+        {
+          "name": "trigger_conditions",
+          "docs": [
+            "stop-limit wakes its parked slot here. It is required, so a caller",
+            "cannot re-arm the order without its watch. See",
+            "[`user_conditions_loader`] for a user that has none."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -1654,6 +1691,43 @@
               {
                 "kind": "account",
                 "path": "quoter_slab"
+              }
+            ]
+          }
+        },
+        {
+          "name": "trigger_conditions",
+          "docs": [
+            "stop-limit wakes its parked slot here. It is required, so a caller",
+            "cannot re-arm the order without its watch. See",
+            "[`user_conditions_loader`] for a user that has none."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
               }
             ]
           }
@@ -2068,6 +2142,12 @@
         {
           "name": "perp_market",
           "writable": true
+        },
+        {
+          "name": "quoter_slab",
+          "docs": [
+            "The market's quoter slab, which may not exist yet."
+          ]
         }
       ],
       "args": [
@@ -9625,7 +9705,8 @@
       "name": "resolve_trigger_limit_order_v1",
       "docs": [
         "Relay resolver for `trigger_limit_order_v1`. Simulate it rather than",
-        "landing it."
+        "landing it. `fired` names the trigger slot that woke, and the resolver",
+        "stages only that slot's order."
       ],
       "discriminator": [
         207,
@@ -9688,13 +9769,23 @@
           "name": "perp_market"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "fired",
+          "type": {
+            "defined": {
+              "name": "FiredConditionArgV0"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "resolve_trigger_market_order_v1",
       "docs": [
         "Relay resolver for `trigger_market_order_v1`. Simulate it rather than",
-        "landing it."
+        "landing it. `fired` names the trigger slot that woke, and the resolver",
+        "stages only that slot's order."
       ],
       "discriminator": [
         12,
@@ -9757,7 +9848,16 @@
           "name": "perp_market"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "fired",
+          "type": {
+            "defined": {
+              "name": "FiredConditionArgV0"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "resync_liq_conditions",
@@ -11737,12 +11837,12 @@
         {
           "name": "trigger_conditions",
           "docs": [
-            "The user's relay trigger conditions. The handler releases the fired",
-            "slot, which silences its level-triggered wake. It is optional, like",
-            "every relay-side account."
+            "re-points or parks the slot of the order it cranked. It is required, so",
+            "a caller cannot leave the watch on the wrong side by omitting it. A",
+            "user created before the block existed has none, and the `seeds` pin the",
+            "address."
           ],
           "writable": true,
-          "optional": true,
           "pda": {
             "seeds": [
               {
@@ -13632,7 +13732,12 @@
           "name": "state"
         },
         {
-          "name": "perp_market"
+          "name": "perp_market",
+          "docs": [
+            "Writable, because a new tick or step is written to the market and the",
+            "book together. Each grid must equal the other."
+          ],
+          "writable": true
         },
         {
           "name": "quoter",

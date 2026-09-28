@@ -1182,7 +1182,9 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResolveSpotBankruptcy {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct ResolveTriggerLimitOrderV1 {}
+    pub struct ResolveTriggerLimitOrderV1 {
+        pub fired: FiredConditionArgV0,
+    }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ResolveTriggerLimitOrderV1 {
         const DISCRIMINATOR: &[u8] = &[207, 143, 198, 105, 218, 207, 43, 27];
@@ -1190,7 +1192,9 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResolveTriggerLimitOrderV1 {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct ResolveTriggerMarketOrderV1 {}
+    pub struct ResolveTriggerMarketOrderV1 {
+        pub fired: FiredConditionArgV0,
+    }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ResolveTriggerMarketOrderV1 {
         const DISCRIMINATOR: &[u8] = &[12, 180, 48, 230, 39, 213, 101, 242];
@@ -10555,6 +10559,7 @@ pub mod accounts {
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub crank_conditions: Pubkey,
+        pub trigger_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobEvict {
@@ -10622,6 +10627,11 @@ pub mod accounts {
                     is_signer: false,
                     is_writable: true,
                 },
+                AccountMeta {
+                    pubkey: self.trigger_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
             ]
         }
     }
@@ -10667,6 +10677,7 @@ pub mod accounts {
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub crank_conditions: Pubkey,
+        pub trigger_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobRemoveExpired {
@@ -10731,6 +10742,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.trigger_conditions,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -11066,6 +11082,7 @@ pub mod accounts {
         pub admin: Pubkey,
         pub state: Pubkey,
         pub perp_market: Pubkey,
+        pub quoter_slab: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for DeleteInitializedPerpMarket {
@@ -11097,6 +11114,11 @@ pub mod accounts {
                     pubkey: self.perp_market,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -24154,7 +24176,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.perp_market,
                     is_signer: false,
-                    is_writable: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.quoter,

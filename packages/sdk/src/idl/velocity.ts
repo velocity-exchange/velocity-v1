@@ -1532,6 +1532,43 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "stop-limit wakes its parked slot here. It is required, so a caller",
+            "cannot re-arm the order without its watch. See",
+            "[`user_conditions_loader`] for a user that has none."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -1660,6 +1697,43 @@ export type Velocity = {
               {
                 "kind": "account",
                 "path": "quoterSlab"
+              }
+            ]
+          }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "stop-limit wakes its parked slot here. It is required, so a caller",
+            "cannot re-arm the order without its watch. See",
+            "[`user_conditions_loader`] for a user that has none."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
               }
             ]
           }
@@ -2074,6 +2148,12 @@ export type Velocity = {
         {
           "name": "perpMarket",
           "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab, which may not exist yet."
+          ]
         }
       ],
       "args": [
@@ -9631,7 +9711,8 @@ export type Velocity = {
       "name": "resolveTriggerLimitOrderV1",
       "docs": [
         "Relay resolver for `trigger_limit_order_v1`. Simulate it rather than",
-        "landing it."
+        "landing it. `fired` names the trigger slot that woke, and the resolver",
+        "stages only that slot's order."
       ],
       "discriminator": [
         207,
@@ -9694,13 +9775,23 @@ export type Velocity = {
           "name": "perpMarket"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "fired",
+          "type": {
+            "defined": {
+              "name": "firedConditionArgV0"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "resolveTriggerMarketOrderV1",
       "docs": [
         "Relay resolver for `trigger_market_order_v1`. Simulate it rather than",
-        "landing it."
+        "landing it. `fired` names the trigger slot that woke, and the resolver",
+        "stages only that slot's order."
       ],
       "discriminator": [
         12,
@@ -9763,7 +9854,16 @@ export type Velocity = {
           "name": "perpMarket"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "fired",
+          "type": {
+            "defined": {
+              "name": "firedConditionArgV0"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "resyncLiqConditions",
@@ -11743,12 +11843,12 @@ export type Velocity = {
         {
           "name": "triggerConditions",
           "docs": [
-            "The user's relay trigger conditions. The handler releases the fired",
-            "slot, which silences its level-triggered wake. It is optional, like",
-            "every relay-side account."
+            "re-points or parks the slot of the order it cranked. It is required, so",
+            "a caller cannot leave the watch on the wrong side by omitting it. A",
+            "user created before the block existed has none, and the `seeds` pin the",
+            "address."
           ],
           "writable": true,
-          "optional": true,
           "pda": {
             "seeds": [
               {
@@ -13638,7 +13738,12 @@ export type Velocity = {
           "name": "state"
         },
         {
-          "name": "perpMarket"
+          "name": "perpMarket",
+          "docs": [
+            "Writable, because a new tick or step is written to the market and the",
+            "book together. Each grid must equal the other."
+          ],
+          "writable": true
         },
         {
           "name": "quoter",

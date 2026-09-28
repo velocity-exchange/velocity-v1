@@ -50,7 +50,7 @@ import {
 	Transaction,
 	TransactionInstruction,
 } from '@solana/web3.js';
-import { AnchorProvider, Program } from '@coral-xyz/anchor';
+import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
 import {
 	getClobCrankConditionsPublicKey,
 	getCrankTreasuryPublicKey,
@@ -536,7 +536,24 @@ async function flagVaultUsers(
 		])
 	);
 
-	const vaultAccounts = await (vaults.account as any).vault.all();
+	const vaultDiscriminator = vaultsIdl.accounts.find(
+		(account: any) => account.name === 'Vault'
+	).discriminator;
+	const vaultAccounts: { publicKey: PublicKey; account: any }[] = [];
+	for (const { pubkey, account } of await provider.connection.getProgramAccounts(
+		vaults.programId,
+		{ filters: [{ memcmp: { offset: 0, bytes: bs58(Buffer.from(vaultDiscriminator)) } }] }
+	)) {
+		try {
+			vaultAccounts.push({
+				publicKey: pubkey,
+				account: vaults.coder.accounts.decode('vault', account.data),
+			});
+		} catch {
+			console.log(`vault ${pubkey.toBase58()}: does not decode under the current layout, skipped`);
+		}
+	}
+
 	let unflagged = 0;
 	for (const { publicKey: vault, account } of vaultAccounts) {
 		const status = statusByUser.get(account.user.toBase58());

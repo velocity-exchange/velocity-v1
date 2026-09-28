@@ -601,8 +601,9 @@ impl<'info> QuotedRoute<'info> {
 
     /// Drop a book's whole run when it rests depth outside the oracle band.
     ///
-    /// The fill then takes from the other sources, and the order outside the
-    /// band stays on the book for its owner or a keeper to remove.
+    /// The fill then takes from the other sources. The order outside the
+    /// band stays on the book until its owner or
+    /// `crank_clob_cancel_outside_band` removes it.
     fn drop_book_outside_band(
         &mut self,
         run: std::ops::Range<usize>,

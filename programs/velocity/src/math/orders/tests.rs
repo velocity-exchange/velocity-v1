@@ -134,185 +134,61 @@ mod order_breaches_oracle_price_limits {
         controller::position::PositionDirection,
         math::{
             constants::{MARGIN_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
-            orders::order_breaches_maker_oracle_price_bands,
+            orders::limit_price_breaches_maker_oracle_price_bands,
         },
-        state::{perp_market::PerpMarket, user::Order},
     };
+
+    /// A 5% band around an oracle of 100.
+    fn breaches(price: u64, direction: PositionDirection) -> bool {
+        limit_price_breaches_maker_oracle_price_bands(
+            price,
+            direction,
+            100 * PRICE_PRECISION_I64,
+            MARGIN_PRECISION / 20,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn bid_does_not_breach() {
-        let _market = PerpMarket {
-            margin_ratio_initial: (MARGIN_PRECISION / 10), // 10x
-            ..PerpMarket::default()
-        };
-
-        let order = Order {
-            price: 101 * PRICE_PRECISION_U64,
-            ..Order::default()
-        };
-
-        let oracle_price = 100 * PRICE_PRECISION_I64;
-
-        let tick_size = 1;
-
-        let margin_ratio_initial = MARGIN_PRECISION / 20;
-        let result = order_breaches_maker_oracle_price_bands(
-            &order,
-            oracle_price,
-            tick_size,
-            margin_ratio_initial,
-        )
-        .unwrap();
-
-        assert!(!result)
+        assert!(!breaches(
+            101 * PRICE_PRECISION_U64,
+            PositionDirection::Long
+        ));
     }
 
     #[test]
     fn bid_does_not_breach_4_99_percent_move() {
-        let _market = PerpMarket {
-            margin_ratio_initial: (MARGIN_PRECISION / 10), // 10x
-            ..PerpMarket::default()
-        };
-
-        let order = Order {
-            price: 105 * PRICE_PRECISION_U64 - 1,
-            ..Order::default()
-        };
-
-        let oracle_price = 100 * PRICE_PRECISION_I64;
-
-        let tick_size = 1;
-
-        let margin_ratio_initial = MARGIN_PRECISION / 20;
-        let result = order_breaches_maker_oracle_price_bands(
-            &order,
-            oracle_price,
-            tick_size,
-            margin_ratio_initial,
-        )
-        .unwrap();
-
-        assert!(!result)
+        assert!(!breaches(
+            105 * PRICE_PRECISION_U64 - 1,
+            PositionDirection::Long
+        ));
     }
 
     #[test]
     fn bid_breaches() {
-        let _market = PerpMarket {
-            margin_ratio_initial: (MARGIN_PRECISION / 10), // 10x
-            margin_ratio_maintenance: (MARGIN_PRECISION / 20), // 20x
-            ..PerpMarket::default()
-        };
-
-        let order = Order {
-            direction: PositionDirection::Long,
-            price: 105 * PRICE_PRECISION_U64,
-            ..Order::default()
-        };
-
-        let oracle_price = 100 * PRICE_PRECISION_I64;
-
-        let tick_size = 1;
-
-        let margin_ratio_initial = MARGIN_PRECISION / 20;
-        let result = order_breaches_maker_oracle_price_bands(
-            &order,
-            oracle_price,
-            tick_size,
-            margin_ratio_initial,
-        )
-        .unwrap();
-
-        assert!(result)
+        assert!(breaches(105 * PRICE_PRECISION_U64, PositionDirection::Long));
     }
 
     #[test]
     fn ask_does_not_breach() {
-        let _market = PerpMarket {
-            margin_ratio_initial: (MARGIN_PRECISION / 10), // 10x
-            margin_ratio_maintenance: (MARGIN_PRECISION / 20), // 20x
-            ..PerpMarket::default()
-        };
-
-        let order = Order {
-            direction: PositionDirection::Short,
-            price: 99 * PRICE_PRECISION_U64,
-            ..Order::default()
-        };
-
-        let oracle_price = 100 * PRICE_PRECISION_I64;
-
-        let tick_size = 1;
-
-        let margin_ratio_initial = MARGIN_PRECISION / 20;
-        let result = order_breaches_maker_oracle_price_bands(
-            &order,
-            oracle_price,
-            tick_size,
-            margin_ratio_initial,
-        )
-        .unwrap();
-
-        assert!(!result)
+        assert!(!breaches(
+            99 * PRICE_PRECISION_U64,
+            PositionDirection::Short
+        ));
     }
 
     #[test]
     fn ask_does_not_breach_4_99_percent_move() {
-        let _market = PerpMarket {
-            margin_ratio_initial: (MARGIN_PRECISION / 10), // 10x
-            margin_ratio_maintenance: (MARGIN_PRECISION / 20), // 20x
-            ..PerpMarket::default()
-        };
-
-        let order = Order {
-            direction: PositionDirection::Short,
-            price: 95 * PRICE_PRECISION_U64 + 1,
-            ..Order::default()
-        };
-
-        let oracle_price = 100 * PRICE_PRECISION_I64;
-
-        let tick_size = 1;
-
-        let margin_ratio_initial = MARGIN_PRECISION / 20;
-        let result = order_breaches_maker_oracle_price_bands(
-            &order,
-            oracle_price,
-            tick_size,
-            margin_ratio_initial,
-        )
-        .unwrap();
-
-        assert!(!result)
+        assert!(!breaches(
+            95 * PRICE_PRECISION_U64 + 1,
+            PositionDirection::Short
+        ));
     }
 
     #[test]
     fn ask_breaches() {
-        let _market = PerpMarket {
-            margin_ratio_initial: (MARGIN_PRECISION / 10), // 10x
-            margin_ratio_maintenance: (MARGIN_PRECISION / 20), // 20x
-            ..PerpMarket::default()
-        };
-
-        let order = Order {
-            direction: PositionDirection::Short,
-            price: 95 * PRICE_PRECISION_U64,
-            ..Order::default()
-        };
-
-        let oracle_price = 100 * PRICE_PRECISION_I64;
-
-        let tick_size = 1;
-
-        let margin_ratio_initial = MARGIN_PRECISION / 20;
-        let result = order_breaches_maker_oracle_price_bands(
-            &order,
-            oracle_price,
-            tick_size,
-            margin_ratio_initial,
-        )
-        .unwrap();
-
-        assert!(result)
+        assert!(breaches(95 * PRICE_PRECISION_U64, PositionDirection::Short));
     }
 }
 

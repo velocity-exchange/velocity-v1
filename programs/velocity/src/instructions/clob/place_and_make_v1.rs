@@ -131,6 +131,15 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         return Ok(());
     };
 
+    super::crank_clob_cancel_outside_band::MakerBand::at_placement(
+        &state,
+        &mut maps,
+        &ctx.accounts.quoter_slab,
+        params.market_index,
+        clock.slot,
+    )?
+    .validate_rest(price, order.direction)?;
+
     let rest = maker_rest(&params, &order, price, base_asset_amount);
     let placed = match rest_on_clob(&clob_rest_accounts(&ctx), &mut maps, &rest, &clock)? {
         RestOutcome::Placed(placed) => placed,

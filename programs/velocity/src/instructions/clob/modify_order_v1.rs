@@ -197,6 +197,14 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         .unwrap_or(0);
     let terms = resolve_replacement_terms(&params, &removed, position_base)?;
     validate_replacement_order(&mut maps, &replacement_order(&params, &terms), clock.slot)?;
+    super::crank_clob_cancel_outside_band::MakerBand::at_placement(
+        &state,
+        &mut maps,
+        &ctx.accounts.quoter_slab,
+        params.market_index,
+        clock.slot,
+    )?
+    .validate_rest(terms.price, PositionDirection::from(removed.side))?;
 
     // The replacement is a placement, so a reduce-only account may only carry
     // a reduce-only order. The replacement takes the removed order's flag, so

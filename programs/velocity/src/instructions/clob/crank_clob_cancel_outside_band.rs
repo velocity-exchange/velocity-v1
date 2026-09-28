@@ -9,6 +9,9 @@
 //! price the fill uses and the band of the book's quoter entry. The oracle must pass
 //! the gates a crossed-book crank passes.
 //!
+//! A maker placement or modify outside the same band is refused, so an order
+//! rests outside the band only after the oracle moves away from it.
+//!
 //! The crank removes the order the way the expiry crank does. The maker pays
 //! the flat removal reward, a placed trigger's shadow is freed, and
 //! program-keeper mode pays reservoir lamports for a crank that collected the
@@ -26,7 +29,7 @@ use {
             position::PositionDirection,
         },
         error::ErrorCode,
-        instructions::constraints::*,
+        instructions::{constraints::*, optional_accounts::AccountMaps},
         load_mut,
         math::orders::limit_price_breaches_maker_oracle_price_bands,
         state::{
@@ -159,7 +162,7 @@ pub fn handle_crank_clob_cancel_outside_band<'info>(
 }
 
 /// The band the router holds a book's makers to, as it stands this slot.
-struct MakerBand {
+pub(super) struct MakerBand {
     /// The MM oracle price the router measures the band from.
     oracle_price: i64,
     /// The book entry's band, in MARGIN_PRECISION units.
@@ -210,6 +213,49 @@ impl MakerBand {
         })
     }
 
+    /// Read the band a new maker order must rest inside.
+    ///
+    /// A refused placement costs the maker nothing, so this reads the oracle
+    /// that the placement already loaded and skips the crank's oracle gates.
+    pub(super) fn at_placement(
+        state: &State,
+        maps: &mut AccountMaps,
+        quoter_slab: &AccountLoader<QuoterSlabV0>,
+        market_index: u16,
+        slot: u64,
+    ) -> Result<Self> {
+        let market = maps.perp_market_map.get_ref(&market_index)?;
+        let oracle_price_data = *maps.oracle_map.get_price_data(&market.oracle_id())?;
+        Ok(Self {
+            oracle_price: maker_band_oracle_price(&market, state, &oracle_price_data, slot)?,
+            oracle_band: quoter_slab
+                .clob_slot(market_index)?
+                .config
+                .oracle_band(market.margin_ratio_initial),
+        })
+    }
+
+    /// Refuse a maker order that would rest outside the band.
+    ///
+    /// The router fills a book best price first and cannot skip a level. One
+    /// order outside the band therefore takes its side of the book out of
+    /// every router fill until this crank cancels it.
+    pub(super) fn validate_rest(
+        &self,
+        price: u64,
+        maker_direction: PositionDirection,
+    ) -> Result<()> {
+        validate!(
+            !self.refuses(price, maker_direction)?,
+            ErrorCode::PriceBandsBreached,
+            "a maker order at {} rests outside the band around oracle {}",
+            price,
+            self.oracle_price
+        )?;
+
+        Ok(())
+    }
+
     /// Whether a maker order at `price` on the `maker_direction` side is one
     /// the router refuses.
     fn refuses(&self, price: u64, maker_direction: PositionDirection) -> Result<bool> {
@@ -249,5 +295,18 @@ mod tests {
     #[test]
     fn a_bid_under_the_oracle_is_inside_the_band() {
         assert!(!BAND.refuses(50_000_000, PositionDirection::Long).unwrap());
+    }
+
+    /// A maker cannot rest an ask at half the oracle, so one small order
+    /// cannot take the ask side out of every router fill.
+    #[test]
+    fn a_maker_placement_outside_the_band_is_refused() {
+        assert_eq!(
+            BAND.validate_rest(50_000_000, PositionDirection::Short),
+            Err(crate::error::ErrorCode::PriceBandsBreached.into())
+        );
+        assert!(BAND
+            .validate_rest(90_000_001, PositionDirection::Short)
+            .is_ok());
     }
 }

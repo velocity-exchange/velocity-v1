@@ -18,6 +18,11 @@
 //! pass refuses a call that leaves out the market, oracle, crank account or quoter
 //! slab of any stageable order.
 //!
+//! A book that is suspended or inactive still arms its market's triggers. The
+//! executors refuse to fire while the book takes no flow, so each trigger stays
+//! armed. A sync during a suspension would otherwise clear every watch on the
+//! market, and nothing arms them again when the book resumes.
+//!
 //! An order evicted from the book waits for the price to cross back before it can
 //! fire again. Its watch fires on the non-trigger side until a crank observes that
 //! recross.
@@ -104,7 +109,7 @@ struct MarketInputs {
     /// True when the market's `QuoterSlabV0` rode along, whether or not its
     /// book quotes.
     has_slab: bool,
-    /// (quoter slab, book, program) when a vetted CLOB is attached.
+    /// (quoter slab, book, program) when the slab holds a `Clob` slot.
     clob: Option<(Pubkey, Pubkey, Pubkey)>,
 }
 
@@ -381,19 +386,11 @@ fn collect_trigger_inputs<'info>(
                 // the book's program in this order, and both passes write the
                 // same list, so this pass carries them the same way.
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
-                if let Some(index) = clob_slot_index(&slots) {
-                    let config = &slots[index].config;
-                    tail_refs.push(AccountRefV0::writable(config.response_account.to_bytes()));
-                    tail_refs.push(AccountRefV0::readonly(config.program_id.to_bytes()));
-                    slab_books.extend([config.response_account, config.program_id]);
-
-                    if slots[index].quotes() {
-                        markets.entry(market).or_default().clob = Some((
-                            *info.key,
-                            slots[index].config.response_account,
-                            slots[index].config.program_id,
-                        ));
-                    }
+                if let Some((book, program)) = armable_book(&slots) {
+                    tail_refs.push(AccountRefV0::writable(book.to_bytes()));
+                    tail_refs.push(AccountRefV0::readonly(program.to_bytes()));
+                    slab_books.extend([book, program]);
+                    markets.entry(market).or_default().clob = Some((*info.key, book, program));
                 }
 
                 continue;
@@ -418,6 +415,13 @@ fn collect_trigger_inputs<'info>(
         tail_refs,
         oracle_infos,
     })
+}
+
+/// The book and program of a slab's `Clob` slot, whether or not the book
+/// quotes now.
+fn armable_book(slots: &[crate::state::prop_amm::QuoterSlotV0]) -> Option<(Pubkey, Pubkey)> {
+    let config = &slots[clob_slot_index(slots)?].config;
+    Some((config.response_account, config.program_id))
 }
 
 /// The watch layout is resolved off each oracle's bytes here, once, for

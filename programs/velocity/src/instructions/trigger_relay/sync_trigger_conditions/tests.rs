@@ -107,6 +107,26 @@ mod coverage_and_direction {
         assert!(validate_trigger_coverage(&user, &BTreeMap::new(), 0).is_err());
     }
 
+    /// A suspended book keeps its market's watches, so a sync during the
+    /// suspension does not disarm them.
+    #[test]
+    fn a_suspended_book_still_arms_its_triggers() {
+        use crate::state::prop_amm::{QuoterSlotV0, QuoterType};
+        let mut slot = QuoterSlotV0 {
+            entry: Pubkey::new_unique(),
+            suspended: true,
+            ..QuoterSlotV0::default()
+        };
+
+        slot.config.quoter_type = QuoterType::Clob;
+        slot.config.response_account = Pubkey::new_unique();
+        assert!(!slot.quotes());
+        assert_eq!(
+            super::super::armable_book(&[slot]).map(|(book, _)| book),
+            Some(slot.config.response_account)
+        );
+    }
+
     /// A market with no CLOB has nowhere to fire, so its order stays skipped.
     #[test]
     fn a_trigger_on_a_market_without_a_clob_is_skipped() {

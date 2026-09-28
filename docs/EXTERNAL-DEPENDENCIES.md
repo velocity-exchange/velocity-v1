@@ -51,10 +51,16 @@ Velocity signs each of these CPIs as the market's `QuoterSlabV0` PDA, never as `
 a quoter's signature reaches no token vault. The response is bounded on the way back. No quoter
 may name the taker or the protocol `User` as a fill subject. A `Custom` entry may move only the
 one user its registration consented for. Every reported balance change is held to the price the
-quoter quoted, every touched user is margin-checked after the fill, and a report larger than the
-reservation velocity wrote at placement fails with `QuoterReportExceedsReservation`. Approving a
+quoter quoted, every touched user is margin-checked after the fill, and a fill report larger than
+the reservation velocity wrote at placement fails with `QuoterReportExceedsReservation`. Approving a
 third-party quoter program is therefore a listing decision of the same kind as listing a mint with
 a transfer hook.
+
+A removal report is not held to that bound. A cancel, a forced cancel, and the evict and expire
+cranks release the size the CLOB reports, clamped to the reservation, so a short reservation cannot
+keep an order open. Velocity checks only which user the report names. A faulty CLOB can therefore
+release all of a maker's reservation on one side while that maker's other orders still rest there.
+The CLOB is velocity's own pinned program, so this trust is the same as the trust in its code.
 
 `velocity` is a CPI *target* of `vaults`, which depends on it with the `cpi` feature. That
 direction is inbound and adds no external trust.

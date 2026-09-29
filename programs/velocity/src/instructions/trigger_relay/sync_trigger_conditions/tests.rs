@@ -364,3 +364,76 @@ mod coverage_and_direction {
         assert_eq!(watch_direction(&evicted), Some(WatchDirection::AtOrBelow));
     }
 }
+
+/// Every book shares one program. A sync over two slabs stores it once, and a
+/// list stored with one copy per slab still replays.
+#[test]
+fn two_book_markets_store_the_book_program_once() {
+    use {
+        super::collect_trigger_inputs,
+        crate::{
+            instructions::refuse_duplicate_accounts_except,
+            state::prop_amm::{QuoterSlabV0, QuoterSlotV0, QuoterType},
+        },
+        anchor_lang::{prelude::AccountInfo, Discriminator},
+        solana_program::pubkey::Pubkey,
+    };
+
+    let program_key = Pubkey::new_unique();
+    let other_owner = Pubkey::new_unique();
+    let owner = crate::ID;
+    let make_slab = |market: u16, book: Pubkey| {
+        let mut slot: QuoterSlotV0 = bytemuck::Zeroable::zeroed();
+        slot.entry = Pubkey::new_unique();
+        slot.config.quoter_type = QuoterType::Clob;
+        slot.config.response_account = book;
+        slot.config.program_id = program_key;
+        let header = QuoterSlabV0 {
+            capacity: 1,
+            market,
+            ..QuoterSlabV0::default()
+        };
+        let mut data = QuoterSlabV0::DISCRIMINATOR.to_vec();
+        data.extend_from_slice(bytemuck::bytes_of(&header));
+        data.extend_from_slice(bytemuck::bytes_of(&slot));
+        data
+    };
+
+    let (book0, book1) = (Pubkey::new_unique(), Pubkey::new_unique());
+    let (slab0_key, slab1_key) = (Pubkey::new_unique(), Pubkey::new_unique());
+    let (mut d0, mut d1) = (make_slab(0, book0), make_slab(1, book1));
+    let (mut db0, mut db1, mut dp0, mut dp1) = (vec![], vec![], vec![], vec![]);
+    let mut lamports = [0u64; 6];
+    let [l0, l1, l2, l3, l4, l5] = &mut lamports;
+    let slab0 = AccountInfo::new(&slab0_key, false, false, l0, &mut d0, &owner, false);
+    let slab1 = AccountInfo::new(&slab1_key, false, false, l1, &mut d1, &owner, false);
+    let b0 = AccountInfo::new(&book0, false, true, l2, &mut db0, &other_owner, false);
+    let b1 = AccountInfo::new(&book1, false, true, l3, &mut db1, &other_owner, false);
+    let p0 = AccountInfo::new(&program_key, false, false, l4, &mut dp0, &other_owner, true);
+    let p1 = AccountInfo::new(&program_key, false, false, l5, &mut dp1, &other_owner, true);
+    fn stored_keys<'a>(accounts: &'a [AccountInfo<'a>]) -> Vec<Pubkey> {
+        collect_trigger_inputs(accounts)
+            .unwrap()
+            .tail_refs
+            .iter()
+            .map(|r| Pubkey::new_from_array(r.address))
+            .collect()
+    }
+
+    let synced = [slab0.clone(), slab1.clone()];
+    let stored = stored_keys(&synced);
+    assert_eq!(
+        stored,
+        vec![slab0_key, book0, program_key, slab1_key, book1]
+    );
+
+    let legacy = [slab0.clone(), b0.clone(), p0, slab1.clone(), b1.clone(), p1];
+    let legacy_inputs = collect_trigger_inputs(&legacy).unwrap();
+    assert!(refuse_duplicate_accounts_except(&legacy, &legacy_inputs.book_programs).is_ok());
+    assert!(legacy_inputs.oracle_infos.is_empty());
+    assert_eq!(stored_keys(&legacy), stored);
+
+    let twice = [slab0.clone(), b0, slab0, slab1, b1];
+    let twice_inputs = collect_trigger_inputs(&twice).unwrap();
+    assert!(refuse_duplicate_accounts_except(&twice, &twice_inputs.book_programs).is_err());
+}

@@ -374,7 +374,7 @@ the landing-race outcome R4 exists to prevent, arrived at from the other directi
 restores the composition: the arb crank clears the front of the book, and the remainder's own cross
 is what the resolver answers with next.
 
-**A hand-built `crank_cross_match` needs no rule of its own.** The instruction is permissionless,
+**A hand-built `crank_cross_match` refuses to reach a remainder.** The instruction is permissionless,
 so the resolver's walk stepping over a remainder is not enough on its own. The caller controls the
 account list, not the walk. A velocity-side predicate used to carry that load, and it could
 only approximate the harm: it refused a cross that consumed a remainder's *entire* crossing depth,
@@ -382,7 +382,11 @@ while a smaller cross still ate the best of that depth and left the remainder cr
 rest, since both walks go best price first. The claim removes the need for the predicate. Claimed
 base is not in the arb crank's matchable set at all, so the cross cannot reach it whatever size
 the caller asks for, and the remainder keeps the whole improvement rather than the part nobody
-took first.
+took first. The claim covers a remainder only while a counterparty crosses it and the claim holds.
+A remainder that nothing crosses, or whose claim lapsed, is ordinary depth at its worst price, and
+a leg that took it would give the protocol `User` the gap to the other leg's source. The executor
+therefore reads each side a leg takes and refuses a cross whose legs can reach any taker-origin
+row. The resolvers end each side at the first such row that the book reports matchable.
 
 ## What each program carries
 

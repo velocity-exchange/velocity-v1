@@ -39,12 +39,14 @@
 //! that cannot fill from one that nobody cranked. A maker cross reads only
 //! depth that no remainder reserves, so it takes nothing a taker is owed.
 //!
-//! A taker-origin order needs no guard here. Such an order reserves the depth
-//! it crosses, and reserved depth leaves the book's matchable set for every
-//! caller that does not pass `include_taker_origin_reservations`. This crank
-//! passes `false` at every site, so it cannot reach that cover at any size the
-//! caller asks for. `crank_taker_origin_cross` owes the taker that improvement
-//! and is the only caller that can reach it.
+//! Neither leg may take a taker-origin order. Such an order reserves the depth
+//! it crosses, and this crank reads the book without those reservations. The
+//! book withholds the remainder itself only while a counterparty crosses it and
+//! its claim holds. Past that it is ordinary depth at its worst price, and a leg
+//! that took it would give the protocol the gap to the other leg's source. The
+//! crank therefore refuses a cross whose legs can reach any taker-origin row.
+//! `crank_taker_origin_cross` owes the taker its improvement and is the only
+//! caller that fills such a row.
 //!
 //! The crank reports protected flow (`taker_served_window`) only when it
 //! measured how long every source that can fill has rested. A book records the
@@ -86,7 +88,7 @@ use {
             perp_market_map::MarketSet,
             prop_amm::{
                 DirectionV0, L3RowV0, PriceLevelV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
-                QuoterType,
+                QuoterType, L3_ROW_FLAG_TAKER_ORIGIN,
             },
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
@@ -397,6 +399,7 @@ fn run_cross_leg<'info>(
     }
 
     let limit_price = leg_limit_price(taker_direction, cx.band_oracle_price, cx.leg_oracle_band)?;
+    refuse_taker_origin_reach(cx, taker_direction, size, limit_price, cpi_scratch)?;
 
     let LegOpening {
         order_id,
@@ -503,6 +506,104 @@ fn run_cross_leg<'info>(
         quote_delta: quote_after.safe_sub(quote_before)?,
         worst_price: filled.worst_fill_price.unwrap_or(0),
     })
+}
+
+/// Refuse a leg that can reach a taker-origin row on a consulted book.
+///
+/// The book withholds a remainder only while a counterparty crosses it and its
+/// claim holds. Past that the remainder is ordinary depth at its worst price, and
+/// a leg that took it would hand the protocol the gap to the other leg's price.
+/// Each leg reads its side just before it fills, because the buy leg can take
+/// the last ask that crosses a bid remainder and so release it to the sell leg.
+fn refuse_taker_origin_reach<'info>(
+    cx: &CrossMatchContext<'_, 'info>,
+    taker_direction: PositionDirection,
+    size: u64,
+    limit_price: u64,
+    cpi_scratch: &mut QuoterCpiScratch<'info>,
+) -> Result<()> {
+    let quoter_slab = &cx.accounts.quoter_slab;
+    for slot_index in quoter_slab.consulted_slots(cx.tail)? {
+        // Copied out so that no slab borrow lives across the book CPI.
+        let quoter_slot = quoter_slab.slots()?[slot_index];
+        if quoter_slot.config.quoter_type != QuoterType::Clob || !quoter_slot.quotes() {
+            continue;
+        }
+
+        let rows = super::helpers::crank_common::book_l3_side(
+            &quoter_slot,
+            quoter_slab,
+            cx.market_index,
+            route_direction(taker_direction),
+            CROSS_ROWS_PER_SIDE,
+            cx.tail,
+            cpi_scratch,
+            false,
+            ReachRow::from_row,
+        )?
+        .unwrap_or_default();
+        validate!(
+            !reaches_taker_origin_row(&rows, size, taker_direction, limit_price),
+            ErrorCode::CrossedTakerRemainderPending,
+            "a cross leg of {} can reach a taker-origin order",
+            size
+        )?;
+    }
+
+    Ok(())
+}
+
+/// The part of an L3 row the reach check reads. The heap never gives memory
+/// back, so the executor copies out less than the whole row.
+#[derive(Clone, Copy)]
+struct ReachRow {
+    price: u64,
+    size: u64,
+    taker_origin: bool,
+}
+
+impl ReachRow {
+    fn from_row(row: &L3RowV0) -> Self {
+        Self {
+            price: row.price,
+            size: row.size,
+            taker_origin: row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0,
+        }
+    }
+}
+
+/// Whether a leg of `size` can take a taker-origin row out of `rows`, one side
+/// of a book best price first.
+///
+/// A leg takes book rows in price order, so it reaches a row only while the
+/// matchable depth in front of that row is under `size`. Other sources can only
+/// shorten that reach. A read that fills [`CROSS_ROWS_PER_SIDE`] short of `size`
+/// hides rows the leg can still take, so the answer is then true.
+fn reaches_taker_origin_row(
+    rows: &[ReachRow],
+    size: u64,
+    taker_direction: PositionDirection,
+    limit_price: u64,
+) -> bool {
+    let within_limit = |price: u64| match taker_direction {
+        PositionDirection::Long => price <= limit_price,
+        PositionDirection::Short => price >= limit_price,
+    };
+
+    let mut depth_in_front = 0u64;
+    for row in rows {
+        if depth_in_front >= size || !within_limit(row.price) {
+            return false;
+        }
+
+        if row.size > 0 && row.taker_origin {
+            return true;
+        }
+
+        depth_in_front = depth_in_front.saturating_add(row.size);
+    }
+
+    depth_in_front < size && rows.len() >= CROSS_ROWS_PER_SIDE as usize
 }
 
 /// What a leg reads off the protocol `User` before it fills.
@@ -790,23 +891,25 @@ const CROSS_ROWS_PER_SIDE: u16 = 32;
 /// behind it is staged first. About a minute at 400 ms slots.
 pub(super) const STALLED_TAKER_ORIGIN_CROSS_SLOTS: u64 = 150;
 
+/// One side of a book as the depth a cross leg may take, best price first.
+///
+/// The side ends at its first taker-origin row with matchable size, because the
+/// executor refuses a leg that can reach one. A remainder the book withholds
+/// reports no size, so it is skipped and the depth behind it stays.
+fn crossable_levels(rows: &[L3RowV0]) -> Vec<CrossLevel> {
+    rows.iter()
+        .take_while(|row| row.size == 0 || row.flags & L3_ROW_FLAG_TAKER_ORIGIN == 0)
+        .filter(|row| row.flags & L3_ROW_FLAG_TAKER_ORIGIN == 0)
+        .map(CrossLevel::from_row)
+        .collect()
+}
+
 /// The crossing prefix of the book against itself, over the rows that
 /// `quote_l3_v0` reports matchable now.
-///
-/// Taker-origin rows are dropped rather than stopping the walk. The crank's
-/// own legs cannot reach a remainder, so a leg sized to include one comes back
-/// short and the cross in front of it could never clear.
 fn clob_cross_prefix(sides: &BookSides<L3RowV0>) -> CrossPrefix {
-    let crossable = |rows: &[L3RowV0]| -> Vec<CrossLevel> {
-        rows.iter()
-            .filter(|row| row.flags & crate::state::prop_amm::L3_ROW_FLAG_TAKER_ORIGIN == 0)
-            .map(CrossLevel::from_row)
-            .collect()
-    };
-
     crossing_prefix(
-        &crossable(&sides.bids),
-        &crossable(&sides.asks),
+        &crossable_levels(&sides.bids),
+        &crossable_levels(&sides.asks),
         MAX_CROSS_MAKERS,
     )
 }
@@ -957,10 +1060,14 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             &clob_accounts,
             &mut cpi_scratch,
             false,
-            CrossLevel::from_row,
+            |row| *row,
         )?
         else {
             return Ok(None);
+        };
+        let book = BookSides {
+            bids: crossable_levels(&book.bids),
+            asks: crossable_levels(&book.asks),
         };
 
         let quoted = |levels: &[PriceLevelV0]| -> Vec<CrossLevel> {

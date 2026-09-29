@@ -96,15 +96,24 @@ fn a_self_cross_ends_the_prefix() {
     );
 }
 
-/// A crossed taker remainder is not depth this crank may cross: the book
-/// withholds it from `execute_v0` while a counterparty crosses it, and the one
-/// case where it does not — a first leg that consumed the whole opposite side —
-/// hands it over at its own resting price. What sits behind it is still an
-/// ordinary cross, and stays in.
+/// A taker remainder is not depth this crank may cross. The book reports a
+/// crossed remainder whose claim holds with no matchable size, and the maker
+/// cross behind it stays. A remainder the book reports matchable ends its side,
+/// because the executor refuses a leg that can reach it.
 #[test]
 fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
-    // The remainder is the best bid: the maker×maker cross behind it is what
-    // remains, sized to the 98 bid rather than to the 101 remainder.
+    let cross = find(
+        &[
+            remainder(1, 101 * PRICE, 0),
+            maker(2, 100 * PRICE, UNIT / 2),
+        ],
+        &[maker(3, 99 * PRICE, UNIT)],
+    );
+
+    assert_eq!(cross.size, UNIT / 2);
+    assert_eq!(cross.makers, vec![user(2), user(3)]);
+
+    // A lapsed claim leaves the whole remainder matchable in front.
     let cross = find(
         &[
             remainder(1, 101 * PRICE, UNIT),
@@ -113,8 +122,7 @@ fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
         &[maker(3, 99 * PRICE, UNIT)],
     );
 
-    assert_eq!(cross.size, UNIT / 2);
-    assert_eq!(cross.makers, vec![user(2), user(3)]);
+    assert_eq!(cross.size, 0);
 
     // Behind the best on its own side, with the maker in front too small to
     // absorb the whole crossing ask: the prefix stops at the remainder instead
@@ -505,5 +513,58 @@ mod funding_between_legs {
             ..sell
         };
         assert!(validate_cross_legs(&buy, &hidden, (0, 0), 1).is_ok());
+    }
+}
+
+/// Which taker-origin rows a cross leg can reach. The sell leg takes bids
+/// best price first, down to its limit.
+mod taker_origin_reach {
+    use super::{super::*, maker, remainder, PRICE, UNIT};
+
+    const SELL_LIMIT: u64 = 98 * PRICE;
+
+    fn sell_reaches(bids: &[L3RowV0], size: u64) -> bool {
+        let rows: Vec<ReachRow> = bids.iter().map(ReachRow::from_row).collect();
+        reaches_taker_origin_row(&rows, size, PositionDirection::Short, SELL_LIMIT)
+    }
+
+    /// A remainder that no ask crosses rests as the best bid at its worst
+    /// price. The book reports it matchable, and the sell leg would take it.
+    #[test]
+    fn an_uncrossed_remainder_at_the_top_is_reached() {
+        assert!(sell_reaches(&[remainder(1, 102 * PRICE, UNIT)], UNIT / 2));
+    }
+
+    #[test]
+    fn a_remainder_behind_enough_maker_depth_is_not_reached() {
+        let bids = [
+            maker(2, 101 * PRICE, UNIT / 2),
+            remainder(1, 100 * PRICE, UNIT),
+        ];
+        assert!(!sell_reaches(&bids, UNIT / 2));
+        assert!(sell_reaches(&bids, UNIT / 2 + 1));
+    }
+
+    #[test]
+    fn a_remainder_past_the_leg_limit_is_not_reached() {
+        let bids = [remainder(1, SELL_LIMIT - 1, UNIT)];
+        assert!(!sell_reaches(&bids, UNIT));
+    }
+
+    /// The book withholds a crossed remainder whose claim holds, and reports
+    /// it with no matchable size.
+    #[test]
+    fn a_withheld_remainder_is_not_reached() {
+        let bids = [remainder(1, 102 * PRICE, 0), maker(2, 101 * PRICE, UNIT)];
+        assert!(!sell_reaches(&bids, UNIT));
+    }
+
+    /// A full read short of the leg's size leaves rows unmeasured, and those
+    /// count as reachable. A short read is the whole side.
+    #[test]
+    fn unmeasured_depth_counts_as_reached() {
+        let full_window = vec![maker(2, 101 * PRICE, 1); CROSS_ROWS_PER_SIDE as usize];
+        assert!(sell_reaches(&full_window, UNIT));
+        assert!(!sell_reaches(&full_window[1..], UNIT));
     }
 }

@@ -198,6 +198,34 @@ fn set_quote_spot_market(svm: &mut litesvm::LiteSVM) {
     );
 }
 
+/// The spot market the keeper payment floors price lamports through, at a SOL
+/// 5-minute TWAP of `sol_price` dollars. No crank here carries its oracle, so
+/// the floor reads the TWAP, as a relay-staged crank does.
+fn set_sol_spot_market(svm: &mut litesvm::LiteSVM, sol_price: i64) {
+    const SOL_SPOT_MARKET_INDEX: u16 = 1;
+    let mut market: SpotMarket = Zeroable::zeroed();
+    market.market_index = SOL_SPOT_MARKET_INDEX;
+    market.oracle = anchor_lang::prelude::Pubkey::new_unique();
+    market.oracle_source = OracleSource::PythLazer;
+    market.cumulative_deposit_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
+    market.cumulative_borrow_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
+    market.decimals = 9;
+    market.historical_oracle_data.last_oracle_price = sol_price * QUOTE_PRECISION_I64;
+    market.historical_oracle_data.last_oracle_price_twap = sol_price * QUOTE_PRECISION_I64;
+    market.historical_oracle_data.last_oracle_price_twap_5min = sol_price * QUOTE_PRECISION_I64;
+    set_zero_copy_account(
+        svm,
+        spot_market_pda(SOL_SPOT_MARKET_INDEX),
+        SpotMarket::DISCRIMINATOR,
+        &market,
+        SpotMarket::SIZE,
+    );
+
+    let mut state: State = read_zero_copy(svm, &state_pda());
+    state.sol_spot_market_index = SOL_SPOT_MARKET_INDEX;
+    set_zero_copy_account(svm, state_pda(), State::DISCRIMINATOR, &state, State::SIZE);
+}
+
 /// A user with a USDC deposit; `order` slots into `orders[0]` with matching
 /// worst-case aggregates.
 fn trading_user(authority: &Pubkey, deposit: u64, order: Option<Order>) -> User {
@@ -10643,6 +10671,7 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
     let conditions = init_crank_conditions(&mut fixture, PAYMENT);
     fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
     let protocol_user = set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
     let (signer, _) = velocity_signer_pda();
     let protocol_stats =
         Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
@@ -10702,6 +10731,8 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
         (instructions_sysvar(), false),
         (fixture.oracle, false),
         (spot_market_pda(0), true),
+        // The SOL spot market prices the keeper payment's floor.
+        (spot_market_pda(1), false),
         (perp_market_pda(0), true),
         (maker.user, true),
         (maker.stats, true),
@@ -10794,6 +10825,7 @@ fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
     let conditions = init_crank_conditions(&mut fixture, PAYMENT);
     fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
     set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
 
     let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
@@ -10825,7 +10857,7 @@ fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
         "the later remainder is the aggressor, so it is the crank's taker"
     );
     assert_eq!(
-        resolved.accounts[15].address,
+        resolved.accounts[16].address,
         early.user.to_bytes(),
         "the earlier one is the counterparty the match is priced at"
     );
@@ -10873,6 +10905,7 @@ fn a_claim_outranks_a_better_priced_maker_and_holds_the_front_until_it_lapses() 
     let conditions = init_crank_conditions(&mut fixture, PAYMENT);
     fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
     let protocol_user = set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
 
     let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let seller = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
@@ -12472,20 +12505,16 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
 
     let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let attacker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let keeper = party(&mut fixture.svm, 0);
-    rest_taker_origin_order(
+    // Resting through a blocker is how the second order rests instead of
+    // taking the first, as on a book with an activation delay.
+    rest_crossing_remainders(
         &mut fixture,
-        &victim,
-        PositionDirection::Long,
-        105 * PRICE,
-        UNIT,
-    );
-    rest_taker_origin_order(
-        &mut fixture,
-        &attacker,
-        PositionDirection::Short,
-        95 * PRICE,
-        UNIT,
+        &blocker,
+        (&victim, PositionDirection::Long, 105 * PRICE, UNIT),
+        (&attacker, PositionDirection::Short, 95 * PRICE, UNIT),
+        12,
     );
 
     resume_amm_fill(&mut fixture.svm);

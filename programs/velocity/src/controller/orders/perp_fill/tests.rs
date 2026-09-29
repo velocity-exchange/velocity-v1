@@ -8,7 +8,7 @@ use {
         super::{FillerSide, PricingRules, TakerSide},
         context::{FillConditions, FillParties, OfferedLiquidity},
         fill_perp_order, fill_within_taker_risk_limits,
-        liquidity::idle_loaded_users,
+        liquidity::{attributable_writable_locks, idle_loaded_users, LoadedFillAccounts},
         FillAmounts, FillRequest, MatchOracle, PerpFillAccounts,
     },
     crate::{
@@ -22,7 +22,7 @@ use {
                 SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
                 SPOT_WEIGHT_PRECISION,
             },
-            router::{FillerObligation, QuoterBook, RouterLeg},
+            router::{withheld_obligation, FillerObligation, QuoterBook, RouterLeg},
             time::SlotClock,
         },
         state::{
@@ -747,6 +747,149 @@ fn a_subaccount_of_the_takers_referrer_holds_no_role_in_the_fill() {
     );
 
     assert_eq!(idle, 3);
+}
+
+/// A route of registry entries, each quoting for its own user. Only the
+/// obligation count reads it, so it never executes.
+struct QuoterEntries {
+    users: Vec<Pubkey>,
+}
+
+impl ExternalQuoterExecutor<'static> for QuoterEntries {
+    fn quoter_type(&self, index: usize) -> QuoterType {
+        if index == 0 {
+            QuoterType::Clob
+        } else {
+            QuoterType::Custom
+        }
+    }
+
+    fn quoter_user(&self, index: usize) -> Pubkey {
+        self.users.get(index).copied().unwrap_or_default()
+    }
+
+    fn quoter_key(&self, index: usize) -> Pubkey {
+        self.users
+            .get(index)
+            .map(|user| Pubkey::new_from_array(user.to_bytes().map(|byte| byte ^ 0xff)))
+            .unwrap_or_default()
+    }
+
+    fn subjects(
+        &self,
+        _index: usize,
+        _direction: DirectionV0,
+        _size: u64,
+    ) -> VelocityResult<QuoterSubjects> {
+        Err(ErrorCode::DefaultError)
+    }
+
+    fn execute(
+        &mut self,
+        _index: usize,
+        _direction: DirectionV0,
+        _size: u64,
+    ) -> VelocityResult<ResponseLocationV0<'static>> {
+        Err(ErrorCode::DefaultError)
+    }
+}
+
+/// The obligation a keeper meets with six book makers and seven Custom
+/// quoters, when the quoters did or did not fill.
+fn padded_route_obligation(quoters_filled: bool) -> VelocityResult<()> {
+    let mut users = UserMap::empty();
+    let mut stats = UserStatsMap::empty();
+    let mut load = |authority: Pubkey| {
+        let key = Pubkey::new_unique();
+        let user = User {
+            authority,
+            ..User::default()
+        };
+        users.0.insert(key, loader_at(user, key));
+        stats.0.insert(
+            authority,
+            loader_at(
+                UserStats {
+                    authority,
+                    ..UserStats::default()
+                },
+                authority,
+            ),
+        );
+        key
+    };
+
+    let book_makers: Vec<Pubkey> = (0..6).map(|_| load(Pubkey::new_unique())).collect();
+    let quoter_users: Vec<Pubkey> = (0..7).map(|_| load(Pubkey::new_unique())).collect();
+    let moved =
+        |key: &Pubkey| book_makers.contains(key) || (quoters_filled && quoter_users.contains(key));
+    let settled_users = users
+        .0
+        .keys()
+        .enumerate()
+        .filter(|(_, key)| moved(key))
+        .fold(0u64, |bits, (index, _)| bits | (1u64 << index));
+
+    let entries = QuoterEntries {
+        users: std::iter::once(Pubkey::default())
+            .chain(quoter_users.iter().copied())
+            .collect(),
+    };
+    let level = PriceLevelV0 {
+        price: 101 * PRICE_PRECISION_U64,
+        size: BASE_PRECISION_U64,
+    };
+    let books: Vec<QuoterBook> = (0..8)
+        .map(|index| QuoterBook {
+            priority: 0,
+            levels: &[],
+            withheld: if index == 0 {
+                level
+            } else {
+                PriceLevelV0::default()
+            },
+        })
+        .collect();
+
+    let taker_key = Pubkey::new_unique();
+    let filler_key = Pubkey::new_unique();
+    let locks = attributable_writable_locks(
+        &LoadedFillAccounts {
+            users: &users,
+            stats: &stats,
+            taker_key,
+            taker_authority: TAKER_AUTHORITY,
+            filler_key,
+            settled_users,
+            executed_books: if quoters_filled { 0b1111_1110 } else { 0 },
+        },
+        &books,
+        &entries,
+    );
+    let idle = idle_loaded_users(&users, settled_users, &taker_key, &filler_key, &entries);
+
+    withheld_obligation(
+        &FillerObligation {
+            taker_signed: false,
+            tx_accounts: Some(64),
+            unrouted_quoters: 0,
+            liquidation: false,
+        },
+        idle,
+        locks,
+    )
+}
+
+/// Seven Custom quoters that fill nothing add no locks to the room test. A
+/// keeper with six book makers then had room for the maker the book withheld.
+/// The same seven quoters count once they fill.
+#[test]
+fn quoters_that_fill_nothing_do_not_fill_the_transaction() {
+    assert_eq!(
+        padded_route_obligation(false).unwrap_err(),
+        ErrorCode::FillerOmittedReachableMaker
+    );
+    assert!(padded_route_obligation(true).is_ok());
 }
 
 fn loader_at<T: ZeroCopy + Owner>(account: T, key: Pubkey) -> AccountLoader<'static, T> {

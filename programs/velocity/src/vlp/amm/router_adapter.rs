@@ -31,7 +31,7 @@ use {
     super::{
         controller::{calculate_base_swap_output, SwapDirection},
         math::{
-            amm::calculate_amm_available_liquidity,
+            amm::{calculate_amm_available_liquidity, calculate_price},
             spread::calculate_base_asset_amount_to_trade_to_price,
         },
         quoter::AmmQuoter,
@@ -68,8 +68,9 @@ pub const LAST_LOOK_BAND: u64 = PERCENTAGE_PRECISION_U64 / 20;
 /// `taker_limit` bounds the ladder. The curve inversion finds the cumulative
 /// where the marginal price reaches the limit, and the total is capped there.
 /// Every rung's true cost is then inside the limit, because a slice's average
-/// never exceeds its end marginal. The limit is the taker's own price, so the
-/// shading band does not apply to it.
+/// never exceeds its end marginal. A limit that the swap's first marginal
+/// already passes gives an empty ladder. The limit is the taker's own price,
+/// so the shading band does not apply to it.
 ///
 /// The cap happens here, so the ladder's book is authoritative for the limit. A
 /// caller must not truncate it again by comparing rung prices to the limit. A
@@ -94,14 +95,20 @@ pub fn vamm_quote_levels(
         return Ok(vec![]);
     }
 
-    let reserve_price = amm.reserve_price()?;
+    // The swap's first marginal price on the spread reserves it runs on. It
+    // differs from `ask_price` and `bid_price` by about `R x^2 / 4` for a
+    // composite spread `x`.
     let top = match direction {
-        DirectionV0::Long => {
-            amm.ask_price(reserve_price, amm.long_spread, amm.reference_price_offset)?
-        }
-        DirectionV0::Short => {
-            amm.bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)?
-        }
+        DirectionV0::Long => calculate_price(
+            amm.ask_quote_asset_reserve,
+            amm.ask_base_asset_reserve,
+            amm.peg_multiplier,
+        )?,
+        DirectionV0::Short => calculate_price(
+            amm.bid_quote_asset_reserve,
+            amm.bid_base_asset_reserve,
+            amm.peg_multiplier,
+        )?,
     };
 
     if let Some(limit) = taker_limit {
@@ -114,11 +121,15 @@ pub fn vamm_quote_levels(
             return Ok(vec![]);
         }
 
+        // The reach runs on the same reserves as `top` but rounds differently.
+        // Its direction is the exact test that some base fills within the limit.
         let (reachable, trade_direction) =
             calculate_base_asset_amount_to_trade_to_price(amm, limit, position_direction)?;
-        if trade_direction == position_direction {
-            total = total.min(reachable);
+        if trade_direction != position_direction {
+            return Ok(vec![]);
         }
+
+        total = total.min(reachable);
         if total == 0 {
             return Ok(vec![]);
         }
@@ -348,7 +359,10 @@ mod tests {
         super::*,
         crate::{
             math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
-            vlp::amm::controller::calculate_base_swap_output,
+            vlp::amm::{
+                controller::calculate_base_swap_output,
+                math::spread::refresh_cached_spread_reserves,
+            },
         },
     };
 
@@ -512,6 +526,55 @@ mod tests {
 
         amm.seed_no_spread_quote_state();
         amm
+    }
+
+    /// [`deep_amm_fixture`] with a nonzero spread on both sides and the cached
+    /// spread reserves the swap reads.
+    fn deep_spread_amm_fixture(spread: u32) -> AMM {
+        let mut amm = deep_amm_fixture();
+        amm.long_spread = spread;
+        amm.short_spread = spread;
+        refresh_cached_spread_reserves(&mut amm).unwrap();
+        amm
+    }
+
+    /// The ask reserves put the swap's first marginal at about
+    /// `ask_price + R x^2 / 4`. A long limit in that window trades nothing, so
+    /// the vAMM must quote nothing rather than a ladder the limit does not cap.
+    #[test]
+    fn long_limit_below_the_first_marginal_empties_the_book() {
+        let amm = deep_spread_amm_fixture(10_000);
+        let spread_ask = amm
+            .ask_price(amm.reserve_price().unwrap(), amm.long_spread, 0)
+            .unwrap();
+        let size = 10_000 * BASE_PRECISION_U64;
+
+        let window_limit = spread_ask + 100;
+        let (_, trade_direction) = calculate_base_asset_amount_to_trade_to_price(
+            &amm,
+            window_limit,
+            PositionDirection::Long,
+        )
+        .unwrap();
+        assert_eq!(trade_direction, PositionDirection::Short);
+
+        let levels =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], Some(window_limit)).unwrap();
+        assert!(levels.is_empty(), "{:?}", levels);
+
+        // A limit past the first marginal still gets the slice it can reach.
+        let reachable_limit = spread_ask + spread_ask / 1000;
+        let levels =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], Some(reachable_limit))
+                .unwrap();
+        let quoted: u64 = levels.iter().map(|l| l.size).sum();
+        assert!(quoted > 0 && quoted < size);
+        let exact = calculate_base_swap_output(&amm, quoted, SwapDirection::Remove)
+            .unwrap()
+            .quote_asset_amount;
+        assert!(
+            exact as u128 * BASE_PRECISION_U64 as u128 <= reachable_limit as u128 * quoted as u128
+        );
     }
 
     /// On a deep curve every honest slice is cheaper than a rival near the

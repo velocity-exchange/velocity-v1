@@ -141,11 +141,9 @@ export function vammQuoteLevels(
 			mmOraclePriceData
 		);
 
+		// The reach runs on the same reserves as `top` but rounds differently.
+		// Its direction is the exact test that some base fills within the limit.
 		if (!isVariant(tradeDirection, isLong ? 'long' : 'short')) {
-			// `top` is the reserve price plus one spread. The swap's first marginal is
-			// higher, so a limit above `top` can still sit below it and trade the other
-			// way. No size fills within the limit, so quote nothing instead of leaving
-			// `total` uncapped past the limit.
 			return [];
 		}
 

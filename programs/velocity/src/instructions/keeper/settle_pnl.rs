@@ -181,9 +181,11 @@ impl PnlSettlement<'_, '_> {
 
     /// Settle the market and report whether the settle happened.
     ///
-    /// Two paths settle nothing. A `settle_pnl` under `TrySettle` turns a pause
+    /// Three paths settle nothing. A `settle_pnl` under `TrySettle` turns a pause
     /// or a degraded oracle into a no-op. A `settle_expired_position` for a user
-    /// with no position returns before the market's SettlePnl pause checks. The
+    /// with no position returns before the market's SettlePnl pause checks, and
+    /// one whose book sweep hit the CLOB's cancel cap commits the sweep and
+    /// settles on a later call. The
     /// caller ties the revenue-share sweep to this answer. The sweep moves
     /// builder and referrer fees out of the market's pnl pool, and a market that
     /// never settled must not be drained.

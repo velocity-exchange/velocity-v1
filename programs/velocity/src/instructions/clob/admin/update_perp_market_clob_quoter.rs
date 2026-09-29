@@ -125,6 +125,7 @@ pub fn handle_update_perp_market_clob_quoter(
         state: ctx.accounts.state.key(),
         oracle: perp_market.oracle,
         quote_spot_market_index: perp_market.quote_spot_market_index,
+        market_index: perp_market.market_index,
     };
     let payments = price_market_cranks(
         &ctx.accounts.state.load()?.transaction_fee_rails,

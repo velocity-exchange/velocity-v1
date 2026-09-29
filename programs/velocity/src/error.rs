@@ -845,9 +845,7 @@ pub enum ErrorCode {
     SignedRouteMismatch,
     #[msg("A quoter the order's signed route names is absent from the fill")]
     SignedRouteEntryMissing,
-    /// @deprecated The cross crank no longer refuses a book by predicate. A
-    /// crossing remainder claims its cover, and claimed depth is outside the
-    /// matchable set of every caller that does not consume reservations.
+    /// `crank_cross_match` refuses a leg that can reach a taker-origin row.
     #[msg("A crossed taker remainder must be resolved by crank_taker_origin_cross")]
     CrossedTakerRemainderPending,
     #[msg("No resolvable taker-origin cross on this book")]

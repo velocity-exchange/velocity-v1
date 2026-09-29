@@ -69,6 +69,7 @@ pub struct ClobCrankConditionKeys {
     /// the perp market account.
     pub oracle: Pubkey,
     pub quote_spot_market_index: u16,
+    pub market_index: u16,
 }
 
 impl ClobCrankConditionKeys {
@@ -77,7 +78,7 @@ impl ClobCrankConditionKeys {
     /// velocity's resolvers with identical accounts.
     ///
     /// [`ResolveClobCrank`]: super::helpers::crank_common::ResolveClobCrank
-    fn resolver_accounts(&self) -> [AccountRefV0; 7] {
+    fn resolver_accounts(&self) -> [AccountRefV0; 8] {
         [
             AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
             AccountRefV0::readonly(self.crank_conditions.to_bytes()),
@@ -86,6 +87,9 @@ impl ClobCrankConditionKeys {
             AccountRefV0::readonly(self.state.to_bytes()),
             AccountRefV0::readonly(self.clob_program.to_bytes()),
             AccountRefV0::readonly(crate::state::pdas::crank_treasury().to_bytes()),
+            // The cross resolver estimates the vAMM off the perp market. It
+            // rides the tail, so `ResolveClobCrank` is unchanged.
+            AccountRefV0::readonly(crate::state::pdas::perp_market(self.market_index).to_bytes()),
         ]
     }
 }

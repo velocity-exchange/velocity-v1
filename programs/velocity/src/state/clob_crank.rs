@@ -69,8 +69,8 @@ pub const CLOB_CRANK_REFILL: usize = 1;
 /// Conditions hosted per market.
 pub const CLOB_CRANK_CONDITIONS: usize = 2;
 
-/// Every condition on this account resolves with the same seven accounts. The
-/// capacity is 8, which is [`RelayBlockV0`]'s smallest granularity.
+/// Every condition on this account resolves with the same eight accounts,
+/// which fills [`RelayBlockV0`]'s smallest granularity.
 pub const CLOB_CRANK_RESOLVER_CAPACITY: usize = 8;
 
 /// Account-data offset of the relay block (what a `WatchV0` registers at).

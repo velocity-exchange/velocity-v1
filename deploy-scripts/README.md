@@ -287,6 +287,12 @@ velocity-admin --multisig "$MULTISIG" multisig proposals
 velocity-admin --multisig "$MULTISIG" --keypair <member.json> multisig execute <index> --cu-limit 1400000
 ```
 
+The script also creates the protocol User, sub-account 0 of the velocity signer PDA, and its
+UserStats. Every relay executor names that account as its filler or taker, so every relay crank
+fails until it exists. Its authority cannot sign, so the program accepts only a warm or cold payer,
+and under `--multisig` it is a proposal the vault pays for. `velocity-admin user init-protocol`
+does the same by hand. `verify-upgrade.ts` fails while either account is missing.
+
 On devnet, leave out `--multisig` and pass a warm admin keypair. Every step then sends directly and
 one run does the whole migration.
 

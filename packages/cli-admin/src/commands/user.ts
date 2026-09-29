@@ -74,6 +74,47 @@ export function registerUser(parent: Command): void {
 
 	withGlobalOptions(
 		user
+			.command('init-protocol')
+			.description(
+				'Create the protocol User, sub-account 0 of the velocity signer PDA, and its UserStats. Every relay crank names this account as its filler or taker, so relay cranks fail until it exists. Its authority cannot sign, so the program accepts only a warm or cold payer. With --multisig the vault pays the rent through a proposal. Skips an account that already exists.'
+			)
+	).action(async (_flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts, false);
+		try {
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const programId = client.program.programId;
+			const signer = client.getSignerPublicKey();
+			const protocolUser = getUserAccountPublicKeySync(programId, signer, 0);
+			if (await provider.connection.getAccountInfo(protocolUser)) {
+				console.log(`protocol user ${protocolUser.toBase58()} already exists`);
+				return;
+			}
+
+			const ixs = await client.getInitializeProtocolUserIxs(
+				'Protocol',
+				resolveAdminAuthority(provider, multisigPda)
+			);
+			const statsExist = await provider.connection.getAccountInfo(
+				getUserStatsAccountPublicKey(programId, signer)
+			);
+			const result = await sendOrPropose(
+				provider,
+				statsExist ? ixs.slice(1) : ixs,
+				multisigPda,
+				'velocity-admin user init-protocol'
+			);
+			reportDispatch(`protocol user = ${protocolUser.toBase58()}`, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		user
 			.command('init <name>')
 			.description(
 				'Initialize velocity user accounts for an authority: UserStats (if missing) plus ' +

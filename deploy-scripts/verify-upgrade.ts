@@ -31,6 +31,9 @@ import {
 	getCrankTreasuryPublicKey,
 	getQuoterSlabPublicKey,
 	getRelayScratchPublicKey,
+	getUserAccountPublicKeySync,
+	getUserStatsAccountPublicKey,
+	getVelocitySignerPublicKey,
 	getVelocityStateAccountPublicKey,
 	positionIsAvailable,
 	Wallet,
@@ -237,6 +240,16 @@ async function main() {
 	await verifier.requireExists(
 		'crank treasury',
 		getCrankTreasuryPublicKey(velocity)
+	);
+	// Every relay executor names the protocol User as its filler or taker.
+	const signer = getVelocitySignerPublicKey(velocity);
+	await verifier.requireExists(
+		'protocol user',
+		getUserAccountPublicKeySync(velocity, signer, 0)
+	);
+	await verifier.requireExists(
+		'protocol user stats',
+		getUserStatsAccountPublicKey(velocity, signer)
 	);
 
 	const perpMarkets = accounts.filter(({ account }) =>

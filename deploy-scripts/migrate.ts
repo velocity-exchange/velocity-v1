@@ -33,8 +33,10 @@
  *   1. resize: grow every velocity-owned zero-copy account whose struct gained fields.
  *      `extend_account` resolves the target size from the discriminator, so this step covers
  *      past and future growth the same way. Then create the singletons and the per-market
- *      accounts the new code loads: the relay scratch, the crank treasury, and the quoter slab
- *      of every perp market that predates it.
+ *      accounts the new code loads: the relay scratch, the crank treasury, the protocol User
+ *      that every relay crank names as its filler or taker, and the quoter slab of every perp
+ *      market that predates it. The protocol User needs a warm payer, so under `--multisig` it
+ *      is a proposal the vault pays for.
  *
  *      Then give every perp market that has no book its CLOB book. Every order path requires
  *      the market's book account, so a market without one takes no order. The bring-up
@@ -87,6 +89,7 @@ import {
 import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
 import * as multisig from '@sqds/multisig';
 import {
+	AdminClient,
 	BASE_PRECISION,
 	decodeQuoterSlab,
 	getClobCrankConditionsPublicKey,
@@ -98,7 +101,10 @@ import {
 	getPerpMarketPublicKeySync,
 	getQuoterSlabPublicKey,
 	getVelocityStateAccountPublicKey,
+	getVelocitySignerPublicKey,
 	getSpotMarketPublicKeySync,
+	getUserAccountPublicKeySync,
+	getUserStatsAccountPublicKey,
 	quoterConfigHash,
 	UserStatus,
 	positionIsAvailable,
@@ -667,6 +673,7 @@ async function migrate(ctx: Migration, idl: any) {
 	}
 
 	const treasury = await ensureCrankTreasury(ctx, statePda);
+	await ensureProtocolUser(ctx, stateAccount);
 	const perpMarkets = await decodeMarkets(connection, program, 'PerpMarket');
 	const spotMarkets = await decodeMarkets(connection, program, 'SpotMarket');
 
@@ -913,6 +920,61 @@ async function ensureCrankTreasury(
 		}
 	);
 	return treasury;
+}
+
+/**
+ * The protocol User: sub-account 0 of the velocity signer PDA, and its
+ * UserStats. Every relay executor names it as the filler or the taker, so
+ * without it every relay crank fails. Its authority cannot sign, so
+ * `validate_payer` accepts only a warm or cold payer, and under a multisig
+ * the vault pays through a proposal.
+ */
+async function ensureProtocolUser(
+	ctx: Migration,
+	stateAccount: any
+): Promise<void> {
+	const { connection, provider, program, admin } = ctx;
+	const velocity = program.programId;
+	const signer = getVelocitySignerPublicKey(velocity);
+	if (!signer.equals(stateAccount.signer)) {
+		throw new Error(
+			`State.signer ${stateAccount.signer.toBase58()} is not the signer PDA ${signer.toBase58()}`
+		);
+	}
+
+	const protocolUser = getUserAccountPublicKeySync(velocity, signer, 0);
+	const protocolUserStats = getUserStatsAccountPublicKey(velocity, signer);
+	const [userInfo, statsInfo] = await connection.getMultipleAccountsInfo([
+		protocolUser,
+		protocolUserStats,
+	]);
+	if (userInfo && statsInfo) {
+		console.log(`protocol user ${protocolUser.toBase58()}: already created`);
+		return;
+	}
+
+	if (statsInfo) {
+		throw new Error(
+			`protocol UserStats ${protocolUserStats.toBase58()} exists without its User. ` +
+				'Create the User by hand with initialize_user and a warm payer.'
+		);
+	}
+
+	console.log(`protocol user ${protocolUser.toBase58()}: creating`);
+	const client = new AdminClient({
+		connection,
+		wallet: provider.wallet as any,
+		programID: velocity,
+		skipLoadUsers: true,
+	});
+	await admin.run(
+		'migrate: create protocol user',
+		await client.getInitializeProtocolUserIxs('Protocol', admin.key),
+		{
+			discriminators: [ixDiscriminator('initialize_user_stats')],
+			account: protocolUserStats,
+		}
+	);
 }
 
 type MarketsAndBooks = {

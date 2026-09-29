@@ -120,6 +120,7 @@ velocity-admin user set-delegate <delegate> [--sub-accounts <n>] [--allow-transf
 velocity-admin user set-special-status <user> <flags>
 velocity-admin user set-equity-floor <user> <floor> <buffer>     # warm/cold admin; QUOTE_PRECISION raw units; floor 0 disables both checks
 velocity-admin user reset-equity-breaker <userStats>             # warm/cold admin; unfreezes an authority after the breaker tripped
+velocity-admin user init-protocol  # warm/cold admin pays; creates the protocol User (signer PDA, sub-account 0) that every relay crank names as filler or taker
 velocity-admin user set-accelerated-referral <authority> <accelerated>  # warm/cold admin; grant clears the auto-enrollment block, revoke sets it
 velocity-admin user equity-floor-status <authority>              # read-only; per-subaccount equity/floor/buffer/headroom + level + breaker flag
 velocity-admin user close-positions [--sub-accounts <csv>]       # signer = account authority; cancel all orders + close all perp positions reduce-only

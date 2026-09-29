@@ -345,6 +345,10 @@ pub const L3_ROW_FLAG_REDUCE_ONLY: u8 = 4;
 /// with `include_taker_origin_reservations` and sees the whole size.
 pub const L3_ROW_FLAG_RESERVED: u8 = 8;
 
+/// A taker-origin order whose claim lapsed. The book no longer withholds depth
+/// for it, so a caller must not count it as a claim on the depth it crosses.
+pub const L3_ROW_FLAG_CLAIM_LAPSED: u8 = 16;
+
 /// Encoded width of an [`L3RowV0`].
 pub const L3_ROW_BYTES: usize = core::mem::size_of::<L3RowV0>();
 

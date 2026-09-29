@@ -1249,6 +1249,47 @@ fn quote_l3_reports_the_claim_on_the_row() {
     );
 }
 
+/// The row says when the book stopped honouring a remainder's claim. A caller
+/// that ranks claimants reads it, because the row carries no activation slot.
+#[test]
+fn quote_l3_flags_a_remainder_whose_claim_lapsed() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (taker, maker) = (user(0xA), user(0xB));
+    place(&mut book, SideV0::Ask, 100, 3, maker);
+    place_at(&mut book, SideV0::Bid, 102, 4, taker, 10, true);
+    place(&mut book, SideV0::Bid, 99, 4, maker);
+
+    let lapsed_flags = |book: &mut ClobMarketV0, slot: u64| -> Vec<(u64, bool)> {
+        let pointer = book
+            .quote_l3(DirectionV0::Short, 0, L3_ROWS_CEILING, true, slot, 0)
+            .unwrap();
+        let bytes = streamed(book, pointer);
+        L3ResponseV0::parse(&bytes)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.price,
+                    row.flags & quoter_spec::L3_ROW_FLAG_CLAIM_LAPSED != 0,
+                )
+            })
+            .collect()
+    };
+
+    let lapse_slot = 10 + book.reservation_grace_slots as u64;
+    assert_eq!(
+        lapsed_flags(&mut book, lapse_slot - 1),
+        vec![(102, false), (99, false)]
+    );
+    // An ordinary order never carries the flag, however long it rests.
+    assert_eq!(
+        lapsed_flags(&mut book, lapse_slot),
+        vec![(102, true), (99, false)]
+    );
+}
+
 /// A claimant whose demand outlasts one cover order must not carry that demand
 /// onto cover it does not cross. With asks at 100 and 105 and a remainder
 /// bidding 102 for more than the 100 holds, the leftover demand crosses

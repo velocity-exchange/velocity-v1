@@ -7,7 +7,7 @@ use {
         arena::unlink_order,
         budget::{settleable, DistinctUsers, Settleable, UserBudget, UserLookup},
         hints::holds_expiry_hint,
-        reservation::CrossReservation,
+        reservation::{is_bound, CrossReservation},
         BookHeader, ClobBook, NodeArena,
     },
     crate::{
@@ -226,6 +226,8 @@ pub(super) fn quote_l3(
         let withheld = reservation.withheld(book, node)?;
         // Read before the call, which borrows `book.response` mutably.
         let blocking_min_size = book.blocking_min_size;
+        let claim_lapsed =
+            node.is_taker_origin() && !is_bound(node, slot, book.reservation_grace_slots);
         writer
             .push_row(
                 &mut book.response,
@@ -235,7 +237,7 @@ pub(super) fn quote_l3(
                     order_id: node.order_id,
                     node_index: index,
                     user: node.user_ref(),
-                    flags: l3_row_flags(node, blocking_min_size, withheld != 0),
+                    flags: l3_row_flags(node, blocking_min_size, withheld != 0, claim_lapsed),
                     _pad: [0; 1],
                     placed_slot: node.placed_slot,
                 },
@@ -839,11 +841,21 @@ fn removed_order_flags(node: &OrderNodeV0) -> u8 {
 /// `L3_ROW_FLAG_BLOCKS_WALK` says this order can end a walk, so its owner gates
 /// the depth behind it. The book reports it so the floor stays the book's rule.
 /// `L3_ROW_FLAG_RESERVED` says a crossing taker remainder claims the rest of the
-/// row's size.
-fn l3_row_flags(node: &OrderNodeV0, blocking_min_size: u64, reserved: bool) -> u8 {
+/// row's size. `L3_ROW_FLAG_CLAIM_LAPSED` says the book no longer honours this
+/// remainder's claim, so a caller does not rank it ahead of a live claimant.
+fn l3_row_flags(
+    node: &OrderNodeV0,
+    blocking_min_size: u64,
+    reserved: bool,
+    claim_lapsed: bool,
+) -> u8 {
     let mut flags = 0;
     if node.is_taker_origin() {
         flags |= quoter_spec::L3_ROW_FLAG_TAKER_ORIGIN;
+    }
+
+    if claim_lapsed {
+        flags |= quoter_spec::L3_ROW_FLAG_CLAIM_LAPSED;
     }
 
     if reserved {

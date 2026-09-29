@@ -51,8 +51,9 @@ pub use {
         len_prefix, CancelledRemainderV0, ChangeOrders, CompletedOrderV0, ExecuteResponseV0,
         L3ResponseV0, L3RowV0, PartiallyFilledOrderV0, PriceLevelV0, QuoteResponseV0,
         ResponsePointerV0, UserBalanceChangeV0, CANCELLED_BYTES, CHANGE_BYTES, COMPLETED_BYTES,
-        L3_ROW_BYTES, L3_ROW_FLAG_BLOCKS_WALK, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_RESERVED,
-        L3_ROW_FLAG_TAKER_ORIGIN, LEN_BYTES, PARTIAL_BYTES, PRICE_LEVEL_BYTES, USER_REF_BYTES,
+        L3_ROW_BYTES, L3_ROW_FLAG_BLOCKS_WALK, L3_ROW_FLAG_CLAIM_LAPSED, L3_ROW_FLAG_REDUCE_ONLY,
+        L3_ROW_FLAG_RESERVED, L3_ROW_FLAG_TAKER_ORIGIN, LEN_BYTES, PARTIAL_BYTES,
+        PRICE_LEVEL_BYTES, USER_REF_BYTES,
     },
     write::{ExecuteWriter, L3Writer, QuoteWriter},
 };

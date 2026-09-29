@@ -416,6 +416,10 @@ impl LiquidationProgress {
     /// farm it by slicing one liquidation. A call that only swept book orders
     /// earns the force-cancel figure. The latched account rests no new orders,
     /// so each paid sweep takes orders off a finite set.
+    ///
+    /// A sweep charges the user no fee, as a liquidation's slot cancel does not.
+    /// The fee rails price the force-cancel figure as the cost of the
+    /// transaction, so a second wallet of the user earns about what it spends.
     fn flat_payment(&self, payments: &CrankPaymentsV0) -> u64 {
         if self.filled_quote >= LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
             u64::from(payments.liquidation)

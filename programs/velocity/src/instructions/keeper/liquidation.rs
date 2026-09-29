@@ -489,8 +489,11 @@ fn pay_liquidation_crank<'info>(
     Ok(())
 }
 
+/// Only the authority counts. The user sets its delegate to any key, so a
+/// delegate test lets the user name a turner's payout address and make every
+/// relay liquidation of the account pay zero.
 fn pays_the_liquidated_user(user: &User, payout: &Pubkey) -> bool {
-    *payout == user.authority || *payout == user.delegate
+    *payout == user.authority
 }
 
 /// What the protocol adds to a liquidation crank's flat payment. It is the
@@ -921,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn the_liquidated_users_own_wallet_is_not_paid() {
+    fn only_the_liquidated_users_authority_is_not_paid() {
         let user = User {
             authority: Pubkey::new_unique(),
             delegate: Pubkey::new_unique(),
@@ -929,7 +932,7 @@ mod tests {
         };
 
         assert!(pays_the_liquidated_user(&user, &user.authority));
-        assert!(pays_the_liquidated_user(&user, &user.delegate));
+        assert!(!pays_the_liquidated_user(&user, &user.delegate));
         assert!(!pays_the_liquidated_user(&user, &Pubkey::new_unique()));
     }
 

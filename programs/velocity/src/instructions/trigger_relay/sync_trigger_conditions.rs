@@ -59,7 +59,7 @@ use {
     crate::{
         error::ErrorCode,
         instructions::{
-            loader_of, refuse_duplicate_accounts, validate_market_coverage, MarketCoverage,
+            loader_of, refuse_duplicate_accounts_except, validate_market_coverage, MarketCoverage,
         },
         state::{
             clob_crank::ClobCrankConditionsV0,
@@ -78,7 +78,7 @@ use {
     },
     anchor_lang::{prelude::*, Discriminator},
     relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0},
-    std::collections::BTreeMap,
+    std::collections::{BTreeMap, BTreeSet},
 };
 
 #[cfg(test)]
@@ -291,8 +291,10 @@ fn checked_trigger_inputs<'info>(
     write_shared_list: bool,
     now: i64,
 ) -> Result<TriggerInputs<'info>> {
-    refuse_duplicate_accounts(remaining_accounts)?;
     let inputs = collect_trigger_inputs(remaining_accounts)?;
+    // A list stored before the program was deduplicated holds one copy of the
+    // book program per slab, and a resync replays that list.
+    refuse_duplicate_accounts_except(remaining_accounts, &inputs.book_programs)?;
     if write_shared_list {
         validate_market_coverage(user_loader, &inputs.coverage())?;
     }
@@ -362,6 +364,8 @@ struct TriggerInputs<'info> {
     /// same order and shape the liquidation pass stores them.
     tail_refs: Vec<AccountRefV0>,
     oracle_infos: BTreeMap<Pubkey, &'info AccountInfo<'info>>,
+    /// The program of every book a passed slab names.
+    book_programs: BTreeSet<Pubkey>,
 }
 
 impl TriggerInputs<'_> {
@@ -425,7 +429,8 @@ fn collect_trigger_inputs<'info>(
     let mut spot_markets: BTreeMap<u16, Pubkey> = BTreeMap::new();
     let mut tail_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracle_infos: BTreeMap<Pubkey, &AccountInfo<'info>> = BTreeMap::new();
-    let mut slab_books: Vec<Pubkey> = Vec::new();
+    let mut slab_books: BTreeSet<Pubkey> = BTreeSet::new();
+    let mut book_programs: BTreeSet<Pubkey> = BTreeSet::new();
 
     for info in remaining_accounts {
         if info.owner == &crate::ID {
@@ -463,12 +468,17 @@ fn collect_trigger_inputs<'info>(
                 // Stored after the markets, where the map parser never
                 // reaches. The liquidation pass stores the slab, its book and
                 // the book's program in this order, and both passes write the
-                // same list, so this pass carries them the same way.
+                // same list, so this pass carries them the same way. Every book
+                // shares one program, which is stored once, because a resync
+                // replays this list and a second copy is a duplicate.
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 if let Some((book, program)) = armable_book(&slots) {
                     tail_refs.push(AccountRefV0::writable(book.to_bytes()));
-                    tail_refs.push(AccountRefV0::readonly(program.to_bytes()));
-                    slab_books.extend([book, program]);
+                    if book_programs.insert(program) {
+                        tail_refs.push(AccountRefV0::readonly(program.to_bytes()));
+                    }
+
+                    slab_books.insert(book);
                     markets.entry(market).or_default().clob = Some((*info.key, book, program));
                 }
 
@@ -485,7 +495,7 @@ fn collect_trigger_inputs<'info>(
 
     // The slab stores its book and program in the tail, so a replayed list
     // that carries them does not make them oracle candidates.
-    oracle_infos.retain(|key, _| !slab_books.contains(key));
+    oracle_infos.retain(|key, _| !slab_books.contains(key) && !book_programs.contains(key));
     Ok(TriggerInputs {
         markets,
         market_oracles,
@@ -493,6 +503,7 @@ fn collect_trigger_inputs<'info>(
         spot_markets,
         tail_refs,
         oracle_infos,
+        book_programs,
     })
 }
 

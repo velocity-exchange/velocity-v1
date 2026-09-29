@@ -1569,6 +1569,39 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "solSpotMarket",
+          "docs": [
+            "The SOL spot market, whose TWAP values the reservoir payment in quote.",
+            "Program-keeper mode requires it when `State` names a SOL market. See",
+            "[`payment_sol_price`]."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -1734,6 +1767,39 @@ export type Velocity = {
               {
                 "kind": "account",
                 "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "solSpotMarket",
+          "docs": [
+            "The SOL spot market, whose TWAP values the reservoir payment in quote.",
+            "Program-keeper mode requires it when `State` names a SOL market. See",
+            "[`payment_sol_price`]."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
               }
             ]
           }
@@ -9773,6 +9839,29 @@ export type Velocity = {
         },
         {
           "name": "perpMarket"
+        },
+        {
+          "name": "state",
+          "docs": [
+            "The exchange pause, the median-price flag and the oracle guard rails",
+            "the executor judges the trigger with."
+          ]
+        },
+        {
+          "name": "quoterSlab"
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "room left on the side the order rests on."
+          ],
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         }
       ],
       "args": [
@@ -9852,6 +9941,29 @@ export type Velocity = {
         },
         {
           "name": "perpMarket"
+        },
+        {
+          "name": "state",
+          "docs": [
+            "The exchange pause, the median-price flag and the oracle guard rails",
+            "the executor judges the trigger with."
+          ]
+        },
+        {
+          "name": "quoterSlab"
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "room left on the side the order rests on."
+          ],
+          "relations": [
+            "quoterSlab"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         }
       ],
       "args": [
@@ -11877,6 +11989,38 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "solSpotMarket",
+          "docs": [
+            "The SOL spot market, whose TWAP values the reservoir payment in quote.",
+            "Program-keeper mode requires it when `State` names a SOL market."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -12006,12 +12150,12 @@ export type Velocity = {
         {
           "name": "triggerConditions",
           "docs": [
-            "The user's relay trigger conditions. The handler releases the fired",
-            "slot, which silences its level-triggered wake. It is optional, like",
-            "every relay-side account."
+            "fired slot, which silences its level-triggered wake. It is required,",
+            "as on `trigger_limit_order_v1`, so a caller cannot leave the slot",
+            "waking relay on a freed order. A user created before the block existed",
+            "has none, and the `seeds` pin the address."
           ],
           "writable": true,
-          "optional": true,
           "pda": {
             "seeds": [
               {
@@ -12053,6 +12197,38 @@ export type Velocity = {
           ],
           "optional": true,
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "solSpotMarket",
+          "docs": [
+            "The SOL spot market, whose TWAP values the reservoir payment in quote.",
+            "Program-keeper mode requires it when `State` names a SOL market."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -33106,7 +33282,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                1344
+                2432
               ]
             }
           },

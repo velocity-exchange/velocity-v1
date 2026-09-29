@@ -7119,7 +7119,7 @@ pub mod types {
     pub struct UserConditionsV0 {
         pub relay: RelayBlock11x48,
         pub trigger_slots: [TriggerSlotMetaV0; 8],
-        pub trigger_resolvers: ByteArray<1344>,
+        pub trigger_resolvers: ByteArray<2432>,
         pub user: Pubkey,
         pub sync_payment_lamports: u64,
         pub sync_fallback_slots: u64,
@@ -8923,7 +8923,7 @@ pub mod accounts {
     pub struct UserConditionsV0 {
         pub relay: RelayBlock11x48,
         pub trigger_slots: [TriggerSlotMetaV0; 8],
-        pub trigger_resolvers: ByteArray<1344>,
+        pub trigger_resolvers: ByteArray<2432>,
         pub user: Pubkey,
         pub sync_payment_lamports: u64,
         pub sync_fallback_slots: u64,
@@ -10563,6 +10563,7 @@ pub mod accounts {
         pub clob_program: Pubkey,
         pub crank_conditions: Pubkey,
         pub trigger_conditions: Pubkey,
+        pub sol_spot_market: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobEvict {
@@ -10635,6 +10636,11 @@ pub mod accounts {
                     is_signer: false,
                     is_writable: true,
                 },
+                AccountMeta {
+                    pubkey: self.sol_spot_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
             ]
         }
     }
@@ -10681,6 +10687,7 @@ pub mod accounts {
         pub clob_program: Pubkey,
         pub crank_conditions: Pubkey,
         pub trigger_conditions: Pubkey,
+        pub sol_spot_market: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobRemoveExpired {
@@ -10752,6 +10759,11 @@ pub mod accounts {
                     pubkey: self.trigger_conditions,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.sol_spot_market,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -18839,6 +18851,10 @@ pub mod accounts {
         pub user: Pubkey,
         pub oracle: Pubkey,
         pub perp_market: Pubkey,
+        pub state: Pubkey,
+        pub quoter_slab: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ResolveTriggerLimitOrderV1 {
@@ -18878,6 +18894,26 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -18921,6 +18957,10 @@ pub mod accounts {
         pub user: Pubkey,
         pub oracle: Pubkey,
         pub perp_market: Pubkey,
+        pub state: Pubkey,
+        pub quoter_slab: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ResolveTriggerMarketOrderV1 {
@@ -18960,6 +19000,26 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -20883,6 +20943,7 @@ pub mod accounts {
         pub clob_program: Pubkey,
         pub crank_conditions: Pubkey,
         pub trigger_conditions: Pubkey,
+        pub sol_spot_market: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerLimitOrderV1 {
@@ -20955,6 +21016,11 @@ pub mod accounts {
                     is_signer: false,
                     is_writable: true,
                 },
+                AccountMeta {
+                    pubkey: self.sol_spot_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
             ]
         }
     }
@@ -21002,6 +21068,7 @@ pub mod accounts {
         pub crank_conditions: Pubkey,
         pub trigger_conditions: Pubkey,
         pub ix_sysvar: Pubkey,
+        pub sol_spot_market: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerMarketOrderV1 {
@@ -21076,6 +21143,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.ix_sysvar,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.sol_spot_market,
                     is_signer: false,
                     is_writable: false,
                 },

@@ -8,11 +8,14 @@
 //! The vAMM wins the tie by tier priority and keeps the difference for the LPs
 //! instead of giving it to the taker as price improvement.
 //!
-//! A rung shades no more base than the rivals at that price offer. Without the
-//! vAMM, a taker pays the rival price only for the size the rival holds, and
-//! the rest of the demand falls back to the curve. An unbounded rung would let
-//! one dust order reprice the whole slice. Resting that order costs nothing,
-//! because the vAMM wins the tie and the order never trades.
+//! A rung shades only base that the rivals at its price also fill in the same
+//! take. Those rivals fill only the part of the take past `reach(P)`, the base
+//! at which the curve reaches the rival price `P`. A rung therefore covers at
+//! most `min(D, total - reach(P))` base, where `D` is the rival depth at `P` or
+//! better that no rung has shaded yet. Its surcharge over the honest curve is
+//! at most that base times `P - top`, plus rounding. A rival that the take
+//! does not reach shades nothing, so an order that never trades cannot reprice
+//! the vAMM.
 //!
 //! Every checkpoint's price comes from the swap math the execute leg runs,
 //! which is `calculate_base_swap_output` over the spread reserves. A rung's
@@ -63,7 +66,7 @@ pub const LAST_LOOK_BAND: u64 = PERCENTAGE_PRECISION_U64 / 20;
 
 /// Quote the vAMM as best-first ladder levels covering `min(size, available)`.
 /// The levels are shaded toward `rival_books` within the last-look band, and
-/// only for the depth those books offer.
+/// only for base those books also fill.
 ///
 /// `taker_limit` bounds the ladder. The curve inversion finds the cumulative
 /// where the marginal price reaches the limit, and the total is capped there.
@@ -212,8 +215,7 @@ pub fn vamm_quote_levels(
 
     // Each checkpoint holds a cumulative base and, for a rival rung, its
     // shading price. A rung shades the last base before the curve reaches its
-    // price. It shades no more base than the rivals at that price or better
-    // still supply, floored to the step. The honest slice before the rung is
+    // price, floored to the step. The honest slice before the rung is
     // cheaper and the slice after it is dearer, so the book stays monotone.
     // Equal-size checkpoints price the rest of the curve honestly. The emit
     // loop skips a checkpoint that does not advance the ladder.
@@ -237,10 +239,14 @@ pub fn vamm_quote_levels(
             continue;
         }
 
+        // The rivals at this price trade only the take past `reach`, so the
+        // rung shades no more base than that.
         let shade_end = reach.min(total) - reach.min(total) % step;
-        let unshaded_depth = rival_depth.safe_sub(shaded_base)?;
+        let shade_budget = rival_depth
+            .safe_sub(shaded_base)?
+            .min(total.saturating_sub(reach));
         let shade_start = shade_end
-            .saturating_sub(unshaded_depth - unshaded_depth % step)
+            .saturating_sub(shade_budget - shade_budget % step)
             .max(covered);
         if shade_start >= shade_end {
             continue;
@@ -577,21 +583,69 @@ mod tests {
         );
     }
 
-    /// On a deep curve every honest slice is cheaper than a rival near the
-    /// band edge. The shade must still reprice only the rival's depth, and the
-    /// surcharge must stay within `depth * (rival - top)`.
+    /// On a deep curve a 100-unit take never reaches a rival inside the band.
+    /// The rival fills nothing, so it shades nothing at any depth or limit.
     #[test]
-    fn deep_curve_shade_surcharge_is_bounded_by_rival_depth() {
+    fn a_rival_the_take_does_not_reach_shades_nothing() {
         let amm = deep_amm_fixture();
         let size = 100 * BASE_PRECISION_U64;
-        let band_offset = TOP * 49 / 1000; // 4.9%, inside the 5% band
 
         for (direction, rival_price) in [
-            (DirectionV0::Long, TOP + band_offset),
-            (DirectionV0::Short, TOP - band_offset),
+            (DirectionV0::Long, TOP + TOP * 49 / 1000),
+            (DirectionV0::Long, TOP + TOP / 100),
+            (DirectionV0::Short, TOP - TOP * 49 / 1000),
+            (DirectionV0::Short, TOP - TOP / 100),
         ] {
+            for taker_limit in [None, Some(rival_price)] {
+                let honest = vamm_quote_levels(&amm, direction, size, 1, &[], taker_limit).unwrap();
+                for depth in [
+                    BASE_PRECISION_U64 / 1000,
+                    10 * BASE_PRECISION_U64,
+                    100 * BASE_PRECISION_U64,
+                    30_000 * BASE_PRECISION_U64,
+                ] {
+                    let rival = [PriceLevelV0 {
+                        price: rival_price,
+                        size: depth,
+                    }];
+                    let shaded = vamm_quote_levels(
+                        &amm,
+                        direction,
+                        size,
+                        1,
+                        &rival_book(&rival),
+                        taker_limit,
+                    )
+                    .unwrap();
+
+                    assert_eq!(shaded, honest, "{} at {}", depth, rival_price);
+                }
+            }
+        }
+    }
+
+    /// A take past `reach(P)` fills the rival as well. The rung shades at most
+    /// the take past `reach(P)`, however deep the rival is, and the surcharge
+    /// stays within that base times `P - top`.
+    #[test]
+    fn shade_is_bounded_by_the_take_past_the_rival_price() {
+        let amm = deep_amm_fixture();
+        let past_reach = 500 * BASE_PRECISION_U64;
+
+        for (direction, rival_price) in [
+            (DirectionV0::Long, TOP + TOP / 200),
+            (DirectionV0::Short, TOP - TOP / 200),
+        ] {
+            let (reach, _) = calculate_base_asset_amount_to_trade_to_price(
+                &amm,
+                rival_price,
+                PositionDirection::from(direction),
+            )
+            .unwrap();
+            let size = reach + past_reach;
             let honest = vamm_quote_levels(&amm, direction, size, 1, &[], None).unwrap();
-            for depth in [BASE_PRECISION_U64 / 1000, 10 * BASE_PRECISION_U64] {
+
+            for depth in [100 * BASE_PRECISION_U64, reach] {
                 let rival = [PriceLevelV0 {
                     price: rival_price,
                     size: depth,
@@ -605,18 +659,19 @@ mod tests {
                     DirectionV0::Short => w[0].price >= w[1].price,
                 }));
 
+                let shade_budget = depth.min(past_reach);
                 let shaded_base: u64 = shaded
                     .iter()
                     .filter(|l| l.price == rival_price)
                     .map(|l| l.size)
                     .sum();
-                assert_eq!(shaded_base, depth);
+                assert!(shaded_base > 0 && shaded_base <= shade_budget);
 
                 // Each rung's price rounds by under one unit, so the two ladders'
                 // notionals differ by under one lamport per base unit and per rung.
                 let rounding = size / BASE_PRECISION_U64 + shaded.len() as u64;
                 let surcharge = split_notional(&shaded).abs_diff(split_notional(&honest));
-                let bound = (depth as u128 * rival_price.abs_diff(TOP) as u128
+                let bound = (shade_budget as u128 * rival_price.abs_diff(TOP) as u128
                     / BASE_PRECISION_U64 as u128) as u64;
                 assert!(surcharge <= bound + rounding, "{} > {}", surcharge, bound);
             }
@@ -823,8 +878,8 @@ mod ts_mirror_fixture {
             println!("TS_MIRROR {} {}", label, encoded.join(","));
         }
 
-        // A dust rival near the band edge on a deep curve. The shade covers
-        // only the rival's depth, just before the curve reaches its price.
+        // A dust rival near the band edge on a deep curve. The take never
+        // reaches the rival price, so the ladder is the honest curve.
         let mut deep = amm;
         deep.base_asset_reserve = 1_000_000 * AMM_RESERVE_PRECISION;
         deep.quote_asset_reserve = 1_000_000 * AMM_RESERVE_PRECISION;

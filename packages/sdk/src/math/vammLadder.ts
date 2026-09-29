@@ -13,8 +13,8 @@
  *  - A rival price within {@link LAST_LOOK_BAND} of the vAMM's top becomes a rung, priced at the
  *    rival's price; the vAMM wins the tie on tier priority. A client that ignores rival books
  *    under-estimates what the taker pays. A rung reprices only the last base before the curve
- *    reaches the rival's price, and no more of it than the rivals at that price offer, so rival
- *    size matters as much as rival price.
+ *    reaches the rival's price `P`. It covers at most `min(D, total - reach(P))` base, where `D`
+ *    is the rival depth not yet shaded, so a rival that the take does not reach shades nothing.
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -209,9 +209,8 @@ export function vammQuoteLevels(
 
 	// Checkpoints: [cumulative base, shading price if this is a rival rung].
 	//
-	// A rung shades the last base before the curve reaches its price. It shades
-	// no more base than the rivals at that price or better still supply,
-	// floored to the step. The honest slice before the rung is cheaper and the
+	// A rung shades the last base before the curve reaches its price, floored
+	// to the step. The honest slice before the rung is cheaper and the
 	// slice after it is dearer, so the book stays monotone. Equal-size
 	// checkpoints price the rest of the curve honestly. The emit loop skips a
 	// checkpoint that does not advance the ladder.
@@ -238,15 +237,14 @@ export function vammQuoteLevels(
 			continue;
 		}
 
+		// The rivals at this price trade only the take past `reach`, so the
+		// rung shades no more base than that.
 		const shadeEnd = standardizeBaseAssetAmount(BN.min(reach, total), step);
-		const unshadedDepth = standardizeBaseAssetAmount(
-			rivalDepth.sub(shadedBase),
+		const shadeBudget = standardizeBaseAssetAmount(
+			BN.min(rivalDepth.sub(shadedBase), BN.max(total.sub(reach), ZERO)),
 			step
 		);
-		const shadeStart = BN.max(
-			BN.max(shadeEnd.sub(unshadedDepth), ZERO),
-			covered
-		);
+		const shadeStart = BN.max(BN.max(shadeEnd.sub(shadeBudget), ZERO), covered);
 		if (shadeStart.gte(shadeEnd)) {
 			continue;
 		}

@@ -8,11 +8,14 @@
 //! The vAMM wins the tie by tier priority and keeps the difference for the LPs
 //! instead of giving it to the taker as price improvement.
 //!
-//! A rung shades no more base than the rivals at that price offer. Without the
-//! vAMM, a taker pays the rival price only for the size the rival holds, and
-//! the rest of the demand falls back to the curve. An unbounded rung would let
-//! one dust order reprice the whole slice. Resting that order costs nothing,
-//! because the vAMM wins the tie and the order never trades.
+//! A rung shades only base that the rivals at its price also fill in the same
+//! take. Those rivals fill only the part of the take past `reach(P)`, the base
+//! at which the curve reaches the rival price `P`. A rung therefore covers at
+//! most `min(D, total - reach(P))` base, where `D` is the rival depth at `P` or
+//! better that no rung has shaded yet. Its surcharge over the honest curve is
+//! at most that base times `P - top`, plus rounding. A rival that the take
+//! does not reach shades nothing, so an order that never trades cannot reprice
+//! the vAMM.
 //!
 //! Every checkpoint's price comes from the swap math the execute leg runs,
 //! which is `calculate_base_swap_output` over the spread reserves. A rung's
@@ -31,7 +34,7 @@ use {
     super::{
         controller::{calculate_base_swap_output, SwapDirection},
         math::{
-            amm::calculate_amm_available_liquidity,
+            amm::{calculate_amm_available_liquidity, calculate_price},
             spread::calculate_base_asset_amount_to_trade_to_price,
         },
         quoter::AmmQuoter,
@@ -63,13 +66,14 @@ pub const LAST_LOOK_BAND: u64 = PERCENTAGE_PRECISION_U64 / 20;
 
 /// Quote the vAMM as best-first ladder levels covering `min(size, available)`.
 /// The levels are shaded toward `rival_books` within the last-look band, and
-/// only for the depth those books offer.
+/// only for base those books also fill.
 ///
 /// `taker_limit` bounds the ladder. The curve inversion finds the cumulative
 /// where the marginal price reaches the limit, and the total is capped there.
 /// Every rung's true cost is then inside the limit, because a slice's average
-/// never exceeds its end marginal. The limit is the taker's own price, so the
-/// shading band does not apply to it.
+/// never exceeds its end marginal. A limit that the swap's first marginal
+/// already passes gives an empty ladder. The limit is the taker's own price,
+/// so the shading band does not apply to it.
 ///
 /// The cap happens here, so the ladder's book is authoritative for the limit. A
 /// caller must not truncate it again by comparing rung prices to the limit. A
@@ -94,14 +98,20 @@ pub fn vamm_quote_levels(
         return Ok(vec![]);
     }
 
-    let reserve_price = amm.reserve_price()?;
+    // The swap's first marginal price on the spread reserves it runs on. It
+    // differs from `ask_price` and `bid_price` by about `R x^2 / 4` for a
+    // composite spread `x`.
     let top = match direction {
-        DirectionV0::Long => {
-            amm.ask_price(reserve_price, amm.long_spread, amm.reference_price_offset)?
-        }
-        DirectionV0::Short => {
-            amm.bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)?
-        }
+        DirectionV0::Long => calculate_price(
+            amm.ask_quote_asset_reserve,
+            amm.ask_base_asset_reserve,
+            amm.peg_multiplier,
+        )?,
+        DirectionV0::Short => calculate_price(
+            amm.bid_quote_asset_reserve,
+            amm.bid_base_asset_reserve,
+            amm.peg_multiplier,
+        )?,
     };
 
     if let Some(limit) = taker_limit {
@@ -114,11 +124,15 @@ pub fn vamm_quote_levels(
             return Ok(vec![]);
         }
 
+        // The reach runs on the same reserves as `top` but rounds differently.
+        // Its direction is the exact test that some base fills within the limit.
         let (reachable, trade_direction) =
             calculate_base_asset_amount_to_trade_to_price(amm, limit, position_direction)?;
-        if trade_direction == position_direction {
-            total = total.min(reachable);
+        if trade_direction != position_direction {
+            return Ok(vec![]);
         }
+
+        total = total.min(reachable);
         if total == 0 {
             return Ok(vec![]);
         }
@@ -201,8 +215,7 @@ pub fn vamm_quote_levels(
 
     // Each checkpoint holds a cumulative base and, for a rival rung, its
     // shading price. A rung shades the last base before the curve reaches its
-    // price. It shades no more base than the rivals at that price or better
-    // still supply, floored to the step. The honest slice before the rung is
+    // price, floored to the step. The honest slice before the rung is
     // cheaper and the slice after it is dearer, so the book stays monotone.
     // Equal-size checkpoints price the rest of the curve honestly. The emit
     // loop skips a checkpoint that does not advance the ladder.
@@ -226,10 +239,14 @@ pub fn vamm_quote_levels(
             continue;
         }
 
+        // The rivals at this price trade only the take past `reach`, so the
+        // rung shades no more base than that.
         let shade_end = reach.min(total) - reach.min(total) % step;
-        let unshaded_depth = rival_depth.safe_sub(shaded_base)?;
+        let shade_budget = rival_depth
+            .safe_sub(shaded_base)?
+            .min(total.saturating_sub(reach));
         let shade_start = shade_end
-            .saturating_sub(unshaded_depth - unshaded_depth % step)
+            .saturating_sub(shade_budget - shade_budget % step)
             .max(covered);
         if shade_start >= shade_end {
             continue;
@@ -348,7 +365,10 @@ mod tests {
         super::*,
         crate::{
             math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
-            vlp::amm::controller::calculate_base_swap_output,
+            vlp::amm::{
+                controller::calculate_base_swap_output,
+                math::spread::refresh_cached_spread_reserves,
+            },
         },
     };
 
@@ -514,21 +534,118 @@ mod tests {
         amm
     }
 
-    /// On a deep curve every honest slice is cheaper than a rival near the
-    /// band edge. The shade must still reprice only the rival's depth, and the
-    /// surcharge must stay within `depth * (rival - top)`.
+    /// [`deep_amm_fixture`] with a nonzero spread on both sides and the cached
+    /// spread reserves the swap reads.
+    fn deep_spread_amm_fixture(spread: u32) -> AMM {
+        let mut amm = deep_amm_fixture();
+        amm.long_spread = spread;
+        amm.short_spread = spread;
+        refresh_cached_spread_reserves(&mut amm).unwrap();
+        amm
+    }
+
+    /// The ask reserves put the swap's first marginal at about
+    /// `ask_price + R x^2 / 4`. A long limit in that window trades nothing, so
+    /// the vAMM must quote nothing rather than a ladder the limit does not cap.
     #[test]
-    fn deep_curve_shade_surcharge_is_bounded_by_rival_depth() {
+    fn long_limit_below_the_first_marginal_empties_the_book() {
+        let amm = deep_spread_amm_fixture(10_000);
+        let spread_ask = amm
+            .ask_price(amm.reserve_price().unwrap(), amm.long_spread, 0)
+            .unwrap();
+        let size = 10_000 * BASE_PRECISION_U64;
+
+        let window_limit = spread_ask + 100;
+        let (_, trade_direction) = calculate_base_asset_amount_to_trade_to_price(
+            &amm,
+            window_limit,
+            PositionDirection::Long,
+        )
+        .unwrap();
+        assert_eq!(trade_direction, PositionDirection::Short);
+
+        let levels =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], Some(window_limit)).unwrap();
+        assert!(levels.is_empty(), "{:?}", levels);
+
+        // A limit past the first marginal still gets the slice it can reach.
+        let reachable_limit = spread_ask + spread_ask / 1000;
+        let levels =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], Some(reachable_limit))
+                .unwrap();
+        let quoted: u64 = levels.iter().map(|l| l.size).sum();
+        assert!(quoted > 0 && quoted < size);
+        let exact = calculate_base_swap_output(&amm, quoted, SwapDirection::Remove)
+            .unwrap()
+            .quote_asset_amount;
+        assert!(
+            exact as u128 * BASE_PRECISION_U64 as u128 <= reachable_limit as u128 * quoted as u128
+        );
+    }
+
+    /// On a deep curve a 100-unit take never reaches a rival inside the band.
+    /// The rival fills nothing, so it shades nothing at any depth or limit.
+    #[test]
+    fn a_rival_the_take_does_not_reach_shades_nothing() {
         let amm = deep_amm_fixture();
         let size = 100 * BASE_PRECISION_U64;
-        let band_offset = TOP * 49 / 1000; // 4.9%, inside the 5% band
 
         for (direction, rival_price) in [
-            (DirectionV0::Long, TOP + band_offset),
-            (DirectionV0::Short, TOP - band_offset),
+            (DirectionV0::Long, TOP + TOP * 49 / 1000),
+            (DirectionV0::Long, TOP + TOP / 100),
+            (DirectionV0::Short, TOP - TOP * 49 / 1000),
+            (DirectionV0::Short, TOP - TOP / 100),
         ] {
+            for taker_limit in [None, Some(rival_price)] {
+                let honest = vamm_quote_levels(&amm, direction, size, 1, &[], taker_limit).unwrap();
+                for depth in [
+                    BASE_PRECISION_U64 / 1000,
+                    10 * BASE_PRECISION_U64,
+                    100 * BASE_PRECISION_U64,
+                    30_000 * BASE_PRECISION_U64,
+                ] {
+                    let rival = [PriceLevelV0 {
+                        price: rival_price,
+                        size: depth,
+                    }];
+                    let shaded = vamm_quote_levels(
+                        &amm,
+                        direction,
+                        size,
+                        1,
+                        &rival_book(&rival),
+                        taker_limit,
+                    )
+                    .unwrap();
+
+                    assert_eq!(shaded, honest, "{} at {}", depth, rival_price);
+                }
+            }
+        }
+    }
+
+    /// A take past `reach(P)` fills the rival as well. The rung shades at most
+    /// the take past `reach(P)`, however deep the rival is, and the surcharge
+    /// stays within that base times `P - top`.
+    #[test]
+    fn shade_is_bounded_by_the_take_past_the_rival_price() {
+        let amm = deep_amm_fixture();
+        let past_reach = 500 * BASE_PRECISION_U64;
+
+        for (direction, rival_price) in [
+            (DirectionV0::Long, TOP + TOP / 200),
+            (DirectionV0::Short, TOP - TOP / 200),
+        ] {
+            let (reach, _) = calculate_base_asset_amount_to_trade_to_price(
+                &amm,
+                rival_price,
+                PositionDirection::from(direction),
+            )
+            .unwrap();
+            let size = reach + past_reach;
             let honest = vamm_quote_levels(&amm, direction, size, 1, &[], None).unwrap();
-            for depth in [BASE_PRECISION_U64 / 1000, 10 * BASE_PRECISION_U64] {
+
+            for depth in [100 * BASE_PRECISION_U64, reach] {
                 let rival = [PriceLevelV0 {
                     price: rival_price,
                     size: depth,
@@ -542,18 +659,19 @@ mod tests {
                     DirectionV0::Short => w[0].price >= w[1].price,
                 }));
 
+                let shade_budget = depth.min(past_reach);
                 let shaded_base: u64 = shaded
                     .iter()
                     .filter(|l| l.price == rival_price)
                     .map(|l| l.size)
                     .sum();
-                assert_eq!(shaded_base, depth);
+                assert!(shaded_base > 0 && shaded_base <= shade_budget);
 
                 // Each rung's price rounds by under one unit, so the two ladders'
                 // notionals differ by under one lamport per base unit and per rung.
                 let rounding = size / BASE_PRECISION_U64 + shaded.len() as u64;
                 let surcharge = split_notional(&shaded).abs_diff(split_notional(&honest));
-                let bound = (depth as u128 * rival_price.abs_diff(TOP) as u128
+                let bound = (shade_budget as u128 * rival_price.abs_diff(TOP) as u128
                     / BASE_PRECISION_U64 as u128) as u64;
                 assert!(surcharge <= bound + rounding, "{} > {}", surcharge, bound);
             }
@@ -677,8 +795,150 @@ mod ts_mirror_fixture {
     //! with `cargo test -p velocity --lib ts_mirror_fixture -- --nocapture`.
     use {
         super::*,
-        crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
+        crate::{
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_U64, PEG_PRECISION,
+                    QUOTE_PRECISION_I128,
+                },
+                oracle::OracleValidity,
+            },
+            state::{
+                oracle::{HistoricalOracleData, MMOraclePriceData, OraclePriceData},
+                perp_market::MarketStats,
+            },
+            vlp::amm::math::spread::update_amm_quote_state,
+        },
     };
+
+    fn encode(levels: &[PriceLevelV0]) -> String {
+        levels
+            .iter()
+            .map(|l| format!("{}:{}", l.price, l.size))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The 100-unit AMM with a dynamic spread and an inventory reference price
+    /// offset. The program's own quote-state update sets the spreads and the
+    /// cached spread reserves, against an oracle at the reserve price.
+    fn spread_amm() -> AMM {
+        let reserves = 100 * AMM_RESERVE_PRECISION;
+        let base_asset_amount_with_amm = 2 * BASE_PRECISION_I128;
+        let mut amm = AMM {
+            base_asset_reserve: reserves,
+            quote_asset_reserve: reserves,
+            sqrt_k: reserves,
+            peg_multiplier: 50 * PEG_PRECISION,
+            min_base_asset_reserve: reserves / 2,
+            max_base_asset_reserve: reserves * 2,
+            max_fill_reserve_fraction: 4,
+            base_spread: 2_000,
+            max_spread: 50_000,
+            curve_update_intensity: 200,
+            base_asset_amount_with_amm,
+            total_fee_minus_distributions: 1_000 * QUOTE_PRECISION_I128,
+            ..AMM::default()
+        };
+
+        // The quote reserve after the pool's position closes, as a repeg sets it.
+        amm.terminal_quote_asset_reserve =
+            reserves * reserves / (reserves + base_asset_amount_with_amm as u128);
+
+        let oracle_price = 50 * PEG_PRECISION as i64;
+        let stats = MarketStats {
+            last_mark_price_twap: 50_500_000,
+            last_mark_price_twap_5min: 50_500_000,
+            last_24h_avg_funding_rate: 1_000_000_000,
+            funding_period: 3600,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: oracle_price,
+                last_oracle_price_twap: oracle_price,
+                last_oracle_price_twap_5min: oracle_price,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        };
+        let oracle_price_data = OraclePriceData {
+            price: oracle_price,
+            confidence: 0,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+        let mm =
+            MMOraclePriceData::new(oracle_price, 0, 0, OracleValidity::Valid, oracle_price_data)
+                .unwrap();
+        let reserve_price = amm.reserve_price().unwrap();
+        update_amm_quote_state(&mut amm, &stats, &mm, reserve_price, 0).unwrap();
+        amm
+    }
+
+    /// Nonzero spreads and a nonzero offset, so the dump below exercises the
+    /// spread reserves that every other fixture here leaves at the curve.
+    #[test]
+    fn print_spread_ladder_for_ts_mirror() {
+        let amm = spread_amm();
+        assert!(amm.long_spread > 0 && amm.short_spread > 0);
+        assert_ne!(amm.reference_price_offset, 0);
+        println!(
+            "TS_MIRROR spread_state long_spread={} short_spread={} offset={} ask={}/{} bid={}/{}",
+            amm.long_spread,
+            amm.short_spread,
+            amm.reference_price_offset,
+            amm.ask_base_asset_reserve,
+            amm.ask_quote_asset_reserve,
+            amm.bid_base_asset_reserve,
+            amm.bid_quote_asset_reserve,
+        );
+
+        let size = 10 * BASE_PRECISION_U64;
+        for (label, direction) in [
+            ("spread_long", DirectionV0::Long),
+            ("spread_short", DirectionV0::Short),
+        ] {
+            let levels = vamm_quote_levels(&amm, direction, size, 1, &[], None).unwrap();
+            println!("TS_MIRROR {} {}", label, encode(&levels));
+        }
+
+        // A rival 1% past the first marginal, and a limit just above the
+        // spread-adjusted ask that the first marginal already passes.
+        let ask_top = calculate_price(
+            amm.ask_quote_asset_reserve,
+            amm.ask_base_asset_reserve,
+            amm.peg_multiplier,
+        )
+        .unwrap();
+        let rival = [PriceLevelV0 {
+            price: ask_top * 101 / 100,
+            size: BASE_PRECISION_U64 / 10,
+        }];
+        let books = [QuoterBook {
+            priority: 10,
+            levels: &rival,
+            withheld: PriceLevelV0::default(),
+        }];
+        let levels = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &books, None).unwrap();
+        println!(
+            "TS_MIRROR spread_long_rival price={} {}",
+            rival[0].price,
+            encode(&levels)
+        );
+
+        let spread_ask = amm
+            .ask_price(
+                amm.reserve_price().unwrap(),
+                amm.long_spread,
+                amm.reference_price_offset,
+            )
+            .unwrap();
+        let window_limit = spread_ask + 1;
+        assert!(window_limit < ask_top);
+        let levels =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], Some(window_limit)).unwrap();
+        assert!(levels.is_empty());
+        println!("TS_MIRROR spread_long_window_limit limit={}", window_limit);
+    }
 
     #[test]
     fn amm_is_copy_so_a_view_ix_can_quote_without_mutating() {
@@ -760,8 +1020,8 @@ mod ts_mirror_fixture {
             println!("TS_MIRROR {} {}", label, encoded.join(","));
         }
 
-        // A dust rival near the band edge on a deep curve. The shade covers
-        // only the rival's depth, just before the curve reaches its price.
+        // A dust rival near the band edge on a deep curve. The take never
+        // reaches the rival price, so the ladder is the honest curve.
         let mut deep = amm;
         deep.base_asset_reserve = 1_000_000 * AMM_RESERVE_PRECISION;
         deep.quote_asset_reserve = 1_000_000 * AMM_RESERVE_PRECISION;

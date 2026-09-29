@@ -442,8 +442,10 @@ pub fn settle_pnl(
 /// `MarketStatus::Settlement`.
 ///
 /// Returns `Ok(true)` when settlement happened. Returns `Ok(false)` when the
-/// user holds no position in the market, which makes the call a no-op. Every
-/// other rejection is an `Err`.
+/// user holds no position in the market, which makes the call a no-op. It also
+/// returns `Ok(false)` after a book sweep that stopped at the book's cap. That
+/// call settles nothing, and the next call continues the sweep. Every other
+/// rejection is an `Err`.
 ///
 /// The no-op returns before the market-scoped SettlePnl pause checks below. A
 /// caller must therefore treat `false` the same way it treats a soft-skipped
@@ -560,7 +562,16 @@ pub fn settle_expired_position(
         state.settlement_duration
     )?;
 
-    cancel_book_orders(user, BookCancelScope::Market(perp_market_index), books)?;
+    let book_cancel = cancel_book_orders(user, BookCancelScope::Market(perp_market_index), books)?;
+    if book_cancel.orders_remain && book_cancel.orders > 0 {
+        msg!(
+            "swept {} book orders of market {}; more remain",
+            book_cancel.orders,
+            perp_market_index
+        );
+
+        return Ok(false);
+    }
 
     validate!(
         user.perp_positions[position_index].open_orders == 0,

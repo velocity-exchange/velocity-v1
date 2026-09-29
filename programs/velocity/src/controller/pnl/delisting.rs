@@ -3126,6 +3126,176 @@ pub mod delisting_test {
         assert_eq!(taker.perp_positions[0].base_asset_amount, 0);
     }
 
+    /// A perp market past its expiry, with one user long half a base unit.
+    fn expired_test_market(oracle: Pubkey, clock: &Clock) -> PerpMarket {
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                base_asset_amount_with_amm: (AMM_RESERVE_PRECISION / 2) as i128,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                amm_jit_intensity: 100,
+                ..AMM::default()
+            },
+            number_of_users_with_base: 1,
+            number_of_users: 1,
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            pnl_pool: PoolBalance {
+                scaled_balance: (1000 * SPOT_BALANCE_PRECISION),
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            expiry_ts: clock.unix_timestamp - 10,
+            base_asset_amount_long: (AMM_RESERVE_PRECISION / 2) as i128,
+            order_step_size: 10000000,
+            oracle,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            quote_asset_amount: -(QUOTE_PRECISION_I128 * 10),
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price_twap: (99 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (99 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u128::MAX;
+        market.amm.min_base_asset_reserve = 0;
+        market
+    }
+
+    /// The quote spot market, at a price of one.
+    fn quote_test_spot_market() -> SpotMarket {
+        SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            initial_liability_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_liability_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
+            borrow_balance: 100 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        }
+    }
+
+    /// A position may rest more book orders than one sweep takes. Each call
+    /// commits its sweep, and the call that empties the book settles.
+    #[test]
+    fn expired_settle_sweeps_more_book_orders_than_one_call_takes() {
+        let clock = Clock {
+            slot: 6893025720,
+            epoch_start_timestamp: 1662065595 - 1000,
+            epoch: 2424,
+            leader_schedule_epoch: 1662065595 - 1,
+            unix_timestamp: 1662065595,
+        };
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let oracle_map = OracleMap::load_one(&oracle_info, 0, SlotClock::baseline(), None).unwrap();
+        let mut market = expired_test_market(oracle_key, &clock);
+        create_anchor_account_info!(market, PerpMarket, market_info);
+        let mut spot_market = quote_test_spot_market();
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+        let mut maps = AccountMaps::new(
+            PerpMarketMap::load_one(&market_info, true).unwrap(),
+            SpotMarketMap::load_one(&spot_market_info, true).unwrap(),
+            oracle_map,
+        );
+        let state = State {
+            oracle_guard_rails: OracleGuardRails {
+                validity: ValidityGuardRails {
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120),
+                    confidence_interval_max_size: 1000,
+                    too_volatile_ratio: 5,
+                },
+                ..OracleGuardRails::default()
+            },
+            ..State::default()
+        };
+        settle_expired_market(0, &mut maps, &state, &clock).unwrap();
+
+        let mut book = CappedBook {
+            bids_left: 129,
+            bid_size: 10000000,
+        };
+        let mut user = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 129,
+                open_bids: 129 * 10000000,
+                base_asset_amount: (BASE_PRECISION_I64 / 2),
+                quote_asset_amount: -(QUOTE_PRECISION_I64 * 10),
+                ..PerpPosition::default()
+            }),
+            open_orders: 129,
+            has_open_order: true,
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        let (user_key, _, _) = get_user_keys();
+        let mut settle = |user: &mut User| {
+            settle_expired_position(0, user, &user_key, &mut maps, &clock, &state, &mut book)
+        };
+
+        assert!(!settle(&mut user).unwrap());
+        assert_eq!(user.perp_positions[0].open_orders, 1);
+        assert_eq!(
+            user.perp_positions[0].base_asset_amount,
+            BASE_PRECISION_I64 / 2
+        );
+
+        assert!(settle(&mut user).unwrap());
+        assert_eq!(user.perp_positions[0].open_orders, 0);
+        assert_eq!(user.perp_positions[0].base_asset_amount, 0);
+
+        let market = maps.perp_market_map.get_ref(&0).unwrap();
+        assert_eq!(market.number_of_users_with_base, 0);
+    }
+
+    /// A book of equal bids that takes at most 128 of them per sweep, as the
+    /// CLOB does.
+    struct CappedBook {
+        bids_left: u32,
+        bid_size: u64,
+    }
+
+    impl crate::controller::liquidation::BookOrderSweep for CappedBook {
+        fn cancel_all(
+            &mut self,
+            _market_index: u16,
+            user: crate::state::prop_amm::UserRefV0,
+        ) -> crate::error::VelocityResult<Option<crate::state::prop_amm::CancelAllOutcomeV0>>
+        {
+            let taken = self.bids_left.min(128);
+            self.bids_left -= taken;
+            Ok(Some(crate::state::prop_amm::CancelAllOutcomeV0 {
+                user,
+                bid_base_asset_amount: u64::from(taken) * self.bid_size,
+                bid_orders: taken,
+                exhaustive: self.bids_left == 0,
+                ..Default::default()
+            }))
+        }
+    }
+
     /// A book that holds one bid of one base unit for the user.
     struct OneBidOnTheBook;
 

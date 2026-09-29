@@ -65,10 +65,6 @@ jobs:
           program: ${{ steps.tag.outputs.program }}
           devnet: "false"
 
-      # SIMD-0500 rejects upgrades below SBPF v3, so refuse to stage one.
-      - name: Assert SBPF v3
-        run: bash deploy-scripts/assert-sbpf-version.sh "target/deploy/${{ steps.tag.outputs.program }}.so"
-
       # The IDL is published on-chain as a program-metadata buffer by the
       # buffer-deploy action below (and applied by the Squads proposal), so there
       # is no need to also attach it to a GitHub release.

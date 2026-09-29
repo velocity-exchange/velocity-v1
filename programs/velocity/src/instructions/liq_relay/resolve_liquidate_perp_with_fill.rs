@@ -1,16 +1,16 @@
 //! Resolver for a distress threshold. It works out which stage of the ladder
 //! the account is in now, and stages the call that matches.
 //!
-//! A force cancel comes first when it has work. It answers to the initial
-//! margin requirement, so it reaches a failing account before a liquidation
-//! does, and it takes only the side of a book that adds risk. A latched account
-//! skips it, because each liquidation call cancels the orders in its own scope.
-//!
 //! The liquidation stage runs the full maintenance-margin calculation with the
 //! code the executor runs. It stages the largest position in a scope that
 //! fails, because the executor liquidates the scope of the market it is given.
-//! An account that is not liquidatable returns NoWork, and the poll wakes the
-//! resolver again later.
+//! Each liquidation call cancels the book orders in its own scope.
+//!
+//! A force cancel runs when no liquidation can. It answers to the initial
+//! margin requirement, so it reaches an account before the account fails
+//! maintenance, and it takes only the side of a book that adds risk. A latched
+//! account skips it. An account with no work returns NoWork, and the poll
+//! wakes the resolver again later.
 
 use {
     crate::{
@@ -100,6 +100,34 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
         // may settle against belong between the map and the quoter tail.
         let map_section = ctx.remaining_accounts.len() - account_iter.len();
 
+        // An account that already fails maintenance goes straight to the
+        // liquidation, which sweeps the book orders in its scope. A cancel
+        // first would cost the account a full poll interval.
+        let failing_market = failing_perp_market(
+            &ctx.accounts.user,
+            &mut maps,
+            state.liquidation_margin_buffer_ratio,
+        )?;
+        if let Some(market_index) = failing_market {
+            if liquidation_can_pay_the_crank(
+                &ctx.accounts.user,
+                &mut maps,
+                &state,
+                market_index,
+                clock.slot,
+            )? {
+                return stage_liquidate_perp(
+                    ctx.accounts.state.key(),
+                    &ctx.accounts.user,
+                    ctx.remaining_accounts,
+                    market_index,
+                    stored,
+                    map_section,
+                )
+                .map(Some);
+            }
+        }
+
         let cancel_target = find_cancel_target(&ctx.accounts.user, &mut maps)?;
         if let Some(market_index) = cancel_target {
             let book = maps.perp_market_map.get_ref(&market_index)?.clob_market;
@@ -114,43 +142,16 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             }
         }
 
-        let Some(market_index) = failing_perp_market(
-            &ctx.accounts.user,
-            &mut maps,
-            state.liquidation_margin_buffer_ratio,
-        )?
-        else {
-            // No failing scope holds a perp position. The account is healthy, or its distress is
-            // spot-only, which no crank can act on. `liquidate_spot` gives the liquidator the borrow and the
-            // collateral behind it, so a protocol keeper would hold spot inventory and its price
-            // risk. The perp path avoids that by routing the fill through the book. Spot has no
-            // such flavor without an external swap venue, and nothing here wires one. A real
-            // liquidator carries that inventory on its own balance sheet and unwinds it elsewhere,
-            // so this stays a keeper-bot path.
-            //
-            // allow-verbose: no other comment says why a liquidatable account returns no work.
-            return Ok(None);
-        };
-
-        if !liquidation_can_pay_the_crank(
-            &ctx.accounts.user,
-            &mut maps,
-            &state,
-            market_index,
-            clock.slot,
-        )? {
-            return Ok(None);
-        }
-
-        stage_liquidate_perp(
-            ctx.accounts.state.key(),
-            &ctx.accounts.user,
-            ctx.remaining_accounts,
-            market_index,
-            stored,
-            map_section,
-        )
-        .map(Some)
+        // No failing scope holds a perp position. The account is healthy, or its distress is
+        // spot-only, which no crank can act on. `liquidate_spot` gives the liquidator the borrow and the
+        // collateral behind it, so a protocol keeper would hold spot inventory and its price
+        // risk. The perp path avoids that by routing the fill through the book. Spot has no
+        // such flavor without an external swap venue, and nothing here wires one. A real
+        // liquidator carries that inventory on its own balance sheet and unwinds it elsewhere,
+        // so this stays a keeper-bot path.
+        //
+        // allow-verbose: no other comment says why a liquidatable account returns no work.
+        Ok(None)
     })
 }
 

@@ -520,20 +520,24 @@ pub fn add_builder_order<'a, 'b>(
     Ok(escrow.get_order_mut(order_idx).ok())
 }
 
-/// The compute budget this transaction asked for. The first value is the price
-/// per compute unit, in micro-lamports. The second is the unit limit.
+/// The compute budget a transaction states in compute-budget instructions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxComputeBudget {
+    /// The price per compute unit, in micro-lamports. `None` when no
+    /// instruction sets it.
+    pub price_per_unit: Option<u64>,
+    /// The unit limit. Zero when no instruction sets it, although the runtime
+    /// then applies a default.
+    pub unit_limit: u32,
+}
+
+/// Read the compute budget off the instructions sysvar. A legacy or v0
+/// transaction states it in instructions to the compute-budget program.
 ///
-/// Both are ordinary instructions to the compute-budget program, so this reads
-/// them back off the instructions sysvar. A crank that reimburses what a turner
-/// spent needs the price, because the priority fee is `price * units` and
-/// nothing else onchain records it.
-///
-/// An absent instruction reads as zero. That matches the runtime for the price,
-/// because no price set means no priority fee. It does not match for the limit,
-/// because the runtime applies a default. A caller reimbursed against a zero
-/// limit gets nothing rather than too much, which is the safe direction. Every
-/// caller that wants reimbursement states its limit.
-pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u64, u32)> {
+/// A v1 transaction states it in its message header, which the instructions
+/// sysvar does not hold, so a v1 transaction reads as no price. No program can
+/// tell that apart from a transaction that sets no price.
+pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<TxComputeBudget> {
     use {
         solana_program::sysvar::instructions::load_instruction_at_checked, std::convert::TryInto,
     };
@@ -546,7 +550,10 @@ pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u
     /// `SetComputeUnitPrice(u64)`, in micro-lamports per compute unit.
     const SET_UNIT_PRICE: u8 = 3;
 
-    let (mut price, mut limit) = (0u64, 0u32);
+    let mut budget = TxComputeBudget {
+        price_per_unit: None,
+        unit_limit: 0,
+    };
     let mut index = 0usize;
     while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
         index += 1;
@@ -556,16 +563,16 @@ pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u
 
         match instruction.data.split_first() {
             Some((&SET_UNIT_PRICE, rest)) if rest.len() >= 8 => {
-                price = u64::from_le_bytes(rest[..8].try_into().unwrap());
+                budget.price_per_unit = Some(u64::from_le_bytes(rest[..8].try_into().unwrap()));
             }
             Some((&SET_UNIT_LIMIT, rest)) if rest.len() >= 4 => {
-                limit = u32::from_le_bytes(rest[..4].try_into().unwrap());
+                budget.unit_limit = u32::from_le_bytes(rest[..4].try_into().unwrap());
             }
             _ => {}
         }
     }
 
-    Ok((price, limit))
+    Ok(budget)
 }
 
 /// How many instructions in this transaction claim the same whole-transaction

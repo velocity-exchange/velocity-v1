@@ -7422,17 +7422,12 @@ fn run_liq_resolver(
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
 }
 
-/// Cancelling comes before liquidating, and one watch drives both.
-///
-/// While the account rests risk-increasing orders the resolver stages the
-/// sweep. Once the book is clear, the same wake resolves to the liquidation.
-#[test]
-fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
-    let mut fixture = setup();
-    // The resolver stages only a liquidation the executor can size.
+/// A book maker short one unit at $100 with a resting ask of half a unit. The
+/// ask adds to the short, so the margin walk counts a short of 1.5 units: a
+/// $7.50 maintenance and a $15 initial requirement.
+fn distressed_book_maker(fixture: &mut Fixture, collateral_dollars: u64) -> (Pubkey, Pubkey) {
     arm_liquidation_throttle(&mut fixture.svm);
-    const PAYMENT: u64 = 10_000;
-    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    let market_conditions = init_crank_conditions(fixture, 10_000);
     // The relay turner is paid out of the market's reservoir in
     // program-keeper mode, so it has to hold more than rent.
     fixture
@@ -7440,25 +7435,18 @@ fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
         .airdrop(&market_conditions, 1_000_000_000)
         .unwrap();
     set_protocol_user(&mut fixture.svm);
-    let maker_stats = maker_stats_address(&fixture);
+    let maker_stats = maker_stats_address(fixture);
     set_user_stats_account(
         &mut fixture.svm,
         maker_stats,
         &fixture.clob_maker_authority.pubkey(),
     );
 
-    // The book maker rests an ask, then takes on a short it cannot carry:
-    // $3 of collateral against a $100 position, which is under the 5%
-    // maintenance requirement, so it is liquidatable *and* cancellable at
-    // once. That is the case worth pinning — the ladder still takes the
-    // orders off first. Short with a resting ask, so the order adds to the
-    // position: a reducing one is passed over, which
-    // `force_cancel_passes_over_a_risk_reducing_order` covers.
-    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    place_clob_ask(fixture, 99 * PRICE, UNIT / 2);
     let maker_user = fixture.clob_maker_user;
     let mut maker = trading_user(
         &fixture.clob_maker_authority.pubkey(),
-        3 * SPOT_BALANCE_PRECISION_U64,
+        collateral_dollars * SPOT_BALANCE_PRECISION_U64,
         None,
     );
 
@@ -7471,7 +7459,16 @@ fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
     maker.has_open_order = true;
     maker.next_order_id = 2;
     set_user_account(&mut fixture.svm, maker_user, &maker);
+    (maker_user, market_conditions)
+}
 
+/// An account that fails the initial requirement but meets maintenance may
+/// not rest risk-increasing orders. The ladder cancels them and liquidates
+/// nothing.
+#[test]
+fn the_distress_ladder_cancels_for_an_account_that_meets_maintenance() {
+    let mut fixture = setup();
+    let (maker_user, market_conditions) = distressed_book_maker(&mut fixture, 10);
     sync_liq_conditions(
         &mut fixture,
         maker_user,
@@ -7479,18 +7476,16 @@ fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
         ANY_SYNC_COST_UNITS,
     );
 
-    // Stage one: orders are in the way, so the sweep is what gets staged —
-    // not the liquidation that is also available right now.
     let resolved = run_liq_resolver(&mut fixture, maker_user)
-        .expect("a distressed account with resting orders is work");
+        .expect("an account under its initial requirement with resting orders is work");
     assert_eq!(
         resolved.executor_disc,
         velocity::instruction::ForceCancelClobOrders::DISCRIMINATOR,
-        "orders come off the book before the position is touched"
+        "an account that meets maintenance is not liquidated"
     );
 
-    // Run it. The sweep takes the whole ask side, so the resolver never had
-    // to read the book to name a single order ref.
+    // The sweep takes the whole ask side, so the resolver never had to read
+    // the book to name a single order ref.
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
     run_staged_executor(
@@ -7503,15 +7498,29 @@ fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
     assert_eq!(clob_ask_count(&fixture), 0);
     let after: User = read_zero_copy(&fixture.svm, &maker_user);
     assert_eq!(after.perp_positions[0].open_orders, 0);
+    assert!(run_liq_resolver(&mut fixture, maker_user).is_none());
+}
 
-    // Stage two: the book is clear, so the same wake now resolves to the
-    // liquidation it was holding back.
+/// An account that already fails maintenance goes straight to the
+/// liquidation, which sweeps the orders in its scope. A cancel first would
+/// cost it a full poll interval.
+#[test]
+fn a_failing_account_is_liquidated_without_a_cancel_first() {
+    let mut fixture = setup();
+    let (maker_user, market_conditions) = distressed_book_maker(&mut fixture, 3);
+    sync_liq_conditions(
+        &mut fixture,
+        maker_user,
+        market_conditions,
+        ANY_SYNC_COST_UNITS,
+    );
+
     let resolved = run_liq_resolver(&mut fixture, maker_user)
-        .expect("a liquidatable account with a clear book is work");
+        .expect("a liquidatable account with resting orders is work");
     assert_eq!(
         resolved.executor_disc,
         velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
-        "with the book clear the ladder moves on to the position"
+        "a failing account is liquidated without a cancel stage"
     );
 }
 

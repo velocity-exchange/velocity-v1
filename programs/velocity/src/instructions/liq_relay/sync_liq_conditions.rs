@@ -281,8 +281,10 @@ pub fn rewrite_liq_conditions<'info>(
         sync_fallback_slots: args.sync_fallback_slots,
     };
     let user_key = user_loader.key();
-    refuse_duplicate_accounts(remaining_accounts)?;
     let inputs = collect_sync_inputs(remaining_accounts)?;
+    // A list stored before the program was deduplicated holds one copy of the
+    // book program per slab, and the resync replays that list.
+    refuse_duplicate_accounts_except(remaining_accounts, &inputs.book_programs)?;
     let exposed_perps = validate_market_coverage(user_loader, &inputs.coverage())?;
     let oracle_refs = inputs
         .oracles
@@ -331,6 +333,8 @@ struct SyncInputs {
     spots: BTreeMap<u16, MarketInputs>,
     tail_refs: Vec<AccountRefV0>,
     oracles: BTreeSet<Pubkey>,
+    /// The program of every book a passed slab names.
+    book_programs: BTreeSet<Pubkey>,
 }
 
 impl SyncInputs {
@@ -401,6 +405,7 @@ fn collect_sync_inputs<'info>(
     let mut tail_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracles: BTreeSet<Pubkey> = BTreeSet::new();
     let mut slab_books: BTreeSet<Pubkey> = BTreeSet::new();
+    let mut book_programs: BTreeSet<Pubkey> = BTreeSet::new();
 
     for info in remaining_accounts {
         if info.owner == &crate::ID {
@@ -447,13 +452,18 @@ fn collect_sync_inputs<'info>(
                 // The book and its program ride with the slab. The resolver
                 // reads the book to name the makers a liquidation fill settles
                 // against, and cannot reach an account the stored list omits.
-                // The slab names both, so it always carries the book.
+                // The slab names both, so it always carries the book. Every
+                // book shares one program, which is stored once, because a
+                // resync replays this list and a second copy is a duplicate.
                 let slots = loader.slots()?;
                 if let Some(index) = crate::state::prop_amm::clob_slot_index(&slots) {
                     let config = &slots[index].config;
                     tail_refs.push(AccountRefV0::writable(config.response_account.to_bytes()));
-                    tail_refs.push(AccountRefV0::readonly(config.program_id.to_bytes()));
-                    slab_books.extend([config.response_account, config.program_id]);
+                    if book_programs.insert(config.program_id) {
+                        tail_refs.push(AccountRefV0::readonly(config.program_id.to_bytes()));
+                    }
+
+                    slab_books.insert(config.response_account);
                 }
 
                 continue;
@@ -471,12 +481,13 @@ fn collect_sync_inputs<'info>(
     // A resync replays the stored list, which carries each slab's book and
     // program. The slab stores them in the tail already, so neither is an
     // oracle candidate.
-    oracles.retain(|key| !slab_books.contains(key));
+    oracles.retain(|key| !slab_books.contains(key) && !book_programs.contains(key));
     Ok(SyncInputs {
         perps,
         spots,
         tail_refs,
         oracles,
+        book_programs,
     })
 }
 
@@ -653,10 +664,19 @@ pub fn loader_of<'info, T: ZeroCopy + Owner>(
 /// Refuse an account passed twice. A second copy of a market makes
 /// `load_maps` fail over the stored list, so no staged executor could load it.
 pub fn refuse_duplicate_accounts(remaining_accounts: &[AccountInfo]) -> Result<()> {
+    refuse_duplicate_accounts_except(remaining_accounts, &BTreeSet::new())
+}
+
+/// [`refuse_duplicate_accounts`], but a second copy of a key in `shared` is
+/// accepted.
+pub fn refuse_duplicate_accounts_except(
+    remaining_accounts: &[AccountInfo],
+    shared: &BTreeSet<Pubkey>,
+) -> Result<()> {
     let mut seen: BTreeSet<&Pubkey> = BTreeSet::new();
     match remaining_accounts
         .iter()
-        .find(|info| !seen.insert(info.key))
+        .find(|info| !seen.insert(info.key) && !shared.contains(info.key))
     {
         Some(duplicate) => {
             msg!("sync account {} is passed twice", duplicate.key);
@@ -1102,5 +1122,74 @@ mod tests {
         let perp_info = create_account_info(&key, true, &mut lamports, &mut data[..], &owner);
 
         assert!(loader_of::<PerpMarket>(&perp_info).is_none());
+    }
+
+    /// Every book shares one program. A sync over two slabs stores it once,
+    /// and a list stored with one copy per slab still replays.
+    #[test]
+    fn two_book_markets_store_the_book_program_once() {
+        use {
+            super::{collect_sync_inputs, refuse_duplicate_accounts_except},
+            crate::state::prop_amm::{QuoterSlabV0, QuoterSlotV0, QuoterType},
+            anchor_lang::Discriminator,
+        };
+
+        let program_key = Pubkey::new_unique();
+        let other_owner = Pubkey::new_unique();
+        let owner = crate::ID;
+        let make_slab = |market: u16, book: Pubkey| {
+            let mut slot: QuoterSlotV0 = bytemuck::Zeroable::zeroed();
+            slot.entry = Pubkey::new_unique();
+            slot.config.quoter_type = QuoterType::Clob;
+            slot.config.response_account = book;
+            slot.config.program_id = program_key;
+            let header = QuoterSlabV0 {
+                capacity: 1,
+                market,
+                ..QuoterSlabV0::default()
+            };
+            let mut data = QuoterSlabV0::DISCRIMINATOR.to_vec();
+            data.extend_from_slice(bytemuck::bytes_of(&header));
+            data.extend_from_slice(bytemuck::bytes_of(&slot));
+            data
+        };
+
+        let (book0, book1) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let (slab0_key, slab1_key) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let (mut d0, mut d1) = (make_slab(0, book0), make_slab(1, book1));
+        let (mut db0, mut db1, mut dp0, mut dp1) = (vec![], vec![], vec![], vec![]);
+        let mut lamports = [0u64; 6];
+        let [l0, l1, l2, l3, l4, l5] = &mut lamports;
+        let slab0 = AccountInfo::new(&slab0_key, false, false, l0, &mut d0, &owner, false);
+        let slab1 = AccountInfo::new(&slab1_key, false, false, l1, &mut d1, &owner, false);
+        let b0 = AccountInfo::new(&book0, false, true, l2, &mut db0, &other_owner, false);
+        let b1 = AccountInfo::new(&book1, false, true, l3, &mut db1, &other_owner, false);
+        let p0 = AccountInfo::new(&program_key, false, false, l4, &mut dp0, &other_owner, true);
+        let p1 = AccountInfo::new(&program_key, false, false, l5, &mut dp1, &other_owner, true);
+        fn stored_keys<'a>(accounts: &'a [AccountInfo<'a>]) -> Vec<Pubkey> {
+            collect_sync_inputs(accounts)
+                .unwrap()
+                .tail_refs
+                .iter()
+                .map(|r| Pubkey::new_from_array(r.address))
+                .collect()
+        }
+
+        let synced = [slab0.clone(), slab1.clone()];
+        let stored = stored_keys(&synced);
+        assert_eq!(
+            stored,
+            vec![slab0_key, book0, program_key, slab1_key, book1]
+        );
+
+        let legacy = [slab0.clone(), b0.clone(), p0, slab1.clone(), b1.clone(), p1];
+        let legacy_inputs = collect_sync_inputs(&legacy).unwrap();
+        assert!(refuse_duplicate_accounts_except(&legacy, &legacy_inputs.book_programs).is_ok());
+        assert!(legacy_inputs.oracles.is_empty());
+        assert_eq!(stored_keys(&legacy), stored);
+
+        let twice = [slab0.clone(), b0, slab0, slab1, b1];
+        let twice_inputs = collect_sync_inputs(&twice).unwrap();
+        assert!(refuse_duplicate_accounts_except(&twice, &twice_inputs.book_programs).is_err());
     }
 }

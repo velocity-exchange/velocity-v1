@@ -63,9 +63,11 @@ priority tiers in ascending order, the vAMM first, then the book, then custom qu
 pro rata inside a tier. `PerpFulfillmentMethod` and AMM JIT are gone, and the `jit-proxy` package
 and program are deleted. A client that reproduces a fill off chain must model the vAMM as a ladder
 of levels rather than a curve swap. `splitAcrossQuoters` and `vammQuoteLevels` mirror the program's
-math. In `vammQuoteLevels` a last-look rung reprices only the last base before the curve reaches
-the rival price, and no more base than the rivals at that price or better offer. The rest of the
-ladder is the honest curve, so rival size matters as much as rival price.
+math. In `vammQuoteLevels` a last-look rung reprices only base that the rivals at its price also
+fill in the same take, at most `min(D, total - reach(P))` just before the curve reaches the rival
+price `P`, so a rival the take does not reach shades nothing. The ladder's top is the swap's first
+marginal on the spread reserves, and a limit short of it quotes nothing. The rest of the ladder is
+the honest curve.
 
 `vammQuoteLevels` caps its ladder at the per-fill reserve throttle, exported as
 `calculateAmmAvailableLiquidity`. The cap is `baseAssetReserve / maxFillReserveFraction`, then at
@@ -436,7 +438,13 @@ argument. A maker that filtered on the flag receives the flow it was filtering.
 
 A signed-message order is routed when it is placed, and whatever it cannot fill rests on the market's
 book as a taker-origin remainder rather than in a slot. The activation window then decides
-who fills it on price rather than on who lands a transaction first.
+who fills it on price rather than on who lands a transaction first. A remainder that no book row
+crosses is routed across the vAMM and the quoters by `crank_taker_origin_cross`, and two
+remainders settle as a pair only at a price the vAMM beats for neither. On a book with a speed
+bump, a keeper submits a signed message with its attestation; an unattested submission must be
+signed by the taker's authority or delegate (`UnattestedSynchronousTake`), so a feed reader cannot
+place a user's order ahead of the attestation. An entry whose order rests no longer blocks a delete
+or shrink of `SignedMsgUserOrders` once it is past the eviction buffer.
 `place_and_make_signed_msg_perp_order` is removed, because it existed only to match a signed-message
 order already resting in `User.orders`.
 
@@ -531,9 +539,19 @@ writable `triggerConditions` account, after `crankConditions`. A client that bui
 passes the PDA even when the account does not exist.
 
 `resolveTriggerLimitOrderV1` and `resolveTriggerMarketOrderV1` take a `fired: FiredConditionArgV0`
-argument. Each resolver stages only the order of the slot that fired, so one order that its
-executor refuses does not hold up the other triggers on the market. A resolver also skips an order
-that the market status refuses. A relay trigger crank pays at least the `min_payment` its slot
+argument and, after `perpMarket`, the read-only `state`, `quoterSlab`, `clobMarket` and
+`clobProgram`. Each resolver stages only the order of the slot that fired, and reports no work for
+every gate the executor applies that it can read: the fill pause, settlement, oracle validity,
+TWAP divergence, a suspended book, a full side, a being-liquidated account, and a reduce-only fire
+with nothing to reduce. A refused fire no longer costs relay a failed simulation and its backoff.
+`UserConditionsV0` grows to 7128 bytes to hold the nine resolver accounts per slot, so every user
+is re-synced after the upgrade. `buildTriggerMarketOrderV1Instruction` takes `triggerConditions` as
+required and an optional `solSpotMarket`; `trigger_limit_order_v1`, `crank_clob_evict` and
+`crank_clob_remove_expired` take the same optional account, which program-keeper mode requires
+when `State` names a SOL market, and a relay-paid removal or trigger crank charges
+`max(flat fee, payment value)`. `placeTriggerOrders` refuses a batch that arms a ninth reduce-only
+stop-loss, and the watch slots rank armed stop-losses first and parked stop-limits last. A fired
+stop-market keeps its routed fill and cancels the remainder a full side refuses. A relay trigger crank pays at least the `min_payment` its slot
 stores, so a lower market payment does not revert a slot synced before the change.
 
 `sync_trigger_conditions` arms a watch on a market whose book is suspended, and the executors
@@ -659,7 +677,13 @@ with nobody submitting them. `ClobCrankConditionsV0` per market and `UserConditi
 relay condition blocks and a keeper-payment reservoir, with simulation-only resolvers staging each
 executor. `getUserConditionsPublicKey`, `getClobCrankConditionsPublicKey` and
 `getRelayScratchPublicKey` are the PDA helpers. One resolver, `resolveClobCrank`, answers every one
-of a market's CLOB crank conditions, because relay names the condition that fired.
+of a market's CLOB crank conditions, because relay names the condition that fired. Its account
+list carries the perp market, so the cross resolver can price the vAMM. `crank_cross_match`
+settles funding once before its first leg and counts a period that rolls between the legs against
+the surplus, and each leg refuses to consume a taker-origin row. `settle_pnl` on an expired market
+settles over several calls when the user rests more than one sweep of book orders. The liquidation
+payout is refused only to the liquidated user's authority, and a transaction with no ComputeBudget
+instructions is reimbursed at the rails' priority ceiling.
 
 Every user gets a `UserConditionsV0`. `initializeUser` requires the `userConditions` account rather
 than accepting `None`, and the payer funds its rent with the account. Relay can only watch an account
@@ -870,7 +894,10 @@ the velocity signer PDA, and `payer` must be the cold or warm admin. New PDA hel
 set paid resync terms when it syncs another user's conditions, as the warm admin may.
 `auth set-hot-admin conditionsSync <key>` sets it.
 
-The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`.
+The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`
+and `user init-protocol`, which creates the protocol `User` and its `UserStats` with a warm or cold
+payer. `update_perp_market_clob_quoter` refuses an attach whose derived crank payments are all zero,
+so the fee rails are set before a book is attached.
 `clob-market update-config` retunes a live book's mutable config through velocity, and
 `clob-market resize` grows its arena, to at most 1024 slots. `clob-market init` defaults
 `--capacity` to 1024, `--evict-threshold` to a quarter of `--capacity`, and `--blocking-min-size`

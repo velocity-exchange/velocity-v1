@@ -3011,7 +3011,10 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     clock.unix_timestamp += 20;
     fixture.svm.set_sysvar(&clock);
     let resolved = run_resolver(&mut fixture, conditions, true).expect("expired order is work");
-    assert_eq!(resolved.accounts.len(), 11);
+    // The last named account is the optional SOL spot market. This State
+    // names no SOL market, so it is staged as `None` and the fee stays flat.
+    assert_eq!(resolved.accounts.len(), 12);
+    assert_eq!(resolved.accounts[11].address, velocity::ID.to_bytes());
     assert_eq!(
         resolved.accounts[2].address,
         protocol_user.to_bytes(),

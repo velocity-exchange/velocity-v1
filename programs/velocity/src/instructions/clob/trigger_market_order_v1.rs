@@ -13,6 +13,10 @@
 //! worse price than the full router. It rests the whole order instead, and the
 //! cross crank fills it across every source at the best price.
 //!
+//! A full book side refuses a fire that filled nothing, so the trigger stays
+//! armed until an eviction frees room. A fire that filled part of the order
+//! keeps the fill and cancels the remainder the side refuses.
+//!
 //! The account set is the trigger keeper set plus the market's CLOB accounts
 //! the rest needs. `trigger_limit_order_v1` carries the same superset. CLOB
 //! trigger-limits keep their own path. They rest their whole order and never
@@ -28,9 +32,9 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             fill_mode::FillMode,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{ClobMarket, QuoterSlabExt, QuoterSlabV0},
+            prop_amm::{ClobMarket, OrderRulesV0, QuoterSlabExt, QuoterSlabV0},
             state::State,
-            user::{Order, OrderStatus, User, UserStats},
+            user::{Order, User, UserStats},
         },
         validate,
     },
@@ -169,8 +173,6 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         market_index
     )?;
 
-    require_room_to_rest(&ctx, market_index, order_id)?;
-
     // Fire the trigger. This validates it, turns a copy of the slot order into
     // a live market order, frees the slot, and pays the flat reward. `None`
     // means there was no payable work. The order was past its `max_ts`, or it
@@ -208,6 +210,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         clock,
     )?;
 
+    require_room_for_unfilled_fire(&ctx, market_index, &fired)?;
     rest_fired_remainder(&ctx, &mut maps, &fired, clock)?;
 
     // Pay the reservoir and release the trigger wake slot. Drop the state
@@ -231,25 +234,22 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     Ok(())
 }
 
-/// Refuse to fire a stop-market onto a full side of the book.
+/// Refuse a fire that filled nothing and would rest onto a full side.
 ///
-/// A fired order cannot go back to its slot, so a remainder the book refuses
-/// is lost. A full side is a state of the book that an eviction clears. The
-/// crank therefore fails and the trigger stays armed.
-fn require_room_to_rest<'info>(
+/// The fire cannot be undone, so an order the book refuses would be lost
+/// whole. A full side is a state of the book that an eviction clears, so the
+/// crank fails and the trigger stays armed. A fire that filled part of the
+/// order keeps that fill, and the rest path cancels the remainder the side
+/// refuses. An attacker who keeps the side full then cannot delay the part a
+/// routed fill reaches.
+fn require_room_for_unfilled_fire<'info>(
     ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
     market_index: u16,
-    order_id: u32,
+    fired: &Order,
 ) -> Result<()> {
-    // A missing order fails in the fire, with its own error.
-    let Some(direction) = load!(ctx.accounts.user)?
-        .orders
-        .iter()
-        .find(|order| order.order_id == order_id && order.status == OrderStatus::Open)
-        .map(|order| order.direction)
-    else {
+    if fired.base_asset_amount_filled != 0 {
         return Ok(());
-    };
+    }
 
     let rules = ClobMarket::from_slab(
         &ctx.accounts.quoter_slab,
@@ -260,11 +260,17 @@ fn require_room_to_rest<'info>(
     .reader()
     .order_rules()?;
 
+    unfilled_fire_admission(&rules, fired)
+}
+
+/// The book's answer for a fired order with no fill, which rests whole.
+fn unfilled_fire_admission(rules: &OrderRulesV0, fired: &Order) -> Result<()> {
     validate!(
-        super::helpers::crank_common::side_has_room(&rules, direction),
+        fired.base_asset_amount_filled != 0
+            || super::helpers::crank_common::side_has_room(rules, fired.direction),
         ErrorCode::MaxNumberOfOrders,
         "market {}'s book side is full; the trigger stays armed",
-        market_index
+        fired.market_index
     )?;
 
     Ok(())
@@ -524,18 +530,16 @@ pub fn handle_resolve_trigger_market_order_v1(
 #[cfg(test)]
 mod side_room_tests {
     use {
+        super::unfilled_fire_admission,
         crate::{
             controller::position::PositionDirection,
             instructions::clob::helpers::crank_common::side_has_room,
-            state::prop_amm::OrderRulesV0,
+            state::{prop_amm::OrderRulesV0, user::Order},
         },
     };
 
-    /// A stop-market that would rest on a full side is not fired, so it
-    /// stays armed until an eviction frees room.
-    #[test]
-    fn a_full_side_has_no_room_and_the_other_side_does() {
-        let rules = OrderRulesV0 {
+    fn rules() -> OrderRulesV0 {
+        OrderRulesV0 {
             min_order_size: 0,
             blocking_min_size: 0,
             default_activation_delay_slots: 0,
@@ -547,9 +551,37 @@ mod side_room_tests {
             arena_capacity: 512,
             evict_threshold_per_side: 200,
             authority: [0; 32],
+        }
+    }
+
+    /// A stop-market that would rest on a full side is not fired, so it
+    /// stays armed until an eviction frees room.
+    #[test]
+    fn a_full_side_has_no_room_and_the_other_side_does() {
+        assert!(side_has_room(&rules(), PositionDirection::Long));
+        assert!(!side_has_room(&rules(), PositionDirection::Short));
+    }
+
+    /// A full side refuses only a fire that filled nothing. A routed fill
+    /// keeps what it filled, and the rest path cancels the remainder.
+    #[test]
+    fn a_full_side_refuses_only_an_unfilled_fire() {
+        let unfilled = Order {
+            direction: PositionDirection::Short,
+            base_asset_amount: 10,
+            ..Order::default()
+        };
+        let part_filled = Order {
+            base_asset_amount_filled: 4,
+            ..unfilled
+        };
+        let long = Order {
+            direction: PositionDirection::Long,
+            ..unfilled
         };
 
-        assert!(side_has_room(&rules, PositionDirection::Long));
-        assert!(!side_has_room(&rules, PositionDirection::Short));
+        assert!(unfilled_fire_admission(&rules(), &unfilled).is_err());
+        assert!(unfilled_fire_admission(&rules(), &part_filled).is_ok());
+        assert!(unfilled_fire_admission(&rules(), &long).is_ok());
     }
 }

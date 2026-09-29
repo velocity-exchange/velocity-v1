@@ -1,6 +1,7 @@
 use {
     super::{
-        admit_message, message_signer, validate_entry_order_type, PlacementEnv, SignedMsgTaker,
+        admit_message, message_signer, validate_entry_order_type, validate_unattested_submitter,
+        PlacementEnv, SignedMsgTaker,
     },
     crate::{
         instructions::optional_accounts::AccountMaps,
@@ -31,6 +32,28 @@ fn a_default_delegate_cannot_sign() {
 
     assert!(message_signer(&user, true).is_err());
     assert_eq!(message_signer(&user, false).unwrap(), user.authority);
+}
+
+/// Unattested flow on a bumped book rests at its worst price, so only the
+/// taker's authority or delegate may submit it. A keeper that read the
+/// message off the swift feed is refused.
+#[test]
+fn only_the_taker_submits_an_unattested_message() {
+    let user = User {
+        authority: Pubkey::new_unique(),
+        delegate: Pubkey::new_unique(),
+        ..User::default()
+    };
+
+    assert!(validate_unattested_submitter(&user, &user.authority).is_ok());
+    assert!(validate_unattested_submitter(&user, &user.delegate).is_ok());
+    assert!(validate_unattested_submitter(&user, &Pubkey::new_unique()).is_err());
+
+    let no_delegate = User {
+        authority: user.authority,
+        ..User::default()
+    };
+    assert!(validate_unattested_submitter(&no_delegate, &Pubkey::default()).is_err());
 }
 
 #[test]

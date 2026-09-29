@@ -221,6 +221,9 @@ struct FillTally {
     /// balance change settles, so the obligation check can name a loaded user
     /// that did nothing.
     settled_users: u64,
+    /// One bit per external book whose allocation executed. The obligation
+    /// check counts a quoter's accounts only when its book executed.
+    executed_books: u8,
 }
 
 impl FillTally {
@@ -249,7 +252,16 @@ impl FillTally {
             }
         }
     }
+
+    /// Mark an external book as one whose allocation executed.
+    fn mark_executed(&mut self, book_index: usize) {
+        if book_index < u8::BITS as usize {
+            self.executed_books |= 1u8 << book_index;
+        }
+    }
 }
+
+const _: () = assert!(MAX_ROUTE_QUOTERS <= u8::BITS as usize);
 
 /// The external quoter books this fill may route to, and the leg that executes on them.
 /// Everything an external book touches sits behind this. It is the only part of the fill
@@ -816,6 +828,10 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.settle_external_change(market, filler, &leg, &response, change_index)?;
         }
 
+        if self.withheld_depth {
+            self.tally.mark_executed(index);
+        }
+
         if leg.maker_aggregates_tracked {
             self.unwind_culled_remainders(market, &leg, &response)?;
         }
@@ -1336,55 +1352,20 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     }
 
     /// Writable locks this transaction spends on work velocity can name.
-    ///
-    /// The transaction's own lock count states what the caller claims. Every
-    /// account counted here was loaded as the type velocity expected, so a
-    /// key that names nothing adds nothing, and a caller cannot raise this
-    /// number by naming more keys.
-    ///
-    /// Undercounts on purpose. It counts the accounts this fill holds and
-    /// leaves out everything else the transaction may carry, such as the
-    /// accounts of a force-cancel that runs ahead of the fill. A prefix of
-    /// that kind names the same taker, market and makers as the fill, so it
-    /// adds few locks of its own. Counting low refuses a withhold rather than
-    /// excusing one, which is the direction the taker is safe in.
     fn attributable_writable_locks(&self, venue: &ExternalVenue, filler_key: &Pubkey) -> usize {
-        let loaded_users = self
-            .makers_and_referrer
-            .0
-            .keys()
-            .filter(|key| **key != self.taker.key)
-            .count();
-        let loaded_stats = self
-            .makers_and_referrer_stats
-            .0
-            .keys()
-            .filter(|authority| **authority != self.taker.user.authority)
-            .count();
-        // A filler that is not a loaded maker holds its own `User` and
-        // `UserStats`. A maker that cranked its own fill is already counted
-        // above, and a fill with no filler names no key at all.
-        let filler_locks = if *filler_key != Pubkey::default()
-            && *filler_key != self.taker.key
-            && !self.makers_and_referrer.0.contains_key(filler_key)
-        {
-            crate::math::router::MAKER_ACCOUNT_COST
-        } else {
-            0
-        };
-
-        // One writable account per consulted quoter: the account it writes
-        // its response into. Its registry slab is shared by the whole route
-        // and the `User` it settles for is a loaded user, so both are counted
-        // elsewhere or not at all.
-        let quoter_locks = (0..crate::state::prop_amm::MAX_ROUTE_QUOTERS)
-            .filter(|index| venue.router.executor.quoter_key(*index) != Pubkey::default())
-            .count();
-        crate::math::router::FILL_FIXED_WRITABLE_LOCKS
-            .saturating_add(loaded_users)
-            .saturating_add(loaded_stats)
-            .saturating_add(filler_locks)
-            .saturating_add(quoter_locks)
+        attributable_writable_locks(
+            &LoadedFillAccounts {
+                users: self.makers_and_referrer,
+                stats: self.makers_and_referrer_stats,
+                taker_key: self.taker.key,
+                taker_authority: self.taker.user.authority,
+                filler_key: *filler_key,
+                settled_users: self.tally.settled_users,
+                executed_books: self.tally.executed_books,
+            },
+            venue.books,
+            &*venue.router.executor,
+        )
     }
 }
 
@@ -1518,7 +1499,9 @@ fn maker_stats_for<'m>(
 /// A role is one of three: the taker, the filler, or the account a registered
 /// quoter fills for. Each of those has to be loaded whether or not it receives
 /// a balance change. Everything else in the map is there to be filled, and one
-/// that filled nothing spent two account locks for nothing.
+/// that filled nothing spent two account locks for nothing. The locks of a
+/// quoter's account count toward the room test only when it filled, see
+/// [`attributable_writable_locks`].
 ///
 /// The taker's referrer holds no role. The fill pays the referrer through the
 /// revenue-share escrow and never reads a referrer `User`.
@@ -1539,6 +1522,103 @@ pub(super) fn idle_loaded_users<'info>(
         .filter(|(index, _)| *index >= u64::BITS as usize || settled_users & (1u64 << *index) == 0)
         .filter(|(_, key)| *key != taker_key && *key != filler_key && !quoter_fills_for(key))
         .count()
+}
+
+/// The accounts a fill loaded, and which of them the fill moved.
+pub(super) struct LoadedFillAccounts<'a, 'm, 's> {
+    pub users: &'a UserMap<'m>,
+    pub stats: &'a UserStatsMap<'s>,
+    pub taker_key: Pubkey,
+    pub taker_authority: Pubkey,
+    pub filler_key: Pubkey,
+    /// A bit per loaded user, as [`FillTally`] sets it.
+    pub settled_users: u64,
+    /// A bit per external book, as [`FillTally`] sets it.
+    pub executed_books: u8,
+}
+
+/// Writable locks this transaction spends on work velocity can name.
+///
+/// The transaction's own lock count states what the caller claims. Every
+/// account counted here was loaded as the type velocity expected, so a
+/// key that names nothing adds nothing, and a caller cannot raise this
+/// number by naming more keys.
+///
+/// Undercounts on purpose. It counts the accounts this fill holds and
+/// leaves out everything else the transaction may carry, such as the
+/// accounts of a force-cancel that runs ahead of the fill. Counting low
+/// refuses a withhold rather than excusing one.
+///
+/// A quoter the caller consulted that filled nothing adds no locks. The caller
+/// chooses which quoters to consult on an order with no signed route, so
+/// otherwise idle quoters could fill the room test in place of book makers.
+pub(super) fn attributable_writable_locks<'info>(
+    accounts: &LoadedFillAccounts,
+    books: &[QuoterBook],
+    executor: &dyn ExternalQuoterExecutor<'info>,
+) -> usize {
+    let settled =
+        |index: usize| index < u64::BITS as usize && accounts.settled_users & (1u64 << index) != 0;
+    let unfilled_quoter_users = accounts
+        .users
+        .0
+        .keys()
+        .enumerate()
+        .filter(|(index, key)| {
+            **key != accounts.taker_key
+                && **key != accounts.filler_key
+                && !settled(*index)
+                && (0..MAX_ROUTE_QUOTERS).any(|book| executor.quoter_user(book) == **key)
+        })
+        .count();
+
+    let loaded_users = accounts
+        .users
+        .0
+        .keys()
+        .filter(|key| **key != accounts.taker_key)
+        .count()
+        .saturating_sub(unfilled_quoter_users);
+    // An unfilled quoter user's `UserStats` may be shared with a counted user.
+    // Removing it anyway only counts low.
+    let loaded_stats = accounts
+        .stats
+        .0
+        .keys()
+        .filter(|authority| **authority != accounts.taker_authority)
+        .count()
+        .saturating_sub(unfilled_quoter_users);
+    // A filler that is not a loaded maker holds its own `User` and
+    // `UserStats`. A maker that cranked its own fill is already counted
+    // above, and a fill with no filler names no key at all.
+    let filler_locks = if accounts.filler_key != Pubkey::default()
+        && accounts.filler_key != accounts.taker_key
+        && !accounts.users.0.contains_key(&accounts.filler_key)
+    {
+        crate::math::router::MAKER_ACCOUNT_COST
+    } else {
+        0
+    };
+
+    // One writable account per book that executed or withheld depth: the
+    // account it writes its response into. Its registry slab is shared by the
+    // whole route.
+    let quoter_locks = books
+        .iter()
+        .enumerate()
+        .take(MAX_ROUTE_QUOTERS)
+        .filter(|(index, book)| {
+            let executed = accounts.executed_books & (1u8 << *index) != 0;
+            let withheld = book.withheld.price != 0 && book.withheld.size != 0;
+            executor.quoter_key(*index) != Pubkey::default() && (executed || withheld)
+        })
+        .count();
+
+    crate::math::router::FILL_FIXED_WRITABLE_LOCKS
+        .saturating_add(loaded_users)
+        .saturating_add(loaded_stats)
+        .saturating_add(filler_locks)
+        .saturating_add(quoter_locks)
 }
 
 /// How many of a quoter's own orders one balance change merges, as the

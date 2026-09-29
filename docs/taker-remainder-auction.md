@@ -329,7 +329,10 @@ Enforced velocity-side, in layers. The taker routes (`place_signed_msg_taker_ord
 entirely for an unattested transaction and rest the whole order. A
 `place_and_take` shape that demands a synchronous outcome an unattested transaction cannot have,
 such as an IOC or a success condition, is refused with `UnattestedSynchronousTake` rather than
-rested without an error. The protocol cranks (`crank_cross_match`, `crank_taker_origin_cross`) do not vouch for
+rested without an error. An unattested signed message is also refused unless the taker's
+authority or delegate signs the transaction. Swift publishes a message before it attests it, so
+otherwise any feed reader could submit it unattested and cross the rested order at its worst
+price. The protocol cranks (`crank_cross_match`, `crank_taker_origin_cross`) do not vouch for
 flow by construction: a crank measures it. `crank_taker_origin_cross` reads the rest time of the
 remainder it settles, and `crank_cross_match` reads both sides it sweeps and takes the worse
 answer, bounded by the size the cross takes. One verdict covers both of its legs, because a cross

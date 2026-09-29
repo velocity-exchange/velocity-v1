@@ -20,6 +20,13 @@
 //! that is not expired, or fails when they do not fit. Dropping a live entry
 //! could re-admit a message that is still placeable. A resize migrates as well and
 //! restores the capacity the owner asks for.
+//!
+//! The owner pays rent for every entry, and the clients create 32 by default,
+//! about 0.0103 SOL. A market or IOC message holds its entry for the fill
+//! window at the shortest slot duration plus the eviction buffer, about 64 s
+//! at 400 ms slots. So 32 entries allow about one such message per 2 s, and a
+//! faster sender gets `SignedMsgUserOrdersAccountFull` until it grows the
+//! record, to at most [`MAX_SIGNED_MSG_USER_ORDERS`] entries.
 
 use {
     crate::{
@@ -148,13 +155,17 @@ impl SignedMsgOrderId {
         self.clob_order_id != 0
     }
 
-    /// Whether dropping this entry can re-admit its message or cost its
-    /// resting order the route. [`EVICTION_BUFFER_MAX_SLOTS`] holds at every
-    /// slot duration, so no slot clock is needed.
+    /// Whether dropping this entry can re-admit its message.
+    /// [`EVICTION_BUFFER_MAX_SLOTS`] holds at every slot duration, so no slot
+    /// clock is needed.
+    ///
+    /// A resting entry past the buffer is not live. Its order can leave the
+    /// book by a path that does not carry this record, so such a hold could
+    /// last forever. Dropping the entry costs the order its route, as the
+    /// reclaim in `add_signed_msg_order_id` does.
     pub fn is_live(&self, current_slot: u64) -> bool {
         self.max_slot != 0
-            && (self.rests_on_clob()
-                || current_slot.saturating_sub(self.max_slot) <= EVICTION_BUFFER_MAX_SLOTS)
+            && current_slot.saturating_sub(self.max_slot) <= EVICTION_BUFFER_MAX_SLOTS
     }
 
     /// Whether this entry refuses `message` as a replay.

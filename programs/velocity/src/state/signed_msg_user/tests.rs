@@ -1166,11 +1166,18 @@ mod legacy_layout {
 
 #[cfg(test)]
 mod live_entries {
-    use crate::{
-        error::ErrorCode,
-        state::signed_msg_user::{
-            SignedMsgOrderId, SignedMsgUserOrdersSnapshot, EVICTION_BUFFER_MAX_SLOTS,
+    use {
+        crate::{
+            error::ErrorCode,
+            math::time::SlotClock,
+            state::signed_msg_user::{
+                SignedMsgOrderId, SignedMsgUserOrdersFixed, SignedMsgUserOrdersSnapshot,
+                SignedMsgUserOrdersZeroCopyMut, EVICTION_BUFFER_MAX_SLOTS,
+                SIGNED_MSG_USER_ORDERS_VERSION,
+            },
         },
+        anchor_lang::prelude::Pubkey,
+        std::cell::RefCell,
     };
 
     const NOW: u64 = 10_000;
@@ -1191,12 +1198,13 @@ mod live_entries {
     }
 
     #[test]
-    fn an_entry_is_live_until_expired_at_every_slot_duration_or_while_it_rests() {
+    fn an_entry_is_live_until_expired_at_every_slot_duration_even_while_it_rests() {
         let bound = NOW - EVICTION_BUFFER_MAX_SLOTS;
         assert!(!SignedMsgOrderId::default().is_live(NOW));
         assert!(SignedMsgOrderId::new([1; 8], bound, 1).is_live(NOW));
         assert!(!SignedMsgOrderId::new([1; 8], bound - 1, 1).is_live(NOW));
-        assert!(resting(1, 1).is_live(NOW));
+        assert!(resting(1, bound).is_live(NOW));
+        assert!(!resting(1, bound - 1).is_live(NOW));
     }
 
     #[test]
@@ -1206,7 +1214,8 @@ mod live_entries {
             SignedMsgOrderId::new([1; 8], 100, 1),
             live,
             SignedMsgOrderId::default(),
-            resting(3, 100),
+            resting(3, NOW),
+            resting(4, 100),
         ]);
 
         assert_eq!(
@@ -1215,7 +1224,7 @@ mod live_entries {
         );
 
         orders.resize(2, NOW).unwrap();
-        assert_eq!(orders.entries, vec![live, resting(3, 100)]);
+        assert_eq!(orders.entries, vec![live, resting(3, NOW)]);
     }
 
     #[test]
@@ -1226,7 +1235,37 @@ mod live_entries {
         ]);
         assert_eq!(expired.live_entries(NOW), 0);
 
-        let with_resting = snapshot(vec![resting(1, 100), SignedMsgOrderId::default()]);
+        let with_resting = snapshot(vec![resting(1, NOW), SignedMsgOrderId::default()]);
         assert_eq!(with_resting.live_entries(NOW), 1);
+    }
+
+    /// A routed remainder that a bulk cancel took off the book leaves its
+    /// entry resting, because the cancel does not carry the record. Past the
+    /// buffer the record still holds no live entry, so the owner can delete it.
+    #[test]
+    fn a_record_can_be_deleted_after_its_remainder_leaves_the_book_unreleased() {
+        let fixed = RefCell::new(SignedMsgUserOrdersFixed {
+            user_pubkey: Pubkey::default(),
+            version: SIGNED_MSG_USER_ORDERS_VERSION,
+            len: 2,
+        });
+        let data = RefCell::new([0u8; 80]);
+        let mut orders = SignedMsgUserOrdersZeroCopyMut {
+            fixed: fixed.borrow_mut(),
+            data: data.borrow_mut(),
+        };
+        let placed_at = NOW - EVICTION_BUFFER_MAX_SLOTS - 1;
+        let index = orders
+            .add_signed_msg_order_id(
+                SignedMsgOrderId::new([1; 8], placed_at, 1),
+                placed_at,
+                SlotClock::default(),
+            )
+            .unwrap();
+        orders.set_resting_route(index, 3, 77, [9; 8]);
+
+        let record = snapshot((0..orders.len()).map(|i| *orders.get(i)).collect());
+        assert!(record.entries[0].rests_on_clob());
+        assert_eq!(record.live_entries(NOW), 0);
     }
 }

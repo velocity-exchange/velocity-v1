@@ -304,7 +304,17 @@ treasury is unpriced on chain, so an attach never reads an inert treasury. A boo
 before its book A fails on the approval. One that executes before the fee rails fails, because the
 attach refuses a market whose crank payments are all zero. Either can run again.
 
-`--fee-rails` sets the rails when they read zero. `--treasury-refill` prices the treasury when it
+`--fee-rails` sets the rails when they read zero. The default is `0,5000,1,100,10000`: the
+5000-lamport signature fee, 1/100 lamport per cost unit, and a 10,000 micro-lamport ceiling on the
+liquidation reimbursement price. A relay turner requires the base fee plus the priority fee it bids,
+so `FLAT_PER_SIGNATURE` (`0,5000,0,0,0`) pays nothing to a turner that bids any priority. The cost
+unit rate repays a bid up to 10,000 micro-lamports per compute unit. At the default `--crank-cu`
+of 250000 each crank then pays 7,500 lamports instead of 5,000. A user sync at 20000 cost units pays
+5,200 lamports, and a user can earn the extra 200 lamports once per paid resync of each sub-account.
+A liquidation reimburses at most 4,000 lamports of priority fee, and never more than its share of
+the liquidator fee. Nothing compares the removal payment against what the protocol collects, so it must stay
+under the value of `flat_filler_fee` in SOL. At the default `flat_filler_fee` of $0.01, 7,500
+lamports stays under it while SOL is under $1,333. `--treasury-refill` prices the treasury when it
 has no pricing. Without `--treasury-refill` the script stops before the books until the treasury is
 priced, and the upgrade then takes a second round. `--lift-liq-pause` clears only the `LiqPaused`
 bit, and only once every book B is sent or proposed. The lift writes the whole status mask it read,

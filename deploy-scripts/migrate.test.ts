@@ -4,12 +4,14 @@ import assert from 'node:assert/strict';
 import bs58 from 'bs58';
 import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
-import { getQuoterSlabPublicKey } from '@velocity-exchange/sdk';
+import { getQuoterSlabPublicKey, transactionCost } from '@velocity-exchange/sdk';
 import {
 	bookConfig,
 	BookBringUp,
 	CLOB_CONFIG_FIELDS,
+	DEFAULT_FEE_RAILS,
 	findUnnamedBook,
+	parseFeeRails,
 } from './migrate';
 
 const velocity = PublicKey.unique();
@@ -123,4 +125,22 @@ test('the book a pending registration names wins over a lower address', async ()
 		quoter
 	);
 	assert.ok(found?.equals(named));
+});
+
+/** What relay's turner requires to land a crank: the base fee plus its priority fee. */
+function turnerMinimum(priceMicroLamportsPerCu: number, units: number): number {
+	return 5_000 + Math.ceil((priceMicroLamportsPerCu * units) / 1_000_000);
+}
+
+test('the default rails repay a turner bidding up to the priority ceiling', () => {
+	const rails = parseFeeRails(DEFAULT_FEE_RAILS);
+	assert.ok(rails.maxPriorityMicroLamportsPerCu > 0);
+	for (const units of [20_000, 250_000]) {
+		assert.ok(
+			transactionCost(rails, units, 1) >=
+				turnerMinimum(rails.maxPriorityMicroLamportsPerCu, units)
+		);
+	}
+
+	assert.equal(transactionCost(rails, 250_000, 1), 7_500);
 });

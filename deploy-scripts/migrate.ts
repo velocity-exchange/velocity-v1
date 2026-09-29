@@ -14,9 +14,10 @@
  * The keypair is the payer and can be any funded key. The admin is the keypair, or with
  * `--multisig` the multisig's vault, and it must hold the warm or cold role. Before anything is
  * sent, the script refuses to run unless the CLOB program is deployed at the id velocity pins.
- * When `State.transactionFeeRails` prices every crank at zero, it writes `--fee-rails`, and
- * `--treasury-refill` prices an inert crank treasury. With zero rails every crank payment and
- * every sync payment is zero, and relay turners take none of that work.
+ * When `State.transactionFeeRails` prices every crank at zero, it writes `--fee-rails`, which
+ * defaults to `DEFAULT_FEE_RAILS`. `--treasury-refill` prices an inert crank treasury. With zero
+ * rails every crank payment and every sync payment is zero, and relay turners take none of that
+ * work.
  *
  * From the program swap until a market's book attaches, nobody can place, reduce or close a
  * position there, fire a stop, or land a signed-message order, but a liquidation still runs.
@@ -246,10 +247,15 @@ type FeeRails = {
 	maxPriorityMicroLamportsPerCu: number;
 };
 
-/** `TransactionFeeRails::FLAT_PER_SIGNATURE`, which `initialize` writes on a new deployment. */
-const DEFAULT_FEE_RAILS = '0,5000,0,0,0';
+/**
+ * The signature fee plus 1/100 lamport per cost unit, which repays a turner's
+ * priority fee up to 10,000 micro-lamports per compute unit. A turner requires
+ * the base fee plus its priority fee, so `FLAT_PER_SIGNATURE` pays nothing
+ * under congestion. The same figure caps the liquidation reimbursement price.
+ */
+export const DEFAULT_FEE_RAILS = '0,5000,1,100,10000';
 
-function parseFeeRails(raw: string): FeeRails {
+export function parseFeeRails(raw: string): FeeRails {
 	const values = raw.split(',').map((value) => Number.parseInt(value, 10));
 	if (
 		values.length !== 5 ||

@@ -251,41 +251,64 @@ instead of proposing them. The payer also needs the `accountExtension` hot role 
 needs a resize.
 
 Every order path requires the market's CLOB book. A market without a book takes no order, and it
-fires no trigger. The first upgrade to the book order flow therefore runs in this order. On mainnet
-every admin command takes `--multisig <pda>`, which makes it a proposal to approve and execute
-before the next step.
+fires no trigger.
+
+**The outage window.** From the moment the upgrade executes until a market's `book B` proposal
+executes, nobody can place, reduce or close a position on that market, fire a stop, or land a
+signed-message order. Liquidations still run, because no liquidation path needs a book. A user who
+would have closed or been stopped out can be liquidated instead, and funding keeps accruing. The
+runbook below keeps the window to one migrate run and one round of approvals, and it pauses
+liquidations for that window. The pause is the default. Leave it out only when the signers can
+approve and execute the whole round within minutes of the swap.
+
+The first upgrade to the book order flow therefore runs in this order. On mainnet every admin
+command takes `--multisig <pda>`, which makes it a proposal.
 
 ```bash
 # 1. Deploy the CLOB program at the id velocity pins (clob_program::id() in
 #    programs/velocity/src/ids.rs, BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU).
 #    migrate.ts refuses to run until it is deployed.
-# 2. Upgrade velocity, as in "Cutting a mainnet release".
-# 3. Price the relay cranks. With zero rails every crank pays 0 lamports, and no
-#    turner takes the work. An upgrade leaves them at zero, and migrate.ts then
-#    proposes FLAT_PER_SIGNATURE, or the value --fee-rails names. Set them here
-#    only to price the cranks some other way.
-velocity-admin --multisig "$MULTISIG" fees set-transaction-rails <inclusionLamports> \
-  <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>
-# 4. Create, price and fund the crank treasury. The book attach stores the
-#    treasury's refill watermark on the market, so migrate.ts stops before the
-#    books while the treasury is not priced.
-velocity-admin --multisig "$MULTISIG" fees init-crank-treasury
-velocity-admin --multisig "$MULTISIG" fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>
-solana transfer <treasury> <sol> -u "$RPC"
-# 5. Let the payer sync users, and resize accounts. Skip the second when no
-#    account needs a resize.
+# 2. Fund the vault for the rent it pays. See below for the amount.
+solana transfer <vault> <sol> -u "$RPC"
+# 3. Pause liquidations just before the swap. The pause key adds a bit without
+#    the multisig. Keep every bit already set: the status is one mask.
+velocity-admin --keypair <pause.json> exchange set-status <currentStatus | 16>
+# 4. Upgrade velocity, as in "Cutting a mainnet release".
+# 5. Run the migration at once. It proposes every admin step in dependency
+#    order: the fee rails, the crank treasury with its pricing, the protocol
+#    User, book A and book B for every market, and last the lift of the
+#    liquidation pause.
+bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG" \
+  --treasury-refill <refillTargetCranks>,<refillWatermarkCranks> --lift-liq-pause
+# 6. In the same signing round, let the payer sync users, and resize accounts.
+#    Skip the second when no account needs a resize.
 velocity-admin --multisig "$MULTISIG" auth set-hot-admin conditionsSync <payer>
 velocity-admin --multisig "$MULTISIG" auth set-hot-admin accountExtension <payer>
-# 6. Fund the vault for the rent it pays. See below for the amount.
-solana transfer <vault> <sol> -u "$RPC"
-# 7. Read the plan, then run it.
-bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG" --dry-run
-bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG"
-# 8. Approve and execute the proposals, then run it again. Repeat until a run
-#    sends and proposes nothing.
+# 7. Approve every proposal, then execute them in ascending index order. A step
+#    that runs out of order fails and can run again. The lift is last.
 velocity-admin --multisig "$MULTISIG" multisig proposals
 velocity-admin --multisig "$MULTISIG" --keypair <member.json> multisig execute <index> --cu-limit 1400000
+# 8. Fund the crank treasury. It exists only after step 7, and a transfer to
+#    the address before then makes its creation fail.
+solana transfer <treasury> <sol> -u "$RPC"
+# 9. Run the migration again. It syncs the users, tops up their reservoirs and
+#    registers the watches from the payer. Repeat until a run sends and
+#    proposes nothing.
+bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG"
 ```
+
+Step 5 builds book B before book A executes. The approval in B carries the hash of the quoter entry
+that A stages, and that entry depends only on A's arguments, so the script simulates A to get the
+hash. B names the book that the pending A names. B also carries the treasury pricing while the
+treasury is unpriced on chain, so an attach never reads an inert treasury. A book B that executes
+before its book A fails on the approval. One that executes before the fee rails fails, because the
+attach refuses a market whose crank payments are all zero. Either can run again.
+
+`--fee-rails` sets the rails when they read zero. `--treasury-refill` prices the treasury when it
+has no pricing. Without `--treasury-refill` the script stops before the books until the treasury is
+priced, and the upgrade then takes a second round. `--lift-liq-pause` clears only the `LiqPaused`
+bit, and only once every book B is sent or proposed. The lift writes the whole status mask it read,
+so propose it again if another pause bit changes before it executes.
 
 The script also creates the protocol User, sub-account 0 of the velocity signer PDA, and its
 UserStats. Every relay executor names that account as its filler or taker, so every relay crank
@@ -296,16 +319,9 @@ does the same by hand. `verify-upgrade.ts` fails while either account is missing
 On devnet, leave out `--multisig` and pass a warm admin keypair. Every step then sends directly and
 one run does the whole migration.
 
-Under a multisig a run proposes in rounds, and the next round needs the previous one executed:
-
-1. The first run creates each book directly and proposes its registration, `migrate: book A market
-   <index>`. The registration names the book on the market and stages the quoter entry.
-2. The next run proposes the approval and the attach, `migrate: book B market <index>`. The approval
-   carries the hash of the staged entry, so it cannot be built before round A executes.
-3. The next run syncs the users, tops up their sync reservoirs and registers the watches, all
-   from the payer. A sync arms the user's triggers, so a user waits until every market it trades has
-   an attached book. A payer without the `conditionsSync` hot role proposes the syncs instead,
-   several users to a proposal, and a further run tops up the reservoirs.
+A sync arms the user's triggers, so a user waits until every market it trades has an attached book.
+A payer without the `conditionsSync` hot role proposes the syncs instead, several users to a
+proposal, and a further run tops up the reservoirs.
 
 Anyone can register a relay watch, and every target is a PDA known before the migration. A watch
 therefore counts only when its creator is the payer or a key `--watch-creators` names, its offset

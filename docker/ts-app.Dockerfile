@@ -45,6 +45,7 @@ COPY apps/keeper-bots-v2/package.json   ./apps/keeper-bots-v2/
 COPY apps/usermap-server/package.json   ./apps/usermap-server/
 COPY packages/cli-admin/package.json    ./packages/cli-admin/
 COPY packages/jit-proxy/package.json    ./packages/jit-proxy/
+COPY packages/revenue-router-sdk/package.json ./packages/revenue-router-sdk/
 COPY packages/sdk/package.json          ./packages/sdk/
 COPY packages/vaults-sdk/package.json   ./packages/vaults-sdk/
 # Frozen: install exactly what the committed lockfile pins, never re-resolve.

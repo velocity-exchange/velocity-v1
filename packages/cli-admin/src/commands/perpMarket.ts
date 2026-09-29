@@ -1,7 +1,12 @@
 import { Command } from 'commander';
 import { PublicKey } from '@solana/web3.js';
 import { BANKRUPTCY_IF_FLOOR_DISABLED } from '@velocity-exchange/sdk';
-import { parseBnArg, parseIntArg, parseMarketIndex } from '../lib/args';
+import {
+	parseBnArg,
+	parseIntArg,
+	parseMarketIndex,
+	parseMarketList,
+} from '../lib/args';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import {
@@ -117,20 +122,20 @@ export function registerPerpMarket(parent: Command): void {
 	withGlobalOptions(
 		pm
 			.command(
-				'set-spread-adjustment <market> <spreadAdjustment> <inventorySpreadAdjustment>'
+				'set-spread-adjustment <markets> <spreadAdjustment> <inventorySpreadAdjustment>'
 			)
 			.description(
-				'Set the vAMM final-spread and inventory-spread percentage adjustments. Both values must be integers in [-100, 100]; -100 removes the component, 0 leaves it unchanged, and 100 doubles it. Negative values must follow a `--` separator so they are not parsed as flags. Requires VammQuoteManagement, warm, or cold.'
+				'Set the vAMM final-spread and inventory-spread percentage adjustments. <markets> is one index, a comma-separated list (0,1,4), or `all`; every market lands in one transaction (or one proposal). Both values must be integers in [-100, 100]; -100 removes the component, 0 leaves it unchanged, and 100 doubles it. Negative values must follow a `--` separator so they are not parsed as flags. Requires VammQuoteManagement, warm, or cold.'
 			)
 	).action(
 		async (
-			market: string,
+			markets: string,
 			spreadAdjustment: string,
 			inventorySpreadAdjustment: string,
 			_flags,
 			cmd: Command
 		) => {
-			const marketIndex = parseMarketIndex(market);
+			const parsed = parseMarketList(markets);
 			const spread = parseIntArg(
 				'spreadAdjustment',
 				spreadAdjustment,
@@ -151,23 +156,42 @@ export function registerPerpMarket(parent: Command): void {
 				const multisigPda = opts.multisig
 					? new PublicKey(opts.multisig)
 					: undefined;
-				const ix = await client.getUpdatePerpMarketAmmSpreadAdjustmentIx(
-					marketIndex,
-					spread,
-					inventorySpread,
-					// referencePriceOffset is ignored onchain: amm.reference_price_offset
-					// is a per-crank output, not an admin-set value.
-					0,
-					resolveAdminAuthority(provider, multisigPda)
+				let marketIndexes: number[];
+				if (parsed === 'all') {
+					const state = await (client.program.account as any).state.fetch(
+						await client.getStatePublicKey()
+					);
+					marketIndexes = Array.from(
+						{ length: state.numberOfMarkets },
+						(_, i) => i
+					);
+				} else {
+					marketIndexes = parsed;
+				}
+				const admin = resolveAdminAuthority(provider, multisigPda);
+				const ixs = await Promise.all(
+					marketIndexes.map((marketIndex) =>
+						client.getUpdatePerpMarketAmmSpreadAdjustmentIx(
+							marketIndex,
+							spread,
+							inventorySpread,
+							// referencePriceOffset is ignored onchain: amm.reference_price_offset
+							// is a per-crank output, not an admin-set value.
+							0,
+							admin
+						)
+					)
 				);
 				const result = await sendOrPropose(
 					provider,
-					[ix],
+					ixs,
 					multisigPda,
 					'velocity-admin perp-market set-spread-adjustment'
 				);
 				reportDispatch(
-					`perp-market[${marketIndex}] amm_spread_adjustment = ${spread}, amm_inventory_spread_adjustment = ${inventorySpread}`,
+					`perp-market[${marketIndexes.join(
+						','
+					)}] amm_spread_adjustment = ${spread}, amm_inventory_spread_adjustment = ${inventorySpread}`,
 					result
 				);
 			} finally {
@@ -334,6 +358,57 @@ export function registerPerpMarket(parent: Command): void {
 			);
 			reportDispatch(
 				`perp-market[${marketIndex}] fee pool += ${amountValue.toString()} (from ${sourceVault.toBase58()})`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		pm
+			.command('deposit-pnl-pool <market> <amount>')
+			.description(
+				'Seed a perp market pnl pool: transfers <amount> (raw quote base units, QUOTE_PRECISION) from the signer into the quote spot vault and credits perp_market.pnl_pool by the same amount, in one instruction. Prefer this over `call updatePerpMarketPnlPool`, which credits without moving tokens and so has to be paired with a separate raw transfer that nothing links to it. Requires the VaultDeposit hot key, or warm/cold.'
+			)
+			.option(
+				'--source-vault <pubkey>',
+				"token account to fund from (default: the signer's ATA for the quote mint)"
+			)
+	).action(async (market: string, amount: string, _flags, cmd: Command) => {
+		const marketIndex = parseMarketIndex(market);
+		const amountValue = parseBnArg('amount', amount);
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { sourceVault?: string };
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const admin = resolveAdminAuthority(provider, multisigPda);
+			const quoteSpotMarket = client.getQuoteSpotMarketAccount();
+			const sourceVault = local.sourceVault
+				? new PublicKey(local.sourceVault)
+				: deriveAssociatedTokenAccount(
+						quoteSpotMarket.mint,
+						admin,
+						(client as any).getTokenProgramForSpotMarket(quoteSpotMarket)
+				  );
+			const ix = await client.getDepositIntoPerpMarketPnlPoolIx(
+				marketIndex,
+				amountValue,
+				sourceVault,
+				admin
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				multisigPda,
+				'velocity-admin perp-market deposit-pnl-pool'
+			);
+			reportDispatch(
+				`perp-market[${marketIndex}] pnl pool += ${amountValue.toString()} (from ${sourceVault.toBase58()})`,
 				result
 			);
 		} finally {

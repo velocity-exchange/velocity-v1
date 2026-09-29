@@ -150,6 +150,7 @@ test_files=(
   # TODO BROKEN ^^
 	builderCodes.ts
   decodeUser.ts
+  initMarket.ts
   scaleOrders.ts
   admin.ts
   bidAskTwapCrank.ts

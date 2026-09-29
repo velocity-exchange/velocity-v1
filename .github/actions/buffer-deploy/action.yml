@@ -5,7 +5,10 @@ description: >
   BPF Upgradeable Loader buffer (resumable — re-writes only missing chunks on
   retry), `target/idl/<program>.json` to a program-metadata buffer, optionally
   exports a solana-verify PDA transaction, and transfers both buffer authorities
-  to the multisig vault. It then re-emits the verify-before-approving summary
+  to the multisig vault. With `uploader: paced` the program buffer is written by
+  deploy-scripts/upload-program-buffer.cjs instead, which paces its RPC requests
+  and backs off on HTTP 429; the IDL buffer still goes through the Solana
+  Foundation `write-metadata-buffer` action. It then re-emits the verify-before-approving summary
   (program buffer + on-chain buffer hash vs the local verifiable .so hash) that a
   multisig signer uses to confirm the staged program before approving the Squads
   proposal.
@@ -29,6 +32,14 @@ inputs:
     description: "Priority fee in microlamports for buffer-write transactions"
     required: false
     default: "100000"
+  uploader:
+    description: "How to write the program buffer: solana-cli (prepare-squads-release) or paced (deploy-scripts/upload-program-buffer.cjs)"
+    required: false
+    default: "solana-cli"
+  cluster:
+    description: "Cluster the RPC must be on, checked by the paced uploader (devnet | mainnet-beta)"
+    required: false
+    default: "mainnet-beta"
   export-verify-pda:
     description: "Export a solana-verify PDA transaction for the Squads proposal (mainnet only)"
     required: false
@@ -45,10 +56,10 @@ inputs:
 outputs:
   buffer:
     description: "BPF buffer address"
-    value: ${{ steps.prepare.outputs.buffer }}
+    value: ${{ steps.paced-program.outputs.buffer || steps.prepare.outputs.buffer }}
   metadata-buffer:
     description: "Program-metadata IDL buffer address"
-    value: ${{ steps.prepare.outputs.metadata-buffer }}
+    value: ${{ steps.paced-metadata.outputs.buffer || steps.prepare.outputs.metadata-buffer }}
   pda-tx:
     description: "Base64-encoded solana-verify PDA transaction (empty unless export-verify-pda)"
     value: ${{ steps.prepare.outputs.pda-tx }}
@@ -65,8 +76,23 @@ runs:
     # deploy (see deploy-scripts/README.md) — CI only ever updates it via the
     # official squads action's single-tx SetData, so no pre-flight check here.
 
+    # Anything that runs agave-install (avm does, on anchor invocations) can swap
+    # the active Solana CLI mid-job. An older CLI rejects SBPFv3 during the local
+    # ELF check with "sbpf_version ... not enabled", so fail on the version here.
+    - name: Solana CLI is the pinned version
+      shell: bash
+      run: |
+        set -euo pipefail
+        GOT="$(solana --version | awk '{print $2}')"
+        echo "solana $GOT at $(command -v solana)"
+        if [ "$GOT" != "$SOLANA_VERSION" ]; then
+          echo "::error::solana CLI is $GOT, expected $SOLANA_VERSION. Something re-ran agave-install after setup-solana."
+          exit 1
+        fi
+
     - name: Prepare Squads release (program + metadata buffers)
       id: prepare
+      if: inputs.uploader != 'paced'
       uses: solana-foundation/github-actions/prepare-squads-release@f0ddc2234ac4ac19c5c17f520b60bc2d7308744f # v0.2.11
       with:
         program-id: ${{ inputs.program-id }}
@@ -85,13 +111,47 @@ runs:
         repo-url: ${{ inputs.repo-url }}
         commit-hash: ${{ inputs.commit-hash }}
 
+    - name: Install paced uploader dependency
+      if: inputs.uploader == 'paced'
+      shell: bash
+      run: npm install --prefix "$RUNNER_TEMP/uploader" --no-save --ignore-scripts --no-audit --no-fund @solana/web3.js@1.99.0
+
+    - name: Write program buffer (paced)
+      id: paced-program
+      if: inputs.uploader == 'paced'
+      shell: bash
+      env:
+        NODE_PATH: ${{ runner.temp }}/uploader/node_modules
+        SOLANA_RPC: ${{ inputs.rpc-url }}
+        DEPLOY_KEYPAIR: ${{ inputs.keypair }}
+        PROGRAM: ${{ inputs.program }}
+        PROGRAM_ID: ${{ inputs.program-id }}
+        AUTHORITY: ${{ inputs.buffer-authority }}
+        CLUSTER: ${{ inputs.cluster }}
+        PRIORITY_FEE: ${{ inputs.priority-fee }}
+      run: |
+        set -euo pipefail
+        ARGS=(--program-id "$PROGRAM_ID" --authority "$AUTHORITY" --cluster "$CLUSTER" --priority-fee "$PRIORITY_FEE" --execute)
+        node deploy-scripts/upload-program-buffer.cjs "target/deploy/$PROGRAM.so" "${ARGS[@]}"
+
+    - name: Write metadata buffer (paced)
+      id: paced-metadata
+      if: inputs.uploader == 'paced'
+      uses: solana-foundation/github-actions/write-metadata-buffer@e15ede4246abd98badb4701d34394865e382a2de
+      with:
+        idl-path: ./target/idl/${{ inputs.program }}.json
+        rpc-url: ${{ inputs.rpc-url }}
+        keypair: ${{ inputs.keypair }}
+        buffer-authority: ${{ inputs.buffer-authority }}
+        priority-fees: ${{ inputs.priority-fee }}
+
     - name: Deploy summary + verifiable hashes
       shell: bash
       env:
         PROGRAM: ${{ inputs.program }}
         RPC_URL: ${{ inputs.rpc-url }}
-        BUFFER: ${{ steps.prepare.outputs.buffer }}
-        METADATA_BUFFER: ${{ steps.prepare.outputs.metadata-buffer }}
+        BUFFER: ${{ steps.paced-program.outputs.buffer || steps.prepare.outputs.buffer }}
+        METADATA_BUFFER: ${{ steps.paced-metadata.outputs.buffer || steps.prepare.outputs.metadata-buffer }}
         EXPORT_VERIFY_PDA: ${{ inputs.export-verify-pda }}
       # One consolidated block: both buffer addresses and the program buffer's
       # verifiable hash next to the local build's hash, so a multisig signer can

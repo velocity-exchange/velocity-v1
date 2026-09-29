@@ -205,7 +205,7 @@ docker_apps() {
 	jq -r 'to_entries[] | select(.key | startswith("_") | not) | [.key, .value.lang, .value.path] | @tsv' docker-info.json
 }
 docker_watch_paths() { # $1 = lang, $2 = path
-	if [ "$1" = ts ]; then echo "$2 packages/sdk packages/jit-proxy docker/ts-app.Dockerfile"
+	if [ "$1" = ts ]; then echo "$2 packages/sdk packages/jit-proxy packages/revenue-router-sdk docker/ts-app.Dockerfile"
 	else echo "$2 rust/velocity-rs packages/sdk/src/idl docker/rust-app.Dockerfile"; fi
 }
 
@@ -397,7 +397,7 @@ cmd_bump() {
 	mutate git switch -c "$branch" "$MASTER"
 
 	step "set version = \"$target\" in $ppath/Cargo.toml"
-	mutate perl -pi -e "s/^version\\s*=\\s*\"[^\"]+\"/version = \"$target\"/ if !\$done++" "$ppath/Cargo.toml"
+	mutate perl -pi -e "\$done ||= s/^version\\s*=\\s*\"[^\"]+\"/version = \"$target\"/" "$ppath/Cargo.toml"
 
 	step "resync the program workspace lockfile (offline)"
 	# rust/Cargo.lock cannot resolve offline (solana-sdk 3.x tree); the cargo

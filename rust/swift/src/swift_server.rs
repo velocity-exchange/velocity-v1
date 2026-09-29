@@ -20,6 +20,7 @@ use {
         util::{
             headers::XSwiftClientConsumer,
             metrics::{metrics_handler, MetricsServerParams, SwiftServerMetrics},
+            shutdown,
         },
     },
     anchor_lang::{AccountDeserialize, Discriminator},
@@ -700,9 +701,28 @@ pub async fn deposit_trade(
     (status, Json(resp))
 }
 
+/// Drain-only readiness.
+///
+/// Deliberately *not* the health route: that gates on RPC, redis, market subs
+/// and the slot subscriber, every one of which each replica shares with the
+/// others. Wiring a deep check to a readiness probe means one dependency blip
+/// marks every replica NotReady at once and the load balancer is left with no
+/// targets — a harder outage than the degraded service it was avoiding. The
+/// health route stays the deep check, for liveness and alerting.
+pub async fn readiness_check() -> impl axum::response::IntoResponse {
+    if shutdown::is_serving() {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+    }
+}
+
 pub async fn health_check(
     State(server_params): State<&'static ServerParams>,
 ) -> impl axum::response::IntoResponse {
+    // Checked first: once SIGTERM lands this pod must fail readiness so the load
+    // balancer stops routing to it, whatever its dependencies say.
+    let serving = shutdown::is_serving();
     let ws_healthy = server_params.velocity.ws().is_running();
     let slot_sub_healthy = !server_params.slot_subscriber.is_stale();
 
@@ -750,7 +770,8 @@ pub async fn health_check(
         }
     };
 
-    if ws_healthy
+    if serving
+        && ws_healthy
         && slot_sub_healthy
         && user_account_fetcher_redis_health
         && redis_health
@@ -760,7 +781,7 @@ pub async fn health_check(
         (axum::http::StatusCode::OK, "ok".into())
     } else {
         let msg = format!(
-            "slot_sub_healthy={slot_sub_healthy} | ws_sub_healthy={ws_healthy} 
+            "serving={serving} | slot_sub_healthy={slot_sub_healthy} | ws_sub_healthy={ws_healthy} 
             | user_account_fetcher_healthy={user_account_fetcher_redis_health} |
             redis_healthy={redis_health}|rpc_healthy={rpc_healthy}|market_subs={market_subs_healthy}",
         );
@@ -901,6 +922,7 @@ pub async fn start_server() {
         .route("/orders", post(process_order_wrapper))
         .route("/depositTrade", post(deposit_trade))
         .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
         .layer(cors)
         .with_state(state);
 
@@ -973,7 +995,11 @@ pub async fn start_server() {
         }
     });
 
-    let axum_server = tokio::spawn(async { axum::serve(listener, app).await });
+    let axum_server = tokio::spawn(async {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown::closing())
+            .await
+    });
     let metrics_server = tokio::spawn(async { axum::serve(listener_metrics, metrics_app).await });
 
     let _ = tokio::try_join!(

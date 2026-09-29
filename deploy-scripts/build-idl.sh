@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Regenerates a program's IDL and its TypeScript types.
 #
-# Usage: build-idl.sh <velocity|vaults|jit-proxy>
+# Usage: build-idl.sh <velocity|vaults|jit-proxy|revenue-router>
 set -euo pipefail
 
-PROGRAM="${1:?usage: build-idl.sh <velocity|vaults|jit-proxy>}"
+PROGRAM="${1:?usage: build-idl.sh <velocity|vaults|jit-proxy|revenue-router>}"
 
 # `anchor idl build` shells out to `cargo +stable`, which resolves only through
 # the rustup shim, so it must come before any other cargo on PATH.
@@ -44,8 +44,17 @@ case "$PROGRAM" in
 			--out packages/jit-proxy/src/types/jit_proxy.ts
 		bun run prettify:fix
 		;;
+	revenue-router)
+		mkdir -p packages/revenue-router-sdk/src/idl packages/revenue-router-sdk/src/types
+		anchor idl build --skip-lint -p protocol_revenue_router \
+			-o packages/revenue-router-sdk/src/idl/protocol_revenue_router.json \
+			-- --no-default-features --features no-entrypoint,anchor-test
+		anchor idl type packages/revenue-router-sdk/src/idl/protocol_revenue_router.json \
+			--out packages/revenue-router-sdk/src/types/protocol_revenue_router.ts
+		bun run prettify:fix
+		;;
 	*)
-		echo "unknown program: $PROGRAM (want velocity|vaults|jit-proxy)" >&2
+		echo "unknown program: $PROGRAM (want velocity|vaults|jit-proxy|revenue-router)" >&2
 		exit 1
 		;;
 esac

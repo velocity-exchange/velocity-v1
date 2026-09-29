@@ -170,7 +170,7 @@ else
   skip_check "unit tests" "--fast"
 fi
 
-# Integration suites (--full only). CI: anchor-tests, vault-tests, rust-workspace tests.
+# Integration suites (--full only). CI: anchor-tests, vault-tests, router-svm-tests, rust-workspace tests.
 
 if [ "$MODE" = "full" ]; then
   # SBF incremental cache corrupts across feature-flavor switches (e.g. a
@@ -180,6 +180,10 @@ if [ "$MODE" = "full" ]; then
   echo "==> cleaning SBF cache (flavor-poisoning guard)"
   rm -rf target/sbpf*-solana-solana target/deploy
 
+  run_check "router svm tests"         bash -c "
+    bash deploy-scripts/build-sbf.sh test protocol-revenue-router &&
+    cargo test --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml --locked
+  "
   run_check "anchor integration suite" bash test-scripts/run-anchor-tests.sh
   run_check "vault tests"              bash -c "
     bash test-scripts/run-vault-tests.sh --build-only &&
@@ -207,6 +211,7 @@ if [ "$MODE" = "full" ]; then
 else
   skip_check "anchor integration suite" "needs --full"
   skip_check "vault tests" "needs --full"
+  skip_check "router svm tests" "needs --full"
   skip_check "rust workspace tests" "needs --full"
 fi
 

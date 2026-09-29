@@ -609,6 +609,74 @@ pub fn handle_deposit_into_perp_market_fee_pool<'c: 'info, 'info>(
 
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
+)]
+/// Move quote tokens into a perp market's pnl pool, transferring and
+/// accounting for them in the same instruction.
+///
+/// The counterpart to `deposit_into_perp_market_fee_pool`, and the safe way to
+/// seed a pnl pool. `update_perp_market_pnl_pool` credits the pool without
+/// moving any tokens, so funding through it takes a raw transfer into
+/// `spot_market_vault` first and a credit second, with nothing linking the
+/// two: the window between them holds tokens no balance claims, crediting less
+/// than was sent strands the difference silently, and
+/// `validate_spot_market_vault_amount` catches neither, because a surplus only
+/// makes it pass more easily. Here the amount transferred and the amount
+/// credited are the same value by construction.
+///
+/// The pnl pool is quote denominated, so the quote spot market and its vault
+/// are pinned to index 0 by seeds rather than passed in.
+pub fn handle_deposit_into_perp_market_pnl_pool<'c: 'info, 'info>(
+    ctx: Context<'info, DepositIntoMarketPnlPool<'info>>,
+    amount: u64,
+) -> Result<()> {
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+
+    let mint = get_token_mint(remaining_accounts_iter)?;
+
+    msg!(
+        "depositing {} into perp market {} pnl pool",
+        amount,
+        perp_market.market_index
+    );
+
+    let quote_spot_market = &mut load_mut!(ctx.accounts.quote_spot_market)?;
+
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        &mut *quote_spot_market,
+        None,
+        Clock::get()?.unix_timestamp,
+        ctx.accounts.state.load()?.funding_paused()?,
+    )?;
+
+    controller::spot_balance::update_spot_balances(
+        amount.cast::<u128>()?,
+        &SpotBalanceType::Deposit,
+        quote_spot_market,
+        &mut perp_market.pnl_pool,
+        false,
+    )?;
+
+    controller::token::receive(
+        &ctx.accounts.token_program,
+        &ctx.accounts.source_vault,
+        &ctx.accounts.spot_market_vault,
+        &ctx.accounts.admin.to_account_info(),
+        amount,
+        &mint,
+        if quote_spot_market.has_transfer_hook() {
+            Some(remaining_accounts_iter)
+        } else {
+            None
+        },
+    )?;
+
+    Ok(())
+}
+
+#[access_control(
+    perp_market_valid(&ctx.accounts.perp_market)
     valid_oracle_for_perp_market(&ctx.accounts.oracle, &ctx.accounts.perp_market)
 )]
 pub fn handle_repeg_amm_curve(ctx: Context<RepegCurve>, new_peg_candidate: u128) -> Result<()> {
@@ -1591,6 +1659,39 @@ pub struct AdminUpdatePerpMarketAmmSummaryStats<'info> {
 
 #[derive(Accounts)]
 pub struct DepositIntoMarketFeePool<'info> {
+    #[account(mut)]
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub perp_market: AccountLoader<'info, PerpMarket>,
+    #[account(constraint = check_hot(&admin.key(), &state, HotRole::VaultDeposit)?)]
+    pub admin: Signer<'info>,
+    #[account(
+        mut,
+        token::authority = admin
+    )]
+    pub source_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(
+        constraint = state.load()?.signer.eq(&velocity_signer.key())
+    )]
+    /// CHECK: withdraw fails if this isn't vault owner
+    pub velocity_signer: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        seeds = [b"spot_market", 0_u16.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub quote_spot_market: AccountLoader<'info, SpotMarket>,
+    #[account(
+        mut,
+        seeds = [b"spot_market_vault".as_ref(), 0_u16.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+pub struct DepositIntoMarketPnlPool<'info> {
     #[account(mut)]
     pub state: AccountLoader<'info, State>,
     #[account(mut)]

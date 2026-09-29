@@ -2713,3 +2713,73 @@ export type TransferFeeAndPnlPoolRecord = {
 	/** QUOTE_PRECISION (1e6) */
 	amount: BN;
 };
+
+/**
+ * Every argument to `initializeSpotMarket`, by name.
+ *
+ * Mirrors the on-chain `InitializeSpotMarketArgs`. Field order matters: borsh
+ * lays the struct out positionally, so this must stay in the IDL's order.
+ */
+export type InitializeSpotMarketArgs = {
+	optimalUtilization: number;
+	optimalBorrowRate: number;
+	maxBorrowRate: number;
+	/** precision: X/200, so 1 is 0.5%. 0 disables the floor. */
+	minBorrowRate: number;
+	oracleSource: OracleSource;
+	initialAssetWeight: number;
+	maintenanceAssetWeight: number;
+	initialLiabilityWeight: number;
+	maintenanceLiabilityWeight: number;
+	imfFactor: number;
+	liquidatorFee: number;
+	ifLiquidationFee: number;
+	activeStatus: boolean;
+	assetTier: AssetTier;
+	scaleInitialAssetWeightStart: BN;
+	withdrawGuardThreshold: BN;
+	orderTickSize: BN;
+	orderStepSize: BN;
+	ifTotalFactor: number;
+	/** precision: token mint precision. 0 is no limit. */
+	maxTokenDeposits: BN;
+	name: number[];
+};
+
+/**
+ * Every argument to `initializePerpMarket`, by name.
+ *
+ * Mirrors the on-chain `InitializePerpMarketArgs`. Field order matters: borsh
+ * lays the struct out positionally, so this must stay in the IDL's order.
+ */
+export type InitializePerpMarketArgs = {
+	marketIndex: number;
+	ammBaseAssetReserve: BN;
+	ammQuoteAssetReserve: BN;
+	ammPeriodicity: BN;
+	ammPegMultiplier: BN;
+	oracleSource: OracleSource;
+	contractTier: ContractTier;
+	marginRatioInitial: number;
+	marginRatioMaintenance: number;
+	liquidatorFee: number;
+	ifLiquidationFee: number;
+	imfFactor: number;
+	activeStatus: boolean;
+	baseSpread: number;
+	maxSpread: number;
+	maxOpenInterest: BN;
+	maxRevenueWithdrawPerPeriod: BN;
+	quoteMaxInsurance: BN;
+	orderStepSize: BN;
+	orderTickSize: BN;
+	minOrderSize: BN;
+	concentrationCoefScale: BN;
+	/** (0, 100] repeg / formulaic k intensity, (100, 200] reference price offset intensity. */
+	curveUpdateIntensity: number;
+	ammJitIntensity: number;
+	name: number[];
+	lpPoolId: number;
+	fundingClampThreshold: number;
+	fundingRampSlope: number;
+};

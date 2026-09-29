@@ -12,6 +12,12 @@ import { sleepMs } from '../../utils';
 import dotenv from 'dotenv';
 import parseArgs from 'minimist';
 
+/**
+ * Cadence of the liveness IPC to the parent filler, matching the sibling
+ * children (`orderSubscriberFiltered`, `dlobBuilder`).
+ */
+const LIVENESS_INTERVAL_MS = 10_000;
+
 export type SwiftOrderSubscriberConfig = {
 	velocityEnv: VelocityEnv;
 	endpoint: string;
@@ -22,8 +28,28 @@ export type SwiftOrderSubscriberConfig = {
 export class SwiftOrderSubscriber {
 	private heartbeatTimeout: NodeJS.Timeout | null = null;
 	private readonly heartbeatIntervalMs = 60000;
+	/**
+	 * Reconnect backoff bounds. Jittered, so that a fleet of subscribers
+	 * knocked off the same server pod does not retry in lockstep.
+	 */
+	private readonly reconnectBaseDelayMs = 500;
+	private readonly reconnectMaxDelayMs = 30000;
+	private reconnectAttempts = 0;
+	/**
+	 * Handle of the pending reconnect, and the guard against scheduling a
+	 * second one: a single disconnect normally emits both `close` and `error`,
+	 * and the heartbeat timer can fire on top of them, so without it one
+	 * eviction would spawn two or three sockets.
+	 */
+	private reconnectTimeout: NodeJS.Timeout | null = null;
 	private ws: WebSocket | null = null;
 	subscribed: boolean = false;
+	/**
+	 * Set when the server rejects a market subscription. The connection is fine
+	 * and authenticated, so `subscribed` alone would read as healthy while at
+	 * least one market silently delivers nothing.
+	 */
+	private subscribeRejected = false;
 
 	constructor(private config: SwiftOrderSubscriberConfig) {}
 
@@ -61,6 +87,12 @@ export class SwiftOrderSubscriber {
 			message['message']?.toLowerCase() === 'authenticated'
 		) {
 			this.subscribed = true;
+			this.subscribeRejected = false;
+			// Reset here rather than on `open`: a pod that is mid-shutdown still
+			// completes the TCP handshake, so a successful auth is the first real
+			// proof the connection is usable.
+			this.reconnectAttempts = 0;
+			this.sendLivenessCheck(true);
 			this.config.marketIndexes.forEach(async (marketIndex) => {
 				this.ws?.send(
 					JSON.stringify({
@@ -75,12 +107,54 @@ export class SwiftOrderSubscriber {
 	}
 
 	async subscribe() {
+		// A caller subscribing twice, or subscribing while a reconnect is
+		// pending, would otherwise end up with two live sockets and every order
+		// delivered twice. Cancel the pending attempt and drop any existing
+		// socket before opening a new one.
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
+		if (this.heartbeatTimeout) {
+			clearTimeout(this.heartbeatTimeout);
+			this.heartbeatTimeout = null;
+		}
+		this.teardownSocket();
+		this.subscribed = false;
+
 		const ws = new WebSocket(
 			this.config.endpoint +
 				'?pubkey=' +
 				this.config.keypair.publicKey.toBase58()
 		);
 		this.ws = ws;
+
+		// Registered before `open`, never inside it. A socket that dies during the
+		// handshake - server pod evicted, connection refused, reset - emits
+		// `error` without ever emitting `open`. Node throws on an unhandled
+		// 'error' event, so with the handlers nested inside `open` this process
+		// died instead of retrying, which is exactly what a rolling swift
+		// ws-server produces.
+		ws.on('error', (error: Error) => {
+			console.error('Swift WebSocket error:', error);
+			this.scheduleReconnect();
+		});
+
+		ws.on('close', (code: number, reason: Buffer) => {
+			console.log(
+				`Disconnected from swift server: code=${code} reason=${reason?.toString()}`
+			);
+			this.scheduleReconnect();
+		});
+
+		ws.on('unexpected-response', (_request, response) => {
+			console.error(
+				'Unexpected response from swift server:',
+				response.statusCode
+			);
+			this.scheduleReconnect();
+		});
+
 		ws.on('open', async () => {
 			console.log('Connected to the server');
 
@@ -90,6 +164,26 @@ export class SwiftOrderSubscriber {
 
 				if (message['channel'] === 'auth') {
 					this.handleAuthMessage(message);
+				}
+
+				// The server acknowledges a subscribe only when it *fails* (an
+				// unknown market, or a topic it has no channel for), so a
+				// rejection is the one chance to notice that this feed is
+				// authenticated but will never deliver that market's orders.
+				//
+				// Keyed on "already authenticated" rather than on the channel:
+				// every error the server can send after auth is a subscribe
+				// failure, and it has sent them on both `subscribe` and `auth`
+				// (the latter until the fix in this change, which older servers
+				// still in a rolling deploy will not have).
+				if (message['error']) {
+					console.error(
+						`Swift server rejected a request on channel ${message['channel']}: ${message['error']}`
+					);
+					if (this.subscribed) {
+						this.subscribeRejected = true;
+						this.sendLivenessCheck(false);
+					}
 				}
 
 				if (message['order']) {
@@ -107,16 +201,6 @@ export class SwiftOrderSubscriber {
 					}
 				}
 			});
-
-			ws.on('close', () => {
-				console.log('Disconnected from the server');
-				this.reconnect();
-			});
-
-			ws.on('error', (error: Error) => {
-				console.error('WebSocket error:', error);
-				this.reconnect();
-			});
 		});
 	}
 
@@ -125,21 +209,95 @@ export class SwiftOrderSubscriber {
 			clearTimeout(this.heartbeatTimeout);
 		}
 		this.heartbeatTimeout = setTimeout(() => {
-			console.warn('No heartbeat received within 30 seconds, reconnecting...');
-			this.reconnect();
+			console.warn(
+				`No heartbeat received within ${this.heartbeatIntervalMs}ms, reconnecting...`
+			);
+			this.scheduleReconnect();
 		}, this.heartbeatIntervalMs);
 	}
 
-	private reconnect() {
+	/**
+	 * Detach listeners, then drop the socket. Order matters: `terminate()` on a
+	 * live socket emits `close`, which would otherwise re-enter
+	 * `scheduleReconnect()`.
+	 */
+	private teardownSocket() {
 		if (this.ws) {
 			this.ws.removeAllListeners();
+			// terminate() on a CONNECTING socket emits `error` on next tick; unhandled, it crashes.
+			this.ws.on('error', () => {});
 			this.ws.terminate();
+			this.ws = null;
+		}
+	}
+
+	/**
+	 * Tear the current socket down and queue a fresh `subscribe()`.
+	 *
+	 * Idempotent per disconnect, and safe to call from any of the socket's
+	 * failure paths.
+	 */
+	private scheduleReconnect() {
+		if (this.reconnectTimeout) {
+			return;
 		}
 
-		console.log('Reconnecting to WebSocket...');
-		setTimeout(() => {
-			this.subscribe();
-		}, 1000);
+		if (this.heartbeatTimeout) {
+			clearTimeout(this.heartbeatTimeout);
+			this.heartbeatTimeout = null;
+		}
+		this.teardownSocket();
+		this.subscribed = false;
+		this.sendLivenessCheck(false);
+
+		const delayMs = this.nextReconnectDelayMs();
+		console.log(`Reconnecting to swift WebSocket in ${delayMs}ms...`);
+		this.reconnectTimeout = setTimeout(() => {
+			// Cleared before resubscribing, not in the `open` handler: the
+			// replacement socket may itself fail before opening, and that failure
+			// has to be able to schedule the next attempt.
+			this.reconnectTimeout = null;
+			this.subscribe().catch((error) => {
+				console.error('Swift resubscribe failed:', error);
+				this.scheduleReconnect();
+			});
+		}, delayMs);
+	}
+
+	/** Exponential backoff with full jitter, capped at `reconnectMaxDelayMs`. */
+	private nextReconnectDelayMs(): number {
+		const ceiling = Math.min(
+			this.reconnectMaxDelayMs,
+			this.reconnectBaseDelayMs * 2 ** this.reconnectAttempts
+		);
+		this.reconnectAttempts++;
+		return Math.floor(Math.random() * ceiling);
+	}
+
+	/** True only when authenticated *and* every market subscribe was accepted. */
+	isFeedHealthy(): boolean {
+		return this.subscribed && !this.subscribeRejected;
+	}
+
+	/**
+	 * Report feed state to the parent filler, which latches it into
+	 * `swiftOrderSubscriberHealth` and gates its own `healthCheck()` on it.
+	 *
+	 * The sibling children send an unconditional `true`; this one reports the
+	 * real state, because it is the only signal that a swift feed has died.
+	 * Until the reconnect fix above, a dead feed crashed this process and the
+	 * restart itself was what surfaced the outage — now that it retries
+	 * quietly, an unreported feed death would be invisible.
+	 */
+	sendLivenessCheck(health: boolean) {
+		if (typeof process.send === 'function') {
+			process.send({
+				type: 'health',
+				data: {
+					healthy: health,
+				},
+			});
+		}
 	}
 
 	private convertUuidToNumber(uuid: string): number {
@@ -191,6 +349,15 @@ async function main() {
 		swiftOrderSubscriberConfig
 	);
 	await swiftOrderSubscriber.subscribe();
+
+	// Auth and disconnect both report immediately; this re-asserts the current
+	// state so a child that wedges without emitting either goes stale rather
+	// than leaving the parent latched on a value it can no longer trust.
+	setInterval(() => {
+		swiftOrderSubscriber.sendLivenessCheck(
+			swiftOrderSubscriber.isFeedHealthy()
+		);
+	}, LIVENESS_INTERVAL_MS);
 }
 
 main();

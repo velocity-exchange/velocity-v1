@@ -7,6 +7,7 @@
 # argument. The IDL comes from `anchor idl build` (see build-idl.sh).
 #
 # Usage: build-sbf.sh <test|devnet|mainnet> [program ...]
+# Programs outside the flavor default (e.g. protocol-revenue-router) are built by name.
 set -euo pipefail
 
 FLAVOR="${1:?usage: build-sbf.sh <test|devnet|mainnet> [program ...]}"
@@ -31,9 +32,9 @@ fi
 export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-z -C link-arg=defs"
 
 case "$FLAVOR" in
-  test)    VELOCITY_ARGS=(--no-default-features --features no-entrypoint,anchor-test) ;;
-  devnet)  VELOCITY_ARGS=(--no-default-features --features no-entrypoint,isolated-position,vlp-hedge) ;;
-  mainnet) VELOCITY_ARGS=() ;;
+  test)    VELOCITY_ARGS=(--no-default-features --features no-entrypoint,anchor-test); ROUTER_ARGS=(--features anchor-test) ;;
+  devnet)  VELOCITY_ARGS=(--no-default-features --features no-entrypoint,isolated-position,vlp-hedge); ROUTER_ARGS=(--no-default-features) ;;
+  mainnet) VELOCITY_ARGS=(); ROUTER_ARGS=() ;;
   *) echo "unknown flavor: $FLAVOR (want test|devnet|mainnet)" >&2; exit 1 ;;
 esac
 
@@ -69,6 +70,8 @@ for p in "${PROGRAMS[@]}"; do
     jit-proxy)    build_one jit-proxy ;;
     pyth)         build_one pyth ;;
     token_faucet) build_one token_faucet ;;
+    # Default features keep the mainnet init gate on; test and devnet drop it.
+    protocol-revenue-router) build_one protocol-revenue-router "${ROUTER_ARGS[@]}" ;;
     *)            build_one "$p" ;;
   esac
 done

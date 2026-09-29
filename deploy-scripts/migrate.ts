@@ -1667,11 +1667,8 @@ export type BookBringUp = {
 	act: Act;
 };
 
-/**
- * `attached`: the book takes orders. `queued`: every proposal its attach needs
- * is pending, so it takes orders once they execute in index order. `blocked`:
- * a later run builds what is missing.
- */
+/** `queued`: every proposal the attach needs is pending. `blocked`: a later
+ * run builds what is missing. */
 type BookOutcome = 'attached' | 'queued' | 'blocked';
 
 /** Markets whose book is attached, markets whose bring-up waits on a multisig

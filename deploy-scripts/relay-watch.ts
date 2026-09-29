@@ -40,9 +40,13 @@ export type WatchesOnTarget = {
 	impostors: Watch[];
 };
 
-export function decodeWatch(address: PublicKey, data: Buffer): Watch | undefined {
+export function decodeWatch(
+	address: PublicKey,
+	data: Buffer
+): Watch | undefined {
 	if (data.length < WATCH_V0_LEN) return undefined;
-	const key = (offset: number) => new PublicKey(data.subarray(offset, offset + 32));
+	const key = (offset: number) =>
+		new PublicKey(data.subarray(offset, offset + 32));
 	return {
 		address,
 		targetProgram: key(WATCH_TARGET_PROGRAM_OFFSET),
@@ -77,7 +81,12 @@ export async function watchesOnTarget(
 	const accounts = await connection.getProgramAccounts(RELAY_PROGRAM, {
 		filters: [
 			{ dataSize: WATCH_V0_LEN },
-			{ memcmp: { offset: WATCH_TARGET_OFFSET, bytes: expected.target.toBase58() } },
+			{
+				memcmp: {
+					offset: WATCH_TARGET_OFFSET,
+					bytes: expected.target.toBase58(),
+				},
+			},
 		],
 	});
 	const watches = accounts
@@ -89,7 +98,9 @@ export async function watchesOnTarget(
 export function describeImpostor(watch: Watch): string {
 	return (
 		`watch ${watch.address.toBase58()} by ${watch.creator.toBase58()} ` +
-		`at offset ${watch.blockOffset} for program ${watch.targetProgram.toBase58()}`
+		`at offset ${
+			watch.blockOffset
+		} for program ${watch.targetProgram.toBase58()}`
 	);
 }
 

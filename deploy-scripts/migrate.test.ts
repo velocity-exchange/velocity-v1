@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import bs58 from 'bs58';
 import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
-import { getQuoterSlabPublicKey, transactionCost } from '@velocity-exchange/sdk';
+import {
+	getQuoterSlabPublicKey,
+	transactionCost,
+} from '@velocity-exchange/sdk';
 import {
 	bookConfig,
 	BookBringUp,
@@ -50,7 +53,10 @@ function connectionHolding(accounts: Map<PublicKey, Buffer>) {
 	return {
 		async getProgramAccounts(
 			_program: PublicKey,
-			config: { filters: Filter[]; dataSlice: { offset: number; length: number } }
+			config: {
+				filters: Filter[];
+				dataSlice: { offset: number; length: number };
+			}
 		) {
 			return [...accounts]
 				.filter(([, data]) =>

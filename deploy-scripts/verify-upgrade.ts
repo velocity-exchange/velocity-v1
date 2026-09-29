@@ -221,7 +221,9 @@ async function main() {
 		authority,
 		await getVelocityStateAccountPublicKey(velocity),
 		parseWatchCreators(
-			argv.includes('--watch-creators') ? flag('--watch-creators', '') : undefined,
+			argv.includes('--watch-creators')
+				? flag('--watch-creators', '')
+				: undefined,
 			authority.publicKey
 		)
 	);
@@ -233,24 +235,7 @@ async function main() {
 		await verifier.checkAccount(pubkey, account.data);
 	}
 
-	await verifier.requireExists(
-		'relay scratch',
-		getRelayScratchPublicKey(velocity)
-	);
-	await verifier.requireExists(
-		'crank treasury',
-		getCrankTreasuryPublicKey(velocity)
-	);
-	// Every relay executor names the protocol User as its filler or taker.
-	const signer = getVelocitySignerPublicKey(velocity);
-	await verifier.requireExists(
-		'protocol user',
-		getUserAccountPublicKeySync(velocity, signer, 0)
-	);
-	await verifier.requireExists(
-		'protocol user stats',
-		getUserStatsAccountPublicKey(velocity, signer)
-	);
+	await requireSingletons(verifier, velocity);
 
 	const perpMarkets = accounts.filter(({ account }) =>
 		nameIs(program, account.data, 'PerpMarket')
@@ -277,6 +262,31 @@ async function main() {
 
 	printReport(verifier, accounts.length);
 	if (verifier.failures.length > 0) process.exit(1);
+}
+
+/** The accounts every relay crank loads. Every relay executor names the
+ * protocol User as its filler or taker. */
+async function requireSingletons(
+	verifier: Verifier,
+	velocity: PublicKey
+): Promise<void> {
+	const signer = getVelocitySignerPublicKey(velocity);
+	await verifier.requireExists(
+		'relay scratch',
+		getRelayScratchPublicKey(velocity)
+	);
+	await verifier.requireExists(
+		'crank treasury',
+		getCrankTreasuryPublicKey(velocity)
+	);
+	await verifier.requireExists(
+		'protocol user',
+		getUserAccountPublicKeySync(velocity, signer, 0)
+	);
+	await verifier.requireExists(
+		'protocol user stats',
+		getUserStatsAccountPublicKey(velocity, signer)
+	);
 }
 
 /** The migration gives the payer two hot roles. The runbook revokes both
@@ -314,17 +324,24 @@ async function requireMarketWatches(
 	const info = await program.provider.connection.getAccountInfo(conditions);
 	if (!info) {
 		verifier.failures.push(
-			`market ${market.marketIndex} names a book but has no crank conditions ${conditions.toBase58()}`
+			`market ${
+				market.marketIndex
+			} names a book but has no crank conditions ${conditions.toBase58()}`
 		);
 		return;
 	}
 
-	await verifier.requireWatch(`market ${market.marketIndex} crank conditions`, conditions);
+	await verifier.requireWatch(
+		`market ${market.marketIndex} crank conditions`,
+		conditions
+	);
 	const { clobBlockOffset } = program.coder.accounts.decode(
 		'clobCrankConditionsV0',
 		info.data
 	) as { clobBlockOffset: number };
-	const book = await program.provider.connection.getAccountInfo(market.clobMarket);
+	const book = await program.provider.connection.getAccountInfo(
+		market.clobMarket
+	);
 	if (book && clobBlockOffset) {
 		await verifier.requireWatch(
 			`market ${market.marketIndex} book`,

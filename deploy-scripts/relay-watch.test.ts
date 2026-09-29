@@ -48,7 +48,9 @@ test('the payer watch at the block offset serves the target', () => {
 });
 
 test('a watch by another creator does not serve the target', () => {
-	const { serving, impostors } = classify(watchData(velocity, PublicKey.unique(), 8));
+	const { serving, impostors } = classify(
+		watchData(velocity, PublicKey.unique(), 8)
+	);
 	assert.equal(serving.length, 0);
 	assert.equal(impostors.length, 1);
 });

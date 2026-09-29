@@ -74,6 +74,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     )?;
 
     if !synchronous_take {
+        validate_unattested_submitter(&*load!(ctx.accounts.user)?, ctx.accounts.authority.key)?;
         validate_unattested_entry(&placed.order)?;
     }
 
@@ -149,8 +150,8 @@ fn run_placement_leg<'c: 'info, 'info>(
 /// Whether the taker's flow served the book's protection window.
 ///
 /// A book with a speed bump gives makers priority, so only attested flow fills synchronously.
-/// An unattested signed-message submission instead rests the whole order taker-origin through
-/// the activation window, and the cross cranks fill it. The attestation is detached: Swift signs
+/// An unattested submission, which only the taker may send, instead rests the whole order
+/// taker-origin through the activation window, and the cross cranks fill it. The attestation is detached: Swift signs
 /// over the taker's own order signature after the hold, so the flow authority never signs a
 /// keeper-built transaction, and the fill pays no second signature fee.
 fn verify_taker_served_window(
@@ -608,6 +609,22 @@ fn validate_entry_order_type(params: &OrderParams) -> Result<()> {
         msg!("a signed-message entry cannot be a trigger order");
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
+
+    Ok(())
+}
+
+/// An unattested entry on a book with a speed bump rests whole at its worst
+/// price, and anyone can then cross it there. Only the taker may choose that,
+/// so the taker's authority or delegate must sign the transaction. Otherwise a
+/// reader of the swift feed could submit the message before swift attests it.
+fn validate_unattested_submitter(taker: &User, submitter: &Pubkey) -> Result<()> {
+    let signed_by_taker = taker.authority == *submitter
+        || (taker.delegate == *submitter && taker.delegate != Pubkey::default());
+    validate!(
+        signed_by_taker,
+        ErrorCode::UnattestedSynchronousTake,
+        "a signed message on a book with a speed bump needs a flow attestation or the taker's signature"
+    )?;
 
     Ok(())
 }

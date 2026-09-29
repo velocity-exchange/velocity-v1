@@ -233,6 +233,16 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         )
     };
 
+    // Funding is settled once, before the first leg. The second leg reads its
+    // baseline without a settle, so a payment that the first leg's own funding
+    // update charges the protocol `User` counts against the surplus.
+    settle_funding_payment(
+        &mut *load_mut!(ctx.accounts.taker)?,
+        &ctx.accounts.taker.key(),
+        &mut *maps.perp_market_map.get_ref_mut(&market_index)?,
+        clock.unix_timestamp,
+    )?;
+
     let base_before = taker_base(&ctx.accounts.taker, market_index)?;
 
     // One set of CPI buffers for the whole crank, as a router fill uses. Both
@@ -329,8 +339,7 @@ struct CrossMatchContext<'a, 'info> {
 struct CrossLegFill {
     base_filled: u64,
     /// What the leg did to the protocol `User`'s quote, net of the taker fee
-    /// it paid. Read on both sides of the fill with funding already settled,
-    /// so a funding payment cannot read as cross surplus.
+    /// it paid. It includes any funding the fill settled.
     quote_delta: i64,
     /// The worst price any single source of this leg executed at. Zero when
     /// the leg filled nothing.
@@ -389,28 +398,11 @@ fn run_cross_leg<'info>(
 
     let limit_price = leg_limit_price(taker_direction, cx.band_oracle_price, cx.leg_oracle_band)?;
 
-    // Funding is settled here, before the quote is read. The fill settles it
-    // too, so by the time the fill runs there is nothing left to charge, and the
-    // quote the leg is measured on moves for the fill alone. Without this call,
-    // a funding payment reads as cross surplus. That includes the payment the
-    // first leg's own funding update creates for the second leg.
-    let (order_id, taker_ref, quote_before) = {
-        let mut market = maps.perp_market_map.get_ref_mut(&cx.market_index)?;
-        let mut taker = load_mut!(cx.accounts.taker)?;
-        settle_funding_payment(
-            &mut taker,
-            &cx.accounts.taker.key(),
-            &mut market,
-            cx.clock.unix_timestamp,
-        )?;
-
-        let order_id = crate::get_then_update_id!(taker, next_order_id);
-        let quote_before = taker
-            .get_perp_position(cx.market_index)
-            .map(|position| position.quote_asset_amount)
-            .unwrap_or(0);
-        (order_id, taker.clob_user_ref(), quote_before)
-    };
+    let LegOpening {
+        order_id,
+        taker_ref,
+        quote_before,
+    } = open_leg(&mut *load_mut!(cx.accounts.taker)?, cx.market_index);
 
     let mut order = Order {
         slot: cx.clock.slot,
@@ -502,9 +494,6 @@ fn run_cross_leg<'info>(
         },
     )?;
 
-    // Read straight after the fill, with no second settle. The fill's own
-    // funding update belongs to whoever holds the position next, and the next
-    // leg settles it before it starts measuring.
     let quote_after = load!(cx.accounts.taker)?
         .get_perp_position(cx.market_index)
         .map(|position| position.quote_asset_amount)
@@ -514,6 +503,30 @@ fn run_cross_leg<'info>(
         quote_delta: quote_after.safe_sub(quote_before)?,
         worst_price: filled.worst_fill_price.unwrap_or(0),
     })
+}
+
+/// What a leg reads off the protocol `User` before it fills.
+struct LegOpening {
+    order_id: u32,
+    taker_ref: crate::state::prop_amm::UserRefV0,
+    quote_before: i64,
+}
+
+/// Take the leg's order id and read the quote it is measured from.
+///
+/// This settles no funding. A settle here before the second leg would pay the
+/// funding that the first leg's own update rolls, on the whole crossed size,
+/// outside the surplus. The leg-1 maker would then collect it from the protocol.
+fn open_leg(taker: &mut User, market_index: u16) -> LegOpening {
+    let order_id = crate::get_then_update_id!(taker, next_order_id);
+    LegOpening {
+        order_id,
+        taker_ref: taker.clob_user_ref(),
+        quote_before: taker
+            .get_perp_position(market_index)
+            .map(|position| position.quote_asset_amount)
+            .unwrap_or(0),
+    }
 }
 
 /// The last price inside the maker oracle band, on the side the leg buys or

@@ -421,3 +421,89 @@ mod surplus_floor {
         );
     }
 }
+
+/// A funding period that rolls between the two legs.
+///
+/// The first leg's own funding update rolls the rate after the protocol
+/// `User` opened `UNIT` long. The second leg's fill then settles one period on
+/// that long. The fills are modelled by writing the position directly, because
+/// only the order of the settle and the baseline read is under test.
+mod funding_between_legs {
+    use {
+        super::{super::*, PRICE, UNIT},
+        crate::{
+            math::funding::calculate_funding_payment,
+            state::{perp_market::PerpMarket, user::PerpPosition},
+            test_utils::get_positions,
+        },
+    };
+
+    const TAKER_FEE: i64 = 40_000;
+    /// One period of funding worth 0.5 quote on `UNIT` long.
+    const RATE_ROLL: i128 = 500_000_000;
+
+    fn market_position(user: &mut User) -> &mut PerpPosition {
+        user.get_perp_position_mut(0).unwrap()
+    }
+
+    /// Leg 1 buys `UNIT` at 100 and leg 2 sells it at 100.3. The spread nets
+    /// 0.22 after both taker fees, which the 0.5 funding payment outweighs.
+    #[test]
+    fn funding_the_first_leg_rolls_counts_against_the_surplus() {
+        let key = Pubkey::new_unique();
+        let mut market = PerpMarket::default();
+        let mut user = User {
+            // An open order keeps the flat position addressable.
+            perp_positions: get_positions(PerpPosition {
+                open_orders: 1,
+                ..PerpPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let opening = open_leg(&mut user, 0);
+        let position = market_position(&mut user);
+        position.base_asset_amount = UNIT as i64;
+        position.quote_asset_amount = opening.quote_before - 100 * PRICE as i64 - TAKER_FEE;
+        position.last_cumulative_funding_rate = market.cumulative_funding_rate_long as i64;
+        let buy = CrossLegFill {
+            base_filled: UNIT,
+            quote_delta: position.quote_asset_amount - opening.quote_before,
+            worst_price: 100 * PRICE,
+        };
+
+        market.cumulative_funding_rate_long += RATE_ROLL;
+        let funding = calculate_funding_payment(
+            market.cumulative_funding_rate_long,
+            market_position(&mut user),
+        )
+        .unwrap();
+        assert!(funding < 0, "the long pays the period");
+
+        let opening = open_leg(&mut user, 0);
+        settle_funding_payment(&mut user, &key, &mut market, 0).unwrap();
+        let position = market_position(&mut user);
+        position.base_asset_amount = 0;
+        position.quote_asset_amount += 100_300_000 - TAKER_FEE;
+        let quote_after = position.quote_asset_amount;
+        let sell = CrossLegFill {
+            base_filled: UNIT,
+            quote_delta: quote_after - opening.quote_before,
+            worst_price: 100_300_000,
+        };
+
+        // Accepted, this cross leaves the protocol `User` short of quote.
+        assert!(quote_after < 0);
+        assert_eq!(
+            validate_cross_legs(&buy, &sell, (0, 0), 1).unwrap_err(),
+            ErrorCode::CrossMatchUnprofitable.into()
+        );
+
+        // A baseline read after the settle hides the payment and admits it.
+        let hidden = CrossLegFill {
+            quote_delta: sell.quote_delta - funding,
+            ..sell
+        };
+        assert!(validate_cross_legs(&buy, &hidden, (0, 0), 1).is_ok());
+    }
+}

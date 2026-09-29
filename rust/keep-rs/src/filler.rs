@@ -915,14 +915,17 @@ async fn try_swift_place(
     let flow_attestation: Option<FlowAttestationV0> = match attest {
         Some(client) => match client.attest(swift_order.signature.as_array()).await {
             Ok(attestation) => Some(attestation),
+            // On a book with a speed bump the program accepts an unattested
+            // message only from the taker's own signer, and the filler is never
+            // that signer. Skip the order and let the next attested attempt place it.
             Err(reason) => {
                 log::warn!(
                     target: TARGET,
-                    "attestation fell through ({reason}); placing unattested. uuid={}",
+                    "attestation fell through ({reason}); skipping the unattested place. uuid={}",
                     swift_order.order_uuid_str()
                 );
 
-                None
+                return;
             }
         },
         None => None,

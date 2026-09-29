@@ -185,7 +185,7 @@ const CLOB_HEADER_PREFIX_BYTES = 176;
 const QUOTER_V0_BYTES = 792;
 const QUOTER_SLAB_SLOT_BYTES = 776;
 const CRANK_CONDITIONS_BYTES = 808;
-const USER_CONDITIONS_BYTES = 6040;
+const USER_CONDITIONS_BYTES = 7128;
 /** Squads proposal statuses that can still execute. An `Active` one past the
  * multisig's stale index cannot, and `PendingProposals` drops it. */
 const PENDING_PROPOSAL_STATUSES = ['Draft', 'Active', 'Approved', 'Executing'];
@@ -633,7 +633,7 @@ const RESIZABLE: { name: string; size: number }[] = [
 	// sizes_for_the_migration_script -- --show-output` in `state/relay_scratch.rs`. A stale or missing entry here has no symptom until read at the wrong offset.
 	{ name: 'ClobCrankConditionsV0', size: 808 },
 	{ name: 'QuoterCrossConditionsV0', size: 2424 },
-	{ name: 'UserConditionsV0', size: 6040 },
+	{ name: 'UserConditionsV0', size: 7128 },
 ];
 
 async function main() {

@@ -30,8 +30,9 @@ import type { ClobAccounts } from '../../types';
  *   answers for its account list through the filler obligation.
  * @param args.crankConditions the market's crank-conditions PDA, holding the wake hint.
  *   Omit to pass the program id as a placeholder.
- * @param args.triggerConditions the user's relay trigger conditions PDA. Omit to pass the
- *   program id as a placeholder.
+ * @param args.triggerConditions the user's relay trigger conditions PDA (required).
+ * @param args.solSpotMarket the SOL spot market named by `State.sol_spot_market_index`.
+ *   Program-keeper mode requires it; a signed keeper omits it.
  */
 export async function buildTriggerMarketOrderV1Instruction(
 	args: {
@@ -47,7 +48,8 @@ export async function buildTriggerMarketOrderV1Instruction(
 		remainingAccounts: AccountMeta[];
 		signedRoute?: PublicKey[];
 		crankConditions?: PublicKey;
-		triggerConditions?: PublicKey;
+		triggerConditions: PublicKey;
+		solSpotMarket?: PublicKey;
 	} & ClobAccounts
 ): Promise<TransactionInstruction> {
 	// An omitted optional account is encoded as the program id, which is anchor's
@@ -72,7 +74,8 @@ export async function buildTriggerMarketOrderV1Instruction(
 				clobMarket: args.clobMarket,
 				clobProgram: args.clobProgram,
 				crankConditions: args.crankConditions ?? omitted,
-				triggerConditions: args.triggerConditions ?? omitted,
+				triggerConditions: args.triggerConditions,
+				solSpotMarket: args.solSpotMarket ?? omitted,
 				// This account is always named. A fill that leaves a book short of an
 				// owner is refused unless velocity can count the transaction's accounts,
 				// and a trigger crank's owner never signs, so this sysvar is the only

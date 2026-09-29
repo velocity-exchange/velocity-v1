@@ -1881,6 +1881,7 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
             clob_program: clob_id(),
             crank_conditions: None,
             trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
+            sol_spot_market: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobRemoveExpired {
@@ -1936,6 +1937,7 @@ fn crank_evict_unwinds_the_tails_aggregates() {
             clob_program: clob_id(),
             crank_conditions: None,
             trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
+            sol_spot_market: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobEvict {
@@ -3181,6 +3183,7 @@ fn trigger_limit_order_v1_ix(
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         crank_conditions: None,
+        sol_spot_market: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -3324,6 +3327,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
             clob_program: clob_id(),
             crank_conditions: None,
             trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
+            sol_spot_market: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobEvict {
@@ -3404,6 +3408,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
             clob_program: clob_id(),
             crank_conditions: None,
             trigger_conditions: user_conditions_pda(&fixture.clob_maker_user),
+            sol_spot_market: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobRemoveExpired {
@@ -6792,6 +6797,10 @@ fn run_trigger_market_resolver(
         user,
         oracle: fixture.oracle,
         perp_market: perp_market_pda(0),
+        state: state_pda(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
     }
     .to_account_metas(None);
     let ix = Instruction {
@@ -11094,8 +11103,9 @@ fn trigger_market_order_v1_fires_a_stop_market_straight_to_the_book() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         crank_conditions: None,
-        trigger_conditions: None,
+        trigger_conditions: user_conditions_pda(&taker_user),
         ix_sysvar: Some(instructions_sysvar()),
+        sol_spot_market: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));

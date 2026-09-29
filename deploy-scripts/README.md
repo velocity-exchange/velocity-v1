@@ -331,7 +331,9 @@ and prints the one it ignored. `verify-upgrade.ts` applies the same test, so pas
 `allowed_creators`.
 
 A rerun reads the last 256 proposals and skips a step that a pending proposal already does. It also
-reuses an empty book that an earlier run created. Each run ends with a summary of what it sent,
+reuses an empty book that an earlier run created. Anyone can create a book that names the slab as
+its authorities, so a reused book must also have the arena `--book-capacity` sets, and the book a
+pending registration names wins over any other. Each run ends with a summary of what it sent,
 what it proposed, and what waits on approval.
 
 The vault pays the rent of what the admin creates: about 0.0134 SOL per book, for the quoter entry,

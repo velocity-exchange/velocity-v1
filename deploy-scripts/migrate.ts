@@ -161,7 +161,7 @@ const CLOB_PLACE_AUTHORITY_OFFSET = 40;
 const CLOB_BID_COUNT_OFFSET = 144;
 const CLOB_ASK_COUNT_OFFSET = 148;
 /** `MarketConfigV0` in wire order, as `[offset, width]` into the header. */
-const CLOB_CONFIG_FIELDS: [number, number][] = [
+export const CLOB_CONFIG_FIELDS: [number, number][] = [
 	[168, 2], // market_index
 	[104, 8], // base_precision
 	[72, 8], // order_tick_size
@@ -1553,7 +1553,7 @@ async function liftLiqPause(
 	);
 }
 
-type BookBringUp = {
+export type BookBringUp = {
 	connection: Connection;
 	program: Program;
 	payer: Keypair;
@@ -1800,15 +1800,18 @@ async function simulateStagedEntry(
  * and only the slab, as both of its authorities, can change either. The book
  * a pending registration names wins. Otherwise the lowest address wins.
  */
-async function findUnnamedBook(
+export async function findUnnamedBook(
 	ctx: BookBringUp,
 	marketIndex: number,
 	market: any,
 	quoter: PublicKey
 ): Promise<PublicKey | undefined> {
 	const quoterSlab = getQuoterSlabPublicKey(ctx.program.programId, marketIndex);
+	// The config compare leaves out the arena, so a book of another capacity
+	// would match it. The account size fixes the capacity.
 	const candidates = await ctx.connection.getProgramAccounts(ctx.clobProgram, {
 		filters: [
+			{ dataSize: clobBookSpace(ctx.args.bookCapacity) },
 			{ memcmp: { offset: CLOB_AUTHORITY_OFFSET, bytes: quoterSlab.toBase58() } },
 			{
 				memcmp: {
@@ -1845,6 +1848,10 @@ async function findUnnamedBook(
 	return chosen;
 }
 
+function clobBookSpace(capacity: number): number {
+	return CLOB_ORDERS_OFFSET + capacity * CLOB_NODE_BYTES;
+}
+
 function isEmptyBookWithConfig(header: Buffer, config: Buffer): boolean {
 	if (header.length < CLOB_HEADER_PREFIX_BYTES) return false;
 	const stored = Buffer.concat(
@@ -1869,7 +1876,7 @@ async function createBook(
 ): Promise<PublicKey> {
 	const { connection, program, payer, clobProgram, args } = ctx;
 	const quoterSlab = getQuoterSlabPublicKey(program.programId, marketIndex);
-	const space = CLOB_ORDERS_OFFSET + args.bookCapacity * CLOB_NODE_BYTES;
+	const space = clobBookSpace(args.bookCapacity);
 	const book = Keypair.generate();
 
 	const createAccount = SystemProgram.createAccount({
@@ -1966,7 +1973,7 @@ async function registerBookIxs(
  * sit at or under the market's. The remaining settings are the admin CLI's
  * defaults.
  */
-function bookConfig(marketIndex: number, market: any, capacity: number): Buffer {
+export function bookConfig(marketIndex: number, market: any, capacity: number): Buffer {
 	const step: BN = market.orderStepSize;
 	const marketMinimum: BN = market.marketStats.minOrderSize;
 	const bookMinimum = marketMinimum.isZero()
@@ -2275,7 +2282,10 @@ function exposedSpotMarkets(user: any): number[] {
 	return [...new Set(markets)];
 }
 
-main().catch((err) => {
-	console.error(err);
-	process.exit(1);
-});
+// A test imports this file for its pure helpers.
+if (require.main === module) {
+	main().catch((err) => {
+		console.error(err);
+		process.exit(1);
+	});
+}

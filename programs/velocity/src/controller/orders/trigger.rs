@@ -304,6 +304,37 @@ fn trigger_market_preflight(
     now: i64,
 ) -> VelocityResult<TriggerMarketPrices> {
     let market_reduce_only = trigger_market_status(perp_market)?;
+    let TriggerPrices {
+        oracle_price_data,
+        trigger_price,
+    } = trigger_prices(state, perp_market, oracle_map, now)?;
+
+    Ok(TriggerMarketPrices {
+        oracle_price_data,
+        trigger_price,
+        market_reduce_only,
+    })
+}
+
+/// The live oracle price, and the price a trigger's condition is judged at.
+pub(crate) struct TriggerPrices {
+    pub oracle_price_data: OraclePriceData,
+    pub trigger_price: u64,
+}
+
+/// The gates every trigger crank passes after its market status, and the
+/// price the trigger condition reads.
+///
+/// Both executors and both relay resolvers call this, so a resolver stages a
+/// crank only when its executor would pass the same gates. The oracle must be
+/// valid for a trigger and stay near the five-minute TWAP. A stale or
+/// divergent feed can fire a stop that the market never reached.
+pub(crate) fn trigger_prices(
+    state: &State,
+    perp_market: &PerpMarket,
+    oracle_map: &mut OracleMap,
+    now: i64,
+) -> VelocityResult<TriggerPrices> {
     trigger_market_gates(perp_market, now)?;
 
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
@@ -343,13 +374,14 @@ fn trigger_market_preflight(
         "oracle price vs twap too divergent"
     )?;
 
-    let oracle_price = oracle_price_data.price;
-    let trigger_price =
-        perp_market.get_trigger_price(oracle_price, now, state.use_median_trigger_price())?;
-    Ok(TriggerMarketPrices {
+    let trigger_price = perp_market.get_trigger_price(
+        oracle_price_data.price,
+        now,
+        state.use_median_trigger_price(),
+    )?;
+    Ok(TriggerPrices {
         oracle_price_data: *oracle_price_data,
         trigger_price,
-        market_reduce_only,
     })
 }
 

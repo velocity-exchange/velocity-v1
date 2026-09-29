@@ -70,14 +70,12 @@ use {
         },
         load_mut,
         math::{
-            casting::Cast,
             liquidation::validate_user_not_being_liquidated,
             margin::{
                 calculate_margin_requirement_and_total_collateral_and_liability_info,
                 calculate_net_equity_for_floor, MarginRequirementType,
             },
-            oracle::{is_oracle_valid_for_action, VelocityAction},
-            orders::{is_oracle_too_divergent_with_twap_5min, order_satisfies_trigger_condition},
+            orders::order_satisfies_trigger_condition,
         },
         msg,
         state::{
@@ -726,11 +724,9 @@ struct TriggerPrices {
 /// Reads the prices for a trigger, and refuses a market or an oracle that
 /// cannot carry one.
 ///
-/// The market must be active, out of settlement, and not fill-paused. A
-/// `ReduceOnly` market admits a reduce-only trigger, which rests flagged so
-/// the book clamps its fills to the owner's position. The oracle must be
-/// valid for a trigger, and it must stay near the five-minute TWAP. A stale
-/// feed or a divergent feed can fire a stop that the market never reached.
+/// A `ReduceOnly` market admits a reduce-only trigger, which rests flagged so
+/// the book clamps its fills to the owner's position. The other gates are
+/// `trigger_prices`, which the stop-market path and both resolvers share.
 fn read_trigger_prices(
     perp_market_map: &PerpMarketMap<'_>,
     oracle_map: &mut OracleMap<'_>,
@@ -747,49 +743,11 @@ fn read_trigger_prices(
         armed.reduce_only
     )?;
 
-    crate::controller::orders::trigger_market_gates(&perp_market, now)?;
-
-    let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
-        MarketType::Perp,
-        perp_market.market_index,
-        &perp_market.oracle_id(),
-        perp_market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap,
-        perp_market.get_max_confidence_interval_multiplier()?,
-        perp_market.oracle_slot_delay_override,
-        perp_market.oracle_low_risk_slot_delay_override,
-        None,
-    )?;
-    let is_oracle_valid =
-        is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::TriggerOrder))?;
-    validate!(is_oracle_valid, ErrorCode::InvalidOracle)?;
-
-    let oracle_price = oracle_price_data.price;
-    let oracle_too_divergent = is_oracle_too_divergent_with_twap_5min(
-        oracle_price,
-        perp_market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_5min,
-        state
-            .oracle_guard_rails
-            .max_oracle_twap_5min_percent_divergence()
-            .cast()?,
-    )?;
-
-    validate!(
-        !oracle_too_divergent,
-        ErrorCode::OrderBreachesOraclePriceLimits,
-        "oracle price vs twap too divergent"
-    )?;
-
-    let trigger_price =
-        perp_market.get_trigger_price(oracle_price, now, state.use_median_trigger_price())?;
+    let prices =
+        crate::controller::orders::trigger_prices(state, &perp_market, oracle_map, now)?;
     Ok(TriggerPrices {
-        oracle_price,
-        trigger_price,
+        oracle_price: prices.oracle_price_data.price,
+        trigger_price: prices.trigger_price,
     })
 }
 
@@ -1137,6 +1095,20 @@ pub struct ResolveTriggerLimitOrderV1<'info> {
     pub oracle: UncheckedAccount<'info>,
     #[account(has_one = oracle)]
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
+    /// The exchange pause, the median-price flag and the oracle guard rails
+    /// the executor judges the trigger with.
+    pub state: AccountLoader<'info, State>,
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == perp_market.load()?.market_index,
+    )]
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: the slab's `has_one` binds it. The resolver asks it for the
+    /// room left on the side the order rests on.
+    pub clob_market: UncheckedAccount<'info>,
+    /// CHECK: address-locked to velocity's CLOB.
+    #[account(address = crate::ids::clob_program::id())]
+    pub clob_program: UncheckedAccount<'info>,
 }
 
 pub fn handle_resolve_trigger_limit_order_v1(
@@ -1148,25 +1120,22 @@ pub fn handle_resolve_trigger_limit_order_v1(
         &[ctx.accounts.scratch.key()],
     )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
-        let clock = Clock::get()?;
-        let fired = {
-            let conditions = ctx.accounts.trigger_conditions.load()?;
-            let user = crate::load!(ctx.accounts.user)?;
-            let market = ctx.accounts.perp_market.load()?;
-            super::helpers::crank_common::find_fired_trigger(
-                super::helpers::crank_common::fired_trigger_slot(
-                    &conditions,
-                    &ctx.accounts.trigger_conditions.key(),
-                    &fired,
-                )?,
-                &user,
-                &market,
-                &ctx.accounts.oracle,
-                &clock,
-                super::helpers::crank_common::TriggerResolverKind::ClobRest,
-            )?
-        };
-        let Some(meta) = fired else {
+        let accounts = &ctx.accounts;
+        let due = super::helpers::crank_common::resolve_due_trigger(
+            &super::helpers::crank_common::TriggerResolverAccounts {
+                trigger_conditions: &accounts.trigger_conditions,
+                user: &accounts.user,
+                oracle: &accounts.oracle,
+                perp_market: &accounts.perp_market,
+                state: &accounts.state,
+                quoter_slab: &accounts.quoter_slab,
+                clob_market: &accounts.clob_market,
+                clob_program: &accounts.clob_program,
+            },
+            &fired,
+            super::helpers::crank_common::TriggerResolverKind::ClobRest,
+        )?;
+        let Some(meta) = due else {
             return Ok(None);
         };
 

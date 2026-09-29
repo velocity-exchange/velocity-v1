@@ -67,8 +67,8 @@ use {
             spot_market::SpotMarket,
             user::{OrderStatus, OrderType, User},
             user_conditions::{
-                TriggerSlotMetaV0, UserConditionsV0, TRIGGER_CONDITION_SLOTS, TRIGGER_SLOT_BASE,
-                USER_CONDITIONS_PDA_SEED,
+                TriggerSlotMetaV0, UserConditionsV0, TRIGGER_CONDITION_SLOTS,
+                TRIGGER_RESOLVERS_PER_SLOT, TRIGGER_SLOT_BASE, USER_CONDITIONS_PDA_SEED,
             },
         },
         validate,
@@ -191,7 +191,13 @@ pub fn rewrite_trigger_conditions<'info>(
         let (resolver_disc, meta) = route_trigger_resolver(order, trigger.clob)?;
         let resolvers = conditions.write_slot_resolvers(
             slot_index,
-            &slot_resolver_refs(conditions_key, user_key, trigger.oracle, order.market_index),
+            &slot_resolver_refs(
+                conditions_key,
+                user_key,
+                trigger.oracle,
+                order.market_index,
+                trigger.clob,
+            ),
         )?;
         let spec = CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
@@ -720,27 +726,29 @@ fn route_trigger_resolver(
     ))
 }
 
-/// Every trigger resolver shares one account set: the scratch, the
-/// block, the user, and the slot's own oracle and perp market. The
-/// fire-to-book resolver stages a taker-origin rest, not a fill, so it
-/// reads no book and needs no CLOB accounts of its own.
+/// The account set of one trigger slot's resolver, in the order of its
+/// accounts struct. It is the scratch, the block and the user, then the
+/// slot's oracle and perp market, then `State` and the market's book. The
+/// resolver reads the last four to report no work for a fire the executor
+/// would refuse.
 fn slot_resolver_refs(
     conditions_key: Pubkey,
     user_key: Pubkey,
     oracle: Pubkey,
     market_index: u16,
-) -> [AccountRefV0; 5] {
-    let (perp_market_pda, _) = Pubkey::find_program_address(
-        &[b"perp_market", market_index.to_le_bytes().as_ref()],
-        &crate::ID,
-    );
-
+    clob: (Pubkey, Pubkey, Pubkey),
+) -> [AccountRefV0; TRIGGER_RESOLVERS_PER_SLOT] {
+    let (quoter_slab, book, program) = clob;
     [
         AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
         AccountRefV0::readonly(conditions_key.to_bytes()),
         AccountRefV0::readonly(user_key.to_bytes()),
         AccountRefV0::readonly(oracle.to_bytes()),
-        AccountRefV0::readonly(perp_market_pda.to_bytes()),
+        AccountRefV0::readonly(crate::state::pdas::perp_market(market_index).to_bytes()),
+        AccountRefV0::readonly(crate::state::pdas::state().to_bytes()),
+        AccountRefV0::readonly(quoter_slab.to_bytes()),
+        AccountRefV0::readonly(book.to_bytes()),
+        AccountRefV0::readonly(program.to_bytes()),
     ]
 }
 

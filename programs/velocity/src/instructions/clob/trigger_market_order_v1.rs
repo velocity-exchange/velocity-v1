@@ -20,7 +20,7 @@
 
 use {
     crate::{
-        controller::{self, position::PositionDirection},
+        controller,
         error::ErrorCode,
         instructions::constraints::*,
         load,
@@ -28,7 +28,7 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             fill_mode::FillMode,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{ClobMarket, OrderRulesV0, QuoterSlabExt, QuoterSlabV0},
+            prop_amm::{ClobMarket, QuoterSlabExt, QuoterSlabV0},
             state::State,
             user::{Order, OrderStatus, User, UserStats},
         },
@@ -261,24 +261,13 @@ fn require_room_to_rest<'info>(
     .order_rules()?;
 
     validate!(
-        side_has_room(&rules, direction),
+        super::helpers::crank_common::side_has_room(&rules, direction),
         ErrorCode::MaxNumberOfOrders,
         "market {}'s book side is full; the trigger stays armed",
         market_index
     )?;
 
     Ok(())
-}
-
-/// Whether the side `direction` rests on holds fewer orders than the book
-/// allows. The arena is shared, so each side holds at most half of it.
-fn side_has_room(rules: &OrderRulesV0, direction: PositionDirection) -> bool {
-    let side = match direction {
-        PositionDirection::Long => 0,
-        PositionDirection::Short => 1,
-    };
-
-    rules.side_order_counts[side] < rules.arena_capacity / 2
 }
 
 /// Routes the fired order against the book, and fills what the route reaches.
@@ -449,6 +438,20 @@ pub struct ResolveTriggerMarketOrderV1<'info> {
     pub oracle: UncheckedAccount<'info>,
     #[account(has_one = oracle)]
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
+    /// The exchange pause, the median-price flag and the oracle guard rails
+    /// the executor judges the trigger with.
+    pub state: AccountLoader<'info, State>,
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == perp_market.load()?.market_index,
+    )]
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: the slab's `has_one` binds it. The resolver asks it for the
+    /// room left on the side the order rests on.
+    pub clob_market: UncheckedAccount<'info>,
+    /// CHECK: address-locked to velocity's CLOB.
+    #[account(address = crate::ids::clob_program::id())]
+    pub clob_program: UncheckedAccount<'info>,
 }
 
 pub fn handle_resolve_trigger_market_order_v1(
@@ -460,25 +463,22 @@ pub fn handle_resolve_trigger_market_order_v1(
         &[ctx.accounts.scratch.key()],
     )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
-        let clock = Clock::get()?;
-        let fired = {
-            let conditions = ctx.accounts.trigger_conditions.load()?;
-            let user = load!(ctx.accounts.user)?;
-            let market = ctx.accounts.perp_market.load()?;
-            super::helpers::crank_common::find_fired_trigger(
-                super::helpers::crank_common::fired_trigger_slot(
-                    &conditions,
-                    &ctx.accounts.trigger_conditions.key(),
-                    &fired,
-                )?,
-                &user,
-                &market,
-                &ctx.accounts.oracle,
-                &clock,
-                super::helpers::crank_common::TriggerResolverKind::ClobFill,
-            )?
-        };
-        let Some(meta) = fired else {
+        let accounts = &ctx.accounts;
+        let due = super::helpers::crank_common::resolve_due_trigger(
+            &super::helpers::crank_common::TriggerResolverAccounts {
+                trigger_conditions: &accounts.trigger_conditions,
+                user: &accounts.user,
+                oracle: &accounts.oracle,
+                perp_market: &accounts.perp_market,
+                state: &accounts.state,
+                quoter_slab: &accounts.quoter_slab,
+                clob_market: &accounts.clob_market,
+                clob_program: &accounts.clob_program,
+            },
+            &fired,
+            super::helpers::crank_common::TriggerResolverKind::ClobFill,
+        )?;
+        let Some(meta) = due else {
             return Ok(None);
         };
 
@@ -524,8 +524,11 @@ pub fn handle_resolve_trigger_market_order_v1(
 #[cfg(test)]
 mod side_room_tests {
     use {
-        super::side_has_room,
-        crate::{controller::position::PositionDirection, state::prop_amm::OrderRulesV0},
+        crate::{
+            controller::position::PositionDirection,
+            instructions::clob::helpers::crank_common::side_has_room,
+            state::prop_amm::OrderRulesV0,
+        },
     };
 
     /// A stop-market that would rest on a full side is not fired, so it

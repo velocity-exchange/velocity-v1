@@ -1327,6 +1327,47 @@ mod payment_shortfall_rules {
     }
 }
 
+/// The crank requires the taker's escrow PDA, so no caller can drop the
+/// builder fee by leaving the escrow out.
+mod taker_escrow {
+    use super::*;
+
+    fn empty_account(key: &Pubkey) -> (u64, Vec<u8>, Pubkey, Pubkey) {
+        (
+            0,
+            Vec::new(),
+            *key,
+            anchor_lang::solana_program::system_program::ID,
+        )
+    }
+
+    #[test]
+    fn a_tail_without_the_escrow_pda_fails() {
+        let authority = Pubkey::new_unique();
+        let (mut lamports, mut data, key, owner) = empty_account(&Pubkey::new_unique());
+        let other =
+            crate::test_utils::create_account_info(&key, false, &mut lamports, &mut data, &owner);
+        let accounts = [other];
+        let iter = &mut accounts.iter().peekable();
+
+        assert!(load_taker_escrow(iter, &authority).is_err());
+        assert!(load_taker_escrow(&mut [].iter().peekable(), &authority).is_err());
+    }
+
+    #[test]
+    fn an_escrow_pda_nobody_created_reads_as_none_and_is_consumed() {
+        let authority = Pubkey::new_unique();
+        let (mut lamports, mut data, key, owner) = empty_account(&revenue_share_escrow(&authority));
+        let pda =
+            crate::test_utils::create_account_info(&key, true, &mut lamports, &mut data, &owner);
+        let accounts = [pda];
+        let iter = &mut accounts.iter().peekable();
+
+        assert!(load_taker_escrow(iter, &authority).unwrap().is_none());
+        assert!(iter.peek().is_none());
+    }
+}
+
 /// A pair settles only at a price the vAMM beats for neither side. The
 /// round-three probe filled a buyer at its 102 bound through a pair while
 /// the vAMM asked about 101.

@@ -285,15 +285,12 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     )?;
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
-    // The taker's escrow, when the caller carries it. The referee discount and
+    // The taker's escrow, at the PDA the tail must carry. The referee discount and
     // the referrer reward are keyed by market, so they bind here. The builder
     // row is keyed by order, so it binds to the remainder the crank fills.
     let mut rev_share_escrow = if state.builder_codes_enabled() {
         let taker_authority = load!(ctx.accounts.taker)?.authority;
-        let escrow = crate::instructions::optional_accounts::get_revenue_share_escrow_account(
-            remaining_accounts_iter,
-            &taker_authority,
-        )?;
+        let escrow = load_taker_escrow(remaining_accounts_iter, &taker_authority)?;
 
         require_referral_escrow(escrow.is_some(), &*load!(ctx.accounts.taker_stats)?)?;
         escrow
@@ -1195,6 +1192,36 @@ fn cranker_earns_reward(filler: &User, taker_authority: &Pubkey) -> Result<bool>
     Ok(true)
 }
 
+/// The taker's escrow, from the account the tail must carry at its PDA.
+///
+/// The PDA is required whether or not it exists, so a caller cannot drop the
+/// builder fee by leaving the escrow out. A PDA nobody created arrives empty
+/// and reads as no escrow.
+fn load_taker_escrow<'a>(
+    remaining_accounts_iter: &mut std::iter::Peekable<std::slice::Iter<'a, AccountInfo<'a>>>,
+    taker_authority: &Pubkey,
+) -> Result<Option<RevenueShareEscrowZeroCopyMut<'a>>> {
+    let expected = revenue_share_escrow(taker_authority);
+    validate!(
+        remaining_accounts_iter
+            .peek()
+            .is_some_and(|account| account.key() == expected),
+        ErrorCode::UnableToLoadRevenueShareAccount,
+        "the tail must carry the taker's RevenueShareEscrow PDA {}",
+        expected
+    )?;
+
+    let escrow = crate::instructions::optional_accounts::get_revenue_share_escrow_account(
+        remaining_accounts_iter,
+        taker_authority,
+    )?;
+    if escrow.is_none() {
+        remaining_accounts_iter.next();
+    }
+
+    Ok(escrow)
+}
+
 /// Fail when a referred taker's escrow is missing. The referee discount and
 /// the referrer reward bind to it, and both branches settle through it.
 fn require_referral_escrow(has_escrow: bool, taker_stats: &UserStats) -> Result<()> {
@@ -1683,6 +1710,8 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     let fill_price = admit_pair_match(cx, &pair, &settled, entry_twap_5min, maps)?;
 
     let facts = pair_fill_facts(cx, &order, &pricing)?;
+    let builder_fee_allowed =
+        pair_builder_fee_allowed(cx, &order, &facts, rev_share_escrow.is_some(), maps)?;
     settle_pair_funding(cx, &pair, &maps.perp_market_map)?;
 
     // The settlement returns evidence that the shared post-fill checks ran on
@@ -1694,6 +1723,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         &PairPricing {
             oracle_price: settled.oracle_price(),
             fill_price,
+            builder_fee_allowed,
         },
         &facts,
         maps,
@@ -1965,6 +1995,48 @@ fn admit_pair_match(
     Ok(fill_price)
 }
 
+/// Whether the aggressor of a pair pays its builder fee.
+///
+/// A routed fill charges it only to a taker that meets initial margin before
+/// the fill, under strict oracles. The pair applies the same gate.
+fn pair_builder_fee_allowed(
+    cx: &TakerOriginContext<'_, '_>,
+    order: &crate::state::user::Order,
+    facts: &PairFillFacts,
+    has_escrow: bool,
+    maps: &mut AccountMaps,
+) -> Result<bool> {
+    if !has_escrow || !order.is_bit_flag_set(OrderBitFlag::HasBuilder) {
+        return Ok(false);
+    }
+
+    let limits = controller::orders::TakerRiskLimits {
+        market_index: cx.market_index,
+        order_decreasing: facts.aggressor_order_decreasing,
+        is_isolated: facts.aggressor_is_isolated,
+        oracle_stale_for_margin: facts.oracle_stale_for_margin,
+        mode: FillMode::Fill,
+        taker_exposure_closed_by_caller: false,
+        perp_market_oi_before: facts.perp_market_oi_before,
+    };
+    let context = crate::state::margin_calculation::MarginContext::standard_with_config(
+        limits.margin_config(
+            crate::math::margin::MarginRequirementType::Initial,
+            limits.is_isolated,
+        ),
+    )
+    .strict(true)
+    .ignore_invalid_deposit_oracles(true);
+    let calculation =
+        crate::math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info(
+            &*load!(cx.accounts.taker)?,
+            maps,
+            context,
+        )?;
+
+    Ok(calculation.meets_margin_requirement() && calculation.all_liability_oracles_valid)
+}
+
 /// What the post-fill checks need to know about the aggressor before the
 /// match moves its position.
 fn pair_fill_facts(
@@ -2021,6 +2093,7 @@ fn settle_pair_funding<'info>(
 struct PairPricing {
     oracle_price: i64,
     fill_price: u64,
+    builder_fee_allowed: bool,
 }
 
 /// Move both positions with one match at the counterparty's price.
@@ -2102,7 +2175,8 @@ fn settle_pair_match<'info>(
             rules: &controller::orders::PricingRules::for_settlement(
                 cx.state,
                 cx.referrer_is_accelerated,
-            ),
+            )
+            .allow_builder_fee(pricing.builder_fee_allowed),
             // This crank settles a cross, never a liquidation.
             mode: crate::state::fill_mode::FillMode::Fill,
             oracle_map,

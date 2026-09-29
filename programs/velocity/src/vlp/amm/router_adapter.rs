@@ -795,8 +795,150 @@ mod ts_mirror_fixture {
     //! with `cargo test -p velocity --lib ts_mirror_fixture -- --nocapture`.
     use {
         super::*,
-        crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
+        crate::{
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_U64, PEG_PRECISION,
+                    QUOTE_PRECISION_I128,
+                },
+                oracle::OracleValidity,
+            },
+            state::{
+                oracle::{HistoricalOracleData, MMOraclePriceData, OraclePriceData},
+                perp_market::MarketStats,
+            },
+            vlp::amm::math::spread::update_amm_quote_state,
+        },
     };
+
+    fn encode(levels: &[PriceLevelV0]) -> String {
+        levels
+            .iter()
+            .map(|l| format!("{}:{}", l.price, l.size))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The 100-unit AMM with a dynamic spread and an inventory reference price
+    /// offset. The program's own quote-state update sets the spreads and the
+    /// cached spread reserves, against an oracle at the reserve price.
+    fn spread_amm() -> AMM {
+        let reserves = 100 * AMM_RESERVE_PRECISION;
+        let base_asset_amount_with_amm = 2 * BASE_PRECISION_I128;
+        let mut amm = AMM {
+            base_asset_reserve: reserves,
+            quote_asset_reserve: reserves,
+            sqrt_k: reserves,
+            peg_multiplier: 50 * PEG_PRECISION,
+            min_base_asset_reserve: reserves / 2,
+            max_base_asset_reserve: reserves * 2,
+            max_fill_reserve_fraction: 4,
+            base_spread: 2_000,
+            max_spread: 50_000,
+            curve_update_intensity: 200,
+            base_asset_amount_with_amm,
+            total_fee_minus_distributions: 1_000 * QUOTE_PRECISION_I128,
+            ..AMM::default()
+        };
+
+        // The quote reserve after the pool's position closes, as a repeg sets it.
+        amm.terminal_quote_asset_reserve =
+            reserves * reserves / (reserves + base_asset_amount_with_amm as u128);
+
+        let oracle_price = 50 * PEG_PRECISION as i64;
+        let stats = MarketStats {
+            last_mark_price_twap: 50_500_000,
+            last_mark_price_twap_5min: 50_500_000,
+            last_24h_avg_funding_rate: 1_000_000_000,
+            funding_period: 3600,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: oracle_price,
+                last_oracle_price_twap: oracle_price,
+                last_oracle_price_twap_5min: oracle_price,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        };
+        let oracle_price_data = OraclePriceData {
+            price: oracle_price,
+            confidence: 0,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+        let mm =
+            MMOraclePriceData::new(oracle_price, 0, 0, OracleValidity::Valid, oracle_price_data)
+                .unwrap();
+        let reserve_price = amm.reserve_price().unwrap();
+        update_amm_quote_state(&mut amm, &stats, &mm, reserve_price, 0).unwrap();
+        amm
+    }
+
+    /// Nonzero spreads and a nonzero offset, so the dump below exercises the
+    /// spread reserves that every other fixture here leaves at the curve.
+    #[test]
+    fn print_spread_ladder_for_ts_mirror() {
+        let amm = spread_amm();
+        assert!(amm.long_spread > 0 && amm.short_spread > 0);
+        assert_ne!(amm.reference_price_offset, 0);
+        println!(
+            "TS_MIRROR spread_state long_spread={} short_spread={} offset={} ask={}/{} bid={}/{}",
+            amm.long_spread,
+            amm.short_spread,
+            amm.reference_price_offset,
+            amm.ask_base_asset_reserve,
+            amm.ask_quote_asset_reserve,
+            amm.bid_base_asset_reserve,
+            amm.bid_quote_asset_reserve,
+        );
+
+        let size = 10 * BASE_PRECISION_U64;
+        for (label, direction) in [
+            ("spread_long", DirectionV0::Long),
+            ("spread_short", DirectionV0::Short),
+        ] {
+            let levels = vamm_quote_levels(&amm, direction, size, 1, &[], None).unwrap();
+            println!("TS_MIRROR {} {}", label, encode(&levels));
+        }
+
+        // A rival 1% past the first marginal, and a limit just above the
+        // spread-adjusted ask that the first marginal already passes.
+        let ask_top = calculate_price(
+            amm.ask_quote_asset_reserve,
+            amm.ask_base_asset_reserve,
+            amm.peg_multiplier,
+        )
+        .unwrap();
+        let rival = [PriceLevelV0 {
+            price: ask_top * 101 / 100,
+            size: BASE_PRECISION_U64 / 10,
+        }];
+        let books = [QuoterBook {
+            priority: 10,
+            levels: &rival,
+            withheld: PriceLevelV0::default(),
+        }];
+        let levels = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &books, None).unwrap();
+        println!(
+            "TS_MIRROR spread_long_rival price={} {}",
+            rival[0].price,
+            encode(&levels)
+        );
+
+        let spread_ask = amm
+            .ask_price(
+                amm.reserve_price().unwrap(),
+                amm.long_spread,
+                amm.reference_price_offset,
+            )
+            .unwrap();
+        let window_limit = spread_ask + 1;
+        assert!(window_limit < ask_top);
+        let levels =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], Some(window_limit)).unwrap();
+        assert!(levels.is_empty());
+        println!("TS_MIRROR spread_long_window_limit limit={}", window_limit);
+    }
 
     #[test]
     fn amm_is_copy_so_a_view_ix_can_quote_without_mutating() {

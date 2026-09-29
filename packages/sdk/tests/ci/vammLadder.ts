@@ -6,14 +6,18 @@
 import { BN } from '@coral-xyz/anchor';
 import { assert } from 'chai';
 import { vammQuoteLevels } from '../../src/math/vammLadder';
-import { calculateAmmAvailableLiquidity } from '../../src/math/amm';
-import { AMM, PositionDirection } from '../../src/types';
+import {
+	calculateAmmAvailableLiquidity,
+	calculateSpreadReserves,
+} from '../../src/math/amm';
+import { AMM, MarketStats, PositionDirection } from '../../src/types';
 import { mockAMM, mockMarketStats } from '../fixtures/mockAccounts';
 import {
 	AMM_RESERVE_PRECISION,
 	BASE_PRECISION,
 	PEG_PRECISION,
 	PRICE_PRECISION,
+	QUOTE_PRECISION,
 	ZERO,
 } from '../../src/constants/numericConstants';
 
@@ -40,6 +44,28 @@ const RUST_LONG_DUST_RIVAL_DEEP =
 /** `TS_MIRROR short_dust_rival`: 1M-reserve AMM, 0.001 base at -4.9%. */
 const RUST_SHORT_DUST_RIVAL_DEEP =
 	'49999374:12500000000,49998125:12500000000,49996875:12500000000,49995625:12500000000,49994375:12500000000,49993125:12500000000,49991876:12500000000,49990626:12500000000';
+
+/** `TS_MIRROR spread_state`: the spread reserves `update_amm_quote_state` caches. */
+const RUST_SPREAD_ASK = {
+	baseAssetReserve: new BN('99518776954'),
+	quoteAssetReserve: new BN('100483550000'),
+};
+const RUST_SPREAD_BID = {
+	baseAssetReserve: new BN('100000050000'),
+	quoteAssetReserve: new BN('99999950000'),
+};
+/** `TS_MIRROR spread_long`. */
+const RUST_SPREAD_LONG =
+	'51126896:1250000000,52444344:1250000000,53813380:1250000000,55236732:1250000000,56717311:1250000000,58258228:1250000000,59862805:1250000000,61534600:1250000000';
+/** `TS_MIRROR spread_short`. */
+const RUST_SPREAD_SHORT =
+	'49382666:1250000000,48178212:1250000000,47017292:1250000000,45897832:1250000000,44817884:1250000000,43775608:1250000000,42769273:1250000000,41797244:1250000000';
+/** `TS_MIRROR spread_long_rival`: 0.1 base 1% past the first marginal. */
+const RUST_SPREAD_LONG_RIVAL_PRICE = new BN(50989566);
+const RUST_SPREAD_LONG_RIVAL =
+	'50685333:393892475,50989566:100000000,51381895:756107525,52444344:1250000000,53813380:1250000000,55236732:1250000000,56717311:1250000000,58258228:1250000000,59862805:1250000000,61534600:1250000000';
+/** `TS_MIRROR spread_long_window_limit`: above `ask_price`, below the first marginal. */
+const RUST_SPREAD_WINDOW_LIMIT = new BN(50483551);
 
 function parse(dump: string): { price: BN; size: BN }[] {
 	return dump.split(',').map((pair) => {
@@ -80,6 +106,42 @@ function ammFixture(reserveUnits = 100): AMM {
 		curveUpdateIntensity: 0,
 		concentrationCoef: ZERO,
 	};
+}
+
+/**
+ * The Rust `spread_amm` fixture: the 100-unit AMM with a dynamic spread, 2 base
+ * of pool inventory and a mark premium, so the quote state carries nonzero
+ * spreads and a reference price offset.
+ */
+function spreadAmmFixture(): { amm: AMM; marketStats: MarketStats } {
+	const reserves = AMM_RESERVE_PRECISION.muln(100);
+	const baseAssetAmountWithAmm = BASE_PRECISION.muln(2);
+	const amm: AMM = {
+		...ammFixture(),
+		baseSpread: 2_000,
+		maxSpread: 50_000,
+		curveUpdateIntensity: 200,
+		baseAssetAmountWithAmm,
+		totalFeeMinusDistributions: QUOTE_PRECISION.muln(1_000),
+		terminalQuoteAssetReserve: reserves
+			.mul(reserves)
+			.div(reserves.add(baseAssetAmountWithAmm)),
+	};
+	const oraclePrice = PRICE_PRECISION.muln(50);
+	const marketStats: MarketStats = {
+		...mockMarketStats,
+		lastMarkPriceTwap: new BN(50_500_000),
+		lastMarkPriceTwap5Min: new BN(50_500_000),
+		last24HAvgFundingRate: new BN(1_000_000_000),
+		fundingPeriod: new BN(3600),
+		historicalOracleData: {
+			...mockMarketStats.historicalOracleData,
+			lastOraclePrice: oraclePrice,
+			lastOraclePriceTwap: oraclePrice,
+			lastOraclePriceTwap5Min: oraclePrice,
+		},
+	};
+	return { amm, marketStats };
 }
 
 /** Asserts two ladders match rung by rung, price and size. */
@@ -263,5 +325,79 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 		for (const [label, actual, dump] of cases) {
 			assertLadderMatches(actual, parse(dump), label);
 		}
+	});
+
+	it('matches the Rust dump with a spread and a reference price offset', () => {
+		const { amm, marketStats } = spreadAmmFixture();
+		const mmOraclePriceData = {
+			price: PRICE_PRECISION.muln(50),
+			confidence: ZERO,
+		};
+		const step = new BN(1);
+		const size = BASE_PRECISION.muln(10);
+
+		const [bid, ask] = calculateSpreadReserves(
+			amm,
+			marketStats,
+			mmOraclePriceData
+		);
+		for (const [label, actual, expected] of [
+			['ask', ask, RUST_SPREAD_ASK],
+			['bid', bid, RUST_SPREAD_BID],
+		] as const) {
+			assert(
+				actual.baseAssetReserve.eq(expected.baseAssetReserve) &&
+					actual.quoteAssetReserve.eq(expected.quoteAssetReserve),
+				`${label} reserves: got ${actual.baseAssetReserve}/${actual.quoteAssetReserve}`
+			);
+		}
+
+		const ladder = (
+			direction: PositionDirection,
+			rivalBooks = [],
+			takerLimit?: BN
+		) =>
+			vammQuoteLevels(
+				amm,
+				marketStats,
+				mmOraclePriceData,
+				direction,
+				size,
+				step,
+				rivalBooks,
+				takerLimit
+			);
+
+		assertLadderMatches(
+			ladder(PositionDirection.LONG),
+			parse(RUST_SPREAD_LONG),
+			'spread_long'
+		);
+		assertLadderMatches(
+			ladder(PositionDirection.SHORT),
+			parse(RUST_SPREAD_SHORT),
+			'spread_short'
+		);
+		assertLadderMatches(
+			ladder(PositionDirection.LONG, [
+				{
+					priority: 10,
+					levels: [
+						{
+							price: RUST_SPREAD_LONG_RIVAL_PRICE,
+							size: BASE_PRECISION.divn(10),
+						},
+					],
+					withheld: { price: ZERO, size: ZERO },
+				},
+			]),
+			parse(RUST_SPREAD_LONG_RIVAL),
+			'spread_long_rival'
+		);
+		assert.equal(
+			ladder(PositionDirection.LONG, [], RUST_SPREAD_WINDOW_LIMIT).length,
+			0,
+			'a limit below the first marginal quotes nothing'
+		);
 	});
 });

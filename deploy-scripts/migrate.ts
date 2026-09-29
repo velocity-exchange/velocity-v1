@@ -7,7 +7,8 @@
  * dependency order.
  *
  *   bun run deploy-scripts/migrate.ts --url <rpc> --keypair <path> \
- *     [--multisig <pda> [--vault-index <n>]] [--fee-rails <i,s,num,den,maxPriority>] [--dry-run]
+ *     [--multisig <pda> [--vault-index <n>]] [--fee-rails <i,s,num,den,maxPriority>] \
+ *     [--watch-creators <pk,pk>] [--dry-run]
  *
  * The keypair is the payer and can be any funded key. The admin is the keypair, or with
  * `--multisig` the multisig's vault, and it must hold the warm or cold role. Before anything is
@@ -47,7 +48,9 @@
  *      executor that fires one.
  *   3. watches: register the relay `WatchV0` records that make the blocks from steps 1 and 2
  *      discoverable: the market crank conditions, the per-quoter cross conditions, and the
- *      per-user liquidation conditions.
+ *      per-user liquidation conditions. Anyone can register a watch on a known PDA, so an
+ *      existing watch counts only when the payer, or a key `--watch-creators` names, made it at
+ *      the block offset. The run registers its own watch beside any other and reports it.
  *   4. legacy orders: report every order still resting in a `User.orders` slot that is not an
  *      unfired trigger and not a book shadow. These are orders from the removed matching venue.
  *      Each still holds an `open_bids`/`open_asks` reservation against its owner's margin, so
@@ -108,14 +111,17 @@ import {
 	sendOrPropose,
 	setDryRun,
 } from '../packages/cli-admin/src/lib/squads';
+import {
+	describeImpostor,
+	parseWatchCreators,
+	RELAY_PROGRAM,
+	WATCH_V0_LEN,
+	watchesOnTarget,
+} from './relay-watch';
 
-const RELAY_PROGRAM = new PublicKey(
-	process.env.RELAY_PROGRAM_ID ?? '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu'
-);
 const VAULTS_ADMIN = new PublicKey(
 	process.env.VAULTS_ADMIN ?? 'GiMXQkJXLVjScmQDkoLJShBJpTh9SDPvT2AZQq8NyEBf'
 );
-const WATCH_V0_LEN = 112;
 /** `OrderBitFlag::PlacedOnClob`: the slot shadows an order resting on the book. */
 const PLACED_ON_CLOB_BIT = 0b0100_0000;
 /** Offset of the relay block in every velocity conditions account, past the
@@ -179,7 +185,12 @@ type Args = {
 	vaultIndex: number;
 	proposalScan: number;
 	feeRails: FeeRails;
+	/** The payer, then every key `--watch-creators` names. A watch by any
+	 * other creator does not count as coverage. */
+	watchCreators: PublicKey[];
 };
+
+type ParsedArgs = Omit<Args, 'watchCreators'> & { watchCreatorList?: string };
 
 type Act = (
 	label: string,
@@ -239,7 +250,7 @@ function parseFeeRails(raw: string): FeeRails {
 	};
 }
 
-function parseArgs(): Args {
+function parseArgs(): ParsedArgs {
 	const argv = process.argv.slice(2);
 	const get = (flag: string, fallback?: string) => {
 		const i = argv.indexOf(flag);
@@ -270,6 +281,9 @@ function parseArgs(): Args {
 		vaultIndex: Number.parseInt(get('--vault-index', '0'), 10),
 		proposalScan: Number.parseInt(get('--proposal-scan', '256'), 10),
 		feeRails: parseFeeRails(get('--fee-rails', DEFAULT_FEE_RAILS)),
+		watchCreatorList: argv.includes('--watch-creators')
+			? get('--watch-creators')
+			: undefined,
 	};
 }
 
@@ -555,12 +569,16 @@ const RESIZABLE: { name: string; size: number }[] = [
 ];
 
 async function main() {
-	const args = parseArgs();
-	setDryRun(args.dryRun);
-	const connection = new Connection(args.url, 'confirmed');
+	const parsed = parseArgs();
+	setDryRun(parsed.dryRun);
+	const connection = new Connection(parsed.url, 'confirmed');
 	const payer = Keypair.fromSecretKey(
-		Uint8Array.from(JSON.parse(fs.readFileSync(args.keypair, 'utf-8')))
+		Uint8Array.from(JSON.parse(fs.readFileSync(parsed.keypair, 'utf-8')))
 	);
+	const args: Args = {
+		...parsed,
+		watchCreators: parseWatchCreators(parsed.watchCreatorList, payer.publicKey),
+	};
 	const provider = new AnchorProvider(connection, new Wallet(payer) as any, {
 		commitment: 'confirmed',
 	});
@@ -680,7 +698,7 @@ async function migrate(ctx: Migration, idl: any) {
 	);
 
 	// 3. watches for the market and quoter conditions
-	await watchMarketsAndQuoters(ctx, perpMarkets);
+	await watchMarketsAndQuoters(ctx, perpMarkets, clobProgram);
 
 	// 4. legacy orders
 	reportLegacyOrders(users, program);
@@ -693,16 +711,17 @@ async function migrate(ctx: Migration, idl: any) {
  * and each quoter's cross conditions. */
 async function watchMarketsAndQuoters(
 	ctx: Migration,
-	perpMarkets: Map<number, any>
+	perpMarkets: Map<number, any>,
+	clobProgram: PublicKey
 ): Promise<void> {
-	const { connection, provider, program, payer, act } = ctx;
+	const { connection, program } = ctx;
 	const velocity = program.programId;
 	console.log('');
 	for (const [marketIndex] of perpMarkets) {
 		const conditions = getClobCrankConditionsPublicKey(velocity, marketIndex);
 		const info = await connection.getAccountInfo(conditions);
 		if (!info) continue;
-		await ensureWatch(connection, provider, payer, conditions, act);
+		await ensureWatch(ctx, conditions, velocity);
 		// The book hosts the four conditions that describe the book, so it
 		// needs a watch of its own. The attach that registered velocity's
 		// resolvers recorded where the book's block sits on the conditions
@@ -713,14 +732,7 @@ async function watchMarketsAndQuoters(
 		) as { clobBlockOffset: number };
 		const book = await clobBookFor(connection, velocity, marketIndex, program);
 		if (book && decoded.clobBlockOffset) {
-			await ensureWatch(
-				connection,
-				provider,
-				payer,
-				book,
-				act,
-				decoded.clobBlockOffset
-			);
+			await ensureWatch(ctx, book, clobProgram, decoded.clobBlockOffset);
 		}
 	}
 
@@ -739,7 +751,7 @@ async function watchMarketsAndQuoters(
 		)[0];
 
 		if (!(await connection.getAccountInfo(crossConditions))) continue;
-		await ensureWatch(connection, provider, payer, crossConditions, act);
+		await ensureWatch(ctx, crossConditions, velocity);
 	}
 }
 
@@ -980,7 +992,7 @@ async function coverUsers(
 		}
 
 		if (!args.dryRun) await fundSyncReservoir(ctx, userConditions);
-		await ensureWatch(connection, provider, payer, userConditions, act);
+		await ensureWatch(ctx, userConditions, program.programId);
 	}
 
 	for (const batch of await admin.pack(toPropose, 'migrate: sync user conditions')) {
@@ -1719,34 +1731,38 @@ async function attachBookIx(
 		.instruction();
 }
 
-/** Register a relay watch over a conditions block, unless the registry
- * already holds a watch on that target. */
+/**
+ * Register a relay watch over a conditions block, unless one already serves it.
+ * A watch another creator registered, or one at another offset, does not
+ * count: turners skip it, and its creator can close it. The run registers its
+ * own watch next to it and says so.
+ */
 async function ensureWatch(
-	connection: Connection,
-	provider: AnchorProvider,
-	payer: Keypair,
+	ctx: Migration,
 	target: PublicKey,
-	act: (
-		label: string,
-		ixs: TransactionInstruction[],
-		signers?: Keypair[]
-	) => Promise<void>,
-
+	targetOwner: PublicKey,
 	blockOffset: number = BLOCK_OFFSET
 ) {
-	// `WatchV0` holds `target_program` and then `target`, so a memcmp finds
-	// every watch on a target without decoding the account.
-	const existing = await connection.getProgramAccounts(RELAY_PROGRAM, {
-		filters: [{ memcmp: { offset: 40, bytes: target.toBase58() } }],
-		dataSlice: { offset: 0, length: 0 },
+	const { connection, payer, args, act } = ctx;
+	const { serving, impostors } = await watchesOnTarget(connection, {
+		target,
+		targetOwner,
+		blockOffset,
+		creators: args.watchCreators,
 	});
+	if (serving.length > 0) return;
 
-	if (existing.length > 0) return;
+	for (const impostor of impostors) {
+		console.log(
+			`watch ${target.toBase58()}: ignoring ${describeImpostor(impostor)}, registering our own`
+		);
+	}
+
 	const watch = Keypair.generate();
 	const offset = Buffer.alloc(4);
 	offset.writeUInt32LE(blockOffset);
 	await act(
-		`register watch -> ${target.toBase58()}`,
+		`register watch -> ${target.toBase58()}${impostors.length > 0 ? ' (beside an impostor)' : ''}`,
 		[
 			SystemProgram.createAccount({
 				fromPubkey: payer.publicKey,

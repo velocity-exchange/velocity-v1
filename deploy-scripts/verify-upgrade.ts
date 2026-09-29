@@ -4,7 +4,11 @@
  * Check that every velocity account is readable by the deployed program after an upgrade and
  * `migrate.ts`. Exits non-zero on any failure.
  *
- *   bun run deploy-scripts/verify-upgrade.ts --url <rpc> --keypair <extension authority>
+ *   bun run deploy-scripts/verify-upgrade.ts --url <rpc> --keypair <extension authority> \
+ *     [--watch-creators <pk,pk>]
+ *
+ * A user's relay watch counts only when the keypair, or a key `--watch-creators` names, created it
+ * at the block offset. Pass the migration payer there when it is not the keypair.
  *
  * The size check simulates `extend_account` on each account and fails when the simulation would
  * grow it. The target size comes from the deployed binary, so the check does not trust the size
@@ -23,6 +27,7 @@ import {
 import {
 	decodeSignedMsgUserOrdersAccount,
 	decodeUser,
+	getClobCrankConditionsPublicKey,
 	getCrankTreasuryPublicKey,
 	getQuoterSlabPublicKey,
 	getRelayScratchPublicKey,
@@ -30,12 +35,15 @@ import {
 	positionIsAvailable,
 	Wallet,
 } from '@velocity-exchange/sdk';
+import {
+	describeImpostor,
+	parseWatchCreators,
+	watchesOnTarget,
+} from './relay-watch';
 
-const RELAY_PROGRAM = new PublicKey(
-	process.env.RELAY_PROGRAM_ID ?? '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu'
-);
-/** `WatchV0` holds `target_program`, then `target`. */
-const WATCH_TARGET_OFFSET = 40;
+/** Offset of the relay block in a velocity conditions account. */
+const BLOCK_OFFSET = 8;
+
 /** Types a client reads through the SDK's own decoder rather than the IDL coder.
  * `SignedMsgUserOrders` keeps a legacy layout the coder cannot read until the
  * program migrates the account on its next write. */
@@ -60,7 +68,8 @@ class Verifier {
 		private connection: Connection,
 		private program: Program,
 		private authority: Keypair,
-		private state: PublicKey
+		private state: PublicKey,
+		private watchCreators: PublicKey[]
 	) {
 		this.coder = new BorshAccountsCoder(program.rawIdl);
 		for (const account of (program.rawIdl as any).accounts) {
@@ -149,16 +158,27 @@ class Verifier {
 		}
 	}
 
-	async requireWatch(label: string, target: PublicKey): Promise<void> {
-		const watches = await this.connection.getProgramAccounts(RELAY_PROGRAM, {
-			filters: [
-				{ memcmp: { offset: WATCH_TARGET_OFFSET, bytes: target.toBase58() } },
-			],
-			dataSlice: { offset: 0, length: 0 },
+	/** A watch counts only when it serves the target. See `relay-watch.ts`. */
+	async requireWatch(
+		label: string,
+		target: PublicKey,
+		targetOwner: PublicKey = this.program.programId,
+		blockOffset: number = BLOCK_OFFSET
+	): Promise<void> {
+		const { serving, impostors } = await watchesOnTarget(this.connection, {
+			target,
+			targetOwner,
+			blockOffset,
+			creators: this.watchCreators,
 		});
+		if (serving.length > 0) return;
 
-		if (watches.length === 0)
-			this.failures.push(`${label} ${target.toBase58()} has no relay watch`);
+		const found = impostors.map(describeImpostor).join('; ');
+		this.failures.push(
+			`${label} ${target.toBase58()} has no relay watch from ` +
+				`${this.watchCreators.map((key) => key.toBase58()).join(', ')}` +
+				(found ? `. It has only: ${found}` : '')
+		);
 	}
 
 	private reportFor(name: string): TypeReport {
@@ -196,7 +216,11 @@ async function main() {
 		connection,
 		program,
 		authority,
-		await getVelocityStateAccountPublicKey(velocity)
+		await getVelocityStateAccountPublicKey(velocity),
+		parseWatchCreators(
+			argv.includes('--watch-creators') ? flag('--watch-creators', '') : undefined,
+			authority.publicKey
+		)
 	);
 
 	const accounts = await connection.getProgramAccounts(velocity, {
@@ -229,13 +253,51 @@ async function main() {
 		);
 		if (market.clobMarket.equals(PublicKey.default)) {
 			console.log(`note: perp market ${market.marketIndex} has no CLOB book`);
+			continue;
 		}
+
+		await requireMarketWatches(verifier, program, market);
 	}
 
 	await requireWatchesOnExposedUsers(verifier, program, accounts);
 
 	printReport(verifier, accounts.length);
 	if (verifier.failures.length > 0) process.exit(1);
+}
+
+/** A market with a book needs a watch on its crank conditions, and one on the
+ * book at the offset the attach recorded. */
+async function requireMarketWatches(
+	verifier: Verifier,
+	program: Program,
+	market: { marketIndex: number; clobMarket: PublicKey }
+): Promise<void> {
+	const conditions = getClobCrankConditionsPublicKey(
+		program.programId,
+		market.marketIndex
+	);
+	const info = await program.provider.connection.getAccountInfo(conditions);
+	if (!info) {
+		verifier.failures.push(
+			`market ${market.marketIndex} names a book but has no crank conditions ${conditions.toBase58()}`
+		);
+		return;
+	}
+
+	await verifier.requireWatch(`market ${market.marketIndex} crank conditions`, conditions);
+	const { clobBlockOffset } = program.coder.accounts.decode(
+		'clobCrankConditionsV0',
+		info.data
+	) as { clobBlockOffset: number };
+	const book = await program.provider.connection.getAccountInfo(market.clobMarket);
+	if (book && clobBlockOffset) {
+		await verifier.requireWatch(
+			`market ${market.marketIndex} book`,
+			market.clobMarket,
+			book.owner,
+			clobBlockOffset
+		);
+	}
 }
 
 /** migrate.ts covers a user with an open perp position, so only that user's conditions need a

@@ -301,6 +301,13 @@ Under a multisig a run proposes in rounds, and the next round needs the previous
    an attached book. A payer without the `conditionsSync` hot role proposes the syncs instead,
    several users to a proposal, and a further run tops up the reservoirs.
 
+Anyone can register a relay watch, and every target is a PDA known before the migration. A watch
+therefore counts only when its creator is the payer or a key `--watch-creators` names, its offset
+is the block's, and its recorded program owns the target. Otherwise the run registers its own watch
+and prints the one it ignored. `verify-upgrade.ts` applies the same test, so pass it the same
+`--watch-creators` when the payer is not its keypair. List the same creators in the turners'
+`allowed_creators`.
+
 A rerun reads the last 256 proposals and skips a step that a pending proposal already does. It also
 reuses an empty book that an earlier run created. Each run ends with a summary of what it sent,
 what it proposed, and what waits on approval.

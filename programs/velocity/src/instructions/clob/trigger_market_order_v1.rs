@@ -33,6 +33,7 @@ use {
             fill_mode::FillMode,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{ClobMarket, OrderRulesV0, QuoterSlabExt, QuoterSlabV0},
+            spot_market::SpotMarket,
             state::State,
             user::{Order, User, UserStats},
         },
@@ -129,6 +130,17 @@ pub struct TriggerMarketOrderV1<'info> {
     /// withheld order and passes `None` here is refused.
     #[account(address = ::solana_program::sysvar::instructions::ID)]
     pub ix_sysvar: Option<UncheckedAccount<'info>>,
+    /// The SOL spot market, whose TWAP values the reservoir payment in quote.
+    /// Program-keeper mode requires it when `State` names a SOL market.
+    #[account(
+        seeds = [
+            b"spot_market",
+            state.load()?.sol_spot_market_index.to_le_bytes().as_ref(),
+        ],
+
+        bump
+    )]
+    pub sol_spot_market: Option<AccountLoader<'info, SpotMarket>>,
 }
 
 #[access_control(
@@ -179,6 +191,15 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         market_index
     )?;
 
+    let keeper_fee = super::helpers::crank_common::TriggerFeeAccounts {
+        state: &accounts.state,
+        filler: &accounts.filler,
+        crank_conditions: &accounts.crank_conditions,
+        trigger_conditions: &trigger_conditions,
+        sol_spot_market: &accounts.sol_spot_market,
+    }
+    .keeper_fee(market_index, order_id)?;
+
     // Fire the trigger. This validates it, turns a copy of the slot order into
     // a live market order, frees the slot, and pays the flat reward. `None`
     // means there was no payable work. The order was past its `max_ts`, or it
@@ -192,6 +213,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
         },
+        keeper_fee,
         &state,
         &controller::orders::TriggerAccounts {
             user: &accounts.user,
@@ -347,10 +369,7 @@ fn route_fill_fired_order<'info>(
             // A trigger crank is not a signed transaction. The owner does not
             // sign, so the keeper answers for what its account list left out.
             filler: crate::instructions::FillerTerms::keeper(
-                accounts
-                    .ix_sysvar
-                    .as_ref()
-                    .map(|sysvar| sysvar.as_ref()),
+                accounts.ix_sysvar.as_ref().map(|sysvar| sysvar.as_ref()),
             )?,
         },
         controller::orders::FillRequest {
@@ -514,6 +533,9 @@ pub fn handle_resolve_trigger_market_order_v1(
                 trigger_conditions: ctx.accounts.trigger_conditions.key(),
                 // No fill, so no filler-obligation read of the sysvar.
                 ix_sysvar: None,
+                sol_spot_market: super::helpers::crank_common::sol_spot_market_ref(
+                    &*ctx.accounts.state.load()?,
+                ),
             })
             // The margin gate of a risk-increasing fire loads every market the
             // user holds, so the stored map rides whole. Its crank tail does

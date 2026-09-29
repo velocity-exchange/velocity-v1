@@ -40,10 +40,11 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 CancelOrderArgsV0, ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0,
-                L3RowV0, OrderRulesV0, OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterSlotV0,
-                QuoterType, RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
+                L3RowV0, OrderRulesV0, OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
+                QuoterSlotV0, QuoterType, RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
             },
             signed_msg_user::release_removed_remainders,
+            spot_market::SpotMarket,
             state::State,
             user::{OrderReservation, ReleaseCheck, User, UserStats},
         },
@@ -126,6 +127,18 @@ pub struct CrankClobOrderRemoval<'info> {
         bump
     )]
     pub trigger_conditions: UncheckedAccount<'info>,
+    /// The SOL spot market, whose TWAP values the reservoir payment in quote.
+    /// Program-keeper mode requires it when `State` names a SOL market. See
+    /// [`payment_sol_price`].
+    #[account(
+        seeds = [
+            b"spot_market",
+            state.load()?.sol_spot_market_index.to_le_bytes().as_ref(),
+        ],
+
+        bump
+    )]
+    pub sol_spot_market: Option<AccountLoader<'info, SpotMarket>>,
 }
 
 /// The user's relay conditions block at its pinned address, or `None` for a
@@ -182,6 +195,57 @@ impl<'info> CrankClobOrderRemoval<'info> {
             signed_msg_record: remaining_accounts.first(),
         }
     }
+
+    /// The SOL price this crank values its reservoir payment at.
+    pub fn payment_sol_price(&self) -> Result<Option<i64>> {
+        let program_keeper_mode =
+            program_keeper_mode(&self.filler, &self.state, self.crank_conditions.is_some())?;
+        payment_sol_price(
+            &*self.state.load()?,
+            program_keeper_mode,
+            self.sol_spot_market.as_ref(),
+        )
+    }
+}
+
+/// The SOL price a program-keeper crank values its reservoir payment at: the
+/// SOL spot market's five-minute TWAP. The caller pins the account with
+/// `seeds`. It is required when `State` names a SOL market, or a caller could
+/// leave it out to pay only the flat fee. `None` leaves the fee flat.
+pub(crate) fn payment_sol_price(
+    state: &State,
+    program_keeper_mode: bool,
+    sol_spot_market: Option<&AccountLoader<SpotMarket>>,
+) -> Result<Option<i64>> {
+    if !program_keeper_mode || state.sol_spot_market_index == 0 {
+        return Ok(None);
+    }
+
+    let Some(sol_spot_market) = sol_spot_market else {
+        msg!("program-keeper crank requires the SOL spot market");
+        return Err(ErrorCode::SpotMarketNotFound.into());
+    };
+
+    let twap = sol_spot_market
+        .load()?
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+    Ok((twap > 0).then_some(twap))
+}
+
+/// What a program-keeper crank charges the owner in quote: the flat fee,
+/// raised to the reservoir payment's value at `sol_price`. The reservoir then
+/// never pays more than the crank collected.
+pub(crate) fn keeper_crank_fee(
+    flat_filler_fee: u64,
+    payment_lamports: u64,
+    sol_price: Option<i64>,
+) -> u64 {
+    sol_price
+        .and_then(|sol_price| CrankPaymentsV0::lamports_to_quote(payment_lamports, sol_price))
+        .map_or(flat_filler_fee, |payment_quote| {
+            payment_quote.max(flat_filler_fee)
+        })
 }
 
 /// Which removal a crank runs. They differ in the CLOB call they make, the
@@ -231,6 +295,17 @@ pub fn crank_clob_removal(
     market_index: u16,
     removal: ClobRemoval,
 ) -> Result<()> {
+    crank_priced_clob_removal(accounts, market_index, removal, None)
+}
+
+/// [`crank_clob_removal`] with the fee raised to the reservoir payment's value
+/// at `sol_price`. See [`keeper_crank_fee`].
+pub fn crank_priced_clob_removal(
+    accounts: &RemovalAccounts,
+    market_index: u16,
+    removal: ClobRemoval,
+    sol_price: Option<i64>,
+) -> Result<()> {
     let clock = Clock::get()?;
     let state = accounts.state.load()?;
     let program_keeper_mode = program_keeper_mode(
@@ -252,6 +327,19 @@ pub fn crank_clob_removal(
     let removed = removal.invoke(&clob)?;
     require_removed_for(accounts.user, &removed.user)?;
     release_removed_remainders(accounts.signed_msg_record, market_index, &[removed]);
+
+    let payment_lamports = match (program_keeper_mode, accounts.crank_conditions) {
+        (true, Some(conditions)) => Some(removal_payment(
+            &conditions.load()?.crank_payments,
+            is_evict,
+            removed.max_ts,
+            clock.unix_timestamp,
+        )),
+        _ => None,
+    };
+    let fee = payment_lamports.map_or(state.perp_fee_structure.flat_filler_fee, |payment| {
+        keeper_crank_fee(state.perp_fee_structure.flat_filler_fee, payment, sol_price)
+    });
 
     // Each removal charges the maker the flat removal reward before it
     // unwinds, because unwinding an otherwise-empty position frees the slot
@@ -288,7 +376,10 @@ pub fn crank_clob_removal(
             &mut user,
             filler.as_deref_mut(),
             &mut market,
-            clock.slot,
+            RemovalFee {
+                amount: fee,
+                slot: clock.slot,
+            },
         )?;
 
         drop(filler);
@@ -323,21 +414,13 @@ pub fn crank_clob_removal(
 
     let paid_lamports = program_keeper_mode
         && earns_crank_lamports(removal_fee, &accounts.authority.key(), &maker_authority);
-    if let (true, Some(conditions)) = (paid_lamports, accounts.crank_conditions) {
-        // An expiry that went unclaimed pays escalation, priced off the
-        // order's own `max_ts` so a caller cannot name its own figure.
-        // Eviction is a capacity limit, not a deadline, so it does not
-        // escalate.
-        let escalation = if is_evict {
-            0
-        } else {
-            CrankPaymentsV0::expiry_escalation(removed.max_ts, clock.unix_timestamp)
-        };
-
-        ClobCrankConditionsV0::pay_crank(
+    if let (true, Some(conditions), Some(payment)) =
+        (paid_lamports, accounts.crank_conditions, payment_lamports)
+    {
+        ClobCrankConditionsV0::pay_keeper(
             conditions,
             &accounts.authority.to_account_info(),
-            |payments| u64::from(payments.removal).saturating_add(u64::from(escalation)),
+            payment,
         )?;
     }
 
@@ -348,6 +431,20 @@ pub fn crank_clob_removal(
     );
 
     Ok(())
+}
+
+/// The lamports a removal crank pays its keeper. An expiry that went
+/// unclaimed pays escalation, priced off the order's own `max_ts` so a caller
+/// cannot name its own figure. Eviction is a capacity limit, not a deadline,
+/// so it does not escalate.
+fn removal_payment(payments: &CrankPaymentsV0, is_evict: bool, max_ts: i64, now: i64) -> u64 {
+    let escalation = if is_evict {
+        0
+    } else {
+        CrankPaymentsV0::expiry_escalation(max_ts, now)
+    };
+
+    u64::from(payments.removal).saturating_add(u64::from(escalation))
 }
 
 /// Wake the parked relay slot of a stop-limit that an eviction re-armed.
@@ -380,7 +477,13 @@ fn wake_parked_trigger(accounts: &RemovalAccounts, market_index: u16, order_id: 
     }
 }
 
-/// Charge the maker the flat removal fee, and return what the keeper got.
+/// The fee a removal charges the maker, and the slot it is charged at.
+struct RemovalFee {
+    amount: u64,
+    slot: u64,
+}
+
+/// Charge the maker the removal fee, and return what the keeper got.
 ///
 /// No filler earns nothing. A full exchange halt charges nothing. A filler
 /// outside pool 0 cannot hold the perp quote the fee pays in.
@@ -389,7 +492,7 @@ fn charge_removal_fee(
     user: &mut User,
     filler: Option<&mut User>,
     market: &mut PerpMarket,
-    slot: u64,
+    fee: RemovalFee,
 ) -> Result<u64> {
     let Some(filler) = filler else {
         return Ok(0);
@@ -411,8 +514,8 @@ fn charge_removal_fee(
         user,
         Some(filler),
         market,
-        state.perp_fee_structure.flat_filler_fee,
-        slot,
+        fee.amount,
+        fee.slot,
     )?)
 }
 
@@ -610,6 +713,7 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
         clob_market: ctx.accounts.clob_market.key(),
         clob_program: crate::ids::clob_program::id(),
         crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+        sol_spot_market: sol_spot_market_ref(&*ctx.accounts.state.load()?),
     });
 
     if !found.taker_origin {
@@ -617,6 +721,12 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
     }
 
     Ok(call.account(pdas::signed_msg_user_orders(&found.user.authority), true))
+}
+
+/// The SOL spot market a staged program-keeper crank passes, when `State`
+/// names one.
+pub fn sol_spot_market_ref(state: &State) -> Option<Pubkey> {
+    (state.sol_spot_market_index != 0).then(|| pdas::spot_market(state.sol_spot_market_index))
 }
 
 /// The trigger a crank acted on, and the reward it collected from the owner.
@@ -697,6 +807,50 @@ pub fn finish_trigger_crank<'info>(
     }
 
     Ok(())
+}
+
+/// The accounts a trigger crank prices its keeper fee from.
+pub struct TriggerFeeAccounts<'a, 'info> {
+    pub state: &'a AccountLoader<'info, State>,
+    pub filler: &'a AccountLoader<'info, User>,
+    pub crank_conditions: &'a Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    pub trigger_conditions:
+        &'a Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
+    pub sol_spot_market: &'a Option<AccountLoader<'info, SpotMarket>>,
+}
+
+impl TriggerFeeAccounts<'_, '_> {
+    /// What the crank of `(market_index, order_id)` charges the owner. A
+    /// program-keeper crank charges at least the value of the payment
+    /// [`finish_trigger_crank`] makes. Any other crank charges the flat fee.
+    pub fn keeper_fee(&self, market_index: u16, order_id: u32) -> Result<u64> {
+        let state = self.state.load()?;
+        let flat_filler_fee = state.perp_fee_structure.flat_filler_fee;
+        let program_keeper_mode =
+            program_keeper_mode(self.filler, self.state, self.crank_conditions.is_some())?;
+        let Some(crank_conditions) = self
+            .crank_conditions
+            .as_ref()
+            .filter(|_| program_keeper_mode)
+        else {
+            return Ok(flat_filler_fee);
+        };
+
+        let sol_price =
+            payment_sol_price(&state, program_keeper_mode, self.sol_spot_market.as_ref())?;
+        let slot_min_payment = match self.trigger_conditions {
+            Some(conditions) => conditions
+                .load()?
+                .trigger_min_payment(market_index, order_id),
+            None => None,
+        };
+        let payment = trigger_payment(
+            u64::from(crank_conditions.load()?.crank_payments.trigger),
+            slot_min_payment,
+        );
+
+        Ok(keeper_crank_fee(flat_filler_fee, payment, sol_price))
+    }
 }
 
 /// The market's current trigger payment, raised to what the slot asserts.
@@ -922,7 +1076,11 @@ fn gated_trigger_price(
 /// Whether firing `order` can move the position. A reduce-only fire with
 /// nothing to reduce is cancelled unpaid, and relay cannot land an unpaid
 /// crank. A `ReduceOnly` market stamps a fired stop-market reduce-only.
-fn fire_moves_position(user: &User, order: &crate::state::user::Order, market: &PerpMarket) -> Result<bool> {
+fn fire_moves_position(
+    user: &User,
+    order: &crate::state::user::Order,
+    market: &PerpMarket,
+) -> Result<bool> {
     let mut fired = *order;
     fired.reduce_only |= market.status == crate::state::market_status::MarketStatus::ReduceOnly
         && order.order_type == crate::state::user::OrderType::TriggerMarket;
@@ -1235,7 +1393,10 @@ mod removal_tests {
             &mut maker(BASE_PRECISION_U64),
             filler,
             &mut PerpMarket::default_test(),
-            0,
+            super::RemovalFee {
+                amount: state.perp_fee_structure.flat_filler_fee,
+                slot: 0,
+            },
         )
     }
 
@@ -1339,6 +1500,64 @@ mod removal_tests {
         assert_eq!(position.open_bids, 0);
         assert_eq!(position.open_orders, 0);
         assert_eq!(user.open_orders, 0);
+    }
+}
+
+#[cfg(test)]
+mod keeper_fee_tests {
+    use {
+        super::{keeper_crank_fee, payment_sol_price, removal_payment},
+        crate::{
+            error::ErrorCode,
+            math::constants::PRICE_PRECISION_I64,
+            state::{clob_crank::CrankPaymentsV0, state::State},
+        },
+    };
+
+    const FLAT: u64 = 10_000;
+
+    /// At $2,000 a SOL, 15,000 lamports are worth $0.03. The fee rises to
+    /// that value, so the reservoir never pays more than the crank collected.
+    #[test]
+    fn the_fee_covers_the_reservoir_payment() {
+        let sol_price = Some(2_000 * PRICE_PRECISION_I64);
+        assert_eq!(keeper_crank_fee(FLAT, 15_000, sol_price), 30_000);
+        assert_eq!(keeper_crank_fee(FLAT, 1_000, sol_price), FLAT);
+        assert_eq!(keeper_crank_fee(FLAT, 15_000, None), FLAT);
+    }
+
+    /// Only an unclaimed expiry escalates. An eviction pays the removal
+    /// payment alone.
+    #[test]
+    fn only_an_expiry_escalates_its_payment() {
+        let payments = CrankPaymentsV0 {
+            removal: 5_000,
+            ..CrankPaymentsV0::default()
+        };
+
+        let expiry = removal_payment(&payments, false, 100, 100_000);
+        assert!(expiry > 5_000);
+        assert_eq!(removal_payment(&payments, true, 100, 100_000), 5_000);
+    }
+
+    /// A program-keeper crank on a state with a SOL market must pass it, or
+    /// it could leave the account out to pay only the flat fee.
+    #[test]
+    fn a_program_keeper_crank_needs_the_sol_market() {
+        let state = State {
+            sol_spot_market_index: 1,
+            ..State::default()
+        };
+
+        assert_eq!(
+            payment_sol_price(&state, true, None).unwrap_err(),
+            ErrorCode::SpotMarketNotFound.into()
+        );
+        assert_eq!(payment_sol_price(&state, false, None).unwrap(), None);
+        assert_eq!(
+            payment_sol_price(&State::default(), true, None).unwrap(),
+            None
+        );
     }
 }
 
@@ -1450,8 +1669,8 @@ mod fired_trigger_tests {
                 pyth_lazer_oracle::PythLazerOracle,
                 state::{ExchangeStatus, FeatureBitFlags, State},
                 user::{
-                    MarketType, Order, OrderBitFlag, OrderStatus, OrderTriggerCondition,
-                    OrderType, PerpPosition, User, UserStatus,
+                    MarketType, Order, OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType,
+                    PerpPosition, User, UserStatus,
                 },
                 user_conditions::{TriggerSlotMetaV0, UserConditionsV0, TRIGGER_SLOT_BASE},
             },
@@ -1632,7 +1851,14 @@ mod fired_trigger_tests {
             exchange_status: ExchangeStatus::FillPaused as u8,
             ..State::default()
         };
-        assert!(resolve(&exchange_paused, &user, &market(oracle_key), &oracle_info, rest).is_none());
+        assert!(resolve(
+            &exchange_paused,
+            &user,
+            &market(oracle_key),
+            &oracle_info,
+            rest
+        )
+        .is_none());
 
         let mut liquidated = user;
         liquidated.status = UserStatus::BeingLiquidated as u8;

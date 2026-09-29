@@ -25,6 +25,9 @@ pub struct TriggerAccounts<'a, 'info> {
 /// The armed slot reserved no exposure, so freeing it releases only the order
 /// count. The remainder the caller rests adds one back for its CLOB order.
 ///
+/// `keeper_fee` is what the crank charges the owner. It is the flat fee, or
+/// more when the reservoir pays the caller.
+///
 /// Returns `None` when there is no payable work. That happens when the order
 /// is past its `max_ts`, or when the order is cancelled instead of fired: a
 /// reduce-only order with nothing to reduce, or a risk-increasing trigger on a
@@ -33,6 +36,7 @@ pub struct TriggerAccounts<'a, 'info> {
 /// market reservoir.
 pub fn trigger_and_route_order(
     order_to_fire: OrderToFire,
+    keeper_fee: u64,
     state: &State,
     accounts: &TriggerAccounts,
     maps: &mut AccountMaps,
@@ -105,14 +109,7 @@ pub fn trigger_and_route_order(
 
     // The fill the caller runs settles its own fees. This is the trigger's
     // own reward, paid once for the crank that fired the order.
-    let filler_reward = pay_trigger_reward(
-        user,
-        market_index,
-        accounts,
-        state.perp_fee_structure.flat_filler_fee,
-        maps,
-        slot,
-    )?;
+    let filler_reward = pay_trigger_reward(user, market_index, accounts, keeper_fee, maps, slot)?;
 
     TriggerRecord {
         fired,
@@ -526,7 +523,7 @@ fn cancel_trigger_order(
     controller::equity_floor::try_lazy_equity_breaker_trip(user, &mut user_stats, maps)
 }
 
-/// Pay the keeper the flat trigger reward, and report what it was paid.
+/// Pay the keeper the trigger reward, and report what it was paid.
 ///
 /// A keeper that owns the order is paid nothing. It is already loaded as the
 /// user, and it cannot be loaded a second time as the filler.
@@ -534,7 +531,7 @@ fn pay_trigger_reward(
     user: &mut User,
     market_index: u16,
     accounts: &TriggerAccounts,
-    flat_filler_fee: u64,
+    keeper_fee: u64,
     maps: &mut AccountMaps,
     slot: u64,
 ) -> VelocityResult<u64> {
@@ -549,7 +546,7 @@ fn pay_trigger_reward(
         user,
         filler.as_deref_mut(),
         &mut perp_market,
-        flat_filler_fee,
+        keeper_fee,
         slot,
     )
 }

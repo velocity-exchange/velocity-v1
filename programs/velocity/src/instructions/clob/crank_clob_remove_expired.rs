@@ -4,7 +4,7 @@
 
 use {
     super::helpers::crank_common::{
-        clob_reader, crank_clob_removal, removal_call, ClobRemoval, CrankClobOrderRemoval,
+        clob_reader, crank_priced_clob_removal, removal_call, ClobRemoval, CrankClobOrderRemoval,
         ResolveClobCrank,
     },
     crate::{
@@ -32,10 +32,11 @@ pub fn handle_crank_clob_remove_expired<'info>(
         order_ref,
     } = args;
 
-    crank_clob_removal(
+    crank_priced_clob_removal(
         &ctx.accounts.removal_accounts(ctx.remaining_accounts),
         market_index,
         ClobRemoval::Expire(RemoveExpiredArgsV0 { order_ref }),
+        ctx.accounts.payment_sol_price()?,
     )
 }
 

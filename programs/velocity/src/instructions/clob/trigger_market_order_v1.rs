@@ -13,6 +13,10 @@
 //! worse price than the full router. It rests the whole order instead, and the
 //! cross crank fills it across every source at the best price.
 //!
+//! A full book side refuses a fire that filled nothing, so the trigger stays
+//! armed until an eviction frees room. A fire that filled part of the order
+//! keeps the fill and cancels the remainder the side refuses.
+//!
 //! The account set is the trigger keeper set plus the market's CLOB accounts
 //! the rest needs. `trigger_limit_order_v1` carries the same superset. CLOB
 //! trigger-limits keep their own path. They rest their whole order and never
@@ -20,7 +24,7 @@
 
 use {
     crate::{
-        controller::{self, position::PositionDirection},
+        controller,
         error::ErrorCode,
         instructions::constraints::*,
         load,
@@ -29,8 +33,9 @@ use {
             fill_mode::FillMode,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{ClobMarket, OrderRulesV0, QuoterSlabExt, QuoterSlabV0},
+            spot_market::SpotMarket,
             state::State,
-            user::{Order, OrderStatus, User, UserStats},
+            user::{Order, User, UserStats},
         },
         validate,
     },
@@ -101,9 +106,11 @@ pub struct TriggerMarketOrderV1<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
-    /// The user's relay trigger conditions. The handler releases the fired
-    /// slot, which silences its level-triggered wake. It is optional, like
-    /// every relay-side account.
+    /// CHECK: the user's relay trigger conditions. The handler releases the
+    /// fired slot, which silences its level-triggered wake. It is required,
+    /// as on `trigger_limit_order_v1`, so a caller cannot leave the slot
+    /// waking relay on a freed order. A user created before the block existed
+    /// has none, and the `seeds` pin the address.
     #[account(
         mut,
         seeds = [
@@ -113,8 +120,7 @@ pub struct TriggerMarketOrderV1<'info> {
 
         bump
     )]
-    pub trigger_conditions:
-        Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
+    pub trigger_conditions: UncheckedAccount<'info>,
     /// CHECK: address-locked to the instructions sysvar. It supplies whether
     /// the owner signed the transaction and how many accounts it locks, which
     /// are the filler-obligation facts a fill needs. It is optional and costs
@@ -124,6 +130,17 @@ pub struct TriggerMarketOrderV1<'info> {
     /// withheld order and passes `None` here is refused.
     #[account(address = ::solana_program::sysvar::instructions::ID)]
     pub ix_sysvar: Option<UncheckedAccount<'info>>,
+    /// The SOL spot market, whose TWAP values the reservoir payment in quote.
+    /// Program-keeper mode requires it when `State` names a SOL market.
+    #[account(
+        seeds = [
+            b"spot_market",
+            state.load()?.sol_spot_market_index.to_le_bytes().as_ref(),
+        ],
+
+        bump
+    )]
+    pub sol_spot_market: Option<AccountLoader<'info, SpotMarket>>,
 }
 
 #[access_control(
@@ -138,8 +155,13 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         order_id,
         signed_route,
     } = args;
+    // Shared for `'info`, because the conditions loader borrows its account
+    // for that long.
+    let accounts: &'info TriggerMarketOrderV1<'info> = ctx.accounts;
+    let trigger_conditions =
+        super::helpers::crank_common::user_conditions_loader(&accounts.trigger_conditions)?;
     let clock = &Clock::get()?;
-    let state = ctx.accounts.state.load()?;
+    let state = accounts.state.load()?;
 
     let remaining_accounts = ctx.remaining_accounts;
     let remaining_accounts_iter = &mut remaining_accounts.iter().peekable();
@@ -155,7 +177,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         remaining_accounts,
         remaining_accounts_iter,
         &state,
-        &ctx.accounts.user,
+        &accounts.user,
     )?;
 
     // Firing is irreversible: it frees the trigger slot, charges the flat
@@ -163,13 +185,20 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     // moves rather than leave the owner with a paid fee and no order. The
     // trigger stays armed until the book quotes again.
     validate!(
-        ctx.accounts.quoter_slab.clob_slot(market_index)?.quotes(),
+        accounts.quoter_slab.clob_slot(market_index)?.quotes(),
         ErrorCode::ClobRestUnavailable,
         "market {}'s book takes no new orders; the trigger stays armed",
         market_index
     )?;
 
-    require_room_to_rest(&ctx, market_index, order_id)?;
+    let keeper_fee = super::helpers::crank_common::TriggerFeeAccounts {
+        state: &accounts.state,
+        filler: &accounts.filler,
+        crank_conditions: &accounts.crank_conditions,
+        trigger_conditions: &trigger_conditions,
+        sol_spot_market: &accounts.sol_spot_market,
+    }
+    .keeper_fee(market_index, order_id)?;
 
     // Fire the trigger. This validates it, turns a copy of the slot order into
     // a live market order, frees the slot, and pays the flat reward. `None`
@@ -184,11 +213,12 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
         },
+        keeper_fee,
         &state,
         &controller::orders::TriggerAccounts {
-            user: &ctx.accounts.user,
-            user_stats: &ctx.accounts.user_stats,
-            filler: &ctx.accounts.filler,
+            user: &accounts.user,
+            user_stats: &accounts.user_stats,
+            filler: &accounts.filler,
         },
         &mut maps,
         clock,
@@ -198,7 +228,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     };
 
     route_fill_fired_order(
-        &ctx,
+        accounts,
         &state,
         &mut maps,
         &mut route_accounts,
@@ -208,18 +238,19 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         clock,
     )?;
 
-    rest_fired_remainder(&ctx, &mut maps, &fired, clock)?;
+    require_room_for_unfilled_fire(accounts, market_index, &fired)?;
+    rest_fired_remainder(accounts, &mut maps, &fired, clock)?;
 
     // Pay the reservoir and release the trigger wake slot. Drop the state
     // borrow first, because the reservoir payout loads state itself.
     drop(state);
     super::helpers::crank_common::finish_trigger_crank(
-        &ctx.accounts.state,
-        &ctx.accounts.filler,
-        &ctx.accounts.authority,
-        &ctx.accounts.user,
-        &ctx.accounts.trigger_conditions,
-        &ctx.accounts.crank_conditions,
+        &accounts.state,
+        &accounts.filler,
+        &accounts.authority,
+        &accounts.user,
+        &trigger_conditions,
+        &accounts.crank_conditions,
         &super::helpers::crank_common::CrankedTrigger {
             market_index,
             order_id,
@@ -231,54 +262,46 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     Ok(())
 }
 
-/// Refuse to fire a stop-market onto a full side of the book.
+/// Refuse a fire that filled nothing and would rest onto a full side.
 ///
-/// A fired order cannot go back to its slot, so a remainder the book refuses
-/// is lost. A full side is a state of the book that an eviction clears. The
-/// crank therefore fails and the trigger stays armed.
-fn require_room_to_rest<'info>(
-    ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
+/// The fire cannot be undone, so an order the book refuses would be lost
+/// whole. A full side is a state of the book that an eviction clears, so the
+/// crank fails and the trigger stays armed. A fire that filled part of the
+/// order keeps that fill, and the rest path cancels the remainder the side
+/// refuses. An attacker who keeps the side full then cannot delay the part a
+/// routed fill reaches.
+fn require_room_for_unfilled_fire<'info>(
+    accounts: &TriggerMarketOrderV1<'info>,
     market_index: u16,
-    order_id: u32,
+    fired: &Order,
 ) -> Result<()> {
-    // A missing order fails in the fire, with its own error.
-    let Some(direction) = load!(ctx.accounts.user)?
-        .orders
-        .iter()
-        .find(|order| order.order_id == order_id && order.status == OrderStatus::Open)
-        .map(|order| order.direction)
-    else {
+    if fired.base_asset_amount_filled != 0 {
         return Ok(());
-    };
+    }
 
     let rules = ClobMarket::from_slab(
-        &ctx.accounts.quoter_slab,
+        &accounts.quoter_slab,
         market_index,
-        &ctx.accounts.clob_market,
-        &ctx.accounts.clob_program,
+        &accounts.clob_market,
+        &accounts.clob_program,
     )?
     .reader()
     .order_rules()?;
 
+    unfilled_fire_admission(&rules, fired)
+}
+
+/// The book's answer for a fired order with no fill, which rests whole.
+fn unfilled_fire_admission(rules: &OrderRulesV0, fired: &Order) -> Result<()> {
     validate!(
-        side_has_room(&rules, direction),
+        fired.base_asset_amount_filled != 0
+            || super::helpers::crank_common::side_has_room(rules, fired.direction),
         ErrorCode::MaxNumberOfOrders,
         "market {}'s book side is full; the trigger stays armed",
-        market_index
+        fired.market_index
     )?;
 
     Ok(())
-}
-
-/// Whether the side `direction` rests on holds fewer orders than the book
-/// allows. The arena is shared, so each side holds at most half of it.
-fn side_has_room(rules: &OrderRulesV0, direction: PositionDirection) -> bool {
-    let side = match direction {
-        PositionDirection::Long => 0,
-        PositionDirection::Short => 1,
-    };
-
-    rules.side_order_counts[side] < rules.arena_capacity / 2
 }
 
 /// Routes the fired order against the book, and fills what the route reaches.
@@ -297,7 +320,7 @@ fn side_has_room(rules: &OrderRulesV0, direction: PositionDirection) -> bool {
 /// attestation transport, so its flow never counts as protected.
 #[allow(clippy::too_many_arguments)]
 fn route_fill_fired_order<'info>(
-    ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
+    accounts: &TriggerMarketOrderV1<'info>,
     state: &State,
     maps: &mut crate::instructions::optional_accounts::AccountMaps<'info>,
     route_accounts: &mut crate::instructions::RouteFillAccounts<'info>,
@@ -309,7 +332,7 @@ fn route_fill_fired_order<'info>(
     let taker_served_window = false;
     let synchronous_take = crate::instructions::synchronous_take_allowed(
         taker_served_window,
-        &ctx.accounts.quoter_slab,
+        &accounts.quoter_slab,
         market_index,
     )?;
 
@@ -318,7 +341,7 @@ fn route_fill_fired_order<'info>(
     }
 
     let order = crate::instructions::RoutedOrder::read(
-        &*load!(ctx.accounts.user)?,
+        &*load!(accounts.user)?,
         fired,
         maps,
         FillMode::Fill,
@@ -346,10 +369,7 @@ fn route_fill_fired_order<'info>(
             // A trigger crank is not a signed transaction. The owner does not
             // sign, so the keeper answers for what its account list left out.
             filler: crate::instructions::FillerTerms::keeper(
-                ctx.accounts
-                    .ix_sysvar
-                    .as_ref()
-                    .map(|sysvar| sysvar.as_ref()),
+                accounts.ix_sysvar.as_ref().map(|sysvar| sysvar.as_ref()),
             )?,
         },
         controller::orders::FillRequest {
@@ -361,10 +381,10 @@ fn route_fill_fired_order<'info>(
             referrer_is_accelerated: route_accounts.referrer_is_accelerated,
         },
         controller::orders::PerpFillAccounts {
-            user: &ctx.accounts.user,
-            user_stats: &ctx.accounts.user_stats,
-            filler: &ctx.accounts.filler,
-            filler_stats: &ctx.accounts.filler_stats,
+            user: &accounts.user,
+            user_stats: &accounts.user_stats,
+            filler: &accounts.filler,
+            filler_stats: &accounts.filler_stats,
             rev_share_escrow: &mut route_accounts.escrow.as_mut(),
         },
         &mut controller::orders::FillParties {
@@ -391,7 +411,7 @@ fn route_fill_fired_order<'info>(
 /// position, so nothing can be restored. The lost remainder emits a cancel
 /// record instead.
 fn rest_fired_remainder<'info>(
-    ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
+    accounts: &TriggerMarketOrderV1<'info>,
     maps: &mut crate::instructions::optional_accounts::AccountMaps<'info>,
     fired: &Order,
     clock: &Clock,
@@ -406,10 +426,10 @@ fn rest_fired_remainder<'info>(
 
     crate::instructions::rest_or_cancel_detached_remainder(
         &crate::instructions::ClobRestAccounts {
-            user: &ctx.accounts.user,
-            quoter_slab: &ctx.accounts.quoter_slab,
-            clob_market: &ctx.accounts.clob_market.to_account_info(),
-            clob_program: &ctx.accounts.clob_program.to_account_info(),
+            user: &accounts.user,
+            quoter_slab: &accounts.quoter_slab,
+            clob_market: &accounts.clob_market.to_account_info(),
+            clob_program: &accounts.clob_program.to_account_info(),
         },
         maps,
         fired,
@@ -449,6 +469,20 @@ pub struct ResolveTriggerMarketOrderV1<'info> {
     pub oracle: UncheckedAccount<'info>,
     #[account(has_one = oracle)]
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
+    /// The exchange pause, the median-price flag and the oracle guard rails
+    /// the executor judges the trigger with.
+    pub state: AccountLoader<'info, State>,
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == perp_market.load()?.market_index,
+    )]
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: the slab's `has_one` binds it. The resolver asks it for the
+    /// room left on the side the order rests on.
+    pub clob_market: UncheckedAccount<'info>,
+    /// CHECK: address-locked to velocity's CLOB.
+    #[account(address = crate::ids::clob_program::id())]
+    pub clob_program: UncheckedAccount<'info>,
 }
 
 pub fn handle_resolve_trigger_market_order_v1(
@@ -460,25 +494,22 @@ pub fn handle_resolve_trigger_market_order_v1(
         &[ctx.accounts.scratch.key()],
     )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
-        let clock = Clock::get()?;
-        let fired = {
-            let conditions = ctx.accounts.trigger_conditions.load()?;
-            let user = load!(ctx.accounts.user)?;
-            let market = ctx.accounts.perp_market.load()?;
-            super::helpers::crank_common::find_fired_trigger(
-                super::helpers::crank_common::fired_trigger_slot(
-                    &conditions,
-                    &ctx.accounts.trigger_conditions.key(),
-                    &fired,
-                )?,
-                &user,
-                &market,
-                &ctx.accounts.oracle,
-                &clock,
-                super::helpers::crank_common::TriggerResolverKind::ClobFill,
-            )?
-        };
-        let Some(meta) = fired else {
+        let accounts = &ctx.accounts;
+        let due = super::helpers::crank_common::resolve_due_trigger(
+            &super::helpers::crank_common::TriggerResolverAccounts {
+                trigger_conditions: &accounts.trigger_conditions,
+                user: &accounts.user,
+                oracle: &accounts.oracle,
+                perp_market: &accounts.perp_market,
+                state: &accounts.state,
+                quoter_slab: &accounts.quoter_slab,
+                clob_market: &accounts.clob_market,
+                clob_program: &accounts.clob_program,
+            },
+            &fired,
+            super::helpers::crank_common::TriggerResolverKind::ClobFill,
+        )?;
+        let Some(meta) = due else {
             return Ok(None);
         };
 
@@ -499,9 +530,12 @@ pub fn handle_resolve_trigger_market_order_v1(
                     meta.market_index,
                 )),
 
-                trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
+                trigger_conditions: ctx.accounts.trigger_conditions.key(),
                 // No fill, so no filler-obligation read of the sysvar.
                 ix_sysvar: None,
+                sol_spot_market: super::helpers::crank_common::sol_spot_market_ref(
+                    &*ctx.accounts.state.load()?,
+                ),
             })
             // The margin gate of a risk-increasing fire loads every market the
             // user holds, so the stored map rides whole. Its crank tail does
@@ -524,15 +558,16 @@ pub fn handle_resolve_trigger_market_order_v1(
 #[cfg(test)]
 mod side_room_tests {
     use {
-        super::side_has_room,
-        crate::{controller::position::PositionDirection, state::prop_amm::OrderRulesV0},
+        super::unfilled_fire_admission,
+        crate::{
+            controller::position::PositionDirection,
+            instructions::clob::helpers::crank_common::side_has_room,
+            state::{prop_amm::OrderRulesV0, user::Order},
+        },
     };
 
-    /// A stop-market that would rest on a full side is not fired, so it
-    /// stays armed until an eviction frees room.
-    #[test]
-    fn a_full_side_has_no_room_and_the_other_side_does() {
-        let rules = OrderRulesV0 {
+    fn rules() -> OrderRulesV0 {
+        OrderRulesV0 {
             min_order_size: 0,
             blocking_min_size: 0,
             default_activation_delay_slots: 0,
@@ -544,9 +579,37 @@ mod side_room_tests {
             arena_capacity: 512,
             evict_threshold_per_side: 200,
             authority: [0; 32],
+        }
+    }
+
+    /// A stop-market that would rest on a full side is not fired, so it
+    /// stays armed until an eviction frees room.
+    #[test]
+    fn a_full_side_has_no_room_and_the_other_side_does() {
+        assert!(side_has_room(&rules(), PositionDirection::Long));
+        assert!(!side_has_room(&rules(), PositionDirection::Short));
+    }
+
+    /// A full side refuses only a fire that filled nothing. A routed fill
+    /// keeps what it filled, and the rest path cancels the remainder.
+    #[test]
+    fn a_full_side_refuses_only_an_unfilled_fire() {
+        let unfilled = Order {
+            direction: PositionDirection::Short,
+            base_asset_amount: 10,
+            ..Order::default()
+        };
+        let part_filled = Order {
+            base_asset_amount_filled: 4,
+            ..unfilled
+        };
+        let long = Order {
+            direction: PositionDirection::Long,
+            ..unfilled
         };
 
-        assert!(side_has_room(&rules, PositionDirection::Long));
-        assert!(!side_has_room(&rules, PositionDirection::Short));
+        assert!(unfilled_fire_admission(&rules(), &unfilled).is_err());
+        assert!(unfilled_fire_admission(&rules(), &part_filled).is_ok());
+        assert!(unfilled_fire_admission(&rules(), &long).is_ok());
     }
 }

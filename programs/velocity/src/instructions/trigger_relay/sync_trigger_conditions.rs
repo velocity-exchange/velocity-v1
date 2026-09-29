@@ -19,8 +19,11 @@
 //! pass refuses a call that leaves out the market, oracle, crank account or quoter
 //! slab of any watched order.
 //!
-//! Reduce-only orders take the slots before the others, so a stop-loss is not
-//! left unwatched behind orders that open a position.
+//! Armed reduce-only stop-losses take the slots first, then the other armed
+//! triggers, then the parked slots of placed stop-limits. So a stop-loss is not
+//! left unwatched behind take-profits, entries or orders already on the book.
+//! Placement refuses a ninth armed reduce-only stop-loss, which no slot could
+//! watch.
 //!
 //! A book that is suspended or inactive still arms its market's triggers. The
 //! executors refuse to fire while the book takes no flow, so each trigger stays
@@ -67,8 +70,8 @@ use {
             spot_market::SpotMarket,
             user::{OrderStatus, OrderType, User},
             user_conditions::{
-                TriggerSlotMetaV0, UserConditionsV0, TRIGGER_CONDITION_SLOTS, TRIGGER_SLOT_BASE,
-                USER_CONDITIONS_PDA_SEED,
+                TriggerSlotMetaV0, UserConditionsV0, TRIGGER_CONDITION_SLOTS,
+                TRIGGER_RESOLVERS_PER_SLOT, TRIGGER_SLOT_BASE, USER_CONDITIONS_PDA_SEED,
             },
         },
         validate,
@@ -191,7 +194,13 @@ pub fn rewrite_trigger_conditions<'info>(
         let (resolver_disc, meta) = route_trigger_resolver(order, trigger.clob)?;
         let resolvers = conditions.write_slot_resolvers(
             slot_index,
-            &slot_resolver_refs(conditions_key, user_key, trigger.oracle, order.market_index),
+            &slot_resolver_refs(
+                conditions_key,
+                user_key,
+                trigger.oracle,
+                order.market_index,
+                trigger.clob,
+            ),
         )?;
         let spec = CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
@@ -227,14 +236,50 @@ pub fn rewrite_trigger_conditions<'info>(
     clear_unused_trigger_slots(&mut conditions, slot_index)
 }
 
-/// The user's orders, reduce-only first. The slot cap is below the order cap,
-/// so the triggers that close a position take the slots before the triggers
-/// that open one.
+/// The user's orders in the order they take the watch slots. The slot cap is
+/// below the order cap, so the sort decides which triggers relay watches.
+/// Orders of one rank keep their array order.
 fn in_watch_priority(
     orders: &[crate::state::user::Order],
 ) -> impl Iterator<Item = &crate::state::user::Order> {
-    let reducing = orders.iter().filter(|order| order.reduce_only);
-    reducing.chain(orders.iter().filter(|order| !order.reduce_only))
+    let mut ranked: Vec<&crate::state::user::Order> = orders.iter().collect();
+    ranked.sort_by_key(|order| watch_rank(order));
+    ranked.into_iter()
+}
+
+/// Where an order ranks for a watch slot. A lower rank takes a slot first.
+///
+/// An armed reduce-only stop-loss comes first, then the other armed
+/// reduce-only triggers, then the armed triggers that open a position. A
+/// placed stop-limit comes last. Its parked slot only lets an eviction wake
+/// it, and a later sync arms the re-armed order.
+fn watch_rank(order: &crate::state::user::Order) -> u8 {
+    if order.is_placed_on_clob() {
+        return 3;
+    }
+
+    match (order.reduce_only, is_stop_loss(order)) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, _) => 2,
+    }
+}
+
+/// Whether a trigger fires on a move against the position it closes: a sell
+/// below its trigger or a buy above it.
+fn is_stop_loss(order: &crate::state::user::Order) -> bool {
+    use crate::{controller::position::PositionDirection, state::user::OrderTriggerCondition};
+    matches!(
+        (order.direction, order.trigger_condition),
+        (PositionDirection::Short, OrderTriggerCondition::Below)
+            | (PositionDirection::Long, OrderTriggerCondition::Above)
+    )
+}
+
+/// Whether `order` is watched at the first rank. When more orders than the
+/// slots hold are, a sync leaves an armed reduce-only stop-loss unwatched.
+pub fn is_armed_stop_loss(order: &crate::state::user::Order, now: i64) -> bool {
+    is_watched(order, now) && watch_rank(order) == 0
 }
 
 /// Classify `remaining_accounts` and refuse a call that could weaken the
@@ -720,27 +765,29 @@ fn route_trigger_resolver(
     ))
 }
 
-/// Every trigger resolver shares one account set: the scratch, the
-/// block, the user, and the slot's own oracle and perp market. The
-/// fire-to-book resolver stages a taker-origin rest, not a fill, so it
-/// reads no book and needs no CLOB accounts of its own.
+/// The account set of one trigger slot's resolver, in the order of its
+/// accounts struct. It is the scratch, the block and the user, then the
+/// slot's oracle and perp market, then `State` and the market's book. The
+/// resolver reads the last four to report no work for a fire the executor
+/// would refuse.
 fn slot_resolver_refs(
     conditions_key: Pubkey,
     user_key: Pubkey,
     oracle: Pubkey,
     market_index: u16,
-) -> [AccountRefV0; 5] {
-    let (perp_market_pda, _) = Pubkey::find_program_address(
-        &[b"perp_market", market_index.to_le_bytes().as_ref()],
-        &crate::ID,
-    );
-
+    clob: (Pubkey, Pubkey, Pubkey),
+) -> [AccountRefV0; TRIGGER_RESOLVERS_PER_SLOT] {
+    let (quoter_slab, book, program) = clob;
     [
         AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
         AccountRefV0::readonly(conditions_key.to_bytes()),
         AccountRefV0::readonly(user_key.to_bytes()),
         AccountRefV0::readonly(oracle.to_bytes()),
-        AccountRefV0::readonly(perp_market_pda.to_bytes()),
+        AccountRefV0::readonly(crate::state::pdas::perp_market(market_index).to_bytes()),
+        AccountRefV0::readonly(crate::state::pdas::state().to_bytes()),
+        AccountRefV0::readonly(quoter_slab.to_bytes()),
+        AccountRefV0::readonly(book.to_bytes()),
+        AccountRefV0::readonly(program.to_bytes()),
     ]
 }
 

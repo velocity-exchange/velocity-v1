@@ -25,6 +25,9 @@ pub struct TriggerAccounts<'a, 'info> {
 /// The armed slot reserved no exposure, so freeing it releases only the order
 /// count. The remainder the caller rests adds one back for its CLOB order.
 ///
+/// `keeper_fee` is what the crank charges the owner. It is the flat fee, or
+/// more when the reservoir pays the caller.
+///
 /// Returns `None` when there is no payable work. That happens when the order
 /// is past its `max_ts`, or when the order is cancelled instead of fired: a
 /// reduce-only order with nothing to reduce, or a risk-increasing trigger on a
@@ -33,6 +36,7 @@ pub struct TriggerAccounts<'a, 'info> {
 /// market reservoir.
 pub fn trigger_and_route_order(
     order_to_fire: OrderToFire,
+    keeper_fee: u64,
     state: &State,
     accounts: &TriggerAccounts,
     maps: &mut AccountMaps,
@@ -105,14 +109,7 @@ pub fn trigger_and_route_order(
 
     // The fill the caller runs settles its own fees. This is the trigger's
     // own reward, paid once for the crank that fired the order.
-    let filler_reward = pay_trigger_reward(
-        user,
-        market_index,
-        accounts,
-        state.perp_fee_structure.flat_filler_fee,
-        maps,
-        slot,
-    )?;
+    let filler_reward = pay_trigger_reward(user, market_index, accounts, keeper_fee, maps, slot)?;
 
     TriggerRecord {
         fired,
@@ -304,6 +301,37 @@ fn trigger_market_preflight(
     now: i64,
 ) -> VelocityResult<TriggerMarketPrices> {
     let market_reduce_only = trigger_market_status(perp_market)?;
+    let TriggerPrices {
+        oracle_price_data,
+        trigger_price,
+    } = trigger_prices(state, perp_market, oracle_map, now)?;
+
+    Ok(TriggerMarketPrices {
+        oracle_price_data,
+        trigger_price,
+        market_reduce_only,
+    })
+}
+
+/// The live oracle price, and the price a trigger's condition is judged at.
+pub(crate) struct TriggerPrices {
+    pub oracle_price_data: OraclePriceData,
+    pub trigger_price: u64,
+}
+
+/// The gates every trigger crank passes after its market status, and the
+/// price the trigger condition reads.
+///
+/// Both executors and both relay resolvers call this, so a resolver stages a
+/// crank only when its executor would pass the same gates. The oracle must be
+/// valid for a trigger and stay near the five-minute TWAP. A stale or
+/// divergent feed can fire a stop that the market never reached.
+pub(crate) fn trigger_prices(
+    state: &State,
+    perp_market: &PerpMarket,
+    oracle_map: &mut OracleMap,
+    now: i64,
+) -> VelocityResult<TriggerPrices> {
     trigger_market_gates(perp_market, now)?;
 
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
@@ -343,13 +371,14 @@ fn trigger_market_preflight(
         "oracle price vs twap too divergent"
     )?;
 
-    let oracle_price = oracle_price_data.price;
-    let trigger_price =
-        perp_market.get_trigger_price(oracle_price, now, state.use_median_trigger_price())?;
-    Ok(TriggerMarketPrices {
+    let trigger_price = perp_market.get_trigger_price(
+        oracle_price_data.price,
+        now,
+        state.use_median_trigger_price(),
+    )?;
+    Ok(TriggerPrices {
         oracle_price_data: *oracle_price_data,
         trigger_price,
-        market_reduce_only,
     })
 }
 
@@ -494,7 +523,7 @@ fn cancel_trigger_order(
     controller::equity_floor::try_lazy_equity_breaker_trip(user, &mut user_stats, maps)
 }
 
-/// Pay the keeper the flat trigger reward, and report what it was paid.
+/// Pay the keeper the trigger reward, and report what it was paid.
 ///
 /// A keeper that owns the order is paid nothing. It is already loaded as the
 /// user, and it cannot be loaded a second time as the filler.
@@ -502,7 +531,7 @@ fn pay_trigger_reward(
     user: &mut User,
     market_index: u16,
     accounts: &TriggerAccounts,
-    flat_filler_fee: u64,
+    keeper_fee: u64,
     maps: &mut AccountMaps,
     slot: u64,
 ) -> VelocityResult<u64> {
@@ -517,7 +546,7 @@ fn pay_trigger_reward(
         user,
         filler.as_deref_mut(),
         &mut perp_market,
-        flat_filler_fee,
+        keeper_fee,
         slot,
     )
 }

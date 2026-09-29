@@ -81,10 +81,10 @@ pub const TRIGGER_SLOT_BASE: usize = 3;
 pub const TRIGGER_CONDITION_SLOTS: usize = 8;
 pub const USER_CONDITIONS: usize = TRIGGER_SLOT_BASE + TRIGGER_CONDITION_SLOTS;
 
-/// Each trigger slot's resolver names its own market oracle and perp market, so no one
-/// list serves every condition the way the margin map does. The region is striped by slot.
-/// See [`relay_spec::write_resolver_stripe`] and [`relay_spec::resolver_stripes_len`].
-pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 5;
+/// Each trigger slot's resolver names its own market oracle, perp market and book, so no
+/// one list serves every condition the way the margin map does. The region is striped by
+/// slot. See [`relay_spec::write_resolver_stripe`] and [`relay_spec::resolver_stripes_len`].
+pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 9;
 pub const TRIGGER_RESOLVERS_LEN: usize =
     relay_spec::resolver_stripes_len(TRIGGER_CONDITION_SLOTS, TRIGGER_RESOLVERS_PER_SLOT);
 

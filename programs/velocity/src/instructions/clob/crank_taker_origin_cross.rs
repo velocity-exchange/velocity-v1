@@ -1494,15 +1494,15 @@ fn collected_covers_payment(collected: u64, payment_quote: Option<u64>) -> bool 
 }
 
 /// The keeper payment's value in quote, as the cross-match floor prices it.
-/// A state with no SOL spot market has no price to convert at, so any
-/// collected fee clears it.
+/// A state with no SOL spot market has no price to convert at, so the
+/// reservoir pays nothing.
 fn taker_origin_payment_quote(
     state: &State,
     maps: &mut AccountMaps,
     payment_lamports: u64,
 ) -> Option<u64> {
     if state.sol_spot_market_index == 0 {
-        return Some(1);
+        return None;
     }
 
     crate::state::clob_crank::sol_price_for_payment_floor(

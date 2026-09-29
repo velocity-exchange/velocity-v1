@@ -1325,6 +1325,24 @@ mod payment_shortfall_rules {
         assert_eq!(payment_shortfall(750, Some(750)), 0);
         assert_eq!(payment_shortfall(900, Some(750)), 0);
     }
+
+    /// With no SOL market there is no price for the payment, so nothing is
+    /// paid and nothing is charged.
+    #[test]
+    fn a_state_with_no_sol_market_pays_nothing() {
+        let state = State::default();
+        assert_eq!(state.sol_spot_market_index, 0);
+        let mut maps = AccountMaps::new(
+            PerpMarketMap::empty(),
+            SpotMarketMap::empty(),
+            OracleMap::empty(),
+        );
+
+        let payment_quote = taker_origin_payment_quote(&state, &mut maps, 5_000);
+        assert_eq!(payment_quote, None);
+        assert_eq!(payment_shortfall(0, payment_quote), 0);
+        assert!(!collected_covers_payment(1, payment_quote));
+    }
 }
 
 /// The crank requires the taker's escrow PDA, so no caller can drop the

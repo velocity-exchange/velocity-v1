@@ -8552,6 +8552,16 @@ fn place_signed_msg_with_book_ix(
     }
 }
 
+/// `place` sent by the taker itself: the taker's authority signs and its own
+/// `User` is the filler. On a book with a speed bump, only the taker may send
+/// an unattested signed message.
+fn signed_by_taker(mut place: Instruction, taker: &Party) -> Instruction {
+    place.accounts[4] = AccountMeta::new_readonly(taker.authority.pubkey(), true);
+    place.accounts[6] = AccountMeta::new(taker.user, false);
+    place.accounts[7] = AccountMeta::new(taker.stats, false);
+    place
+}
+
 /// Rest an ask at 99 on a book with an activation delay, and move to slot 30
 /// with the oracle at 100. An unattested signed order then rests whole.
 /// Returns the maker's `UserStats`.
@@ -8591,12 +8601,15 @@ fn a_signed_order_migrates_a_legacy_record() {
     set_legacy_signed_msg_user_orders(&mut fixture.svm, &authority, 8, &[(*b"legacy01", 25)]);
 
     let envelope = signed_market_order_envelope(&taker, *b"migrate1", 30);
-    let place = place_signed_msg_with_book_ix(&fixture, &taker, &keeper, maker_stats, envelope);
+    let place = signed_by_taker(
+        place_signed_msg_with_book_ix(&fixture, &taker, &keeper, maker_stats, envelope),
+        &taker,
+    );
     let placed = send_with_ixs(
         &mut fixture.svm,
         &keeper.authority,
         &[compute_unit_limit_ix(600_000), place],
-        &[],
+        &[&taker.authority],
     )
     .unwrap();
     assert!(
@@ -8794,8 +8807,9 @@ fn signed_msg_taker_signature_is_verified_in_program() {
 
 /// On a bumped book a signed-message fill takes synchronously only with
 /// swift's detached attestation: the flow authority's signature over the
-/// order's own signature plus an expiry, verified in-program. Without it
-/// the order rests whole through the window; expired, it is refused.
+/// order's own signature plus an expiry, verified in-program. A keeper
+/// cannot submit it without the attestation. The taker can, and the order
+/// then rests whole through the window. Expired, the attestation is refused.
 #[test]
 fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
     use {
@@ -8932,13 +8946,33 @@ fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
         }
     };
 
-    // Unattested: no fill — the whole order rests taker-origin.
-    let (envelope, _) = signed(*b"noattest");
-    send_with_ixs(
+    // Unattested from a keeper: refused, so a reader of the swift feed
+    // cannot rest the order at its worst price ahead of the attestation.
+    let (envelope, _) = signed(*b"keeper01");
+    let err = send_with_ixs(
         &mut fixture.svm,
         &keeper.authority,
         &[compute_unit_limit_ix(600_000), place_ix(envelope, None)],
         &[],
+    )
+    .unwrap_err();
+    assert!(
+        format!("{:?}", err.err).contains("6404"),
+        "expected UnattestedSynchronousTake for a keeper's unattested submission, got {:?}",
+        err.err
+    );
+
+    // Unattested from the taker: no fill, and the whole order rests
+    // taker-origin.
+    let (envelope, _) = signed(*b"noattest");
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[
+            compute_unit_limit_ix(600_000),
+            signed_by_taker(place_ix(envelope, None), &taker),
+        ],
+        &[&taker.authority],
     )
     .unwrap();
     let taker_state: User = read_zero_copy(&fixture.svm, &taker.user);

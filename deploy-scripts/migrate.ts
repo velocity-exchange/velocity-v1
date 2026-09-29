@@ -46,7 +46,8 @@
  *   1. resize: grow every velocity-owned zero-copy account whose struct gained fields.
  *      `extend_account` resolves the target size from the discriminator, so this step covers
  *      past and future growth the same way. Then create the singletons and the per-market
- *      accounts the new code loads: the relay scratch, the crank treasury, the protocol User
+ *      accounts the new code loads: the SOL spot market that prices the liquidation
+ *      reimbursement, the relay scratch, the crank treasury, the protocol User
  *      that every relay crank names as its filler or taker, and the quoter slab of every perp
  *      market that predates it. The protocol User needs a warm payer, so under `--multisig` it
  *      is a proposal the vault pays for.
@@ -215,6 +216,8 @@ type Args = {
 	/** Clear `ExchangeStatus::LiqPaused` once every book attach is sent or
 	 * proposed. */
 	liftLiqPause: boolean;
+	/** The liquidation reimbursement share written when State holds none. */
+	liqReimbursementBps: number;
 };
 
 type ParsedArgs = Omit<Args, 'watchCreators'> & { watchCreatorList?: string };
@@ -320,6 +323,8 @@ function parseArgs(): ParsedArgs {
 			? parseTreasuryRefill(get('--treasury-refill'))
 			: undefined,
 		liftLiqPause: argv.includes('--lift-liq-pause'),
+		// What `initialize` writes on a new deployment.
+		liqReimbursementBps: Number.parseInt(get('--liq-reimbursement-bps', '500'), 10),
 	};
 }
 
@@ -728,6 +733,7 @@ async function migrate(ctx: Migration, idl: any) {
 	await ensureProtocolUser(ctx, stateAccount);
 	const perpMarkets = await decodeMarkets(connection, program, 'PerpMarket');
 	const spotMarkets = await decodeMarkets(connection, program, 'SpotMarket');
+	await ensureLiquidationReimbursement(ctx, statePda, stateAccount, spotMarkets);
 
 	console.log('');
 	await createMissingQuoterSlabs(
@@ -1008,6 +1014,71 @@ function treasuryPricing(
 	return decoded.refillTargetCranks && decoded.refillWatermarkCranks
 		? decoded
 		: undefined;
+}
+
+const NATIVE_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+
+/**
+ * The reimbursement write an upgrade needs, or undefined when State already
+ * names its SOL market. An upgrade leaves the share and the market at zero,
+ * and a zero market turns off the liquidation reimbursement and the SOL
+ * pricing of the cross and taker-origin payment floors. Index 0 is the quote
+ * market, which the program reads as unset.
+ */
+export function liquidationReimbursementUpdate(
+	stateAccount: { liquidationCrankReimbursementBps: number; solSpotMarketIndex: number },
+	spotMarkets: Map<number, { mint: PublicKey }>,
+	defaultShareBps: number
+): { shareBps: number; solSpotMarketIndex: number } | undefined {
+	if (stateAccount.solSpotMarketIndex !== 0) return undefined;
+
+	const solMarket = [...spotMarkets].find(
+		([index, market]) => index !== 0 && market.mint.equals(NATIVE_MINT)
+	);
+	if (!solMarket) return undefined;
+
+	return {
+		shareBps: stateAccount.liquidationCrankReimbursementBps || defaultShareBps,
+		solSpotMarketIndex: solMarket[0],
+	};
+}
+
+async function ensureLiquidationReimbursement(
+	ctx: Migration,
+	statePda: PublicKey,
+	stateAccount: any,
+	spotMarkets: Map<number, any>
+): Promise<void> {
+	const update = liquidationReimbursementUpdate(
+		stateAccount,
+		spotMarkets,
+		ctx.args.liqReimbursementBps
+	);
+	if (!update) {
+		console.log(
+			stateAccount.solSpotMarketIndex !== 0
+				? `liquidation reimbursement: ${stateAccount.liquidationCrankReimbursementBps}bps, SOL market ${stateAccount.solSpotMarketIndex}`
+				: 'liquidation reimbursement: no SOL spot market, left unset'
+		);
+		return;
+	}
+
+	console.log(
+		`liquidation reimbursement: writing ${update.shareBps}bps, SOL market ${update.solSpotMarketIndex}`
+	);
+	await ctx.admin.run(
+		'migrate: set liquidation reimbursement SOL market',
+		[
+			await ctx.program.methods
+				.updateLiquidationCrankReimbursement(update)
+				.accounts({ admin: ctx.admin.key, state: statePda })
+				.instruction(),
+		],
+		{
+			discriminators: [ixDiscriminator('update_liquidation_crank_reimbursement')],
+			account: statePda,
+		}
+	);
 }
 
 /**

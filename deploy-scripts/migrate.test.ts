@@ -11,6 +11,7 @@ import {
 	CLOB_CONFIG_FIELDS,
 	DEFAULT_FEE_RAILS,
 	findUnnamedBook,
+	liquidationReimbursementUpdate,
 	parseFeeRails,
 } from './migrate';
 
@@ -143,4 +144,35 @@ test('the default rails repay a turner bidding up to the priority ceiling', () =
 	}
 
 	assert.equal(transactionCost(rails, 250_000, 1), 7_500);
+});
+
+test('an upgrade names the SOL spot market and keeps a share already set', () => {
+	const spotMarkets = new Map([
+		[0, { mint: PublicKey.unique() }],
+		[1, { mint: new PublicKey('So11111111111111111111111111111111111111112') }],
+	]);
+	assert.deepEqual(
+		liquidationReimbursementUpdate(
+			{ liquidationCrankReimbursementBps: 0, solSpotMarketIndex: 0 },
+			spotMarkets,
+			500
+		),
+		{ shareBps: 500, solSpotMarketIndex: 1 }
+	);
+	assert.deepEqual(
+		liquidationReimbursementUpdate(
+			{ liquidationCrankReimbursementBps: 300, solSpotMarketIndex: 0 },
+			spotMarkets,
+			500
+		),
+		{ shareBps: 300, solSpotMarketIndex: 1 }
+	);
+	assert.equal(
+		liquidationReimbursementUpdate(
+			{ liquidationCrankReimbursementBps: 300, solSpotMarketIndex: 1 },
+			spotMarkets,
+			500
+		),
+		undefined
+	);
 });

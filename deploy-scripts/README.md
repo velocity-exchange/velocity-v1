@@ -275,9 +275,10 @@ solana transfer <vault> <sol> -u "$RPC"
 velocity-admin --keypair <pause.json> exchange set-status <currentStatus | 16>
 # 4. Upgrade velocity, as in "Cutting a mainnet release".
 # 5. Run the migration at once. It proposes every admin step in dependency
-#    order: the fee rails, the crank treasury with its pricing, the protocol
-#    User, book A and book B for every market, and last the lift of the
-#    liquidation pause.
+#    order: the fee rails, the SOL spot market for the liquidation
+#    reimbursement, the crank treasury with its pricing, the protocol User,
+#    book A and book B for every market, and last the lift of the liquidation
+#    pause.
 bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG" \
   --treasury-refill <refillTargetCranks>,<refillWatermarkCranks> --lift-liq-pause
 # 6. In the same signing round, let the payer sync users, and resize accounts.
@@ -319,6 +320,12 @@ has no pricing. Without `--treasury-refill` the script stops before the books un
 priced, and the upgrade then takes a second round. `--lift-liq-pause` clears only the `LiqPaused`
 bit, and only once every book B is sent or proposed. The lift writes the whole status mask it read,
 so propose it again if another pause bit changes before it executes.
+
+An upgrade leaves `State.sol_spot_market_index` at zero, which turns off the liquidation
+reimbursement and the SOL pricing of the cross and taker-origin payment floors. The script writes
+the spot market whose mint is wrapped SOL through `update_liquidation_crank_reimbursement`. It
+keeps a share that State already holds, and otherwise writes `--liq-reimbursement-bps`, 500 by
+default, which is what `initialize` writes.
 
 The script also creates the protocol User, sub-account 0 of the velocity signer PDA, and its
 UserStats. Every relay executor names that account as its filler or taker, so every relay crank

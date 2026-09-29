@@ -126,7 +126,7 @@ pub fn handle_update_perp_market_clob_quoter(
         oracle: perp_market.oracle,
         quote_spot_market_index: perp_market.quote_spot_market_index,
     };
-    let payments = CrankPaymentsV0::derive(
+    let payments = price_market_cranks(
         &ctx.accounts.state.load()?.transaction_fee_rails,
         &crank_cost_units,
     )?;
@@ -187,6 +187,22 @@ pub fn handle_update_perp_market_clob_quoter(
     // designation and nothing here writes it. A path that could repoint the
     // market later would put every user a fill carries behind the admin key.
     Ok(())
+}
+
+/// Price each crank from the rails. An attach under zero rails stores zero
+/// payments, and relay turners then take none of the market's cranks.
+fn price_market_cranks(
+    rails: &crate::state::state::TransactionFeeRails,
+    units: &CrankCostUnitsV0,
+) -> Result<CrankPaymentsV0> {
+    let payments = CrankPaymentsV0::derive(rails, units)?;
+    validate!(
+        payments.max_payment() > 0,
+        ErrorCode::InvalidQuoterConfig,
+        "every crank payment is zero; set State.transaction_fee_rails first"
+    )?;
+
+    Ok(payments)
 }
 
 /// Bind the book the market's slab names, and run the two identity checks
@@ -429,6 +445,46 @@ fn write_market_crank_conditions(
     // there is no work.
     conditions.spendable_mirror = spendable_lamports;
     Ok(())
+}
+
+#[cfg(test)]
+mod crank_price_tests {
+    use {
+        super::price_market_cranks,
+        crate::{
+            error::ErrorCode,
+            state::{clob_crank::CrankCostUnitsV0, state::TransactionFeeRails},
+        },
+    };
+
+    fn units() -> CrankCostUnitsV0 {
+        CrankCostUnitsV0 {
+            removal: 250_000,
+            cross: 250_000,
+            taker_origin_cross: 250_000,
+            trigger: 250_000,
+            liquidation: 250_000,
+            force_cancel: 250_000,
+            refill: 250_000,
+        }
+    }
+
+    /// An upgrade reads the rails from former padding, so they read zero
+    /// until an admin writes them.
+    #[test]
+    fn an_attach_under_zero_rails_is_refused() {
+        assert_eq!(
+            price_market_cranks(&TransactionFeeRails::default(), &units()).unwrap_err(),
+            ErrorCode::InvalidQuoterConfig.into()
+        );
+    }
+
+    #[test]
+    fn an_attach_under_priced_rails_passes() {
+        let payments =
+            price_market_cranks(&TransactionFeeRails::FLAT_PER_SIGNATURE, &units()).unwrap();
+        assert_eq!(payments.max_payment(), 5_000);
+    }
 }
 
 #[cfg(test)]

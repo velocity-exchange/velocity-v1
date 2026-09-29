@@ -19,8 +19,11 @@
 //! pass refuses a call that leaves out the market, oracle, crank account or quoter
 //! slab of any watched order.
 //!
-//! Reduce-only orders take the slots before the others, so a stop-loss is not
-//! left unwatched behind orders that open a position.
+//! Armed reduce-only stop-losses take the slots first, then the other armed
+//! triggers, then the parked slots of placed stop-limits. So a stop-loss is not
+//! left unwatched behind take-profits, entries or orders already on the book.
+//! Placement refuses a ninth armed reduce-only stop-loss, which no slot could
+//! watch.
 //!
 //! A book that is suspended or inactive still arms its market's triggers. The
 //! executors refuse to fire while the book takes no flow, so each trigger stays
@@ -233,14 +236,50 @@ pub fn rewrite_trigger_conditions<'info>(
     clear_unused_trigger_slots(&mut conditions, slot_index)
 }
 
-/// The user's orders, reduce-only first. The slot cap is below the order cap,
-/// so the triggers that close a position take the slots before the triggers
-/// that open one.
+/// The user's orders in the order they take the watch slots. The slot cap is
+/// below the order cap, so the sort decides which triggers relay watches.
+/// Orders of one rank keep their array order.
 fn in_watch_priority(
     orders: &[crate::state::user::Order],
 ) -> impl Iterator<Item = &crate::state::user::Order> {
-    let reducing = orders.iter().filter(|order| order.reduce_only);
-    reducing.chain(orders.iter().filter(|order| !order.reduce_only))
+    let mut ranked: Vec<&crate::state::user::Order> = orders.iter().collect();
+    ranked.sort_by_key(|order| watch_rank(order));
+    ranked.into_iter()
+}
+
+/// Where an order ranks for a watch slot. A lower rank takes a slot first.
+///
+/// An armed reduce-only stop-loss comes first, then the other armed
+/// reduce-only triggers, then the armed triggers that open a position. A
+/// placed stop-limit comes last. Its parked slot only lets an eviction wake
+/// it, and a later sync arms the re-armed order.
+fn watch_rank(order: &crate::state::user::Order) -> u8 {
+    if order.is_placed_on_clob() {
+        return 3;
+    }
+
+    match (order.reduce_only, is_stop_loss(order)) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, _) => 2,
+    }
+}
+
+/// Whether a trigger fires on a move against the position it closes: a sell
+/// below its trigger or a buy above it.
+fn is_stop_loss(order: &crate::state::user::Order) -> bool {
+    use crate::{controller::position::PositionDirection, state::user::OrderTriggerCondition};
+    matches!(
+        (order.direction, order.trigger_condition),
+        (PositionDirection::Short, OrderTriggerCondition::Below)
+            | (PositionDirection::Long, OrderTriggerCondition::Above)
+    )
+}
+
+/// Whether `order` is watched at the first rank. When more orders than the
+/// slots hold are, a sync leaves an armed reduce-only stop-loss unwatched.
+pub fn is_armed_stop_loss(order: &crate::state::user::Order, now: i64) -> bool {
+    is_watched(order, now) && watch_rank(order) == 0
 }
 
 /// Classify `remaining_accounts` and refuse a call that could weaken the

@@ -11,6 +11,10 @@
 //! The batch defers one margin check to the end. A stop loss and a take profit
 //! arrive together, and a check after each one alone would admit the first
 //! under a weaker threshold than the pair needs.
+//!
+//! Relay watches eight triggers per account, and armed reduce-only stop-losses
+//! take those slots first. A batch that arms a ninth such stop-loss is refused,
+//! because no slot would watch one of them.
 
 use super::*;
 
@@ -63,6 +67,7 @@ pub fn handle_place_trigger_orders_v1<'c: 'info, 'info>(
         None
     };
 
+    let first_new_order_id = user.next_order_id;
     let results = {
         let placement = &mut BatchPlacement {
             state: &state,
@@ -75,6 +80,7 @@ pub fn handle_place_trigger_orders_v1<'c: 'info, 'info>(
         arm_triggers(placement, &args.params, clock)?
     };
 
+    refuse_unwatched_stop_loss(&user, first_new_order_id, clock.unix_timestamp)?;
     enforce_batch_margin(&user, &mut maps, &results)
 }
 
@@ -174,6 +180,38 @@ fn arm_trigger(
     )?)
 }
 
+/// Refuse a batch that arms a reduce-only stop-loss past the watch slots.
+///
+/// Relay is the only firer, so a stop-loss that no slot watches never fires.
+/// A batch that arms only other triggers is not refused, because it leaves no
+/// stop-loss less watched than before.
+fn refuse_unwatched_stop_loss(user: &User, first_new_order_id: u32, now: i64) -> Result<()> {
+    use crate::{
+        instructions::trigger_relay::sync_trigger_conditions::is_armed_stop_loss,
+        state::user_conditions::TRIGGER_CONDITION_SLOTS,
+    };
+
+    let stop_losses = || {
+        user.orders
+            .iter()
+            .filter(|order| is_armed_stop_loss(order, now))
+    };
+    if !stop_losses().any(|order| order.order_id >= first_new_order_id) {
+        return Ok(());
+    }
+
+    let count = stop_losses().count();
+    validate!(
+        count <= TRIGGER_CONDITION_SLOTS,
+        ErrorCode::MaxNumberOfOrders,
+        "{} armed reduce-only stop-losses exceed the {} watch slots",
+        count,
+        TRIGGER_CONDITION_SLOTS
+    )?;
+
+    Ok(())
+}
+
 /// One post-batch margin check, accumulating risk across the whole batch, so it
 /// still runs when the final entry was a no-op. It mirrors what arming each
 /// trigger on its own would have enforced:
@@ -209,4 +247,44 @@ pub(super) fn enforce_batch_margin(
             meets_place_order_margin_requirement(user, maps, true, isolated_market_index)
         })
         .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod watch_slot_tests {
+    use {
+        super::refuse_unwatched_stop_loss,
+        crate::{
+            controller::position::PositionDirection,
+            state::user::{Order, OrderStatus, OrderTriggerCondition, OrderType, User},
+        },
+    };
+
+    fn trigger(order_id: u32, trigger_condition: OrderTriggerCondition) -> Order {
+        Order {
+            order_id,
+            status: OrderStatus::Open,
+            order_type: OrderType::TriggerMarket,
+            direction: PositionDirection::Short,
+            trigger_condition,
+            reduce_only: true,
+            ..Order::default()
+        }
+    }
+
+    /// Eight armed stop-losses fill the watch slots. A ninth is refused, and
+    /// a take-profit armed beside them is not.
+    #[test]
+    fn a_ninth_armed_stop_loss_is_refused() {
+        let mut user = User::default();
+        for index in 0..8 {
+            user.orders[index] = trigger(index as u32 + 1, OrderTriggerCondition::Below);
+        }
+
+        user.orders[8] = trigger(9, OrderTriggerCondition::Above);
+        assert!(refuse_unwatched_stop_loss(&user, 9, 0).is_ok());
+
+        user.orders[8] = trigger(9, OrderTriggerCondition::Below);
+        assert!(refuse_unwatched_stop_loss(&user, 9, 0).is_err());
+        assert!(refuse_unwatched_stop_loss(&user, 10, 0).is_ok());
+    }
 }

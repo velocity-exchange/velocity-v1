@@ -172,20 +172,64 @@ mod coverage_and_direction {
         );
     }
 
-    /// Only eight triggers are watched. A stop-loss placed after eight
-    /// entries still takes a slot, because reduce-only orders come first.
+    /// Only eight triggers are watched. An armed stop-loss takes a slot ahead
+    /// of take-profits, entries and placed stop-limits, whatever their slots.
     #[test]
-    fn reduce_only_triggers_take_the_slots_first() {
-        let mut orders = [Order::default(); 10];
-        for (index, order) in orders.iter_mut().enumerate() {
-            order.order_id = index as u32 + 1;
-        }
+    fn an_armed_stop_loss_takes_the_first_slot() {
+        use crate::controller::position::PositionDirection;
+        let order = |order_id: u32, reduce_only: bool, trigger_condition| Order {
+            order_id,
+            status: OrderStatus::Open,
+            direction: PositionDirection::Short,
+            trigger_condition,
+            reduce_only,
+            ..Order::default()
+        };
 
-        orders[9].reduce_only = true;
+        let mut placed = order(1, true, OrderTriggerCondition::Below);
+        placed.add_bit_flag(OrderBitFlag::PlacedOnClob);
+        let orders = [
+            placed,
+            order(2, false, OrderTriggerCondition::Below),
+            order(3, true, OrderTriggerCondition::Above),
+            order(4, true, OrderTriggerCondition::Below),
+        ];
+
         let ids: Vec<u32> = super::super::in_watch_priority(&orders)
             .map(|order| order.order_id)
             .collect();
-        assert_eq!(ids, vec![10, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(ids, vec![4, 3, 2, 1]);
+    }
+
+    /// Placement holds to the slot cap only armed, watched reduce-only
+    /// stop-losses.
+    #[test]
+    fn only_armed_stop_losses_rank_first() {
+        use crate::controller::position::PositionDirection;
+        let stop_loss = Order {
+            order_type: OrderType::TriggerMarket,
+            direction: PositionDirection::Short,
+            trigger_condition: OrderTriggerCondition::Below,
+            reduce_only: true,
+            ..stop_above()
+        };
+
+        let mut placed = stop_loss;
+        placed.add_bit_flag(OrderBitFlag::PlacedOnClob);
+        let expired = Order {
+            max_ts: 10,
+            ..stop_loss
+        };
+        let take_profit = Order {
+            trigger_condition: OrderTriggerCondition::Above,
+            ..stop_loss
+        };
+
+        let armed: Vec<bool> = [stop_loss, placed, expired, take_profit]
+            .iter()
+            .map(|order| super::super::is_armed_stop_loss(order, 20))
+            .collect();
+        assert_eq!(armed, vec![true, false, false, false]);
     }
 
     /// A market with no CLOB has nowhere to fire, so its order stays skipped.

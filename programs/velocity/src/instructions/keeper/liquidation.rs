@@ -500,11 +500,6 @@ fn pays_the_liquidated_user(user: &User, payout: &Pubkey) -> bool {
 /// priority fee the transaction paid, bounded by a share of what the
 /// liquidation recovered.
 ///
-/// This function reads the fee out of the transaction's own compute-budget
-/// instructions. `CrankPaymentsV0::crank_priority_lamports` then prices it on
-/// the lesser of the units the caller requested and the stored cost units. A
-/// caller therefore cannot inflate the bill by asking for room it does not use.
-///
 /// Every reason to decline pays nothing extra instead of failing. A crank that
 /// lands is worth more than one that reverts over its own tip, and the flat
 /// payment still stands.
@@ -523,15 +518,16 @@ fn liquidation_reimbursement<'info>(
         return 0;
     }
 
-    let Ok((price_per_unit, requested_units)) =
-        crate::instructions::optional_accounts::tx_compute_budget(sysvar)
-    else {
+    let Ok(priority_lamports) = reimbursed_priority_lamports(
+        sysvar,
+        u64::from(
+            state
+                .transaction_fee_rails
+                .max_priority_micro_lamports_per_cu,
+        ),
+    ) else {
         return 0;
     };
-
-    if price_per_unit == 0 || requested_units == 0 {
-        return 0;
-    }
 
     let Some(sol_price) =
         crate::state::clob_crank::sol_oracle_price(state, spot_market_map, oracle_map)
@@ -539,32 +535,46 @@ fn liquidation_reimbursement<'info>(
         return 0;
     };
 
-    // The priority fee is a whole-transaction cost, so the liquidations batched
-    // into that transaction share it. Reimbursing each one the full figure would
-    // pay the same fee once per liquidated account.
-    let Ok(claimants) = crate::instructions::optional_accounts::tx_reimbursement_claimants(
-        sysvar,
-        crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
-    ) else {
-        return 0;
+    CrankPaymentsV0::liquidation_reimbursement(
+        filled_quote,
+        sol_price,
+        priority_lamports,
+        state.liquidation_crank_reimbursement_bps,
+    )
+    .unwrap_or(0)
+}
+
+/// The priority fee one liquidation crank is reimbursed, before the cap on
+/// what the liquidation recovered.
+///
+/// A transaction that states its price is reimbursed that price on its unit
+/// limit. `crank_priority_lamports` bounds both, so a caller cannot bill room
+/// it does not use. The liquidations batched into that transaction share the
+/// one fee, so each claims a share.
+///
+/// A transaction that states no price is priced at `max_price_per_unit` on the
+/// reimbursed unit figure. Relay's turner sends only v1 transactions, which
+/// carry the fee in the message header where no program can read it. Each
+/// batched liquidation is priced on its own units, so the figure is not shared.
+fn reimbursed_priority_lamports(
+    instructions_sysvar: &AccountInfo,
+    max_price_per_unit: u64,
+) -> VelocityResult<u64> {
+    let budget = crate::instructions::optional_accounts::tx_compute_budget(instructions_sysvar)?;
+    let Some(price_per_unit) = budget.price_per_unit else {
+        return CrankPaymentsV0::crank_priority_lamports(
+            max_price_per_unit,
+            crate::state::clob_crank::LIQUIDATION_CRANK_REIMBURSED_UNITS,
+            max_price_per_unit,
+        );
     };
 
-    let max_price_per_unit = u64::from(
-        state
-            .transaction_fee_rails
-            .max_priority_micro_lamports_per_cu,
-    );
-    CrankPaymentsV0::crank_priority_lamports(price_per_unit, requested_units, max_price_per_unit)
-        .and_then(|lamports| lamports.safe_div(u64::from(claimants)))
-        .and_then(|priority_lamports| {
-            CrankPaymentsV0::liquidation_reimbursement(
-                filled_quote,
-                sol_price,
-                priority_lamports,
-                state.liquidation_crank_reimbursement_bps,
-            )
-        })
-        .unwrap_or(0)
+    let claimants = crate::instructions::optional_accounts::tx_reimbursement_claimants(
+        instructions_sysvar,
+        crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+    )?;
+    CrankPaymentsV0::crank_priority_lamports(price_per_unit, budget.unit_limit, max_price_per_unit)?
+        .safe_div(u64::from(claimants))
 }
 
 #[access_control(
@@ -894,7 +904,10 @@ pub struct SetUserStatusToBeingLiquidated<'info> {
 #[cfg(test)]
 mod tests {
     use {
-        super::{liquidation_reimbursement, pays_the_liquidated_user, LiquidationProgress},
+        super::{
+            liquidation_reimbursement, pays_the_liquidated_user, reimbursed_priority_lamports,
+            LiquidationProgress,
+        },
         crate::state::{
             oracle_map::OracleMap, spot_market_map::SpotMarketMap, state::State, user::User,
         },
@@ -962,5 +975,96 @@ mod tests {
         );
 
         assert_eq!(paid, 0);
+    }
+
+    /// A sysvar over `instructions`, serialized the way the runtime does.
+    fn with_instructions_sysvar<T>(
+        instructions: &[solana_program::instruction::Instruction],
+        read: impl FnOnce(&AccountInfo) -> T,
+    ) -> T {
+        use solana_program::sysvar::instructions::{
+            construct_instructions_data, BorrowedInstruction,
+        };
+
+        let borrowed: Vec<BorrowedInstruction> = instructions
+            .iter()
+            .map(|ix| BorrowedInstruction {
+                program_id: &ix.program_id,
+                accounts: vec![],
+                data: &ix.data,
+            })
+            .collect();
+        let mut data = construct_instructions_data(&borrowed);
+        let key = solana_program::sysvar::instructions::ID;
+        let owner = Pubkey::default();
+        let mut lamports = 0;
+        let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, false);
+        read(&info)
+    }
+
+    /// Relay's turner sends a v1 transaction. Its compute budget sits in the
+    /// message header, so the sysvar holds only the guard and the crank. Such
+    /// a crank is priced at the rails' ceiling on the reimbursed units.
+    #[test]
+    fn a_v1_liquidation_is_reimbursed_at_the_priority_ceiling() {
+        use {
+            crate::state::clob_crank::LIQUIDATION_CRANK_REIMBURSED_UNITS,
+            anchor_lang::Discriminator, solana_program::instruction::Instruction,
+        };
+
+        let relay = Pubkey::new_unique();
+        let liquidation = Instruction::new_with_bytes(
+            crate::ID,
+            crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+            vec![],
+        );
+        let guard = Instruction::new_with_bytes(relay, &[1; 8], vec![]);
+        let assert_paid = Instruction::new_with_bytes(relay, &[2; 8], vec![]);
+        let ceiling = 50_000;
+
+        let paid = with_instructions_sysvar(
+            &[guard.clone(), liquidation.clone(), assert_paid.clone()],
+            |sysvar| reimbursed_priority_lamports(sysvar, ceiling).unwrap(),
+        );
+        assert_eq!(
+            paid,
+            ceiling * u64::from(LIQUIDATION_CRANK_REIMBURSED_UNITS) / 1_000_000
+        );
+
+        let batched = with_instructions_sysvar(
+            &[guard, liquidation.clone(), liquidation, assert_paid],
+            |sysvar| reimbursed_priority_lamports(sysvar, ceiling).unwrap(),
+        );
+        assert_eq!(batched, paid);
+    }
+
+    /// A transaction that states its price is reimbursed that price, and the
+    /// liquidations batched into it share the fee.
+    #[test]
+    fn a_stated_price_is_reimbursed_and_shared() {
+        use {anchor_lang::Discriminator, solana_program::instruction::Instruction};
+
+        let compute_budget = solana_program::pubkey!("ComputeBudget111111111111111111111111111111");
+        let limit = Instruction::new_with_bytes(
+            compute_budget,
+            &[&[2u8][..], &200_000u32.to_le_bytes()].concat(),
+            vec![],
+        );
+        let price = Instruction::new_with_bytes(
+            compute_budget,
+            &[&[3u8][..], &1_000u64.to_le_bytes()].concat(),
+            vec![],
+        );
+        let liquidation = Instruction::new_with_bytes(
+            crate::ID,
+            crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+            vec![],
+        );
+
+        let paid = with_instructions_sysvar(
+            &[limit, price, liquidation.clone(), liquidation],
+            |sysvar| reimbursed_priority_lamports(sysvar, 50_000).unwrap(),
+        );
+        assert_eq!(paid, 1_000 * 200_000 / 1_000_000 / 2);
     }
 }

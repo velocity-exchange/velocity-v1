@@ -12385,3 +12385,133 @@ fn an_unfillable_reduce_only_remainder_is_cancelled_and_frees_its_side() {
     );
     assert_eq!(clob_bid_count(&fixture), 0);
 }
+
+fn resume_amm_fill(svm: &mut litesvm::LiteSVM) {
+    use velocity::state::paused_operations::PerpOperation;
+    let mut market: PerpMarket = read_zero_copy(svm, &perp_market_pda(0));
+    market.paused_operations &= !(PerpOperation::AmmFill as u8);
+    set_zero_copy_account(
+        svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+}
+
+/// A remainder that no book row crosses routes into the vAMM. It rested whole
+/// while the vAMM was unavailable. With the vAMM back, the crank fills it near
+/// the curve rather than leaving it at the 105 it rested at, where anyone who
+/// rests a crossing order would take it.
+#[test]
+fn a_remainder_only_the_vamm_crosses_routes_to_the_vamm() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        105 * PRICE,
+        UNIT,
+    );
+    assert_eq!(
+        clob_ask_count(&fixture),
+        0,
+        "no book row crosses the remainder"
+    );
+
+    resume_amm_fill(&mut fixture.svm);
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), ix],
+        &[],
+    )
+    .expect("the vAMM fills the remainder");
+
+    let position = perp_position(&fixture.svm, &taker.user);
+    assert_eq!(position.base_asset_amount, UNIT as i64);
+    assert!(
+        -position.quote_asset_amount < 104 * PRICE as i64,
+        "paid {} for a unit the vAMM quotes near 100",
+        -position.quote_asset_amount
+    );
+    assert_eq!(clob_bid_count(&fixture), 0);
+}
+
+/// Two unattested remainders cross: a buy at 105, then a sell at 95. The pair
+/// would settle the buyer at its own worst price, 105, while the vAMM asks
+/// about 100. The crank refuses the pair, and the buyer routes to the vAMM.
+#[test]
+fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let attacker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        105 * PRICE,
+        UNIT,
+    );
+    rest_taker_origin_order(
+        &mut fixture,
+        &attacker,
+        PositionDirection::Short,
+        95 * PRICE,
+        UNIT,
+    );
+
+    resume_amm_fill(&mut fixture.svm);
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &attacker, &[&victim]);
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::NoTakerOriginCross);
+
+    let route = crank_taker_origin_cross_ix(&fixture, &keeper, &victim, &[&attacker]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), route],
+        &[],
+    )
+    .expect("the earlier remainder routes to the vAMM");
+
+    let position = perp_position(&fixture.svm, &victim.user);
+    assert_eq!(position.base_asset_amount, UNIT as i64);
+    assert!(
+        -position.quote_asset_amount < 104 * PRICE as i64,
+        "paid {}, where the pair would have charged 105",
+        -position.quote_asset_amount
+    );
+}

@@ -804,7 +804,7 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
     let taker_origin = match stage_taker_origin_cross(ctx)? {
         Some(TakerOriginStage {
             call,
-            stalled: false,
+            yields_to_maker_cross: false,
         }) => return Ok(Some(call)),
         stage => stage,
     };

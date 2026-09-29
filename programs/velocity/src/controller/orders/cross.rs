@@ -168,6 +168,67 @@ pub fn price_taker_origin_cross(
     })
 }
 
+/// The vAMM's best price for a taker on `direction`, on a copy of the curve
+/// projected to `oracle_price_data` the way a fill projects it.
+///
+/// `None` when the vAMM cannot fill that side, or when the projection fails.
+/// A caller uses this only to choose a path, and the fill it chooses applies
+/// every vAMM gate again.
+pub fn vamm_top_price(
+    market: &PerpMarket,
+    oracle_price_data: OraclePriceData,
+    state: &State,
+    slot: u64,
+    direction: PositionDirection,
+) -> Option<u64> {
+    if state.amm_paused().ok()? || market.is_operation_paused(PerpOperation::AmmFill) {
+        return None;
+    }
+
+    let inputs = crate::state::quoter::MarketQuoteInputs::load(
+        market,
+        oracle_price_data,
+        slot,
+        &state.oracle_guard_rails.validity,
+        state.slot_clock(),
+    )
+    .ok()?;
+    let mut amm = market.amm;
+    let quoter_context = inputs.ctx(slot);
+    crate::vlp::amm::quoter::AmmQuoter::for_amm(&mut amm)
+        .refresh(&quoter_context)
+        .ok()?;
+
+    let available = crate::vlp::amm::math::amm::calculate_amm_available_liquidity(
+        &amm,
+        &direction,
+        market.order_step_size,
+    )
+    .ok()?;
+    if available == 0 {
+        return None;
+    }
+
+    let reserve_price = amm.reserve_price().ok()?;
+    match direction {
+        PositionDirection::Long => amm
+            .ask_price(reserve_price, amm.long_spread, amm.reference_price_offset)
+            .ok(),
+        PositionDirection::Short => amm
+            .bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)
+            .ok(),
+    }
+}
+
+/// Whether the vAMM fills a taker on `direction` at a better price than
+/// `price`. `vamm_top` is [`vamm_top_price`].
+pub fn vamm_improves_on(vamm_top: Option<u64>, direction: PositionDirection, price: u64) -> bool {
+    vamm_top.is_some_and(|top| match direction {
+        PositionDirection::Long => top < price,
+        PositionDirection::Short => top > price,
+    })
+}
+
 /// Notional of `base_asset_amount` at `price`, floored. This is the CLOB's
 /// own rounding, so a notional velocity computes for a remainder it prices
 /// itself lands in the same units as a book-filled leg.
@@ -274,6 +335,19 @@ mod gate_tests {
             crank_market_gates(&market, 100).err().unwrap(),
             ErrorCode::MarketFillOrderPaused
         );
+    }
+
+    /// A pair settles at the counterparty's price only when the vAMM does not
+    /// beat it for the aggressor.
+    #[test]
+    fn the_vamm_improves_only_on_a_worse_price() {
+        use {super::vamm_improves_on, crate::controller::position::PositionDirection};
+
+        assert!(vamm_improves_on(Some(101), PositionDirection::Long, 102));
+        assert!(!vamm_improves_on(Some(102), PositionDirection::Long, 102));
+        assert!(vamm_improves_on(Some(99), PositionDirection::Short, 98));
+        assert!(!vamm_improves_on(Some(97), PositionDirection::Short, 98));
+        assert!(!vamm_improves_on(None, PositionDirection::Long, 102));
     }
 
     /// A pair of remainders settles without a router, and the referred taker

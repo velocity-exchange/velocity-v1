@@ -296,7 +296,24 @@ solana transfer <treasury> <sol> -u "$RPC"
 #    registers the watches from the payer. Repeat until a run sends and
 #    proposes nothing.
 bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG"
+# 10. Check every account. The keypair must still hold accountExtension here,
+#     because the size check simulates extend_account with it.
+bun run deploy-scripts/verify-upgrade.ts --url "$RPC" --keypair <payer.json>
+# 11. Revoke the payer's hot roles. The conditionsSync key can set or clear the
+#     paid resync terms of every user, and the payer is an operator keypair.
+velocity-admin --multisig "$MULTISIG" auth set-hot-admin conditionsSync 11111111111111111111111111111111
+velocity-admin --multisig "$MULTISIG" auth set-hot-admin accountExtension 11111111111111111111111111111111
 ```
+
+The keys the upgrade touches:
+
+| Key | Holds | During the upgrade |
+| --- | --- | --- |
+| Multisig vault | velocity upgrade authority, warm or cold admin | Signs every proposal and pays the rent of what the admin creates. |
+| CLOB upgrade authority | the CLOB program `BPX47ur8…` | Must be the vault, or the program must be immutable. An upgrade to the CLOB can name any user as a maker, because `initialize_quoter` pins the CLOB by id only. `migrate.ts` refuses to run under `--multisig` otherwise. `release.sh` and CI release only velocity, so a CLOB upgrade is a manual Squads proposal. |
+| Pause key | `State.pause_admin` | Adds `LiqPaused` before the swap. It cannot clear a bit. |
+| Migration payer | `conditionsSync`, `accountExtension` | Creates the books, syncs the users and registers the watches. Revoke both roles in step 11. |
+| Deployer | CI buffer rent, proposal creation | Must be a multisig member with Voter permissions. |
 
 Step 5 builds book B before book A executes. The approval in B carries the hash of the quoter entry
 that A stages, and that entry depends only on A's arguments, so the script simulates A to get the

@@ -273,9 +273,31 @@ async function main() {
 	}
 
 	await requireWatchesOnExposedUsers(verifier, program, accounts);
+	await noteMigrationHotRoles(program);
 
 	printReport(verifier, accounts.length);
 	if (verifier.failures.length > 0) process.exit(1);
+}
+
+/** The migration gives the payer two hot roles. The runbook revokes both
+ * after this check, so a set role is a reminder, not a failure. */
+async function noteMigrationHotRoles(program: Program): Promise<void> {
+	const info = await program.provider.connection.getAccountInfo(
+		await getVelocityStateAccountPublicKey(program.programId)
+	);
+	if (!info) return;
+	const state: any = program.coder.accounts.decode('state', info.data);
+	for (const [role, key] of [
+		['conditionsSync', state.hotConditionsSync],
+		['accountExtension', state.hotAccountExtension],
+	] as [string, PublicKey][]) {
+		if (!key.equals(PublicKey.default)) {
+			console.log(
+				`note: hot ${role} is still ${key.toBase58()}. Revoke it once the migration is done: ` +
+					`velocity-admin --multisig <pda> auth set-hot-admin ${role} ${PublicKey.default.toBase58()}`
+			);
+		}
+	}
 }
 
 /** A market with a book needs a watch on its crank conditions, and one on the

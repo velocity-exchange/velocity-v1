@@ -694,7 +694,7 @@ async function migrate(ctx: Migration, idl: any) {
 	const statePda = await getVelocityStateAccountPublicKey(velocity);
 
 	const clobProgram = clobProgramId(idl);
-	await assertClobDeployed(connection, clobProgram);
+	await assertClobDeployed(connection, clobProgram, admin);
 	const stateAccount = await loadState(connection, program, statePda);
 	assertAdminHoldsWarm(stateAccount, admin.key);
 	await ensureFeeRails(ctx, statePda, stateAccount);
@@ -1493,9 +1493,15 @@ function clobProgramId(idl: any): PublicKey {
 	return new PublicKey(address);
 }
 
+/**
+ * The CLOB is the trust root for maker identity: `initialize_quoter` pins it
+ * by id only, and an upgrade to it can name any user as a maker. Under a
+ * multisig its upgrade authority must therefore be the vault, or none.
+ */
 async function assertClobDeployed(
 	connection: Connection,
-	clobProgram: PublicKey
+	clobProgram: PublicKey,
+	admin: AdminDispatch
 ): Promise<void> {
 	const info = await connection.getAccountInfo(clobProgram);
 	if (!info?.executable) {
@@ -1505,7 +1511,27 @@ async function assertClobDeployed(
 		);
 	}
 
-	console.log(`clob ${clobProgram.toBase58()}: deployed`);
+	const authority = await upgradeAuthority(connection, clobProgram);
+	console.log(
+		`clob ${clobProgram.toBase58()}: deployed, upgrade authority ${authority?.toBase58() ?? 'none'}`
+	);
+	if (admin.proposes && authority && !authority.equals(admin.key)) {
+		throw new Error(
+			`the CLOB upgrade authority ${authority.toBase58()} is not the vault ${admin.key.toBase58()}. ` +
+				`Run solana program set-upgrade-authority ${clobProgram.toBase58()} --new-upgrade-authority ${admin.key.toBase58()}.`
+		);
+	}
+}
+
+/** `UpgradeableLoaderState::ProgramData`: a u32 tag, the deploy slot, then an
+ * optional authority. Undefined when the program is immutable. */
+async function upgradeAuthority(
+	connection: Connection,
+	program: PublicKey
+): Promise<PublicKey | undefined> {
+	const programData = await connection.getAccountInfo(getProgramDataAddress(program));
+	if (!programData || programData.data[12] === 0) return undefined;
+	return new PublicKey(programData.data.subarray(13, 45));
 }
 
 /** Write the fee rails when they price every crank at zero, which is what an

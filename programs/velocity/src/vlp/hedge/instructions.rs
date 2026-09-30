@@ -1833,7 +1833,10 @@ pub struct WithdrawProgramVault<'info> {
 #[derive(Accounts)]
 pub struct UpdateConstituentOracleInfo<'info> {
     pub state: AccountLoader<'info, State>,
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = check_hot(&keeper.key(), &state, HotRole::LpCache)?
+    )]
     pub keeper: Signer<'info>,
     #[account(mut)]
     pub constituent: AccountLoader<'info, Constituent>,
@@ -1849,7 +1852,10 @@ pub struct UpdateConstituentOracleInfo<'info> {
 #[derive(Accounts)]
 pub struct UpdateConstituentTargetBase<'info> {
     pub state: AccountLoader<'info, State>,
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = check_hot(&keeper.key(), &state, HotRole::LpCache)?
+    )]
     pub keeper: Signer<'info>,
     /// CHECK: checked in AmmConstituentMappingZeroCopy checks
     pub amm_constituent_mapping: UncheckedAccount<'info>,
@@ -1864,7 +1870,10 @@ pub struct UpdateConstituentTargetBase<'info> {
 #[derive(Accounts)]
 pub struct UpdateLPPoolAum<'info> {
     pub state: AccountLoader<'info, State>,
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = check_hot(&keeper.key(), &state, HotRole::LpCache)?
+    )]
     pub keeper: Signer<'info>,
     #[account(mut)]
     pub lp_pool: AccountLoader<'info, LPPool>,

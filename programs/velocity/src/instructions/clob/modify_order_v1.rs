@@ -47,7 +47,7 @@ use {
             casting::Cast,
             liquidation::validate_user_not_being_liquidated,
             margin::meets_place_order_margin_requirement,
-            orders::{is_new_order_risk_increasing, reduce_only_cover},
+            orders::{is_new_order_risk_increasing, reduce_only_cover, standardize_price},
             safe_math::SafeMath,
         },
         msg,
@@ -195,7 +195,11 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         .get_perp_position(params.market_index)
         .map(|position| position.base_asset_amount)
         .unwrap_or(0);
-    let terms = resolve_replacement_terms(&params, &removed, position_base)?;
+    let mut terms = resolve_replacement_terms(&params, &removed, position_base)?;
+    terms.price = replacement_price_on_market_grid(
+        &*maps.perp_market_map.get_ref(&params.market_index)?,
+        &terms,
+    )?;
     validate_replacement_order(&mut maps, &replacement_order(&params, &terms), clock.slot)?;
     super::crank_clob_cancel_outside_band::MakerBand::at_placement(
         &state,
@@ -288,6 +292,17 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     );
 
     Ok(())
+}
+
+/// Snap a client replacement price exactly as a fresh perp placement does:
+/// bids round down and asks round up, so the maker never receives a worse
+/// limit than the one it submitted.
+fn replacement_price_on_market_grid(market: &PerpMarket, terms: &ReplacementTerms) -> Result<u64> {
+    Ok(standardize_price(
+        terms.price,
+        market.order_tick_size,
+        terms.direction,
+    )?)
 }
 
 /// The account gates every placement passes before its order is built.
@@ -462,14 +477,6 @@ fn validate_replacement_against_market(
     oracle_price: i64,
     slot: u64,
 ) -> Result<()> {
-    validate!(
-        order.price.is_multiple_of(market.order_tick_size.max(1)),
-        ErrorCode::InvalidOrderLimitPrice,
-        "price {} is not a multiple of the market tick {}",
-        order.price,
-        market.order_tick_size
-    )?;
-
     validate_order(order, market, Some(oracle_price), slot)?;
     Ok(())
 }
@@ -633,7 +640,7 @@ mod resolve_replacement_terms_tests {
 mod replacement_rules_tests {
     use {
         super::{
-            replacement_order, validate_market_takes_replacement,
+            replacement_order, replacement_price_on_market_grid, validate_market_takes_replacement,
             validate_replacement_against_market, ModifyOrderV1Params, ReplacementTerms,
         },
         crate::{
@@ -721,12 +728,18 @@ mod replacement_rules_tests {
         );
     }
 
+    /// A placement rounds an off-tick price, so a modify rounds it the same
+    /// way: a bid down and an ask up, never to a worse price for the maker.
     #[test]
-    fn a_replacement_off_the_market_tick_is_refused() {
-        assert_eq!(
-            validate(50, 1_050, false),
-            Err(ErrorCode::InvalidOrderLimitPrice.into())
-        );
+    fn a_replacement_off_the_market_tick_rounds_onto_it() {
+        let bid = terms(50, 1_050, false);
+        let ask = ReplacementTerms {
+            direction: PositionDirection::Short,
+            ..terms(50, 1_050, false)
+        };
+
+        assert_eq!(replacement_price_on_market_grid(&market(), &bid), Ok(1_000));
+        assert_eq!(replacement_price_on_market_grid(&market(), &ask), Ok(1_100));
     }
 
     #[test]

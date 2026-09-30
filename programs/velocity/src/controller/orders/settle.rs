@@ -1156,8 +1156,9 @@ fn price_matched_fill(
     let market_index = cx.market.market_index;
     let reward_referrer =
         can_reward_user_with_referral_reward(market_index, filler.rev_share_escrow);
-    let reward_filler = can_reward_user_with_perp_pnl(filler.user, market_index)
-        || maker_cranked_fill(maker, filler);
+    // A maker that cranks its own matched leg earns no filler reward, so the
+    // protocol keeps its share of the taker fee.
+    let reward_filler = can_reward_user_with_perp_pnl(filler.user, market_index);
     let escrow = cx
         .rules
         .builder_escrow(filler, taker, market_index, taker.order.order_id);
@@ -1205,24 +1206,16 @@ fn settle_matched_fill(
     accrue_market_fees(cx, &settled.fees, None)?;
     charge_taker(taker, settled, cx)?;
     credit_maker_rebate(maker, taker, settled.fees.maker_rebate, cx)?;
-    pay_matched_keeper(maker, filler, settled, filled.quote, cx)?;
+    pay_matched_keeper(filler, settled, filled.quote, cx)?;
     settled.accrue_referrer_reward(filler, cx)?;
     advance_taker_order(taker, filler, settled, filled)
 }
 
-/// Whether this leg's maker cranked the fill and earns the filler reward. A
-/// maker of the taker's authority has no stats loaded, so it earns nothing.
-fn maker_cranked_fill(maker: &MakerSide, filler: &FillerSide) -> bool {
-    filler.user.is_none() && filler.key == maker.key && maker.stats.is_some()
-}
-
 /// Pay the keeper that turned a matched fill.
 ///
-/// A maker that cranked its own fill is paid on its own seat, because it is
-/// already loaded as the maker and cannot be loaded a second time as the
-/// filler.
+/// Only a distinct loaded filler is paid. A maker that cranks its own matched
+/// leg still earns its maker rebate, but not an additional filler reward.
 fn pay_matched_keeper(
-    maker: &mut MakerSide,
     filler: &mut FillerSide,
     settled: &SettledFees,
     quote_filled: u64,
@@ -1239,19 +1232,7 @@ fn pay_matched_keeper(
             cx.slot,
         );
     }
-    if !maker_cranked_fill(maker, filler) {
-        return Ok(());
-    }
-
-    credit_filler_perp_pnl(
-        maker.user,
-        &mut maker.stats.as_deref_mut(),
-        cx.market,
-        settled.fees.filler_reward,
-        quote_filled,
-        cx.now,
-        cx.slot,
-    )
+    Ok(())
 }
 
 /// Settle one external-quoter balance change.

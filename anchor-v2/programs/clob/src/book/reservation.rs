@@ -26,31 +26,22 @@ pub(super) fn is_bound(node: &OrderNodeV0, slot: u64, grace_slots: u16) -> bool 
     node.is_taker_origin() && !is_claim_lapsed(node, slot, grace_slots as u64)
 }
 
-/// The worst-priced order on `side` that eviction may take, or [`NIL`] when
-/// every order there is a bound remainder. A bound remainder is passed over
-/// rather than refusing the eviction, so its owner cannot use a permissionless
-/// crank to pull it, and the side still frees a slot while the claim holds.
-/// The search passes only bound remainders, so the side's claimant count
-/// bounds it.
+/// The worst-priced order on `side` that eviction may take, or [`NIL`] while
+/// that tail order is a bound remainder. Eviction never moves toward a better
+/// price: doing so would let a bound remainder protect a worse quote while an
+/// honest maker pays to lose a more competitive one.
 pub(crate) fn evictable_order(book: &ClobMarketV0, side: SideV0, slot: u64) -> Result<u32> {
-    let mut cursor = book.worst(side);
-    let mut bound_passed = 0u16;
-    while cursor != NIL {
-        let node = book.read_node(cursor)?;
-        if !is_bound(&node, slot, book.reservation_grace_slots) {
-            return Ok(cursor);
-        }
-
-        require!(
-            bound_passed < book.claimant_count(side),
-            ClobError::BookInvariantViolated
-        );
-
-        bound_passed += 1;
-        cursor = node.prev;
+    let worst = book.worst(side);
+    if worst == NIL {
+        return Ok(NIL);
     }
 
-    Ok(NIL)
+    let node = book.read_node(worst)?;
+    Ok(if is_bound(&node, slot, book.reservation_grace_slots) {
+        NIL
+    } else {
+        worst
+    })
 }
 
 /// What a crossing taker remainder has claimed on the side being read, and what

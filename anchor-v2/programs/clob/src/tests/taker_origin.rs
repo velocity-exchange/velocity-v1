@@ -646,10 +646,10 @@ fn cancel_all_keeps_a_remainder_until_its_claim_lapses() {
 }
 
 /// Eviction is a permissionless crank, so it must not be a way for the owner
-/// to pull a bound remainder. It passes over the remainder and takes the
-/// worst order behind it, which still frees a slot on the side.
+/// to pull a bound remainder. It also cannot pass that remainder and charge a
+/// better-priced maker for the eviction.
 #[test]
-fn eviction_passes_over_a_bound_remainder() {
+fn eviction_refuses_when_the_worst_order_is_a_bound_remainder() {
     let market = TestMarket::new_with(
         16,
         MarketConfigV0 {
@@ -666,10 +666,12 @@ fn eviction_passes_over_a_bound_remainder() {
     let next_worst = place(&mut book, SideV0::Bid, 101, 5, maker);
     assert_eq!(book.worst(SideV0::Bid), remainder.node_index);
 
-    let evicted = book.evict_worst(SideV0::Bid, 5).unwrap();
-    assert_eq!(evicted.order_id, next_worst.order_id);
-    assert!(!evicted.taker_origin);
+    assert_err(
+        book.evict_worst(SideV0::Bid, 5),
+        ClobError::TakerOriginBound,
+    );
     assert_eq!(book.worst(SideV0::Bid), remainder.node_index);
+    assert_eq!(book.read_node(next_worst.node_index).unwrap().price, 101);
     assert_consistent(&book);
 
     // Once the claim lapses the remainder is an ordinary tail again.
@@ -679,8 +681,7 @@ fn eviction_passes_over_a_bound_remainder() {
     assert_consistent(&book);
 }
 
-/// A side of nothing but bound remainders has nothing to evict until a claim
-/// lapses.
+/// A bound remainder at the tail blocks eviction until its claim lapses.
 #[test]
 fn eviction_refuses_a_side_of_bound_remainders() {
     let market = TestMarket::new_with(

@@ -60,8 +60,8 @@ pub(crate) fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
 
 /// The order `evict_worst_v0` would take on a side that has reached the
 /// eviction threshold. When both sides have reached it, the fuller side is
-/// relieved first. A side whose every order is a bound remainder is passed
-/// over, the same way [`evictable_order`] passes over each such order.
+/// preferred. A side whose worst order is a bound remainder is unavailable;
+/// eviction never skips it to remove a better-priced order.
 ///
 /// The threshold and the choice of side are the book's policy and stay here. A
 /// caller that had to know them would re-decide, from numbers it read out of

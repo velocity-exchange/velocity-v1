@@ -545,15 +545,13 @@ fn random_operation_sequences_keep_the_book_consistent() {
                     let side = rng.side();
                     let count = book.node_count(side);
                     if count > 0 && count >= book.evict_threshold_per_side {
-                        let all_bound = live_orders(&book)
-                            .iter()
-                            .filter(|(_, node)| node.side() == side)
-                            .all(|(_, node)| is_bound(&book, node, slot));
+                        let worst_bound =
+                            is_bound(&book, &book.read_node(book.worst(side)).unwrap(), slot);
                         let result = book.evict_worst(side, slot);
                         assert_eq!(
                             result.is_ok(),
-                            !all_bound,
-                            "{context}: evict must pass over bound remainders and only them"
+                            !worst_bound,
+                            "{context}: eviction must refuse a bound tail"
                         );
                     }
                 }

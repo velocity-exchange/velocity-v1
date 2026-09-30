@@ -965,10 +965,10 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
 }
 
 /// A resolver stages the eviction `next_removal_v0` names, and velocity checks
-/// the removal against the maker it loaded. The two must pass over a bound
-/// remainder the same way, or every such crank fails.
+/// the removal against the maker it loaded. Both must refuse a bound tail;
+/// neither may move eviction onto a better-priced maker.
 #[test]
-fn next_removal_and_eviction_agree_over_a_bound_remainder() {
+fn next_removal_and_eviction_both_refuse_a_bound_tail() {
     let mut ctx = setup_with_capacity(16); // 8 per side, evict threshold 6
     let (maker, taker) = (addr(Pubkey::new_unique()), addr(Pubkey::new_unique()));
 
@@ -979,13 +979,13 @@ fn next_removal_and_eviction_agree_over_a_bound_remainder() {
     let remainder = place(&mut ctx, taker_origin_args(SideV0::Bid, 100, 1), taker);
     assert_eq!(market_state(&ctx).worst_bid, remainder.node_index);
 
-    let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
-    assert_eq!(node(&ctx, work.order_ref.node_index).price, 101);
-    let meta = evict_worst(&mut ctx, SideV0::Bid).unwrap();
-    let (evicted_user, order_id, ..) = parse_removed(&meta.return_data.data);
     assert_eq!(
-        (evicted_user, order_id),
-        (maker.to_bytes(), work.order_ref.order_id)
+        next_removal(&mut ctx, ClobRemovalKindV0::Evictable),
+        OrderViewV0::NONE
+    );
+    assert_clob_err(
+        evict_worst(&mut ctx, SideV0::Bid),
+        err_code(clob::error::ClobError::TakerOriginBound),
     );
 
     // Past the one-slot delay and the claim, both name the remainder.

@@ -267,10 +267,10 @@ pub(super) fn cancel(
 /// a fraction of one CPI round trip per hop.
 ///
 /// Removals are capped at [`CANCEL_ALL_ORDERS_CEILING`] per call, and
-/// [`CancelAllOutcomeV0::exhaustive`] reports whether the walk reached the end
-/// of every requested side. It is false only when the cap stopped the walk,
-/// which is the one case where orders of this user are still resting. The
-/// caller must repeat the call until it comes back true.
+/// [`CancelAllOutcomeV0::exhaustive`] reports whether the walk removed every
+/// cancellable order on the requested sides. An unforced sweep never removes
+/// taker-origin nodes: their signed-message route record has to be released by
+/// a removal path that carries that record.
 ///
 /// Each removed order's id goes to `removed_ids` as the walk frees it, in
 /// book order per side. The handler streams those into the cancel record's
@@ -280,7 +280,6 @@ pub(super) fn cancel_all(
     book: &mut ClobMarketV0,
     user: UserRefV0,
     sides: CancelSidesV0,
-    slot: u64,
     force: bool,
     removed_ids: &mut dyn FnMut(u32) -> Result<()>,
 ) -> Result<CancelAllOutcomeV0> {
@@ -290,7 +289,7 @@ pub(super) fn cancel_all(
         ..Default::default()
     };
     let mut capped = false;
-    let mut skipped_bound = false;
+    let mut skipped_taker_origin = false;
     // The count runs across both sides, so the cap bounds the call rather than
     // each side of it.
     let mut total_removed = 0u32;
@@ -311,12 +310,11 @@ pub(super) fn cancel_all(
                 return Ok(Walk::Continue);
             }
 
-            // Pass over a bound remainder rather than fail the sweep, so one
-            // order a maker cannot pull yet does not block a whole ladder. The
-            // flag is read after both sides run, because ending the walk here
-            // would stop the other side too.
-            if !force && is_bound(node, slot, book.reservation_grace_slots) {
-                skipped_bound = true;
+            // Bulk cancellation cannot release the signed-message record that
+            // may own a taker remainder. Leave every taker-origin node to a
+            // single-order or forced removal path that carries that record.
+            if !force && node.is_taker_origin() {
+                skipped_taker_origin = true;
                 return Ok(Walk::Continue);
             }
 
@@ -337,7 +335,7 @@ pub(super) fn cancel_all(
         removed.write_into(&mut outcome, side);
     }
 
-    outcome.exhaustive = !capped && !skipped_bound;
+    outcome.exhaustive = !capped && !skipped_taker_origin;
     if owes_expiry_repair {
         book.recompute_wake_hints(true, None)?;
     }

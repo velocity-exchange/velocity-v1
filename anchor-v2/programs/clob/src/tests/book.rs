@@ -1127,7 +1127,7 @@ fn cancel_all(
 ) -> (CancelAllOutcomeV0, Vec<u32>) {
     let mut ids = Vec::new();
     let outcome = book
-        .cancel_all(user, sides, ACTIVE_SLOT, false, &mut |client_order_id| {
+        .cancel_all(user, sides, false, &mut |client_order_id| {
             ids.push(client_order_id);
             Ok(())
         })
@@ -1277,9 +1277,7 @@ fn cancel_all_ends_by_validating_the_book() {
     place(&mut book, SideV0::Bid, 100, 1, maker);
     book.free_count += 1;
     assert_err(
-        book.cancel_all(maker, CancelSidesV0::Both, ACTIVE_SLOT, false, &mut |_| {
-            Ok(())
-        }),
+        book.cancel_all(maker, CancelSidesV0::Both, false, &mut |_| Ok(())),
         ClobError::BookInvariantViolated,
     );
 }
@@ -1293,7 +1291,7 @@ fn a_failing_id_sink_fails_the_sweep() {
     let maker = user(1);
     place(&mut book, SideV0::Bid, 100, 1, maker);
     assert_err(
-        book.cancel_all(maker, CancelSidesV0::Both, ACTIVE_SLOT, false, &mut |_| {
+        book.cancel_all(maker, CancelSidesV0::Both, false, &mut |_| {
             Err(ClobError::EventTooLarge.into())
         }),
         ClobError::EventTooLarge,

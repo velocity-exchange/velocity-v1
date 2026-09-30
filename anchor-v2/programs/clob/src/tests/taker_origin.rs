@@ -621,30 +621,6 @@ fn a_bound_remainder_cannot_be_cancelled_until_its_claim_lapses() {
     assert_consistent(&book);
 }
 
-/// The sweep reads the same bind as the single cancel.
-#[test]
-fn cancel_all_keeps_a_remainder_until_its_claim_lapses() {
-    let market = TestMarket::new(16);
-    let mut book = market.book();
-    let (taker, maker) = (user(0xA), user(0xB));
-
-    place(&mut book, SideV0::Ask, 100, 5, maker);
-    place_at(&mut book, SideV0::Bid, 100, 5, taker, 10, true);
-
-    let bound = book
-        .cancel_all(taker, CancelSidesV0::Both, 41, false, &mut |_| Ok(()))
-        .expect("sweep succeeds");
-    assert_eq!(bound.bid_orders, 0);
-    assert!(!bound.exhaustive);
-
-    let lapsed = book
-        .cancel_all(taker, CancelSidesV0::Both, 42, false, &mut |_| Ok(()))
-        .expect("sweep succeeds");
-    assert_eq!(lapsed.bid_orders, 1);
-    assert!(lapsed.exhaustive);
-    assert_consistent(&book);
-}
-
 /// Eviction is a permissionless crank, so it must not be a way for the owner
 /// to pull a bound remainder. It also cannot pass that remainder and charge a
 /// better-priced maker for the eviction.
@@ -743,32 +719,36 @@ fn an_ordinary_order_inside_its_window_is_not_bound() {
     assert!(book.cancel(maker, quote, 0, false).is_ok());
 }
 
-/// A sweep passes a bound remainder over rather than failing, so a maker
-/// withdrawing a ladder is not blocked by one order it cannot pull yet. The
-/// call reports itself as not exhaustive, which is what says orders remain.
+/// An unforced sweep passes over every taker-origin remainder, bound or not,
+/// rather than failing. The sweep reports no order ids, so the record that
+/// owns the remainder's route could not be released. The call reports itself
+/// as not exhaustive, which is what says orders remain.
 #[test]
-fn cancel_all_passes_over_a_bound_remainder_and_says_so() {
+fn cancel_all_passes_over_a_taker_origin_remainder_and_says_so() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let owner = user(0xA);
 
-    let bound = place_at(&mut book, SideV0::Bid, 100, 5, owner, 10, true);
+    let remainder = place_at(&mut book, SideV0::Bid, 100, 5, owner, 0, true);
     place_at(&mut book, SideV0::Bid, 90, 5, owner, 0, false);
     place_at(&mut book, SideV0::Ask, 110, 5, owner, 0, false);
 
     let outcome = book
-        .cancel_all(owner, CancelSidesV0::Both, 0, false, &mut |_| Ok(()))
+        .cancel_all(owner, CancelSidesV0::Both, false, &mut |_| Ok(()))
         .expect("sweep succeeds");
-    // Both ordinary orders left; the bound remainder stayed, on the side it
-    // shares with one of them.
+    // Both ordinary orders left. The remainder stayed, on the side it shares
+    // with one of them.
     assert_eq!(outcome.bid_orders, 1);
     assert_eq!(outcome.ask_orders, 1);
     assert!(!outcome.exhaustive);
-    assert!(book.read_node(bound.node_index).unwrap().is_taker_origin());
+    assert!(book
+        .read_node(remainder.node_index)
+        .unwrap()
+        .is_taker_origin());
 
     // Force sweeps it with the rest.
     let outcome = book
-        .cancel_all(owner, CancelSidesV0::Both, 0, true, &mut |_| Ok(()))
+        .cancel_all(owner, CancelSidesV0::Both, true, &mut |_| Ok(()))
         .expect("sweep succeeds");
     assert_eq!(outcome.bid_orders, 1);
     assert!(outcome.exhaustive);

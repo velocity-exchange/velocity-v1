@@ -138,8 +138,8 @@ pub fn handle_cancel_orders_v1(
         );
     } else {
         msg!(
-            "cancelled {} clob orders for user {}; the book's per-call cap stopped \
-             the sweep early — repeat to clear the rest",
+            "cancelled {} clob orders for user {}; orders remain: the per-call cap \
+             stopped the sweep, or a taker-origin remainder needs cancel_order_v1",
             removed.orders(),
             ctx.accounts.user.key()
         );

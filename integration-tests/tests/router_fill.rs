@@ -3868,13 +3868,11 @@ fn a_reduce_only_remainder_modify_keeps_both_flags() {
     );
 }
 
-/// A sweep frees placed-trigger shadows too. The handler can't match returned
-/// order ids for this (the wire is aggregate), so it re-checks each shadow's
-/// node against the post-sweep book — this pins that the shadow ends up
-/// `Canceled` and its accounting unwound, the same as a per-order cancel leaves
-/// it.
+/// A fired trigger-limit rests taker-origin, and an unforced sweep leaves every
+/// taker-origin order on the book. The sweep takes the plain ask beside it,
+/// and the placed trigger and its shadow stay live for `cancel_order_v1`.
 #[test]
-fn cancel_all_frees_placed_trigger_shadows() {
+fn cancel_all_leaves_a_placed_trigger_to_its_own_cancel() {
     use velocity::state::user::OrderTriggerCondition;
 
     let mut fixture = setup();
@@ -3936,18 +3934,18 @@ fn cancel_all_frees_placed_trigger_shadows() {
     assert_eq!(before.perp_positions[0].open_orders, 2);
     assert_eq!(clob_ask_count(&fixture), 2);
 
-    // An unforced sweep passes over a bound remainder, so the fired trigger's
-    // claim must lapse before it counts as swept.
+    // The trigger stays even after its claim lapses.
     warp_past_claim(&mut fixture, 12);
     let ix = cancel_all_clob_ix(&fixture, CancelSidesV0::Asks);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
 
     let after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
-    assert_eq!(after.orders[0].status, OrderStatus::Canceled);
-    assert_eq!(after.perp_positions[0].open_orders, 0);
-    assert_eq!(after.open_orders, 0);
-    assert_eq!(after.perp_positions[0].open_asks, 0);
-    assert_eq!(clob_ask_count(&fixture), 0);
+    assert_eq!(after.orders[0].status, OrderStatus::Open);
+    assert!(after.orders[0].is_placed_on_clob());
+    assert_eq!(after.perp_positions[0].open_orders, 1);
+    assert_eq!(after.open_orders, 1);
+    assert_eq!(after.perp_positions[0].open_asks, -((UNIT / 2) as i64));
+    assert_eq!(clob_ask_count(&fixture), 1);
 }
 
 /// A user cancels a placed trigger through `cancel_clob_order` (the shadow

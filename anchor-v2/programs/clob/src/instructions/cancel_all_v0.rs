@@ -44,13 +44,9 @@ pub fn handle_cancel_all_v0(
         args.user.sub_account_id,
         args.sides.tag(),
     )?;
-    let outcome = market.cancel_all(
-        args.user,
-        args.sides,
-        clock.slot,
-        args.force,
-        &mut |order_id| record.push_id(order_id),
-    )?;
+    let outcome = market.cancel_all(args.user, args.sides, args.force, &mut |order_id| {
+        record.push_id(order_id)
+    })?;
 
     // The removal path takes no clock. An activation hint that the chain
     // already reached is dropped here.

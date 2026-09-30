@@ -135,7 +135,6 @@ pub trait ClobBook {
         &mut self,
         user: UserRefV0,
         sides: CancelSidesV0,
-        slot: u64,
         force: bool,
         removed_ids: &mut dyn FnMut(u32) -> Result<()>,
     ) -> Result<CancelAllOutcomeV0>;
@@ -217,11 +216,10 @@ impl ClobBook for ClobMarketV0 {
         &mut self,
         user: UserRefV0,
         sides: CancelSidesV0,
-        slot: u64,
         force: bool,
         removed_ids: &mut dyn FnMut(u32) -> Result<()>,
     ) -> Result<CancelAllOutcomeV0> {
-        placement::cancel_all(self, user, sides, slot, force, removed_ids)
+        placement::cancel_all(self, user, sides, force, removed_ids)
     }
 
     fn evict_worst(&mut self, side: SideV0, slot: u64) -> Result<RemovedOrderV0> {

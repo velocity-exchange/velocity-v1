@@ -532,14 +532,8 @@ fn random_operation_sequences_keep_the_book_consistent() {
                         CancelSidesV0::Asks,
                         CancelSidesV0::Both,
                     ]);
-                    book.cancel_all(
-                        rng.pick(&pool),
-                        sides,
-                        slot,
-                        rng.chance(30),
-                        &mut |_| Ok(()),
-                    )
-                    .unwrap_or_else(|error| panic!("{context}: cancel_all failed: {error:?}"));
+                    book.cancel_all(rng.pick(&pool), sides, rng.chance(30), &mut |_| Ok(()))
+                        .unwrap_or_else(|error| panic!("{context}: cancel_all failed: {error:?}"));
                 }
                 3 => {
                     let side = rng.side();

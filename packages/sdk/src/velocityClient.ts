@@ -13469,7 +13469,9 @@ export class VelocityClient {
 	 * Builds a `cancelOrdersV1` instruction: pull a whole side, or both, off the book in one CPI.
 	 * It unwinds from per-side totals, so the cost does not grow with the ladder. The book caps how
 	 * many orders one sweep removes and reports whether it finished. Repeating the call is safe,
-	 * because the totals always describe exactly what that call removed.
+	 * because the totals always describe exactly what that call removed. The sweep leaves every
+	 * taker-origin remainder on the book, because it cannot release the remainder's signed-message
+	 * entry. Remove one with `cancelOrderV1` and `takerOrigin` set.
 	 * @param subAccountId - Sub-account holding the orders; defaults to the active one.
 	 */
 	public async getCancelOrdersV1Ix(

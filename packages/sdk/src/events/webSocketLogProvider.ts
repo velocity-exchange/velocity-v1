@@ -7,6 +7,11 @@ import {
 	PublicKey,
 } from '@solana/web3.js';
 import { EventEmitter } from 'events';
+import { promiseTimeout } from '../util/promiseTimeout';
+
+// A half-open websocket never answers the unsubscribe, so the teardown promise
+// can pend forever. Abandon it rather than let the resubscribe chain wait.
+const UNSUBSCRIBE_TIMEOUT_MS = 10_000;
 
 /**
  * `LogProvider` backed by `connection.onLogs` — a raw Solana websocket log
@@ -110,16 +115,27 @@ export class WebSocketLogProvider implements LogProvider {
 		this.timeoutId = undefined;
 
 		if (this.subscriptionId != null) {
+			let ok = true;
 			try {
-				await this.connection.removeOnLogsListener(this.subscriptionId);
-				this.subscriptionId = undefined;
-				this.isUnsubscribing = false;
-				return true;
+				const removed = await promiseTimeout(
+					this.connection
+						.removeOnLogsListener(this.subscriptionId)
+						.then(() => true),
+					UNSUBSCRIBE_TIMEOUT_MS
+				);
+				if (!removed) {
+					console.log(
+						`webSocketLogProvider: unsubscribe timed out after ${UNSUBSCRIBE_TIMEOUT_MS}ms, forcing cleanup`
+					);
+					ok = false;
+				}
 			} catch (err) {
 				console.log('Error unsubscribing from logs: ', err);
-				this.isUnsubscribing = false;
-				return false;
+				ok = false;
 			}
+			this.subscriptionId = undefined;
+			this.isUnsubscribing = false;
+			return ok;
 		} else {
 			this.isUnsubscribing = false;
 			return true;

@@ -422,7 +422,7 @@ export type QuotedSourceV0 = {
 	/** routing tier the split applies (lower fills first at a price) */
 	priority: number;
 	kind: QuotedSourceKind;
-	/** verification reduced this book. A Custom quoter advertised more depth than its `User`'s margin supports */
+	/** verification reduced this book. A Custom quoter advertised more depth than its `User`'s margin supports, or depth off the market's order step */
 	clamped: boolean;
 	/** this source's slice of the buffer's `rows`: where it starts */
 	rowStart: number;

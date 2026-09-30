@@ -246,14 +246,7 @@ pub fn build_user_caps<'info>(
 
         // The quote cap: what this user may lose to depth a book already
         // reserved for them.
-        let quote_cap = ctx.maker_budget(
-            &key,
-            inputs.market_index,
-            resting_side,
-            inputs.size,
-            inputs.reference_price,
-            books,
-        )?;
+        let quote_cap = ctx.maker_budget(&key, inputs, books)?;
 
         // The base cap is shared by two readers, so it is the tighter of what each needs. Usually only one
         // binds, since the other is unbounded. A book covers reduce-only orders to the position they may
@@ -429,9 +422,9 @@ fn base_funded_by(quote: u64, oracle_price: i64, margin_ratio_initial: u32) -> R
 /// because a book's makers are bounded by their budgets. The route consults a
 /// slot only when its response account rides the tail, so a market whose slab
 /// holds no live unreserved quoter never scans the tail at all.
-fn unreserved_quoters<'info>(
+pub(super) fn unreserved_quoters<'info>(
     slab: Option<&AccountLoader<'info, QuoterSlabV0>>,
-    tail: &'info [AccountInfo<'info>],
+    tail: &[AccountInfo<'info>],
 ) -> Result<QuoterUsers> {
     let Some(slab) = slab else {
         return Ok(QuoterUsers::NONE);
@@ -452,7 +445,7 @@ fn unreserved_quoters<'info>(
 
 /// The settlement user of each unreserved quoter the route consults.
 #[derive(Clone, Copy)]
-struct QuoterUsers {
+pub(super) struct QuoterUsers {
     entries: [(u16, Pubkey); MAX_ROUTE_QUOTERS],
     len: u8,
 }
@@ -465,7 +458,7 @@ impl QuoterUsers {
 
     /// Every consulted slab slot that settles for this user. Entries are
     /// keyed by program as well as user, so one user can hold several.
-    fn slots_for<'a>(&'a self, key: &'a Pubkey) -> impl Iterator<Item = usize> + 'a {
+    pub(super) fn slots_for<'a>(&'a self, key: &'a Pubkey) -> impl Iterator<Item = usize> + 'a {
         self.entries[..self.len as usize]
             .iter()
             .filter(move |(_, user)| user == key)
@@ -505,21 +498,17 @@ fn clob_books_in_route<'info>(
 }
 
 impl CapInputs<'_, '_> {
-    /// Quote this maker may lose filling on `resting_side`. It is `0` when the
+    /// Quote this maker may lose to a taker filling `inputs`. It is `0` when the
     /// fill would refuse them outright, and `u64::MAX` when no book is
     /// consulted or this fill cannot reach far enough to matter.
     ///
     /// The cheap answers come first, and that order is deliberate. A margin
     /// walk leaves allocations on a heap that never reclaims, so every named
     /// user that can be answered without one must be.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn maker_budget(
         &mut self,
         key: &Pubkey,
-        market_index: u16,
-        resting_side: SideV0,
-        taker_size: u64,
-        reference_price: i64,
+        inputs: &QuoteInputs<'_>,
         books: u32,
     ) -> Result<u64> {
         // No book spends a budget, and the divide by `books` below needs a non-zero count.
@@ -528,6 +517,8 @@ impl CapInputs<'_, '_> {
         }
 
         let maker = self.makers_and_referrer.get_ref(key)?;
+        let market_index = inputs.market_index;
+        let resting_side = inputs.direction.side();
 
         // The most base this maker can be filled for, which bounds everything below. Some users rest
         // nothing on a book. Examples are a referrer, a maker that quotes only one side, and a maker that
@@ -538,7 +529,7 @@ impl CapInputs<'_, '_> {
             &maker,
             market_index,
             resting_side,
-            clob_resting_base(&maker, market_index, resting_side)?.min(taker_size),
+            clob_resting_base(&maker, market_index, resting_side)?.min(inputs.size),
         );
         if resting == 0 {
             return Ok(u64::MAX);
@@ -552,7 +543,7 @@ impl CapInputs<'_, '_> {
         // is its whole value at reference.
         let worst_loss = resting
             .cast::<i128>()?
-            .safe_mul(reference_price.max(0).cast()?)?
+            .safe_mul(inputs.reference_price.max(0).cast()?)?
             .safe_div(BASE_PRECISION_U64.cast()?)?;
 
         // The tier this fill answers to, read from the same rule the fill

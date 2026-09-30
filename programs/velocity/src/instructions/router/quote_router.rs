@@ -5,20 +5,24 @@
 //! is what makes the answer verified and uniform.
 //!
 //! The view verifies depth rather than repeating an advertisement. A Custom
-//! quoter's book is clamped to what its `User`'s margin supports before it
-//! leaves this instruction. The clamp is the room the fill gives that quoter,
-//! so depth that does not exist never reaches a router's selection or a depth
-//! chart. Every ladder is also cut at the oracle band as the fill cuts it. CLOB
-//! depth otherwise stands as quoted, because it was margin-gated at placement.
-//! The fill applies one further per-maker cut this view does not. See
-//! `quote_externals`.
+//! quoter's ladder goes through the fill's own cut, `trim_to_quoter_room`, at
+//! the oracle band, the market step and the room the fill gives that quoter.
+//! Depth that no fill settles therefore never reaches a router's selection or
+//! a depth chart. A CLOB book is cut at the band by the fill's own rule, and
+//! otherwise stands as quoted, because it was margin-gated at placement.
+//!
+//! The view carries no caps, so it does not apply two per-maker cuts of the
+//! fill. It does not cap a book maker by its budget. It also does not take a
+//! user's book claim (`base_funded_by`) off the room of that user's Custom
+//! quoter. A user that rests on a book and also quotes as Custom can
+//! therefore show more Custom depth here than a fill settles.
 //!
 //! The view quotes the way the fill will quote. The sources are not
 //! independent, because the vAMM shades its ladder against rival books. A vAMM
 //! book quoted on its own prices better than the same vAMM inside a real fill.
 //! This instruction runs the sources in fill order: the external books, then
-//! the vAMM with every earlier book as a rival. The published books equal the
-//! fill-time books by construction.
+//! the vAMM with every earlier book as a rival. Apart from the per-maker cuts
+//! above, the published books equal the fill-time books.
 //!
 //! The view is uniform. CLOB, PropAMM and vAMM all come back as
 //! `(kind, key, priority, levels)` in one buffer, so a consumer needs one code
@@ -40,9 +44,11 @@
 
 use {
     super::{
-        quoted_route::{book_rests_outside_band, levels_inside_band},
+        quoted_route::{
+            book_rests_outside_band, levels_inside_band, trim_to_quoter_room, QuoterLadderBounds,
+        },
         route_fill::RouteMark,
-        user_caps::CapInputs,
+        user_caps::{unreserved_quoters, CapInputs, QuoterUsers},
     },
     crate::{
         controller::{orders::MatchOracle, position::PositionDirection},
@@ -53,13 +59,13 @@ use {
         state::{
             perp_market_map::MarketSet,
             prop_amm::{
-                usable_levels, DirectionV0, L3ArgsV0, PriceLevelV0, QuoteArgsV0, QuoterSlabExt,
-                QuoterSlabV0, QuoterType, UserRefV0,
+                usable_levels, DirectionV0, L3ArgsV0, PriceLevelV0, QuoteArgsV0, QuoterCpiScratch,
+                QuoterSlabExt, QuoterSlabV0, QuoterType, UserRefV0,
             },
             quoter::MarketQuoteInputs,
             router_quote::{QuotedRowV0, QuotedSourceKind, RouterQuoteBufferV0},
             state::State,
-            user_map::load_user_maps,
+            user_map::{load_user_maps, UserMap},
         },
         validate,
         vlp::amm::{quoter::AmmQuoter, router_adapter::vamm_quote_levels, AMM},
@@ -145,6 +151,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     let view = FillView {
         mark: RouteMark::read(&mut maps, market_index)?,
         oracle,
+        order_step_size: maps.perp_market_map.get_ref(&market_index)?.order_step_size,
     };
     quote_externals(
         &args,
@@ -226,6 +233,8 @@ fn find_market_slab<'info>(
 struct FillView {
     mark: RouteMark,
     oracle: MatchOracle,
+    /// The market's `order_step_size`, which the fill trims a Custom ladder to.
+    order_step_size: u64,
 }
 
 /// One slot's answer to the view: what it quoted, and who it says it is.
@@ -244,90 +253,32 @@ struct QuotedSlot<'info> {
     located: crate::state::prop_amm::ResponseLocationV0<'info>,
 }
 
-/// Quote one slab slot and locate the response it wrote.
-///
-/// Returns `None` when the slot quotes nothing. The slot may be suspended or
-/// deactivated, or its activation delay may hold it back.
-fn quote_one_slot<'info>(
-    args: &QuoteRouterArgs,
-    slab_loader: &AccountLoader<'info, QuoterSlabV0>,
-    slot_index: usize,
-    accounts: &[AccountInfo<'info>],
-    view: &FillView,
-    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<Option<QuotedSlot<'info>>> {
-    let market_index = args.market_index;
-    let slots = slab_loader.slots()?;
-    let slot = &slots[slot_index];
-    if !slot.quotes() {
-        return Ok(None);
-    }
-
-    let entry_key = slot.entry;
-    // Makers take priority, as the fill's route applies it. A book with an
-    // activation delay quotes no depth to unprotected flow, so this view must
-    // not show any.
-    if slot.config.quoter_type == QuoterType::Clob
-        && !args.taker_served_window
-        && slot.config.book_default_activation_delay_slots > 0
-    {
-        return Ok(None);
-    }
-
-    let located = slot
-        .quote_in_place(
-            market_index,
-            QuoteArgsV0 {
-                // The view settles nothing, so it constrains nothing. It
-                // reports the book as it stands.
-                caps: crate::state::prop_amm::UserCapsV0::EMPTY,
-                // The fill's mark, so a quoter that checks a band against it
-                // quotes here what it quotes to a fill. The caps are empty, so
-                // no budget is spent.
-                reference_price: Some(view.mark.reference_price.cast()?),
-                direction: args.direction,
-                size: args.size,
-                // A view has no settlement, so it applies no loaded-user
-                // restriction. It quotes everything the book holds.
-                users: &[],
-                taker: None,
-                // No taker, so there is no price to bound the ladder at. A
-                // caller reads this view to decide what to route, which needs
-                // the depth a bound would cut.
-                limit_price: 0,
-                taker_served_window: args.taker_served_window,
-                include_taker_origin_reservations: false,
-            },
-            slab_loader,
-            accounts,
-            scratch,
-        )
-        .map_err(|e| {
-            msg!("quoter {} quote failed: {}", entry_key, e);
-            ErrorCode::FailedQuoterCpi
-        })?;
-    Ok(Some(QuotedSlot {
-        priority: slot.config.priority,
-        quoter_type: slot.config.quoter_type,
-        user: slot.config.user,
-        entry: entry_key,
-        oracle_band: slot.config.oracle_band(view.mark.margin_ratio_initial),
-        located,
-    }))
+/// The state every step of [`quote_externals`] shares.
+struct ViewQuote<'a, 'info> {
+    args: &'a QuoteRouterArgs,
+    slab: &'a AccountLoader<'info, QuoterSlabV0>,
+    accounts: &'a [AccountInfo<'info>],
+    view: &'a FillView,
+    makers: &'a UserMap<'info>,
+    scratch: QuoterCpiScratch<'info>,
+    /// One vector reused for every Custom ladder, so the heap holds at most
+    /// one copy. Velocity's heap is 32 KB and never reclaims.
+    ladder: Vec<PriceLevelV0>,
+    buffer: &'a mut RouterQuoteBufferV0,
 }
 
 /// Quote every consulted external quoter into the buffer.
 ///
 /// The externals run first, because their books are the vAMM's last look. A
-/// book is read from the quoter's response account and copied once, into the
-/// buffer. Nothing holds a second copy. Velocity's heap is 32 KB and never
-/// reclaims, and this runs once per quoter.
+/// book is read from the quoter's response account and copied into the
+/// buffer.
 ///
 /// The view applies the fill's book-wide rules. No book quotes while the
-/// oracle refuses a match fill. A ladder is cut at the oracle band as
-/// [`fill_admitted_levels`] cuts it. A Custom quoter gets the room the fill
-/// gives it. The fill also caps a book maker by that maker's own budget. The
-/// view skips that cap, because it names no taker and loads no set of makers.
+/// oracle refuses a match fill. A ladder is cut as [`fill_admitted_levels`]
+/// cuts it. A Custom quoter gets the room the fill gives it, split over the
+/// same sibling slots. The fill also caps a book maker by that maker's own
+/// budget, and takes that book claim off a Custom quoter's room. The view
+/// skips both, because it names no taker and carries no caps.
 fn quote_externals<'info>(
     args: &QuoteRouterArgs,
     slab_loader: Option<&AccountLoader<'info, QuoterSlabV0>>,
@@ -336,7 +287,7 @@ fn quote_externals<'info>(
     sizing: &mut CapInputs<'_, 'info>,
     buffer: &mut RouterQuoteBufferV0,
 ) -> Result<()> {
-    let Some(slab_loader) = slab_loader else {
+    let Some(slab) = slab_loader else {
         return Ok(());
     };
 
@@ -344,102 +295,244 @@ fn quote_externals<'info>(
         return Ok(());
     }
 
-    let market_index = args.market_index;
-    let maker_direction = PositionDirection::from(args.direction).opposite();
-    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    // The fill's own rule, so the view consults the slots a fill would and
-    // refuses a tail a fill would refuse.
-    let consulted = slab_loader.consulted_slots(accounts)?;
+    // The fill's own rules, so the view consults the slots a fill would,
+    // refuses a tail a fill would refuse, and splits a room the same way.
+    let consulted = slab.consulted_slots(accounts)?;
+    let sized_quoters = unreserved_quoters(Some(slab), accounts)?;
+
+    let mut quote = ViewQuote {
+        args,
+        slab,
+        accounts,
+        view,
+        makers: sizing.makers_and_referrer,
+        scratch: QuoterCpiScratch::new(),
+        ladder: Vec::new(),
+        buffer,
+    };
 
     for &slot_index in &consulted {
-        let Some(quoted) = quote_one_slot(
-            args,
-            slab_loader,
-            slot_index,
-            accounts,
-            view,
-            &mut cpi_scratch,
-        )?
-        else {
+        let Some(quoted) = quote.quote_slot(slot_index)? else {
             continue;
         };
 
-        let QuotedSlot {
-            priority,
-            quoter_type,
-            user: quoter_user,
-            entry: entry_key,
-            oracle_band,
-            located,
-        } = quoted;
-
         // The room is taken before the response is borrowed, because sizing
         // reads the maps.
-        let cap = if quoter_type == QuoterType::Custom {
-            custom_quoter_room(
-                sizing,
-                slab_loader,
-                &consulted,
-                &quoter_user,
-                market_index,
-                maker_direction,
-            )?
+        let room = if quoted.quoter_type == QuoterType::Custom {
+            custom_quoter_room(sizing, &sized_quoters, &quoted.user, args)?
         } else {
             u64::MAX
         };
 
-        // The borrow ends with this block, before the next quoter's CPI. A
-        // live borrow of a response account would fail the CPI that writes
-        // it.
-        let admitted = {
-            let data = located.borrow()?;
-            let response = located.checked_quote_response(&data, args.direction)?;
-            let levels = fill_admitted_levels(
-                usable_levels(response.levels),
-                quoter_type,
-                maker_direction,
-                view.oracle.band_price,
-                oracle_band,
-            )?;
-            buffer.push_capped(QuotedSourceKind::Quoter, entry_key, priority, levels, cap)?;
-
-            buffer
-                .levels_for(buffer.source_count as usize - 1)
-                .iter()
-                .map(|level| level.size)
-                .fold(0u64, u64::saturating_add)
-        };
-
-        let rows_wanted = buffer.rows_remaining();
-        if rows_wanted > 0 {
-            // Who the ladder stands on: a Custom entry is bound to the user it
-            // registered for, matching settlement's split. A quoter holding
-            // other people's orders says so itself through the optional third
-            // leg; every other quoter's rows point at the registry's one account.
-            let bound_to = (quoter_type == QuoterType::Custom)
-                .then(|| user_ref(sizing.makers_and_referrer, &quoter_user))
-                .flatten();
-            let described = quoter_rows(
-                slab_loader,
-                slot_index,
-                market_index,
-                args.direction,
-                admitted,
-                rows_wanted,
-                &entry_key,
-                accounts,
-                &mut cpi_scratch,
-                bound_to,
-                buffer,
-            )?;
-
-            if !described {
-                attribute_to_user(sizing.makers_and_referrer, &quoter_user, admitted, buffer)?;
-            }
-        }
+        let admitted = quote.push_admitted(&quoted, room)?;
+        quote.record_rows(slot_index, &quoted, admitted)?;
     }
 
     Ok(())
+}
+
+impl<'info> ViewQuote<'_, 'info> {
+    /// Quote one slab slot and locate the response it wrote.
+    ///
+    /// Returns `None` when the slot quotes nothing. The slot may be suspended
+    /// or deactivated, or its activation delay may hold it back.
+    fn quote_slot(&mut self, slot_index: usize) -> Result<Option<QuotedSlot<'info>>> {
+        let slots = self.slab.slots()?;
+        let slot = &slots[slot_index];
+        if !slot.quotes() {
+            return Ok(None);
+        }
+
+        // Makers take priority, as the fill's route applies it. A book with an
+        // activation delay quotes no depth to unprotected flow, so this view
+        // must not show any.
+        if slot.config.quoter_type == QuoterType::Clob
+            && !self.args.taker_served_window
+            && slot.config.book_default_activation_delay_slots > 0
+        {
+            return Ok(None);
+        }
+
+        let entry = slot.entry;
+        let located = slot
+            .quote_in_place(
+                self.args.market_index,
+                QuoteArgsV0 {
+                    // The view settles nothing, so it constrains nothing. It
+                    // reports the book as it stands.
+                    caps: crate::state::prop_amm::UserCapsV0::EMPTY,
+                    // The fill's mark, so a quoter that checks a band against
+                    // it quotes here what it quotes to a fill. The caps are
+                    // empty, so no budget is spent.
+                    reference_price: Some(self.view.mark.reference_price.cast()?),
+                    direction: self.args.direction,
+                    size: self.args.size,
+                    // A view has no settlement, so it applies no loaded-user
+                    // restriction. It quotes everything the book holds.
+                    users: &[],
+                    taker: None,
+                    // No taker, so there is no price to bound the ladder at. A
+                    // caller reads this view to decide what to route, which
+                    // needs the depth a bound would cut.
+                    limit_price: 0,
+                    taker_served_window: self.args.taker_served_window,
+                    include_taker_origin_reservations: false,
+                },
+                self.slab,
+                self.accounts,
+                &mut self.scratch,
+            )
+            .map_err(|e| {
+                msg!("quoter {} quote failed: {}", entry, e);
+                ErrorCode::FailedQuoterCpi
+            })?;
+        Ok(Some(QuotedSlot {
+            priority: slot.config.priority,
+            quoter_type: slot.config.quoter_type,
+            user: slot.config.user,
+            entry,
+            oracle_band: slot.config.oracle_band(self.view.mark.margin_ratio_initial),
+            located,
+        }))
+    }
+
+    /// Push one slot's ladder, cut as the fill cuts it with `room`, and
+    /// return the base the ladder admits.
+    ///
+    /// The response borrow ends here, before the next quoter's CPI. A live
+    /// borrow of a response account would fail the CPI that writes it.
+    fn push_admitted(&mut self, quoted: &QuotedSlot<'info>, room: u64) -> Result<u64> {
+        let data = quoted.located.borrow()?;
+        let response = quoted
+            .located
+            .checked_quote_response(&data, self.args.direction)?;
+        let admitted = fill_admitted_levels(
+            usable_levels(response.levels),
+            quoted.quoter_type,
+            QuoterLadderBounds {
+                maker_direction: PositionDirection::from(self.args.direction).opposite(),
+                band_oracle_price: self.view.oracle.band_price,
+                oracle_band: quoted.oracle_band,
+                room,
+                order_step_size: self.view.order_step_size,
+            },
+            &mut self.ladder,
+        )?;
+
+        let index = self.buffer.source_count as usize;
+        self.buffer.push(
+            QuotedSourceKind::Quoter,
+            quoted.entry,
+            quoted.priority,
+            admitted.levels,
+        )?;
+        self.buffer.sources[index].clamped = admitted.clamped;
+
+        Ok(total_base(admitted.levels))
+    }
+
+    /// Record the orders behind the ladder just pushed, or one row against
+    /// the registry user when the quoter describes none.
+    fn record_rows(
+        &mut self,
+        slot_index: usize,
+        quoted: &QuotedSlot<'info>,
+        admitted: u64,
+    ) -> Result<()> {
+        if self.buffer.rows_remaining() == 0 {
+            return Ok(());
+        }
+
+        // A Custom entry is bound to the user it registered for, matching
+        // settlement's split. A quoter holding other people's orders says so
+        // itself through the optional third leg. Every other quoter's rows
+        // point at the registry's one account.
+        let bound_to = (quoted.quoter_type == QuoterType::Custom)
+            .then(|| user_ref(self.makers, &quoted.user))
+            .flatten();
+        if !self.quoter_rows(slot_index, admitted, bound_to)? {
+            attribute_to_user(self.makers, &quoted.user, admitted, self.buffer)?;
+        }
+
+        Ok(())
+    }
+
+    /// Ask a quoter which orders its ladder stands on, and record them.
+    ///
+    /// Returns `false` when the entry declares no `quote_l3_v0` leg, which is
+    /// every quoter that fills from one account. `bound_to` is the one user a
+    /// Custom entry may name, and `None` for a book.
+    fn quoter_rows(
+        &mut self,
+        slot_index: usize,
+        admitted: u64,
+        bound_to: Option<UserRefV0>,
+    ) -> Result<bool> {
+        let (entry, located) = {
+            let slots = self.slab.slots()?;
+            let slot = &slots[slot_index];
+            let located = slot.quote_l3(
+                self.args.market_index,
+                L3ArgsV0 {
+                    direction: self.args.direction,
+                    size: admitted,
+                    max_rows: self.buffer.rows_remaining().min(u16::MAX as usize) as u16,
+                    include_taker_origin_reservations: false,
+                },
+                self.slab,
+                self.accounts,
+                &mut self.scratch,
+            )?;
+            (slot.entry, located)
+        };
+        let Some(located) = located else {
+            return Ok(false);
+        };
+
+        let data = located.borrow()?;
+        // Cut to what the ladder admitted. A book whose depth verification
+        // clamped must not name makers whose orders that clamp took away.
+        let mut remaining = admitted;
+        for row in located.l3_response(&data)?.rows {
+            if remaining == 0 {
+                break;
+            }
+
+            // A quoter that fills from one account may only describe that
+            // account. Settlement refuses anything else. The row is reported
+            // rather than corrected, so the health layer can hold the quoter
+            // responsible.
+            if let Some(bound_to) = bound_to {
+                validate!(
+                    row.user == bound_to,
+                    ErrorCode::QuoterSubjectNotPermitted,
+                    "quoter {} described a row for user {}/{}, which it cannot settle",
+                    entry,
+                    row.user.authority,
+                    row.user.sub_account_id
+                )?;
+            }
+
+            let size = row.size.min(remaining);
+            if !self.buffer.push_row(QuotedRowV0 {
+                price: row.price,
+                size,
+                order_id: row.order_id,
+                node_index: row.node_index,
+                authority: row.user.authority,
+                sub_account_id: row.user.sub_account_id,
+                flags: row.flags,
+                padding: [0; 1],
+                placed_slot: row.placed_slot,
+            })? {
+                break;
+            }
+
+            remaining -= size;
+        }
+
+        Ok(true)
+    }
 }
 
 /// Quote the vAMM into the buffer, with every book already in it as the
@@ -514,90 +607,6 @@ fn quote_vamm(
     Ok(())
 }
 
-/// Ask a quoter which orders its ladder stands on, and record them.
-///
-/// Returns `false` when the entry declares no `quote_l3_v0` leg, which is every
-/// quoter that fills from one account.
-#[allow(clippy::too_many_arguments)]
-fn quoter_rows<'info>(
-    slab_loader: &AccountLoader<'info, QuoterSlabV0>,
-    slot_index: usize,
-    market_index: u16,
-    direction: DirectionV0,
-    admitted: u64,
-    rows_wanted: usize,
-    entry: &Pubkey,
-    accounts: &[AccountInfo<'info>],
-    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-    // The one user a Custom entry may name, `None` for a book. This is the
-    // rule settlement applies, applied to what the entry says about itself.
-    bound_to: Option<UserRefV0>,
-    buffer: &mut RouterQuoteBufferV0,
-) -> Result<bool> {
-    let located = {
-        let slots = slab_loader.slots()?;
-        slots[slot_index].quote_l3(
-            market_index,
-            L3ArgsV0 {
-                direction,
-                size: admitted,
-                max_rows: rows_wanted.min(u16::MAX as usize) as u16,
-                include_taker_origin_reservations: false,
-            },
-            slab_loader,
-            accounts,
-            scratch,
-        )?
-    };
-    let Some(located) = located else {
-        return Ok(false);
-    };
-    let data = located.borrow()?;
-    // Cut to what the ladder admitted. A book whose depth verification clamped
-    // must not name makers whose orders that clamp took away.
-    let mut remaining = admitted;
-    for row in located.l3_response(&data)?.rows {
-        if remaining == 0 {
-            break;
-        }
-
-        // A quoter that fills from one account may only describe that account.
-        // Settlement refuses anything else, so a row that names a stranger is a
-        // quoter that asks the caller to carry an account it could never move.
-        // The row is reported rather than corrected, so the health layer can
-        // hold the quoter responsible.
-        if let Some(bound_to) = bound_to {
-            validate!(
-                row.user == bound_to,
-                ErrorCode::QuoterSubjectNotPermitted,
-                "quoter {} described a row for user {}/{}, which it cannot settle",
-                entry,
-                row.user.authority,
-                row.user.sub_account_id
-            )?;
-        }
-
-        let size = row.size.min(remaining);
-        if !buffer.push_row(QuotedRowV0 {
-            price: row.price,
-            size,
-            order_id: row.order_id,
-            node_index: row.node_index,
-            authority: row.user.authority,
-            sub_account_id: row.user.sub_account_id,
-            flags: row.flags,
-            padding: [0; 1],
-            placed_slot: row.placed_slot,
-        })? {
-            break;
-        }
-
-        remaining -= size;
-    }
-
-    Ok(true)
-}
-
 /// The loaded user's identity in derivable form, `None` when the call did not
 /// carry its account.
 fn user_ref(makers: &crate::state::user_map::UserMap, user: &Pubkey) -> Option<UserRefV0> {
@@ -652,49 +661,78 @@ fn attribute_to_user(
     Ok(())
 }
 
-/// The levels of a ladder the fill would keep at the oracle band.
+/// What [`fill_admitted_levels`] keeps of one ladder.
+struct AdmittedLadder<'l> {
+    levels: &'l [PriceLevelV0],
+    /// Whether the room or the step cut depth the band admitted.
+    clamped: bool,
+}
+
+/// The levels of a ladder the fill would keep.
 ///
-/// A Custom ladder ends at its first level outside the band, as
-/// `trim_to_quoter_room` ends it. A book with any level outside the band
+/// A Custom ladder goes through `trim_to_quoter_room`, the fill's own cut at
+/// the band, the step and the room. It is staged in `ladder`, because that
+/// cut rewrites a vector in place. A book with any level outside the band
 /// offers nothing, as `book_rests_outside_band` decides for the fill.
-fn fill_admitted_levels(
-    levels: &[PriceLevelV0],
+fn fill_admitted_levels<'l>(
+    levels: &'l [PriceLevelV0],
     quoter_type: QuoterType,
-    maker_direction: PositionDirection,
-    band_oracle_price: i64,
-    oracle_band: u32,
-) -> Result<&[PriceLevelV0]> {
-    let kept = match quoter_type {
+    bounds: QuoterLadderBounds,
+    ladder: &'l mut Vec<PriceLevelV0>,
+) -> Result<AdmittedLadder<'l>> {
+    match quoter_type {
         QuoterType::Custom => {
-            levels_inside_band(levels, maker_direction, band_oracle_price, oracle_band)?
+            let inside_band = levels_inside_band(
+                levels,
+                bounds.maker_direction,
+                bounds.band_oracle_price,
+                bounds.oracle_band,
+            )?;
+
+            ladder.clear();
+            ladder.extend_from_slice(levels);
+            let kept = trim_to_quoter_room(ladder, 0..levels.len(), bounds)?;
+            Ok(AdmittedLadder {
+                clamped: total_base(&ladder[kept.clone()]) < total_base(&levels[..inside_band]),
+                levels: &ladder[kept],
+            })
         }
         QuoterType::Clob
             if book_rests_outside_band(
                 levels,
-                maker_direction,
-                band_oracle_price,
-                oracle_band,
+                bounds.maker_direction,
+                bounds.band_oracle_price,
+                bounds.oracle_band,
             )? =>
         {
-            0
+            Ok(AdmittedLadder {
+                levels: &[],
+                clamped: false,
+            })
         }
-        _ => levels.len(),
-    };
-
-    Ok(&levels[..kept])
+        _ => Ok(AdmittedLadder {
+            levels,
+            clamped: false,
+        }),
+    }
 }
 
-/// The base a Custom quoter's user may take on through this slot.
+fn total_base(levels: &[PriceLevelV0]) -> u64 {
+    levels
+        .iter()
+        .map(|level| level.size)
+        .fold(0, u64::saturating_add)
+}
+
+/// The base a Custom quoter's user may take on through one slot.
 ///
-/// It is the fill's room: `quoter_base_room`, split evenly over every consulted
-/// unreserved slot that settles for the same user.
+/// It is the fill's room: `quoter_base_room`, split evenly over every
+/// consulted unreserved slot that settles for the same user.
 fn custom_quoter_room(
     sizing: &mut CapInputs,
-    slab_loader: &AccountLoader<QuoterSlabV0>,
-    consulted: &[usize],
+    sized_quoters: &QuoterUsers,
     user: &Pubkey,
-    market_index: u16,
-    maker_direction: PositionDirection,
+    args: &QuoteRouterArgs,
 ) -> Result<u64> {
     if sizing.makers_and_referrer.get_ref(user).is_err() {
         // Without the quoter's user account there is nothing to verify
@@ -703,24 +741,14 @@ fn custom_quoter_room(
         return Ok(0);
     }
 
-    let slots_for_user = {
-        let slots = slab_loader.slots()?;
-        consulted
-            .iter()
-            .filter(|&&index| {
-                let config = &slots[index].config;
-                !config.quoter_type.depth_is_margin_reserved() && config.user == *user
-            })
-            .count() as u64
-    };
-    let room = sizing.quoter_base_room(user, market_index, maker_direction)?;
-    Ok(room / slots_for_user.max(1))
+    let maker_direction = PositionDirection::from(args.direction).opposite();
+    let room = sizing.quoter_base_room(user, args.market_index, maker_direction)?;
+    Ok(room / (sized_quoters.slots_for(user).count() as u64).max(1))
 }
-
 #[cfg(test)]
 mod tests {
     use {
-        super::fill_admitted_levels,
+        super::{fill_admitted_levels, trim_to_quoter_room, QuoterLadderBounds},
         crate::{
             controller::position::PositionDirection,
             math::constants::{MARGIN_PRECISION, PRICE_PRECISION_U64 as PRICE},
@@ -728,24 +756,31 @@ mod tests {
         },
     };
 
-    /// Asks at 99, then 90, then 101, against a 5% band around 100.
-    fn kept(quoter_type: QuoterType) -> usize {
-        let levels: Vec<PriceLevelV0> = [99, 90, 101]
+    fn asks(levels: &[(u64, u64)]) -> Vec<PriceLevelV0> {
+        levels
             .iter()
-            .map(|price| PriceLevelV0 {
-                price: price * PRICE,
-                size: 1,
-            })
-            .collect();
-        fill_admitted_levels(
-            &levels,
-            quoter_type,
-            PositionDirection::Short,
-            (100 * PRICE) as i64,
-            MARGIN_PRECISION / 20,
-        )
-        .unwrap()
-        .len()
+            .map(|&(price, size)| PriceLevelV0 { price, size })
+            .collect()
+    }
+
+    /// Asks against a 5% band around 100.
+    fn bounds(room: u64, order_step_size: u64) -> QuoterLadderBounds {
+        QuoterLadderBounds {
+            maker_direction: PositionDirection::Short,
+            band_oracle_price: (100 * PRICE) as i64,
+            oracle_band: MARGIN_PRECISION / 20,
+            room,
+            order_step_size,
+        }
+    }
+
+    /// Asks at 99, then 90, then 101.
+    fn kept(quoter_type: QuoterType) -> usize {
+        let levels = asks(&[(99 * PRICE, 1), (90 * PRICE, 1), (101 * PRICE, 1)]);
+        fill_admitted_levels(&levels, quoter_type, bounds(u64::MAX, 1), &mut Vec::new())
+            .unwrap()
+            .levels
+            .len()
     }
 
     /// The view keeps what the fill keeps. A Custom ladder ends at its first
@@ -755,5 +790,28 @@ mod tests {
         assert_eq!(kept(QuoterType::Custom), 1);
         assert_eq!(kept(QuoterType::Clob), 0);
         assert_eq!(kept(QuoterType::Vamm), 3);
+    }
+
+    /// A Custom ladder the view publishes is the ladder the fill settles. The
+    /// first ask is not a multiple of the step, so the fill floors it and
+    /// ends the ladder there.
+    #[test]
+    fn the_view_publishes_the_custom_ladder_the_fill_settles() {
+        let levels = asks(&[(100 * PRICE, 1_500), (100_100_000, 2_000)]);
+        let bounds = bounds(u64::MAX, 1_000);
+
+        let mut staged = Vec::new();
+        let view = fill_admitted_levels(&levels, QuoterType::Custom, bounds, &mut staged).unwrap();
+        let view_levels = view.levels.to_vec();
+        assert!(view.clamped);
+
+        let mut fill = levels.clone();
+        let kept = trim_to_quoter_room(&mut fill, 0..levels.len(), bounds).unwrap();
+        assert_eq!(view_levels, fill[kept]);
+        assert_eq!(
+            view_levels,
+            asks(&[(100 * PRICE, 1_000)]),
+            "1,000 base settles"
+        );
     }
 }

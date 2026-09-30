@@ -17,6 +17,7 @@ use {
         state::{
             oracle::{HistoricalOracleData, OracleSource},
             perp_market::{MarketStats, PerpMarket, AMM},
+            prop_amm::{DirectionV0, UserRefV0},
             pyth_lazer_oracle::PythLazerOracle,
             spot_market::{SpotBalanceType, SpotMarket},
             user::{Order, OrderStatus, OrderType, PerpPosition, SpotPosition, User, UserStats},
@@ -270,13 +271,32 @@ fn measure(case: Case, measure: Measure) -> u64 {
     };
 
     match measure {
+        // A short taker sweeps the bid side.
         Measure::Budget => inputs
-            .maker_budget(&maker_key, 0, SideV0::Bid, taker_size, ORACLE, books)
+            .maker_budget(&maker_key, &short_taker(taker_size), books)
             .unwrap(),
         // A taker sweeping the bid side leaves the quoter long.
         Measure::QuoterRoom => inputs
             .quoter_base_room(&maker_key, 0, PositionDirection::Long)
             .unwrap(),
+    }
+}
+
+fn short_taker(size: u64) -> QuoteInputs<'static> {
+    QuoteInputs {
+        market_index: 0,
+        direction: DirectionV0::Short,
+        size,
+        users: &[],
+        reference_price: ORACLE,
+        band_oracle_price: ORACLE,
+        match_fills_allowed: true,
+        taker: UserRefV0::default(),
+        limit_price: 0,
+        taker_served_window: false,
+        margin_ratio_initial: 0,
+        order_step_size: 1,
+        include_taker_origin_reservations: false,
     }
 }
 

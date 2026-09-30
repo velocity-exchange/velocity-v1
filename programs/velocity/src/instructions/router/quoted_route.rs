@@ -54,13 +54,13 @@ fn is_quoter_slab(info: &AccountInfo) -> bool {
 
 /// The quoter's own bounds on the ladder one fill settles against.
 #[derive(Clone, Copy)]
-struct QuoterLadderBounds {
-    maker_direction: PositionDirection,
-    band_oracle_price: i64,
-    oracle_band: u32,
+pub(super) struct QuoterLadderBounds {
+    pub maker_direction: PositionDirection,
+    pub band_oracle_price: i64,
+    pub oracle_band: u32,
     /// The base the quoter's account can carry in this fill.
-    room: u64,
-    order_step_size: u64,
+    pub room: u64,
+    pub order_step_size: u64,
 }
 
 /// Cut a custom quoter's ladder to the depth this fill will settle against.
@@ -82,7 +82,7 @@ struct QuoterLadderBounds {
 /// is the tail of the pool, so the kept levels move down over the dropped
 /// ones and the pool shortens. No second list exists to disagree with this
 /// one, and no earlier quoter's run moves.
-fn trim_to_quoter_room(
+pub(super) fn trim_to_quoter_room(
     levels: &mut Vec<PriceLevelV0>,
     run: std::ops::Range<usize>,
     bounds: QuoterLadderBounds,

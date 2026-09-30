@@ -2533,7 +2533,7 @@ pub mod update_trigger_order_params {
         state::{
             oracle::OraclePriceData,
             perp_market::ContractTier,
-            user::{Order, OrderTriggerCondition, OrderType},
+            user::{Order, OrderBitFlag, OrderTriggerCondition, OrderType},
         },
         PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
     };
@@ -2616,6 +2616,38 @@ pub mod update_trigger_order_params {
         );
 
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn named_trigger_market_keeps_its_absolute_worst_price() {
+        let mut order = Order {
+            order_type: OrderType::TriggerMarket,
+            direction: PositionDirection::Short,
+            trigger_condition: OrderTriggerCondition::Below,
+            price: 95 * PRICE_PRECISION_U64,
+            ..Order::default()
+        };
+        let oracle_price_data = OraclePriceData {
+            price: 99 * PRICE_PRECISION_I64,
+            ..OraclePriceData::default()
+        };
+
+        update_trigger_order_params(
+            &mut order,
+            &oracle_price_data,
+            ContractTier::B,
+            10,
+            SlotClock::baseline(),
+        )
+        .unwrap();
+
+        assert_eq!(order.price, 95 * PRICE_PRECISION_U64);
+        assert_eq!(order.oracle_price_offset, 0);
+        assert!(!order.is_bit_flag_set(OrderBitFlag::OracleTriggerMarket));
+        assert_eq!(
+            order.get_limit_price(Some(98 * PRICE_PRECISION_I64), None, 1),
+            Ok(Some(95 * PRICE_PRECISION_U64))
+        );
     }
 }
 

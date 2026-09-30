@@ -650,15 +650,18 @@ pub(super) fn update_trigger_order_params(
         order.price,
     )?;
 
-    if matches!(order.order_type, OrderType::TriggerMarket) {
-        // A fired trigger-market is a market order priced off the oracle it
-        // fired against, so it holds its bound as an offset.
+    if matches!(order.order_type, OrderType::TriggerMarket) && order.price == 0 {
+        // An unnamed bound follows the oracle, so keep it as an offset. A
+        // named worst price remains absolute: the fill may use an MM oracle
+        // that differs from the exchange oracle this offset is measured from.
         order.add_bit_flag(OrderBitFlag::OracleTriggerMarket);
         order.oracle_price_offset = worst_price
             .cast::<i64>()?
             .safe_sub(oracle_price_data.price)?;
         order.price = 0;
     } else {
+        order.remove_bit_flag(OrderBitFlag::OracleTriggerMarket);
+        order.oracle_price_offset = 0;
         order.price = worst_price;
     }
 

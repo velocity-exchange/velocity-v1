@@ -350,6 +350,7 @@ fn clob_rest_accounts<'a, 'info>(
     ctx: &'a Context<'info, PlaceAndMakeV1<'info>>,
 ) -> ClobRestAccounts<'a, 'info> {
     ClobRestAccounts {
+        state: &ctx.accounts.state,
         user: &ctx.accounts.user,
         quoter_slab: &ctx.accounts.quoter_slab,
         clob_market: &ctx.accounts.clob_market,

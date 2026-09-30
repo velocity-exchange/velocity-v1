@@ -270,6 +270,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
     // The fill leg updated the filled amounts of `placed.order` in place.
     let rested = crate::instructions::rest_or_cancel_detached_remainder(
         &crate::instructions::ClobRestAccounts {
+            state: &ctx.accounts.state,
             user: &ctx.accounts.user,
             quoter_slab: &ctx.accounts.quoter_slab,
             clob_market: &ctx.accounts.clob_market.to_account_info(),

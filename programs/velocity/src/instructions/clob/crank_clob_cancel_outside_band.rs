@@ -9,8 +9,10 @@
 //! price the fill uses and the band of the book's quoter entry. The oracle must pass
 //! the gates a crossed-book crank passes.
 //!
-//! A maker placement or modify outside the same band is refused, so an order
-//! rests outside the band only after the oracle moves away from it.
+//! Maker placement and modify refuse prices outside the same band. A
+//! taker-origin order, which is a taker remainder or a fired trigger-limit,
+//! is clamped just inside the band before it rests. An order is therefore
+//! outside the band only after the oracle moves away from it.
 //!
 //! The crank removes the order the way the expiry crank does. The maker pays
 //! the flat removal reward, a placed trigger's shadow is freed, and
@@ -171,6 +173,13 @@ pub(super) struct MakerBand {
 }
 
 impl MakerBand {
+    /// A band no price breaches, for tests that exercise other gates.
+    #[cfg(test)]
+    pub(super) const UNBOUNDED: Self = Self {
+        oracle_price: i64::MAX,
+        oracle_band: u32::MAX,
+    };
+
     /// Read the band behind the oracle gates a crossed-book crank passes. A
     /// cancel is irreversible, so a stale or divergent oracle must not decide
     /// that an order is out of band.
@@ -257,6 +266,29 @@ impl MakerBand {
         Ok(())
     }
 
+    /// Clamp a taker-origin order to the nearest price strictly inside the
+    /// maker band. The later book-grid alignment moves bids down and asks
+    /// up, so it can only move the result farther inside the band.
+    pub(super) fn clamp_rest(&self, price: u64, direction: PositionDirection) -> Result<u64> {
+        use crate::math::constants::MARGIN_PRECISION_U128;
+
+        let oracle = u128::from(self.oracle_price.unsigned_abs());
+        let distance = oracle
+            .checked_mul(u128::from(self.oracle_band))
+            .and_then(|value| value.checked_div(MARGIN_PRECISION_U128))
+            .ok_or(ErrorCode::MathError)?;
+        let edge = match direction {
+            PositionDirection::Long => oracle.saturating_add(distance).saturating_sub(1),
+            PositionDirection::Short => oracle.saturating_sub(distance).saturating_add(1),
+        }
+        .min(u128::from(u64::MAX)) as u64;
+
+        Ok(match direction {
+            PositionDirection::Long => price.min(edge),
+            PositionDirection::Short => price.max(edge),
+        })
+    }
+
     /// Whether a maker order at `price` on the `maker_direction` side is one
     /// the router refuses.
     pub(super) fn refuses(&self, price: u64, maker_direction: PositionDirection) -> Result<bool> {
@@ -309,5 +341,19 @@ mod tests {
         assert!(BAND
             .validate_rest(90_000_001, PositionDirection::Short)
             .is_ok());
+    }
+
+    #[test]
+    fn a_remainder_is_clamped_strictly_inside_the_band() {
+        assert_eq!(
+            BAND.clamp_rest(120_000_000, PositionDirection::Long)
+                .unwrap(),
+            109_999_999
+        );
+        assert_eq!(
+            BAND.clamp_rest(80_000_000, PositionDirection::Short)
+                .unwrap(),
+            90_000_001
+        );
     }
 }

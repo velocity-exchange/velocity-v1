@@ -21,6 +21,7 @@ use {
             prop_amm::{
                 ClobMarket, PlaceOrderArgsV0, QuoterSlabExt, QuoterSlabV0, SideV0, UserRefV0,
             },
+            state::State,
             user::{Order, OrderReservation, ReleaseCheck, User},
         },
         validate,
@@ -321,6 +322,7 @@ pub fn rest_admission(
 
 /// The accounts one rest on the book reads.
 pub struct ClobRestAccounts<'a, 'info> {
+    pub state: &'a AccountLoader<'info, State>,
     pub user: &'a AccountLoader<'info, User>,
     pub quoter_slab: &'a AccountLoader<'info, QuoterSlabV0>,
     pub clob_market: &'a AccountInfo<'info>,
@@ -393,10 +395,22 @@ pub fn rest_on_clob<'info>(
 
     // A partial fill often leaves a remainder the book refuses, so the rules
     // are tested before the CPI that would revert the fill.
+    let requested_price = if order.taker_origin {
+        super::super::crank_clob_cancel_outside_band::MakerBand::at_placement(
+            &*accounts.state.load()?,
+            maps,
+            accounts.quoter_slab,
+            order.market_index,
+            clock.slot,
+        )?
+        .clamp_rest(order.price, order.direction)?
+    } else {
+        order.price
+    };
     let price = match clob_admits_rest(
         &clob,
         order.direction,
-        order.price,
+        requested_price,
         order.base_asset_amount,
         order.max_ts,
         order.activation_delay_slots,
@@ -1101,6 +1115,9 @@ mod detached_remainder_tests {
 
         create_anchor_account_info!(user, User, user_info);
         let user_loader = AccountLoader::try_from(&user_info).unwrap();
+        let mut state = crate::state::state::State::default();
+        create_anchor_account_info!(state, State, state_info);
+        let state_loader = AccountLoader::try_from(&state_info).unwrap();
 
         let slab_key = Pubkey::new_unique();
         let mut slab_lamports = 0;
@@ -1121,6 +1138,7 @@ mod detached_remainder_tests {
             OracleMap::empty(),
         );
         let accounts = ClobRestAccounts {
+            state: &state_loader,
             user: &user_loader,
             quoter_slab: &slab_loader,
             clob_market: &slab_info,

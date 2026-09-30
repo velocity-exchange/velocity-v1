@@ -426,6 +426,7 @@ fn rest_fired_remainder<'info>(
 
     crate::instructions::rest_or_cancel_detached_remainder(
         &crate::instructions::ClobRestAccounts {
+            state: &accounts.state,
             user: &accounts.user,
             quoter_slab: &accounts.quoter_slab,
             clob_market: &accounts.clob_market.to_account_info(),

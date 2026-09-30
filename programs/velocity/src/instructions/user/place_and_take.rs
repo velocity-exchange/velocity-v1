@@ -405,6 +405,7 @@ fn rest_take_remainder<'info>(
 
     let rest = crate::instructions::rest_remainder_on_clob(
         &crate::instructions::ClobRestAccounts {
+            state: accounts.state,
             user: accounts.user,
             quoter_slab: clob.quoter_slab,
             clob_market: clob.clob_market,

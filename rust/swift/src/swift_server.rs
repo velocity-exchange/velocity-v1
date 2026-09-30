@@ -834,9 +834,21 @@ pub async fn start_server() {
         _ => panic!("Invalid velocity environment: {velocity_env}"),
     };
     let wallet = Wallet::new(Keypair::new());
-    let client = VelocityClient::new(context, RpcClient::new(rpc_endpoint), wallet)
-        .await
-        .expect("initialized client");
+    // Commitment must be set explicitly. `RpcClient::new` defaults to
+    // `CommitmentConfig::default()`, which is *finalized*, and the client's
+    // commitment is inherited by every account subscription it opens (markets,
+    // oracles, users). Finalized state runs ~32 slots (~13s) behind head, which
+    // is far past the 10-slot tolerance of the auction oracle-band guard below,
+    // so that guard would fail open on every order. Confirmed matches the TS
+    // SDK's `DEFAULT_CONFIRMATION_OPTS` and the commitment this server already
+    // passes explicitly to `simulateTransaction`.
+    let client = VelocityClient::new(
+        context,
+        RpcClient::new_with_commitment(rpc_endpoint, CommitmentConfig::confirmed()),
+        wallet,
+    )
+    .await
+    .expect("initialized client");
 
     let user_account_fetcher = UserAccountFetcher::from_env(client.clone()).await;
 
@@ -2698,7 +2710,10 @@ mod tests {
         // Create mock server params
         let velocity = VelocityClient::new(
             velocity_rs::Context::DevNet,
-            RpcClient::new("https://api.devnet.solana.com".to_string()),
+            RpcClient::new_with_commitment(
+                "https://api.devnet.solana.com".to_string(),
+                CommitmentConfig::confirmed(),
+            ),
             Keypair::new().into(),
         )
         .await

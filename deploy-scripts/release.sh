@@ -55,7 +55,8 @@ options
   --no-color       plain output (also honours NO_COLOR)
   -h, --help       this text
 
-programs: velocity, jit_proxy (token_faucet: devnet only)
+programs: velocity, jit_proxy, protocol_revenue_router (token_faucet: devnet only;
+          protocol_revenue_router: mainnet only, no devnet workflow)
 USAGE
 }
 
@@ -93,16 +94,18 @@ NPM_WF="npm-publish.yml"
 DOCKER_WF="velocity-publish.yml"
 # npm-publish.yml's `if:` skips these packages' tags (not public yet).
 NPM_CI_SKIPPED=" vaults-sdk cli-admin "
+# PROGRAMS is what manual-devnet-deploy.yaml offers; the router has no devnet workflow.
 PROGRAMS="velocity jit_proxy token_faucet"
-MAINNET_PROGRAMS="velocity jit_proxy"
+MAINNET_PROGRAMS="velocity jit_proxy protocol_revenue_router"
 
-program_path()  { case "$1" in velocity) echo programs/velocity ;; jit_proxy) echo programs/jit-proxy ;; token_faucet) echo programs/token_faucet ;; esac; }
-program_crate() { case "$1" in velocity) echo velocity ;; jit_proxy) echo jit-proxy ;; token_faucet) echo token_faucet ;; esac; }
-program_idl()   { case "$1" in velocity) echo program:idl ;; jit_proxy) echo program:idl:jit-proxy ;; *) echo "" ;; esac; }
+program_path()  { case "$1" in velocity) echo programs/velocity ;; jit_proxy) echo programs/jit-proxy ;; token_faucet) echo programs/token_faucet ;; protocol_revenue_router) echo programs/protocol-revenue-router ;; esac; }
+program_crate() { case "$1" in velocity) echo velocity ;; jit_proxy) echo jit-proxy ;; token_faucet) echo token_faucet ;; protocol_revenue_router) echo protocol-revenue-router ;; esac; }
+program_idl()   { case "$1" in velocity) echo program:idl ;; jit_proxy) echo program:idl:jit-proxy ;; protocol_revenue_router) echo program:idl:revenue-router ;; *) echo "" ;; esac; }
 program_idl_files() {
 	case "$1" in
 		velocity) echo "packages/sdk/src/idl/velocity.json packages/sdk/src/idl/velocity.ts" ;;
 		jit_proxy) echo "packages/jit-proxy/src/idl/jit_proxy.json packages/jit-proxy/src/types/jit_proxy.ts" ;;
+		protocol_revenue_router) echo "packages/revenue-router-sdk/src/idl/protocol_revenue_router.json packages/revenue-router-sdk/src/types/protocol_revenue_router.ts" ;;
 	esac
 }
 check_program() { # $1 = name, $2 = allowed list
@@ -119,7 +122,8 @@ master_sha()     { git rev-parse "$MASTER"; }
 tag_version()    { printf '%s' "${1##*-v}"; }
 tag_sha()        { git rev-list -n1 "$1" 2>/dev/null || true; }
 tag_date()       { git log -1 --format=%cs "$1" 2>/dev/null || true; }
-latest_tag()     { git tag --list "${1}v*" | grep -E 'v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1; }
+# `|| true`: a program with no tag yet must not trip pipefail.
+latest_tag()     { git tag --list "${1}v*" | { grep -E 'v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1; }
 tag_exists()     { [ -n "$(git tag --list "$1")" ]; }
 file_at()        { git show "$MASTER:$1" 2>/dev/null || true; }
 cargo_version()  { file_at "$(program_path "$1")/Cargo.toml" | sed -nE 's/^version *= *"([^"]+)".*/\1/p' | head -1; }
@@ -257,10 +261,11 @@ cmd_status() {
 		ver="$(cargo_version "$p")"
 		tag="$(latest_tag "program-$p-")"
 		tver=""; tsha=""; [ -z "$tag" ] || { tver="$(tag_version "$tag")"; tsha="$(tag_sha "$tag")"; }
+		local tv="${tver:+v$tver}"
 		n="$(count_lines "$(commits_since "$tsha" "$(program_path "$p")")")"
 		mconc=""; [ -z "$tag" ] || mconc="$(run_for_branch "$MAINNET_WF" "$tag" | cut -f4)"
-		printf '   %s%-13s%s Cargo %-9s tag v%-8s %s   mainnet %s   %s program commit(s) since tag\n' \
-			"$BOLD" "$p" "$RST" "$ver" "${tver:-none}" "${DIM}$(short "$tsha") $(tag_date "$tag")${RST}" "$(mark "$mconc")" "$n" >&2
+		printf '   %s%-23s%s Cargo %-9s tag %-9s %s   mainnet %s   %s program commit(s) since tag\n' \
+			"$BOLD" "$p" "$RST" "${ver:-none}" "${tv:-none}" "${DIM}$(short "$tsha") $(tag_date "$tag")${RST}" "$(mark "$mconc")" "$n" >&2
 		if [ -n "$tver" ] && [ "$n" -gt 0 ] && ! semver_gt "$ver" "$tver"; then
 			warn "$p: Cargo $ver is not ahead of tag v$tver; bump before tagging"
 			set_next "bump $p"
@@ -335,6 +340,7 @@ cmd_status() {
 	# --- mainnet tag for the current Cargo version
 	for p in $MAINNET_PROGRAMS; do
 		ver="$(cargo_version "$p")"; tag="program-$p-v$ver"
+		[ -n "$ver" ] || continue
 		if ! tag_exists "$tag"; then
 			set_next "mainnet $p" "then sign the mainnet Squads proposal; verify first: bun run verify-buffer $p"
 		else
@@ -457,6 +463,7 @@ cmd_mainnet() {
 	kv "last tag" "${last:-none} ${DIM}($n program commit(s) since)${RST}"
 	[ "$p" != velocity ] || velocity_checks "$(tag_sha "$last")" >/dev/null
 
+	is_semver "$ver" || die "no Cargo version for $p on $MASTER"
 	[ -n "$tver" ] && ! semver_gt "$ver" "$tver" && die "Cargo $ver is not ahead of $last; land \`release.sh bump $p\` first"
 	tag_exists "$tag" && die "$tag already exists"
 

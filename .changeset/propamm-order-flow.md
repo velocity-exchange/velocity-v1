@@ -85,6 +85,10 @@ and therefore returned the same inflated figure. Its argument order is unchanged
 units. The program holds a fill to that scalar, so a client that predicts whether a fill is
 accepted needs it.
 
+A maker that cranks a fill earns the filler reward on the vAMM slice only. On a CLOB or Custom
+match leg, only a filler that is not that leg's maker earns it, so the reward does not come out of
+the protocol's share of the taker fee.
+
 A quoter reports depth it could not reach in `withheldPrice` and `withheldBase`. When a book
 withholds depth and the taker did not sign the transaction, the fill requires that the transaction
 was full and that every loaded user did something. A loaded user counts only as the taker, the
@@ -183,7 +187,11 @@ because each book numbers its own orders. The keeper arms are
 `force_cancel_clob_orders`, `crank_clob_evict` and `crank_clob_remove_expired`. `force_cancel_clob_orders`
 cancels during a full exchange halt but pays no keeper fee, so the halt means the same thing for
 it as for its `User.orders` twin, which refuses outright. It takes no `fillerStats` account, and it
-judges a reduce-only order at the size it can close. The evict and expiry cranks charge no maker fee
+judges a reduce-only order at the size it can close. `cancelOrdersV1` leaves every taker-origin
+remainder on the book and reports the sweep as not exhaustive, because the sweep cannot release a
+remainder's signed-message entry. `cancelOrderV1` with `takerOrigin` set removes one. Eviction
+refuses a side whose worst order is a taker remainder inside its claim, with `TakerOriginBound`, and
+never moves to a better-priced order. The evict and expiry cranks charge no maker fee
 under a full halt. They and `crank_taker_origin_cross` refuse a filler outside pool 0 when a reward
 is due.
 
@@ -220,10 +228,12 @@ maker-side builder fee. A `userOrderId` that a live slot order holds fails with
 `UserOrderIdAlreadyInUse`. A reduce-only maker order rests, clamped to the position, also on a
 `ReduceOnly` market. `TryPostOnly` and `Slide` read the book's best opposite order as well as the
 vAMM. A price outside the maker oracle band fails with `PriceBandsBreached`, measured as the
-router measures it, so an order rests outside the band only after the oracle moves. The placement
+router measures it, so an order rests outside the band only after the oracle moves. A taker
+remainder or a fired trigger-limit rests clamped just inside the band. The placement
 emits `OrderActionRecord(Place)` beside its `OrderRecord`.
 
-`modifyOrderV1` holds the replacement to the market's tick, step and minimum order size, to the
+`modifyOrderV1` rounds the replacement price onto the market's tick as a placement does, a bid down
+and an ask up. It holds the replacement to the market's step and minimum order size, to the
 open-interest cap, to the maker oracle band, and to the vAMM post-only check when `rejectIfCrossed`
 is set. It refuses a market in settlement.
 
@@ -415,7 +425,8 @@ becomes `unusedAuctionDuration`. The account layout is unchanged.
 `math/auction` is deleted. `math/worstPrice` replaces it with
 `deriveWorstPrice(oraclePrice, contractTier, direction, namedPrice)`. The contract tier sets the
 bound of an unnamed price: 2 percent on tier A, 5 on B and C, 10 on Speculative, and 20 on
-HighlySpeculative and Isolated. A fired stop-market takes the same bound.
+HighlySpeculative and Isolated. A fired stop-market takes the same bound. A named worst price stays
+absolute when the stop fires, so the fill cannot move it with the MM oracle.
 `isFallbackAvailableLiquiditySource` moves to `math/orders`. `getLimitPrice`, `hasLimitPrice`,
 `isRestingLimitOrder` and `isRestingSignedMsgLimitOrder` lose their auction and slot arguments,
 `signedMsgOrderMaxSlot` trades its auction duration for `isRestingLimit`, and `hasAuctionPrice` is
@@ -639,8 +650,10 @@ now fails rather than being trusted not to matter.
 `quote_router` no longer needs the perp market passed writable, and it no longer writes to the
 makers it sizes. It was opening a position slot on a third party's account to reproduce the fill's
 clamp and putting it back; it now sizes against the position a fill would open, so the makers ride
-read-only. It applies the fill's oracle gate, band trim, CLOB-run drop and quoter room. It does not
-apply the per-maker budget cap on CLOB depth, because it names no taker and loads no maker set.
+read-only. It applies the fill's oracle gate, band trim and CLOB-run drop, and cuts a Custom ladder
+with the fill's own trim at the market step and the quoter room. It carries no caps, so it does not
+apply the per-maker budget cap on CLOB depth, and it does not take a user's book claim off that
+user's Custom quoter room.
 
 `crank_cross_match` carries the SOL spot market, read-only, after the quote spot market, when
 `State.solSpotMarketIndex` is not 0. It prices its keeper payment in quote at the live SOL oracle,
@@ -736,7 +749,8 @@ removal. `math/crankFee` mirrors the on-chain arithmetic (`requestedCostUnits`, 
 `deriveCrankPayments`) and the runtime's cost model, so a client can predict what an attach writes.
 
 A program-keeper crank draws reservoir lamports only when it collected a fee for the protocol, and
-never when the payout account is the order owner's authority. That covers the removal, trigger and
+never when the payout account is the order owner's authority. A removal or trigger crank draws none
+when no live SOL TWAP prices the payment, because the owner then pays only the flat fee. That covers the removal, trigger and
 force-cancel cranks and `crank_taker_origin_cross`. A program-keeper `liquidate_perp_with_fill`
 draws nothing when the payout account is the liquidated user's authority or delegate.
 A full exchange halt waives the fee, so such a

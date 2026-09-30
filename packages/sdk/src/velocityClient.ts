@@ -13410,7 +13410,8 @@ export class VelocityClient {
 	 * change. The order keeps its id, because a reprice is one order that moved, and loses its queue
 	 * position, because the book has no in-place mutation. A `null` field keeps what the resting
 	 * order carries, except `baseAssetAmount`, where `null` keeps the remaining size rather than the
-	 * original. An `activationDelaySlots` below the book's default is refused.
+	 * original. An `activationDelaySlots` below the book's default is refused. An off-tick `price`
+	 * rounds onto the market's tick as a placement does, a bid down and an ask up.
 	 * @param takerOrigin - The order is a taker remainder. The instruction then carries the
 	 * signed-message record, so a signed-message remainder keeps its route under the new book id.
 	 */

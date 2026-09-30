@@ -1,7 +1,7 @@
 //! Tests for the gate that cancels a fired stop-market instead of firing it.
 
 use {
-    super::{fired_order_must_cancel, trigger_must_cancel},
+    super::{account_carries_risk_increase, fired_order_must_cancel},
     crate::{
         controller::position::PositionDirection,
         create_anchor_account_info,
@@ -137,7 +137,7 @@ fn initial_margin_counts_the_fired_order() {
     .unwrap();
 
     assert!(must_cancel);
-    assert!(!trigger_must_cancel(&user, &user_stats, &mut maps).unwrap());
+    assert!(account_carries_risk_increase(&user, &user_stats.load().unwrap(), &mut maps).unwrap());
 
     let position = user.get_perp_position(0).unwrap();
     assert_eq!(position.open_bids, 0);

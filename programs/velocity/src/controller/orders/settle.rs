@@ -335,6 +335,7 @@ impl<'a, 'stats> MakerSide<'a, 'stats> {
     /// never available and never recycled, and the order keeps one margin
     /// regime for its whole life. The fallback is for a maker the fill reaches
     /// with no book order behind it.
+    // A constructor: each argument is a field of the `MakerSide` it builds.
     #[allow(clippy::too_many_arguments)]
     pub fn bind(
         user: &'a mut User,
@@ -676,13 +677,8 @@ impl SettledFees {
                 accrue_revenue_share(escrow, index, self.builder_fee, cx.market)
             }
             _ => {
-                validate!(
-                    false,
-                    ErrorCode::UnableToLoadRevenueShareAccount,
-                    "Order has builder fee but no escrow account found"
-                )?;
-
-                Ok(())
+                msg!("Order has builder fee but no escrow account found");
+                Err(ErrorCode::UnableToLoadRevenueShareAccount)
             }
         }
     }

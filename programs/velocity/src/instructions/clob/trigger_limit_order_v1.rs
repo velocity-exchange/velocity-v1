@@ -59,10 +59,7 @@
 use {
     super::helpers::placement::{rest_admission, RestAdmission, RestRefusal},
     crate::{
-        controller::{
-            orders::{cancel_order, pay_keeper_flat_reward_for_perps},
-            position::PositionDirection,
-        },
+        controller::{orders::cancel_order, position::PositionDirection},
         error::ErrorCode,
         instructions::{
             constraints::*,
@@ -71,17 +68,12 @@ use {
         load_mut,
         math::{
             liquidation::validate_user_not_being_liquidated,
-            margin::{
-                calculate_margin_requirement_and_total_collateral_and_liability_info,
-                calculate_net_equity_for_floor, MarginRequirementType,
-            },
             orders::order_satisfies_trigger_condition,
         },
         msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
-            margin_calculation::MarginContext,
             oracle_map::OracleMap,
             perp_market_map::{MarketSet, PerpMarketMap},
             prop_amm::{
@@ -250,6 +242,13 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         user_stats: &accounts.user_stats,
         filler: &accounts.filler,
         state: &state,
+        maker_band: super::crank_clob_cancel_outside_band::MakerBand::at_placement(
+            &state,
+            &mut maps,
+            &accounts.quoter_slab,
+            market_index,
+            slot,
+        )?,
         market_index,
         order_id,
         keeper_fee: super::helpers::crank_common::TriggerFeeAccounts {
@@ -286,6 +285,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
                     market_index,
                     order_id,
                     keeper_reward,
+                    pay_lamports: crank.keeper_fee.pay_lamports,
                     release_slot: true,
                 },
             );
@@ -310,6 +310,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
                     market_index,
                     order_id,
                     keeper_reward,
+                    pay_lamports: crank.keeper_fee.pay_lamports,
                     release_slot: false,
                 },
             );
@@ -384,6 +385,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
             keeper_reward: filler_reward,
+            pay_lamports: crank.keeper_fee.pay_lamports,
             release_slot: false,
         },
     )?;
@@ -405,10 +407,13 @@ struct TriggerLimitCrank<'a, 'info> {
     user_stats: &'a AccountLoader<'info, UserStats>,
     filler: &'a AccountLoader<'info, User>,
     state: &'a State,
+    /// The fired order rests taker-origin, so it is clamped inside the band
+    /// the router holds the book to.
+    maker_band: super::crank_clob_cancel_outside_band::MakerBand,
     market_index: u16,
     order_id: u32,
     /// What the crank charges the owner for the fire or the recross.
-    keeper_fee: u64,
+    keeper_fee: super::helpers::crank_common::TriggerKeeperFee,
     clock: &'a Clock,
 }
 
@@ -455,17 +460,12 @@ impl TriggerLimitCrank<'_, '_> {
             TriggerFire::Done(step) => return Ok(step),
         };
 
-        let Some(reserved) = reserve_and_gate_trigger(
+        let Some(reserved) = self.reserve_and_gate(
             user,
             user_stats,
             fired.order_index,
-            self.market_index,
             fired.prices.oracle_price,
             maps,
-            &user_key,
-            &filler_key,
-            now,
-            self.clock.slot,
         )?
         else {
             return Ok(TriggerLimitStep::NoWork);
@@ -474,23 +474,15 @@ impl TriggerLimitCrank<'_, '_> {
         let admission = rest_admission(
             rules,
             reserved.direction,
-            user.orders[fired.order_index].price,
+            self.maker_band
+                .clamp_rest(user.orders[fired.order_index].price, reserved.direction)?,
             reserved.base_asset_amount,
             user.orders[fired.order_index].max_ts,
             None,
             now,
         );
 
-        let filler_reward = pay_trigger_keeper(
-            user,
-            self.filler,
-            &maps.perp_market_map,
-            self.market_index,
-            self.keeper_fee,
-            &user_key,
-            &filler_key,
-            self.clock.slot,
-        )?;
+        let filler_reward = self.pay_keeper(user, &maps.perp_market_map)?;
 
         let price = match admission {
             RestAdmission::Admitted { price } => price,
@@ -570,16 +562,7 @@ impl TriggerLimitCrank<'_, '_> {
             }));
         }
 
-        let keeper_reward = pay_trigger_keeper(
-            user,
-            self.filler,
-            &maps.perp_market_map,
-            self.market_index,
-            self.keeper_fee,
-            &self.user.key(),
-            &self.filler.key(),
-            self.clock.slot,
-        )?;
+        let keeper_reward = self.pay_keeper(user, &maps.perp_market_map)?;
 
         Ok(TriggerFire::Done(TriggerLimitStep::Rearmed {
             keeper_reward,
@@ -825,62 +808,74 @@ struct ReservedTrigger {
     reduce_only: bool,
 }
 
-/// Reserves the resting order on the account, or cancels the trigger.
-///
-/// `None` means the gate cancelled the order instead of placing it. The order
-/// is never re-armed, so an underfunded stop cannot repeat forever.
-///
-/// The margin gate exempts a reduce-only order. The book is position-blind,
-/// but the router sends it an authoritative `base_cover` per user, and the
-/// book clamps every reduce-only fill to that cover.
-///
-/// The subaccount may already sit below its raw floor when a risk cancel
-/// succeeds, so that cancel trips the equity breaker inline.
-#[allow(clippy::too_many_arguments)]
-fn reserve_and_gate_trigger(
-    user: &mut User,
-    user_stats: &mut UserStats,
-    order_index: usize,
-    market_index: u16,
-    oracle_price: i64,
-    maps: &mut AccountMaps<'_>,
-    user_key: &Pubkey,
-    filler_key: &Pubkey,
-    now: i64,
-    slot: u64,
-) -> Result<Option<ReservedTrigger>> {
-    let explanation = match gate_trigger(
-        user,
-        user_stats,
-        order_index,
-        market_index,
-        oracle_price,
-        maps,
-    )? {
-        TriggerGate::Rest(reserved) => return Ok(Some(reserved)),
-        TriggerGate::Cancel(explanation) => explanation,
-    };
+impl TriggerLimitCrank<'_, '_> {
+    /// Reserves the resting order on the account, or cancels the trigger.
+    ///
+    /// `None` means the gate cancelled the order instead of placing it. The order
+    /// is never re-armed, so an underfunded stop cannot repeat forever.
+    ///
+    /// The margin gate exempts a reduce-only order. The book is position-blind,
+    /// but the router sends it an authoritative `base_cover` per user, and the
+    /// book clamps every reduce-only fill to that cover.
+    ///
+    /// The subaccount may already sit below its raw floor when a risk cancel
+    /// succeeds, so that cancel trips the equity breaker inline.
+    fn reserve_and_gate(
+        &self,
+        user: &mut User,
+        user_stats: &mut UserStats,
+        order_index: usize,
+        oracle_price: i64,
+        maps: &mut AccountMaps<'_>,
+    ) -> Result<Option<ReservedTrigger>> {
+        let explanation = match gate_trigger(
+            user,
+            user_stats,
+            order_index,
+            self.market_index,
+            oracle_price,
+            maps,
+        )? {
+            TriggerGate::Rest(reserved) => return Ok(Some(reserved)),
+            TriggerGate::Cancel(explanation) => explanation,
+        };
 
-    cancel_order(
-        order_index,
-        user,
-        user_key,
-        maps,
-        now,
-        slot,
-        explanation,
-        Some(filler_key),
-        0,
-        false,
-    )?;
+        cancel_order(
+            order_index,
+            user,
+            &self.user.key(),
+            maps,
+            self.clock.unix_timestamp,
+            self.clock.slot,
+            explanation,
+            Some(&self.filler.key()),
+            0,
+            false,
+        )?;
 
-    user.update_last_active_slot(slot);
+        user.update_last_active_slot(self.clock.slot);
 
-    if explanation == OrderActionExplanation::InsufficientFreeCollateral {
-        crate::controller::equity_floor::try_lazy_equity_breaker_trip(user, user_stats, maps)?;
+        if explanation == OrderActionExplanation::InsufficientFreeCollateral {
+            crate::controller::equity_floor::try_lazy_equity_breaker_trip(user, user_stats, maps)?;
+        }
+
+        Ok(None)
     }
 
-    Ok(None)
+    /// Pays the crank its reward out of the user, and reports the reward.
+    ///
+    /// A user that cranks its own trigger pays nothing. The account is already
+    /// borrowed here, and a reward it paid itself would move no value.
+    fn pay_keeper(&self, user: &mut User, perp_market_map: &PerpMarketMap<'_>) -> Result<u64> {
+        Ok(crate::controller::orders::pay_trigger_reward(
+            user,
+            &self.user.key(),
+            self.filler,
+            &mut *perp_market_map.get_ref_mut(&self.market_index)?,
+            self.keeper_fee.quote,
+            self.clock.slot,
+        )?)
+    }
 }
 
 /// What the gate decided for a fired trigger.
@@ -935,7 +930,7 @@ fn gate_trigger(
         .worst_case_liability_value(oracle_price)?;
     if worst_case_after > worst_case_before
         && !reduce_only
-        && !account_carries_risk_increase(user, user_stats, maps)?
+        && !crate::controller::orders::account_carries_risk_increase(user, user_stats, maps)?
     {
         user.replace_reservation(&placed, &armed)?;
         return Ok(TriggerGate::Cancel(
@@ -950,41 +945,6 @@ fn gate_trigger(
     }))
 }
 
-/// Whether the account may take on more risk: it meets initial margin, clears
-/// its buffered equity floor, and its authority's equity breaker is not set.
-///
-/// A floor that cannot be verified fails the crank rather than cancelling the
-/// trigger. A cancel is irreversible, so a brief oracle fault must not destroy
-/// a resting order. The keeper retries once the feed recovers.
-fn account_carries_risk_increase(
-    user: &User,
-    user_stats: &UserStats,
-    maps: &mut AccountMaps<'_>,
-) -> Result<bool> {
-    let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
-        user,
-        maps,
-        MarginContext::standard(MarginRequirementType::Initial),
-    )?;
-
-    let net_equity = calculate_net_equity_for_floor(user, maps)?;
-    if let Some(net_equity) = net_equity {
-        validate!(
-            net_equity.all_oracles_valid,
-            ErrorCode::InvalidOracle,
-            "cannot verify equity floor {} + buffer {} with an invalid oracle (authority {} subaccount {})",
-            user.equity_floor,
-            user.equity_floor_buffer,
-            user.authority,
-            user.sub_account_id
-        )?;
-    }
-
-    Ok(margin_calc.meets_margin_requirement()
-        && net_equity.is_none_or(|net_equity| net_equity.clears_buffered_floor(user))
-        && !user_stats.is_equity_breaker_tripped())
-}
-
 /// The armed slot as the trigger record states it: fired through its
 /// condition, as a fired stop-market reads. The slot itself stays
 /// untriggered.
@@ -997,37 +957,6 @@ fn fired_view(armed: &Order) -> Order {
     };
 
     fired
-}
-
-/// Pays the crank its reward out of the user, and reports the reward.
-///
-/// A user that cranks its own trigger pays nothing. The account is already
-/// borrowed here, and a reward it paid itself would move no value.
-#[allow(clippy::too_many_arguments)]
-fn pay_trigger_keeper(
-    user: &mut User,
-    filler: &AccountLoader<'_, User>,
-    perp_market_map: &PerpMarketMap<'_>,
-    market_index: u16,
-    keeper_fee: u64,
-    user_key: &Pubkey,
-    filler_key: &Pubkey,
-    slot: u64,
-) -> Result<u64> {
-    let is_filler_user = user_key == filler_key;
-    let mut filler = if !is_filler_user {
-        Some(load_mut!(filler)?)
-    } else {
-        None
-    };
-    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
-    Ok(pay_keeper_flat_reward_for_perps(
-        user,
-        filler.as_deref_mut(),
-        &mut perp_market,
-        keeper_fee,
-        slot,
-    )?)
 }
 
 /// Point the relay watch of `order_id` at the side it is due at next.
@@ -1097,99 +1026,6 @@ fn mark_slot_placed(
     user.orders[order_index].add_bit_flag(OrderBitFlag::PlacedOnClob);
     user.update_last_active_slot(slot);
     Ok(())
-}
-
-/// The relay resolver for `trigger_limit_order_v1`. It is simulation-only and
-/// is staged from the user's synced trigger conditions.
-#[derive(Accounts)]
-pub struct ResolveTriggerLimitOrderV1<'info> {
-    /// The shared staging account, at index 0 by convention. A resolver's
-    /// response pointer is read against it.
-    #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
-    pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
-    /// Read-only. A resolver stages into the shared scratch account rather
-    /// than into the block it reads.
-    #[account(constraint = trigger_conditions.load()?.user == user.key())]
-    pub trigger_conditions: AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
-    pub user: AccountLoader<'info, User>,
-    /// CHECK: the perp market's `has_one` binds it.
-    pub oracle: UncheckedAccount<'info>,
-    #[account(has_one = oracle)]
-    pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
-    /// The exchange pause, the median-price flag and the oracle guard rails
-    /// the executor judges the trigger with.
-    pub state: AccountLoader<'info, State>,
-    #[account(
-        has_one = clob_market,
-        constraint = quoter_slab.load()?.market == perp_market.load()?.market_index,
-    )]
-    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: the slab's `has_one` binds it. The resolver asks it for the
-    /// room left on the side the order rests on.
-    pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: address-locked to velocity's CLOB.
-    #[account(address = crate::ids::clob_program::id())]
-    pub clob_program: UncheckedAccount<'info>,
-}
-
-pub fn handle_resolve_trigger_limit_order_v1(
-    ctx: Context<ResolveTriggerLimitOrderV1>,
-    fired: super::FiredConditionArgV0,
-) -> Result<()> {
-    crate::instructions::constraints::require_view_accounts(
-        &ctx.accounts.to_account_infos(),
-        &[ctx.accounts.scratch.key()],
-    )?;
-    crate::instructions::resolve_into(&ctx.accounts.scratch, || {
-        let accounts = &ctx.accounts;
-        let due = super::helpers::crank_common::resolve_due_trigger(
-            &super::helpers::crank_common::TriggerResolverAccounts {
-                trigger_conditions: &accounts.trigger_conditions,
-                user: &accounts.user,
-                oracle: &accounts.oracle,
-                perp_market: &accounts.perp_market,
-                state: &accounts.state,
-                quoter_slab: &accounts.quoter_slab,
-                clob_market: &accounts.clob_market,
-                clob_program: &accounts.clob_program,
-            },
-            &fired,
-            super::helpers::crank_common::TriggerResolverKind::ClobRest,
-        )?;
-        let Some(meta) = due else {
-            return Ok(None);
-        };
-
-        let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
-        let user_stats =
-            crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
-        Ok(Some(
-            crate::staged_call!(TriggerLimitOrderV1 {
-                state: crate::state::pdas::state(),
-                authority: crate::state::pdas::keeper_placeholder(),
-                filler: protocol_user,
-                filler_stats: protocol_user_stats,
-                user: ctx.accounts.user.key(),
-                user_stats,
-                quoter_slab: meta.quoter_slab,
-                clob_market: meta.clob_market,
-                clob_program: meta.clob_program,
-                crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
-                    meta.market_index,
-                )),
-
-                trigger_conditions: ctx.accounts.trigger_conditions.key(),
-                sol_spot_market: super::helpers::crank_common::sol_spot_market_ref(
-                    &*ctx.accounts.state.load()?,
-                ),
-            })
-            .refs(ctx.accounts.trigger_conditions.load()?.read_sync_accounts())
-            .arg(TriggerLimitOrderV1Args {
-                market_index: meta.market_index,
-                order_id: meta.order_id,
-            })?,
-        ))
-    })
 }
 
 #[cfg(test)]
@@ -1405,9 +1241,14 @@ mod crank_tests {
             user_stats: &AccountLoader::try_from(&user_stats_info).unwrap(),
             filler: &filler_loader,
             state: &state,
+            maker_band:
+                crate::instructions::clob::crank_clob_cancel_outside_band::MakerBand::UNBOUNDED,
             market_index: 0,
             order_id: 7,
-            keeper_fee: FLAT_FILLER_FEE,
+            keeper_fee: crate::instructions::clob::helpers::crank_common::TriggerKeeperFee {
+                quote: FLAT_FILLER_FEE,
+                pay_lamports: false,
+            },
             clock: &Clock::default(),
         };
 
@@ -1456,9 +1297,14 @@ mod crank_tests {
             user_stats: &AccountLoader::try_from(&user_stats_info).unwrap(),
             filler: &AccountLoader::<User>::try_from(&filler_info).unwrap(),
             state: &state,
+            maker_band:
+                crate::instructions::clob::crank_clob_cancel_outside_band::MakerBand::UNBOUNDED,
             market_index: 0,
             order_id: 7,
-            keeper_fee: FLAT_FILLER_FEE,
+            keeper_fee: crate::instructions::clob::helpers::crank_common::TriggerKeeperFee {
+                quote: FLAT_FILLER_FEE,
+                pay_lamports: false,
+            },
             clock: &Clock::default(),
         };
 

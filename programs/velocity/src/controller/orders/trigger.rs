@@ -109,7 +109,14 @@ pub fn trigger_and_route_order(
 
     // The fill the caller runs settles its own fees. This is the trigger's
     // own reward, paid once for the crank that fired the order.
-    let filler_reward = pay_trigger_reward(user, market_index, accounts, keeper_fee, maps, slot)?;
+    let filler_reward = pay_trigger_reward(
+        user,
+        &accounts.user.key(),
+        accounts.filler,
+        &mut *maps.perp_market_map.get_ref_mut(&market_index)?,
+        keeper_fee,
+        slot,
+    )?;
 
     TriggerRecord {
         fired,
@@ -422,28 +429,22 @@ fn fired_order_must_cancel(
         .worst_case_liability_value(oracle_price)?;
     let must_cancel = worst_case_after > worst_case_before
         && !fired.reduce_only
-        && trigger_must_cancel(user, user_stats_loader, maps)?;
+        && !account_carries_risk_increase(user, &*crate::load!(user_stats_loader)?, maps)?;
 
     user.replace_reservation(&fired_reservation, &armed_reservation)?;
     Ok(must_cancel)
 }
 
-/// Whether a risk-increasing trigger must be cancelled instead of fired.
+/// Whether the account may take on more risk: it meets initial margin, clears
+/// its buffered equity floor, and its authority's equity breaker is not set.
+/// The breaker check matches the fill, withdraw and transfer paths.
 ///
-/// The account is held to initial margin, to its own buffered equity floor,
-/// and to the authority-wide equity breaker. The breaker check matches the
-/// fill, withdraw and transfer paths. While the breaker is set, no
-/// risk-increasing action is allowed on any of the authority's subaccounts.
-/// The gate runs before the keeper reward is paid, so a keeper earns nothing
-/// for turning the resting orders of a frozen or below-floor account into cancels.
-///
-/// An unverifiable floor rejects the trigger instead of cancelling it. A
-/// cancel is irreversible, so an invalid oracle must not destroy a resting
-/// order the account may legitimately carry. The keeper retries once the feed
-/// recovers, and the gate then resolves either way.
-fn trigger_must_cancel(
+/// A floor that cannot be verified fails the crank rather than cancelling the
+/// trigger. A cancel is irreversible, so a brief oracle fault must not destroy
+/// a resting order. The keeper retries once the feed recovers.
+pub(crate) fn account_carries_risk_increase(
     user: &User,
-    user_stats_loader: &AccountLoader<UserStats>,
+    user_stats: &UserStats,
     maps: &mut AccountMaps,
 ) -> VelocityResult<bool> {
     let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
@@ -465,12 +466,9 @@ fn trigger_must_cancel(
         )?;
     }
 
-    // The floor restricts the user here. It cancels a risk-increasing order
-    // that the subaccount may not carry. Every oracle is valid past the check
-    // above, so a trusted value below the buffered floor is grounds to cancel.
-    Ok(!margin_calc.meets_margin_requirement()
-        || net_equity.is_some_and(|net_equity| !net_equity.clears_buffered_floor(user))
-        || load!(user_stats_loader)?.is_equity_breaker_tripped())
+    Ok(margin_calc.meets_margin_requirement()
+        && net_equity.is_none_or(|net_equity| net_equity.clears_buffered_floor(user))
+        && !user_stats.is_equity_breaker_tripped())
 }
 
 /// Whether a fired order can move the position. Only a reduce-only order with
@@ -527,28 +525,21 @@ fn cancel_trigger_order(
 ///
 /// A keeper that owns the order is paid nothing. It is already loaded as the
 /// user, and it cannot be loaded a second time as the filler.
-fn pay_trigger_reward(
+pub(crate) fn pay_trigger_reward(
     user: &mut User,
-    market_index: u16,
-    accounts: &TriggerAccounts,
+    user_key: &Pubkey,
+    filler: &AccountLoader<User>,
+    perp_market: &mut PerpMarket,
     keeper_fee: u64,
-    maps: &mut AccountMaps,
     slot: u64,
 ) -> VelocityResult<u64> {
-    let mut filler = if accounts.user.key() != accounts.filler.key() {
-        Some(load_mut!(accounts.filler)?)
+    let mut filler = if *user_key != filler.key() {
+        Some(load_mut!(filler)?)
     } else {
         None
     };
 
-    let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
-    pay_keeper_flat_reward_for_perps(
-        user,
-        filler.as_deref_mut(),
-        &mut perp_market,
-        keeper_fee,
-        slot,
-    )
+    pay_keeper_flat_reward_for_perps(user, filler.as_deref_mut(), perp_market, keeper_fee, slot)
 }
 
 /// The `OrderAction::Trigger` record of one fired trigger, on either

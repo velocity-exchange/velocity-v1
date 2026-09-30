@@ -2992,6 +2992,8 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     const PAYMENT: u64 = 50_000;
     let conditions = init_crank_conditions(&mut fixture, PAYMENT);
     let protocol_user = set_protocol_user(&mut fixture.svm);
+    // The reservoir pays only a crank whose payment a SOL TWAP priced.
+    set_sol_spot_market(&mut fixture.svm, 150);
     // Top off the reservoir (lamport credits to a program-owned account are
     // unrestricted — this is the hot role's off-chain top-off leg).
     fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
@@ -3039,10 +3041,9 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     clock.unix_timestamp += 20;
     fixture.svm.set_sysvar(&clock);
     let resolved = run_resolver(&mut fixture, conditions, true).expect("expired order is work");
-    // The last named account is the optional SOL spot market. This State
-    // names no SOL market, so it is staged as `None` and the fee stays flat.
+    // The last named account is the optional SOL spot market.
     assert_eq!(resolved.accounts.len(), 12);
-    assert_eq!(resolved.accounts[11].address, velocity::ID.to_bytes());
+    assert_eq!(resolved.accounts[11].address, spot_market_pda(1).to_bytes());
     assert_eq!(
         resolved.accounts[2].address,
         protocol_user.to_bytes(),
@@ -3097,8 +3098,8 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
 }
 
 /// The evict resolver walks both sides: with both at the soft cap it stages
-/// the bid tail first (pinning the bid-side header offsets), then the ask —
-/// each executed unsigned with the reservoir paying.
+/// the bid tail first (pinning the bid-side header offsets), then the ask.
+/// Each runs unsigned. The reservoir pays only the crank a SOL TWAP priced.
 #[test]
 fn program_keeper_evict_crank_resolves_both_sides() {
     let mut fixture = setup();
@@ -3151,8 +3152,14 @@ fn program_keeper_evict_crank_resolves_both_sides() {
 
     let maker_user: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker_user.perp_positions[0].open_bids, 0);
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000,
+        "no SOL TWAP priced the payment, so the reservoir pays nothing"
+    );
 
-    // Second resolve takes the ask tail.
+    // Second resolve takes the ask tail, with a SOL TWAP to price the payment.
+    set_sol_spot_market(&mut fixture.svm, 150);
     let resolved = run_resolver(&mut fixture, conditions, false).expect("ask side at soft cap");
     assert_eq!(resolved.data, vec![0, 0, 1]);
     run_staged_executor(
@@ -3168,7 +3175,7 @@ fn program_keeper_evict_crank_resolves_both_sides() {
     assert_eq!(clob_ask_count(&fixture), 0);
     assert_eq!(
         fixture.svm.get_account(&payout).unwrap().lamports,
-        1_000_000_000 + 2 * PAYMENT
+        1_000_000_000 + PAYMENT
     );
 
     // Book clear again: quiet.
@@ -6933,6 +6940,7 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
     const PAYMENT: u64 = 25_000;
     let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
     set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
     fixture
         .svm
         .airdrop(&market_conditions, 1_000_000_000)

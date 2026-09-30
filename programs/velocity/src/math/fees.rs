@@ -76,6 +76,8 @@ pub struct FillFees {
     pub amm_fee: u64,
 }
 
+// The list is the fee schedule's inputs. A struct here would be built on the
+// caller's 4 KB frame for every fill; `PricingRules` is the caller-side wrapper.
 #[allow(clippy::too_many_arguments)]
 pub fn calculate_fee_for_fulfillment_with_amm(
     user_stats: &UserStats,
@@ -433,6 +435,8 @@ fn calculate_filler_reward(
     Ok(fee)
 }
 
+// The list is the fee schedule's inputs. A struct here would be built on the
+// caller's 4 KB frame for every fill; `PricingRules` is the caller-side wrapper.
 #[allow(clippy::too_many_arguments)]
 pub fn calculate_fee_for_fulfillment_with_match(
     taker_stats: &UserStats,
@@ -590,6 +594,8 @@ impl TakerOriginCrossFee {
 /// `counterparty_quote` is the notional at the counterparty's price, which the match
 /// settles at. `order_slot` is the slot the taker-origin order was placed. Its age
 /// drives the time-based half of the reward, the way an `Order.slot` does.
+// The list is the fee schedule's inputs. A struct here would be built on the
+// caller's 4 KB frame for every fill; `PricingRules` is the caller-side wrapper.
 #[allow(clippy::too_many_arguments)]
 pub fn calculate_taker_origin_cross_fee(
     taker_direction: PositionDirection,

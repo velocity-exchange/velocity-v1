@@ -413,6 +413,7 @@ pub fn crank_priced_clob_removal(
     };
 
     let paid_lamports = program_keeper_mode
+        && sol_price.is_some()
         && earns_crank_lamports(removal_fee, &accounts.authority.key(), &maker_authority);
     if let (true, Some(conditions), Some(payment)) =
         (paid_lamports, accounts.crank_conditions, payment_lamports)
@@ -734,6 +735,9 @@ pub struct CrankedTrigger {
     pub market_index: u16,
     pub order_id: u32,
     pub keeper_reward: u64,
+    /// Whether a valid SOL TWAP priced the reservoir payment. Without one the
+    /// owner paid only the flat quote fee, so the reservoir pays no lamports.
+    pub pay_lamports: bool,
     /// False when the crank already re-pointed or parked the slot, so the
     /// slot must stay.
     pub release_slot: bool,
@@ -765,6 +769,7 @@ pub fn finish_trigger_crank<'info>(
         order_id,
         keeper_reward,
         release_slot,
+        ..
     } = *cranked;
 
     let mut slot_min_payment = None;
@@ -786,6 +791,7 @@ pub fn finish_trigger_crank<'info>(
 
     let program_keeper_mode = program_keeper_mode(filler, state, crank_conditions.is_some())?;
     let paid_lamports = program_keeper_mode
+        && cranked.pay_lamports
         && earns_crank_lamports(
             keeper_reward,
             &authority.key(),
@@ -819,11 +825,19 @@ pub struct TriggerFeeAccounts<'a, 'info> {
     pub sol_spot_market: &'a Option<AccountLoader<'info, SpotMarket>>,
 }
 
+/// The quote fee charged for a trigger crank and whether it covers a reservoir
+/// payment valued from a live SOL TWAP.
+#[derive(Clone, Copy)]
+pub struct TriggerKeeperFee {
+    pub quote: u64,
+    pub pay_lamports: bool,
+}
+
 impl TriggerFeeAccounts<'_, '_> {
     /// What the crank of `(market_index, order_id)` charges the owner. A
     /// program-keeper crank charges at least the value of the payment
     /// [`finish_trigger_crank`] makes. Any other crank charges the flat fee.
-    pub fn keeper_fee(&self, market_index: u16, order_id: u32) -> Result<u64> {
+    pub fn keeper_fee(&self, market_index: u16, order_id: u32) -> Result<TriggerKeeperFee> {
         let state = self.state.load()?;
         let flat_filler_fee = state.perp_fee_structure.flat_filler_fee;
         let program_keeper_mode =
@@ -833,7 +847,10 @@ impl TriggerFeeAccounts<'_, '_> {
             .as_ref()
             .filter(|_| program_keeper_mode)
         else {
-            return Ok(flat_filler_fee);
+            return Ok(TriggerKeeperFee {
+                quote: flat_filler_fee,
+                pay_lamports: false,
+            });
         };
 
         let sol_price =
@@ -849,7 +866,10 @@ impl TriggerFeeAccounts<'_, '_> {
             slot_min_payment,
         );
 
-        Ok(keeper_crank_fee(flat_filler_fee, payment, sol_price))
+        Ok(TriggerKeeperFee {
+            quote: keeper_crank_fee(flat_filler_fee, payment, sol_price),
+            pay_lamports: sol_price.is_some(),
+        })
     }
 }
 
@@ -1308,6 +1328,8 @@ pub(crate) struct BookSides<T> {
 /// on the other side, and a reader that saw one side could not tell a resolvable
 /// cross from a stuck one. A taker of `Long` sweeps asks, so that read names the
 /// ask side. Returns `None` when the entry declares no L3 leg.
+// The two reads share one slab, one scratch and one row mapper. A context
+// struct would hold the scratch borrow across both CPIs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn book_l3_sides<'info, T>(
     quoter: &QuoterSlotV0,

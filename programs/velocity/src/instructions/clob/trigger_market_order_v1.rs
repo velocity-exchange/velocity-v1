@@ -213,7 +213,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
         },
-        keeper_fee,
+        keeper_fee.quote,
         &state,
         &controller::orders::TriggerAccounts {
             user: &accounts.user,
@@ -229,12 +229,10 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 
     route_fill_fired_order(
         accounts,
-        &state,
         &mut maps,
         &mut route_accounts,
         &mut fired,
         &signed_route,
-        market_index,
         clock,
     )?;
 
@@ -255,6 +253,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
             keeper_reward: filler_reward,
+            pay_lamports: keeper_fee.pay_lamports,
             release_slot: true,
         },
     )?;
@@ -318,17 +317,16 @@ fn unfilled_fire_admission(rules: &OrderRulesV0, fired: &Order) -> Result<()> {
 /// unattested keeper's tail is ignored, and the fired order rests whole, as it
 /// does on the relay path. A trigger crank is keeper-built and carries no
 /// attestation transport, so its flow never counts as protected.
-#[allow(clippy::too_many_arguments)]
 fn route_fill_fired_order<'info>(
     accounts: &TriggerMarketOrderV1<'info>,
-    state: &State,
     maps: &mut crate::instructions::optional_accounts::AccountMaps<'info>,
     route_accounts: &mut crate::instructions::RouteFillAccounts<'info>,
     fired: &mut Order,
     signed_route: &[Pubkey],
-    market_index: u16,
     clock: &Clock,
 ) -> Result<()> {
+    let market_index = fired.market_index;
+    let state = accounts.state.load()?;
     let taker_served_window = false;
     let synchronous_take = crate::instructions::synchronous_take_allowed(
         taker_served_window,
@@ -352,7 +350,7 @@ fn route_fill_fired_order<'info>(
 
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     crate::instructions::RouteFill {
-        state,
+        state: &state,
         clock,
         tail: route_accounts.quoters,
         scratch: &mut cpi_scratch,

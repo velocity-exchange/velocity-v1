@@ -127,6 +127,7 @@ mod place_and_make_v1;
 mod place_and_take_v1;
 pub mod refill_crank_reservoir;
 pub mod resolve_clob_crank;
+mod resolve_trigger_limit_order_v1;
 mod trigger_limit_order_v1;
 mod trigger_market_order_v1;
 
@@ -136,5 +137,5 @@ pub use {
     crank_cross_match::*, crank_taker_origin_cross::*, force_cancel_clob_orders::*, helpers::*,
     initialize_quoter_cross_conditions::*, modify_order_v1::*, place_and_make_v1::*,
     place_and_take_v1::*, refill_crank_reservoir::*, resolve_clob_crank::*,
-    trigger_limit_order_v1::*, trigger_market_order_v1::*,
+    resolve_trigger_limit_order_v1::*, trigger_limit_order_v1::*, trigger_market_order_v1::*,
 };

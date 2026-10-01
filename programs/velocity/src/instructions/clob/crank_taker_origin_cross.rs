@@ -411,7 +411,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 market_index,
                 subject_order.order_ref.order_id,
             )?,
-            plan.claim_lapsed(),
+            !plan.owns_its_claim(),
             signed_route.is_empty(),
         ),
     };
@@ -556,11 +556,7 @@ enum SubjectPlan {
     Cross(Box<SubjectCross>),
     /// No book cross is the remainder's to settle. The fill honours every live
     /// claim, so it reaches the vAMM, the quoters and unclaimed depth only.
-    Route {
-        order: RestingOrder,
-        side: SideV0,
-        claim_lapsed: bool,
-    },
+    Route { order: RestingOrder, side: SideV0 },
 }
 
 impl SubjectPlan {
@@ -596,16 +592,6 @@ impl SubjectPlan {
     /// Whether the fill may take the depth the book reserves for the claim.
     fn owns_its_claim(&self) -> bool {
         matches!(self, Self::Cross(_))
-    }
-
-    fn claim_lapsed(&self) -> bool {
-        matches!(
-            self,
-            Self::Route {
-                claim_lapsed: true,
-                ..
-            }
-        )
     }
 }
 
@@ -724,7 +710,6 @@ fn plan_subject(
             .map(|row| SubjectPlan::Route {
                 order: row.order,
                 side,
-                claim_lapsed: row.claim_lapsed,
             })
     };
 
@@ -1115,15 +1100,18 @@ fn signed_route_digest(
 
 /// The route claim the crank is held to.
 ///
-/// A remainder whose claim lapsed is ordinary depth that anyone takes at its
-/// own price. A crank that names no route may then fill it across the
-/// baseline, which can only improve on that price.
+/// A fill that honours every claim takes no depth the remainder claims, and
+/// a remainder whose claim lapsed is in that plan too. A crank that names no
+/// route may fill such a remainder across the baseline, which can only
+/// improve on its rest price. Relay cannot read the taker's record, so
+/// holding that fill to the digest fails every staged crank for the claim
+/// window.
 fn claimed_route_digest(
     signed_digest: crate::state::order_params::RouteDigest,
-    claim_lapsed: bool,
+    honours_every_claim: bool,
     claims_baseline: bool,
 ) -> crate::state::order_params::RouteDigest {
-    if claim_lapsed && claims_baseline {
+    if honours_every_claim && claims_baseline {
         return NO_ROUTE_DIGEST;
     }
 

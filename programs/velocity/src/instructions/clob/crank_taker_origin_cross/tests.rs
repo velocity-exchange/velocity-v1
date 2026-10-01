@@ -1125,7 +1125,7 @@ mod subject_plans {
 
         let older = plan_subject(&bids, &asks, user(0xA)).unwrap();
         assert_eq!(routed_id(&older), Some(10));
-        assert!(older.claim_lapsed());
+        assert!(!older.owns_its_claim());
     }
 
     /// A lapsed remainder on the other side is depth, not a pair: the
@@ -1278,11 +1278,33 @@ mod resolver_stages {
         );
     }
 
-    /// A live claim keeps the signed route, and so does a crank that names it.
+    /// A fill that takes claimed depth keeps the signed route, and so does a
+    /// crank that names it.
     #[test]
-    fn a_live_claim_keeps_its_signed_route() {
+    fn a_claimed_fill_keeps_its_signed_route() {
         assert_eq!(claimed_route_digest([7; 8], false, true), [7; 8]);
         assert_eq!(claimed_route_digest([7; 8], true, false), [7; 8]);
+    }
+
+    /// The resolver stages a routed signed-message remainder with an empty
+    /// route. That fill honours every claim, so the baseline is good for it
+    /// inside the claim window too. The round-four probe showed each staged
+    /// crank failing the digest until the claim lapsed.
+    #[test]
+    fn a_routed_signed_remainder_claims_the_baseline() {
+        let bids = [row(1, 102, 0xA, true)];
+        let vamm = VammTops {
+            bid: Some(99),
+            ask: Some(101),
+        };
+        let stage = choose_stage(&bids, &[], vamm, 2).unwrap();
+        let plan = plan_subject(&bids, &[], stage.taker).unwrap();
+
+        let signed = crate::state::order_params::route_digest(&[Pubkey::new_from_array([7; 32])]);
+        assert_eq!(
+            claimed_route_digest(signed, !plan.owns_its_claim(), true),
+            crate::state::order_params::route_digest(&[])
+        );
     }
 
     /// A lapsed remainder is left alone while a live claimant on its side may

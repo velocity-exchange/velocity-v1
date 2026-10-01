@@ -310,9 +310,11 @@ price does not move, so the same crank can fail until the claim lapses.
 `quote_l3_v0` flags a remainder whose claim lapsed (`L3_ROW_FLAG_CLAIM_LAPSED`). The row carries no
 activation slot, and without the flag a lapsed remainder would keep the first claim on its side in
 velocity's reading, although the book no longer honours it. Velocity reads such a row as depth, not
-as a claimant. A lapsed remainder is ordinary depth that anyone takes at its own price, so a crank
-that names no route may fill it across the baseline, even when its signer chose a route. A
-remainder that carries a route therefore holds relay back for its claim window at most.
+as a claimant. A crank that honours every claim takes no depth the remainder claims, so it may fill
+the remainder across the baseline, even when its signer chose a route. A lapsed remainder is always
+in that plan, and so is a remainder that only the vAMM or unclaimed depth crosses. Relay cannot
+read the taker's route, so only a remainder that takes claimed depth with a signed route holds
+relay back, and only for its claim window. A keeper that names the route lands it.
 
 No new slot and no new watch. A taker-origin cross can newly appear for one of two reasons. A
 side's best moved, which the cross condition's 8-byte `OnAccountChange` over `best_bid` and

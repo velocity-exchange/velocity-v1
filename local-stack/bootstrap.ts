@@ -53,6 +53,8 @@ const SERVICE_KEYS = [
 const SERVICE_SOL = 100;
 /** Crank budget the treasury refills each reservoir to, and the level that triggers a refill. */
 const TREASURY_REFILL_CRANKS = { target: 1000, watermark: 100 };
+// The default migrate.ts prices a treasury with.
+const TREASURY_RESYNC_FLOOR_LAMPORTS = '100000000';
 const TREASURY_SOL = 500;
 const KEEPER_DUSDT = new BN(10_000_000_000);
 
@@ -140,6 +142,8 @@ async function fundTreasury(
 		'set-crank-treasury',
 		String(TREASURY_REFILL_CRANKS.target),
 		String(TREASURY_REFILL_CRANKS.watermark),
+		'--resync-floor',
+		TREASURY_RESYNC_FLOOR_LAMPORTS,
 	]);
 	await topUp(provider, treasury, TREASURY_SOL);
 }

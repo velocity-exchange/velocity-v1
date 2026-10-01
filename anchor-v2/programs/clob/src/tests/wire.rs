@@ -6,8 +6,9 @@
 
 use {
     crate::instruction::{
-        CancelAllV0, CancelOrderV0, EvictWorstV0, FillV0, NextCrossV0, NextRemovalV0, OrderRulesV0,
-        OrdersV0, PlaceOrderV0, RemoveExpiredV0, SetCrankConditionsV0,
+        CancelAllV0, CancelOrderV0, EvictWorstV0, ExecuteV0, FillV0, NextCrossV0, NextRemovalV0,
+        OrderRulesV0, OrdersV0, PlaceOrderV0, QuoteL3V0, QuoteV0, RemoveExpiredV0,
+        SetCrankConditionsV0,
     },
     anchor_lang::Discriminator,
     clob_wire::discriminator,
@@ -32,4 +33,15 @@ fn the_published_discriminators_are_the_ones_anchor_derives() {
     assert_eq!(discriminator::ORDERS_V0, OrdersV0::DISCRIMINATOR);
     assert_eq!(discriminator::NEXT_CROSS_V0, NextCrossV0::DISCRIMINATOR);
     assert_eq!(discriminator::ORDER_RULES_V0, OrderRulesV0::DISCRIMINATOR);
+}
+
+/// Velocity pins a book entry's quoter-surface discriminators to these at
+/// approval.
+#[test]
+fn the_quoter_surface_discriminators_are_the_ones_anchor_derives() {
+    use quoter_spec::discriminator;
+
+    assert_eq!(discriminator::QUOTE_V0, QuoteV0::DISCRIMINATOR);
+    assert_eq!(discriminator::EXECUTE_V0, ExecuteV0::DISCRIMINATOR);
+    assert_eq!(discriminator::QUOTE_L3_V0, QuoteL3V0::DISCRIMINATOR);
 }

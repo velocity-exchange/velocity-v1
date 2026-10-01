@@ -6449,6 +6449,7 @@ export class VelocityClient {
 	 * actually existing on-chain yet (e.g. deposit-to-trade in the same transaction as account
 	 * creation): `isMakingNewAccount` skips loading the (not-yet-existing) user account for
 	 * `remainingAccounts`, and `depositMarketIndex` marks the deposit's spot market as readable.
+	 * @param overrides - `authority` overrides the signing authority, which defaults to `this.wallet.publicKey`.
 	 * @returns The instruction.
 	 */
 	public async getPlaceTriggerOrdersIx(
@@ -6457,6 +6458,9 @@ export class VelocityClient {
 		depositToTradeArgs?: {
 			isMakingNewAccount: boolean;
 			depositMarketIndex: number;
+		},
+		overrides?: {
+			authority?: PublicKey;
 		}
 	): Promise<TransactionInstruction> {
 		orderParams = orderParams.map((params) =>
@@ -6497,7 +6501,7 @@ export class VelocityClient {
 			orderParams,
 			state: await this.getStatePublicKey(),
 			user,
-			authority: this.wallet.publicKey,
+			authority: overrides?.authority ?? this.wallet.publicKey,
 			remainingAccounts,
 		});
 	}
@@ -6509,11 +6513,15 @@ export class VelocityClient {
 	 * @param newPerpMarketIndexes - Perp markets that an earlier instruction of the same
 	 * transaction opens exposure in. The cached user account does not show them yet.
 	 * @param subAccountId - Sub-account to sync; defaults to the active sub-account.
+	 * @param overrides - `payer` overrides who pays the conditions account's rent, which defaults to `this.wallet.publicKey`.
 	 * @returns The instruction.
 	 */
 	public async getSyncTriggerConditionsIx(
 		newPerpMarketIndexes: number[],
-		subAccountId?: number
+		subAccountId?: number,
+		overrides?: {
+			payer?: PublicKey;
+		}
 	): Promise<TransactionInstruction> {
 		const userAccount = this.getUserAccountOrThrow(subAccountId);
 		const user = await this.getUserAccountPublicKey(subAccountId);
@@ -6556,7 +6564,7 @@ export class VelocityClient {
 
 		return await VelocityCore.buildSyncTriggerConditionsInstruction({
 			program: this.program,
-			payer: this.wallet.publicKey,
+			payer: overrides?.payer ?? this.wallet.publicKey,
 			user,
 			userConditions: getUserConditionsPublicKey(this.program.programId, user),
 			remainingAccounts,
@@ -8627,12 +8635,16 @@ export class VelocityClient {
 	 * market's CLOB. See `buildPlaceAndMakePerpOrderInstruction` for semantics.
 	 * @param orderParams - Maker order to place, a `Limit` that is not IOC.
 	 * @param subAccountId - Sub-account placing the maker order; defaults to the active sub-account.
+	 * @param overrides - `authority` overrides the signing authority, which defaults to `this.wallet.publicKey`.
 	 */
 	public async getPlaceAndMakePerpOrderIx(
 		orderParams: OptionalOrderParams,
 		clobAccounts?: ClobAccounts,
 
-		subAccountId?: number
+		subAccountId?: number,
+		overrides?: {
+			authority?: PublicKey;
+		}
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const clob =
@@ -8652,7 +8664,7 @@ export class VelocityClient {
 			state: await this.getStatePublicKey(),
 			user,
 			userStats: userStatsPublicKey,
-			authority: this.wallet.publicKey,
+			authority: overrides?.authority ?? this.wallet.publicKey,
 			remainingAccounts,
 			clobAccounts: clob,
 		});

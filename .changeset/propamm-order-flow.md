@@ -935,6 +935,10 @@ New endpoints take a single args struct (`PlaceAndTakePerpOrderV1Args`, `Trigger
 `OrderActionExplanation` gains `CLOB_ORDER_EVICTED` and `CLOB_REMAINDER_CULLED`, which name a book
 order that a crank evicted and a remainder that a fill culled under the book's minimum.
 
+`getPlaceAndMakePerpOrderIx` and `getPlaceTriggerOrdersIx` take `overrides.authority`, and
+`getSyncTriggerConditionsIx` takes `overrides.payer`, so a delegated signer can place book orders
+and triggers as `getPlaceAndTakePerpOrderIx` already allowed.
+
 `AdminClient` gains the quoter registry builders the CLI needs: `getInitializeQuoterIx`,
 `getInitializeQuoterSlabIx`, `getUpdateQuoterAccountsIx`, `getUpdateQuoterApprovedIx`,
 `getUpdatePerpMarketClobQuoterIx`, `getUpdatePerpMarketClobBookConfigIx` and

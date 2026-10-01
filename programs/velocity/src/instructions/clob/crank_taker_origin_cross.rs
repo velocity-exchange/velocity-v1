@@ -1534,7 +1534,13 @@ fn report_fills_to_book<'info>(
             ),
             ReleaseCheck::HeldToReservation,
             leg.order_id,
-            OrderStatus::Canceled,
+            // A leg the fill consumed whole filled. A leg the book culled
+            // under its minimum was cancelled, as the router fill records it.
+            if leg.culled_base_asset_amount == 0 {
+                OrderStatus::Filled
+            } else {
+                OrderStatus::Canceled
+            },
         )?;
 
         drop(owner);

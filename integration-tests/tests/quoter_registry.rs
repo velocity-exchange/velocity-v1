@@ -65,9 +65,9 @@ fn init_quoter_ix(
                 market_index: 0,
                 quoter_type,
                 response_account,
-                quote_v0_discriminator: [1; 8],
-                quote_l3_v0_discriminator: [0; 8],
-                execute_v0_discriminator: [2; 8],
+                quote_v0_discriminator: ix_discriminator("quote_v0"),
+                quote_l3_v0_discriminator: ix_discriminator("quote_l3_v0"),
+                execute_v0_discriminator: ix_discriminator("execute_v0"),
             },
         }
         .data(),

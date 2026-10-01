@@ -361,7 +361,7 @@ mod surplus_floor {
 
     /// A keeper payment of 0.01 SOL. At a SOL price of 100 it is worth one
     /// unit of quote.
-    fn floor(sol_spot_market_index: u16, sol_twap: Option<i64>) -> Result<u64> {
+    fn payment(sol_spot_market_index: u16, sol_twap: Option<i64>) -> CrossPayment {
         let mut conditions = ClobCrankConditionsV0 {
             min_cross_surplus: MIN_CROSS_SURPLUS,
             crank_payments: CrankPaymentsV0 {
@@ -396,17 +396,26 @@ mod surplus_floor {
             ..State::default()
         };
 
-        cross_surplus_floor(
+        cross_payment(
             &conditions,
             &state,
             &spot_market_map,
             &mut OracleMap::empty(),
         )
+        .unwrap()
     }
 
+    const UNPAID: CrossPayment = CrossPayment {
+        min_surplus: MIN_CROSS_SURPLUS,
+        lamports: 0,
+    };
+
+    /// Market index zero is the quote market, so its TWAP must not price the
+    /// payment. The reservoir then pays nothing.
     #[test]
-    fn a_state_with_no_sol_market_keeps_the_admin_floor() {
-        assert_eq!(floor(0, None).unwrap(), MIN_CROSS_SURPLUS);
+    fn a_state_with_no_sol_market_pays_nothing() {
+        assert_eq!(payment(0, None), UNPAID);
+        assert_eq!(payment(0, Some(100 * PRICE as i64)), UNPAID);
     }
 
     /// A relay resolver can stage the SOL spot market but not its oracle. The
@@ -414,19 +423,20 @@ mod surplus_floor {
     #[test]
     fn the_sol_market_twap_prices_the_payment_when_no_oracle_rides() {
         assert_eq!(
-            floor(SOL_MARKET, Some(100 * PRICE as i64)).unwrap(),
-            crate::math::constants::QUOTE_PRECISION_U64
+            payment(SOL_MARKET, Some(100 * PRICE as i64)),
+            CrossPayment {
+                min_surplus: crate::math::constants::QUOTE_PRECISION_U64,
+                lamports: 10_000_000,
+            }
         );
     }
 
-    /// Anyone can call the crank and the reservoir always pays, so a call that
-    /// leaves out the SOL price cannot skip the floor.
+    /// A crank that carries no SOL market, or one whose TWAP is cold, cannot
+    /// value the payment, so the reservoir pays nothing for it.
     #[test]
-    fn a_crank_without_a_sol_price_is_refused() {
-        assert_eq!(
-            floor(SOL_MARKET, None).unwrap_err(),
-            ErrorCode::SpotMarketNotFound.into()
-        );
+    fn a_crank_without_a_sol_price_pays_nothing() {
+        assert_eq!(payment(SOL_MARKET, None), UNPAID);
+        assert_eq!(payment(SOL_MARKET, Some(0)), UNPAID);
     }
 }
 

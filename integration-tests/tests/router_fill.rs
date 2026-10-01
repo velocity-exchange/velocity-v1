@@ -4214,6 +4214,8 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     const PAYMENT: u64 = 10_000;
     let conditions = init_crank_conditions(&mut fixture, PAYMENT);
     let protocol_user = set_protocol_user(&mut fixture.svm);
+    // The reservoir pays only when a SOL price values the payment.
+    set_sol_spot_market(&mut fixture.svm, 150);
     let (signer, _) = velocity_signer_pda();
     let protocol_stats =
         Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
@@ -4280,6 +4282,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         // Maps, then the maker pair, then the quoter section.
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
         accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(spot_market_pda(1), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
         // The quoter section: the slab each leg assembles its route from,
@@ -6420,6 +6423,8 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     const PAYMENT: u64 = 10_000;
     let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
     set_protocol_user(&mut fixture.svm);
+    // The reservoir pays only when a SOL price values the payment.
+    set_sol_spot_market(&mut fixture.svm, 150);
     fixture
         .svm
         .airdrop(&market_conditions, 1_000_000_000)

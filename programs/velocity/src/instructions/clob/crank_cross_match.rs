@@ -26,8 +26,9 @@
 //! fee gulf rests instead.
 //!
 //! The surplus lands in the protocol `User`, which the crank incentive loop
-//! drains. The caller's `authority` is paid reservoir lamports. No signature is
-//! required anywhere, because relay turners submit executors unsigned.
+//! drains. The caller's `authority` is paid reservoir lamports when a SOL price
+//! values the payment. No signature is required anywhere, because relay turners
+//! submit executors unsigned.
 //!
 //! The cross resolver stages a taker-origin cross first. A `ResolvedCrankV0`
 //! names its own executor, so one condition serves both cranks. The
@@ -283,7 +284,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &mut cpi_scratch,
     )?;
 
-    let cross_floor = cross_surplus_floor(
+    let payment = cross_payment(
         &ctx.accounts.crank_conditions,
         &state,
         &maps.spot_market_map,
@@ -296,15 +297,17 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &buy,
         &sell,
         (base_before, taker_base(&ctx.accounts.taker, market_index)?),
-        cross_floor,
+        payment.min_surplus,
     )?;
 
     // The keeper's fee, so relay's `assert_paid_v0` has a balance to measure.
-    ClobCrankConditionsV0::pay_crank(
-        &ctx.accounts.crank_conditions,
-        &ctx.accounts.authority.to_account_info(),
-        |payments| u64::from(payments.cross),
-    )?;
+    if payment.lamports > 0 {
+        ClobCrankConditionsV0::pay_keeper(
+            &ctx.accounts.crank_conditions,
+            &ctx.accounts.authority.to_account_info(),
+            payment.lamports,
+        )?;
+    }
 
     msg!(
         "cross matched {} base for {} quote surplus on market {}",
@@ -751,20 +754,26 @@ fn validate_cross_legs(
     })
 }
 
-/// The quote surplus a cross has to clear.
+/// The lamports a cross pays its keeper, and the quote surplus it must clear.
+#[derive(Debug, PartialEq, Eq)]
+struct CrossPayment {
+    min_surplus: u64,
+    lamports: u64,
+}
+
+/// What a cross pays its keeper, and the surplus it must clear to pay it.
 ///
-/// The floor covers the keeper's lamport payment valued in quote, so a cross the
-/// reservoir pays for never nets the protocol less than it costs to land. The
-/// two figures are in different units, and the SOL price converts between them.
-/// A crank that carries no usable SOL price fails, because anyone can call it
-/// and the payment is always made. Only a state with no SOL spot market leaves
-/// the admin's `min_cross_surplus` alone.
-fn cross_surplus_floor(
+/// The floor is the keeper's lamport payment valued in quote, so a cross the
+/// reservoir pays for never nets the protocol less than it costs to land. A
+/// crank without a usable SOL price cannot value the payment. The reservoir
+/// then pays nothing, and the floor is the admin's `min_cross_surplus`. Market
+/// index zero is the quote market, so it never prices the payment.
+fn cross_payment(
     crank_conditions: &AccountLoader<ClobCrankConditionsV0>,
     state: &State,
     spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
     oracle_map: &mut crate::state::oracle_map::OracleMap,
-) -> Result<u64> {
+) -> Result<CrossPayment> {
     let (min_surplus, payment_lamports) = {
         let conditions = crank_conditions.load()?;
         (
@@ -773,27 +782,32 @@ fn cross_surplus_floor(
         )
     };
 
-    if state.sol_spot_market_index == 0 || payment_lamports == 0 {
-        return Ok(min_surplus);
-    }
+    let payment_quote = (state.sol_spot_market_index != 0)
+        .then(|| {
+            crate::state::clob_crank::sol_price_for_payment_floor(
+                state,
+                spot_market_map,
+                oracle_map,
+            )
+        })
+        .flatten()
+        .and_then(|sol_price| {
+            crate::state::clob_crank::CrankPaymentsV0::lamports_to_quote(
+                payment_lamports,
+                sol_price,
+            )
+        });
 
-    let payment_quote =
-        crate::state::clob_crank::sol_price_for_payment_floor(state, spot_market_map, oracle_map)
-            .and_then(|sol_price| {
-                crate::state::clob_crank::CrankPaymentsV0::lamports_to_quote(
-                    payment_lamports,
-                    sol_price,
-                )
-            })
-            .ok_or_else(|| {
-                msg!(
-                    "cross match needs spot market {} to price the keeper payment",
-                    state.sol_spot_market_index
-                );
-
-                ErrorCode::SpotMarketNotFound
-            })?;
-    Ok(min_surplus.max(payment_quote))
+    Ok(match payment_quote {
+        Some(payment_quote) => CrossPayment {
+            min_surplus: min_surplus.max(payment_quote),
+            lamports: payment_lamports,
+        },
+        None => CrossPayment {
+            min_surplus,
+            lamports: 0,
+        },
+    })
 }
 
 /// The cross and activation conditions' answer: a crossed taker remainder if

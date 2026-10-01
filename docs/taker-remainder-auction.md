@@ -190,13 +190,15 @@ consequence for a market operator is that a resting remainder can shut attested 
 depth it claims until a crank resolves the cross or the claim lapses, and an attested take that
 reaches nothing rests as a remainder of its own.
 
-**A remainder cannot be cancelled inside its window.** Binding the taker is what makes the auction
-an auction. An order its owner can pull the moment a maker lines up offers nothing to line up
-against. `Book::cancel` refuses while `slot < activation_slot` for a taker-origin node, and the
-rule lives in the CLOB because that is where the flag and the slot are. Liquidation force-cancel
-passes `force` and stays exempt, so a distressed account is never blocked, and `max_ts` still
-bounds the order's life. The cost is real. A taker who signed a market order cannot pull it for
-the window, and neither can a delegate.
+**A remainder cannot be cancelled while its claim holds.** Binding the taker is what makes the
+auction an auction. An order its owner can pull the moment a maker lines up offers nothing to line
+up against. `Book::cancel` refuses a taker-origin node until `reservation_grace_slots` after its
+activation slot, which is exactly when its claim lapses, and the rule lives in the CLOB because
+that is where the flag and the slot are. Liquidation force-cancel passes `force` and stays exempt,
+so a distressed account is never blocked, and `max_ts` still bounds the order's life. The cost is
+real. A taker who signed a market order cannot pull it for the delay plus the grace window, and
+neither can a delegate. A modify is a cancel first, so the same bind holds it, and its replacement
+is a maker order that claims nothing.
 
 **Every reader withholds through one function, and that is the point.** A router allocates from
 the quote and velocity binds the execute to it. Depth one of them offers and the other withholds
@@ -271,9 +273,12 @@ A market remainder does not only exist when the taker's bound is tighter than th
 a book with an activation delay, unattested flow does not fill at placement. It rests whole at its
 bound. That covers every relay-fired stop-market, every wallet `place_and_take_v1`, and every
 signed-message order submitted without an attestation. No book row need cross such a remainder,
-so the crank routes it anyway when the vAMM or a quoter crosses its price. That fill honours every
-live claim, so it takes the vAMM, the quoters and unclaimed depth only. The same fill serves a newer
-remainder that waits behind an older claim on its side.
+so the crank routes it anyway. That fill honours every live claim, so it takes the vAMM, the
+quoters the call carries and unclaimed depth only. Relay's resolver stages it when the vAMM or an
+unclaimed row crosses its price, and while the vAMM's fill gates admit a fill. It carries no
+quoters of its own, so a quoter that crosses the remainder fills it only through a keeper that
+builds the call. The same fill serves a newer remainder that waits behind an older claim on its
+side.
 
 **R7. Activation delay.** The market's `default_activation_delay_slots`, as with any placement.
 
@@ -327,9 +332,12 @@ came to trade, so it is handed over before the protocol middles the same crossed
 arbitrage. It also keeps the arb crank off a cross it must not run, as
 [What this replaces](#what-this-replaces) describes.
 
-`min_payment` on those conditions stays the market's `keeper_payment_lamports`. That is what relay
-measures, since `assert_paid_v0` watches the payout account's lamport balance, and this crank pays
-the same reservoir lamports as every other. The reservoir pays only what the crank collected, so a
+`min_payment` on those conditions is the cheaper of the market's `cross` and `taker_origin_cross`
+payments, because one condition stages both crosses. That is what relay measures, since
+`assert_paid_v0` watches the payout account's lamport balance, and this crank pays the same
+reservoir lamports as every other. A taker-origin cross that stays on the book past
+`STALLED_TAKER_ORIGIN_CROSS_SLOTS`, 150 slots, gives way to a maker cross behind it, because the
+resolver cannot tell a remainder that cannot fill from one nobody cranked. The reservoir pays only what the crank collected, so a
 cross whose fee and reward fall short charges the taker the difference, as a removal charges its
 owner. An unpaid cross is one relay never lands, and it would hold back every newer remainder on its
 side. The charge is capped by what the fill gained the taker against its rest price, net of the
@@ -511,8 +519,15 @@ row. The resolvers end each side at the first such row that the book reports mat
   permissionless, and the cross resolver ranks a taker's improvement ahead of arbitrage, which is
   right once a remainder is at the front and wrong before it is. A hand-built crank aimed at a remainder
   sitting behind a better-priced resting order would fill it out of the depth that order had
-  priority on. Both the crank and the resolver read the two heads and refuse when neither
-  demands liquidity, so what the resolver stages is exactly what the crank accepts.
+  priority on. Both the crank and the resolver read the two heads and refuse a claimed cross when
+  neither demands liquidity.
+
+  A remainder behind a maker×maker front may still route with every claim honoured. That fill
+  takes no claimed depth, only the vAMM, the quoters and unclaimed depth, at or better than the
+  remainder's rest price, so nothing can be extracted from it. The resolver stages that route only
+  after the maker cross, because a routed stage yields to it. The crank does not refuse it. A maker
+  cross inside the fee gulf is one `crank_cross_match` cannot clear, and refusing the route would
+  strand the remainder behind it at its worst price.
 - The resolver runs under simulation, so it walks the whole window and hands the crank the depth it
   actually needs to re-find the cross, instead of the crank guessing.
 - A partially-consumed remainder stays on the book, still taker-origin and immediately matchable,
@@ -527,9 +542,11 @@ row. The resolvers end each side at the first such row that the book reports mat
 **Relay**
 - No new condition or watch: the `CLOB_CRANK_CROSS` slot's resolver
   (`resolve_clob_crank`) stages `crank_taker_origin_cross` when it finds a claimed cross or a
-  remainder the vAMM crosses, and `crank_cross_match` otherwise, at the same `min_payment` (R8).
-- The crossing-prefix walk that feeds the arb crank steps over taker-origin nodes, so the two cranks
-  compose instead of the arb one being staged for a cross it cannot run.
+  remainder the vAMM crosses, and `crank_cross_match` otherwise. The condition's `min_payment` is
+  the cheaper of the two crosses' payments (R8).
+- The crossing-prefix walk that feeds the arb crank ends each side at the first matchable
+  taker-origin row, so the two cranks compose instead of the arb one being staged for a cross it
+  cannot run.
 
 **SDK / keepers**
 - keep-rs stops needing the signed route on its auction/uncross/vAMM paths: once taker remainders
@@ -564,10 +581,12 @@ where there is no improvement to take. The moment a counterparty arrives it is c
 cross settles at the counterparty's price.
 
 What a nonzero delay adds is a pre-window in which the order is not matchable at all, so makers can
-line up before anyone can trade with it. It also binds the taker: the cancel refusal keys on the
-same activation slot, so at zero there is nothing to bind and the owner may pull the order at once.
-A market that wants makers to compete before the first fill sets a delay. A market that wants
-immediacy sets zero. Both are supported and both are tested.
+line up before anyone can trade with it. It also lengthens the bind on the taker: the cancel
+refusal lasts until the claim lapses, `reservation_grace_slots` after the activation slot, so at
+zero the owner is bound for the grace window alone. A market that wants makers to compete before
+the first fill sets a delay. A market that wants immediacy sets zero. Both are supported and both
+are tested. A grace window of zero is legal too, and the claim then protects nothing after
+activation.
 
 **E. A reservation lapses if the crank never runs.** A reservation holds depth that only
 `crank_taker_origin_cross` can consume, so a turner that never fires would hold the top of the

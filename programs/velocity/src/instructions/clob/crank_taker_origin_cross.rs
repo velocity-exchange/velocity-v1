@@ -63,10 +63,12 @@
 //! names. `note_activation` min-folds every placement's activation slot,
 //! including a migrating remainder's.
 //!
-//! `min_payment` stays the market's `keeper_payment_lamports`, because relay
-//! measures lamports and `assert_paid_v0` watches the payout account's
-//! balance. The quote-denominated crank reward can be zero, because a dust or
-//! equal-price improvement resolves for free by design. The reservoir pays the
+//! The cross conditions' `min_payment` is in lamports, because relay measures
+//! lamports and `assert_paid_v0` watches the payout account's balance. It is
+//! the cheaper of the market's `cross` and `taker_origin_cross` payments,
+//! because one condition stages both crosses. The quote-denominated crank
+//! reward can be zero, because a dust or equal-price improvement resolves for
+//! free by design. The reservoir pays the
 //! lamports only when what the crank collected covers their value in quote, so
 //! the protocol never pays more for a crank than it collects. A crank that
 //! collected less charges the taker the shortfall, because an unpaid cross is

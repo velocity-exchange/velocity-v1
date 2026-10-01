@@ -12670,7 +12670,6 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
     );
 }
 
-
 /// The pause key clears a compromised hot role without the warm admin, and it
 /// cannot set one. The FlowAuthority key otherwise stays live for a whole
 /// signing round.
@@ -12725,7 +12724,6 @@ fn audit4_the_pause_key_clears_a_hot_role_and_cannot_set_one() {
     let state: State = read_zero_copy(&svm, &state_pda());
     assert_eq!(state.hot_flow_authority.to_bytes(), [0u8; 32]);
 }
-
 
 /// A synced user whose stop-market buy at 99 the oracle at 100 has crossed.
 struct Fix4TrigCrossedStop {
@@ -13288,7 +13286,6 @@ fn fix4_trig_a_band_cancel_charges_the_payment_value() {
     );
 }
 
-
 /// Warp to `slot` with a fresh oracle price of 100.
 fn fix4_cross_warp(fixture: &mut Fixture, slot: u64) {
     fixture.svm.warp_to_slot(slot);
@@ -13532,7 +13529,6 @@ fn fix4_cross_one_authority_on_both_legs_is_refused() {
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // Liquidation coverage after a sync.
 // ---------------------------------------------------------------------------
@@ -13773,7 +13769,6 @@ fn fix4_liq_a_liquidation_pays_the_poll_floor_after_a_price_cut() {
         "the liquidation pays what the poll asserts, not the lowered figure"
     );
 }
-
 
 /// `place_and_take_perp_order_v1` market order for `taker`, with `makers`
 /// loaded so the book may settle against them.
@@ -14091,7 +14086,6 @@ fn fix4_router_an_attested_sell_cannot_take_a_vamm_crossed_remainder_before_the_
 
     fix4_router_crank_routes_the_victim(&mut fixture, &keeper, &victim);
 }
-
 
 /// Rests `owners` small asks of separate accounts at 104 through a taker-origin
 /// bid at 105, then sends the crank the cross resolver stages. The staged

@@ -1466,3 +1466,75 @@ mod pair_against_the_vamm {
         assert_eq!(paired.taker, asks[0].order.user);
     }
 }
+
+/// A short read can hide an older claimant behind the subject, so the crank
+/// refuses a read that ends on a crossing row. An older bid at 101 holds the
+/// first claim on the ask at 100, and a newer bid at 102 rests in front of it.
+mod crossing_reads {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    fn user(owner: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([owner; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn row(order_id: u64, price: u64, owner: u8, taker_origin: bool) -> BookRow {
+        BookRow {
+            order: RestingOrder {
+                order_ref: ClobOrderRefV0 {
+                    node_index: order_id as u32,
+                    order_id,
+                },
+                user: user(owner),
+                price,
+                base_asset_amount: 10,
+                taker_origin,
+                reduce_only: false,
+                placed_slot: order_id,
+            },
+            claim_lapsed: false,
+        }
+    }
+
+    fn book() -> ([BookRow; 2], [BookRow; 1]) {
+        (
+            [row(9, 102, 0xC, true), row(5, 101, 0xA, true)],
+            [row(3, 100, 0xB, false)],
+        )
+    }
+
+    #[test]
+    fn a_read_that_ends_on_a_crossing_row_is_refused() {
+        let (bids, asks) = book();
+        assert!(!read_shows_every_crossing_row(&bids[..1], &asks, 1));
+        assert!(read_shows_every_crossing_row(&bids, &asks, 3));
+        assert!(read_shows_every_crossing_row(
+            &bids[..1],
+            &asks,
+            MAX_CROSS_ROWS
+        ));
+    }
+
+    #[test]
+    fn a_full_side_that_ends_below_the_cross_is_shown() {
+        let bids = [row(9, 102, 0xC, true), row(4, 99, 0xD, false)];
+        let asks = [row(3, 100, 0xB, false)];
+        assert!(read_shows_every_crossing_row(&bids, &asks, 2));
+    }
+
+    /// With the whole book read, the newer remainder routes with the older
+    /// claim honoured, and the resolver reads deep enough to show the older
+    /// one.
+    #[test]
+    fn the_older_claimant_keeps_its_depth_on_a_full_read() {
+        let (bids, asks) = book();
+        let plan = plan_subject(&bids, &asks, user(0xC)).unwrap();
+        assert!(!plan.owns_its_claim());
+
+        let stage = choose_stage(&bids, &asks, VammTops::default(), 10).unwrap();
+        assert_eq!(stage.taker, user(0xA));
+        assert_eq!(stage.read_depth, 3);
+    }
+}

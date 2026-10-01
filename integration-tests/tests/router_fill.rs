@@ -12684,3 +12684,100 @@ fn fix4_taker_a_fourth_blocker_owner_does_not_freeze_the_relay_crank() {
         "the victim paid {average} per unit, where its rest price is 105"
     );
 }
+
+/// The same crank with another read depth.
+fn fix4_taker_with_cross_rows(mut ix: Instruction, cross_rows: u16) -> Instruction {
+    ix.data = velocity::instruction::CrankTakerOriginCross {
+        args: CrankTakerOriginCrossArgs {
+            market_index: 0,
+            cross_rows,
+            signed_route: vec![],
+        },
+    }
+    .data();
+    ix
+}
+
+/// An older bid at 101 holds the first claim on the ask at 100, and a newer bid
+/// at 102 rests in front of it. A one-row read showed only the newer bid, which
+/// then took the ask the book reserves for the older one. The crank now
+/// refuses a read that ends on a crossing row, and the older bid fills.
+#[test]
+fn fix4_taker_a_short_read_cannot_skip_an_older_claimant() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let older = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let newer = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_taker_origin_order(
+        &mut fixture,
+        &older,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    rest_taker_origin_order(
+        &mut fixture,
+        &newer,
+        PositionDirection::Long,
+        102 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let short_read = fix4_taker_with_cross_rows(
+        crank_taker_origin_cross_ix(&fixture, &keeper, &newer, &[&maker, &older]),
+        1,
+    );
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), short_read],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::NoTakerOriginCross);
+    assert_eq!(
+        perp_position(&fixture.svm, &newer.user).base_asset_amount,
+        0
+    );
+
+    fixture.svm.expire_blockhash();
+    let claimant = crank_taker_origin_cross_ix(&fixture, &keeper, &older, &[&maker, &newer]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), claimant],
+        &[],
+    )
+    .expect("the older claimant takes the ask it claims");
+
+    let position = perp_position(&fixture.svm, &older.user);
+    assert_eq!(position.base_asset_amount, UNIT as i64);
+    assert!(
+        -position.quote_asset_amount < 101 * PRICE as i64,
+        "the older bid bought at the maker's 100: {}",
+        -position.quote_asset_amount
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &newer.user).base_asset_amount,
+        0
+    );
+}

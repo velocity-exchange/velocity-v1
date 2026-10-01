@@ -134,8 +134,9 @@ mod tests;
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct CrankTakerOriginCrossArgs {
     pub market_index: u16,
-    /// How deep to read each side of the book. A short read truncates worse
-    /// prices, never a better counterparty.
+    /// How deep to read each side of the book, up to `MAX_CROSS_ROWS`. The
+    /// crank refuses a read that ends on a row crossing the other side,
+    /// because the rows behind it can hold an older claimant.
     pub cross_rows: u16,
     /// The taker's signed route, when the crank claims one. An empty vector
     /// claims the market baseline.
@@ -608,11 +609,12 @@ fn resolve_subject<'info>(
     taker_ref: UserRefV0,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<SubjectPlan> {
+    let rows_read = cross_rows.min(MAX_CROSS_ROWS);
     let BookSides { bids, asks } = book_l3_sides(
         book_slot,
         &ctx.accounts.quoter_slab,
         market_index,
-        cross_rows.min(MAX_CROSS_ROWS),
+        rows_read,
         &[
             ctx.accounts.clob_market.to_account_info(),
             ctx.accounts.clob_program.to_account_info(),
@@ -623,7 +625,62 @@ fn resolve_subject<'info>(
     )?
     .ok_or(ErrorCode::NoTakerOriginCross)?;
 
+    validate!(
+        read_shows_every_crossing_row(&bids, &asks, rows_read),
+        ErrorCode::NoTakerOriginCross,
+        "a read of {} rows per side ends on a row that crosses the other side",
+        rows_read
+    )?;
+
     Ok(plan_subject(&bids, &asks, taker_ref)?)
+}
+
+/// Whether a read of `rows_read` rows per side shows every row that crosses
+/// the other side. Rows behind a full side rest at worse prices, so none of
+/// them crosses when its last row does not. A read at `MAX_CROSS_ROWS` is
+/// accepted, because the resolver reads no deeper.
+fn read_shows_every_crossing_row(bids: &[BookRow], asks: &[BookRow], rows_read: u16) -> bool {
+    if rows_read >= MAX_CROSS_ROWS {
+        return true;
+    }
+
+    let side_shown = |rows: &[BookRow], side: SideV0, opposite: &[BookRow]| {
+        rows.len() < usize::from(rows_read)
+            || rows
+                .last()
+                .zip(opposite.first())
+                .is_none_or(|(last, best)| !price_crosses(side, last.order.price, best.order.price))
+    };
+
+    side_shown(bids, SideV0::Bid, asks) && side_shown(asks, SideV0::Ask, bids)
+}
+
+/// Whether an order at `price` on `side` crosses one at `opposite_price`.
+fn price_crosses(side: SideV0, price: u64, opposite_price: u64) -> bool {
+    match side {
+        SideV0::Bid => price >= opposite_price,
+        SideV0::Ask => price <= opposite_price,
+    }
+}
+
+/// Rows the crank must read per side to see every row that crosses the other
+/// side, and one more to show where the crossing rows end.
+fn crossing_read_depth(bids: &[BookRow], asks: &[BookRow]) -> u16 {
+    let crossing_rows = |rows: &[BookRow], side: SideV0, opposite: &[BookRow]| {
+        rows.iter()
+            .take_while(|row| {
+                opposite
+                    .first()
+                    .is_some_and(|best| price_crosses(side, row.order.price, best.order.price))
+            })
+            .count()
+    };
+    let deepest =
+        crossing_rows(bids, SideV0::Bid, asks).max(crossing_rows(asks, SideV0::Ask, bids));
+
+    (deepest.min(usize::from(MAX_CROSS_ROWS)) as u16)
+        .saturating_add(1)
+        .min(MAX_CROSS_ROWS)
 }
 
 /// The plan for the taker's remainder on this book.
@@ -2507,14 +2564,27 @@ struct ChosenStage {
     yields_to_maker_cross: bool,
 }
 
-/// The taker-origin work the resolver stages, if the book has any.
+/// The taker-origin work the resolver stages, if the book has any, with a
+/// read deep enough for the executor's check on it.
+fn choose_stage(
+    bids: &[BookRow],
+    asks: &[BookRow],
+    vamm: VammTops,
+    slot: u64,
+) -> Option<ChosenStage> {
+    let mut stage = choose_subject_stage(bids, asks, vamm, slot)?;
+    stage.read_depth = stage.read_depth.max(crossing_read_depth(bids, asks));
+    Some(stage)
+}
+
+/// The remainder the resolver stages, and the makers its crank carries.
 ///
 /// A cross the taker claims goes first. Only when the book has none does the
 /// resolver stage a remainder that routes with every live claim honoured:
 /// one the vAMM crosses, or one whose claim lapsed and that crosses a row no
 /// live claim covers. The executor applies the same plan, so a stage it would
 /// refuse is never chosen for a reason the resolver can see.
-fn choose_stage(
+fn choose_subject_stage(
     bids: &[BookRow],
     asks: &[BookRow],
     vamm: VammTops,
@@ -2538,7 +2608,7 @@ fn choose_stage(
                 side,
                 opposite_rows(bids, asks, side),
             ),
-            read_depth: cross_read_depth(&claim_view(bids), &claim_view(asks), &cross),
+            read_depth: crossing_read_depth(bids, asks),
             yields_to_maker_cross: cross_stalled(&cross, slot),
         });
     }
@@ -2669,12 +2739,8 @@ fn routed_subject_fills(
 
 /// Whether `other` is a row a fill of `subject` on `side` can take.
 fn crossable_counterparty(subject: &RestingOrder, side: SideV0, other: &BookRow) -> bool {
-    let crosses = match side {
-        SideV0::Bid => other.order.price <= subject.price,
-        SideV0::Ask => other.order.price >= subject.price,
-    };
-
-    crosses && !crate::math::crosses::same_authority(&subject.user, &other.order.user)
+    price_crosses(side, subject.price, other.order.price)
+        && !crate::math::crosses::same_authority(&subject.user, &other.order.user)
 }
 
 /// The makers a crank for `subject` carries: the counterparty first, then the
@@ -2803,21 +2869,4 @@ fn stageable_cross(bids: &[BookRow], asks: &[BookRow]) -> Option<(Cross, SideV0)
         .iter()
         .find(|cross| cross.kind != CrossKind::ProtocolMiddles)?;
     Some((*cross, cross.kind.aggressor_side()?))
-}
-
-/// How deep the crank must read to see the cross this resolver picked.
-///
-/// Rows come back best first, so the deeper of the pair's two positions is the
-/// whole window the crank needs.
-fn cross_read_depth(bids: &[RestingOrder], asks: &[RestingOrder], cross: &Cross) -> u16 {
-    let depth = |rows: &[RestingOrder], target: &RestingOrder| {
-        rows.iter()
-            .position(|row| row.order_ref == target.order_ref)
-            .unwrap_or(0) as u16
-    };
-
-    depth(bids, &cross.bid)
-        .max(depth(asks, &cross.ask))
-        .saturating_add(1)
-        .min(MAX_CROSS_ROWS)
 }

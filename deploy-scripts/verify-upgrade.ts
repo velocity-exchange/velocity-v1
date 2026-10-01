@@ -4,15 +4,21 @@
  * Check that every velocity account is readable by the deployed program after an upgrade and
  * `migrate.ts`. Exits non-zero on any failure.
  *
- *   bun run deploy-scripts/verify-upgrade.ts --url <rpc> --keypair <extension authority> \
- *     [--watch-creators <pk,pk>]
+ *   bun run deploy-scripts/verify-upgrade.ts --url <rpc> --keypair <payer> \
+ *     [--extend-authority <pk>] [--watch-creators <pk,pk>] \
+ *     [--clob-hash <sha256> | --clob-so <path>] [--expect-hot]
  *
  * A user's relay watch counts only when the keypair, or a key `--watch-creators` names, created it
  * at the block offset. Pass the migration payer there when it is not the keypair.
  *
  * The size check simulates `extend_account` on each account and fails when the simulation would
  * grow it. The target size comes from the deployed binary, so the check does not trust the size
- * table in `migrate.ts`.
+ * table in `migrate.ts`. The simulation verifies no signature, so `--extend-authority` can name
+ * the vault, and the check runs after the payer's hot roles are revoked.
+ *
+ * It also fails while the upgrade pause is set, while the fee rails, the treasury pricing or the
+ * SOL spot market index are unset, while the migration hot roles are set, unless `--expect-hot`
+ * makes those warnings, and when the CLOB code does not hash to `--clob-hash`.
  */
 import * as fs from 'fs';
 import { AnchorProvider, BorshAccountsCoder, Program } from '@coral-xyz/anchor';
@@ -28,6 +34,7 @@ import {
 	decodeSignedMsgUserOrdersAccount,
 	decodeUser,
 	getClobCrankConditionsPublicKey,
+	getUserConditionsPublicKey,
 	getCrankTreasuryPublicKey,
 	getQuoterSlabPublicKey,
 	getRelayScratchPublicKey,
@@ -43,6 +50,11 @@ import {
 	parseWatchCreators,
 	watchesOnTarget,
 } from './relay-watch';
+import {
+	deployedProgramHash,
+	expectedClobHash,
+	UPGRADE_PAUSE_BITS,
+} from './upgrade-guards';
 
 /** Offset of the relay block in a velocity conditions account. */
 const BLOCK_OFFSET = 8;
@@ -64,13 +76,15 @@ type TypeReport = {
 class Verifier {
 	readonly reports = new Map<string, TypeReport>();
 	readonly failures: string[] = [];
+	readonly warnings: string[] = [];
 	private names = new Map<string, string>();
 	private coder: BorshAccountsCoder;
 
 	constructor(
 		private connection: Connection,
 		private program: Program,
-		private authority: Keypair,
+		private payer: Keypair,
+		private extendAuthority: PublicKey,
 		private state: PublicKey,
 		private watchCreators: PublicKey[]
 	) {
@@ -119,14 +133,14 @@ class Verifier {
 			.extendAccount()
 			.accountsStrict({
 				state: this.state,
-				payer: this.authority.publicKey,
-				authority: this.authority.publicKey,
+				payer: this.payer.publicKey,
+				authority: this.extendAuthority,
 				account,
 				systemProgram: SystemProgram.programId,
 			})
 			.instruction();
 		const message = new TransactionMessage({
-			payerKey: this.authority.publicKey,
+			payerKey: this.payer.publicKey,
 			recentBlockhash: PublicKey.default.toBase58(),
 			instructions: [ix],
 		}).compileToV0Message();
@@ -202,14 +216,12 @@ async function main() {
 		flag('--url', 'http://127.0.0.1:8899'),
 		'confirmed'
 	);
-	const authority = Keypair.fromSecretKey(
+	const payer = Keypair.fromSecretKey(
 		Uint8Array.from(JSON.parse(fs.readFileSync(flag('--keypair', ''), 'utf-8')))
 	);
-	const provider = new AnchorProvider(
-		connection,
-		new Wallet(authority) as any,
-		{ commitment: 'confirmed' }
-	);
+	const provider = new AnchorProvider(connection, new Wallet(payer) as any, {
+		commitment: 'confirmed',
+	});
 	const program = new Program(
 		JSON.parse(fs.readFileSync('packages/sdk/src/idl/velocity.json', 'utf-8')),
 		provider
@@ -218,13 +230,14 @@ async function main() {
 	const verifier = new Verifier(
 		connection,
 		program,
-		authority,
+		payer,
+		new PublicKey(flag('--extend-authority', payer.publicKey.toBase58())),
 		await getVelocityStateAccountPublicKey(velocity),
 		parseWatchCreators(
 			argv.includes('--watch-creators')
 				? flag('--watch-creators', '')
 				: undefined,
-			authority.publicKey
+			payer.publicKey
 		)
 	);
 
@@ -258,7 +271,13 @@ async function main() {
 	}
 
 	await requireWatchesOnExposedUsers(verifier, program, accounts);
-	await noteMigrationHotRoles(program);
+	await requireUpgradeFinished(verifier, program, accounts, {
+		expectHot: argv.includes('--expect-hot'),
+		clobHash: expectedClobHash(
+			argv.includes('--clob-hash') ? flag('--clob-hash', '') : undefined,
+			argv.includes('--clob-so') ? flag('--clob-so', '') : undefined
+		),
+	});
 
 	printReport(verifier, accounts.length);
 	if (verifier.failures.length > 0) process.exit(1);
@@ -289,26 +308,162 @@ async function requireSingletons(
 	);
 }
 
-/** The migration gives the payer two hot roles. The runbook revokes both
- * after this check, so a set role is a reminder, not a failure. */
-async function noteMigrationHotRoles(program: Program): Promise<void> {
-	const info = await program.provider.connection.getAccountInfo(
-		await getVelocityStateAccountPublicKey(program.programId)
+/** The State settings and the CLOB code the upgrade leaves behind. */
+async function requireUpgradeFinished(
+	verifier: Verifier,
+	program: Program,
+	accounts: readonly {
+		pubkey: PublicKey;
+		account: { data: Buffer; lamports: number };
+	}[],
+	options: { expectHot: boolean; clobHash?: string }
+): Promise<void> {
+	const stateAccount = accounts.find(({ account }) =>
+		nameIs(program, account.data, 'State')
 	);
-	if (!info) return;
-	const state: any = program.coder.accounts.decode('state', info.data);
+	if (!stateAccount) {
+		verifier.failures.push('State does not exist');
+		return;
+	}
+
+	const state: any = program.coder.accounts.decode(
+		'state',
+		stateAccount.account.data
+	);
+	requireMigrationHotRolesRevoked(verifier, state, options.expectHot);
+	requireLiveExchange(verifier, state);
+	requireEconomics(verifier, program, state, accounts);
+	await requireClobCode(verifier, program, options.clobHash);
+}
+
+/** The migration gives the payer two hot roles. The conditionsSync key can set
+ * or clear every user's paid resync terms, so a role left set is a failure.
+ * `--expect-hot` makes it a warning for a run before the revoke executes. */
+function requireMigrationHotRolesRevoked(
+	verifier: Verifier,
+	state: any,
+	expectHot: boolean
+): void {
 	for (const [role, key] of [
 		['conditionsSync', state.hotConditionsSync],
 		['accountExtension', state.hotAccountExtension],
 	] as [string, PublicKey][]) {
-		if (!key.equals(PublicKey.default)) {
-			console.log(
-				`note: hot ${role} is still ${key.toBase58()}. Revoke it once the migration is done: ` +
-					`velocity-admin --multisig <pda> auth set-hot-admin ${role} ${PublicKey.default.toBase58()}`
+		if (key.equals(PublicKey.default)) continue;
+
+		const line =
+			`hot ${role} is still ${key.toBase58()}. Revoke it: velocity-admin --multisig <pda> ` +
+			`auth set-hot-admin ${role} ${PublicKey.default.toBase58()}`;
+		(expectHot ? verifier.warnings : verifier.failures).push(line);
+	}
+}
+
+/** The upgrade pause must be lifted. Otherwise no liquidation, settle or
+ * withdrawal runs, for as long as nobody notices. */
+function requireLiveExchange(verifier: Verifier, state: any): void {
+	const held = state.exchangeStatus & UPGRADE_PAUSE_BITS;
+	if (held !== 0) {
+		verifier.failures.push(
+			`exchange status ${state.exchangeStatus} still holds upgrade pause bits ${held}. ` +
+				'Execute the lift that migrate.ts --lift-upgrade-pause proposed.'
+		);
+	}
+}
+
+/** What the migration writes so relay is paid: non-zero fee rails, a priced
+ * and funded crank treasury, and the SOL spot market for the reimbursement. */
+function requireEconomics(
+	verifier: Verifier,
+	program: Program,
+	state: any,
+	accounts: readonly {
+		pubkey: PublicKey;
+		account: { data: Buffer; lamports: number };
+	}[]
+): void {
+	const rails = state.transactionFeeRails;
+	const railsPriced =
+		rails.inclusionLamports > 0 ||
+		rails.signatureLamports > 0 ||
+		(rails.resourceFeeNumerator > 0 && rails.resourceFeeDenominator > 0);
+	if (!railsPriced) {
+		verifier.failures.push(
+			'the transaction fee rails price every crank at zero'
+		);
+	}
+
+	const treasuryKey = getCrankTreasuryPublicKey(program.programId);
+	const treasury = accounts.find(({ pubkey }) => pubkey.equals(treasuryKey));
+	if (treasury) {
+		const decoded: any = program.coder.accounts.decode(
+			'crankTreasuryV0',
+			treasury.account.data
+		);
+		if (!decoded.refillTargetCranks || !decoded.refillWatermarkCranks) {
+			verifier.failures.push(
+				`crank treasury ${treasuryKey.toBase58()} is not priced`
 			);
 		}
 	}
+
+	const hasSolMarket = accounts
+		.filter(({ account }) => nameIs(program, account.data, 'SpotMarket'))
+		.map(({ account }) =>
+			program.coder.accounts.decode('spotMarket', account.data)
+		)
+		.some(
+			(market: any) =>
+				market.marketIndex !== 0 && market.mint.equals(NATIVE_MINT)
+		);
+	if (state.solSpotMarketIndex === 0) {
+		(hasSolMarket ? verifier.failures : verifier.warnings).push(
+			'State.solSpotMarketIndex is 0, so the liquidation reimbursement and the SOL ' +
+				'payment floors are off' +
+				(hasSolMarket ? '' : '. No wrapped-SOL spot market exists to name')
+		);
+	}
 }
+
+/** The CLOB is the trust root for maker identity, so its code must be the
+ * reviewed build. Without a hash this is a warning. */
+async function requireClobCode(
+	verifier: Verifier,
+	program: Program,
+	expectedHash: string | undefined
+): Promise<void> {
+	const attach = (program.rawIdl as any).instructions.find(
+		(ix: any) => ix.name === 'update_perp_market_clob_quoter'
+	);
+	const address = attach?.accounts?.find(
+		(account: any) => account.name === 'clob_program'
+	)?.address;
+	if (!address) {
+		verifier.failures.push('the IDL does not pin a clob_program on the attach');
+		return;
+	}
+
+	if (!expectedHash) {
+		verifier.warnings.push(
+			'no --clob-hash or --clob-so, so the CLOB code is not checked'
+		);
+		return;
+	}
+
+	const deployed = await deployedProgramHash(
+		program.provider.connection,
+		new PublicKey(address)
+	);
+	if (deployed !== expectedHash) {
+		verifier.failures.push(
+			`the CLOB ${address} hashes to ${
+				deployed ?? 'nothing'
+			}, not ${expectedHash}`
+		);
+	}
+}
+
+const NATIVE_MINT = new PublicKey(
+	'So11111111111111111111111111111111111111112'
+);
 
 /** A market with a book needs a watch on its crank conditions, and one on the
  * book at the offset the attach recorded. */
@@ -352,35 +507,41 @@ async function requireMarketWatches(
 	}
 }
 
-/** migrate.ts covers a user with an open perp position, so only that user's conditions need a
- * watch. A user created after the upgrade has conditions before it trades. */
+/** migrate.ts covers a user with an open perp position, so every such user
+ * needs conditions and a watch on them. A user created after the upgrade has
+ * conditions before it trades. */
 async function requireWatchesOnExposedUsers(
 	verifier: Verifier,
 	program: Program,
 	accounts: readonly { pubkey: PublicKey; account: { data: Buffer } }[]
 ): Promise<void> {
-	const users = new Map(
+	const conditionsKeys = new Set(
 		accounts
-			.filter(({ account }) => nameIs(program, account.data, 'User'))
-			.map(({ pubkey, account }) => [
-				pubkey.toBase58(),
-				decodeUser(account.data),
-			])
+			.filter(({ account }) =>
+				nameIs(program, account.data, 'UserConditionsV0')
+			)
+			.map(({ pubkey }) => pubkey.toBase58())
 	);
-	const conditions = accounts.filter(({ account }) =>
-		nameIs(program, account.data, 'UserConditionsV0')
-	);
-	for (const { pubkey, account } of conditions) {
-		const { user } = program.coder.accounts.decode(
-			'userConditionsV0',
-			account.data
-		) as {
-			user: PublicKey;
-		};
-		const exposed = users
-			.get(user.toBase58())
-			?.perpPositions.some((position) => !positionIsAvailable(position));
-		if (exposed) await verifier.requireWatch('user conditions', pubkey);
+	const exposedUsers = accounts
+		.filter(({ account }) => nameIs(program, account.data, 'User'))
+		.filter(({ account }) =>
+			decodeUser(account.data).perpPositions.some(
+				(position) => !positionIsAvailable(position)
+			)
+		);
+	for (const { pubkey: user } of exposedUsers) {
+		const conditions = getUserConditionsPublicKey(program.programId, user);
+		if (!conditionsKeys.has(conditions.toBase58())) {
+			verifier.failures.push(
+				`user ${user.toBase58()} holds a perp position and has no conditions ${conditions.toBase58()}`
+			);
+			continue;
+		}
+
+		await verifier.requireWatch(
+			`user ${user.toBase58()} conditions`,
+			conditions
+		);
 	}
 }
 
@@ -404,6 +565,7 @@ function printReport(verifier: Verifier, total: number): void {
 		verifier.failures.push(...problems.map((line) => `${name} ${line}`));
 	}
 
+	verifier.warnings.forEach((line) => console.log(`warning: ${line}`));
 	console.log(
 		verifier.failures.length === 0
 			? '\nverify: clean'

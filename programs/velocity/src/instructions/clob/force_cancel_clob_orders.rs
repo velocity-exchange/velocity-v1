@@ -240,7 +240,15 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             &plan.user_ref.authority,
         )
     {
-        pay_crank_reward(&ctx.accounts.crank_conditions, &ctx.accounts.authority)?;
+        let poll_floor = crate::instructions::optional_accounts::liveness_poll_min_payment(
+            ctx.remaining_accounts,
+            &ctx.accounts.user.key(),
+        );
+        pay_crank_reward(
+            &ctx.accounts.crank_conditions,
+            &ctx.accounts.authority,
+            poll_floor,
+        )?;
     }
 
     msg!(
@@ -588,17 +596,19 @@ fn unwind_cancelled_orders(
     Ok(collected_fee)
 }
 
-/// Pay the relay turner its force-cancel figure out of the reservoir.
+/// Pay the relay turner its force-cancel figure out of the reservoir, raised
+/// to the payment that the user's liveness poll asks relay to assert.
 /// `liquidate_perp_with_fill` pays for its own reward on the same terms.
 fn pay_crank_reward<'info>(
     crank_conditions: &Option<AccountLoader<'info, ClobCrankConditionsV0>>,
     authority: &UncheckedAccount<'info>,
+    poll_floor: u64,
 ) -> Result<()> {
     if let Some(conditions_loader) = crank_conditions {
         ClobCrankConditionsV0::pay_crank(
             conditions_loader,
             &authority.to_account_info(),
-            |payments| u64::from(payments.force_cancel),
+            |payments| u64::from(payments.force_cancel).max(poll_floor),
         )?;
     }
 

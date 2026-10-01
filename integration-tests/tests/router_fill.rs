@@ -13070,3 +13070,215 @@ fn fix4_taker_slices_at_the_limit_charge_no_shortfall() {
         "a slice that gained the taker nothing pays no lamports"
     );
 }
+
+fn fix4_taker_enable_builder_codes(svm: &mut litesvm::LiteSVM) {
+    let mut state: State = read_zero_copy(svm, &state_pda());
+    state.feature_bit_flags |= velocity::state::state::FeatureBitFlags::BuilderCodes as u8;
+    set_zero_copy_account(svm, state_pda(), State::DISCRIMINATOR, &state, State::SIZE);
+}
+
+fn fix4_taker_escrow_pda(authority: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            velocity::state::revenue_share::REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(),
+            authority.as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0
+}
+
+/// The crank with the taker's escrow PDA after the counterparties, where the
+/// handler reads it.
+fn fix4_taker_with_escrow(mut ix: Instruction, taker: &Party) -> Instruction {
+    let at = ix.accounts.len() - 3;
+    ix.accounts.insert(
+        at,
+        AccountMeta::new(fix4_taker_escrow_pda(&taker.authority.pubkey()), false),
+    );
+    ix
+}
+
+/// With builder codes on, a crank that leaves the taker's escrow PDA out could
+/// skip the builder fee. The crank refuses it, and the same crank with an
+/// uncreated PDA in place routes the taker.
+#[test]
+fn fix4_taker_a_crank_without_the_taker_escrow_pda_is_refused() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+    fix4_taker_enable_builder_codes(&mut fixture.svm);
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let without = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&maker]);
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), without.clone()],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::UnableToLoadRevenueShareAccount);
+
+    fixture.svm.expire_blockhash();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[
+            compute_unit_limit_ix(1_400_000),
+            fix4_taker_with_escrow(without, &taker),
+        ],
+        &[],
+    )
+    .expect("an uncreated escrow PDA reads as no escrow");
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        UNIT as i64
+    );
+}
+
+/// Writes the taker's escrow with one approved builder and one open builder
+/// row for `order_id`.
+fn fix4_taker_set_builder_escrow(svm: &mut litesvm::LiteSVM, taker: &Party, order_id: u32) {
+    use velocity::state::revenue_share::{
+        BuilderInfo, RevenueShareEscrow, RevenueShareEscrowFixed, RevenueShareOrder,
+        RevenueShareOrderBitFlag,
+    };
+
+    let order = RevenueShareOrder::new(
+        0,
+        0,
+        order_id,
+        100,
+        MarketType::Perp,
+        0,
+        RevenueShareOrderBitFlag::Open as u8,
+        0,
+    );
+    let builder = BuilderInfo {
+        authority: anchor_lang::prelude::Pubkey::new_unique(),
+        max_fee_tenth_bps: 1_000,
+        padding: [0; 6],
+    };
+    let fixed = RevenueShareEscrowFixed {
+        authority: anchor_lang::prelude::Pubkey::new_from_array(
+            taker.authority.pubkey().to_bytes(),
+        ),
+        ..RevenueShareEscrowFixed::default()
+    };
+
+    let header = 8 + core::mem::size_of::<RevenueShareEscrowFixed>();
+    let order_size = core::mem::size_of::<RevenueShareOrder>();
+    let mut data = vec![0u8; RevenueShareEscrow::space(1, 1)];
+    data[..8].copy_from_slice(RevenueShareEscrow::DISCRIMINATOR);
+    data[8..header].copy_from_slice(bytemuck::bytes_of(&fixed));
+    data[header + 4..header + 8].copy_from_slice(&1u32.to_le_bytes());
+    data[header + 8..header + 8 + order_size].copy_from_slice(bytemuck::bytes_of(&order));
+    let builders_len_offset = header + 12 + order_size;
+    data[builders_len_offset..builders_len_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+    data[builders_len_offset + 4..builders_len_offset + 4 + core::mem::size_of::<BuilderInfo>()]
+        .copy_from_slice(bytemuck::bytes_of(&builder));
+    svm.set_account(
+        fix4_taker_escrow_pda(&taker.authority.pubkey()),
+        Account {
+            lamports: 100_000_000_000,
+            data,
+            owner: velocity_id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+}
+
+fn fix4_taker_builder_fees_accrued(svm: &litesvm::LiteSVM, taker: &Party) -> u64 {
+    use velocity::state::revenue_share::{RevenueShareEscrowFixed, RevenueShareOrder};
+
+    let account = svm
+        .get_account(&fix4_taker_escrow_pda(&taker.authority.pubkey()))
+        .unwrap();
+    let start = 8 + core::mem::size_of::<RevenueShareEscrowFixed>() + 8;
+    let order: RevenueShareOrder = bytemuck::pod_read_unaligned(
+        &account.data[start..start + core::mem::size_of::<RevenueShareOrder>()],
+    );
+    order.fees_accrued
+}
+
+/// The pair branch settles without a router, and it priced under settlement
+/// rules whose builder fee is always off. The aggressor of a pair now pays the
+/// builder fee its order carries.
+#[test]
+fn fix4_taker_a_pair_charges_the_aggressors_builder_fee() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_crossing_remainders(
+        &mut fixture,
+        &blocker,
+        (&early, PositionDirection::Long, 101 * PRICE, UNIT),
+        (&late, PositionDirection::Short, 99 * PRICE, UNIT / 2),
+        12,
+    );
+    let late_user: User = read_zero_copy(&fixture.svm, &late.user);
+    fix4_taker_set_builder_escrow(&mut fixture.svm, &late, late_user.get_last_order_id());
+    fix4_taker_enable_builder_codes(&mut fixture.svm);
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+    quote_vamm_outside_the_pair(&mut fixture.svm);
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = fix4_taker_with_escrow(
+        crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]),
+        &late,
+    );
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .expect("the pair settles");
+
+    assert_eq!(
+        perp_position(&fixture.svm, &late.user).base_asset_amount,
+        -((UNIT / 2) as i64)
+    );
+    assert!(
+        fix4_taker_builder_fees_accrued(&fixture.svm, &late) > 0,
+        "the pair charged the builder fee on the aggressor's order"
+    );
+}

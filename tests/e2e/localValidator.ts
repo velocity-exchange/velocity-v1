@@ -75,6 +75,13 @@ import {
 import { initializeQuoteSpotMarket } from '../velocity/testHelpers';
 
 const RPC_URL = process.env.E2E_RPC_URL ?? 'http://127.0.0.1:8899';
+/** solana-test-validator serves its websocket one port above its RPC port. */
+const WS_URL = (() => {
+	const url = new URL(RPC_URL);
+	url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+	url.port = String(Number(url.port || 8899) + 1);
+	return url.toString().replace(/\/$/, '');
+})();
 const REDIS_URL = process.env.E2E_REDIS_URL ?? 'redis://127.0.0.1:6399';
 const SCRATCH = process.env.E2E_SCRATCH_DIR ?? '/tmp/velocity-e2e';
 const PUBLISHER_BIN =
@@ -1225,7 +1232,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		startService('swift', SWIFT_BIN, ['--server', 'swift'], {
 			ENV: 'devnet',
 			ENDPOINT: RPC_URL,
-			WS_ENDPOINT_1: RPC_URL.replace('http', 'ws').replace('8899', '8900'),
+			WS_ENDPOINT_1: WS_URL,
 			ELASTICACHE_HOST: '127.0.0.1',
 			ELASTICACHE_PORT: new URL(REDIS_URL).port || '6379',
 			PORT: String(SWIFT_PORT),

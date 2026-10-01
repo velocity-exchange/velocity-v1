@@ -95,10 +95,10 @@ pub const TRIGGER_RESOLVERS_OFFSET: usize =
 /// Account-data offset of the relay block (what a `WatchV0` registers at).
 pub const USER_CONDITIONS_BLOCK_OFFSET: usize = relay_spec::block_offset!(UserConditionsV0, relay);
 
-/// Capacity of the stored sync account list: four fixed resolver accounts plus roughly
-/// three per market the user is exposed in, so forty-eight covers about fourteen markets.
-/// A list that does not fit reverts the sync rather than truncating, which would deny the
-/// opt-in to the accounts carrying the most risk.
+/// Capacity of the stored sync account list. Four resolver accounts lead it. A book market
+/// costs five: market, oracle, crank account, slab and book. The shared book program costs
+/// one, any other market two, and the quote market one, so eight book markets fill 46. A
+/// list that does not fit reverts the sync, and only the keeper bots then cover the user.
 pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 48;
 
 /// The stored list starts with the resolver's named accounts, which are
@@ -338,7 +338,11 @@ impl UserConditionsV0 {
             .map_err(|_| error!(ErrorCode::InvalidConditionBlock))?;
 
         self.relay.write_resolvers(refs).map_err(|_| {
-            msg!("sync account list of {} exceeds the region", refs.len());
+            msg!(
+                "sync account list of {} exceeds the {} the block holds; relay cannot cover this user",
+                refs.len(),
+                LIQ_SYNC_ACCOUNTS_MAX
+            );
             error!(ErrorCode::ConditionResolverListTooLarge)
         })
     }

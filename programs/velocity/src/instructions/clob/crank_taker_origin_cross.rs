@@ -71,6 +71,8 @@
 //! the protocol never pays more for a crank than it collects. A crank that
 //! collected less charges the taker the shortfall, because an unpaid cross is
 //! one relay never lands, and it holds back every newer remainder on its side.
+//! The charge is capped by what the fill gained the taker against its rest
+//! price, so the taker never ends worse than resting.
 //!
 //! Two remainders can face each other only while something crosses the earlier
 //! one, so their pair usually becomes resolvable when the blocker is removed
@@ -453,7 +455,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         }],
     )?;
 
-    pay_crank_lamports(&cx, &mut maps, fees_booked_before, crank_reward)?;
+    pay_crank_lamports(&cx, &mut maps, fees_booked_before, &fee, crank_reward)?;
     emit_taker_origin_record(
         &cx,
         &TakerOriginOutcome {
@@ -1540,10 +1542,13 @@ fn booked_fee_remainder(perp_market_map: &PerpMarketMap, market_index: u16) -> R
 /// crank draws lamports that nothing paid for. A crank that collected less
 /// charges the taker the shortfall, as a removal charges its owner. Relay
 /// asserts the payment, so an unpaid cross would stall every cross behind it.
+/// The charge never exceeds what the fill left the taker under its rest
+/// price, so many small cranks cannot charge it past that price.
 fn pay_crank_lamports<'info>(
     cx: &TakerOriginContext<'_, 'info>,
     maps: &mut AccountMaps,
     fees_booked_before: u128,
+    fee: &crate::math::fees::TakerOriginCrossFee,
     crank_reward: u64,
 ) -> Result<()> {
     let (true, Some(conditions)) = (cx.program_keeper_mode, &cx.accounts.crank_conditions) else {
@@ -1556,7 +1561,7 @@ fn pay_crank_lamports<'info>(
         .saturating_sub(fees_booked_before)
         .saturating_add(u128::from(crank_reward))
         .min(u128::from(u64::MAX)) as u64;
-    let shortfall = payment_shortfall(booked, payment_quote);
+    let shortfall = chargeable_shortfall(booked, payment_quote, fee.budget, crank_reward);
     let charged = if shortfall > 0 && cx.accounts.authority.key() != cx.taker_ref.authority {
         charge_payment_shortfall(cx, maps, shortfall)?
     } else {
@@ -1595,6 +1600,17 @@ fn pay_crank_lamports<'info>(
 /// payment with no price is never paid, so it has no shortfall.
 fn payment_shortfall(collected: u64, payment_quote: Option<u64>) -> u64 {
     payment_quote.map_or(0, |payment_quote| payment_quote.saturating_sub(collected))
+}
+
+/// The shortfall the taker is charged: at most what it gained against its
+/// rest price, net of the crank reward. `budget` is that gain.
+fn chargeable_shortfall(
+    collected: u64,
+    payment_quote: Option<u64>,
+    budget: u64,
+    crank_reward: u64,
+) -> u64 {
+    payment_shortfall(collected, payment_quote).min(budget.saturating_sub(crank_reward))
 }
 
 /// Charge the taker `shortfall` in quote, paid to the protocol `User` that
@@ -1887,7 +1903,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     let remainder_base_asset_amount = report_fills_to_book(cx, &pair.book_fills())?;
     let crank_reward = pay_crank_reward(cx, &pricing.fee, pair.quote_filled, maps)?;
 
-    pay_crank_lamports(cx, maps, fees_booked_before, crank_reward)?;
+    pay_crank_lamports(cx, maps, fees_booked_before, &pricing.fee, crank_reward)?;
     emit_taker_origin_record(
         cx,
         &TakerOriginOutcome {

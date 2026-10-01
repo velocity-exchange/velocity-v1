@@ -1326,6 +1326,16 @@ mod payment_shortfall_rules {
         assert_eq!(payment_shortfall(900, Some(750)), 0);
     }
 
+    /// The charge comes out of what the taker gained against its rest price, so
+    /// a crank at the rest price charges nothing. The round-four probe charged
+    /// a victim about the payment on every one of ten minimum slices.
+    #[test]
+    fn the_charge_is_capped_by_what_the_taker_gained() {
+        assert_eq!(chargeable_shortfall(0, Some(750), 0, 0), 0);
+        assert_eq!(chargeable_shortfall(0, Some(750), 500, 100), 400);
+        assert_eq!(chargeable_shortfall(200, Some(750), 5_000, 100), 550);
+    }
+
     /// With no SOL market there is no price for the payment, so nothing is
     /// paid and nothing is charged.
     #[test]

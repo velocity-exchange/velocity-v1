@@ -330,9 +330,12 @@ measures, since `assert_paid_v0` watches the payout account's lamport balance, a
 the same reservoir lamports as every other. The reservoir pays only what the crank collected, so a
 cross whose fee and reward fall short charges the taker the difference, as a removal charges its
 owner. An unpaid cross is one relay never lands, and it would hold back every newer remainder on its
-side. Pricing it above that would make exactly the crosses
-R5 resolves for free undiscoverable, and a unit of dust in front of a gated remainder is enough to
-strand it for its whole life.
+side. The charge is capped by what the fill gained the taker against its rest price, net of the
+crank reward, so R5's invariant holds however many cranks split a remainder. A cross that gains
+the taker too little to pay is not paid. A signed keeper can still crank it, and once the claim
+lapses the remainder is ordinary depth at its own price. Pricing it above that would make exactly
+the crosses R5 resolves for free undiscoverable, and a unit of dust in front of a gated remainder
+is enough to strand it for its whole life.
 
 The wake that needs care is the **both-remainders** case. Two remainders can only face each other
 while something crosses the earlier one, so the moment the pair becomes resolvable is usually the

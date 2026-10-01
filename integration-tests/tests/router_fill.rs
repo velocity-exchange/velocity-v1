@@ -12993,3 +12993,80 @@ fn fix4_taker_a_maker_cross_stops_in_front_of_a_later_remainder() {
         UNIT as i64
     );
 }
+
+/// An attacker rests one minimum ask at the victim's limit of 99 and cranks it
+/// in program-keeper mode with its own payout, ten times. Each slice charged
+/// the victim the keeper payment's shortfall and paid the attacker the
+/// lamports. The charge is now capped by what the slice gained the victim
+/// against its rest price, which is nothing here, so the reservoir pays
+/// nothing and the victim pays its limit plus its taker fee.
+#[test]
+fn fix4_taker_slices_at_the_limit_charge_no_shortfall() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let conditions = init_crank_conditions(&mut fixture, 7_500);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        99 * PRICE,
+        UNIT,
+    );
+    resume_amm_fill(&mut fixture.svm);
+    let attacker = party(&mut fixture.svm, 1_000 * SPOT_BALANCE_PRECISION_U64);
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+
+    const SLICES: u64 = 10;
+    for slice in 0..SLICES {
+        let slot = 20 + slice;
+        fixture.svm.warp_to_slot(slot);
+        fixture.svm.expire_blockhash();
+        set_oracle(
+            &mut fixture.svm,
+            fixture.oracle,
+            (100 * PRICE_PRECISION) as i64,
+            slot,
+        );
+        place_clob_order_for(
+            &mut fixture,
+            &attacker,
+            PositionDirection::Short,
+            99 * PRICE,
+            1000,
+        );
+
+        let resolved = run_cross_resolver(&mut fixture, conditions).expect("the slice crosses");
+        let authority = attacker.authority.insecure_clone();
+        send_with_ixs(
+            &mut fixture.svm,
+            &authority,
+            &[
+                compute_unit_limit_ix(1_400_000),
+                staged_executor_ix(&resolved, payout),
+            ],
+            &[],
+        )
+        .expect("the slice cranks");
+    }
+
+    let position = perp_position(&fixture.svm, &victim.user);
+    let filled = position.base_asset_amount;
+    assert_eq!(filled, (1000 * SLICES) as i64);
+    let paid = -position.quote_asset_amount;
+    let at_limit = 99 * PRICE as i64 * filled / UNIT as i64;
+    assert!(
+        paid <= at_limit + at_limit / 1000,
+        "paid {paid} for base worth {at_limit} at its limit"
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000,
+        "a slice that gained the taker nothing pays no lamports"
+    );
+}

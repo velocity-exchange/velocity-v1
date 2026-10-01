@@ -9,13 +9,14 @@
 //! instead of giving it to the taker as price improvement.
 //!
 //! A rung shades only base that the rivals at its price also fill in the same
-//! take. Those rivals fill only the part of the take past `reach(P)`, the base
-//! at which the curve reaches the rival price `P`. A rung therefore covers at
-//! most `min(D, total - reach(P))` base, where `D` is the rival depth at `P` or
-//! better that no rung has shaded yet. Its surcharge over the honest curve is
-//! at most that base times `P - top`, plus rounding. A rival that the take
-//! does not reach shades nothing, so an order that never trades cannot reprice
-//! the vAMM.
+//! take. The split fills the curve up to `reach(P)`, the base at which the
+//! curve reaches the rival price `P`, and all rival depth `R` priced better
+//! than `P` first. Rival depth at or inside the vAMM's top counts in `R`. A
+//! rung therefore covers at most `min(d, total - reach(P) - R)` base, where `d`
+//! is the rival depth at `P`. Its surcharge over the honest curve is at most
+//! that base times `P - top`, plus rounding. A rival that the take does not
+//! reach shades nothing, so an order that never trades cannot reprice the
+//! vAMM. Rival depth counts only the levels the split reads.
 //!
 //! Every checkpoint's price comes from the swap math the execute leg runs,
 //! which is `calculate_base_swap_output` over the spread reserves. A rung's
@@ -46,7 +47,7 @@ use {
         math::{
             casting::Cast,
             constants::{BASE_PRECISION_U64, PERCENTAGE_PRECISION_U64},
-            router::QuoterBook,
+            router::{QuoterBook, MAX_LEVELS_PER_BOOK},
             safe_math::SafeMath,
         },
         state::{
@@ -158,60 +159,8 @@ pub fn vamm_quote_levels(
         (None, _) => band_edge,
     };
 
-    // The best `VAMM_QUOTE_CHECKPOINTS` rival rungs, best first and deduped,
-    // each carrying the rivals' depth at its price. An insert sort keeps this
-    // a fixed array instead of a collect-and-truncate, whose doubling buffers
-    // the allocator never reclaims; the insert sort is linear in rungs kept.
-    let mut rival_rungs = [PriceLevelV0::default(); VAMM_QUOTE_CHECKPOINTS];
-    let mut rung_count = 0usize;
-    let ranks_before = |a: u64, b: u64| match direction {
-        DirectionV0::Long => a < b,
-        DirectionV0::Short => a > b,
-    };
-
-    for level in rival_books.iter().flat_map(|book| book.levels.iter()) {
-        let price = level.price;
-        let in_band = match direction {
-            DirectionV0::Long => price > top && price <= rung_edge,
-            DirectionV0::Short => price < top && price >= rung_edge && price > 0,
-        };
-
-        if !in_band || level.size == 0 {
-            continue;
-        }
-
-        let mut at = 0usize;
-        while at < rung_count && ranks_before(rival_rungs[at].price, price) {
-            at += 1;
-        }
-
-        if at < rung_count && rival_rungs[at].price == price {
-            // Two rivals at one price offer that price for both their sizes.
-            rival_rungs[at].size = rival_rungs[at].size.saturating_add(level.size);
-            continue;
-        }
-        if at >= VAMM_QUOTE_CHECKPOINTS {
-            continue;
-        }
-
-        // Shift the worse rungs down one. A full array drops its worst rung.
-        let end = if rung_count < VAMM_QUOTE_CHECKPOINTS {
-            rung_count
-        } else {
-            VAMM_QUOTE_CHECKPOINTS - 1
-        };
-
-        if at < end {
-            rival_rungs.copy_within(at..end, at + 1);
-        }
-
-        rival_rungs[at] = PriceLevelV0 {
-            price,
-            size: level.size,
-        };
-
-        rung_count = (rung_count + 1).min(VAMM_QUOTE_CHECKPOINTS);
-    }
+    let step = step_size.max(1);
+    let rivals = RivalRungs::collect(rival_books, direction, top, rung_edge, step);
 
     // Each checkpoint holds a cumulative base and, for a rival rung, its
     // shading price. A rung shades the last base before the curve reaches its
@@ -219,7 +168,6 @@ pub fn vamm_quote_levels(
     // cheaper and the slice after it is dearer, so the book stays monotone.
     // Equal-size checkpoints price the rest of the curve honestly. The emit
     // loop skips a checkpoint that does not advance the ladder.
-    let step = step_size.max(1);
     let chunk = (total / VAMM_QUOTE_CHECKPOINTS as u64).max(1);
     let grid_point = |k: usize| match k {
         VAMM_QUOTE_CHECKPOINTS => total,
@@ -228,23 +176,25 @@ pub fn vamm_quote_levels(
 
     let mut checkpoints: Vec<(u64, Option<u64>)> = Vec::with_capacity(3 * VAMM_QUOTE_CHECKPOINTS);
     let mut grid_index = 1usize;
-    let mut rival_depth = 0u64;
-    let mut shaded_base = 0u64;
+    let mut rival_depth_ahead = rivals.depth_inside_top;
     let mut covered = 0u64;
-    for rung in rival_rungs[..rung_count].iter() {
-        rival_depth = rival_depth.saturating_add(rung.size);
+    for rung in rivals.rungs() {
+        let depth_better_than_rung = rival_depth_ahead;
+        rival_depth_ahead = rival_depth_ahead.saturating_add(rung.size);
         let (reach, trade_direction) =
             calculate_base_asset_amount_to_trade_to_price(amm, rung.price, position_direction)?;
         if trade_direction != position_direction {
             continue;
         }
 
-        // The rivals at this price trade only the take past `reach`, so the
-        // rung shades no more base than that.
+        // The rivals at this price trade only the take that the curve up to
+        // `reach` and every better rival leave over.
         let shade_end = reach.min(total) - reach.min(total) % step;
-        let shade_budget = rival_depth
-            .safe_sub(shaded_base)?
-            .min(total.saturating_sub(reach));
+        let shade_budget = rung.size.min(
+            total
+                .saturating_sub(reach)
+                .saturating_sub(depth_better_than_rung),
+        );
         let shade_start = shade_end
             .saturating_sub(shade_budget - shade_budget % step)
             .max(covered);
@@ -263,7 +213,6 @@ pub fn vamm_quote_levels(
 
         checkpoints.push((shade_start, None));
         checkpoints.push((shade_end, Some(rung.price)));
-        shaded_base = shaded_base.safe_add(shade_end - shade_start)?;
         covered = shade_end;
     }
 
@@ -324,6 +273,115 @@ pub fn vamm_quote_levels(
     }
 
     Ok(levels)
+}
+
+/// The rival depth the shade budget reads, over the levels the split reads.
+struct RivalRungs {
+    /// The best [`VAMM_QUOTE_CHECKPOINTS`] in-band prices, best first and
+    /// deduped, each with the rivals' depth at that price.
+    rungs: [PriceLevelV0; VAMM_QUOTE_CHECKPOINTS],
+    rung_count: usize,
+    /// Rival depth priced at or better than the vAMM's top. The split fills it
+    /// before any rung.
+    depth_inside_top: u64,
+}
+
+impl RivalRungs {
+    /// An insert sort keeps the rungs in a fixed array instead of a
+    /// collect-and-truncate, whose doubling buffers the allocator never
+    /// reclaims. A level that the full array drops is worse than every rung it
+    /// keeps, so no kept rung needs its depth.
+    fn collect(
+        rival_books: &[QuoterBook],
+        direction: DirectionV0,
+        top: u64,
+        rung_edge: u64,
+        step: u64,
+    ) -> Self {
+        let mut rivals = Self {
+            rungs: [PriceLevelV0::default(); VAMM_QUOTE_CHECKPOINTS],
+            rung_count: 0,
+            depth_inside_top: 0,
+        };
+
+        let levels = rival_books
+            .iter()
+            .flat_map(|book| split_readable_levels(book.levels, direction, step));
+        for level in levels {
+            let (inside_top, in_band) = match direction {
+                DirectionV0::Long => (level.price <= top, level.price <= rung_edge),
+                DirectionV0::Short => (level.price >= top, level.price >= rung_edge),
+            };
+
+            if inside_top {
+                rivals.depth_inside_top = rivals.depth_inside_top.saturating_add(level.size);
+            } else if in_band {
+                rivals.insert(direction, level);
+            }
+        }
+
+        rivals
+    }
+
+    fn insert(&mut self, direction: DirectionV0, level: PriceLevelV0) {
+        let ranks_before = |a: u64, b: u64| match direction {
+            DirectionV0::Long => a < b,
+            DirectionV0::Short => a > b,
+        };
+
+        let mut at = 0usize;
+        while at < self.rung_count && ranks_before(self.rungs[at].price, level.price) {
+            at += 1;
+        }
+
+        if at < self.rung_count && self.rungs[at].price == level.price {
+            self.rungs[at].size = self.rungs[at].size.saturating_add(level.size);
+            return;
+        }
+
+        if at >= VAMM_QUOTE_CHECKPOINTS {
+            return;
+        }
+
+        // Shift the worse rungs down one. A full array drops its worst rung.
+        let end = self.rung_count.min(VAMM_QUOTE_CHECKPOINTS - 1);
+        if at < end {
+            self.rungs.copy_within(at..end, at + 1);
+        }
+
+        self.rungs[at] = level;
+        self.rung_count = (self.rung_count + 1).min(VAMM_QUOTE_CHECKPOINTS);
+    }
+
+    fn rungs(&self) -> &[PriceLevelV0] {
+        &self.rungs[..self.rung_count]
+    }
+}
+
+/// The levels of one book that [`crate::math::router::split_across_quoters`]
+/// can allocate, each size floored to the step. This matches the split's
+/// cursor. It reads at most [`MAX_LEVELS_PER_BOOK`] levels, stops at the first
+/// level out of price order, and skips a zero price or a sub-step size.
+fn split_readable_levels(
+    levels: &[PriceLevelV0],
+    direction: DirectionV0,
+    step: u64,
+) -> impl Iterator<Item = PriceLevelV0> + '_ {
+    let capped = &levels[..levels.len().min(MAX_LEVELS_PER_BOOK)];
+    let monotone = capped
+        .windows(2)
+        .position(|pair| match direction {
+            DirectionV0::Long => pair[1].price < pair[0].price,
+            DirectionV0::Short => pair[1].price > pair[0].price,
+        })
+        .map_or(capped.len(), |last_in_order| last_in_order + 1);
+    capped[..monotone].iter().filter_map(move |level| {
+        let size = level.size - level.size % step;
+        (level.price != 0 && size != 0).then_some(PriceLevelV0 {
+            price: level.price,
+            size,
+        })
+    })
 }
 
 impl RouterQuoter for AmmQuoter<'_> {
@@ -678,6 +736,169 @@ mod tests {
         }
     }
 
+    /// Depth at or inside the vAMM's top fills before a rival at `P`. A take of
+    /// `2 reach(P)` against `reach(P)` of such depth never reaches the rival, so
+    /// the ladder is the honest curve and the taker pays no surcharge.
+    #[test]
+    fn econ_probe_better_source_hides_the_rival_from_the_shade_budget() {
+        let amm = deep_amm_fixture();
+        for divisor in [200u64, 100, 50, 25] {
+            let rival_price = TOP + TOP / divisor;
+            let (reach, _) = calculate_base_asset_amount_to_trade_to_price(
+                &amm,
+                rival_price,
+                PositionDirection::Long,
+            )
+            .unwrap();
+            let size = 2 * reach;
+            let inside_top = [PriceLevelV0 {
+                price: TOP,
+                size: reach,
+            }];
+            let wall = [PriceLevelV0 {
+                price: rival_price,
+                size: reach,
+            }];
+            let rivals = [
+                QuoterBook {
+                    priority: 10,
+                    levels: &inside_top,
+                    withheld: PriceLevelV0::default(),
+                },
+                QuoterBook {
+                    priority: 10,
+                    levels: &wall,
+                    withheld: PriceLevelV0::default(),
+                },
+            ];
+
+            let honest = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], None).unwrap();
+            let shaded =
+                vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &rivals, None).unwrap();
+            assert_eq!(shaded, honest, "wall at +{} bps", 10_000 / divisor);
+        }
+    }
+
+    /// Rival depth below the top fills first, so the rival at `P` it covers
+    /// shades nothing. Two rungs: the take past `reach(P2)` is only the depth
+    /// at `P1`, so the rival at `P2` fills nothing and shades nothing.
+    #[test]
+    fn rival_depth_better_than_a_rung_is_charged_to_the_take() {
+        let amm = amm_fixture();
+        let wall_price = TOP + TOP / 50;
+        let (wall_reach, _) = calculate_base_asset_amount_to_trade_to_price(
+            &amm,
+            wall_price,
+            PositionDirection::Long,
+        )
+        .unwrap();
+        let inside = 5 * BASE_PRECISION_U64;
+        let levels = [
+            PriceLevelV0 {
+                price: TOP - TOP / 500,
+                size: inside,
+            },
+            PriceLevelV0 {
+                price: wall_price,
+                size: 5 * BASE_PRECISION_U64,
+            },
+        ];
+        let size = wall_reach + inside;
+        let shaded =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &rival_book(&levels), None)
+                .unwrap();
+        let honest = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &[], None).unwrap();
+        assert_eq!(shaded, honest);
+
+        let near = TOP + TOP / 200;
+        let far = TOP + TOP / 50;
+        let near_depth = BASE_PRECISION_U64 / 10;
+        let (far_reach, _) =
+            calculate_base_asset_amount_to_trade_to_price(&amm, far, PositionDirection::Long)
+                .unwrap();
+        let two_rungs = [
+            PriceLevelV0 {
+                price: near,
+                size: near_depth,
+            },
+            PriceLevelV0 {
+                price: far,
+                size: 5 * BASE_PRECISION_U64,
+            },
+        ];
+        let shaded = vamm_quote_levels(
+            &amm,
+            DirectionV0::Long,
+            far_reach + near_depth,
+            1,
+            &rival_book(&two_rungs),
+            None,
+        )
+        .unwrap();
+        assert!(
+            shaded.iter().all(|level| level.price != far),
+            "{:?}",
+            shaded
+        );
+        assert!(shaded.iter().any(|level| level.price == near));
+    }
+
+    /// A level the split never reads gives the shade no depth: one past the
+    /// first level out of price order, and one past `MAX_LEVELS_PER_BOOK`.
+    #[test]
+    fn rival_depth_counts_only_levels_the_split_reads() {
+        let amm = amm_fixture();
+        let size = 10 * BASE_PRECISION_U64;
+        let rival_price = TOP + TOP / 100;
+        let readable = [PriceLevelV0 {
+            price: rival_price,
+            size: BASE_PRECISION_U64 / 10,
+        }];
+        let out_of_order = [
+            readable[0],
+            PriceLevelV0 {
+                price: TOP + TOP / 200,
+                size,
+            },
+        ];
+        let expected = vamm_quote_levels(
+            &amm,
+            DirectionV0::Long,
+            size,
+            1,
+            &rival_book(&readable),
+            None,
+        )
+        .unwrap();
+        let shaded = vamm_quote_levels(
+            &amm,
+            DirectionV0::Long,
+            size,
+            1,
+            &rival_book(&out_of_order),
+            None,
+        )
+        .unwrap();
+        assert_eq!(shaded, expected);
+
+        let mut deep = vec![
+            PriceLevelV0 {
+                price: TOP - TOP / 100,
+                size: 1,
+            };
+            MAX_LEVELS_PER_BOOK
+        ];
+        let read =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &rival_book(&deep), None).unwrap();
+        deep.push(PriceLevelV0 {
+            price: rival_price,
+            size,
+        });
+        let past_the_cap =
+            vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &rival_book(&deep), None).unwrap();
+        assert_eq!(past_the_cap, read);
+    }
+
     #[test]
     fn taker_limit_caps_the_ladder_at_an_honest_final_rung() {
         let amm = amm_fixture();
@@ -946,8 +1167,8 @@ mod ts_mirror_fixture {
         assert_copy::<AMM>();
     }
 
-    #[test]
-    fn print_ladder_for_ts_mirror() {
+    /// The 100-unit AMM at peg 50 with no spread.
+    fn no_spread_amm() -> AMM {
         let mut amm = AMM {
             base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
             quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -961,6 +1182,12 @@ mod ts_mirror_fixture {
         };
 
         amm.seed_no_spread_quote_state();
+        amm
+    }
+
+    #[test]
+    fn print_ladder_for_ts_mirror() {
+        let amm = no_spread_amm();
         for (label, direction) in [("long", DirectionV0::Long), ("short", DirectionV0::Short)] {
             let levels =
                 vamm_quote_levels(&amm, direction, 10 * BASE_PRECISION_U64, 1, &[], None).unwrap();
@@ -1056,6 +1283,67 @@ mod ts_mirror_fixture {
                 .map(|l| format!("{}:{}", l.price, l.size))
                 .collect();
             println!("TS_MIRROR {} {}", label, encoded.join(","));
+        }
+    }
+
+    /// Rival depth that the split fills before a rung: a level inside the top,
+    /// a better rung, and a level past the first one out of order.
+    #[test]
+    fn print_rival_depth_ladders_for_ts_mirror() {
+        let amm = no_spread_amm();
+        let top = 50 * PEG_PRECISION as u64;
+        let book_cases: [(&str, u64, [PriceLevelV0; 2]); 3] = [
+            (
+                "long_inside_top_wall",
+                6 * BASE_PRECISION_U64,
+                [
+                    PriceLevelV0 {
+                        price: top - top / 500,
+                        size: 5 * BASE_PRECISION_U64,
+                    },
+                    PriceLevelV0 {
+                        price: top + top / 50,
+                        size: 5 * BASE_PRECISION_U64,
+                    },
+                ],
+            ),
+            (
+                "long_two_rungs",
+                2 * BASE_PRECISION_U64,
+                [
+                    PriceLevelV0 {
+                        price: top + top / 200,
+                        size: BASE_PRECISION_U64 / 10,
+                    },
+                    PriceLevelV0 {
+                        price: top + top / 50,
+                        size: 5 * BASE_PRECISION_U64,
+                    },
+                ],
+            ),
+            (
+                "long_out_of_order",
+                10 * BASE_PRECISION_U64,
+                [
+                    PriceLevelV0 {
+                        price: top + top / 100,
+                        size: BASE_PRECISION_U64 / 10,
+                    },
+                    PriceLevelV0 {
+                        price: top + top / 200,
+                        size: 10 * BASE_PRECISION_U64,
+                    },
+                ],
+            ),
+        ];
+        for (label, size, rival) in book_cases {
+            let books = [QuoterBook {
+                priority: 10,
+                levels: &rival,
+                withheld: PriceLevelV0::default(),
+            }];
+            let levels = vamm_quote_levels(&amm, DirectionV0::Long, size, 1, &books, None).unwrap();
+            println!("TS_MIRROR {} {}", label, encode(&levels));
         }
     }
 }

@@ -13,8 +13,10 @@
  *  - A rival price within {@link LAST_LOOK_BAND} of the vAMM's top becomes a rung, priced at the
  *    rival's price; the vAMM wins the tie on tier priority. A client that ignores rival books
  *    under-estimates what the taker pays. A rung reprices only the last base before the curve
- *    reaches the rival's price `P`. It covers at most `min(D, total - reach(P))` base, where `D`
- *    is the rival depth not yet shaded, so a rival that the take does not reach shades nothing.
+ *    reaches the rival's price `P`. It covers at most `min(d, total - reach(P) - R)` base, where
+ *    `d` is the rival depth at `P` and `R` is the rival depth priced better than `P`, inside the
+ *    top included. A rival that the take does not reach shades nothing. Rival depth counts only
+ *    the levels the split reads.
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -40,7 +42,11 @@ import {
 } from './amm';
 import { calculateBidAskPrice } from './amm';
 import { standardizeBaseAssetAmount } from './orders';
-import { RouterPriceLevel, RouterQuoterBook } from './router';
+import {
+	MAX_LEVELS_PER_BOOK,
+	RouterPriceLevel,
+	RouterQuoterBook,
+} from './router';
 
 /** Ladder checkpoints per quote (rival rungs + equal-size filler). */
 export const VAMM_QUOTE_CHECKPOINTS = 8;
@@ -85,6 +91,40 @@ function swapNotional(
 		spreadReserves.newPeg,
 		swapDirection
 	);
+}
+
+/**
+ * The levels of one book that the router split can allocate, each size floored
+ * to the step. It mirrors `split_readable_levels`, which matches the split's
+ * cursor. It reads at most `MAX_LEVELS_PER_BOOK` levels, stops at the first
+ * level out of price order, and skips a zero price or a sub-step size.
+ */
+function splitReadableLevels(
+	levels: RouterPriceLevel[],
+	isLong: boolean,
+	step: BN
+): RouterPriceLevel[] {
+	const readable: RouterPriceLevel[] = [];
+	const cap = Math.min(levels.length, MAX_LEVELS_PER_BOOK);
+	for (let index = 0; index < cap; index++) {
+		const level = levels[index];
+		if (index > 0) {
+			const previous = levels[index - 1].price;
+			const outOfOrder = isLong
+				? level.price.lt(previous)
+				: level.price.gt(previous);
+			if (outOfOrder) {
+				break;
+			}
+		}
+
+		const size = standardizeBaseAssetAmount(level.size, step);
+		if (level.price.gt(ZERO) && size.gt(ZERO)) {
+			readable.push({ price: level.price, size });
+		}
+	}
+
+	return readable;
 }
 
 /**
@@ -165,17 +205,23 @@ export function vammQuoteLevels(
 	// The best VAMM_QUOTE_CHECKPOINTS rungs, best first. Each one carries the
 	// depth the rivals offer at its price. The Rust insert-sorts into a fixed
 	// array of that length, so a price that never reaches the array loses its
-	// depth too. The walk below reproduces that bound.
+	// depth too. The walk below reproduces that bound. Depth at or inside the
+	// top is summed instead, because the split fills it before any rung.
 	const rivalRungs: RouterPriceLevel[] = [];
+	let depthInsideTop = ZERO;
 	const ranksBefore = (a: BN, b: BN) => (isLong ? a.lt(b) : a.gt(b));
 	for (const book of rivalBooks) {
-		for (const level of book.levels) {
+		for (const level of splitReadableLevels(book.levels, isLong, step)) {
+			const insideTop = isLong ? level.price.lte(top) : level.price.gte(top);
+			if (insideTop) {
+				depthInsideTop = depthInsideTop.add(level.size);
+				continue;
+			}
+
 			const inBand = isLong
-				? level.price.gt(top) && level.price.lte(rungEdge)
-				: level.price.lt(top) &&
-				  level.price.gte(rungEdge) &&
-				  level.price.gt(ZERO);
-			if (!inBand || level.size.lte(ZERO)) {
+				? level.price.lte(rungEdge)
+				: level.price.gte(rungEdge);
+			if (!inBand) {
 				continue;
 			}
 
@@ -196,11 +242,12 @@ export function vammQuoteLevels(
 
 				continue;
 			}
+
 			if (at >= VAMM_QUOTE_CHECKPOINTS) {
 				continue;
 			}
 
-			rivalRungs.splice(at, 0, { price: level.price, size: level.size });
+			rivalRungs.splice(at, 0, level);
 			if (rivalRungs.length > VAMM_QUOTE_CHECKPOINTS) {
 				rivalRungs.length = VAMM_QUOTE_CHECKPOINTS;
 			}
@@ -220,11 +267,11 @@ export function vammQuoteLevels(
 
 	const checkpoints: [BN, BN | undefined][] = [];
 	let gridIndex = 1;
-	let rivalDepth = ZERO;
-	let shadedBase = ZERO;
+	let rivalDepthAhead = depthInsideTop;
 	let covered = ZERO;
 	for (const rung of rivalRungs) {
-		rivalDepth = rivalDepth.add(rung.size);
+		const depthBetterThanRung = rivalDepthAhead;
+		rivalDepthAhead = rivalDepthAhead.add(rung.size);
 		const [reach, tradeDirection] = calculateMaxBaseAssetAmountToTrade(
 			amm,
 			marketStats,
@@ -237,11 +284,14 @@ export function vammQuoteLevels(
 			continue;
 		}
 
-		// The rivals at this price trade only the take past `reach`, so the
-		// rung shades no more base than that.
+		// The rivals at this price trade only the take that the curve up to
+		// `reach` and every better rival leave over.
 		const shadeEnd = standardizeBaseAssetAmount(BN.min(reach, total), step);
 		const shadeBudget = standardizeBaseAssetAmount(
-			BN.min(rivalDepth.sub(shadedBase), BN.max(total.sub(reach), ZERO)),
+			BN.min(
+				rung.size,
+				BN.max(total.sub(reach).sub(depthBetterThanRung), ZERO)
+			),
 			step
 		);
 		const shadeStart = BN.max(BN.max(shadeEnd.sub(shadeBudget), ZERO), covered);
@@ -266,7 +316,6 @@ export function vammQuoteLevels(
 
 		checkpoints.push([shadeStart, undefined]);
 		checkpoints.push([shadeEnd, rung.price]);
-		shadedBase = shadedBase.add(shadeEnd.sub(shadeStart));
 		covered = shadeEnd;
 	}
 

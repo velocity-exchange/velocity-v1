@@ -932,6 +932,9 @@ reserved tail space.
 New endpoints take a single args struct (`PlaceAndTakePerpOrderV1Args`, `TriggerMarketOrderV1Args`,
 `PlaceTriggerOrdersV1Args`, `UpdateQuoterApprovedArgs` and the rest).
 
+`OrderActionExplanation` gains `CLOB_ORDER_EVICTED` and `CLOB_REMAINDER_CULLED`, which name a book
+order that a crank evicted and a remainder that a fill culled under the book's minimum.
+
 `AdminClient` gains the quoter registry builders the CLI needs: `getInitializeQuoterIx`,
 `getInitializeQuoterSlabIx`, `getUpdateQuoterAccountsIx`, `getUpdateQuoterApprovedIx`,
 `getUpdatePerpMarketClobQuoterIx`, `getUpdatePerpMarketClobBookConfigIx` and

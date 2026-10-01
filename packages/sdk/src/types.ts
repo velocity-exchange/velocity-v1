@@ -397,6 +397,14 @@ export class OrderActionExplanation {
 	static readonly ORDER_FILLED_WITH_EXTERNAL_QUOTER = {
 		orderFilledWithExternalQuoter: {},
 	};
+	/** the book side reached its capacity threshold and a crank removed its worst-priced order. The owner did not cancel it, and a placed trigger re-arms */
+	static readonly CLOB_ORDER_EVICTED = {
+		clobOrderEvicted: {},
+	};
+	/** a fill left a remainder under the book's minimum order size, and the book removed it with the fill */
+	static readonly CLOB_REMAINDER_CULLED = {
+		clobRemainderCulled: {},
+	};
 }
 
 /** Which kind of liquidity a quoted book came from (`QuotedSourceKind` on-chain). A `quoter` source executes through a CPI leg and `vamm` off the curve. A PropAMM's levels are a quote at a size rather than resting orders, so a UI needs the distinction. `dlobOrder` is deprecated: no source publishes it, and the variant stays so the wire layout does not shift. */

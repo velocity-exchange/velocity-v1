@@ -257,63 +257,89 @@ fires no trigger.
 executes, nobody can place, reduce or close a position on that market, fire a stop, or land a
 signed-message order. Liquidations still run, because no liquidation path needs a book. A user who
 would have closed or been stopped out can be liquidated instead, and funding keeps accruing. The
-runbook below keeps the window to one migrate run and one round of approvals, and it pauses
-liquidations for that window. The pause is the default. Leave it out only when the signers can
-approve and execute the whole round within minutes of the swap.
+runbook below keeps the window to one migrate run and one round of approvals, and it pauses the
+exchange for that window with `LiqPaused | WithdrawPaused | SettlePnlPaused | FundingPaused`
+(114). Liquidations alone are not enough. With only `LiqPaused`, an account that passes its
+collateral cannot be liquidated, but anyone can still settle its loss into the PnL pool, and an
+offsetting account can settle that pool and withdraw it. The loss then reaches the insurance fund
+and the market after the lift. Users cannot withdraw during the window. The pause is the default.
+Leave it out only when the signers can approve and execute the whole round within minutes of the
+swap.
 
 The first upgrade to the book order flow therefore runs in this order. On mainnet every admin
 command takes `--multisig <pda>`, which makes it a proposal.
 
 ```bash
 # 1. Deploy the CLOB program at the id velocity pins (clob_program::id() in
-#    programs/velocity/src/ids.rs, BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU).
-#    migrate.ts refuses to run until it is deployed.
+#    programs/velocity/src/ids.rs, BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU),
+#    then move its upgrade authority to the vault or make it immutable. Record
+#    the executable hash of the reviewed build. migrate.ts and verify-upgrade.ts
+#    refuse a deployed CLOB with another hash.
+CLOB_HASH=$(solana-verify get-executable-hash anchor-v2/target/deploy/clob.so)
 # 2. Fund the vault for the rent it pays. See below for the amount.
 solana transfer <vault> <sol> -u "$RPC"
-# 3. Pause liquidations just before the swap. The pause key adds a bit without
-#    the multisig. Keep every bit already set: the status is one mask.
-velocity-admin --keypair <pause.json> exchange set-status <currentStatus | 16>
+# 3. Pause liquidations, withdrawals, settlement and funding just before the
+#    swap. The pause key adds bits without the multisig. Keep every bit already
+#    set: the status is one mask.
+velocity-admin --keypair <pause.json> exchange set-status <currentStatus | 114>
 # 4. Upgrade velocity, as in "Cutting a mainnet release".
 # 5. Run the migration at once. It proposes every admin step in dependency
 #    order: the fee rails, the SOL spot market for the liquidation
 #    reimbursement, the crank treasury with its pricing, the protocol User,
-#    book A and book B for every market, and last the lift of the liquidation
+#    book A and book B for every market, and last the lift of the upgrade
 #    pause.
 bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG" \
-  --treasury-refill <refillTargetCranks>,<refillWatermarkCranks> --lift-liq-pause
+  --clob-hash "$CLOB_HASH" \
+  --treasury-refill <refillTargetCranks>,<refillWatermarkCranks> --lift-upgrade-pause
 # 6. In the same signing round, let the payer sync users, and resize accounts.
 #    Skip the second when no account needs a resize.
 velocity-admin --multisig "$MULTISIG" auth set-hot-admin conditionsSync <payer>
 velocity-admin --multisig "$MULTISIG" auth set-hot-admin accountExtension <payer>
-# 7. Approve every proposal, then execute them in ascending index order. A step
-#    that runs out of order fails and can run again. The lift is last.
-velocity-admin --multisig "$MULTISIG" multisig proposals
+# 7. Approve only the proposal indexes the run printed, and the two from step 6.
+#    Each printed proposal holds exactly the instructions the run built. Any
+#    other proposal is not part of the migration. Execute them in ascending
+#    index order with velocity-admin. A step that runs out of order fails and
+#    can run again. The lift is last. execute refuses the lift when the
+#    exchange status changed after the run read it. Run step 5 again for a new
+#    lift.
+velocity-admin --multisig "$MULTISIG" multisig inspect <index>
 velocity-admin --multisig "$MULTISIG" --keypair <member.json> multisig execute <index> --cu-limit 1400000
-# 8. Fund the crank treasury. It exists only after step 7, and a transfer to
-#    the address before then makes its creation fail.
+# 8. Fund the crank treasury once step 7 creates it.
 solana transfer <treasury> <sol> -u "$RPC"
 # 9. Run the migration again. It syncs the users, tops up their reservoirs and
 #    registers the watches from the payer. Repeat until a run sends and
-#    proposes nothing.
-bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG"
-# 10. Check every account. The keypair must still hold accountExtension here,
-#     because the size check simulates extend_account with it.
-bun run deploy-scripts/verify-upgrade.ts --url "$RPC" --keypair <payer.json>
+#    proposes nothing and reports no failure.
+bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG" \
+  --clob-hash "$CLOB_HASH"
+# 10. Check every account. --expect-hot turns the migration hot roles from a
+#     failure into a warning, because step 11 has not executed yet.
+bun run deploy-scripts/verify-upgrade.ts --url "$RPC" --keypair <payer.json> \
+  --clob-hash "$CLOB_HASH" --expect-hot
 # 11. Revoke the payer's hot roles. The conditionsSync key can set or clear the
 #     paid resync terms of every user, and the payer is an operator keypair.
 velocity-admin --multisig "$MULTISIG" auth set-hot-admin conditionsSync 11111111111111111111111111111111
 velocity-admin --multisig "$MULTISIG" auth set-hot-admin accountExtension 11111111111111111111111111111111
+# 12. Check again once the revoke executes. The size check simulates
+#     extend_account without signatures, so the vault can be its authority.
+bun run deploy-scripts/verify-upgrade.ts --url "$RPC" --keypair <payer.json> \
+  --clob-hash "$CLOB_HASH" --extend-authority <vault>
 ```
+
+`verify-upgrade.ts` fails while the upgrade pause is still set, while the fee rails, the treasury
+pricing or `State.sol_spot_market_index` are unset when a wrapped-SOL spot market exists, while a
+user with a perp position has no conditions account or no watch, and while a migration hot role is
+set without `--expect-hot`.
 
 The keys the upgrade touches:
 
 | Key | Holds | During the upgrade |
 | --- | --- | --- |
 | Multisig vault | velocity upgrade authority, warm or cold admin | Signs every proposal and pays the rent of what the admin creates. |
-| CLOB upgrade authority | the CLOB program `BPX47ur8…` | Must be the vault, or the program must be immutable. An upgrade to the CLOB can name any user as a maker, because `initialize_quoter` pins the CLOB by id only. `migrate.ts` refuses to run under `--multisig` otherwise. `release.sh` and CI release only velocity, so a CLOB upgrade is a manual Squads proposal. |
-| Pause key | `State.pause_admin` | Adds `LiqPaused` before the swap. It cannot clear a bit. |
+| CLOB upgrade authority | the CLOB program `BPX47ur8…` | Must be the vault, or the program must be immutable. Velocity keeps no record of a book order's price, so the CLOB code chooses every book maker's fill price within the band and the maker's reservation, and it can refuse every cancel. `initialize_quoter` pins the CLOB by id only. Never hand the authority to a hot key, and prefer an immutable CLOB once the book is stable. `migrate.ts` refuses to run under `--multisig` unless the authority is the vault or none and the code hashes to `--clob-hash`. `release.sh` and CI release only velocity, so a CLOB upgrade is a manual Squads proposal, verified against a reproducible build like a velocity buffer. |
+| Pause key | `State.pause_admin` | Adds the upgrade pause before the swap. It cannot clear a pause bit. It can clear any hot role, which stops a compromised hot key without the multisig. It cannot set one. |
 | Migration payer | `conditionsSync`, `accountExtension` | Creates the books, syncs the users and registers the watches. Revoke both roles in step 11. |
 | Deployer | CI buffer rent, proposal creation | Must be a multisig member with Voter permissions. |
+| FlowAuthority | `State.hot_flow_authority` | Not used by the upgrade. Its attestation lets a signed-message order skip every speed bump, and the chain holds no hold, size or rate cap on it, so its holder can take stale quotes on every speed-bumped book with its own flow. Keep it on an HSM that only swift can call. On a suspected compromise, the pause key clears it at once with `velocity-admin --keypair <pause.json> auth set-hot-admin flowAuthority 11111111111111111111111111111111`. The warm admin then sets a new key, and swift restarts with it. |
 
 Step 5 builds book B before book A executes. The approval in B carries the hash of the quoter entry
 that A stages, and that entry depends only on A's arguments, so the script simulates A to get the
@@ -334,9 +360,11 @@ the liquidator fee. Nothing compares the removal payment against what the protoc
 under the value of `flat_filler_fee` in SOL. At the default `flat_filler_fee` of $0.01, 7,500
 lamports stays under it while SOL is under $1,333. `--treasury-refill` prices the treasury when it
 has no pricing. Without `--treasury-refill` the script stops before the books until the treasury is
-priced, and the upgrade then takes a second round. `--lift-liq-pause` clears only the `LiqPaused`
-bit, and only once every book B is sent or proposed. The lift writes the whole status mask it read,
-so propose it again if another pause bit changes before it executes.
+priced, and the upgrade then takes a second round. `--lift-upgrade-pause` clears only the four
+upgrade pause bits, and only once every book B is sent or proposed. The lift writes the whole
+status mask it read, so its proposal also carries that status in a memo. `velocity-admin multisig
+execute` refuses the lift once the live status differs, which keeps a pause the pause key added
+during the round. The Squads UI does not check this, so execute the lift with `velocity-admin`.
 
 An upgrade leaves `State.sol_spot_market_index` at zero, which turns off the liquidation
 reimbursement and the SOL pricing of the cross and taker-origin payment floors. The script writes
@@ -357,6 +385,12 @@ A sync arms the user's triggers, so a user waits until every market it trades ha
 A payer without the `conditionsSync` hot role proposes the syncs instead, several users to a
 proposal, and a further run tops up the reservoirs.
 
+A user with positions on many markets can need a sync larger than a legacy transaction. The run
+then creates one address lookup table for the accounts every sync shares and sends that sync as a
+v0 transaction. Deactivate and close the table after the migration. A user whose sync fails is
+listed in the summary, the run continues with the other users and the watches, and it exits
+non-zero.
+
 Anyone can register a relay watch, and every target is a PDA known before the migration. A watch
 therefore counts only when its creator is the payer or a key `--watch-creators` names, its offset
 is the block's, and its recorded program owns the target. Otherwise the run registers its own watch
@@ -364,10 +398,13 @@ and prints the one it ignored. `verify-upgrade.ts` applies the same test, so pas
 `--watch-creators` when the payer is not its keypair. List the same creators in the turners'
 `allowed_creators`.
 
-A rerun reads the last 256 proposals and skips a step that a pending proposal already does. It also
-reuses an empty book that an earlier run created. Anyone can create a book that names the slab as
-its authorities, so a reused book must also have the arena `--book-capacity` sets, and the book a
-pending registration names wins over any other. Each run ends with a summary of what it sent,
+A rerun reads the last 256 proposals and skips a step only when a pending proposal holds exactly the
+instructions the run built for it, with the same data and accounts. A `Draft` counts only when the
+payer created it. A proposal that differs in any byte is not the migration's, so a member cannot
+stand in its own proposal for a step. A rerun also reuses an empty book that an earlier run
+created. Anyone can create a book that names the slab as its authorities, so a reused book must
+also have the arena `--book-capacity` sets, and the book whose exact registration is pending wins
+over any other. Each run ends with a summary of what it sent,
 what it proposed, and what waits on approval.
 
 The vault pays the rent of what the admin creates: about 0.0134 SOL per book, for the quoter entry,

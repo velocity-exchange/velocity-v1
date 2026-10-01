@@ -119,3 +119,38 @@ mod conditions_sync_role {
         assert!(!state.is_hot(&Pubkey::new_unique(), HotRole::ConditionsSync));
     }
 }
+
+mod hot_key_revocation {
+    use {crate::state::state::State, anchor_lang::prelude::Pubkey};
+
+    #[test]
+    fn the_pause_admin_clears_a_hot_role_and_cannot_set_one() {
+        let warm = Pubkey::new_unique();
+        let pause = Pubkey::new_unique();
+        let stranger = Pubkey::new_unique();
+        let state = State {
+            cold_admin: Pubkey::new_unique(),
+            warm_admin: warm,
+            pause_admin: pause,
+            ..State::default()
+        };
+
+        assert!(state.may_set_hot_key(&pause, &Pubkey::default()));
+        assert!(!state.may_set_hot_key(&pause, &stranger));
+
+        assert!(state.may_set_hot_key(&warm, &stranger));
+        assert!(state.may_set_hot_key(&warm, &Pubkey::default()));
+
+        assert!(!state.may_set_hot_key(&stranger, &Pubkey::default()));
+    }
+
+    #[test]
+    fn an_unset_pause_admin_clears_nothing() {
+        let state = State {
+            cold_admin: Pubkey::new_unique(),
+            ..State::default()
+        };
+
+        assert!(!state.may_set_hot_key(&Pubkey::default(), &Pubkey::default()));
+    }
+}

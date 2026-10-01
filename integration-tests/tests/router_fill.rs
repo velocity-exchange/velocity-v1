@@ -12597,3 +12597,58 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
         -position.quote_asset_amount
     );
 }
+
+/// The pause key clears a compromised hot role without the warm admin, and it
+/// cannot set one. The FlowAuthority key otherwise stays live for a whole
+/// signing round.
+#[test]
+fn audit4_the_pause_key_clears_a_hot_role_and_cannot_set_one() {
+    use velocity::state::state::{HotRole, State};
+
+    let mut svm = svm();
+    let warm = Keypair::new();
+    let pause = Keypair::new();
+    let flow = Keypair::new();
+    svm.airdrop(&pause.pubkey(), 10_000_000_000).unwrap();
+    set_state(&mut svm, &warm.pubkey());
+
+    let mut state: State = read_zero_copy(&svm, &state_pda());
+    state.pause_admin = anchor_lang::prelude::Pubkey::new_from_array(pause.pubkey().to_bytes());
+    state.hot_flow_authority =
+        anchor_lang::prelude::Pubkey::new_from_array(flow.pubkey().to_bytes());
+    set_zero_copy_account(
+        &mut svm,
+        state_pda(),
+        State::DISCRIMINATOR,
+        &state,
+        State::SIZE,
+    );
+
+    let update_hot_admin = |new_pubkey: Pubkey| Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateHotAdmin {
+            state: state_pda(),
+            admin: pause.pubkey(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateHotAdmin {
+            role: HotRole::FlowAuthority,
+            new_pubkey,
+        }
+        .data(),
+    };
+
+    let granted = send(
+        &mut svm,
+        &pause,
+        update_hot_admin(Keypair::new().pubkey()),
+        &[],
+    )
+    .expect_err("the pause key cannot set a hot role");
+    assert_velocity_error(&granted, ErrorCode::Unauthorized);
+
+    send(&mut svm, &pause, update_hot_admin(Pubkey::default()), &[])
+        .expect("the pause key clears the hot role");
+    let state: State = read_zero_copy(&svm, &state_pda());
+    assert_eq!(state.hot_flow_authority.to_bytes(), [0u8; 32]);
+}

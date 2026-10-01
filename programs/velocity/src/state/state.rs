@@ -595,6 +595,13 @@ impl State {
             || (self.pause_admin != Pubkey::default() && self.pause_admin == *signer)
     }
 
+    /// True if `signer` may write `new_key` into a hot role. Warm and cold set
+    /// any key. The pause admin may only clear a role, so it can stop a
+    /// compromised hot key without the warm admin and cannot grant one.
+    pub fn may_set_hot_key(&self, signer: &Pubkey, new_key: &Pubkey) -> bool {
+        self.is_warm(signer) || (self.is_pause(signer) && *new_key == Pubkey::default())
+    }
+
     pub fn is_hot(&self, signer: &Pubkey, role: HotRole) -> bool {
         if self.is_warm(signer) {
             return true;

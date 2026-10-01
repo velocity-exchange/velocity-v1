@@ -13,14 +13,13 @@ import {
 	BookBringUp,
 	CLOB_CONFIG_FIELDS,
 	DEFAULT_FEE_RAILS,
-	findUnnamedBook,
+	findUnnamedBooks,
 	liquidationReimbursementUpdate,
 	parseFeeRails,
 } from './migrate';
 
 const velocity = PublicKey.unique();
 const clobProgram = PublicKey.unique();
-const quoter = PublicKey.unique();
 const marketIndex = 0;
 const market = {
 	orderStepSize: new BN(100),
@@ -82,56 +81,52 @@ function connectionHolding(accounts: Map<PublicKey, Buffer>) {
 	};
 }
 
-function bringUp(
-	accounts: Map<PublicKey, Buffer>,
-	pendingAccounts?: PublicKey[]
-): BookBringUp {
+function bringUp(accounts: Map<PublicKey, Buffer>): BookBringUp {
 	return {
 		connection: connectionHolding(accounts),
 		program: { programId: velocity },
 		clobProgram,
 		args: { bookCapacity: 1024 },
-		admin: { pendingAccounts: () => pendingAccounts },
 	} as unknown as BookBringUp;
 }
 
 test('an empty book of the expected capacity is reused', async () => {
 	const book = PublicKey.unique();
-	const found = await findUnnamedBook(
+	const found = await findUnnamedBooks(
 		bringUp(new Map([[book, emptyBook(1024)]])),
 		marketIndex,
-		market,
-		quoter
+		market
 	);
-	assert.ok(found?.equals(book));
+	assert.equal(found.length, 1);
+	assert.ok(found[0].equals(book));
 });
 
 test('an empty book with the same config but a smaller arena is not reused', async () => {
-	const found = await findUnnamedBook(
+	const found = await findUnnamedBooks(
 		bringUp(new Map([[PublicKey.unique(), emptyBook(514)]])),
 		marketIndex,
-		market,
-		quoter
+		market
 	);
-	assert.equal(found, undefined);
+	assert.equal(found.length, 0);
 });
 
-test('the book a pending registration names wins over a lower address', async () => {
+test('the matches come lowest address first', async () => {
 	const low = new PublicKey(Buffer.alloc(32, 1));
-	const named = new PublicKey(Buffer.alloc(32, 9));
-	const found = await findUnnamedBook(
+	const high = new PublicKey(Buffer.alloc(32, 9));
+	const found = await findUnnamedBooks(
 		bringUp(
 			new Map([
+				[high, emptyBook(1024)],
 				[low, emptyBook(1024)],
-				[named, emptyBook(1024)],
-			]),
-			[named]
+			])
 		),
 		marketIndex,
-		market,
-		quoter
+		market
 	);
-	assert.ok(found?.equals(named));
+	assert.deepEqual(
+		found.map((key) => key.toBase58()),
+		[low.toBase58(), high.toBase58()]
+	);
 });
 
 /** What relay's turner requires to land a crank: the base fee plus its priority fee. */

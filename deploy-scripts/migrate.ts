@@ -8,12 +8,13 @@
  *
  *   bun run deploy-scripts/migrate.ts --url <rpc> --keypair <path> \
  *     [--multisig <pda> [--vault-index <n>]] [--fee-rails <i,s,num,den,maxPriority>] \
- *     [--treasury-refill <target,watermark>] [--lift-liq-pause] [--watch-creators <pk,pk>] \
- *     [--dry-run]
+ *     [--treasury-refill <target,watermark>] [--lift-upgrade-pause] [--watch-creators <pk,pk>] \
+ *     [--clob-hash <sha256> | --clob-so <path>] [--dry-run]
  *
  * The keypair is the payer and can be any funded key. The admin is the keypair, or with
  * `--multisig` the multisig's vault, and it must hold the warm or cold role. Before anything is
  * sent, the script refuses to run unless the CLOB program is deployed at the id velocity pins.
+ * Under `--multisig` the CLOB code must also hash to `--clob-hash`, or to the `--clob-so` build.
  * When `State.transactionFeeRails` prices every crank at zero, it writes `--fee-rails`, which
  * defaults to `DEFAULT_FEE_RAILS`. `--treasury-refill` prices an inert crank treasury. With zero
  * rails every crank payment and every sync payment is zero, and relay turners take none of that
@@ -21,8 +22,9 @@
  *
  * From the program swap until a market's book attaches, nobody can place, reduce or close a
  * position there, fire a stop, or land a signed-message order, but a liquidation still runs.
- * The runbook pauses liquidations for that window, and `--lift-liq-pause` lifts the pause once
- * every book attach is sent or proposed.
+ * The runbook pauses liquidations, settlement, withdrawals and funding for that window
+ * (`UPGRADE_PAUSE_BITS`), and `--lift-upgrade-pause` clears those bits once every book attach
+ * is sent or proposed.
  *
  * Without `--multisig`, every instruction sends directly and one run does the whole migration.
  * With it, every warm-admin instruction becomes a Squads proposal, and the vault pays that
@@ -39,7 +41,8 @@
  * executed out of order fails and can run again. The next run syncs the users, which waits for
  * every market they trade to have an attached book. Run again until a run sends and proposes
  * nothing. A rerun does not propose a step again when a pending proposal among the last
- * `--proposal-scan` (256) already does it. It also reuses an empty book from an earlier run
+ * `--proposal-scan` (256) holds exactly the instructions the run built for it. A `Draft`
+ * counts only when the payer created it. It also reuses an empty book from an earlier run
  * whose registration still waits.
  *
  * Steps:
@@ -62,7 +65,9 @@
  *   2. liq coverage: create and sync relay liquidation conditions for every user with exposure,
  *      backfilling users that predate `initialize_user` creating them automatically. The same
  *      `sync_user_conditions` call arms the user's trigger orders, because relay is the only
- *      executor that fires one.
+ *      executor that fires one. A sync too large for a legacy transaction goes as v0 through a
+ *      lookup table the run creates. A user whose sync fails is reported, the run continues,
+ *      and it exits non-zero.
  *   3. watches: register the relay `WatchV0` records that make the blocks from steps 1 and 2
  *      discoverable: the market crank conditions, the per-quoter cross conditions, and the
  *      per-user liquidation conditions. Anyone can register a watch on a known PDA, so an
@@ -92,6 +97,8 @@ import * as fs from 'fs';
 import {
 	AccountInfo,
 	AccountMeta,
+	AddressLookupTableAccount,
+	AddressLookupTableProgram,
 	Connection,
 	Keypair,
 	PublicKey,
@@ -140,6 +147,18 @@ import {
 	WATCH_V0_LEN,
 	watchesOnTarget,
 } from './relay-watch';
+import {
+	deployedProgramHash,
+	expectedClobHash,
+	instructionKey,
+	liftedStatus,
+	ProposedInstruction,
+	proposalDoes,
+	proposalWithin,
+	asProposed,
+	UPGRADE_PAUSE_BITS,
+} from './upgrade-guards';
+import { exchangeStatusGuardIx } from '../packages/cli-admin/src/lib/exchangeStatusGuard';
 
 const VAULTS_ADMIN = new PublicKey(
 	process.env.VAULTS_ADMIN ?? 'GiMXQkJXLVjScmQDkoLJShBJpTh9SDPvT2AZQq8NyEBf'
@@ -187,7 +206,8 @@ const QUOTER_SLAB_SLOT_BYTES = 776;
 const CRANK_CONDITIONS_BYTES = 808;
 const USER_CONDITIONS_BYTES = 7128;
 /** Squads proposal statuses that can still execute. An `Active` one past the
- * multisig's stale index cannot, and `PendingProposals` drops it. */
+ * multisig's stale index cannot, and `PendingProposals` drops it. A `Draft`
+ * counts only when the payer created it. */
 const PENDING_PROPOSAL_STATUSES = ['Draft', 'Active', 'Approved', 'Executing'];
 /** `BOOK_BLOCKING_FLOOR_MIN_ORDERS` in velocity. The attach refuses a lower blocking floor. */
 const BOOK_BLOCKING_FLOOR_MIN_ORDERS = 10;
@@ -213,19 +233,23 @@ type Args = {
 	/** `--treasury-refill <target>,<watermark>`: the crank treasury pricing
 	 * the run writes when the treasury has none. */
 	treasuryRefill?: { targetCranks: number; watermarkCranks: number };
-	/** Clear `ExchangeStatus::LiqPaused` once every book attach is sent or
-	 * proposed. */
-	liftLiqPause: boolean;
+	/** Clear `UPGRADE_PAUSE_BITS` once every book attach is sent or proposed. */
+	liftUpgradePause: boolean;
+	/** The CLOB executable hash the deployed program must have. Required under
+	 * `--multisig`. */
+	clobHash?: string;
 	/** The liquidation reimbursement share written when State holds none. */
 	liqReimbursementBps: number;
 };
 
 type ParsedArgs = Omit<Args, 'watchCreators'> & { watchCreatorList?: string };
 
+/** Send `ixs`. A lookup table makes it a v0 transaction. */
 type Act = (
 	label: string,
 	ixs: TransactionInstruction[],
-	signers?: Keypair[]
+	signers?: Keypair[],
+	lookupTable?: AddressLookupTableAccount
 ) => Promise<void>;
 
 /** What one run did. A proposal lands only when the multisig executes it, so
@@ -234,11 +258,8 @@ type RunReport = {
 	sent: string[];
 	proposed: string[];
 	awaiting: string[];
+	failed: string[];
 };
-
-/** Instructions of a pending proposal that already do a step: any instruction
- * with one of these discriminators that names `account`. */
-type ProposalMatch = { discriminators: Buffer[]; account: PublicKey };
 
 type DispatchOutcome = 'sent' | 'awaiting';
 
@@ -322,7 +343,11 @@ function parseArgs(): ParsedArgs {
 		treasuryRefill: argv.includes('--treasury-refill')
 			? parseTreasuryRefill(get('--treasury-refill'))
 			: undefined,
-		liftLiqPause: argv.includes('--lift-liq-pause'),
+		liftUpgradePause: argv.includes('--lift-upgrade-pause'),
+		clobHash: expectedClobHash(
+			argv.includes('--clob-hash') ? get('--clob-hash') : undefined,
+			argv.includes('--clob-so') ? get('--clob-so') : undefined
+		),
 		// What `initialize` writes on a new deployment.
 		liqReimbursementBps: Number.parseInt(get('--liq-reimbursement-bps', '500'), 10),
 	};
@@ -375,7 +400,8 @@ class AdminDispatch {
 					provider.connection,
 					args.multisig,
 					velocity,
-					args.proposalScan
+					args.proposalScan,
+					provider.wallet.publicKey
 			  )
 			: undefined;
 		return new AdminDispatch(provider, args, act, report, pending);
@@ -385,14 +411,16 @@ class AdminDispatch {
 		return this.args.multisig !== undefined;
 	}
 
-	/** The pending proposal that already does `match`, if there is one. */
-	pendingIndex(match: ProposalMatch): bigint | undefined {
-		return this.pending?.find(match);
+	/** The pending proposal that holds exactly `ixs`, if there is one. */
+	pendingIndex(ixs: readonly TransactionInstruction[]): bigint | undefined {
+		return this.pending?.find(ixs);
 	}
 
-	/** Every account the pending proposal that does `match` names. */
-	pendingAccounts(match: ProposalMatch): PublicKey[] | undefined {
-		return this.pending?.accountsOf(match);
+	/** The pending proposals made only of instructions in `ixs`, by index. */
+	pendingCovering(
+		ixs: readonly TransactionInstruction[]
+	): Map<bigint, ProposedInstruction[]> {
+		return this.pending?.within(ixs) ?? new Map();
 	}
 
 	noteAwaiting(label: string, index: bigint): void {
@@ -400,17 +428,16 @@ class AdminDispatch {
 		this.report.awaiting.push(`${label}: proposal #${index}`);
 	}
 
-	async run(
-		label: string,
-		ixs: TransactionInstruction[],
-		match?: ProposalMatch
-	): Promise<DispatchOutcome> {
+	/** Send `ixs`, or propose them unless a pending proposal holds exactly
+	 * them. A proposal that differs in any byte or account does not count, so a
+	 * member cannot stand in a proposal of its own for a step. */
+	async run(label: string, ixs: TransactionInstruction[]): Promise<DispatchOutcome> {
 		if (!this.args.multisig) {
 			await this.act(label, ixs);
 			return 'sent';
 		}
 
-		const existing = match ? this.pendingIndex(match) : undefined;
+		const existing = this.pendingIndex(ixs);
 		if (existing !== undefined) {
 			this.noteAwaiting(label, existing);
 			return 'awaiting';
@@ -471,12 +498,6 @@ class AdminDispatch {
 	}
 }
 
-type ProposedInstruction = {
-	program: PublicKey;
-	data: Buffer;
-	accounts: PublicKey[];
-};
-
 /** The velocity instructions of every proposal in the scan window that can
  * still execute. */
 class PendingProposals {
@@ -489,7 +510,8 @@ class PendingProposals {
 		connection: Connection,
 		multisigPda: PublicKey,
 		velocity: PublicKey,
-		window: number
+		window: number,
+		payer: PublicKey
 	): Promise<PendingProposals> {
 		const info = await multisig.accounts.Multisig.fromAccountAddress(
 			connection,
@@ -526,8 +548,10 @@ class PendingProposals {
 			const status = proposal.status.__kind;
 			if (!PENDING_PROPOSAL_STATUSES.includes(status)) return;
 			if (status === 'Active' && index <= stale) return;
-			const message = vaultTransactionMessage(transactionInfo);
-			if (message) proposals.set(index, message);
+			const vaultTransaction = decodeVaultTransaction(transactionInfo);
+			if (!vaultTransaction) return;
+			if (status === 'Draft' && !vaultTransaction.creator.equals(payer)) return;
+			proposals.set(index, vaultTransaction.instructions);
 		});
 
 		console.log(
@@ -536,55 +560,56 @@ class PendingProposals {
 		return new PendingProposals(velocity, proposals);
 	}
 
-	find(match: ProposalMatch): bigint | undefined {
+	find(expected: readonly TransactionInstruction[]): bigint | undefined {
 		for (const [index, instructions] of this.proposals) {
-			const found = instructions.some(
-				(ix) =>
-					ix.program.equals(this.velocity) &&
-					match.discriminators.some((d) => d.equals(ix.data.subarray(0, 8))) &&
-					ix.accounts.some((account) => account.equals(match.account))
-			);
-			if (found) return index;
+			if (proposalDoes(instructions, expected)) return index;
 		}
 
 		return undefined;
 	}
 
-	accountsOf(match: ProposalMatch): PublicKey[] | undefined {
-		const index = this.find(match);
-		if (index === undefined) return undefined;
-		return this.proposals.get(index)!.flatMap((ix) => ix.accounts);
+	within(
+		expected: readonly TransactionInstruction[]
+	): Map<bigint, ProposedInstruction[]> {
+		const keys = new Set(expected.map((ix) => instructionKey(asProposed(ix))));
+		return new Map(
+			[...this.proposals].filter(([, instructions]) =>
+				proposalWithin(instructions, keys)
+			)
+		);
 	}
 
 	record(index: bigint, ixs: TransactionInstruction[]): void {
-		this.proposals.set(
-			index,
-			ixs.map((ix) => ({
-				program: ix.programId,
-				data: ix.data,
-				accounts: ix.keys.map((key) => key.pubkey),
-			}))
-		);
+		this.proposals.set(index, ixs.map(asProposed));
 	}
 }
 
-/** The instructions a vault transaction carries, or undefined for a config
+/** A vault transaction's creator and instructions, or undefined for a config
  * transaction, which decodes as something else. */
-function vaultTransactionMessage(
+function decodeVaultTransaction(
 	info: AccountInfo<Buffer>
-): ProposedInstruction[] | undefined {
-	let message: multisig.accounts.VaultTransaction['message'];
+): { creator: PublicKey; instructions: ProposedInstruction[] } | undefined {
+	let transaction: multisig.accounts.VaultTransaction;
 	try {
-		message = multisig.accounts.VaultTransaction.fromAccountInfo(info)[0].message;
+		transaction = multisig.accounts.VaultTransaction.fromAccountInfo(info)[0];
 	} catch {
 		return undefined;
 	}
 
-	return message.instructions.map((ix) => ({
-		program: message.accountKeys[ix.programIdIndex],
-		data: Buffer.from(ix.data),
-		accounts: Array.from(ix.accountIndexes).map((i) => message.accountKeys[i]),
-	}));
+	const { message } = transaction;
+	const loadsFromTables = message.instructions.some((ix) =>
+		Array.from(ix.accountIndexes).some((i) => i >= message.accountKeys.length)
+	);
+	if (loadsFromTables) return undefined;
+
+	return {
+		creator: transaction.creator,
+		instructions: message.instructions.map((ix) => ({
+			program: message.accountKeys[ix.programIdIndex],
+			data: Buffer.from(ix.data),
+			accounts: Array.from(ix.accountIndexes).map((i) => message.accountKeys[i]),
+		})),
+	};
 }
 
 /**
@@ -656,15 +681,22 @@ async function main() {
 	const program = new Program(idl, provider);
 	const velocity = program.programId;
 
-	const report: RunReport = { sent: [], proposed: [], awaiting: [] };
-	const act = async (
-		label: string,
-		ixs: TransactionInstruction[],
-		signers: Keypair[] = []
-	) => {
+	const report: RunReport = { sent: [], proposed: [], awaiting: [], failed: [] };
+	const act: Act = async (label, ixs, signers = [], lookupTable) => {
 		report.sent.push(label);
 		if (args.dryRun) return;
-		await provider.sendAndConfirm(new Transaction().add(...ixs), signers);
+		if (!lookupTable) {
+			await provider.sendAndConfirm(new Transaction().add(...ixs), signers);
+			return;
+		}
+
+		const { blockhash } = await connection.getLatestBlockhash();
+		const message = new TransactionMessage({
+			payerKey: payer.publicKey,
+			recentBlockhash: blockhash,
+			instructions: ixs,
+		}).compileToV0Message([lookupTable]);
+		await provider.sendAndConfirm(new VersionedTransaction(message), signers);
 	};
 
 	console.log(`velocity ${velocity.toBase58()} @ ${args.url}`);
@@ -672,10 +704,15 @@ async function main() {
 
 	const admin = await AdminDispatch.create(provider, velocity, args, act, report);
 	try {
-		await migrate({ connection, provider, program, payer, admin, args, act }, idl);
+		await migrate(
+			{ connection, provider, program, payer, admin, args, act, report },
+			idl
+		);
 	} finally {
 		await printReport(connection, admin, args, report);
 	}
+
+	if (report.failed.length > 0) process.exitCode = 1;
 }
 
 type Migration = {
@@ -686,6 +723,7 @@ type Migration = {
 	admin: AdminDispatch;
 	args: Args;
 	act: Act;
+	report: RunReport;
 };
 
 async function migrate(ctx: Migration, idl: any) {
@@ -694,7 +732,7 @@ async function migrate(ctx: Migration, idl: any) {
 	const statePda = await getVelocityStateAccountPublicKey(velocity);
 
 	const clobProgram = clobProgramId(idl);
-	await assertClobDeployed(connection, clobProgram, admin);
+	await assertClobDeployed(connection, clobProgram, admin, args.clobHash);
 	const stateAccount = await loadState(connection, program, statePda);
 	assertAdminHoldsWarm(stateAccount, admin.key);
 	await ensureFeeRails(ctx, statePda, stateAccount);
@@ -729,7 +767,7 @@ async function migrate(ctx: Migration, idl: any) {
 		]);
 	}
 
-	const treasury = await ensureCrankTreasury(ctx, statePda);
+	const { treasury, pricingQueued } = await ensureCrankTreasury(ctx, statePda);
 	await ensureProtocolUser(ctx, stateAccount);
 	const perpMarkets = await decodeMarkets(connection, program, 'PerpMarket');
 	const spotMarkets = await decodeMarkets(connection, program, 'SpotMarket');
@@ -744,12 +782,12 @@ async function migrate(ctx: Migration, idl: any) {
 		act
 	);
 
-	await assertTreasuryPriced(ctx, treasury);
+	await assertTreasuryPriced(ctx, treasury, pricingQueued);
 	const books = await bringUpBooks(
 		{ connection, program, payer, admin, state: statePda, clobProgram, args, act },
 		perpMarkets
 	);
-	await liftLiqPause(ctx, statePda, stateAccount, books);
+	await liftUpgradePause(ctx, statePda, stateAccount, books);
 
 	// 2. liquidation coverage
 	const users = await connection.getProgramAccounts(velocity, {
@@ -952,7 +990,7 @@ function holdsConditionsSync(stateAccount: any, payer: PublicKey): boolean {
 async function ensureCrankTreasury(
 	ctx: Migration,
 	statePda: PublicKey
-): Promise<PublicKey> {
+): Promise<{ treasury: PublicKey; pricingQueued: boolean }> {
 	const { connection, program, admin, args } = ctx;
 	const treasury = getCrankTreasuryPublicKey(program.programId);
 	const info = await connection.getAccountInfo(treasury);
@@ -992,17 +1030,10 @@ async function ensureCrankTreasury(
 		);
 	}
 
-	if (ixs.length > 0) {
-		await admin.run('migrate: create and price crank treasury', ixs, {
-			discriminators: [
-				ixDiscriminator('initialize_crank_treasury'),
-				ixDiscriminator('update_crank_treasury'),
-			],
-			account: treasury,
-		});
-	}
+	if (ixs.length === 0) return { treasury, pricingQueued: false };
 
-	return treasury;
+	await admin.run('migrate: create and price crank treasury', ixs);
+	return { treasury, pricingQueued: admin.proposes && !priced && !!args.treasuryRefill };
 }
 
 /** The treasury's refill levels, or undefined while it is inert. */
@@ -1073,11 +1104,7 @@ async function ensureLiquidationReimbursement(
 				.updateLiquidationCrankReimbursement(update)
 				.accounts({ admin: ctx.admin.key, state: statePda })
 				.instruction(),
-		],
-		{
-			discriminators: [ixDiscriminator('update_liquidation_crank_reimbursement')],
-			account: statePda,
-		}
+		]
 	);
 }
 
@@ -1128,11 +1155,7 @@ async function ensureProtocolUser(
 	});
 	await admin.run(
 		'migrate: create protocol user',
-		await client.getInitializeProtocolUserIxs('Protocol', admin.key),
-		{
-			discriminators: [ixDiscriminator('initialize_user_stats')],
-			account: protocolUserStats,
-		}
+		await client.getInitializeProtocolUserIxs('Protocol', admin.key)
 	);
 }
 
@@ -1157,7 +1180,7 @@ async function coverUsers(
 	markets: MarketsAndBooks,
 	payerSyncs: boolean
 ): Promise<void> {
-	const { connection, provider, program, payer, admin, args, act } = ctx;
+	const { connection, program, payer, admin, args } = ctx;
 	console.log(`\nliq coverage: ${users.length} user accounts`);
 	const proposesSyncs = admin.proposes && !payerSyncs;
 	const syncer = payerSyncs ? payer.publicKey : admin.key;
@@ -1169,7 +1192,8 @@ async function coverUsers(
 
 	let covered = 0;
 	let deferred = 0;
-	const toPropose: TransactionInstruction[] = [];
+	const toPropose: { user: PublicKey; ix: TransactionInstruction }[] = [];
+	const sender = new SyncSender(ctx, statePda, markets);
 	for (const { pubkey: user, account } of users) {
 		if (args.limit && covered >= args.limit) break;
 		const decodedUser: any = program.coder.accounts.decode('user', account.data);
@@ -1196,29 +1220,29 @@ async function coverUsers(
 		covered += 1;
 
 		if (proposesSyncs && !(existing && syncPayment(existing.data) > 0)) {
-			const pending = admin.pendingIndex({
-				discriminators: [ixDiscriminator('sync_user_conditions')],
-				account: userConditions,
-			});
-			if (pending === undefined) toPropose.push(ix);
-			else admin.noteAwaiting(`sync ${user.toBase58()}`, pending);
+			toPropose.push({ user, ix });
 			continue;
 		}
 
-		if (!proposesSyncs) {
-			await act(
-				`${existing ? 'sync' : 'create+sync'} user conditions for ${user.toBase58()}`,
-				[ix]
-			);
+		// One user whose sync fails must not stop the users after it, or the
+		// watches the run registers later.
+		try {
+			if (!proposesSyncs) {
+				await sender.send(
+					`${existing ? 'sync' : 'create+sync'} user conditions for ${user.toBase58()}`,
+					ix
+				);
+			}
+
+			if (!args.dryRun) await fundSyncReservoir(ctx, userConditions);
+			await ensureWatch(ctx, userConditions, program.programId);
+		} catch (error) {
+			console.log(`liq coverage: ${user.toBase58()} failed: ${error}`);
+			ctx.report.failed.push(`liq coverage ${user.toBase58()}: ${error}`);
 		}
-
-		if (!args.dryRun) await fundSyncReservoir(ctx, userConditions);
-		await ensureWatch(ctx, userConditions, program.programId);
 	}
 
-	for (const batch of await admin.pack(toPropose, 'migrate: sync user conditions')) {
-		await admin.run(`migrate: sync ${batch.length} user conditions`, batch);
-	}
+	await proposeSyncs(ctx, toPropose);
 
 	console.log(`liq coverage: ${covered} accounts with exposure`);
 	if (deferred > 0) {
@@ -1226,6 +1250,143 @@ async function coverUsers(
 			`liq coverage: ${deferred} accounts wait on a book that is not attached yet`
 		);
 	}
+}
+
+/** Propose the syncs no pending proposal already does. A pending proposal
+ * counts only when every instruction it holds is one of these syncs. */
+async function proposeSyncs(
+	ctx: Migration,
+	syncs: readonly { user: PublicKey; ix: TransactionInstruction }[]
+): Promise<void> {
+	const { admin } = ctx;
+	const pendingKeys = new Map<string, bigint>();
+	for (const [index, instructions] of admin.pendingCovering(syncs.map((s) => s.ix))) {
+		for (const ix of instructions) pendingKeys.set(instructionKey(ix), index);
+	}
+
+	const toPropose: TransactionInstruction[] = [];
+	for (const { user, ix } of syncs) {
+		const pending = pendingKeys.get(instructionKey(asProposed(ix)));
+		if (pending === undefined) toPropose.push(ix);
+		else admin.noteAwaiting(`sync ${user.toBase58()}`, pending);
+	}
+
+	for (const batch of await admin.pack(toPropose, 'migrate: sync user conditions')) {
+		try {
+			await admin.run(`migrate: sync ${batch.length} user conditions`, batch);
+		} catch (error) {
+			ctx.report.failed.push(`propose ${batch.length} user syncs: ${error}`);
+		}
+	}
+}
+
+/**
+ * Sends user syncs. A sync over many markets can pass the legacy transaction
+ * limit, so a sync that does not fit goes as a v0 transaction through one
+ * lookup table the run creates for the accounts every sync shares.
+ */
+class SyncSender {
+	private lookupTable?: AddressLookupTableAccount;
+
+	constructor(
+		private readonly ctx: Migration,
+		private readonly statePda: PublicKey,
+		private readonly markets: MarketsAndBooks
+	) {}
+
+	async send(label: string, ix: TransactionInstruction): Promise<void> {
+		if (this.fitsLegacy(ix)) {
+			await this.ctx.act(label, [ix]);
+			return;
+		}
+
+		if (this.ctx.args.dryRun) {
+			await this.ctx.act(`${label} (v0, lookup table)`, [ix]);
+			return;
+		}
+
+		await this.ctx.act(label, [ix], [], await this.table());
+	}
+
+	private fitsLegacy(ix: TransactionInstruction): boolean {
+		const tx = new Transaction().add(ix);
+		tx.feePayer = this.ctx.payer.publicKey;
+		tx.recentBlockhash = PublicKey.default.toBase58();
+		return (
+			tx.serialize({ requireAllSignatures: false, verifySignatures: false })
+				.length <= PROPOSAL_TX_LIMIT
+		);
+	}
+
+	private async table(): Promise<AddressLookupTableAccount> {
+		if (this.lookupTable) return this.lookupTable;
+
+		const { connection, payer, act } = this.ctx;
+		const addresses = sharedSyncAccounts(
+			this.ctx.program.programId,
+			this.statePda,
+			this.markets
+		);
+		const [create, table] = AddressLookupTableProgram.createLookupTable({
+			authority: payer.publicKey,
+			payer: payer.publicKey,
+			recentSlot: await connection.getSlot('finalized'),
+		});
+		await act(`create sync lookup table ${table.toBase58()}`, [create]);
+		for (let i = 0; i < addresses.length; i += 20) {
+			await act(`extend sync lookup table ${table.toBase58()}`, [
+				AddressLookupTableProgram.extendLookupTable({
+					lookupTable: table,
+					authority: payer.publicKey,
+					payer: payer.publicKey,
+					addresses: addresses.slice(i, i + 20),
+				}),
+			]);
+		}
+
+		// A table serves a transaction only from the slot after its last extend.
+		const extendedAt = await connection.getSlot('confirmed');
+		while ((await connection.getSlot('confirmed')) <= extendedAt) {
+			await new Promise((resolve) => setTimeout(resolve, 400));
+		}
+
+		const { value } = await connection.getAddressLookupTable(table);
+		if (!value) throw new Error(`lookup table ${table.toBase58()} did not land`);
+		console.log(
+			`liq coverage: lookup table ${table.toBase58()} holds ${addresses.length} accounts. ` +
+				'Deactivate and close it after the migration.'
+		);
+		this.lookupTable = value;
+		return value;
+	}
+}
+
+/** Every account a sync can carry that is not the user's own. */
+function sharedSyncAccounts(
+	velocity: PublicKey,
+	statePda: PublicKey,
+	markets: MarketsAndBooks
+): PublicKey[] {
+	const oracles = [...markets.perpMarkets.values(), ...markets.spotMarkets.values()]
+		.map((market) => market.oracle as PublicKey)
+		.filter((oracle) => !oracle.equals(PublicKey.default));
+	const keys = [
+		statePda,
+		SYSVAR_RENT_PUBKEY,
+		SystemProgram.programId,
+		...oracles,
+		...[...markets.spotMarkets.keys()].map((index) =>
+			getSpotMarketPublicKeySync(velocity, index)
+		),
+		...[...markets.perpMarkets.keys()].map((index) =>
+			getPerpMarketPublicKeySync(velocity, index)
+		),
+		...[...markets.books.attached].flatMap((index) => [
+			getClobCrankConditionsPublicKey(velocity, index),
+			getQuoterSlabPublicKey(velocity, index),
+		]),
+	];
+	return [...new Map(keys.map((key) => [key.toBase58(), key])).values()];
 }
 
 /** The markets and oracles a sync must carry for one user, in the order the
@@ -1496,12 +1657,15 @@ function clobProgramId(idl: any): PublicKey {
 /**
  * The CLOB is the trust root for maker identity: `initialize_quoter` pins it
  * by id only, and an upgrade to it can name any user as a maker. Under a
- * multisig its upgrade authority must therefore be the vault, or none.
+ * multisig its upgrade authority must therefore be the vault, or none, and
+ * its code must hash to `--clob-hash`. The authority alone does not prove the
+ * code: a deployer could upgrade it before handing the authority over.
  */
 async function assertClobDeployed(
 	connection: Connection,
 	clobProgram: PublicKey,
-	admin: AdminDispatch
+	admin: AdminDispatch,
+	expectedHash: string | undefined
 ): Promise<void> {
 	const info = await connection.getAccountInfo(clobProgram);
 	if (!info?.executable) {
@@ -1521,6 +1685,26 @@ async function assertClobDeployed(
 				`Run solana program set-upgrade-authority ${clobProgram.toBase58()} --new-upgrade-authority ${admin.key.toBase58()}.`
 		);
 	}
+
+	if (!expectedHash) {
+		if (admin.proposes) {
+			throw new Error(
+				'--multisig needs --clob-hash <sha256> or --clob-so <path>: the CLOB code the vault adopts must match a reviewed build.'
+			);
+		}
+
+		console.log('clob: no --clob-hash, code not checked');
+		return;
+	}
+
+	const deployed = await deployedProgramHash(connection, clobProgram);
+	if (deployed !== expectedHash) {
+		throw new Error(
+			`the CLOB at ${clobProgram.toBase58()} hashes to ${deployed ?? 'nothing'}, not ${expectedHash}.`
+		);
+	}
+
+	console.log(`clob: code hash ${deployed}`);
 }
 
 /** `UpgradeableLoaderState::ProgramData`: a u32 tag, the deploy slot, then an
@@ -1558,25 +1742,22 @@ async function ensureFeeRails(
 				.updateTransactionFeeRails(ctx.args.feeRails)
 				.accounts({ admin: ctx.admin.key, state: statePda })
 				.instruction(),
-		],
-		{
-			discriminators: [ixDiscriminator('update_transaction_fee_rails')],
-			account: statePda,
-		}
+		]
 	);
 }
 
 /**
  * The attach stores the treasury's refill watermark on the market, so an
- * inert treasury leaves the market's reservoir with no refill. A pending
- * proposal that prices it passes, because each book attach is proposed after
- * it and executes after it in index order.
+ * inert treasury leaves the market's reservoir with no refill. Pricing this
+ * run proposed passes, because each book attach is proposed after it and
+ * executes after it in index order.
  */
 async function assertTreasuryPriced(
 	ctx: Migration,
-	treasury: PublicKey
+	treasury: PublicKey,
+	pricingQueued: boolean
 ): Promise<void> {
-	const { connection, program, admin, args } = ctx;
+	const { connection, program, args } = ctx;
 	const info = await connection.getAccountInfo(treasury);
 	const pricing = info ? treasuryPricing(program, info.data) : undefined;
 	if (pricing) {
@@ -1586,13 +1767,9 @@ async function assertTreasuryPriced(
 		return;
 	}
 
-	const pending = admin.pendingIndex({
-		discriminators: [ixDiscriminator('update_crank_treasury')],
-		account: treasury,
-	});
-	if (pending !== undefined) {
+	if (pricingQueued) {
 		console.log(
-			`\ntreasury: priced by proposal #${pending}. Execute it before any book B proposal.`
+			'\ntreasury: priced by the treasury proposal. Execute it before any book B proposal.'
 		);
 		return;
 	}
@@ -1609,50 +1786,43 @@ async function assertTreasuryPriced(
 	);
 }
 
-/** `ExchangeStatus::LiqPaused`. */
-const LIQ_PAUSED = 0b0001_0000;
-
 /**
- * Clear the liquidation pause once every book attach is sent or pending.
- * The pause covers the time from the program swap until the books attach,
- * when no user can place or close an order but a liquidation can still run.
- * The write replaces the whole mask it read, so propose it again if another
- * pause bit changes before it executes.
+ * Clear the upgrade pause once every book attach is sent or pending. The pause
+ * covers the time from the program swap until the books attach, when no user
+ * can place or close an order. It clears only `UPGRADE_PAUSE_BITS`. A proposal
+ * carries the status it read, and `multisig execute` refuses it once another
+ * pause bit changes, so a rerun proposes it again.
  */
-async function liftLiqPause(
+async function liftUpgradePause(
 	ctx: Migration,
 	statePda: PublicKey,
 	stateAccount: any,
 	books: BookStatus
 ): Promise<void> {
 	const status: number = stateAccount.exchangeStatus;
-	if ((status & LIQ_PAUSED) === 0) return;
+	if ((status & UPGRADE_PAUSE_BITS) === 0) return;
 
-	if (!ctx.args.liftLiqPause) {
+	if (!ctx.args.liftUpgradePause) {
 		console.log(
-			'\nexchange: liquidations are paused. Pass --lift-liq-pause to lift them after the books.'
+			`\nexchange: status ${status} holds the upgrade pause. Pass --lift-upgrade-pause to lift it after the books.`
 		);
 		return;
 	}
 
 	if (!books.allQueued) {
-		console.log('\nexchange: liquidations stay paused until every book B is proposed');
+		console.log('\nexchange: the upgrade pause stays until every book B is proposed');
 		return;
 	}
 
-	console.log(`\nexchange: lifting LiqPaused, status ${status} -> ${status & ~LIQ_PAUSED}`);
+	const lifted = liftedStatus(status);
+	console.log(`\nexchange: lifting the upgrade pause, status ${status} -> ${lifted}`);
+	const write = await ctx.program.methods
+		.updateExchangeStatus(lifted)
+		.accounts({ admin: ctx.admin.key, state: statePda })
+		.instruction();
 	await ctx.admin.run(
-		'migrate: lift LiqPaused (execute after every book B)',
-		[
-			await ctx.program.methods
-				.updateExchangeStatus(status & ~LIQ_PAUSED)
-				.accounts({ admin: ctx.admin.key, state: statePda })
-				.instruction(),
-		],
-		{
-			discriminators: [ixDiscriminator('update_exchange_status')],
-			account: statePda,
-		}
+		`migrate: lift the upgrade pause ${status} -> ${lifted} (execute after every book B)`,
+		ctx.admin.proposes ? [exchangeStatusGuardIx(status), write] : [write]
 	);
 }
 
@@ -1726,13 +1896,12 @@ async function bringUpBook(
 	let book: PublicKey = market.clobMarket;
 	if (book.equals(PublicKey.default)) {
 		book =
-			(await findUnnamedBook(ctx, marketIndex, market, quoter)) ??
+			(await chooseUnnamedBook(ctx, marketIndex, market, quoter)) ??
 			(await createBook(ctx, marketIndex, market));
 		const registerIxs = await registerBookIxs(ctx, marketIndex, book, quoter);
 		const registration = await ctx.admin.run(
 			`migrate: book A market ${marketIndex}`,
-			registerIxs,
-			{ discriminators: [ixDiscriminator('initialize_quoter')], account: quoter }
+			registerIxs
 		);
 		if (registration === 'awaiting') {
 			return await queueBookB(ctx, marketIndex, book, quoter, registerIxs);
@@ -1773,20 +1942,9 @@ async function bringUpBook(
 		await bookBIxs(ctx, marketIndex, book, quoter, {
 			stagedEntry: approved ? undefined : quoterInfo.data,
 			attach: !attached,
-		}),
-		bookBMatch(quoter)
+		})
 	);
 	return outcome === 'sent' ? 'attached' : 'queued';
-}
-
-function bookBMatch(quoter: PublicKey): ProposalMatch {
-	return {
-		discriminators: [
-			ixDiscriminator('update_quoter_approved'),
-			ixDiscriminator('update_perp_market_clob_quoter'),
-		],
-		account: quoter,
-	};
 }
 
 /**
@@ -1843,12 +2001,6 @@ async function queueBookB(
 	registerIxs: TransactionInstruction[]
 ): Promise<BookOutcome> {
 	const label = `migrate: book B market ${marketIndex}`;
-	const pending = ctx.admin.pendingIndex(bookBMatch(quoter));
-	if (pending !== undefined) {
-		ctx.admin.noteAwaiting(label, pending);
-		return 'queued';
-	}
-
 	const stagedEntry = await simulateStagedEntry(ctx, registerIxs, quoter);
 	if (!stagedEntry) {
 		console.log(`book market ${marketIndex}: B waits for a run after the book exists`);
@@ -1857,8 +2009,7 @@ async function queueBookB(
 
 	await ctx.admin.run(
 		label,
-		await bookBIxs(ctx, marketIndex, book, quoter, { stagedEntry, attach: true }),
-		bookBMatch(quoter)
+		await bookBIxs(ctx, marketIndex, book, quoter, { stagedEntry, attach: true })
 	);
 	return 'queued';
 }
@@ -1895,17 +2046,45 @@ async function simulateStagedEntry(
 
 /**
  * A book from an earlier run that the market does not name yet, because its
- * registration waits on the multisig. Any such book is as good as a new one,
- * whoever created it. It holds no order and the config this script writes,
- * and only the slab, as both of its authorities, can change either. The book
- * a pending registration names wins. Otherwise the lowest address wins.
+ * registration waits on the multisig. The book whose exact round A is
+ * pending wins, because round B is built from round A's arguments. Otherwise
+ * the lowest address wins.
  */
-export async function findUnnamedBook(
+async function chooseUnnamedBook(
 	ctx: BookBringUp,
 	marketIndex: number,
 	market: any,
 	quoter: PublicKey
 ): Promise<PublicKey | undefined> {
+	const matches = await findUnnamedBooks(ctx, marketIndex, market);
+	if (matches.length === 0) return undefined;
+
+	let chosen = matches[0];
+	for (const book of matches) {
+		const registerIxs = await registerBookIxs(ctx, marketIndex, book, quoter);
+		if (ctx.admin.pendingIndex(registerIxs) !== undefined) {
+			chosen = book;
+			break;
+		}
+	}
+
+	console.log(
+		`book market ${marketIndex}: reusing ${chosen.toBase58()}` +
+			(matches.length > 1 ? `, one of ${matches.length} matches` : '')
+	);
+	return chosen;
+}
+
+/**
+ * The empty books with the config this script writes, lowest address first.
+ * Any such book is as good as a new one, whoever created it. It holds no
+ * order, and only the slab, as both of its authorities, can change either.
+ */
+export async function findUnnamedBooks(
+	ctx: BookBringUp,
+	marketIndex: number,
+	market: any
+): Promise<PublicKey[]> {
 	const quoterSlab = getQuoterSlabPublicKey(ctx.program.programId, marketIndex);
 	// The config compare leaves out the arena, so a book of another capacity
 	// would match it. The account size fixes the capacity.
@@ -1925,27 +2104,10 @@ export async function findUnnamedBook(
 	});
 
 	const config = bookConfig(marketIndex, market, ctx.args.bookCapacity);
-	const matches = candidates
+	return candidates
 		.filter(({ account }) => isEmptyBookWithConfig(account.data, config))
 		.map(({ pubkey }) => pubkey)
 		.sort((a, b) => Buffer.compare(a.toBuffer(), b.toBuffer()));
-	if (matches.length === 0) return undefined;
-
-	// Round B is built from round A's arguments, so it has to name the book
-	// the pending round A names.
-	const pendingAccounts =
-		ctx.admin.pendingAccounts({
-			discriminators: [ixDiscriminator('initialize_quoter')],
-			account: quoter,
-		}) ?? [];
-	const chosen =
-		matches.find((book) => pendingAccounts.some((key) => key.equals(book))) ??
-		matches[0];
-	console.log(
-		`book market ${marketIndex}: reusing ${chosen.toBase58()}` +
-			(matches.length > 1 ? `, one of ${matches.length} matches` : '')
-	);
-	return chosen;
 }
 
 function clobBookSpace(capacity: number): number {
@@ -2251,6 +2413,11 @@ async function printReport(
 
 	console.log(`\n${args.dryRun ? 'would send' : 'sent'} ${report.sent.length} transactions`);
 	list(report.sent);
+	if (report.failed.length > 0) {
+		console.log(`${report.failed.length} steps failed. Fix each one and run again.`);
+		list(report.failed);
+	}
+
 	if (!args.multisig) return;
 
 	console.log(
@@ -2274,7 +2441,8 @@ async function printReport(
 
 	if (report.proposed.length + report.awaiting.length > 0) {
 		console.log(
-			'Approve every proposal, then execute them in ascending index order. A book B ' +
+			'Approve only the proposal indexes this run printed, then execute them in ascending ' +
+				'index order. Each one holds exactly the instructions this run built. A book B ' +
 				'that runs before its book A or the fee rails fails and can run again. Then ' +
 				'run this migration again. It is done when a run sends and proposes nothing.'
 		);

@@ -1401,6 +1401,38 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "solSpotMarket",
+          "docs": [
+            "The SOL spot market, whose TWAP values the reservoir payment in quote.",
+            "Program-keeper mode requires it when `State` names a SOL market."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -24019,8 +24051,9 @@ export type Velocity = {
           {
             "name": "crossRows",
             "docs": [
-              "How deep to read each side of the book. A short read truncates worse",
-              "prices, never a better counterparty."
+              "How deep to read each side of the book, up to `MAX_CROSS_ROWS`. The",
+              "crank refuses a read that ends on a row crossing the other side,",
+              "because the rows behind it can hold an older claimant."
             ],
             "type": "u16"
           },
@@ -24064,9 +24097,10 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "paddingU64",
+            "name": "resyncFloorLamports",
             "docs": [
-              "Reserved."
+              "Paid resyncs leave at least this many lamports above rent, so resync",
+              "payments cannot spend what reservoir refills need. Refills ignore it."
             ],
             "type": "u64"
           },
@@ -32694,6 +32728,13 @@ export type Velocity = {
               "Cranks' worth of lamports at or under which a refill wakes."
             ],
             "type": "u16"
+          },
+          {
+            "name": "resyncFloorLamports",
+            "docs": [
+              "Lamports above rent that paid resyncs leave in the treasury."
+            ],
+            "type": "u64"
           }
         ]
       }

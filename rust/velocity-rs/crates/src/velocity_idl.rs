@@ -3875,7 +3875,7 @@ pub mod types {
     pub struct CrankTreasuryV0 {
         pub total_paid: u64,
         pub total_refilled: u64,
-        pub padding_u64: u64,
+        pub resync_floor_lamports: u64,
         pub refill_target_cranks: u16,
         pub refill_watermark_cranks: u16,
         #[serde(skip)]
@@ -6894,6 +6894,7 @@ pub mod types {
     pub struct UpdateCrankTreasuryArgs {
         pub refill_target_cranks: u16,
         pub refill_watermark_cranks: u16,
+        pub resync_floor_lamports: u64,
     }
     #[repr(C)]
     #[derive(
@@ -7594,7 +7595,7 @@ pub mod accounts {
     pub struct CrankTreasuryV0 {
         pub total_paid: u64,
         pub total_refilled: u64,
-        pub padding_u64: u64,
+        pub resync_floor_lamports: u64,
         pub refill_target_cranks: u16,
         pub refill_watermark_cranks: u16,
         #[serde(skip)]
@@ -10445,6 +10446,7 @@ pub mod accounts {
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub crank_conditions: Pubkey,
+        pub sol_spot_market: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobCancelOutsideBand {
@@ -10516,6 +10518,11 @@ pub mod accounts {
                     pubkey: self.crank_conditions,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.sol_spot_market,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }

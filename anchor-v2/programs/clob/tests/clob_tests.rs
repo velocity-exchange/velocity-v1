@@ -2429,11 +2429,11 @@ fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
     assert!(node(&ctx, state.best_bid).is_taker_origin());
 }
 
-/// A taker remainder nobody on the book crosses is still withheld while its
-/// claim holds, because the vAMM or a quoter may cross it. Once the claim lapses
-/// it is ordinary depth, quotable and takeable at its own price.
+/// A taker remainder nobody on the book crosses is still withheld, because the
+/// vAMM or a quoter may cross it. It stays withheld after its claim lapses, and
+/// only a read with the flag reaches it.
 #[test]
-fn an_uncrossed_taker_remainder_is_withheld_while_its_claim_holds() {
+fn an_uncrossed_taker_remainder_is_withheld_before_and_after_its_claim_lapses() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
@@ -2447,11 +2447,13 @@ fn an_uncrossed_taker_remainder_is_withheld_while_its_claim_holds() {
 
     let grace = market_state(&ctx).reservation_grace_slots as u64;
     advance_slot(&mut ctx, grace);
+    assert!(quote(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Short, 5).is_empty());
     assert_eq!(
-        quote(&mut ctx, DirectionV0::Short, u64::MAX),
+        quote_consuming(&mut ctx, DirectionV0::Short, u64::MAX),
         vec![(101, 5)]
     );
-    let changes = execute(&mut ctx, DirectionV0::Short, 5);
+    let changes = execute_consuming(&mut ctx, DirectionV0::Short, 5);
     assert_eq!(changes, vec![(taker.to_bytes(), 5, 505, vec![1])]);
     assert_eq!(market_state(&ctx).bid_count, 0);
 }
@@ -2471,10 +2473,10 @@ fn a_maker_only_cross_is_not_gated() {
     assert_eq!(execute(&mut ctx, DirectionV0::Long, 5).len(), 1);
 }
 
-/// The remainder is withheld from the slot it activates until the slot its
+/// The remainder is withheld from the slot it activates, before and after its
 /// claim lapses, whatever the other side holds.
 #[test]
-fn a_remainder_is_withheld_until_its_claim_lapses() {
+fn a_remainder_is_withheld_before_and_after_its_claim_lapses() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
@@ -2496,11 +2498,12 @@ fn a_remainder_is_withheld_until_its_claim_lapses() {
     assert!(execute(&mut ctx, DirectionV0::Short, 1).is_empty());
 
     ctx.svm.warp_to_slot(lapse_slot);
+    assert!(quote(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Short, 1).is_empty());
     assert_eq!(
-        quote(&mut ctx, DirectionV0::Short, u64::MAX),
+        quote_consuming(&mut ctx, DirectionV0::Short, u64::MAX),
         vec![(101, 5)]
     );
-    assert_eq!(execute(&mut ctx, DirectionV0::Short, 1).len(), 1);
 }
 
 /// Quote and the gate on-chain: the crossed remainder's level is absent from the
@@ -2541,15 +2544,15 @@ fn quote_and_execute_skip_the_same_order() {
         vec![(101, 5)]
     );
 
-    // With the cross gone the remainder stays withheld until its claim lapses,
-    // and then it is ordinary depth at its own price.
+    // With the cross gone the remainder stays withheld, and after its claim
+    // lapses too.
     cancel(&mut ctx, crossing_bid, crosser).unwrap();
     assert!(quote(&mut ctx, DirectionV0::Long, u64::MAX).is_empty());
 
     let grace = market_state(&ctx).reservation_grace_slots as u64;
     advance_slot(&mut ctx, grace);
-    assert_eq!(quote(&mut ctx, DirectionV0::Long, u64::MAX), vec![(100, 5)]);
-    assert_eq!(execute(&mut ctx, DirectionV0::Long, 5).len(), 1);
+    assert!(quote(&mut ctx, DirectionV0::Long, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Long, 5).is_empty());
 }
 
 /// The gate's cost on quote, which unlike execute walks a whole side: a

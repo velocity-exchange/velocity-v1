@@ -159,23 +159,18 @@ fn a_crossed_taker_remainder_is_passed_over() {
     // And it is still resting, untouched, waiting for its counterparty.
     assert_eq!(book.node_count(SideV0::Bid), 1);
 
-    // With the ask gone the remainder stays withheld until its claim lapses.
+    // With the ask gone the remainder stays withheld, and after its claim
+    // lapses too.
     book.cancel(maker, counterparty, ACTIVE_SLOT, false)
         .unwrap();
-    assert!(book
-        .execute(&execute_args(DirectionV0::Short, 5), 0, 0)
-        .unwrap()
-        .fills
-        .is_empty());
-
     let lapsed = book.reservation_grace_slots as u64;
-    assert_eq!(
-        book.execute(&execute_args(DirectionV0::Short, 5), lapsed, 0)
+    for slot in [0, lapsed] {
+        assert!(book
+            .execute(&execute_args(DirectionV0::Short, 5), slot, 0)
             .unwrap()
             .fills
-            .len(),
-        1
-    );
+            .is_empty());
+    }
 }
 
 /// The liveness property skipping buys, and the reason it beats failing the
@@ -237,12 +232,12 @@ fn a_maker_only_cross_gates_nothing() {
     );
 }
 
-/// A taker remainder that no book order crosses is still withheld while its
-/// claim holds. The vAMM or a quoter can cross it, and the book cannot see
-/// either, so an ordinary fill would take it at its worst price before the
-/// crank routes it. Once the claim lapses it is ordinary depth at its own price.
+/// A taker remainder that no book order crosses is still withheld, before and
+/// after its claim lapses. The vAMM or a quoter can cross it, and the book
+/// cannot see either, so an ordinary fill would take it at its worst price
+/// before the crank routes it. Only a read with the flag sees it.
 #[test]
-fn an_uncrossed_taker_remainder_is_withheld_while_its_claim_holds() {
+fn an_uncrossed_taker_remainder_is_withheld_before_and_after_its_claim_lapses() {
     let (taker, maker) = (user(0xA), user(0xB));
     for ask_rests in [true, false] {
         let market = TestMarket::new(16);
@@ -274,29 +269,31 @@ fn an_uncrossed_taker_remainder_is_withheld_while_its_claim_holds() {
         let lapsed = book.reservation_grace_slots as u64;
         assert_eq!(
             quoted(&mut book, DirectionV0::Short, u64::MAX, lapsed),
+            encode_quote(&[])
+        );
+        assert!(book
+            .execute(&execute_args(DirectionV0::Short, 5), lapsed, 0)
+            .unwrap()
+            .fills
+            .is_empty());
+        assert_eq!(
+            consuming_quote(&mut book, DirectionV0::Short, u64::MAX, lapsed),
             remainder
         );
-        assert_eq!(
-            book.execute(&execute_args(DirectionV0::Short, 5), lapsed, 0)
-                .unwrap()
-                .fills
-                .len(),
-            1
-        );
-        assert_eq!(book.node_count(SideV0::Bid), 0);
+        assert_eq!(book.node_count(SideV0::Bid), 1);
     }
 }
 
-/// The remainder is withheld from its activation slot until exactly the slot
-/// its claim lapses, whatever the other side holds.
+/// The remainder is withheld from an ordinary fill at every slot, before and
+/// after its claim lapses, whatever the other side holds.
 #[test]
-fn the_remainder_is_withheld_until_exactly_its_claim_lapses() {
+fn the_remainder_is_withheld_at_every_slot() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     place_at(&mut book, SideV0::Bid, 101, 5, user(0xA), 10, true);
     let lapse_slot = 10 + book.reservation_grace_slots as u64;
 
-    for slot in [9, 10, lapse_slot - 1] {
+    for slot in [9, 10, lapse_slot - 1, lapse_slot, lapse_slot + 1_000] {
         assert!(
             book.execute(&execute_args(DirectionV0::Short, 1), slot, 0)
                 .unwrap()
@@ -307,11 +304,8 @@ fn the_remainder_is_withheld_until_exactly_its_claim_lapses() {
     }
 
     assert_eq!(
-        book.execute(&execute_args(DirectionV0::Short, 1), lapse_slot, 0)
-            .unwrap()
-            .fills
-            .len(),
-        1
+        executed_with(&mut book, DirectionV0::Short, 1, lapse_slot, true),
+        vec![1]
     );
 }
 
@@ -485,10 +479,10 @@ fn quote_and_execute_skip_the_same_order() {
 }
 
 /// Removing the crossing bid does not release the remainder. It stays out of
-/// the quote until its claim lapses, and then it is ordinary depth at its own
-/// price.
+/// the quote before and after its claim lapses. Only a read with the flag
+/// sees it.
 #[test]
-fn the_same_book_quotes_that_depth_once_the_claim_lapses() {
+fn the_same_book_keeps_the_remainder_out_of_the_quote_after_the_claim_lapses() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker, crosser) = (user(0xA), user(0xB), user(0xC));
@@ -519,17 +513,7 @@ fn the_same_book_quotes_that_depth_once_the_claim_lapses() {
     let lapsed = book.reservation_grace_slots as u64;
     assert_eq!(
         quoted(&mut book, DirectionV0::Long, u64::MAX, lapsed),
-        encode_quote(&[
-            PriceLevelV0 { price: 99, size: 5 },
-            PriceLevelV0 {
-                price: 100,
-                size: 5
-            },
-            PriceLevelV0 {
-                price: 102,
-                size: 5
-            },
-        ])
+        makers_only
     );
 
     // Execute agrees, which is the whole point of the two sharing a predicate.
@@ -538,7 +522,7 @@ fn the_same_book_quotes_that_depth_once_the_claim_lapses() {
             .unwrap()
             .fills
             .len(),
-        3
+        2
     );
 }
 
@@ -1083,7 +1067,10 @@ fn every_removal_path_maintains_the_claimant_list() {
     // Execute culling a sub-minimum remainder of a remainder whose claim lapsed.
     let culled = place_taker_origin(&mut book, SideV0::Ask, 200, 5, owner);
     let lapsed = book.reservation_grace_slots as u64;
-    assert_eq!(executed(&mut book, DirectionV0::Long, 3, lapsed), vec![3]);
+    assert_eq!(
+        executed_with(&mut book, DirectionV0::Long, 3, lapsed, true),
+        vec![3]
+    );
     assert_consistent(&book);
     assert_eq!(book.claimant_count(SideV0::Ask), 0);
     assert!(book.read_node(culled.node_index).unwrap().order_id != culled.order_id);

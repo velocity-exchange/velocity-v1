@@ -342,8 +342,9 @@ pub const L3_ROW_FLAG_REDUCE_ONLY: u8 = 4;
 
 /// The book withholds some or all of this row's size, and `size` already has
 /// the reservation subtracted. A taker-origin order claims the size, or the row
-/// is a taker-origin order whose claim holds. A caller that settles the cross
-/// reads with `include_taker_origin_reservations` and sees the whole size.
+/// is a taker-origin order, before or after its claim lapses. A caller that
+/// settles the cross reads with `include_taker_origin_reservations` and sees
+/// the whole size.
 pub const L3_ROW_FLAG_RESERVED: u8 = 8;
 
 /// A taker-origin order whose claim lapsed. The book no longer withholds depth

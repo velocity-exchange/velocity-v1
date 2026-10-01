@@ -152,15 +152,16 @@ Narrowed to exactly the harm, in three ways:
   somebody's improvement, and a reservation over it would cost takers depth for nothing.
 - A reservation reaches only depth the claimant's own price crosses. A remainder that crosses
   nothing on the book claims nothing.
-- The remainder itself is withheld whole while its claim holds, whether or not a book order
-  crosses it. The vAMM and the quoters are not book orders, and either can cross the remainder.
-  An ordinary fill would then take it at its worst price before the crank routes it. Once the
-  claim lapses the remainder is ordinary depth, quotable and takeable at its own price. That is
-  how it fills if no source ever crosses it.
+- The remainder itself is withheld whole for its whole life, whether or not a book order crosses
+  it and after its claim lapses. The vAMM and the quoters are not book orders, and either can
+  cross the remainder. An ordinary fill would then take it at its worst price before the crank
+  routes it. Only `crank_taker_origin_cross` fills it. After the claim lapses its owner can cancel
+  it, or modify it, which rests the replacement as an ordinary maker order.
 - A reservation lapses `reservation_grace_slots` after the claimant activates, 32 on a fresh
-  market and settable by `update_market_v0` up to 150. Past that the depth is ordinary again. A
-  reservation is what makes the auction deterministic, and a crank has to run to collect it, so a
-  crank that never runs must not hold the top of the book forever.
+  market and settable by `update_market_v0` up to 150. Past that the depth it claimed is ordinary
+  again, and the remainder itself stays withheld. A reservation is what makes the auction
+  deterministic, and a crank has to run to collect it, so a crank that never runs must not hold
+  the top of the book forever.
 
 An order still inside its activation delay, or already expired, is not a counterparty. Nothing
 can match it, so no improvement is within reach, and claiming it would cost the book that depth
@@ -287,8 +288,8 @@ side.
 
 A market at 0 is a supported setting rather than a broken one. R4's reservation protects the
 improvement, not the delay. At 0 a remainder claims its counterparty the moment it rests, and no
-ordinary fill can take the remainder until its claim lapses. Only the crank fills it in that
-window, and the crank routes it to every source that crosses it.
+ordinary fill can take the remainder. Only the crank fills it, and the crank routes it to every
+source that crosses it.
 
 The delay does set the clock a reservation expires on. It lapses `reservation_grace_slots` after
 the claimant activates, so at 0 the window is the grace alone.
@@ -348,7 +349,7 @@ owner. An unpaid cross is one relay never lands, and it would hold back every ne
 side. The charge is capped by what the fill gained the taker against its rest price, net of the
 crank reward, so R5's invariant holds however many cranks split a remainder. A cross that gains
 the taker too little to pay is not paid. A signed keeper can still crank it, and once the claim
-lapses the remainder is ordinary depth at its own price. Pricing it above that would make exactly
+lapses its owner can cancel it. Pricing it above that would make exactly
 the crosses R5 resolves for free undiscoverable, and a unit of dust in front of a gated remainder
 is enough to strand it for its whole life.
 
@@ -374,7 +375,7 @@ a swift-built transaction as a named `flow_authority` account, or it signs a det
 keeper-built fill carries proof without the key ever signing a transaction it did not build, and
 without a second signature fee. An unattested marketable order does not take. It rests whole,
 taker-origin, through the default window, and the cross cranks fill it. A maker crosses it at the
-maker's own price, or it activates and becomes ordinary depth.
+maker's own price, or the crank routes it once it activates.
 
 Cancels are never delayed. That asymmetry is the property: a maker can always reprice ahead of
 aggression it never agreed to fill instantly, so informed flow cannot pick off a stale quote in a
@@ -441,9 +442,9 @@ while a smaller cross still ate the best of that depth and left the remainder cr
 rest, since both walks go best price first. The claim removes the need for the predicate. Claimed
 base is not in the arb crank's matchable set at all, so the cross cannot reach it whatever size
 the caller asks for, and the remainder keeps the whole improvement rather than the part nobody
-took first. The book withholds a remainder whole while its claim holds. A remainder whose claim
-lapsed is ordinary depth at its worst price, and a leg that took it would give the protocol `User`
-the gap to the other leg's source. Before each leg the executor reads the side it takes and names
+took first. The book withholds a remainder whole, before and after its claim lapses, so a leg
+cannot take one through `execute_v0`. A leg that took one would give the protocol `User` the gap
+to the other leg's source, so the executor checks it as well. Before each leg the executor reads the side it takes and names
 the owners of the taker-origin rows inside the leg's limit that the book does not withhold. After
 the fill it refuses the cross if the leg moved one of those owners, or reached the last price of a
 read that filled its row window. A count of the depth in front cannot replace this check, because
@@ -502,7 +503,7 @@ a remainder.
   far into the book as the taker's own limit reaches rather than stopping at one counterparty.
   Relay's staged call carries three makers. In program-keeper mode the fill stops short at the
   makers it carries, as a liquidation does. Otherwise a fourth owner through the remainder refuses
-  every staged crank, and the remainder waits for its claim to lapse at its worst price. What is
+  every staged crank, and the remainder waits for a keeper that carries every owner. What is
   settled is then reported back with `fill_v0`, which shrinks the remainder in place.
 - **Two taker remainders crossing each other take a second branch of the same crank**: velocity
   computes the match itself and settles the two directly, at the earlier one's price, unless the
@@ -584,9 +585,9 @@ remainder whose fate depends on which route reached it is a bug.
 **D. The window has no floor, and zero is a sensible setting.** R7 defers to per-market config,
 and zero is the expected default rather than a misconfiguration, because the delay is not what
 protects the improvement. R4's reservation is. A remainder claims the depth it crosses whatever
-the delay, and claimed depth leaves the book's matchable set for every caller but the crank. At
-zero the remainder itself also leaves the matchable set until its claim lapses, so only the crank
-fills it in that window. A cross settles at the counterparty's price.
+the delay, and claimed depth leaves the book's matchable set for every caller but the crank. The
+remainder itself leaves the matchable set for its whole life, so only the crank fills it. A cross
+settles at the counterparty's price.
 
 What a nonzero delay adds is a pre-window in which the order is not matchable at all, so makers can
 line up before anyone can trade with it. It also lengthens the bind on the taker: the cancel
@@ -600,7 +601,8 @@ activation.
 `crank_taker_origin_cross` can consume, so a turner that never fires would hold the top of the
 book until the remainder's `max_ts`. `ClobHeaderV0::reservation_grace_slots` bounds it instead. A
 reservation stops being honoured that many slots after its claimant activates, and the depth is
-ordinary again. A fresh market starts at 32 slots and `update_market_v0` retunes it, up to a
+ordinary again. The remainder itself stays withheld from ordinary fills, and the crank still
+routes it. Its owner can cancel or modify it once the claim lapses. A fresh market starts at 32 slots and `update_market_v0` retunes it, up to a
 150-slot ceiling. The window only has to cover the crank transaction, and a transaction cannot
 outlive its blockhash. The lapse is read per claimant in the
 walk, so one remainder's reservation expiring leaves every other remainder's reservation intact.

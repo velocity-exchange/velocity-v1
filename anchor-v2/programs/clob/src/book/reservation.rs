@@ -1,5 +1,7 @@
 //! The claims a crossing taker remainder holds on the depth it crosses, and the
-//! rules that bind such a remainder to the book while its claim holds.
+//! rules that bind such a remainder to the book while its claim holds. An
+//! ordinary caller never takes a remainder itself, before or after its claim
+//! lapses.
 
 use {
     super::{BookHeader, ClobBook, NodeArena},
@@ -119,8 +121,8 @@ impl CrossReservation {
     }
 
     /// Units of `node` no ordinary caller may take: the units a crossing remainder
-    /// claims, or the whole of a remainder whose claim holds. The second is the
-    /// larger answer whenever it applies, so it wins.
+    /// claims, or the whole of a remainder. The second is the larger answer
+    /// whenever it applies, so it wins.
     #[inline(always)]
     pub(crate) fn withheld(&mut self, book: &ClobMarketV0, node: &OrderNodeV0) -> Result<u64> {
         if !self.may_withhold(node) {
@@ -137,9 +139,10 @@ impl CrossReservation {
         }
 
         let claimed = self.claimed(book, node)?;
-        // Whole, whether or not a book order crosses it. The vAMM or a quoter
-        // can cross it too, and the book cannot see either.
-        if node.is_taker_origin() && !self.lapsed(node) {
+        // Whole, whether or not a book order crosses it and after its claim
+        // lapses. The vAMM or a quoter can cross it too, and the book cannot
+        // see either. Only the crank that routes it reads with the flag.
+        if node.is_taker_origin() {
             return Ok(node.base_asset_amount);
         }
 

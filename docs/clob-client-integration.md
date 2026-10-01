@@ -187,7 +187,8 @@ because a maker must be able to pull orders off a killed or delisted book.
 **A taker remainder is bound until its claim lapses.** Its owner cannot cancel or modify it until
 `reservation_grace_slots` after its activation slot. The call fails with `TakerOriginBound`. At a
 zero activation delay the bind is the grace window alone, 32 slots on a fresh market and at most
-150. A liquidation force-cancel is exempt.
+150. A liquidation force-cancel is exempt. Ordinary takers never fill a taker remainder, before or
+after the bind ends. Only the cross crank fills it.
 
 **A modify keeps the order's id** and loses its queue position. The book has no in-place mutation,
 so the order is removed and replaced. A UI can treat it as one order at new terms, which is what the

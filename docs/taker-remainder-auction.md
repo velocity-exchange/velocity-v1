@@ -84,12 +84,17 @@ party quoted.
 One consequence is worth stating. The *earlier* order captures nothing here: no improvement, and
 no rebate beyond the ordinary maker rebate. It gets the price it was already offering.
 
-The pair settles at the earlier price only when the vAMM does not beat it for the later order.
-When the vAMM does, the crank routes the later order instead, across the vAMM, the quoters and the
-book with the earlier remainder in it. The pair also passes the symmetric fill-price band that every
-routed fill passes, and it records its price as the market's last fill. Without these, an
-unattested order rested through a remainder settles at that remainder's worst price while the
-vAMM quotes better.
+The pair settles at the earlier price only when the vAMM beats it for neither order. When the
+vAMM beats it for the later order, the crank routes the later order instead, across the vAMM, the
+quoters and the book with the earlier remainder in it. When the vAMM beats it for the earlier
+order, the earlier order routes first and the pair waits. When the vAMM cannot fill the earlier
+order at all, the pair also waits. That covers an `AmmFill` pause and every fill gate the router
+applies: drawdown, MM-oracle divergence and oracle validity. A vAMM that quotes nothing is no
+evidence that the earlier order's worst price is fair, and the resolver stages no pair that waits.
+The pair also passes the symmetric fill-price band that every routed fill passes, and it records
+its price as the market's last fill. Without these, an unattested order rested through a remainder
+settles at that remainder's worst price while the vAMM quotes better, or while the vAMM is
+paused.
 
 **A partly filled remainder keeps its id and its queue position.** The book API for editing a
 resting order's size is `fill_v0`. Velocity reports the base it settled and the order shrinks
@@ -292,9 +297,10 @@ lapsed and that crosses a row no live claim holds. That stage yields to a maker 
 `ResolvedCrankV0` names its own executor, so one condition slot serves both.
 
 The resolver estimates the vAMM off the perp market, which rides the end of its account list. It
-has no oracle account, so it projects the curve to the oracle price the market last stored. The
-executor routes against the live oracle, so a stale estimate costs one failed crank, not a wrong
-fill.
+has no oracle account, so it projects the curve to the oracle price the market last stored, and it
+reads the vAMM's fill gates at that price. The executor routes against the live oracle, so a stale
+estimate never makes a wrong fill. It can fail a staged crank, and on an idle market the stored
+price does not move, so the same crank can fail until the claim lapses.
 
 `quote_l3_v0` flags a remainder whose claim lapsed (`L3_ROW_FLAG_CLAIM_LAPSED`). The row carries no
 activation slot, and without the flag a lapsed remainder would keep the first claim on its side in

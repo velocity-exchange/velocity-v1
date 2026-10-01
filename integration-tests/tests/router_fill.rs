@@ -10518,6 +10518,9 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
         (100 * PRICE_PRECISION) as i64,
         20,
     );
+    // A pair settles only while the vAMM can fill the earlier remainder and
+    // beats the pair price for neither side.
+    quote_vamm_outside_the_pair(&mut fixture.svm);
 
     // The aggressor is the later order, so it is the `taker` of the crank.
     let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
@@ -10649,6 +10652,9 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
         (100 * PRICE_PRECISION) as i64,
         20,
     );
+    // A pair settles only while the vAMM can fill the earlier remainder and
+    // beats the pair price for neither side.
+    quote_vamm_outside_the_pair(&mut fixture.svm);
 
     let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
     let keeper_authority = keeper.authority.insecure_clone();
@@ -10888,6 +10894,9 @@ fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
         (100 * PRICE_PRECISION) as i64,
         20,
     );
+    // A pair settles only while the vAMM can fill the earlier remainder and
+    // beats the pair price for neither side.
+    quote_vamm_outside_the_pair(&mut fixture.svm);
 
     let resolved = run_cross_resolver(&mut fixture, conditions).expect("the pair is work");
     assert_eq!(
@@ -12472,6 +12481,22 @@ fn an_unfillable_reduce_only_remainder_is_cancelled_and_frees_its_side() {
     assert_eq!(clob_bid_count(&fixture), 0);
 }
 
+/// Lets the vAMM fill again with a 10% spread, so it quotes about 95 and 105
+/// around an oracle of 100. A pair priced between those settles.
+fn quote_vamm_outside_the_pair(svm: &mut litesvm::LiteSVM) {
+    resume_amm_fill(svm);
+    let mut market: PerpMarket = read_zero_copy(svm, &perp_market_pda(0));
+    market.amm.base_spread = 100_000;
+    market.amm.max_spread = 100_000;
+    set_zero_copy_account(
+        svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+}
+
 fn resume_amm_fill(svm: &mut litesvm::LiteSVM) {
     use velocity::state::paused_operations::PerpOperation;
     let mut market: PerpMarket = read_zero_copy(svm, &perp_market_pda(0));
@@ -12778,6 +12803,104 @@ fn fix4_taker_a_short_read_cannot_skip_an_older_claimant() {
     );
     assert_eq!(
         perp_position(&fixture.svm, &newer.user).base_asset_amount,
+        0
+    );
+}
+
+/// A buy remainder at 105 rests first, then a sell remainder at 95, with the
+/// oracle at 100. Leaves the vAMM's fill paused.
+fn fix4_taker_rest_pair(fixture: &mut Fixture) -> (Party, Party, Party) {
+    pause_amm_fill(&mut fixture.svm);
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let attacker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_crossing_remainders(
+        fixture,
+        &blocker,
+        (&victim, PositionDirection::Long, 105 * PRICE, UNIT),
+        (&attacker, PositionDirection::Short, 95 * PRICE, UNIT),
+        12,
+    );
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+    (victim, attacker, keeper)
+}
+
+/// With `AmmFill` paused the vAMM has no price, and the pair used to settle the
+/// later sell into the earlier buy at 105 against an oracle of 100. The pair
+/// now waits until the vAMM can fill the earlier remainder.
+#[test]
+fn fix4_taker_an_amm_fill_pause_does_not_settle_the_worst_price_pair() {
+    let mut fixture = setup();
+    let (victim, attacker, keeper) = fix4_taker_rest_pair(&mut fixture);
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &attacker, &[&victim]);
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::NoTakerOriginCross);
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &attacker.user).base_asset_amount,
+        0
+    );
+}
+
+/// A vAMM in drawdown is quoted but cannot fill. The pair rule now reads the
+/// same fill gates as the router, so the resolver stages no pair crank that
+/// fails on every attempt, and the direct pair crank waits.
+#[test]
+fn fix4_taker_a_drawdown_vamm_stages_no_failing_pair() {
+    let mut fixture = setup();
+    let conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+    let (victim, attacker, keeper) = fix4_taker_rest_pair(&mut fixture);
+
+    resume_amm_fill(&mut fixture.svm);
+    let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    market.amm.net_revenue_since_last_funding = -1_000_000_000_000;
+    market.amm.total_fee_minus_distributions = 1_000_000;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+
+    assert!(
+        run_cross_resolver(&mut fixture, conditions).is_none(),
+        "nothing the executor would land is staged"
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &attacker, &[&victim]);
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::NoTakerOriginCross);
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
         0
     );
 }

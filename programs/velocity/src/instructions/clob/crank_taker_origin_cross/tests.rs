@@ -1425,9 +1425,31 @@ mod pair_against_the_vamm {
             pair_resolution(VAMM, SideV0::Ask, 100),
             PairResolution::Settle
         );
+    }
+
+    /// A vAMM that cannot fill the earlier remainder leaves its worst price
+    /// unpriced, so the pair waits. The round-four probe paused `AmmFill` and
+    /// sold the earlier buyer at 105 against an oracle of 100.
+    #[test]
+    fn a_pair_the_vamm_cannot_price_waits() {
         assert_eq!(
             pair_resolution(VammTops::default(), SideV0::Ask, 102),
-            PairResolution::Settle
+            PairResolution::Unpriced
+        );
+
+        // The later sell aggresses, so the earlier buyer faces the vAMM ask.
+        let no_ask = VammTops {
+            bid: Some(99),
+            ask: None,
+        };
+        assert_eq!(
+            pair_resolution(no_ask, SideV0::Ask, 102),
+            PairResolution::Unpriced
+        );
+        assert_eq!(
+            pair_resolution(no_ask, SideV0::Bid, 100),
+            PairResolution::Settle,
+            "the aggressor's own side needs no vAMM price"
         );
     }
 
@@ -1461,9 +1483,24 @@ mod pair_against_the_vamm {
         let stage = choose_stage(&bids, &asks, VAMM, 2).unwrap();
         assert_eq!(stage.taker, bids[0].order.user);
         assert!(stage.makers.is_empty());
+        assert!(stage.yields_to_maker_cross);
 
-        let paired = choose_stage(&bids, &asks, VammTops::default(), 2).unwrap();
+        let inside = VammTops {
+            bid: Some(98),
+            ask: Some(103),
+        };
+        let paired = choose_stage(&bids, &asks, inside, 2).unwrap();
         assert_eq!(paired.taker, asks[0].order.user);
+    }
+
+    /// An unpriced pair is not staged, so a maker cross on the same book goes
+    /// next instead of relay backing off a crank that always fails.
+    #[test]
+    fn the_resolver_stages_no_unpriced_pair() {
+        let bids = [row(1, 102, 0xA)];
+        let asks = [row(2, 99, 0xB)];
+
+        assert_eq!(choose_stage(&bids, &asks, VammTops::default(), 2), None);
     }
 }
 

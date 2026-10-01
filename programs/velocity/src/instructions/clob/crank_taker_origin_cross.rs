@@ -36,9 +36,9 @@
 //! reaches the vAMM, the quoters and the depth nobody claims. Without it, a
 //! remainder that only the vAMM crosses rests at its worst price, and anyone
 //! who rests a crossing order takes it there. For the same reason, two
-//! remainders settle as a pair only when the vAMM does not beat the
-//! counterparty's price. A remainder whose claim lapsed claims nothing, so the
-//! cross walk reads it as depth.
+//! remainders settle as a pair only when the vAMM can fill the earlier one and
+//! beats the counterparty's price for neither side. A remainder whose claim
+//! lapsed claims nothing, so the cross walk reads it as depth.
 //!
 //! `crank_cross_match` middles two crossed makers for the protocol. This crank
 //! does not. One side is the aggressor by construction, the improvement belongs
@@ -380,6 +380,12 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             resolution != PairResolution::CounterpartyRoutesFirst,
             ErrorCode::NoTakerOriginCross,
             "the vAMM fills the earlier remainder better than the pair price; it routes first"
+        )?;
+
+        validate!(
+            resolution != PairResolution::Unpriced,
+            ErrorCode::NoTakerOriginCross,
+            "the vAMM cannot fill the earlier remainder, so the pair waits for it"
         )?;
 
         if resolution == PairResolution::Settle {
@@ -1661,13 +1667,17 @@ enum PairResolution {
     /// The vAMM beats that price for the earlier remainder, whose own price
     /// it is. The earlier remainder routes first.
     CounterpartyRoutesFirst,
+    /// The vAMM cannot fill the earlier remainder, so nothing shows that its
+    /// worst price is fair. The pair waits until the vAMM can fill it.
+    Unpriced,
 }
 
 /// Settle a pair only at a price the vAMM beats for neither side.
 ///
 /// The pair price is the earlier remainder's worst price. Without this rule,
 /// anyone who rests an unattested order through a remainder takes it there,
-/// while the vAMM quotes it better.
+/// while the vAMM quotes it better. A vAMM paused or stopped by its fill gates
+/// quotes nothing, which is no evidence that the price is fair.
 fn pair_resolution(
     vamm: VammTops,
     aggressor_side: SideV0,
@@ -1678,6 +1688,10 @@ fn pair_resolution(
         SideV0::Bid => SideV0::Ask,
         SideV0::Ask => SideV0::Bid,
     };
+
+    if vamm.facing(counterparty_side).is_none() {
+        return PairResolution::Unpriced;
+    }
 
     if controller::orders::vamm_improves_on(
         vamm.facing(counterparty_side),
@@ -2512,8 +2526,9 @@ impl VammTops {
 /// The vAMM's tops, off the perp market the resolver's tail carries.
 ///
 /// The resolver has no oracle account, so the curve is projected to the
-/// oracle price the market last stored. The executor routes against the live
-/// oracle, so a stale estimate costs one failed crank, not a wrong fill.
+/// oracle price the market last stored, and the fill gates read that price
+/// too. The executor routes against the live oracle, so a stale estimate can
+/// fail a crank until the stored price moves, but it never fills wrong.
 fn resolver_vamm_tops(
     ctx: &Context<ResolveClobCrank>,
     market_index: u16,
@@ -2593,11 +2608,18 @@ fn choose_subject_stage(
     if let Some((cross, side)) = stageable_cross(bids, asks) {
         let aggressor = aggressor_of(&cross, side);
         let counterparty = counterparty_of(&cross, side);
-        if counterparty.taker_origin
-            && pair_resolution(vamm, side, counterparty.price)
-                == PairResolution::CounterpartyRoutesFirst
-        {
-            return counterparty_route_stage(bids, asks, &counterparty);
+        let resolution = counterparty
+            .taker_origin
+            .then(|| pair_resolution(vamm, side, counterparty.price));
+        match resolution {
+            Some(PairResolution::CounterpartyRoutesFirst) => {
+                return counterparty_route_stage(bids, asks, &counterparty);
+            }
+
+            // The executor refuses the pair, and the vAMM cannot fill either
+            // remainder's route. Staging it would fail every attempt.
+            Some(PairResolution::Unpriced) => return routed_stage(bids, asks, vamm),
+            _ => {}
         }
 
         return Some(ChosenStage {
@@ -2643,7 +2665,7 @@ fn counterparty_route_stage(
         taker: counterparty.user,
         makers: Vec::new(),
         read_depth: (position as u16).saturating_add(1).min(MAX_CROSS_ROWS),
-        yields_to_maker_cross: false,
+        yields_to_maker_cross: true,
     })
 }
 

@@ -12597,3 +12597,90 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
         -position.quote_asset_amount
     );
 }
+
+/// Rests `owners` small asks of separate accounts at 104 through a taker-origin
+/// bid at 105, then sends the crank the cross resolver stages. The staged
+/// crank carries three makers, so a fourth owner is withheld from it.
+fn fix4_taker_blockade(
+    owners: usize,
+) -> (
+    Fixture,
+    Party,
+    Result<(), litesvm::types::FailedTransactionMetadata>,
+) {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        105 * PRICE,
+        UNIT,
+    );
+
+    for _ in 0..owners {
+        let blocker = party(&mut fixture.svm, 1_000 * SPOT_BALANCE_PRECISION_U64);
+        place_clob_order_for(
+            &mut fixture,
+            &blocker,
+            PositionDirection::Short,
+            104 * PRICE,
+            UNIT / 10,
+        );
+    }
+
+    resume_amm_fill(&mut fixture.svm);
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let resolved =
+        run_cross_resolver(&mut fixture, conditions).expect("a crossed remainder is work");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let keeper = fixture.keeper.insecure_clone();
+    let result = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[
+            compute_unit_limit_ix(1_400_000),
+            staged_executor_ix(&resolved, payout),
+        ],
+        &[],
+    )
+    .map(|_| ());
+    (fixture, victim, result)
+}
+
+/// Four owners through the remainder are one more than relay stages. The
+/// program-keeper crank stops short at the three it carries, so the victim
+/// still buys below the 104 asks instead of waiting to be sold at 105.
+#[test]
+fn fix4_taker_a_fourth_blocker_owner_does_not_freeze_the_relay_crank() {
+    let (fixture, victim, result) = fix4_taker_blockade(4);
+    result.expect("the staged crank stops short at the makers it carries");
+
+    let position = perp_position(&fixture.svm, &victim.user);
+    let filled = position.base_asset_amount;
+    assert!(filled > 0, "the crank filled the victim");
+    let average = -position.quote_asset_amount as i128 * UNIT as i128 / filled as i128;
+    assert!(
+        average < 104 * PRICE as i128,
+        "the victim paid {average} per unit, where its rest price is 105"
+    );
+}

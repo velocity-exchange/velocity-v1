@@ -810,6 +810,7 @@ mod withheld_book_tests {
             tx_accounts: Some(64),
             unrouted_quoters: 0,
             liquidation: true,
+            stops_at_carried_makers: false,
         };
         assert_eq!(withheld_obligation(&obligation, 0, attributable), Ok(()));
     }

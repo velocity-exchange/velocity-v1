@@ -117,6 +117,7 @@ macro_rules! no_router {
                     tx_accounts: None,
                     unrouted_quoters: 0,
                     liquidation: false,
+                    stops_at_carried_makers: false,
                 },
             },
 
@@ -3252,6 +3253,7 @@ pub mod builder_fee_margin_gate {
                     tx_accounts: None,
                     unrouted_quoters: 0,
                     liquidation: false,
+                    stops_at_carried_makers: false,
                 },
             },
 

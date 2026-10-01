@@ -1076,11 +1076,16 @@ fn route_and_fill_remainder<'info>(
                 quoters: remainder.claim.quoters,
                 digest: remainder.claim.digest,
             }),
-            // The taker is not here to choose the account list, so the cranker
-            // answers for what it left out, as a keeper fill does.
-            filler: crate::instructions::FillerTerms::keeper(Some(
-                &cx.accounts.instructions_sysvar.to_account_info(),
-            ))?,
+            // The taker is not here to choose the account list, so a signed
+            // keeper answers for what it left out. Relay stages a fixed maker
+            // count, so a program-keeper crank stops short at the makers it
+            // carries instead.
+            filler: crate::instructions::FillerTerms {
+                stops_at_carried_makers: cx.program_keeper_mode,
+                ..crate::instructions::FillerTerms::keeper(Some(
+                    &cx.accounts.instructions_sysvar.to_account_info(),
+                ))?
+            },
         },
         controller::orders::FillRequest {
             order: &mut order,
@@ -2488,7 +2493,8 @@ fn resolver_vamm_tops(
 
 /// Makers one staged crank carries, the counterparty included. Each costs two
 /// accounts. Past the counterparty, they let the fill pass over a row whose
-/// owner cannot settle and reach the depth behind it.
+/// owner cannot settle and reach the depth behind it. The fill stops short at
+/// the first owner past these, so more owners than this cannot refuse it.
 const STAGED_COUNTERPARTIES: usize = 3;
 
 /// What the resolver stages for one book.

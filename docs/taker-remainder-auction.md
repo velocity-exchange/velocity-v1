@@ -464,10 +464,13 @@ row. The resolvers end each side at the first such row that the book reports mat
   because the CLOB baseline is mandatory, so the route adds nothing new.
 - `crank_taker_origin_cross` resolves one cross, and it resolves it as an ordinary fill. The
   remainder is the taker of a router pass: the market's baseline book and the routed quoters
-  compete on price, `require_baseline` holds the call to carrying the CLOB entry, and the filler
-  obligation holds it to the makers it had room for. So the crank sweeps as far into the book as
-  the taker's own limit reaches rather than stopping at one counterparty. What is settled is then
-  reported back with `fill_v0`, which shrinks the remainder in place.
+  compete on price, and `require_baseline` holds the call to carrying the CLOB entry. A signed
+  keeper is held by the filler obligation to the makers it had room for. So the crank sweeps as
+  far into the book as the taker's own limit reaches rather than stopping at one counterparty.
+  Relay's staged call carries three makers. In program-keeper mode the fill stops short at the
+  makers it carries, as a liquidation does. Otherwise a fourth owner through the remainder refuses
+  every staged crank, and the remainder waits for its claim to lapse at its worst price. What is
+  settled is then reported back with `fill_v0`, which shrinks the remainder in place.
 - **Two taker remainders crossing each other take a second branch of the same crank**: velocity
   computes the match itself and settles the two directly, at the earlier one's price, unless the
   vAMM beats that price for the later one (R3). They cannot be

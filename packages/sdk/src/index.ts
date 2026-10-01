@@ -125,6 +125,7 @@ export * from './math/spotBalance';
 export * from './velocityClientConfig';
 export * from './clob/topMakersClient';
 export * from './clob/userOrdersClient';
+export * from './clob/orderRef';
 export * from './orderBookLevels';
 export * from './userMap/userMap';
 export * from './userMap/referrerMap';

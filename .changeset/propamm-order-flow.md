@@ -939,6 +939,9 @@ order that a crank evicted and a remainder that a fill culled under the book's m
 `getSyncTriggerConditionsIx` takes `overrides.payer`, so a delegated signer can place book orders
 and triggers as `getPlaceAndTakePerpOrderIx` already allowed.
 
+`decodeClobOrderRefV0` reads the `ClobOrderRefV0` that `placeAndMakePerpOrderV1` writes as return
+data, so a client can cancel or modify an order before the user-orders feed shows it.
+
 `AdminClient` gains the quoter registry builders the CLI needs: `getInitializeQuoterIx`,
 `getInitializeQuoterSlabIx`, `getUpdateQuoterAccountsIx`, `getUpdateQuoterApprovedIx`,
 `getUpdatePerpMarketClobQuoterIx`, `getUpdatePerpMarketClobBookConfigIx` and

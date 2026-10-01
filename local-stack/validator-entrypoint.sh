@@ -18,8 +18,12 @@ if [ ! -e /ledger/.booted ]; then
   find /ledger -mindepth 1 -delete
   AUTHORITY="$(solana-keygen pubkey "$SNAPSHOT/authority.json")"
   SLOT="$(grep -o '"slot": *[0-9]*' "$SNAPSHOT/manifest.json" | grep -o '[0-9]*$')"
+  # With the default 432000-slot epoch, a warp to a devnet slot sets the clock about 13 hours
+  # ahead of wall time, so every wall-clock expiry is already past on chain. A short epoch
+  # re-anchors the clock to the validator's votes.
   ARGS+=(
     --warp-slot "$SLOT"
+    --slots-per-epoch 432
     --mint "$AUTHORITY"
     --account-dir "$SNAPSHOT/accounts"
     --upgradeable-program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P /programs/velocity.so "$AUTHORITY"

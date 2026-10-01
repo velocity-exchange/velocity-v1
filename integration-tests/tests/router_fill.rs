@@ -3789,11 +3789,11 @@ fn a_maker_modify_rests_as_a_maker_quote() {
     );
 }
 
-/// A modify of a migrated taker remainder keeps it taker-origin. Losing the
-/// flag would rest it as a maker quote and drop it from the cross crank's
-/// queue.
+/// A modify of a migrated taker remainder rests it as a maker quote, as a
+/// cancel and a `place_and_make_v1` would. Keeping the flag let an owner whose
+/// claim lapsed reprice the remainder through new depth and bind it again.
 #[test]
-fn a_taker_remainder_modify_keeps_its_taker_origin_flag() {
+fn a_taker_remainder_modify_rests_as_a_maker_quote() {
     let mut fixture = setup();
     pause_amm_fill(&mut fixture.svm);
     let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
@@ -3822,18 +3822,18 @@ fn a_taker_remainder_modify_keeps_its_taker_origin_flag() {
     let bids = clob_side(&fixture, DirectionV0::Short);
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].size, UNIT / 2);
-    assert_ne!(
+    assert_eq!(
         bids[0].flags & L3_ROW_FLAG_TAKER_ORIGIN,
         0,
-        "the replacement is still the taker's migrated remainder"
+        "the replacement claims no depth"
     );
 }
 
-/// A modify of a reduce-only remainder keeps both flags. Reduce-only, because
-/// the book still clamps its fills to the position it covers. Taker-origin,
-/// because every reduce-only book order is one by construction.
+/// A modify of a reduce-only remainder keeps the reduce-only flag, because the
+/// book still clamps its fills to the position it covers. Like every
+/// replacement, it rests as a maker quote.
 #[test]
-fn a_reduce_only_remainder_modify_keeps_both_flags() {
+fn a_reduce_only_remainder_modify_keeps_its_reduce_only_flag() {
     let mut fixture = setup();
     let stop = arm_reduce_only_sell_stop(&mut fixture, UNIT as i64);
 
@@ -3870,8 +3870,8 @@ fn a_reduce_only_remainder_modify_keeps_both_flags() {
     assert_eq!(asks[0].size, UNIT / 4);
     assert_eq!(
         asks[0].flags & (L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_REDUCE_ONLY),
-        L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_REDUCE_ONLY,
-        "a reduce-only book order is a taker remainder by construction"
+        L3_ROW_FLAG_REDUCE_ONLY,
+        "the replacement reduces only and claims no depth"
     );
 }
 

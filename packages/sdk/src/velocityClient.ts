@@ -13412,8 +13412,10 @@ export class VelocityClient {
 	 * order carries, except `baseAssetAmount`, where `null` keeps the remaining size rather than the
 	 * original. An `activationDelaySlots` below the book's default is refused. An off-tick `price`
 	 * rounds onto the market's tick as a placement does, a bid down and an ask up.
+	 * The replacement is always a maker order, so a modified taker remainder rests as a cancel and a
+	 * `placeAndMake` would rest it.
 	 * @param takerOrigin - The order is a taker remainder. The instruction then carries the
-	 * signed-message record, so a signed-message remainder keeps its route under the new book id.
+	 * signed-message record, so the remainder's route entry is released.
 	 */
 	public async getModifyOrderV1Ix(
 		params: ModifyOrderV1Params,

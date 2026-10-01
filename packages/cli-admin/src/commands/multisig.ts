@@ -19,6 +19,7 @@ import { buildAdminClient, buildProvider } from '../lib/provider';
 import { confirmMainnetDirect } from '../lib/context';
 import * as ui from '../lib/ui';
 import { flatten } from '../lib/decode';
+import { exchangeStatusWriteProblem } from '../lib/exchangeStatusGuard';
 
 const { Permission, Permissions } = multisig.types;
 
@@ -233,9 +234,11 @@ export function registerMultisig(parent: Command): void {
 				`--cu-limit must be between 1 and 1400000, got "${local.cuLimit}"`
 			);
 		}
-		const provider = buildProvider(opts);
 		const multisigPda = new PublicKey(opts.multisig);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts, false);
 		const member = provider.wallet.publicKey;
+		await refuseStaleStatusWrite(client, multisigPda, transactionIndex);
 
 		const { instruction, lookupTableAccounts } =
 			await multisig.instructions.vaultTransactionExecute({
@@ -998,4 +1001,46 @@ function formatDuration(seconds: number): string {
 	}
 	const s = seconds % 60;
 	return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+/** Refuse a proposal whose exchange status write would clear a pause added after it was
+ * proposed. See `exchangeStatusGuard.ts`. */
+async function refuseStaleStatusWrite(
+	client: Awaited<ReturnType<typeof buildAdminClient>>,
+	multisigPda: PublicKey,
+	transactionIndex: bigint
+): Promise<void> {
+	const connection = client.connection;
+	const [txPda] = multisig.getTransactionPda({
+		multisigPda,
+		index: transactionIndex,
+	});
+	const acc = await connection.getAccountInfo(txPda);
+	if (!acc) return;
+
+	let message: multisig.accounts.VaultTransaction['message'];
+	try {
+		message =
+			multisig.accounts.VaultTransaction.fromAccountInfo(acc)[0].message;
+	} catch {
+		return;
+	}
+
+	const instructions = message.instructions.map((ix) => ({
+		program: message.accountKeys[ix.programIdIndex],
+		data: Buffer.from(ix.data),
+	}));
+	const stateInfo = await connection.getAccountInfo(
+		await client.getStatePublicKey()
+	);
+	if (!stateInfo) return;
+
+	const state = client.program.coder.accounts.decode('state', stateInfo.data);
+	const problem = exchangeStatusWriteProblem(
+		instructions,
+		client.program.programId,
+		state.exchangeStatus
+	);
+	if (problem)
+		throw new Error(`refusing to execute #${transactionIndex}: ${problem}`);
 }

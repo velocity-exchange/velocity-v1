@@ -85,7 +85,7 @@ velocity-admin spot-market set-withdraw-breaker <market> <pct>
 velocity-admin spot-market set-max-token-deposits <market> <amount>  # warm/cold admin; hard deposit cap, raw token base units, 0 = uncapped
 velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
-velocity-admin exchange set-status <bitfield>
+velocity-admin exchange set-status <bitfield>  # a proposal records the live status; multisig execute refuses it once the status changes
 velocity-admin exchange sync-slot-duration <ms>        # permissionless; sync one IBRL transition (400->350->300->250->200) from its feature gate (previews the gate's activation/effective slots); effective slot derived onchain from the EpochSchedule
 velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
 
@@ -172,7 +172,7 @@ velocity-admin lut extend [address] [--dry-run]                  # add every mis
 
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
 velocity-admin multisig proposals [--limit <n>]                  # recent proposals: status, approvals, timelock ETA
-velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs)
+velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs); refuses an exchange-status write that would clear a pause added after it was proposed
 velocity-admin multisig inspect <index> [--raw]                  # review a pending proposal: decoded instructions + args + named accounts, the account fields it would change (before -> after), program logs, and whether it can execute yet
 velocity-admin multisig set-rent-collector <pubkey>              # propose a config tx setting the rent collector (required by close-accounts); executing any config tx marks still-Active vault proposals stale
 velocity-admin multisig close-accounts [--dry-run]               # reclaim rent from settled proposals (Executed/Rejected/Cancelled + stale non-approved); requires the multisig's rent collector to be set

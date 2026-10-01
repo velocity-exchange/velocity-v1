@@ -293,6 +293,7 @@ fn taker_signed_standing() -> crate::instructions::FillerStanding {
             tx_accounts: None,
             unrouted_quoters: 0,
             liquidation: false,
+            stops_at_carried_makers: false,
         },
     }
 }
@@ -874,6 +875,7 @@ fn padded_route_obligation(quoters_filled: bool) -> VelocityResult<()> {
             tx_accounts: Some(64),
             unrouted_quoters: 0,
             liquidation: false,
+            stops_at_carried_makers: false,
         },
         idle,
         locks,

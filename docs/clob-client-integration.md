@@ -181,13 +181,20 @@ await velocityClient.modifyOrderV1({
 });
 ```
 
-**Cancel always works.** It is ungated on the book slot's active and suspended flags, because a
-maker must be able to pull orders off a killed or delisted book.
+**Cancel works on every book state.** It is ungated on the book slot's active and suspended flags,
+because a maker must be able to pull orders off a killed or delisted book.
+
+**A taker remainder is bound until its claim lapses.** Its owner cannot cancel or modify it until
+`reservation_grace_slots` after its activation slot. The call fails with `TakerOriginBound`. At a
+zero activation delay the bind is the grace window alone, 32 slots on a fresh market and at most
+150. A liquidation force-cancel is exempt.
 
 **A modify keeps the order's id** and loses its queue position. The book has no in-place mutation,
 so the order is removed and replaced. A UI can treat it as one order at new terms, which is what the
-records say too. A `rejectIfCrossed` modify that is refused leaves the maker with **no order**,
-because the original is already off the book when the replacement is refused.
+records say too. The replacement is always a maker order, so a modified taker remainder rests as an
+ordinary limit order and claims no depth. A `rejectIfCrossed` modify that is refused leaves the
+maker with **no order**, because the original is already off the book when the replacement is
+refused.
 
 **A sweep can stop early.** `cancelOrdersV1` removes at most 128 orders per call. The instruction
 reports whether it finished. When it did not, the user still has resting orders, and repeating the

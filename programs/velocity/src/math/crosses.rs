@@ -190,13 +190,27 @@ pub fn resolve_crosses(
 
 /// The next pair to settle: a taker-origin cross if there is one, and the best
 /// maker pair otherwise.
+///
+/// A remainder pairs with nothing behind the first remainder it crosses on the
+/// other side. Reaching past that one would take it at its own price, and the
+/// pair of the two settles at the earlier one's price.
 fn next_cross(bids: &[RestingOrder], asks: &[RestingOrder]) -> Option<(usize, usize, CrossKind)> {
     let mut best: Option<(usize, usize, CrossKind, u64)> = None;
+    let mut ask_behind_bid_remainder = vec![false; asks.len()];
     for (bid_index, bid) in bids.iter().enumerate() {
+        let mut behind_ask_remainder = false;
         for (ask_index, ask) in asks.iter().enumerate() {
+            if behind_ask_remainder || ask_behind_bid_remainder[ask_index] {
+                continue;
+            }
+
             let Some(kind) = classify(bid, ask) else {
                 continue;
             };
+
+            let remainder_pair = bid.taker_origin && ask.taker_origin;
+            behind_ask_remainder = remainder_pair;
+            ask_behind_bid_remainder[ask_index] = remainder_pair;
 
             // A taker's own improvement outranks arbitrage the protocol would
             // take. Among taker crosses the earliest to rest goes first. The

@@ -392,6 +392,7 @@ pub mod amm_jit {
                     tx_accounts: None,
                     unrouted_quoters: 0,
                     liquidation: false,
+                    stops_at_carried_makers: false,
                 },
             },
 
@@ -783,6 +784,7 @@ pub mod amm_jit {
                     tx_accounts: None,
                     unrouted_quoters: 0,
                     liquidation: false,
+                    stops_at_carried_makers: false,
                 },
             },
 

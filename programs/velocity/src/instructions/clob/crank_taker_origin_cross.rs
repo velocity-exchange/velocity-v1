@@ -1,11 +1,11 @@
 //! `crank_taker_origin_cross`: route one resting taker remainder.
 //!
 //! A migrated taker remainder rests on the book with the taker-origin flag. It
-//! rests at the worst price its signer agreed to tolerate. The book refuses to
-//! let anyone take it while a live counterparty crosses it, so the improvement
-//! between the two prices cannot be won by landing a transaction at the
-//! activation slot. This crank hands that improvement to the taker. It is
-//! permissionless and is paid out of the improvement it delivers.
+//! rests at the worst price its signer agreed to tolerate. The book withholds
+//! it from every ordinary fill while its claim holds, so the improvement
+//! between that price and whatever crosses it cannot be won by landing a
+//! transaction at the activation slot. This crank hands that improvement to the
+//! taker. It is permissionless and is paid out of the improvement it delivers.
 //!
 //! The resolution is an ordinary fill. The remainder becomes a detached limit
 //! order at the price it rested at. The router fills it against everything the
@@ -36,9 +36,12 @@
 //! reaches the vAMM, the quoters and the depth nobody claims. Without it, a
 //! remainder that only the vAMM crosses rests at its worst price, and anyone
 //! who rests a crossing order takes it there. For the same reason, two
-//! remainders settle as a pair only when the vAMM does not beat the
-//! counterparty's price. A remainder whose claim lapsed claims nothing, so the
-//! cross walk reads it as depth.
+//! remainders settle as a pair only when the vAMM can fill the earlier one and
+//! beats the counterparty's price for neither side. A remainder whose claim
+//! lapsed claims nothing, so the cross walk reads it as depth. Two lapsed
+//! remainders at the front still settle as a pair, because a claim-honouring
+//! route of one would take the other at its own price, or take nothing where
+//! the book withholds it.
 //!
 //! `crank_cross_match` middles two crossed makers for the protocol. This crank
 //! does not. One side is the aggressor by construction, the improvement belongs
@@ -63,14 +66,18 @@
 //! names. `note_activation` min-folds every placement's activation slot,
 //! including a migrating remainder's.
 //!
-//! `min_payment` stays the market's `keeper_payment_lamports`, because relay
-//! measures lamports and `assert_paid_v0` watches the payout account's
-//! balance. The quote-denominated crank reward can be zero, because a dust or
-//! equal-price improvement resolves for free by design. The reservoir pays the
+//! The cross conditions' `min_payment` is in lamports, because relay measures
+//! lamports and `assert_paid_v0` watches the payout account's balance. It is
+//! the cheaper of the market's `cross` and `taker_origin_cross` payments,
+//! because one condition stages both crosses. The quote-denominated crank
+//! reward can be zero, because a dust or equal-price improvement resolves for
+//! free by design. The reservoir pays the
 //! lamports only when what the crank collected covers their value in quote, so
 //! the protocol never pays more for a crank than it collects. A crank that
 //! collected less charges the taker the shortfall, because an unpaid cross is
 //! one relay never lands, and it holds back every newer remainder on its side.
+//! The charge is capped by what the fill gained the taker against its rest
+//! price, so the taker never ends worse than resting.
 //!
 //! Two remainders can face each other only while something crosses the earlier
 //! one, so their pair usually becomes resolvable when the blocker is removed
@@ -134,8 +141,9 @@ mod tests;
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct CrankTakerOriginCrossArgs {
     pub market_index: u16,
-    /// How deep to read each side of the book. A short read truncates worse
-    /// prices, never a better counterparty.
+    /// How deep to read each side of the book, up to `MAX_CROSS_ROWS`. The
+    /// crank refuses a read that ends on a row crossing the other side,
+    /// because the rows behind it can hold an older claimant.
     pub cross_rows: u16,
     /// The taker's signed route, when the crank claims one. An empty vector
     /// claims the market baseline.
@@ -381,6 +389,12 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             "the vAMM fills the earlier remainder better than the pair price; it routes first"
         )?;
 
+        validate!(
+            resolution != PairResolution::Unpriced,
+            ErrorCode::NoTakerOriginCross,
+            "the vAMM cannot fill the earlier remainder, so the pair waits for it"
+        )?;
+
         if resolution == PairResolution::Settle {
             return settle_taker_origin_pair(
                 &cx,
@@ -402,7 +416,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 market_index,
                 subject_order.order_ref.order_id,
             )?,
-            plan.claim_lapsed(),
+            !plan.owns_its_claim(),
             signed_route.is_empty(),
         ),
     };
@@ -417,6 +431,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         tail,
         &RoutedRemainder {
             order: &subject_order,
+            base: plan.route_base(),
             claim: &route_claim,
             include_taker_origin_reservations: plan.owns_its_claim(),
         },
@@ -445,7 +460,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         }],
     )?;
 
-    pay_crank_lamports(&cx, &mut maps, fees_booked_before, crank_reward)?;
+    pay_crank_lamports(&cx, &mut maps, fees_booked_before, &fee, crank_reward)?;
     emit_taker_origin_record(
         &cx,
         &TakerOriginOutcome {
@@ -508,6 +523,11 @@ struct SubjectCross {
     order: RestingOrder,
     /// The row that crosses the remainder.
     counterparty: RestingOrder,
+    /// The base the fill may route. See [`base_ahead_of_opposite_remainder`].
+    route_base: u64,
+    /// The subject holds the first live claim on the counterparty. A pair of
+    /// remainders whose claims both lapsed claims nothing.
+    owns_claim: bool,
 }
 
 /// One book row, and whether the book still honours its claim.
@@ -544,11 +564,7 @@ enum SubjectPlan {
     Cross(Box<SubjectCross>),
     /// No book cross is the remainder's to settle. The fill honours every live
     /// claim, so it reaches the vAMM, the quoters and unclaimed depth only.
-    Route {
-        order: RestingOrder,
-        side: SideV0,
-        claim_lapsed: bool,
-    },
+    Route { order: RestingOrder, side: SideV0 },
 }
 
 impl SubjectPlan {
@@ -566,6 +582,14 @@ impl SubjectPlan {
         }
     }
 
+    /// The base the fill may route.
+    fn route_base(&self) -> u64 {
+        match self {
+            Self::Cross(subject) => subject.route_base,
+            Self::Route { order, .. } => order.base_asset_amount,
+        }
+    }
+
     fn counterparty(&self) -> Option<&RestingOrder> {
         match self {
             Self::Cross(subject) => Some(&subject.counterparty),
@@ -575,17 +599,7 @@ impl SubjectPlan {
 
     /// Whether the fill may take the depth the book reserves for the claim.
     fn owns_its_claim(&self) -> bool {
-        matches!(self, Self::Cross(_))
-    }
-
-    fn claim_lapsed(&self) -> bool {
-        matches!(
-            self,
-            Self::Route {
-                claim_lapsed: true,
-                ..
-            }
-        )
+        matches!(self, Self::Cross(subject) if subject.owns_claim)
     }
 }
 
@@ -608,11 +622,12 @@ fn resolve_subject<'info>(
     taker_ref: UserRefV0,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<SubjectPlan> {
+    let rows_read = cross_rows.min(MAX_CROSS_ROWS);
     let BookSides { bids, asks } = book_l3_sides(
         book_slot,
         &ctx.accounts.quoter_slab,
         market_index,
-        cross_rows.min(MAX_CROSS_ROWS),
+        rows_read,
         &[
             ctx.accounts.clob_market.to_account_info(),
             ctx.accounts.clob_program.to_account_info(),
@@ -623,7 +638,62 @@ fn resolve_subject<'info>(
     )?
     .ok_or(ErrorCode::NoTakerOriginCross)?;
 
+    validate!(
+        read_shows_every_crossing_row(&bids, &asks, rows_read),
+        ErrorCode::NoTakerOriginCross,
+        "a read of {} rows per side ends on a row that crosses the other side",
+        rows_read
+    )?;
+
     Ok(plan_subject(&bids, &asks, taker_ref)?)
+}
+
+/// Whether a read of `rows_read` rows per side shows every row that crosses
+/// the other side. Rows behind a full side rest at worse prices, so none of
+/// them crosses when its last row does not. A read at `MAX_CROSS_ROWS` is
+/// accepted, because the resolver reads no deeper.
+fn read_shows_every_crossing_row(bids: &[BookRow], asks: &[BookRow], rows_read: u16) -> bool {
+    if rows_read >= MAX_CROSS_ROWS {
+        return true;
+    }
+
+    let side_shown = |rows: &[BookRow], side: SideV0, opposite: &[BookRow]| {
+        rows.len() < usize::from(rows_read)
+            || rows
+                .last()
+                .zip(opposite.first())
+                .is_none_or(|(last, best)| !price_crosses(side, last.order.price, best.order.price))
+    };
+
+    side_shown(bids, SideV0::Bid, asks) && side_shown(asks, SideV0::Ask, bids)
+}
+
+/// Whether an order at `price` on `side` crosses one at `opposite_price`.
+fn price_crosses(side: SideV0, price: u64, opposite_price: u64) -> bool {
+    match side {
+        SideV0::Bid => price >= opposite_price,
+        SideV0::Ask => price <= opposite_price,
+    }
+}
+
+/// Rows the crank must read per side to see every row that crosses the other
+/// side, and one more to show where the crossing rows end.
+fn crossing_read_depth(bids: &[BookRow], asks: &[BookRow]) -> u16 {
+    let crossing_rows = |rows: &[BookRow], side: SideV0, opposite: &[BookRow]| {
+        rows.iter()
+            .take_while(|row| {
+                opposite
+                    .first()
+                    .is_some_and(|best| price_crosses(side, row.order.price, best.order.price))
+            })
+            .count()
+    };
+    let deepest =
+        crossing_rows(bids, SideV0::Bid, asks).max(crossing_rows(asks, SideV0::Ask, bids));
+
+    (deepest.min(usize::from(MAX_CROSS_ROWS)) as u16)
+        .saturating_add(1)
+        .min(MAX_CROSS_ROWS)
 }
 
 /// The plan for the taker's remainder on this book.
@@ -642,19 +712,54 @@ fn plan_subject(
         return Ok(SubjectPlan::Cross(Box::new(subject)));
     }
 
+    if let Some(subject) = lapsed_pair_subject(bids, asks, taker_ref) {
+        return Ok(SubjectPlan::Cross(Box::new(subject)));
+    }
+
     let owned = |rows: &[BookRow], side: SideV0| {
         rows.iter()
             .find(|row| row.order.taker_origin && row.order.user == taker_ref)
             .map(|row| SubjectPlan::Route {
                 order: row.order,
                 side,
-                claim_lapsed: row.claim_lapsed,
             })
     };
 
     owned(bids, SideV0::Bid)
         .or_else(|| owned(asks, SideV0::Ask))
         .ok_or(ErrorCode::NoTakerOriginCross)
+}
+
+/// The cross of the two heads, when both are lapsed remainders, and its
+/// aggressor's side. A claim-honouring route of one would take the other at
+/// its own price, or nothing where the book withholds it.
+fn lapsed_pair_at_front(bids: &[BookRow], asks: &[BookRow]) -> Option<(Cross, SideV0)> {
+    let lapsed_remainder = |row: &BookRow| row.order.taker_origin && row.claim_lapsed;
+    let (bid, ask) = (bids.first()?, asks.first()?);
+    if !lapsed_remainder(bid) || !lapsed_remainder(ask) {
+        return None;
+    }
+
+    let cross = *resolve_crosses(&[bid.order], &[ask.order], 1).first()?;
+    Some((cross, cross.kind.aggressor_side()?))
+}
+
+/// The lapsed pair at the front, when the taker's remainder aggresses it.
+fn lapsed_pair_subject(
+    bids: &[BookRow],
+    asks: &[BookRow],
+    taker_ref: UserRefV0,
+) -> Option<SubjectCross> {
+    let (cross, aggressor_side) = lapsed_pair_at_front(bids, asks)?;
+    let order = aggressor_of(&cross, aggressor_side);
+    (order.user == taker_ref).then(|| SubjectCross {
+        aggressor_side,
+        cross,
+        order,
+        counterparty: counterparty_of(&cross, aggressor_side),
+        route_base: order.base_asset_amount,
+        owns_claim: false,
+    })
 }
 
 /// The cross the taker's remainder settles with its claim, when it has one.
@@ -672,8 +777,22 @@ fn claimed_subject_cross(
         "the front of the book is a maker cross; crank_cross_match resolves it first"
     )?;
 
-    let crosses = resolve_crosses(&claim_view(bids), &claim_view(asks), MAX_CROSSES_PER_CRANK);
-    subject_cross(&crosses, taker_ref)
+    let (bid_view, ask_view) = (claim_view(bids), claim_view(asks));
+    let crosses = resolve_crosses(&bid_view, &ask_view, MAX_CROSSES_PER_CRANK);
+    let mut subject = subject_cross(&crosses, taker_ref)?;
+    if !subject.counterparty.taker_origin {
+        let opposite = match subject.aggressor_side {
+            SideV0::Bid => &ask_view,
+            SideV0::Ask => &bid_view,
+        };
+        subject.route_base = subject.route_base.min(base_ahead_of_opposite_remainder(
+            &subject.order,
+            subject.aggressor_side,
+            opposite,
+        ));
+    }
+
+    Ok(subject)
 }
 
 /// Whether either best row is a taker remainder. A lapsed one counts, because
@@ -729,7 +848,41 @@ fn subject_cross(crosses: &[Cross], taker_ref: UserRefV0) -> VelocityResult<Subj
         cross: subject,
         order: subject_order,
         counterparty: counterparty_of(&subject, aggressor_side),
+        route_base: subject_order.base_asset_amount,
+        owns_claim: true,
     })
+}
+
+/// The crossing base on the other side that rests in front of the first live
+/// remainder there. `u64::MAX` when no such remainder crosses the subject.
+///
+/// A Cross plan fills with every claim ignored, so it would take that
+/// remainder at the remainder's own worst price. The two remainders are a pair
+/// instead, and a pair settles at the earlier one's price. The fill stops in
+/// front of it, and the pair is the next crank's work.
+fn base_ahead_of_opposite_remainder(
+    subject: &RestingOrder,
+    side: SideV0,
+    opposite: &[RestingOrder],
+) -> u64 {
+    let mut base_ahead = 0u64;
+    for row in opposite {
+        if !price_crosses(side, subject.price, row.price) {
+            break;
+        }
+
+        if crate::math::crosses::same_authority(&subject.user, &row.user) {
+            continue;
+        }
+
+        if row.taker_origin {
+            return base_ahead;
+        }
+
+        base_ahead = base_ahead.saturating_add(row.base_asset_amount);
+    }
+
+    u64::MAX
 }
 
 /// A row of the subject cross that can never fill.
@@ -990,17 +1143,16 @@ fn signed_route_digest(
     Ok(digest)
 }
 
-/// The route claim the crank is held to.
-///
-/// A remainder whose claim lapsed is ordinary depth that anyone takes at its
-/// own price. A crank that names no route may then fill it across the
-/// baseline, which can only improve on that price.
+/// The route claim the crank is held to. A fill that honours every claim
+/// takes no claimed depth, so a crank that names no route may fill it across
+/// the baseline. Relay cannot read the taker's record, so the digest would
+/// fail every staged crank for the claim window.
 fn claimed_route_digest(
     signed_digest: crate::state::order_params::RouteDigest,
-    claim_lapsed: bool,
+    honours_every_claim: bool,
     claims_baseline: bool,
 ) -> crate::state::order_params::RouteDigest {
-    if claim_lapsed && claims_baseline {
+    if honours_every_claim && claims_baseline {
         return NO_ROUTE_DIGEST;
     }
 
@@ -1010,6 +1162,8 @@ fn claimed_route_digest(
 /// The remainder one routed fill takes, and how much of the book it reaches.
 struct RoutedRemainder<'a> {
     order: &'a RestingOrder,
+    /// The base this fill may take, at most the order's size.
+    base: u64,
     claim: &'a SignedRouteClaim<'a>,
     /// True only for the first live claim on a book row, which may take the
     /// depth the book reserves for it.
@@ -1037,6 +1191,8 @@ fn route_and_fill_remainder<'info>(
     let subject_order = remainder.order;
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, subject_order);
+    // The fill targets the order's own size, so the bound goes on the order.
+    order.base_asset_amount = remainder.base;
     bind_builder_order(cx, rev_share_escrow, subject_order, &mut order)?;
 
     let mark = crate::instructions::RouteMark::read(maps, cx.market_index)?;
@@ -1056,7 +1212,7 @@ fn route_and_fill_remainder<'info>(
         crate::instructions::RouteRequest {
             order: crate::instructions::RoutedOrder {
                 direction: crate::instructions::route_direction(cx.taker_direction),
-                unfilled: subject_order.base_asset_amount,
+                unfilled: remainder.base,
                 taker: cx.taker_ref,
                 limit_price: subject_order.price,
                 mark,
@@ -1076,11 +1232,16 @@ fn route_and_fill_remainder<'info>(
                 quoters: remainder.claim.quoters,
                 digest: remainder.claim.digest,
             }),
-            // The taker is not here to choose the account list, so the cranker
-            // answers for what it left out, as a keeper fill does.
-            filler: crate::instructions::FillerTerms::keeper(Some(
-                &cx.accounts.instructions_sysvar.to_account_info(),
-            ))?,
+            // The taker is not here to choose the account list, so a signed
+            // keeper answers for what it left out. Relay stages a fixed maker
+            // count, so a program-keeper crank stops short at the makers it
+            // carries instead.
+            filler: crate::instructions::FillerTerms {
+                stops_at_carried_makers: cx.program_keeper_mode,
+                ..crate::instructions::FillerTerms::keeper(Some(
+                    &cx.accounts.instructions_sysvar.to_account_info(),
+                ))?
+            },
         },
         controller::orders::FillRequest {
             order: &mut order,
@@ -1410,10 +1571,13 @@ fn booked_fee_remainder(perp_market_map: &PerpMarketMap, market_index: u16) -> R
 /// crank draws lamports that nothing paid for. A crank that collected less
 /// charges the taker the shortfall, as a removal charges its owner. Relay
 /// asserts the payment, so an unpaid cross would stall every cross behind it.
+/// The charge never exceeds what the fill left the taker under its rest
+/// price, so many small cranks cannot charge it past that price.
 fn pay_crank_lamports<'info>(
     cx: &TakerOriginContext<'_, 'info>,
     maps: &mut AccountMaps,
     fees_booked_before: u128,
+    fee: &crate::math::fees::TakerOriginCrossFee,
     crank_reward: u64,
 ) -> Result<()> {
     let (true, Some(conditions)) = (cx.program_keeper_mode, &cx.accounts.crank_conditions) else {
@@ -1426,7 +1590,7 @@ fn pay_crank_lamports<'info>(
         .saturating_sub(fees_booked_before)
         .saturating_add(u128::from(crank_reward))
         .min(u128::from(u64::MAX)) as u64;
-    let shortfall = payment_shortfall(booked, payment_quote);
+    let shortfall = chargeable_shortfall(booked, payment_quote, fee.budget, crank_reward);
     let charged = if shortfall > 0 && cx.accounts.authority.key() != cx.taker_ref.authority {
         charge_payment_shortfall(cx, maps, shortfall)?
     } else {
@@ -1465,6 +1629,17 @@ fn pay_crank_lamports<'info>(
 /// payment with no price is never paid, so it has no shortfall.
 fn payment_shortfall(collected: u64, payment_quote: Option<u64>) -> u64 {
     payment_quote.map_or(0, |payment_quote| payment_quote.saturating_sub(collected))
+}
+
+/// The shortfall the taker is charged: at most what it gained against its
+/// rest price, net of the crank reward. `budget` is that gain.
+fn chargeable_shortfall(
+    collected: u64,
+    payment_quote: Option<u64>,
+    budget: u64,
+    crank_reward: u64,
+) -> u64 {
+    payment_shortfall(collected, payment_quote).min(budget.saturating_sub(crank_reward))
 }
 
 /// Charge the taker `shortfall` in quote, paid to the protocol `User` that
@@ -1599,13 +1774,17 @@ enum PairResolution {
     /// The vAMM beats that price for the earlier remainder, whose own price
     /// it is. The earlier remainder routes first.
     CounterpartyRoutesFirst,
+    /// The vAMM cannot fill the earlier remainder, so nothing shows that its
+    /// worst price is fair. The pair waits until the vAMM can fill it.
+    Unpriced,
 }
 
 /// Settle a pair only at a price the vAMM beats for neither side.
 ///
 /// The pair price is the earlier remainder's worst price. Without this rule,
 /// anyone who rests an unattested order through a remainder takes it there,
-/// while the vAMM quotes it better.
+/// while the vAMM quotes it better. A vAMM paused or stopped by its fill gates
+/// quotes nothing, which is no evidence that the price is fair.
 fn pair_resolution(
     vamm: VammTops,
     aggressor_side: SideV0,
@@ -1616,6 +1795,10 @@ fn pair_resolution(
         SideV0::Bid => SideV0::Ask,
         SideV0::Ask => SideV0::Bid,
     };
+
+    if vamm.facing(counterparty_side).is_none() {
+        return PairResolution::Unpriced;
+    }
 
     if controller::orders::vamm_improves_on(
         vamm.facing(counterparty_side),
@@ -1749,7 +1932,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     let remainder_base_asset_amount = report_fills_to_book(cx, &pair.book_fills())?;
     let crank_reward = pay_crank_reward(cx, &pricing.fee, pair.quote_filled, maps)?;
 
-    pay_crank_lamports(cx, maps, fees_booked_before, crank_reward)?;
+    pay_crank_lamports(cx, maps, fees_booked_before, &pricing.fee, crank_reward)?;
     emit_taker_origin_record(
         cx,
         &TakerOriginOutcome {
@@ -2450,8 +2633,9 @@ impl VammTops {
 /// The vAMM's tops, off the perp market the resolver's tail carries.
 ///
 /// The resolver has no oracle account, so the curve is projected to the
-/// oracle price the market last stored. The executor routes against the live
-/// oracle, so a stale estimate costs one failed crank, not a wrong fill.
+/// oracle price the market last stored, and the fill gates read that price
+/// too. The executor routes against the live oracle, so a stale estimate can
+/// fail a crank until the stored price moves, but it never fills wrong.
 fn resolver_vamm_tops(
     ctx: &Context<ResolveClobCrank>,
     market_index: u16,
@@ -2488,7 +2672,8 @@ fn resolver_vamm_tops(
 
 /// Makers one staged crank carries, the counterparty included. Each costs two
 /// accounts. Past the counterparty, they let the fill pass over a row whose
-/// owner cannot settle and reach the depth behind it.
+/// owner cannot settle and reach the depth behind it. The fill stops short at
+/// the first owner past these, so more owners than this cannot refuse it.
 const STAGED_COUNTERPARTIES: usize = 3;
 
 /// What the resolver stages for one book.
@@ -2501,43 +2686,71 @@ struct ChosenStage {
     yields_to_maker_cross: bool,
 }
 
-/// The taker-origin work the resolver stages, if the book has any.
-///
-/// A cross the taker claims goes first. Only when the book has none does the
-/// resolver stage a remainder that routes with every live claim honoured:
-/// one the vAMM crosses, or one whose claim lapsed and that crosses a row no
-/// live claim covers. The executor applies the same plan, so a stage it would
-/// refuse is never chosen for a reason the resolver can see.
+/// The taker-origin work the resolver stages, if the book has any, with a
+/// read deep enough for the executor's check on it.
 fn choose_stage(
     bids: &[BookRow],
     asks: &[BookRow],
     vamm: VammTops,
     slot: u64,
 ) -> Option<ChosenStage> {
-    if let Some((cross, side)) = stageable_cross(bids, asks) {
-        let aggressor = aggressor_of(&cross, side);
-        let counterparty = counterparty_of(&cross, side);
-        if counterparty.taker_origin
-            && pair_resolution(vamm, side, counterparty.price)
-                == PairResolution::CounterpartyRoutesFirst
-        {
+    let mut stage = choose_subject_stage(bids, asks, vamm, slot)?;
+    stage.read_depth = stage.read_depth.max(crossing_read_depth(bids, asks));
+    Some(stage)
+}
+
+/// The remainder the resolver stages, and the makers its crank carries. A
+/// cross the taker claims or a lapsed pair goes first. Otherwise the resolver
+/// stages a remainder that routes with every live claim honoured. The executor
+/// applies the same plan, so a stage it would refuse is never chosen.
+fn choose_subject_stage(
+    bids: &[BookRow],
+    asks: &[BookRow],
+    vamm: VammTops,
+    slot: u64,
+) -> Option<ChosenStage> {
+    match stageable_cross(bids, asks).or_else(|| lapsed_pair_at_front(bids, asks)) {
+        Some((cross, side)) => cross_stage(bids, asks, &cross, side, vamm, slot),
+        None => routed_stage(bids, asks, vamm),
+    }
+}
+
+/// The stage for one cross with an aggressor, as the executor's plan treats it.
+fn cross_stage(
+    bids: &[BookRow],
+    asks: &[BookRow],
+    cross: &Cross,
+    side: SideV0,
+    vamm: VammTops,
+    slot: u64,
+) -> Option<ChosenStage> {
+    let aggressor = aggressor_of(cross, side);
+    let counterparty = counterparty_of(cross, side);
+    let resolution = counterparty
+        .taker_origin
+        .then(|| pair_resolution(vamm, side, counterparty.price));
+    match resolution {
+        Some(PairResolution::CounterpartyRoutesFirst) => {
             return counterparty_route_stage(bids, asks, &counterparty);
         }
 
-        return Some(ChosenStage {
-            taker: aggressor.user,
-            makers: staged_makers(
-                &aggressor,
-                Some(&counterparty),
-                side,
-                opposite_rows(bids, asks, side),
-            ),
-            read_depth: cross_read_depth(&claim_view(bids), &claim_view(asks), &cross),
-            yields_to_maker_cross: cross_stalled(&cross, slot),
-        });
+        // The executor refuses the pair, and the vAMM cannot fill either
+        // remainder's route. Staging it would fail every attempt.
+        Some(PairResolution::Unpriced) => return routed_stage(bids, asks, vamm),
+        _ => {}
     }
 
-    routed_stage(bids, asks, vamm)
+    Some(ChosenStage {
+        taker: aggressor.user,
+        makers: staged_makers(
+            &aggressor,
+            Some(&counterparty),
+            side,
+            opposite_rows(bids, asks, side),
+        ),
+        read_depth: crossing_read_depth(bids, asks),
+        yields_to_maker_cross: cross_stalled(cross, slot),
+    })
 }
 
 /// The earlier remainder of a pair, routed to the vAMM before the pair
@@ -2567,7 +2780,7 @@ fn counterparty_route_stage(
         taker: counterparty.user,
         makers: Vec::new(),
         read_depth: (position as u16).saturating_add(1).min(MAX_CROSS_ROWS),
-        yields_to_maker_cross: false,
+        yields_to_maker_cross: true,
     })
 }
 
@@ -2637,9 +2850,10 @@ fn is_routed_subject(bids: &[BookRow], asks: &[BookRow], side: SideV0, row: &Boo
 
 /// Whether a remainder that routes with every live claim honoured can fill.
 ///
-/// The vAMM fills it when its top beats the rest price. A book row fills it
+/// The vAMM fills it when its top beats the rest price. A maker row fills it
 /// only when no live claimant on its side could hold that row, which the
-/// resolver's read cannot tell apart row by row.
+/// resolver's read cannot tell apart row by row. A remainder on the other side
+/// is a pair, never depth for this route.
 fn routed_subject_fills(
     row: &BookRow,
     side: SideV0,
@@ -2656,19 +2870,15 @@ fn routed_subject_fills(
         .iter()
         .all(|other| !other.order.taker_origin || other.claim_lapsed);
     no_live_claimant
-        && opposite
-            .iter()
-            .any(|other| crossable_counterparty(&row.order, side, other))
+        && opposite.iter().any(|other| {
+            !other.order.taker_origin && crossable_counterparty(&row.order, side, other)
+        })
 }
 
 /// Whether `other` is a row a fill of `subject` on `side` can take.
 fn crossable_counterparty(subject: &RestingOrder, side: SideV0, other: &BookRow) -> bool {
-    let crosses = match side {
-        SideV0::Bid => other.order.price <= subject.price,
-        SideV0::Ask => other.order.price >= subject.price,
-    };
-
-    crosses && !crate::math::crosses::same_authority(&subject.user, &other.order.user)
+    price_crosses(side, subject.price, other.order.price)
+        && !crate::math::crosses::same_authority(&subject.user, &other.order.user)
 }
 
 /// The makers a crank for `subject` carries: the counterparty first, then the
@@ -2797,21 +3007,4 @@ fn stageable_cross(bids: &[BookRow], asks: &[BookRow]) -> Option<(Cross, SideV0)
         .iter()
         .find(|cross| cross.kind != CrossKind::ProtocolMiddles)?;
     Some((*cross, cross.kind.aggressor_side()?))
-}
-
-/// How deep the crank must read to see the cross this resolver picked.
-///
-/// Rows come back best first, so the deeper of the pair's two positions is the
-/// whole window the crank needs.
-fn cross_read_depth(bids: &[RestingOrder], asks: &[RestingOrder], cross: &Cross) -> u16 {
-    let depth = |rows: &[RestingOrder], target: &RestingOrder| {
-        rows.iter()
-            .position(|row| row.order_ref == target.order_ref)
-            .unwrap_or(0) as u16
-    };
-
-    depth(bids, &cross.bid)
-        .max(depth(asks, &cross.ask))
-        .saturating_add(1)
-        .min(MAX_CROSS_ROWS)
 }

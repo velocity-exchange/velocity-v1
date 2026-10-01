@@ -66,12 +66,17 @@ pub struct FillerObligation {
     pub unrouted_quoters: usize,
     /// The fill is a liquidation, so the program wrote the order and its limit price.
     pub liquidation: bool,
+    /// The caller stages a fixed number of makers, and a book can hold more owners than
+    /// that. The program-keeper taker-origin crank sets this. Its fill is bound by the
+    /// remainder's rest price, so a short fill leaves the rest for the next crank.
+    pub stops_at_carried_makers: bool,
 }
 
 /// Whether a filler that left a book short of an owner met its obligation. A taker that
 /// signed owes itself nothing. A liquidation stops short at the makers it carries, because
 /// its limit price already holds the liquidated user to the liquidator fee, which a
-/// takeover also charges. Otherwise there are four outcomes, and only the last one fills.
+/// takeover also charges. A fill that sets `stops_at_carried_makers` stops short too.
+/// Otherwise there are four outcomes, and only the last one fills.
 ///
 /// - The transaction had room for another maker, so the filler owed that maker.
 /// - It is full, but carries a loaded user that filled nothing and holds no role. Those
@@ -88,7 +93,7 @@ pub fn withheld_obligation(
     idle_loaded_users: usize,
     attributable_locks: usize,
 ) -> VelocityResult<()> {
-    if obligation.taker_signed || obligation.liquidation {
+    if obligation.taker_signed || obligation.liquidation || obligation.stops_at_carried_makers {
         return Ok(());
     }
 
@@ -697,6 +702,7 @@ mod tests {
             tx_accounts: None,
             unrouted_quoters: 0,
             liquidation: false,
+            stops_at_carried_makers: false,
         };
 
         assert!(withheld_obligation(&signed, 7, 0).is_ok());
@@ -711,9 +717,37 @@ mod tests {
             tx_accounts: None,
             unrouted_quoters: 1,
             liquidation: true,
+            stops_at_carried_makers: false,
         };
 
         assert!(withheld_obligation(&liquidation, 1, 0).is_ok());
+    }
+
+    /// The program-keeper taker-origin crank stages three makers. A fourth owner
+    /// through the remainder must not refuse every crank of it.
+    #[test]
+    fn a_fill_that_stages_its_makers_stops_short_of_a_withheld_book() {
+        let staged = FillerObligation {
+            taker_signed: false,
+            tx_accounts: Some(FILL_FIXED_WRITABLE_LOCKS + 3 * MAKER_ACCOUNT_COST),
+            unrouted_quoters: 0,
+            liquidation: false,
+            stops_at_carried_makers: true,
+        };
+        let shallow = FILL_FIXED_WRITABLE_LOCKS + 3 * MAKER_ACCOUNT_COST;
+
+        assert!(withheld_obligation(&staged, 0, shallow).is_ok());
+        assert_eq!(
+            withheld_obligation(
+                &FillerObligation {
+                    stops_at_carried_makers: false,
+                    ..staged
+                },
+                0,
+                shallow
+            ),
+            Err(ErrorCode::FillerOmittedReachableMaker)
+        );
     }
 
     /// A fill that withholds and cannot count the transaction fails closed.
@@ -725,6 +759,7 @@ mod tests {
             tx_accounts: None,
             unrouted_quoters: 0,
             liquidation: false,
+            stops_at_carried_makers: false,
         };
 
         assert_eq!(
@@ -743,6 +778,7 @@ mod tests {
                 tx_accounts: Some(accounts),
                 unrouted_quoters: 0,
                 liquidation: false,
+                stops_at_carried_makers: false,
             };
 
             assert_eq!(
@@ -762,6 +798,7 @@ mod tests {
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 1,
             liquidation: false,
+            stops_at_carried_makers: false,
         };
 
         assert_eq!(
@@ -779,6 +816,7 @@ mod tests {
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
             liquidation: false,
+            stops_at_carried_makers: false,
         };
 
         assert!(withheld_obligation(&honest, 0, TX_WRITABLE_LOCK_BUDGET).is_ok());
@@ -793,6 +831,7 @@ mod tests {
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
             liquidation: false,
+            stops_at_carried_makers: false,
         };
 
         assert_eq!(
@@ -816,6 +855,7 @@ mod tests {
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET * 2),
             unrouted_quoters: 0,
             liquidation: false,
+            stops_at_carried_makers: false,
         };
         let shallow = FILL_FIXED_WRITABLE_LOCKS + MAKER_ACCOUNT_COST;
         assert_eq!(

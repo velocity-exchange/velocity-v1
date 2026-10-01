@@ -3789,11 +3789,11 @@ fn a_maker_modify_rests_as_a_maker_quote() {
     );
 }
 
-/// A modify of a migrated taker remainder keeps it taker-origin. Losing the
-/// flag would rest it as a maker quote and drop it from the cross crank's
-/// queue.
+/// A modify of a migrated taker remainder rests it as a maker quote, as a
+/// cancel and a `place_and_make_v1` would. Keeping the flag let an owner whose
+/// claim lapsed reprice the remainder through new depth and bind it again.
 #[test]
-fn a_taker_remainder_modify_keeps_its_taker_origin_flag() {
+fn a_taker_remainder_modify_rests_as_a_maker_quote() {
     let mut fixture = setup();
     pause_amm_fill(&mut fixture.svm);
     let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
@@ -3822,18 +3822,18 @@ fn a_taker_remainder_modify_keeps_its_taker_origin_flag() {
     let bids = clob_side(&fixture, DirectionV0::Short);
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].size, UNIT / 2);
-    assert_ne!(
+    assert_eq!(
         bids[0].flags & L3_ROW_FLAG_TAKER_ORIGIN,
         0,
-        "the replacement is still the taker's migrated remainder"
+        "the replacement claims no depth"
     );
 }
 
-/// A modify of a reduce-only remainder keeps both flags. Reduce-only, because
-/// the book still clamps its fills to the position it covers. Taker-origin,
-/// because every reduce-only book order is one by construction.
+/// A modify of a reduce-only remainder keeps the reduce-only flag, because the
+/// book still clamps its fills to the position it covers. Like every
+/// replacement, it rests as a maker quote.
 #[test]
-fn a_reduce_only_remainder_modify_keeps_both_flags() {
+fn a_reduce_only_remainder_modify_keeps_its_reduce_only_flag() {
     let mut fixture = setup();
     let stop = arm_reduce_only_sell_stop(&mut fixture, UNIT as i64);
 
@@ -3870,8 +3870,8 @@ fn a_reduce_only_remainder_modify_keeps_both_flags() {
     assert_eq!(asks[0].size, UNIT / 4);
     assert_eq!(
         asks[0].flags & (L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_REDUCE_ONLY),
-        L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_REDUCE_ONLY,
-        "a reduce-only book order is a taker remainder by construction"
+        L3_ROW_FLAG_REDUCE_ONLY,
+        "the replacement reduces only and claims no depth"
     );
 }
 
@@ -8098,6 +8098,22 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     account.perp_positions[1].market_index = 0;
     set_user_account(&mut fixture.svm, user, &account);
 
+    // The treasury pays for this account at most once per fallback interval,
+    // and opting in stamped the slot. A resync inside that interval pays
+    // nothing, and relay asserts the advertised payment, so the resolver
+    // reports no work until the interval ends.
+    let ix = resolver_ix();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    assert!(
+        !velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data)
+            .unwrap()
+            .has_work(),
+        "a resync inside the paid interval is not work"
+    );
+
+    fixture
+        .svm
+        .warp_to_slot(fixture.svm.get_sysvar::<anchor_lang::prelude::Clock>().slot + 3_000);
     let ix = resolver_ix();
     let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
@@ -8114,32 +8130,6 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     let payout_before = fixture.svm.get_balance(&payout).unwrap();
     let conditions_before = fixture.svm.get_balance(&conditions).unwrap();
     let treasury_before = fixture.svm.get_balance(&crank_treasury_pda()).unwrap();
-
-    // The treasury pays for this account at most once per fallback interval.
-    // Opting in stamped the slot, so a resync inside that interval does the
-    // work and pays nothing: opting in is permissionless and the payer is
-    // protocol funds, so an unbounded rate is a drain by repetition.
-    run_staged_executor(
-        &mut fixture,
-        &resolved,
-        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
-        payout,
-    );
-
-    assert_eq!(
-        fixture.svm.get_balance(&payout).unwrap(),
-        payout_before,
-        "a resync inside the interval is not paid for"
-    );
-
-    fixture
-        .svm
-        .warp_to_slot(fixture.svm.get_sysvar::<anchor_lang::prelude::Clock>().slot + 3_000);
-    // The treasury pays only a resync that finds the positions changed, and
-    // the resync above already recorded the close.
-    let mut account: User = read_zero_copy(&fixture.svm, &user);
-    account.perp_positions[1].quote_asset_amount = -1;
-    set_user_account(&mut fixture.svm, user, &account);
     run_staged_executor(
         &mut fixture,
         &resolved,
@@ -8156,6 +8146,24 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     assert_eq!(
         fixture.svm.get_balance(&crank_treasury_pda()).unwrap(),
         treasury_before - SYNC_FEE
+    );
+
+    // A second change inside the new interval still resyncs when cranked by
+    // hand, and the treasury does not pay it: opting in is permissionless and
+    // the payer is protocol funds, so an unbounded rate is a drain.
+    let mut account: User = read_zero_copy(&fixture.svm, &user);
+    account.perp_positions[1].quote_asset_amount = -1;
+    set_user_account(&mut fixture.svm, user, &account);
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
+        payout,
+    );
+    assert_eq!(
+        fixture.svm.get_balance(&payout).unwrap(),
+        payout_before + SYNC_FEE,
+        "a resync inside the interval is not paid for"
     );
 
     // The user's own account pays nothing: a resync nobody is paid to run
@@ -10557,6 +10565,9 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
         (100 * PRICE_PRECISION) as i64,
         20,
     );
+    // A pair settles only while the vAMM can fill the earlier remainder and
+    // beats the pair price for neither side.
+    quote_vamm_outside_the_pair(&mut fixture.svm);
 
     // The aggressor is the later order, so it is the `taker` of the crank.
     let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
@@ -10688,6 +10699,9 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
         (100 * PRICE_PRECISION) as i64,
         20,
     );
+    // A pair settles only while the vAMM can fill the earlier remainder and
+    // beats the pair price for neither side.
+    quote_vamm_outside_the_pair(&mut fixture.svm);
 
     let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
     let keeper_authority = keeper.authority.insecure_clone();
@@ -10927,6 +10941,9 @@ fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
         (100 * PRICE_PRECISION) as i64,
         20,
     );
+    // A pair settles only while the vAMM can fill the earlier remainder and
+    // beats the pair price for neither side.
+    quote_vamm_outside_the_pair(&mut fixture.svm);
 
     let resolved = run_cross_resolver(&mut fixture, conditions).expect("the pair is work");
     assert_eq!(
@@ -12511,6 +12528,22 @@ fn an_unfillable_reduce_only_remainder_is_cancelled_and_frees_its_side() {
     assert_eq!(clob_bid_count(&fixture), 0);
 }
 
+/// Lets the vAMM fill again with a 10% spread, so it quotes about 95 and 105
+/// around an oracle of 100. A pair priced between those settles.
+fn quote_vamm_outside_the_pair(svm: &mut litesvm::LiteSVM) {
+    resume_amm_fill(svm);
+    let mut market: PerpMarket = read_zero_copy(svm, &perp_market_pda(0));
+    market.amm.base_spread = 100_000;
+    market.amm.max_spread = 100_000;
+    set_zero_copy_account(
+        svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+}
+
 fn resume_amm_fill(svm: &mut litesvm::LiteSVM) {
     use velocity::state::paused_operations::PerpOperation;
     let mut market: PerpMarket = read_zero_copy(svm, &perp_market_pda(0));
@@ -12637,6 +12670,7 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
     );
 }
 
+
 /// The pause key clears a compromised hot role without the warm admin, and it
 /// cannot set one. The FlowAuthority key otherwise stays live for a whole
 /// signing round.
@@ -12690,6 +12724,8 @@ fn audit4_the_pause_key_clears_a_hot_role_and_cannot_set_one() {
         .expect("the pause key clears the hot role");
     let state: State = read_zero_copy(&svm, &state_pda());
     assert_eq!(state.hot_flow_authority.to_bytes(), [0u8; 32]);
+}
+
 
 /// A synced user whose stop-market buy at 99 the oracle at 100 has crossed.
 struct Fix4TrigCrossedStop {
@@ -13493,5 +13529,1274 @@ fn fix4_cross_one_authority_on_both_legs_is_refused() {
     assert_eq!(
         perp_position(&fixture.svm, &bidder.user).base_asset_amount,
         0
+    );
+}
+
+
+// ---------------------------------------------------------------------------
+// Liquidation coverage after a sync.
+// ---------------------------------------------------------------------------
+
+/// The stored list as relay hands it to a resolver or an executor.
+fn fix4_liq_stored_metas(fixture: &Fixture, user: Pubkey) -> Vec<AccountMeta> {
+    let conditions: velocity::state::user_conditions::UserConditionsV0 =
+        read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
+    conditions
+        .read_sync_accounts()
+        .iter()
+        .map(|r| AccountMeta {
+            pubkey: Pubkey::new_from_array(r.address),
+            is_signer: false,
+            is_writable: r.is_writable(),
+        })
+        .collect()
+}
+
+/// Run a resolver over its fixed accounts and the stored list, and return
+/// the call it stages.
+fn fix4_liq_resolve(
+    fixture: &mut Fixture,
+    user: Pubkey,
+    mut accounts: Vec<AccountMeta>,
+    data: Vec<u8>,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    accounts.extend(fix4_liq_stored_metas(fixture, user));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data,
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).expect("the resolver does not fail");
+    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    if !pointer.has_work() {
+        return None;
+    }
+
+    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
+    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+}
+
+fn fix4_liq_resolve_liquidation(
+    fixture: &mut Fixture,
+    user: Pubkey,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let accounts = velocity::accounts::ResolveLiquidatePerpWithFill {
+        scratch: relay_scratch_pda(),
+        liq_conditions: user_conditions_pda(&user),
+        user,
+        state: state_pda(),
+    }
+    .to_account_metas(None);
+    let data = velocity::instruction::ResolveLiquidatePerpWithFill {}.data();
+    fix4_liq_resolve(fixture, user, accounts, data)
+}
+
+fn fix4_liq_resolve_resync(
+    fixture: &mut Fixture,
+    user: Pubkey,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let accounts = velocity::accounts::ResolveResyncLiqConditions {
+        scratch: relay_scratch_pda(),
+        liq_conditions: user_conditions_pda(&user),
+        user,
+    }
+    .to_account_metas(None);
+    let data = velocity::instruction::ResolveResyncLiqConditions {}.data();
+    fix4_liq_resolve(fixture, user, accounts, data)
+}
+
+/// A user long 10 units at $100 with $50 of USDC, synced over perp market 0.
+fn fix4_liq_synced_long(
+    fixture: &mut Fixture,
+    market_conditions: Pubkey,
+    sync_cost_units: u32,
+) -> Pubkey {
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut account = trading_user(&authority.pubkey(), 50 * SPOT_BALANCE_PRECISION_U64, None);
+    account.perp_positions[0].market_index = 0;
+    account.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    set_user_account(&mut fixture.svm, user, &account);
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+
+    let conditions = sync_liq_conditions(fixture, user, market_conditions, sync_cost_units);
+    fixture.svm.airdrop(&conditions, 100_000_000).unwrap();
+    user
+}
+
+/// A synced user deposits dust in a spot market the sync never saw. The
+/// liquidation resolver reports no work instead of failing, and the resync
+/// waits for its paid interval. The resync then adds the market, and relay
+/// stages the liquidation of the underwater account again.
+#[test]
+fn fix4_liq_a_dust_deposit_in_a_new_market_keeps_relay_coverage() {
+    let mut fixture = setup();
+    arm_liquidation_throttle(&mut fixture.svm);
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+    let user = fix4_liq_synced_long(&mut fixture, market_conditions, ANY_SYNC_COST_UNITS);
+
+    set_sol_spot_market(&mut fixture.svm, 150);
+    let sol_market: velocity::state::spot_market::SpotMarket =
+        read_zero_copy(&fixture.svm, &spot_market_pda(1));
+    let sol_oracle = Pubkey::new_from_array(sol_market.oracle.to_bytes());
+    let mut account: User = read_zero_copy(&fixture.svm, &user);
+    account.spot_positions[1].market_index = 1;
+    account.spot_positions[1].balance_type = SpotBalanceType::Deposit;
+    account.spot_positions[1].scaled_balance = 1;
+    set_user_account(&mut fixture.svm, user, &account);
+
+    let underwater_at = |fixture: &mut Fixture, slot: u64| {
+        fixture.svm.warp_to_slot(slot);
+        set_oracle(
+            &mut fixture.svm,
+            fixture.oracle,
+            (80 * PRICE_PRECISION) as i64,
+            slot,
+        );
+        set_oracle(
+            &mut fixture.svm,
+            sol_oracle,
+            (150 * PRICE_PRECISION) as i64,
+            slot,
+        );
+    };
+
+    underwater_at(&mut fixture, 12);
+    assert!(
+        fix4_liq_resolve_liquidation(&mut fixture, user).is_none(),
+        "the stored list lacks spot market 1, so the resolver reports no work"
+    );
+    assert!(
+        fix4_liq_resolve_resync(&mut fixture, user).is_none(),
+        "a resync inside the paid interval pays nothing, so it is not work"
+    );
+
+    underwater_at(&mut fixture, 3_100);
+    let resync = fix4_liq_resolve_resync(&mut fixture, user).expect("the new market is work");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let payout_before = fixture.svm.get_balance(&payout).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resync,
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
+        payout,
+    );
+    assert!(fixture.svm.get_balance(&payout).unwrap() > payout_before);
+
+    let stored: Vec<Pubkey> = fix4_liq_stored_metas(&fixture, user)
+        .iter()
+        .map(|meta| meta.pubkey)
+        .collect();
+    assert!(stored.contains(&spot_market_pda(1)));
+    assert!(stored.contains(&sol_oracle));
+
+    let liquidation =
+        fix4_liq_resolve_liquidation(&mut fixture, user).expect("relay covers the user again");
+    assert_eq!(
+        liquidation.executor_disc,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR
+    );
+}
+
+/// The admin lowers the market's crank payments after a user's sync. The
+/// liveness poll still asks relay for the old figure, so the staged
+/// liquidation pays that figure and relay's payment guard holds.
+#[test]
+fn fix4_liq_a_liquidation_pays_the_poll_floor_after_a_price_cut() {
+    let mut fixture = setup();
+    arm_liquidation_throttle(&mut fixture.svm);
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    set_protocol_user(&mut fixture.svm);
+    place_clob_bid(&mut fixture, 80 * PRICE, 5 * UNIT);
+    let user = fix4_liq_synced_long(&mut fixture, market_conditions, 0);
+
+    let conditions: velocity::state::user_conditions::UserConditionsV0 =
+        read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
+    assert_eq!(conditions.liveness_min_payment(), 10_000);
+
+    let mut crank: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &market_conditions);
+    crank.crank_payments.liquidation = 3_000;
+    crank.crank_payments.force_cancel = 3_000;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        market_conditions,
+        velocity::state::clob_crank::ClobCrankConditionsV0::DISCRIMINATOR,
+        &crank,
+        velocity::state::clob_crank::ClobCrankConditionsV0::SIZE,
+    );
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (80 * PRICE_PRECISION) as i64,
+        12,
+    );
+    let resolved = fix4_liq_resolve_liquidation(&mut fixture, user)
+        .expect("an underwater account stages a liquidation");
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let reservoir_before = fixture.svm.get_balance(&market_conditions).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+        payout,
+    );
+    assert_eq!(
+        reservoir_before - fixture.svm.get_balance(&market_conditions).unwrap(),
+        10_000,
+        "the liquidation pays what the poll asserts, not the lowered figure"
+    );
+}
+
+
+/// `place_and_take_perp_order_v1` market order for `taker`, with `makers`
+/// loaded so the book may settle against them.
+fn fix4_router_take_ix(
+    fixture: &Fixture,
+    taker: &Party,
+    direction: PositionDirection,
+    base: u64,
+    limit: u64,
+    makers: &[&Party],
+) -> Instruction {
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        authority: taker.authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    for maker in makers {
+        accounts.push(AccountMeta::new(maker.user, false));
+        accounts.push(AccountMeta::new(maker.stats, false));
+    }
+
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            args: PlaceAndTakePerpOrderV1Args {
+                params: OrderParams {
+                    order_type: OrderType::Market,
+                    market_type: MarketType::Perp,
+                    direction,
+                    base_asset_amount: base,
+                    price: limit,
+                    market_index: 0,
+                    post_only: PostOnlyParam::None,
+                    ..OrderParams::default()
+                },
+                success_condition: None,
+            },
+        }
+        .data(),
+    }
+}
+
+/// A swift market order for one unit, signed by its taker and attested by the
+/// flow authority.
+struct Fix4RouterSignedOrder {
+    envelope: Vec<u8>,
+    attestation: velocity::FlowAttestationV0,
+}
+
+fn fix4_router_signed_order(
+    flow: &Keypair,
+    taker: &Party,
+    direction: PositionDirection,
+    limit: u64,
+    slot: u64,
+) -> Fix4RouterSignedOrder {
+    use {
+        anchor_lang::AnchorSerialize, velocity::state::order_params::SignedMsgOrderParamsMessage,
+    };
+
+    let message = SignedMsgOrderParamsMessage {
+        signed_msg_order_params: OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction,
+            base_asset_amount: UNIT,
+            price: limit,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            ..OrderParams::default()
+        },
+        sub_account_id: 0,
+        slot,
+        uuid: *b"fix4rout",
+        take_profit_order_params: None,
+        stop_loss_order_params: None,
+        max_margin_ratio: None,
+        builder_idx: None,
+        builder_fee_tenth_bps: None,
+        isolated_position_deposit: None,
+        network: Some(velocity::state::order_params::expected_signed_msg_network()),
+        route: None,
+    };
+    let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
+    message.serialize(&mut borsh_body).unwrap();
+    let hex_msg = hex_lower(&borsh_body);
+    let signed_bytes = velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+    let signature = taker.authority.sign_message(&signed_bytes);
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(signature.as_ref());
+    envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());
+    envelope.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+    envelope.extend_from_slice(hex_msg.as_bytes());
+
+    let order_sig = <[u8; 64]>::try_from(signature.as_ref()).unwrap();
+    let mut attest_message = Vec::new();
+    attest_message.extend_from_slice(velocity::FLOW_ATTESTATION_DOMAIN);
+    attest_message.extend_from_slice(&order_sig);
+    attest_message.extend_from_slice(&i64::MAX.to_le_bytes());
+    Fix4RouterSignedOrder {
+        envelope,
+        attestation: velocity::FlowAttestationV0 {
+            signature: <[u8; 64]>::try_from(flow.sign_message(&attest_message).as_ref()).unwrap(),
+            expiry_ts: i64::MAX,
+        },
+    }
+}
+
+/// The keeper-built fill that places `order` for `taker` with `makers` loaded.
+fn fix4_router_attested_swift_ix(
+    fixture: &Fixture,
+    order: Fix4RouterSignedOrder,
+    taker: &Party,
+    keeper: &Party,
+    makers: &[&Party],
+) -> Instruction {
+    let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+        authority: keeper.authority.pubkey(),
+        ix_sysvar: instructions_sysvar(),
+        filler: keeper.user,
+        filler_stats: keeper.stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    for maker in makers {
+        accounts.push(AccountMeta::new(maker.user, false));
+        accounts.push(AccountMeta::new(maker.stats, false));
+    }
+
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceSignedMsgTakerOrder {
+            signed_msg_order_params_message_bytes: order.envelope,
+            is_delegate_signer: false,
+            flow_attestation: Some(order.attestation),
+        }
+        .data(),
+    }
+}
+
+/// Route the victim's resting buy with `crank_taker_origin_cross` and assert it
+/// paid the vAMM's price, not its own bound of 105.
+fn fix4_router_crank_routes_the_victim(fixture: &mut Fixture, keeper: &Party, victim: &Party) {
+    let crank = crank_taker_origin_cross_ix(fixture, keeper, victim, &[]);
+    let authority = keeper.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(1_400_000), crank],
+        &[],
+    )
+    .expect("the crank routes the remainder");
+
+    let position = perp_position(&fixture.svm, &victim.user);
+    assert_eq!(position.base_asset_amount, UNIT as i64);
+    assert!(
+        -position.quote_asset_amount < 104 * PRICE as i64,
+        "paid {}, where its bound is 105",
+        -position.quote_asset_amount
+    );
+}
+
+/// On a zero-delay book, a buy remainder at 105 rests while `AmmFill` is
+/// paused, and the vAMM then asks about 102. Nothing on the book crosses the
+/// remainder. A seller that loads its owner still cannot take it at 105 while
+/// its claim holds, so the crank routes it to the vAMM instead.
+#[test]
+fn fix4_router_a_seller_cannot_take_a_vamm_crossed_remainder_before_the_crank() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let attacker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        105 * PRICE,
+        UNIT,
+    );
+    resume_amm_fill(&mut fixture.svm);
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let sell = fix4_router_take_ix(
+        &fixture,
+        &attacker,
+        PositionDirection::Short,
+        UNIT,
+        90 * PRICE,
+        &[&victim],
+    );
+    let authority = attacker.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(1_400_000), sell],
+        &[],
+    )
+    .expect("the sell lands");
+
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0,
+        "the sell did not reach the remainder"
+    );
+    assert_eq!(clob_bid_count(&fixture), 1);
+    assert!(
+        perp_position(&fixture.svm, &attacker.user).quote_asset_amount < 104 * PRICE as i64,
+        "the seller did not receive the remainder's bound"
+    );
+
+    fix4_router_crank_routes_the_victim(&mut fixture, &attacker, &victim);
+}
+
+/// On a delayed book an unattested buy rests whole at 105 while the vAMM asks
+/// about 102. At activation an attested swift sell that loads the victim does
+/// not take the remainder, so the crank routes it to the vAMM instead.
+#[test]
+fn fix4_router_an_attested_sell_cannot_take_a_vamm_crossed_remainder_before_the_crank() {
+    use velocity::state::state::HotRole;
+
+    let mut fixture = setup();
+    set_clob_default_activation_delay(&mut fixture, 4);
+    let flow = Keypair::new();
+    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
+    state.set_hot_key(HotRole::FlowAuthority, flow.pubkey());
+    set_zero_copy_account(
+        &mut fixture.svm,
+        state_pda(),
+        State::DISCRIMINATOR,
+        &state,
+        State::SIZE,
+    );
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let attacker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    set_signed_msg_user_orders(&mut fixture.svm, &attacker.authority.pubkey(), 8);
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        105 * PRICE,
+        UNIT,
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0
+    );
+
+    fixture.svm.warp_to_slot(16);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        16,
+    );
+
+    let order =
+        fix4_router_signed_order(&flow, &attacker, PositionDirection::Short, 90 * PRICE, 16);
+    let sell = fix4_router_attested_swift_ix(&fixture, order, &attacker, &keeper, &[&victim]);
+    let keeper_authority = keeper.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), sell],
+        &[],
+    )
+    .expect("the attested sell lands");
+
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0,
+        "the attested sell did not reach the remainder"
+    );
+    assert_eq!(clob_bid_count(&fixture), 1);
+
+    fix4_router_crank_routes_the_victim(&mut fixture, &keeper, &victim);
+}
+
+
+/// Rests `owners` small asks of separate accounts at 104 through a taker-origin
+/// bid at 105, then sends the crank the cross resolver stages. The staged
+/// crank carries three makers, so a fourth owner is withheld from it.
+fn fix4_taker_blockade(
+    owners: usize,
+) -> (
+    Fixture,
+    Party,
+    Result<(), litesvm::types::FailedTransactionMetadata>,
+) {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        105 * PRICE,
+        UNIT,
+    );
+
+    for _ in 0..owners {
+        let blocker = party(&mut fixture.svm, 1_000 * SPOT_BALANCE_PRECISION_U64);
+        place_clob_order_for(
+            &mut fixture,
+            &blocker,
+            PositionDirection::Short,
+            104 * PRICE,
+            UNIT / 10,
+        );
+    }
+
+    resume_amm_fill(&mut fixture.svm);
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let resolved =
+        run_cross_resolver(&mut fixture, conditions).expect("a crossed remainder is work");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let keeper = fixture.keeper.insecure_clone();
+    let result = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[
+            compute_unit_limit_ix(1_400_000),
+            staged_executor_ix(&resolved, payout),
+        ],
+        &[],
+    )
+    .map(|_| ());
+    (fixture, victim, result)
+}
+
+/// Four owners through the remainder are one more than relay stages. The
+/// program-keeper crank stops short at the three it carries, so the victim
+/// still buys below the 104 asks instead of waiting to be sold at 105.
+#[test]
+fn fix4_taker_a_fourth_blocker_owner_does_not_freeze_the_relay_crank() {
+    let (fixture, victim, result) = fix4_taker_blockade(4);
+    result.expect("the staged crank stops short at the makers it carries");
+
+    let position = perp_position(&fixture.svm, &victim.user);
+    let filled = position.base_asset_amount;
+    assert!(filled > 0, "the crank filled the victim");
+    let average = -position.quote_asset_amount as i128 * UNIT as i128 / filled as i128;
+    assert!(
+        average < 104 * PRICE as i128,
+        "the victim paid {average} per unit, where its rest price is 105"
+    );
+}
+
+/// The same crank with another read depth.
+fn fix4_taker_with_cross_rows(mut ix: Instruction, cross_rows: u16) -> Instruction {
+    ix.data = velocity::instruction::CrankTakerOriginCross {
+        args: CrankTakerOriginCrossArgs {
+            market_index: 0,
+            cross_rows,
+            signed_route: vec![],
+        },
+    }
+    .data();
+    ix
+}
+
+/// An older bid at 101 holds the first claim on the ask at 100, and a newer bid
+/// at 102 rests in front of it. A one-row read showed only the newer bid, which
+/// then took the ask the book reserves for the older one. The crank now
+/// refuses a read that ends on a crossing row, and the older bid fills.
+#[test]
+fn fix4_taker_a_short_read_cannot_skip_an_older_claimant() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let older = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let newer = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_taker_origin_order(
+        &mut fixture,
+        &older,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    rest_taker_origin_order(
+        &mut fixture,
+        &newer,
+        PositionDirection::Long,
+        102 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let short_read = fix4_taker_with_cross_rows(
+        crank_taker_origin_cross_ix(&fixture, &keeper, &newer, &[&maker, &older]),
+        1,
+    );
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), short_read],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::NoTakerOriginCross);
+    assert_eq!(
+        perp_position(&fixture.svm, &newer.user).base_asset_amount,
+        0
+    );
+
+    fixture.svm.expire_blockhash();
+    let claimant = crank_taker_origin_cross_ix(&fixture, &keeper, &older, &[&maker, &newer]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), claimant],
+        &[],
+    )
+    .expect("the older claimant takes the ask it claims");
+
+    let position = perp_position(&fixture.svm, &older.user);
+    assert_eq!(position.base_asset_amount, UNIT as i64);
+    assert!(
+        -position.quote_asset_amount < 101 * PRICE as i64,
+        "the older bid bought at the maker's 100: {}",
+        -position.quote_asset_amount
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &newer.user).base_asset_amount,
+        0
+    );
+}
+
+/// A buy remainder at 105 rests first, then a sell remainder at 95, with the
+/// oracle at 100. Leaves the vAMM's fill paused.
+fn fix4_taker_rest_pair(fixture: &mut Fixture) -> (Party, Party, Party) {
+    pause_amm_fill(&mut fixture.svm);
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let attacker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_crossing_remainders(
+        fixture,
+        &blocker,
+        (&victim, PositionDirection::Long, 105 * PRICE, UNIT),
+        (&attacker, PositionDirection::Short, 95 * PRICE, UNIT),
+        12,
+    );
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+    (victim, attacker, keeper)
+}
+
+/// With `AmmFill` paused the vAMM has no price, and the pair used to settle the
+/// later sell into the earlier buy at 105 against an oracle of 100. The pair
+/// now waits until the vAMM can fill the earlier remainder.
+#[test]
+fn fix4_taker_an_amm_fill_pause_does_not_settle_the_worst_price_pair() {
+    let mut fixture = setup();
+    let (victim, attacker, keeper) = fix4_taker_rest_pair(&mut fixture);
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &attacker, &[&victim]);
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::NoTakerOriginCross);
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &attacker.user).base_asset_amount,
+        0
+    );
+}
+
+/// A vAMM in drawdown is quoted but cannot fill. The pair rule now reads the
+/// same fill gates as the router, so the resolver stages no pair crank that
+/// fails on every attempt, and the direct pair crank waits.
+#[test]
+fn fix4_taker_a_drawdown_vamm_stages_no_failing_pair() {
+    let mut fixture = setup();
+    let conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+    let (victim, attacker, keeper) = fix4_taker_rest_pair(&mut fixture);
+
+    resume_amm_fill(&mut fixture.svm);
+    let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    market.amm.net_revenue_since_last_funding = -1_000_000_000_000;
+    market.amm.total_fee_minus_distributions = 1_000_000;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+
+    assert!(
+        run_cross_resolver(&mut fixture, conditions).is_none(),
+        "nothing the executor would land is staged"
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &attacker, &[&victim]);
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::NoTakerOriginCross);
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0
+    );
+}
+
+fn fix4_taker_warp_at_oracle_100(fixture: &mut Fixture, slot: u64) {
+    fixture.svm.warp_to_slot(slot);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        slot,
+    );
+}
+
+/// A bid remainder at 102 rests first, then a maker ask at 100 for half a
+/// unit, then an ask remainder at 101. The bid's crank ignores every claim, and
+/// it used to sweep through the maker into the later ask at 101. It now stops
+/// in front of the later ask, and the two remainders pair at the earlier 102.
+#[test]
+fn fix4_taker_a_maker_cross_stops_in_front_of_a_later_remainder() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_taker_origin_order(
+        &mut fixture,
+        &early,
+        PositionDirection::Long,
+        102 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT / 2,
+    );
+    fix4_taker_warp_at_oracle_100(&mut fixture, 12);
+    rest_taker_origin_order(
+        &mut fixture,
+        &late,
+        PositionDirection::Short,
+        101 * PRICE,
+        UNIT,
+    );
+
+    fix4_taker_warp_at_oracle_100(&mut fixture, 20);
+    quote_vamm_outside_the_pair(&mut fixture.svm);
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let route = crank_taker_origin_cross_ix(&fixture, &keeper, &early, &[&maker, &late]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), route],
+        &[],
+    )
+    .expect("the earlier bid takes the maker in front of the later ask");
+    assert_eq!(
+        perp_position(&fixture.svm, &early.user).base_asset_amount,
+        (UNIT / 2) as i64
+    );
+    assert_eq!(perp_position(&fixture.svm, &late.user).base_asset_amount, 0);
+
+    fixture.svm.expire_blockhash();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .expect("the two remainders pair");
+
+    let late_position = perp_position(&fixture.svm, &late.user);
+    assert_eq!(late_position.base_asset_amount, -((UNIT / 2) as i64));
+    assert!(
+        late_position.quote_asset_amount > 50_800_000,
+        "sold half a unit at the earlier 102 less fees, not at its own 101: {}",
+        late_position.quote_asset_amount
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &early.user).base_asset_amount,
+        UNIT as i64
+    );
+}
+
+/// An attacker rests one minimum ask at the victim's limit of 99 and cranks it
+/// in program-keeper mode with its own payout, ten times. Each slice charged
+/// the victim the keeper payment's shortfall and paid the attacker the
+/// lamports. The charge is now capped by what the slice gained the victim
+/// against its rest price, which is nothing here, so the reservoir pays
+/// nothing and the victim pays its limit plus its taker fee.
+#[test]
+fn fix4_taker_slices_at_the_limit_charge_no_shortfall() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let conditions = init_crank_conditions(&mut fixture, 7_500);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        99 * PRICE,
+        UNIT,
+    );
+    resume_amm_fill(&mut fixture.svm);
+    let attacker = party(&mut fixture.svm, 1_000 * SPOT_BALANCE_PRECISION_U64);
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+
+    const SLICES: u64 = 10;
+    for slice in 0..SLICES {
+        let slot = 20 + slice;
+        fixture.svm.warp_to_slot(slot);
+        fixture.svm.expire_blockhash();
+        set_oracle(
+            &mut fixture.svm,
+            fixture.oracle,
+            (100 * PRICE_PRECISION) as i64,
+            slot,
+        );
+        place_clob_order_for(
+            &mut fixture,
+            &attacker,
+            PositionDirection::Short,
+            99 * PRICE,
+            1000,
+        );
+
+        let resolved = run_cross_resolver(&mut fixture, conditions).expect("the slice crosses");
+        let authority = attacker.authority.insecure_clone();
+        send_with_ixs(
+            &mut fixture.svm,
+            &authority,
+            &[
+                compute_unit_limit_ix(1_400_000),
+                staged_executor_ix(&resolved, payout),
+            ],
+            &[],
+        )
+        .expect("the slice cranks");
+    }
+
+    let position = perp_position(&fixture.svm, &victim.user);
+    let filled = position.base_asset_amount;
+    assert_eq!(filled, (1000 * SLICES) as i64);
+    let paid = -position.quote_asset_amount;
+    let at_limit = 99 * PRICE as i64 * filled / UNIT as i64;
+    assert!(
+        paid <= at_limit + at_limit / 1000,
+        "paid {paid} for base worth {at_limit} at its limit"
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000,
+        "a slice that gained the taker nothing pays no lamports"
+    );
+}
+
+fn fix4_taker_enable_builder_codes(svm: &mut litesvm::LiteSVM) {
+    let mut state: State = read_zero_copy(svm, &state_pda());
+    state.feature_bit_flags |= velocity::state::state::FeatureBitFlags::BuilderCodes as u8;
+    set_zero_copy_account(svm, state_pda(), State::DISCRIMINATOR, &state, State::SIZE);
+}
+
+fn fix4_taker_escrow_pda(authority: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            velocity::state::revenue_share::REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(),
+            authority.as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0
+}
+
+/// The crank with the taker's escrow PDA after the counterparties, where the
+/// handler reads it.
+fn fix4_taker_with_escrow(mut ix: Instruction, taker: &Party) -> Instruction {
+    let at = ix.accounts.len() - 3;
+    ix.accounts.insert(
+        at,
+        AccountMeta::new(fix4_taker_escrow_pda(&taker.authority.pubkey()), false),
+    );
+    ix
+}
+
+/// With builder codes on, a crank that leaves the taker's escrow PDA out could
+/// skip the builder fee. The crank refuses it, and the same crank with an
+/// uncreated PDA in place routes the taker.
+#[test]
+fn fix4_taker_a_crank_without_the_taker_escrow_pda_is_refused() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+    fix4_taker_enable_builder_codes(&mut fixture.svm);
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let without = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&maker]);
+    let refused = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), without.clone()],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&refused, ErrorCode::UnableToLoadRevenueShareAccount);
+
+    fixture.svm.expire_blockhash();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[
+            compute_unit_limit_ix(1_400_000),
+            fix4_taker_with_escrow(without, &taker),
+        ],
+        &[],
+    )
+    .expect("an uncreated escrow PDA reads as no escrow");
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        UNIT as i64
+    );
+}
+
+/// Writes the taker's escrow with one approved builder and one open builder
+/// row for `order_id`.
+fn fix4_taker_set_builder_escrow(svm: &mut litesvm::LiteSVM, taker: &Party, order_id: u32) {
+    use velocity::state::revenue_share::{
+        BuilderInfo, RevenueShareEscrow, RevenueShareEscrowFixed, RevenueShareOrder,
+        RevenueShareOrderBitFlag,
+    };
+
+    let order = RevenueShareOrder::new(
+        0,
+        0,
+        order_id,
+        100,
+        MarketType::Perp,
+        0,
+        RevenueShareOrderBitFlag::Open as u8,
+        0,
+    );
+    let builder = BuilderInfo {
+        authority: anchor_lang::prelude::Pubkey::new_unique(),
+        max_fee_tenth_bps: 1_000,
+        padding: [0; 6],
+    };
+    let fixed = RevenueShareEscrowFixed {
+        authority: anchor_lang::prelude::Pubkey::new_from_array(
+            taker.authority.pubkey().to_bytes(),
+        ),
+        ..RevenueShareEscrowFixed::default()
+    };
+
+    let header = 8 + core::mem::size_of::<RevenueShareEscrowFixed>();
+    let order_size = core::mem::size_of::<RevenueShareOrder>();
+    let mut data = vec![0u8; RevenueShareEscrow::space(1, 1)];
+    data[..8].copy_from_slice(RevenueShareEscrow::DISCRIMINATOR);
+    data[8..header].copy_from_slice(bytemuck::bytes_of(&fixed));
+    data[header + 4..header + 8].copy_from_slice(&1u32.to_le_bytes());
+    data[header + 8..header + 8 + order_size].copy_from_slice(bytemuck::bytes_of(&order));
+    let builders_len_offset = header + 12 + order_size;
+    data[builders_len_offset..builders_len_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+    data[builders_len_offset + 4..builders_len_offset + 4 + core::mem::size_of::<BuilderInfo>()]
+        .copy_from_slice(bytemuck::bytes_of(&builder));
+    svm.set_account(
+        fix4_taker_escrow_pda(&taker.authority.pubkey()),
+        Account {
+            lamports: 100_000_000_000,
+            data,
+            owner: velocity_id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+}
+
+fn fix4_taker_builder_fees_accrued(svm: &litesvm::LiteSVM, taker: &Party) -> u64 {
+    use velocity::state::revenue_share::{RevenueShareEscrowFixed, RevenueShareOrder};
+
+    let account = svm
+        .get_account(&fix4_taker_escrow_pda(&taker.authority.pubkey()))
+        .unwrap();
+    let start = 8 + core::mem::size_of::<RevenueShareEscrowFixed>() + 8;
+    let order: RevenueShareOrder = bytemuck::pod_read_unaligned(
+        &account.data[start..start + core::mem::size_of::<RevenueShareOrder>()],
+    );
+    order.fees_accrued
+}
+
+/// The pair branch settles without a router, and it priced under settlement
+/// rules whose builder fee is always off. The aggressor of a pair now pays the
+/// builder fee its order carries.
+#[test]
+fn fix4_taker_a_pair_charges_the_aggressors_builder_fee() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_crossing_remainders(
+        &mut fixture,
+        &blocker,
+        (&early, PositionDirection::Long, 101 * PRICE, UNIT),
+        (&late, PositionDirection::Short, 99 * PRICE, UNIT / 2),
+        12,
+    );
+    let late_user: User = read_zero_copy(&fixture.svm, &late.user);
+    fix4_taker_set_builder_escrow(&mut fixture.svm, &late, late_user.get_last_order_id());
+    fix4_taker_enable_builder_codes(&mut fixture.svm);
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+    quote_vamm_outside_the_pair(&mut fixture.svm);
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = fix4_taker_with_escrow(
+        crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]),
+        &late,
+    );
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .expect("the pair settles");
+
+    assert_eq!(
+        perp_position(&fixture.svm, &late.user).base_asset_amount,
+        -((UNIT / 2) as i64)
+    );
+    assert!(
+        fix4_taker_builder_fees_accrued(&fixture.svm, &late) > 0,
+        "the pair charged the builder fee on the aggressor's order"
+    );
+}
+
+/// A bid remainder at 101 and a later ask remainder at 99 both outlive their
+/// claims. A claim-honouring route of either would take the other at its own
+/// price, or nothing where the book withholds it. The later ask now aggresses
+/// the pair and sells at the earlier bid's 101.
+#[test]
+fn fix4_taker_two_lapsed_remainders_settle_as_a_pair() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_crossing_remainders(
+        &mut fixture,
+        &blocker,
+        (&early, PositionDirection::Long, 101 * PRICE, UNIT),
+        (&late, PositionDirection::Short, 99 * PRICE, UNIT / 2),
+        12,
+    );
+
+    warp_past_claim(&mut fixture, 12);
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        clock.slot,
+    );
+    quote_vamm_outside_the_pair(&mut fixture.svm);
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .expect("the lapsed pair settles");
+
+    let late_position = perp_position(&fixture.svm, &late.user);
+    assert_eq!(late_position.base_asset_amount, -((UNIT / 2) as i64));
+    assert!(
+        (50_400_000..50_500_000).contains(&late_position.quote_asset_amount),
+        "sold at the earlier order's 101 less fees: {}",
+        late_position.quote_asset_amount
     );
 }

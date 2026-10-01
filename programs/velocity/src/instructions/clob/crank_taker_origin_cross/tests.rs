@@ -1125,7 +1125,7 @@ mod subject_plans {
 
         let older = plan_subject(&bids, &asks, user(0xA)).unwrap();
         assert_eq!(routed_id(&older), Some(10));
-        assert!(older.claim_lapsed());
+        assert!(!older.owns_its_claim());
     }
 
     /// A lapsed remainder on the other side is depth, not a pair: the
@@ -1278,11 +1278,33 @@ mod resolver_stages {
         );
     }
 
-    /// A live claim keeps the signed route, and so does a crank that names it.
+    /// A fill that takes claimed depth keeps the signed route, and so does a
+    /// crank that names it.
     #[test]
-    fn a_live_claim_keeps_its_signed_route() {
+    fn a_claimed_fill_keeps_its_signed_route() {
         assert_eq!(claimed_route_digest([7; 8], false, true), [7; 8]);
         assert_eq!(claimed_route_digest([7; 8], true, false), [7; 8]);
+    }
+
+    /// The resolver stages a routed signed-message remainder with an empty
+    /// route. That fill honours every claim, so the baseline is good for it
+    /// inside the claim window too. The round-four probe showed each staged
+    /// crank failing the digest until the claim lapsed.
+    #[test]
+    fn a_routed_signed_remainder_claims_the_baseline() {
+        let bids = [row(1, 102, 0xA, true)];
+        let vamm = VammTops {
+            bid: Some(99),
+            ask: Some(101),
+        };
+        let stage = choose_stage(&bids, &[], vamm, 2).unwrap();
+        let plan = plan_subject(&bids, &[], stage.taker).unwrap();
+
+        let signed = crate::state::order_params::route_digest(&[Pubkey::new_from_array([7; 32])]);
+        assert_eq!(
+            claimed_route_digest(signed, !plan.owns_its_claim(), true),
+            crate::state::order_params::route_digest(&[])
+        );
     }
 
     /// A lapsed remainder is left alone while a live claimant on its side may
@@ -1324,6 +1346,16 @@ mod payment_shortfall_rules {
     fn a_cross_that_collected_the_payment_charges_nothing() {
         assert_eq!(payment_shortfall(750, Some(750)), 0);
         assert_eq!(payment_shortfall(900, Some(750)), 0);
+    }
+
+    /// The charge comes out of what the taker gained against its rest price, so
+    /// a crank at the rest price charges nothing. The round-four probe charged
+    /// a victim about the payment on every one of ten minimum slices.
+    #[test]
+    fn the_charge_is_capped_by_what_the_taker_gained() {
+        assert_eq!(chargeable_shortfall(0, Some(750), 0, 0), 0);
+        assert_eq!(chargeable_shortfall(0, Some(750), 500, 100), 400);
+        assert_eq!(chargeable_shortfall(200, Some(750), 5_000, 100), 550);
     }
 
     /// With no SOL market there is no price for the payment, so nothing is
@@ -1425,9 +1457,31 @@ mod pair_against_the_vamm {
             pair_resolution(VAMM, SideV0::Ask, 100),
             PairResolution::Settle
         );
+    }
+
+    /// A vAMM that cannot fill the earlier remainder leaves its worst price
+    /// unpriced, so the pair waits. The round-four probe paused `AmmFill` and
+    /// sold the earlier buyer at 105 against an oracle of 100.
+    #[test]
+    fn a_pair_the_vamm_cannot_price_waits() {
         assert_eq!(
             pair_resolution(VammTops::default(), SideV0::Ask, 102),
-            PairResolution::Settle
+            PairResolution::Unpriced
+        );
+
+        // The later sell aggresses, so the earlier buyer faces the vAMM ask.
+        let no_ask = VammTops {
+            bid: Some(99),
+            ask: None,
+        };
+        assert_eq!(
+            pair_resolution(no_ask, SideV0::Ask, 102),
+            PairResolution::Unpriced
+        );
+        assert_eq!(
+            pair_resolution(no_ask, SideV0::Bid, 100),
+            PairResolution::Settle,
+            "the aggressor's own side needs no vAMM price"
         );
     }
 
@@ -1461,8 +1515,245 @@ mod pair_against_the_vamm {
         let stage = choose_stage(&bids, &asks, VAMM, 2).unwrap();
         assert_eq!(stage.taker, bids[0].order.user);
         assert!(stage.makers.is_empty());
+        assert!(stage.yields_to_maker_cross);
 
-        let paired = choose_stage(&bids, &asks, VammTops::default(), 2).unwrap();
+        let inside = VammTops {
+            bid: Some(98),
+            ask: Some(103),
+        };
+        let paired = choose_stage(&bids, &asks, inside, 2).unwrap();
         assert_eq!(paired.taker, asks[0].order.user);
+    }
+
+    /// An unpriced pair is not staged, so a maker cross on the same book goes
+    /// next instead of relay backing off a crank that always fails.
+    #[test]
+    fn the_resolver_stages_no_unpriced_pair() {
+        let bids = [row(1, 102, 0xA)];
+        let asks = [row(2, 99, 0xB)];
+
+        assert_eq!(choose_stage(&bids, &asks, VammTops::default(), 2), None);
+    }
+}
+
+/// A short read can hide an older claimant behind the subject, so the crank
+/// refuses a read that ends on a crossing row. An older bid at 101 holds the
+/// first claim on the ask at 100, and a newer bid at 102 rests in front of it.
+mod crossing_reads {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    fn user(owner: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([owner; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn row(order_id: u64, price: u64, owner: u8, taker_origin: bool) -> BookRow {
+        BookRow {
+            order: RestingOrder {
+                order_ref: ClobOrderRefV0 {
+                    node_index: order_id as u32,
+                    order_id,
+                },
+                user: user(owner),
+                price,
+                base_asset_amount: 10,
+                taker_origin,
+                reduce_only: false,
+                placed_slot: order_id,
+            },
+            claim_lapsed: false,
+        }
+    }
+
+    fn book() -> ([BookRow; 2], [BookRow; 1]) {
+        (
+            [row(9, 102, 0xC, true), row(5, 101, 0xA, true)],
+            [row(3, 100, 0xB, false)],
+        )
+    }
+
+    #[test]
+    fn a_read_that_ends_on_a_crossing_row_is_refused() {
+        let (bids, asks) = book();
+        assert!(!read_shows_every_crossing_row(&bids[..1], &asks, 1));
+        assert!(read_shows_every_crossing_row(&bids, &asks, 3));
+        assert!(read_shows_every_crossing_row(
+            &bids[..1],
+            &asks,
+            MAX_CROSS_ROWS
+        ));
+    }
+
+    #[test]
+    fn a_full_side_that_ends_below_the_cross_is_shown() {
+        let bids = [row(9, 102, 0xC, true), row(4, 99, 0xD, false)];
+        let asks = [row(3, 100, 0xB, false)];
+        assert!(read_shows_every_crossing_row(&bids, &asks, 2));
+    }
+
+    /// With the whole book read, the newer remainder routes with the older
+    /// claim honoured, and the resolver reads deep enough to show the older
+    /// one.
+    #[test]
+    fn the_older_claimant_keeps_its_depth_on_a_full_read() {
+        let (bids, asks) = book();
+        let plan = plan_subject(&bids, &asks, user(0xC)).unwrap();
+        assert!(!plan.owns_its_claim());
+
+        let stage = choose_stage(&bids, &asks, VammTops::default(), 10).unwrap();
+        assert_eq!(stage.taker, user(0xA));
+        assert_eq!(stage.read_depth, 3);
+    }
+}
+
+/// A bid remainder at 102 crosses a maker ask at 100 and a later ask remainder
+/// at 101. The routed fill ignores every claim, so it stops in front of the
+/// later remainder, and the two then pair at 102.
+mod cross_route_bound {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    fn user(owner: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([owner; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn row(order_id: u64, price: u64, size: u64, owner: u8, taker_origin: bool) -> BookRow {
+        BookRow {
+            order: RestingOrder {
+                order_ref: ClobOrderRefV0 {
+                    node_index: order_id as u32,
+                    order_id,
+                },
+                user: user(owner),
+                price,
+                base_asset_amount: size,
+                taker_origin,
+                reduce_only: false,
+                placed_slot: order_id,
+            },
+            claim_lapsed: false,
+        }
+    }
+
+    #[test]
+    fn the_route_stops_in_front_of_a_later_remainder() {
+        let bids = [row(5, 102, 10, 0xA, true)];
+        let asks = [
+            row(7, 100, 5, 0xB, false),
+            row(8, 100, 3, 0xD, false),
+            row(9, 101, 10, 0xC, true),
+        ];
+
+        let plan = plan_subject(&bids, &asks, user(0xA)).unwrap();
+        assert!(plan.owns_its_claim());
+        assert_eq!(plan.counterparty().unwrap().order_ref.order_id, 7);
+        assert_eq!(plan.route_base(), 8);
+    }
+
+    #[test]
+    fn a_route_with_no_remainder_behind_takes_the_whole_order() {
+        let bids = [row(5, 102, 10, 0xA, true)];
+        let asks = [row(7, 100, 5, 0xB, false)];
+
+        assert_eq!(
+            plan_subject(&bids, &asks, user(0xA)).unwrap().route_base(),
+            10
+        );
+    }
+
+    /// A lapsed remainder is depth, and the subject's own other account is
+    /// passed over, so neither stops the route.
+    #[test]
+    fn a_lapsed_or_own_remainder_does_not_stop_the_route() {
+        let mut lapsed = row(9, 101, 4, 0xC, true);
+        lapsed.claim_lapsed = true;
+        let mut own = row(10, 101, 6, 0xA, true);
+        own.order.user.sub_account_id = 1;
+        let bids = [row(5, 102, 10, 0xA, true)];
+        let asks = [row(7, 100, 5, 0xB, false), lapsed, own];
+
+        assert_eq!(
+            plan_subject(&bids, &asks, user(0xA)).unwrap().route_base(),
+            10
+        );
+    }
+}
+
+/// Two remainders whose claims lapsed settle as a pair at the earlier one's
+/// price, not through a claim-honouring route of one into the other.
+mod lapsed_pairs {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    fn user(owner: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([owner; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn lapsed(order_id: u64, price: u64, owner: u8) -> BookRow {
+        BookRow {
+            order: RestingOrder {
+                order_ref: ClobOrderRefV0 {
+                    node_index: order_id as u32,
+                    order_id,
+                },
+                user: user(owner),
+                price,
+                base_asset_amount: 5,
+                taker_origin: true,
+                reduce_only: false,
+                placed_slot: order_id,
+            },
+            claim_lapsed: true,
+        }
+    }
+
+    const INSIDE: VammTops = VammTops {
+        bid: Some(95),
+        ask: Some(105),
+    };
+
+    #[test]
+    fn the_later_lapsed_remainder_aggresses_the_earlier_one() {
+        let bids = [lapsed(1, 102, 0xA)];
+        let asks = [lapsed(2, 99, 0xB)];
+
+        let SubjectPlan::Cross(subject) = plan_subject(&bids, &asks, user(0xB)).unwrap() else {
+            panic!("the later remainder settles the pair");
+        };
+        assert!(subject.counterparty.taker_origin);
+        assert_eq!(subject.counterparty.price, 102);
+        assert!(!subject.owns_claim, "a lapsed pair takes no claimed depth");
+
+        let earlier = plan_subject(&bids, &asks, user(0xA)).unwrap();
+        assert!(!earlier.owns_its_claim());
+        assert!(earlier.counterparty().is_none());
+    }
+
+    #[test]
+    fn the_resolver_stages_the_lapsed_pair() {
+        let bids = [lapsed(1, 102, 0xA)];
+        let asks = [lapsed(2, 99, 0xB)];
+
+        let stage = choose_stage(&bids, &asks, INSIDE, 3).unwrap();
+        assert_eq!(stage.taker, user(0xB));
+        assert_eq!(stage.makers, vec![user(0xA)]);
+    }
+
+    /// A claim-honouring route of a lapsed remainder cannot take a remainder
+    /// on the other side, so the resolver does not stage one for it.
+    #[test]
+    fn a_remainder_is_not_depth_for_a_routed_stage() {
+        let bids = [lapsed(1, 102, 0xA)];
+        let mut asks = [lapsed(2, 99, 0xB), lapsed(3, 100, 0xC)];
+        asks[0].order.user = user(0xA);
+        asks[0].order.user.sub_account_id = 1;
+
+        assert_eq!(choose_stage(&bids, &asks, VammTops::default(), 3), None);
     }
 }

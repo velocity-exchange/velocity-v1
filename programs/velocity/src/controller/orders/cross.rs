@@ -172,8 +172,10 @@ pub fn price_taker_origin_cross(
 /// projected to `oracle_price_data` the way a fill projects it.
 ///
 /// `None` when the vAMM cannot fill that side, or when the projection fails.
-/// A caller uses this only to choose a path, and the fill it chooses applies
-/// every vAMM gate again.
+/// The fill gates are the router's own, so a cascade that stops vAMM fills
+/// also stops this price. The order-timing gate is left out, because this
+/// price has no order. A caller uses this only to choose a path, and the
+/// fill it chooses applies every vAMM gate again.
 pub fn vamm_top_price(
     market: &PerpMarket,
     oracle_price_data: OraclePriceData,
@@ -181,7 +183,16 @@ pub fn vamm_top_price(
     slot: u64,
     direction: PositionDirection,
 ) -> Option<u64> {
-    if state.amm_paused().ok()? || market.is_operation_paused(PerpOperation::AmmFill) {
+    if state.amm_paused().ok()? {
+        return None;
+    }
+
+    let (mm_oracle_price_data, safe_validity) =
+        super::safe_mm_oracle_state(market, state, &oracle_price_data, slot).ok()?;
+    if !market
+        .amm_fill_gates_ok(safe_validity, &mm_oracle_price_data)
+        .ok()?
+    {
         return None;
     }
 
@@ -348,6 +359,61 @@ mod gate_tests {
         assert!(vamm_improves_on(Some(99), PositionDirection::Short, 98));
         assert!(!vamm_improves_on(Some(97), PositionDirection::Short, 98));
         assert!(!vamm_improves_on(None, PositionDirection::Long, 102));
+    }
+
+    /// The controller fixture's $100 curve, priced at an oracle of 100.
+    fn quoted_market() -> (PerpMarket, crate::state::oracle::OraclePriceData) {
+        use crate::math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64};
+
+        let mut market = market_with(MarketStatus::Active);
+        market.amm.base_asset_reserve = 100 * AMM_RESERVE_PRECISION;
+        market.amm.quote_asset_reserve = 100 * AMM_RESERVE_PRECISION;
+        market.amm.sqrt_k = 100 * AMM_RESERVE_PRECISION;
+        market.amm.peg_multiplier = 100 * PEG_PRECISION;
+        market.amm.terminal_quote_asset_reserve = 100 * AMM_RESERVE_PRECISION;
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+        market.amm.base_spread = 20_000;
+        market.amm.max_spread = 50_000;
+        market.amm.max_fill_reserve_fraction = 100;
+        market.amm.max_slippage_ratio = 50;
+        market.order_step_size = 1000;
+        let historical = &mut market.market_stats.historical_oracle_data;
+        historical.last_oracle_price = 100 * PRICE_PRECISION_I64;
+        historical.last_oracle_price_twap = 100 * PRICE_PRECISION_I64;
+        historical.last_oracle_price_twap_5min = 100 * PRICE_PRECISION_I64;
+        let oracle = crate::state::oracle::OraclePriceData {
+            price: 100 * PRICE_PRECISION_I64,
+            confidence: 1,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+        (market, oracle)
+    }
+
+    /// The pair rule reads the vAMM through the router's fill gates. A vAMM
+    /// in drawdown or with `AmmFill` paused has no price for it.
+    #[test]
+    fn a_vamm_the_fill_gates_stop_has_no_top() {
+        use crate::controller::position::PositionDirection;
+
+        let state = crate::state::state::State::default();
+        let top = |market: &PerpMarket, oracle| {
+            super::vamm_top_price(market, oracle, &state, 0, PositionDirection::Long)
+        };
+        let (market, oracle) = quoted_market();
+        assert!(top(&market, oracle).is_some(), "a live vAMM quotes a top");
+
+        let mut drawn_down = market;
+        drawn_down.amm.net_revenue_since_last_funding = -1_000_000_000_000;
+        drawn_down.amm.total_fee_minus_distributions = 1_000_000;
+        assert!(drawn_down.has_too_much_drawdown().unwrap());
+        assert_eq!(top(&drawn_down, oracle), None);
+
+        let mut paused = market;
+        paused.paused_operations = PerpOperation::AmmFill as u8;
+        assert_eq!(top(&paused, oracle), None);
     }
 
     /// A pair of remainders settles without a router, and the referred taker

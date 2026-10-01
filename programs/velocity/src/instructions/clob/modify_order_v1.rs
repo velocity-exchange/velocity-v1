@@ -27,10 +27,12 @@
 //! partially-filled order therefore modifies against its remaining size, never
 //! against its original size.
 //!
-//! The replacement takes a new book id. The owner's writable
-//! `SignedMsgUserOrders` record may ride after the margin maps. A modified
-//! signed-message remainder then keeps its route under the new id. Without the
-//! record the replacement fills as unrouted.
+//! The replacement takes a new book id, and it is always a maker order. A
+//! modified taker remainder therefore rests as `cancel_order_v1` and
+//! `place_and_make_perp_order_v1` would rest it. Otherwise an owner whose claim
+//! lapsed could reprice the remainder through new depth and bind that depth
+//! again. The owner's writable `SignedMsgUserOrders` record may ride after the
+//! margin maps, and the remainder's route entry is then released.
 
 use {
     crate::{
@@ -236,7 +238,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         activation_delay_slots: params.activation_delay_slots,
         max_ts: terms.max_ts,
         user: user_ref,
-        taker_origin: terms.taker_origin,
+        taker_origin: false,
         // The id stays the same, so a reprice reads as one order moved rather
         // than two orders. A placed trigger's shadow slot keeps the id it
         // armed under; a new id here would orphan the shadow.
@@ -256,11 +258,11 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         &terms,
     )?;
 
-    if terms.taker_origin {
+    if removed.taker_origin {
         if let Some(mut record) =
             carried_signed_msg_record(remaining_accounts.next(), &user_ref.authority)
         {
-            record.move_resting_route(params.market_index, removed.order_id, order_ref.order_id);
+            record.clear_resting_route(params.market_index, removed.order_id);
         }
     }
 
@@ -278,7 +280,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
             base_asset_amount_filled: 0,
             max_ts: terms.max_ts,
             slot: clock.slot,
-            taker_origin: terms.taker_origin,
+            taker_origin: false,
         },
         is_isolated_position,
     )?;
@@ -383,8 +385,6 @@ struct ReplacementTerms {
     max_ts: i64,
     /// Carried from the cancelled order. The replacement cannot change it.
     reduce_only: bool,
-    /// Carried from the cancelled order. The replacement cannot change it.
-    taker_origin: bool,
 }
 
 /// Read the replacement's terms from the parameters and the removed order. A
@@ -438,13 +438,11 @@ fn resolve_replacement_terms(
         base_asset_amount,
         max_ts,
         reduce_only: removed.reduce_only,
-        taker_origin: removed.taker_origin,
     })
 }
 
 /// The replacement as the `Order` a fresh placement would build. A post-only
-/// replacement is one that asks the book to refuse a cross. A taker remainder
-/// is never post-only.
+/// replacement is one that asks the book to refuse a cross.
 fn replacement_order(params: &ModifyOrderV1Params, terms: &ReplacementTerms) -> Order {
     Order {
         status: OrderStatus::Open,
@@ -455,7 +453,7 @@ fn replacement_order(params: &ModifyOrderV1Params, terms: &ReplacementTerms) -> 
         price: terms.price,
         base_asset_amount: terms.base_asset_amount,
         reduce_only: terms.reduce_only,
-        post_only: params.reject_if_crossed && !terms.taker_origin,
+        post_only: params.reject_if_crossed,
         max_ts: terms.max_ts,
         ..Order::default()
     }
@@ -609,24 +607,16 @@ mod resolve_replacement_terms_tests {
     #[test]
     fn a_maker_order_replaces_as_a_maker_order() {
         let terms = resolve_replacement_terms(&params(), &removed(false, false), 0).unwrap();
-        assert!(!terms.taker_origin);
         assert!(!terms.reduce_only);
     }
 
     #[test]
-    fn a_taker_remainder_replaces_as_a_taker_remainder() {
-        let terms = resolve_replacement_terms(&params(), &removed(true, false), 0).unwrap();
-        assert!(terms.taker_origin);
-        assert!(!terms.reduce_only);
-    }
-
-    #[test]
-    fn a_reduce_only_taker_remainder_replaces_as_a_reduce_only_taker_remainder() {
+    fn a_reduce_only_taker_remainder_keeps_its_reduce_only_flag() {
         // The removed order is a bid, so a short position is what it has left
         // to reduce.
         let terms = resolve_replacement_terms(&params(), &removed(true, true), -1_000).unwrap();
-        assert!(terms.taker_origin);
         assert!(terms.reduce_only);
+        assert_eq!(terms.base_asset_amount, 1_000);
     }
 
     #[test]
@@ -689,7 +679,6 @@ mod replacement_rules_tests {
             base_asset_amount,
             max_ts: 0,
             reduce_only,
-            taker_origin: false,
         }
     }
 
@@ -743,16 +732,9 @@ mod replacement_rules_tests {
     }
 
     #[test]
-    fn only_a_maker_that_refuses_a_cross_is_post_only() {
+    fn only_a_replacement_that_refuses_a_cross_is_post_only() {
         assert!(replacement_order(&params(true), &terms(50, 1_000, false)).post_only);
         assert!(!replacement_order(&params(false), &terms(50, 1_000, false)).post_only);
-
-        let taker_remainder = ReplacementTerms {
-            taker_origin: true,
-            ..terms(50, 1_000, false)
-        };
-
-        assert!(!replacement_order(&params(true), &taker_remainder).post_only);
     }
 
     #[test]

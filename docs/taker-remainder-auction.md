@@ -74,6 +74,11 @@ aggressor and crosses into it. Rest order is the CLOB order id alone. A book's `
 only increases and never reuses a value, so the lower id rested first and no separate slot
 comparison is needed.
 
+The rule holds when makers rest between the two. A remainder that takes makers fills with every
+claim ignored, so it would take a remainder behind those makers at that remainder's own price. The
+crank therefore stops the fill in front of the first live remainder on the other side, and the cross
+walk pairs a remainder with nothing behind that one. The two remainders then settle as a pair.
+
 Nothing else about R3 changes. The later order is the one that came to trade, which is what
 "taker" means everywhere else in this document, and the earlier order gets the price it was
 already offering, which is all a maker is ever promised. The alternative was the midpoint, and it
@@ -84,12 +89,17 @@ party quoted.
 One consequence is worth stating. The *earlier* order captures nothing here: no improvement, and
 no rebate beyond the ordinary maker rebate. It gets the price it was already offering.
 
-The pair settles at the earlier price only when the vAMM does not beat it for the later order.
-When the vAMM does, the crank routes the later order instead, across the vAMM, the quoters and the
-book with the earlier remainder in it. The pair also passes the symmetric fill-price band that every
-routed fill passes, and it records its price as the market's last fill. Without these, an
-unattested order rested through a remainder settles at that remainder's worst price while the
-vAMM quotes better.
+The pair settles at the earlier price only when the vAMM beats it for neither order. When the
+vAMM beats it for the later order, the crank routes the later order instead, across the vAMM, the
+quoters and the book with the earlier remainder in it. When the vAMM beats it for the earlier
+order, the earlier order routes first and the pair waits. When the vAMM cannot fill the earlier
+order at all, the pair also waits. That covers an `AmmFill` pause and every fill gate the router
+applies: drawdown, MM-oracle divergence and oracle validity. A vAMM that quotes nothing is no
+evidence that the earlier order's worst price is fair, and the resolver stages no pair that waits.
+The pair also passes the symmetric fill-price band that every routed fill passes, and it records
+its price as the market's last fill. Without these, an unattested order rested through a remainder
+settles at that remainder's worst price while the vAMM quotes better, or while the vAMM is
+paused.
 
 **A partly filled remainder keeps its id and its queue position.** The book API for editing a
 resting order's size is `fill_v0`. Velocity reports the base it settled and the order shrinks
@@ -183,13 +193,15 @@ consequence for a market operator is that a resting remainder can shut attested 
 depth it claims until a crank resolves the cross or the claim lapses, and an attested take that
 reaches nothing rests as a remainder of its own.
 
-**A remainder cannot be cancelled inside its window.** Binding the taker is what makes the auction
-an auction. An order its owner can pull the moment a maker lines up offers nothing to line up
-against. `Book::cancel` refuses while `slot < activation_slot` for a taker-origin node, and the
-rule lives in the CLOB because that is where the flag and the slot are. Liquidation force-cancel
-passes `force` and stays exempt, so a distressed account is never blocked, and `max_ts` still
-bounds the order's life. The cost is real. A taker who signed a market order cannot pull it for
-the window, and neither can a delegate.
+**A remainder cannot be cancelled while its claim holds.** Binding the taker is what makes the
+auction an auction. An order its owner can pull the moment a maker lines up offers nothing to line
+up against. `Book::cancel` refuses a taker-origin node until `reservation_grace_slots` after its
+activation slot, which is exactly when its claim lapses, and the rule lives in the CLOB because
+that is where the flag and the slot are. Liquidation force-cancel passes `force` and stays exempt,
+so a distressed account is never blocked, and `max_ts` still bounds the order's life. The cost is
+real. A taker who signed a market order cannot pull it for the delay plus the grace window, and
+neither can a delegate. A modify is a cancel first, so the same bind holds it, and its replacement
+is a maker order that claims nothing.
 
 **Every reader withholds through one function, and that is the point.** A router allocates from
 the quote and velocity binds the execute to it. Depth one of them offers and the other withholds
@@ -264,9 +276,12 @@ A market remainder does not only exist when the taker's bound is tighter than th
 a book with an activation delay, unattested flow does not fill at placement. It rests whole at its
 bound. That covers every relay-fired stop-market, every wallet `place_and_take_v1`, and every
 signed-message order submitted without an attestation. No book row need cross such a remainder,
-so the crank routes it anyway when the vAMM or a quoter crosses its price. That fill honours every
-live claim, so it takes the vAMM, the quoters and unclaimed depth only. The same fill serves a newer
-remainder that waits behind an older claim on its side.
+so the crank routes it anyway. That fill honours every live claim, so it takes the vAMM, the
+quoters the call carries and unclaimed depth only. Relay's resolver stages it when the vAMM or an
+unclaimed row crosses its price, and while the vAMM's fill gates admit a fill. It carries no
+quoters of its own, so a quoter that crosses the remainder fills it only through a keeper that
+builds the call. The same fill serves a newer remainder that waits behind an older claim on its
+side.
 
 **R7. Activation delay.** The market's `default_activation_delay_slots`, as with any placement.
 
@@ -294,16 +309,22 @@ lapsed and that crosses a row no live claim holds. That stage yields to a maker 
 `ResolvedCrankV0` names its own executor, so one condition slot serves both.
 
 The resolver estimates the vAMM off the perp market, which rides the end of its account list. It
-has no oracle account, so it projects the curve to the oracle price the market last stored. The
-executor routes against the live oracle, so a stale estimate costs one failed crank, not a wrong
-fill.
+has no oracle account, so it projects the curve to the oracle price the market last stored, and it
+reads the vAMM's fill gates at that price. The executor routes against the live oracle, so a stale
+estimate never makes a wrong fill. It can fail a staged crank, and on an idle market the stored
+price does not move, so the same crank can fail until the claim lapses.
 
 `quote_l3_v0` flags a remainder whose claim lapsed (`L3_ROW_FLAG_CLAIM_LAPSED`). The row carries no
 activation slot, and without the flag a lapsed remainder would keep the first claim on its side in
 velocity's reading, although the book no longer honours it. Velocity reads such a row as depth, not
-as a claimant. A lapsed remainder is ordinary depth that anyone takes at its own price, so a crank
-that names no route may fill it across the baseline, even when its signer chose a route. A
-remainder that carries a route therefore holds relay back for its claim window at most.
+as a claimant. A crank that honours every claim takes no depth the remainder claims, so it may fill
+the remainder across the baseline, even when its signer chose a route. A lapsed remainder is always
+in that plan, and so is a remainder that only the vAMM or unclaimed depth crosses. Relay cannot
+read the taker's route, so only a remainder that takes claimed depth with a signed route holds
+relay back, and only for its claim window. A keeper that names the route lands it. Two lapsed
+remainders at the front of the book settle as a pair at the earlier one's price, under the same
+vAMM rule as two live ones, because a claim-honouring route of one would take the other at its own
+price.
 
 No new slot and no new watch. A taker-origin cross can newly appear for one of two reasons. A
 side's best moved, which the cross condition's 8-byte `OnAccountChange` over `best_bid` and
@@ -316,14 +337,20 @@ came to trade, so it is handed over before the protocol middles the same crossed
 arbitrage. It also keeps the arb crank off a cross it must not run, as
 [What this replaces](#what-this-replaces) describes.
 
-`min_payment` on those conditions stays the market's `keeper_payment_lamports`. That is what relay
-measures, since `assert_paid_v0` watches the payout account's lamport balance, and this crank pays
-the same reservoir lamports as every other. The reservoir pays only what the crank collected, so a
+`min_payment` on those conditions is the cheaper of the market's `cross` and `taker_origin_cross`
+payments, because one condition stages both crosses. That is what relay measures, since
+`assert_paid_v0` watches the payout account's lamport balance, and this crank pays the same
+reservoir lamports as every other. A taker-origin cross that stays on the book past
+`STALLED_TAKER_ORIGIN_CROSS_SLOTS`, 150 slots, gives way to a maker cross behind it, because the
+resolver cannot tell a remainder that cannot fill from one nobody cranked. The reservoir pays only what the crank collected, so a
 cross whose fee and reward fall short charges the taker the difference, as a removal charges its
 owner. An unpaid cross is one relay never lands, and it would hold back every newer remainder on its
-side. Pricing it above that would make exactly the crosses
-R5 resolves for free undiscoverable, and a unit of dust in front of a gated remainder is enough to
-strand it for its whole life.
+side. The charge is capped by what the fill gained the taker against its rest price, net of the
+crank reward, so R5's invariant holds however many cranks split a remainder. A cross that gains
+the taker too little to pay is not paid. A signed keeper can still crank it, and once the claim
+lapses the remainder is ordinary depth at its own price. Pricing it above that would make exactly
+the crosses R5 resolves for free undiscoverable, and a unit of dust in front of a gated remainder
+is enough to strand it for its whole life.
 
 The wake that needs care is the **both-remainders** case. Two remainders can only face each other
 while something crosses the earlier one, so the moment the pair becomes resolvable is usually the
@@ -470,10 +497,13 @@ a remainder.
   because the CLOB baseline is mandatory, so the route adds nothing new.
 - `crank_taker_origin_cross` resolves one cross, and it resolves it as an ordinary fill. The
   remainder is the taker of a router pass: the market's baseline book and the routed quoters
-  compete on price, `require_baseline` holds the call to carrying the CLOB entry, and the filler
-  obligation holds it to the makers it had room for. So the crank sweeps as far into the book as
-  the taker's own limit reaches rather than stopping at one counterparty. What is settled is then
-  reported back with `fill_v0`, which shrinks the remainder in place.
+  compete on price, and `require_baseline` holds the call to carrying the CLOB entry. A signed
+  keeper is held by the filler obligation to the makers it had room for. So the crank sweeps as
+  far into the book as the taker's own limit reaches rather than stopping at one counterparty.
+  Relay's staged call carries three makers. In program-keeper mode the fill stops short at the
+  makers it carries, as a liquidation does. Otherwise a fourth owner through the remainder refuses
+  every staged crank, and the remainder waits for its claim to lapse at its worst price. What is
+  settled is then reported back with `fill_v0`, which shrinks the remainder in place.
 - **Two taker remainders crossing each other take a second branch of the same crank**: velocity
   computes the match itself and settles the two directly, at the earlier one's price, unless the
   vAMM beats that price for the later one (R3). They cannot be
@@ -498,8 +528,15 @@ a remainder.
   permissionless, and the cross resolver ranks a taker's improvement ahead of arbitrage, which is
   right once a remainder is at the front and wrong before it is. A hand-built crank aimed at a remainder
   sitting behind a better-priced resting order would fill it out of the depth that order had
-  priority on. Both the crank and the resolver read the two heads and refuse when neither
-  demands liquidity, so what the resolver stages is exactly what the crank accepts.
+  priority on. Both the crank and the resolver read the two heads and refuse a claimed cross when
+  neither demands liquidity.
+
+  A remainder behind a maker×maker front may still route with every claim honoured. That fill
+  takes no claimed depth, only the vAMM, the quoters and unclaimed depth, at or better than the
+  remainder's rest price, so nothing can be extracted from it. The resolver stages that route only
+  after the maker cross, because a routed stage yields to it. The crank does not refuse it. A maker
+  cross inside the fee gulf is one `crank_cross_match` cannot clear, and refusing the route would
+  strand the remainder behind it at its worst price.
 - The resolver runs under simulation, so it walks the whole window and hands the crank the depth it
   actually needs to re-find the cross, instead of the crank guessing.
 - A partially-consumed remainder stays on the book, still taker-origin and immediately matchable,
@@ -514,9 +551,11 @@ a remainder.
 **Relay**
 - No new condition or watch: the `CLOB_CRANK_CROSS` slot's resolver
   (`resolve_clob_crank`) stages `crank_taker_origin_cross` when it finds a claimed cross or a
-  remainder the vAMM crosses, and `crank_cross_match` otherwise, at the same `min_payment` (R8).
-- The crossing-prefix walk that feeds the arb crank steps over taker-origin nodes, so the two cranks
-  compose instead of the arb one being staged for a cross it cannot run.
+  remainder the vAMM crosses, and `crank_cross_match` otherwise. The condition's `min_payment` is
+  the cheaper of the two crosses' payments (R8).
+- The crossing-prefix walk that feeds the arb crank ends each side at the first matchable
+  taker-origin row, so the two cranks compose instead of the arb one being staged for a cross it
+  cannot run.
 
 **SDK / keepers**
 - keep-rs stops needing the signed route on its auction/uncross/vAMM paths: once taker remainders
@@ -550,10 +589,12 @@ zero the remainder itself also leaves the matchable set until its claim lapses, 
 fills it in that window. A cross settles at the counterparty's price.
 
 What a nonzero delay adds is a pre-window in which the order is not matchable at all, so makers can
-line up before anyone can trade with it. It also binds the taker: the cancel refusal keys on the
-same activation slot, so at zero there is nothing to bind and the owner may pull the order at once.
-A market that wants makers to compete before the first fill sets a delay. A market that wants
-immediacy sets zero. Both are supported and both are tested.
+line up before anyone can trade with it. It also lengthens the bind on the taker: the cancel
+refusal lasts until the claim lapses, `reservation_grace_slots` after the activation slot, so at
+zero the owner is bound for the grace window alone. A market that wants makers to compete before
+the first fill sets a delay. A market that wants immediacy sets zero. Both are supported and both
+are tested. A grace window of zero is legal too, and the claim then protects nothing after
+activation.
 
 **E. A reservation lapses if the crank never runs.** A reservation holds depth that only
 `crank_taker_origin_cross` can consume, so a turner that never fires would hold the top of the

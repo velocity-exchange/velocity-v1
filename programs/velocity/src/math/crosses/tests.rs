@@ -252,3 +252,45 @@ mod prefix {
         assert_eq!(prefix.estimated_surplus(&fee(5)), 0);
     }
 }
+
+/// A bid remainder at 102 crosses a maker ask at 100 and a later ask remainder
+/// at 101. The bid takes the maker first, and the two remainders then pair at
+/// the bid's price, because the bid rested first.
+#[test]
+fn a_remainder_reaches_a_later_remainder_only_as_a_pair() {
+    let crosses = resolve_crosses(
+        &[remainder(5, 102, 10, 0xA)],
+        &[maker(7, 100, 5, 0xB), remainder(9, 101, 10, 0xC)],
+        8,
+    );
+
+    assert_eq!(crosses.len(), 2);
+    assert_eq!(crosses[0].kind, CrossKind::BidAggresses);
+    assert_eq!(crosses[0].ask.order_ref.order_id, 7);
+    assert_eq!(crosses[1].kind, CrossKind::AskAggresses);
+    assert_eq!(crosses[1].settlement_price(), Some(102));
+    assert_eq!(crosses[1].base_asset_amount, 5);
+}
+
+/// A maker behind the remainder an order crosses first is not that order's
+/// counterparty until the remainder leaves.
+#[test]
+fn nothing_pairs_behind_the_first_remainder_an_order_crosses() {
+    let crosses = resolve_crosses(
+        &[remainder(5, 102, 10, 0xA)],
+        &[remainder(9, 101, 4, 0xC), maker(7, 101, 5, 0xB)],
+        8,
+    );
+
+    assert_eq!(crosses[0].ask.order_ref.order_id, 9);
+    assert_eq!(crosses[0].kind, CrossKind::AskAggresses);
+    assert_eq!(crosses[1].ask.order_ref.order_id, 7);
+
+    let bids_first = resolve_crosses(
+        &[remainder(3, 103, 4, 0xD), maker(6, 102, 5, 0xE)],
+        &[remainder(9, 100, 10, 0xC)],
+        8,
+    );
+    assert_eq!(bids_first[0].bid.order_ref.order_id, 3);
+    assert_eq!(bids_first[1].bid.order_ref.order_id, 6);
+}

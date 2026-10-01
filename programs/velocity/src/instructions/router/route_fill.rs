@@ -166,6 +166,8 @@ pub struct FillerTerms {
     /// Whether the caller opens and closes the taker's whole exposure inside
     /// one instruction and asserts the end state itself.
     pub taker_exposure_closed_by_caller: bool,
+    /// See [`FillerObligation::stops_at_carried_makers`].
+    pub stops_at_carried_makers: bool,
 }
 
 impl FillerTerms {
@@ -174,6 +176,7 @@ impl FillerTerms {
         taker_signed: true,
         tx_accounts: None,
         taker_exposure_closed_by_caller: false,
+        stops_at_carried_makers: false,
     };
 
     /// The taker did not sign, so the caller answers for what its account
@@ -185,6 +188,7 @@ impl FillerTerms {
                 .map(tx_writable_lock_count)
                 .transpose()?,
             taker_exposure_closed_by_caller: false,
+            stops_at_carried_makers: false,
         })
     }
 }
@@ -277,6 +281,7 @@ impl<'info> RouteFill<'_, 'info> {
                 tx_accounts: route.filler.tx_accounts,
                 unrouted_quoters: quoted.unrouted_quoters,
                 liquidation: fill.mode.is_liquidation(),
+                stops_at_carried_makers: route.filler.stops_at_carried_makers,
             },
             taker_exposure_closed_by_caller: route.filler.taker_exposure_closed_by_caller,
         });

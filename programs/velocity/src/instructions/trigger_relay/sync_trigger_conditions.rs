@@ -22,8 +22,8 @@
 //! Armed reduce-only stop-losses take the slots first, then the other armed
 //! triggers, then the parked slots of placed stop-limits. So a stop-loss is not
 //! left unwatched behind take-profits, entries or orders already on the book.
-//! Placement refuses a ninth armed reduce-only stop-loss, which no slot could
-//! watch.
+//! Placement and a modify refuse a ninth armed reduce-only stop-loss, which
+//! no slot could watch.
 //!
 //! A book that is suspended or inactive still arms its market's triggers. The
 //! executors refuse to fire while the book takes no flow, so each trigger stays

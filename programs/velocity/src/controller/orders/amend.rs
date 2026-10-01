@@ -494,6 +494,7 @@ pub fn modify_order(
         )?;
 
         carry_trigger_recross(&mut user, &existing_order, order_id);
+        refuse_unwatched_stop_loss(&user, order_id, clock.unix_timestamp)?;
     }
 
     Ok(())

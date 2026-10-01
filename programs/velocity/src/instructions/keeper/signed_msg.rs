@@ -704,6 +704,7 @@ fn place_bracket_orders(
     env: &mut PlacementEnv<'_, '_>,
 ) -> Result<()> {
     let entry = message.signed_msg_order_params;
+    let first_sidecar_order_id = taker.user.next_order_id;
     let sidecars = [
         (
             message.stop_loss_order_params.as_ref(),
@@ -763,6 +764,12 @@ fn place_bracket_orders(
             &mut builder_order,
         )?;
     }
+
+    controller::orders::refuse_unwatched_stop_loss(
+        taker.user,
+        first_sidecar_order_id,
+        env.clock.unix_timestamp,
+    )?;
 
     Ok(())
 }

@@ -12680,3 +12680,205 @@ fn fix4_trig_stale_liquidation_flag_still_fires_the_stop() {
     );
     assert_eq!(after.perp_positions[0].open_bids, UNIT as i64);
 }
+
+/// A party long one unit at $100 with eight armed reduce-only stop-losses,
+/// which fill the relay watch slots.
+fn fix4_trig_party_with_eight_stop_losses(fixture: &mut Fixture) -> Party {
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let mut user: User = read_zero_copy(&fixture.svm, &owner.user);
+    let position = &mut user.perp_positions[0];
+    position.base_asset_amount = UNIT as i64;
+    position.quote_asset_amount = -((100 * PRICE) as i64);
+    position.quote_entry_amount = -((100 * PRICE) as i64);
+    position.quote_break_even_amount = -((100 * PRICE) as i64);
+    position.open_orders = 8;
+    for index in 0..8u32 {
+        let mut order = Order::default();
+        order.order_id = index + 1;
+        order.status = OrderStatus::Open;
+        order.order_type = OrderType::TriggerMarket;
+        order.market_type = MarketType::Perp;
+        order.market_index = 0;
+        order.direction = PositionDirection::Short;
+        order.base_asset_amount = UNIT / 16;
+        order.trigger_price = (90 - u64::from(index)) * PRICE;
+        order.trigger_condition = velocity::state::user::OrderTriggerCondition::Below;
+        order.reduce_only = true;
+        user.orders[index as usize] = order;
+    }
+
+    user.open_orders = 8;
+    user.has_open_order = true;
+    user.next_order_id = 9;
+    set_user_account(&mut fixture.svm, owner.user, &user);
+    owner
+}
+
+/// A modify that turns a take-profit into a ninth stop-loss is refused. A
+/// modify of a stop-loss that keeps the count at eight lands.
+#[test]
+fn fix4_trig_a_modify_cannot_arm_a_ninth_stop_loss() {
+    use velocity::state::{order_params::ModifyOrderParams, user::OrderTriggerCondition};
+
+    let mut fixture = setup();
+    let owner = fix4_trig_party_with_eight_stop_losses(&mut fixture);
+    let mut user: User = read_zero_copy(&fixture.svm, &owner.user);
+    let mut take_profit = user.orders[0];
+    take_profit.order_id = 9;
+    take_profit.trigger_price = 120 * PRICE;
+    take_profit.trigger_condition = OrderTriggerCondition::Above;
+    user.orders[8] = take_profit;
+    user.open_orders = 9;
+    user.perp_positions[0].open_orders = 9;
+    user.next_order_id = 10;
+    set_user_account(&mut fixture.svm, owner.user, &user);
+
+    let modify = |fixture: &mut Fixture, order_id: u32, params: ModifyOrderParams| {
+        let mut accounts = velocity::accounts::CancelOrder {
+            state: state_pda(),
+            user: owner.user,
+            authority: owner.authority.pubkey(),
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        let ix = Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::ModifyOrder {
+                order_id: Some(order_id),
+                modify_order_params: params,
+            }
+            .data(),
+        };
+        fixture.svm.expire_blockhash();
+        let authority = owner.authority.insecure_clone();
+        send(&mut fixture.svm, &authority, ix, &[])
+    };
+
+    let err = modify(
+        &mut fixture,
+        9,
+        ModifyOrderParams {
+            trigger_price: Some(80 * PRICE),
+            trigger_condition: Some(OrderTriggerCondition::Below),
+            ..ModifyOrderParams::default()
+        },
+    )
+    .unwrap_err();
+    assert_velocity_error(&err, ErrorCode::MaxNumberOfOrders);
+
+    modify(
+        &mut fixture,
+        1,
+        ModifyOrderParams {
+            trigger_price: Some(85 * PRICE),
+            ..ModifyOrderParams::default()
+        },
+    )
+    .expect("a modified stop-loss keeps the count at eight");
+}
+
+/// The envelope a keeper submits for `message`, signed by `authority`.
+fn fix4_trig_signed_envelope(
+    authority: &Keypair,
+    message: &velocity::state::order_params::SignedMsgOrderParamsMessage,
+) -> Vec<u8> {
+    use {
+        anchor_lang::AnchorSerialize, velocity::state::order_params::SignedMsgOrderParamsMessage,
+    };
+
+    let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
+    message.serialize(&mut borsh_body).unwrap();
+    let hex_msg = hex_lower(&borsh_body);
+    let signed_bytes = velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+    let signature = authority.sign_message(&signed_bytes);
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(signature.as_ref());
+    envelope.extend_from_slice(&authority.pubkey().to_bytes());
+    envelope.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+    envelope.extend_from_slice(hex_msg.as_bytes());
+    envelope
+}
+
+/// A signed-message bracket whose stop-loss would be the ninth is refused.
+#[test]
+fn fix4_trig_a_signed_bracket_cannot_arm_a_ninth_stop_loss() {
+    use velocity::state::order_params::{
+        OrderParams, PostOnlyParam, SignedMsgOrderParamsMessage, SignedMsgTriggerOrderParams,
+    };
+
+    let mut fixture = setup();
+    let taker = fix4_trig_party_with_eight_stop_losses(&mut fixture);
+    let keeper = party(&mut fixture.svm, 0);
+    set_signed_msg_user_orders(&mut fixture.svm, &taker.authority.pubkey(), 8);
+    let slot = fixture.svm.get_sysvar::<solana_clock::Clock>().slot;
+
+    let message = SignedMsgOrderParamsMessage {
+        signed_msg_order_params: OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: UNIT / 16,
+            price: 101 * PRICE,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            ..OrderParams::default()
+        },
+        sub_account_id: 0,
+        slot,
+        uuid: *b"ninthsl1",
+        take_profit_order_params: None,
+        stop_loss_order_params: Some(SignedMsgTriggerOrderParams {
+            trigger_price: 80 * PRICE,
+            base_asset_amount: UNIT / 16,
+        }),
+        max_margin_ratio: None,
+        builder_idx: None,
+        builder_fee_tenth_bps: None,
+        isolated_position_deposit: None,
+        network: Some(velocity::state::order_params::expected_signed_msg_network()),
+        route: None,
+    };
+    let envelope = fix4_trig_signed_envelope(&taker.authority, &message);
+    let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+        authority: keeper.authority.pubkey(),
+        ix_sysvar: instructions_sysvar(),
+        filler: keeper.user,
+        filler_stats: keeper.stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceSignedMsgTakerOrder {
+            signed_msg_order_params_message_bytes: envelope,
+            is_delegate_signer: false,
+            flow_attestation: None,
+        }
+        .data(),
+    };
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[compute_unit_limit_ix(600_000), ix],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&err, ErrorCode::MaxNumberOfOrders);
+}

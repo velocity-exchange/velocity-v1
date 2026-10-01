@@ -204,7 +204,7 @@ services:
         WORKDIR /relay
         COPY . .
         RUN --mount=type=cache,target=/relay/target,id=relay-target \
-            --mount=type=cache,target=/usr/local/cargo/registry \
+            --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
             cargo build --release --locked -p relay-crank-turner \
             && cp target/release/relay-crank-turner /usr/local/bin/
         FROM debian:bookworm-slim

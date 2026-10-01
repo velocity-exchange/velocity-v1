@@ -12,7 +12,7 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       clang libclang-dev llvm-dev cmake libudev-dev libssl-dev pkg-config protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/agave-target \
     set -eu; mkdir -p /out; \
     if [ "$TARGETARCH" = amd64 ]; then \

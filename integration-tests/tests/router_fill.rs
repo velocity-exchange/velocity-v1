@@ -12597,3 +12597,86 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
         -position.quote_asset_amount
     );
 }
+
+/// A healthy account with a stale being-liquidated flag and a crossed
+/// stop-market. The resolver stages the fire, and the executor clears the
+/// flag and fires.
+#[test]
+fn fix4_trig_stale_liquidation_flag_still_fires_the_stop() {
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 25_000);
+    set_protocol_user(&mut fixture.svm);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+
+    let authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&authority.pubkey(), 1_000_000_000)
+        .unwrap();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Long;
+    order.base_asset_amount = UNIT;
+    order.trigger_price = 99 * PRICE;
+    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    order.max_ts = clock.unix_timestamp + 1_000;
+    let mut state = armed_trigger_user(
+        &authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        order,
+    );
+    state.next_order_id = 2;
+    state.status = velocity::state::user::UserStatus::BeingLiquidated as u8;
+    set_user_account(&mut fixture.svm, user, &state);
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+    sync_trigger_conditions(&mut fixture, user, market_conditions, true);
+
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
+
+    let resolved = run_trigger_market_resolver(&mut fixture, user)
+        .expect("a stale flag does not hide a crossed stop");
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::TriggerMarketOrderV1::DISCRIMINATOR,
+        payout,
+    );
+
+    let after: User = read_zero_copy(&fixture.svm, &user);
+    assert_eq!(
+        after.status & (velocity::state::user::UserStatus::BeingLiquidated as u8),
+        0
+    );
+    assert_eq!(after.perp_positions[0].open_bids, UNIT as i64);
+}

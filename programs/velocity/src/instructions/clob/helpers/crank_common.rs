@@ -1054,14 +1054,15 @@ pub fn find_fired_trigger(
     }))
 }
 
-/// Whether the exchange and the account admit a trigger crank. A stale
-/// being-liquidated flag also returns false. The executor clears such a flag
-/// only with the margin maps, which a resolver does not carry.
+/// Whether the exchange and the account admit a trigger crank. A
+/// being-liquidated flag admits it. The resolver has no margin maps to judge
+/// the flag, and the executor clears a stale flag and refuses a live one.
+/// Nothing else clears a stale flag.
 fn account_admits_trigger(state: &State, user: &User) -> Result<bool> {
     let fill_paused = state
         .get_exchange_status()?
         .contains(crate::state::state::ExchangeStatus::FillPaused);
-    Ok(!fill_paused && !user.is_being_liquidated() && !user.is_bankrupt())
+    Ok(!fill_paused && !user.is_bankrupt())
 }
 
 /// The price the executor judges the trigger condition at, or `None` when the
@@ -1882,13 +1883,34 @@ mod fired_trigger_tests {
         )
         .is_none());
 
-        let mut liquidated = user;
-        liquidated.status = UserStatus::BeingLiquidated as u8;
-        assert!(resolve(&state, &liquidated, &market(oracle_key), &oracle_info, rest).is_none());
+        let mut bankrupt = user;
+        bankrupt.status = UserStatus::Bankrupt as u8;
+        assert!(resolve(&state, &bankrupt, &market(oracle_key), &oracle_info, rest).is_none());
 
         let mut flat = user;
         flat.perp_positions = get_positions(PerpPosition::default());
         assert!(resolve(&state, &flat, &market(oracle_key), &oracle_info, rest).is_none());
+    }
+
+    /// The resolver cannot tell a stale being-liquidated flag from a live one,
+    /// so it stages the fire and the executor judges the flag.
+    #[test]
+    fn a_being_liquidated_flag_still_stages_the_fire() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        oracle_price.posted_slot = SLOT;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut user = long_user(stop(1, true));
+        user.status = UserStatus::BeingLiquidated as u8;
+
+        let due = resolve(
+            &State::default(),
+            &user,
+            &market(oracle_key),
+            &oracle_info,
+            TriggerResolverKind::ClobRest,
+        );
+        assert_eq!(due.map(|due| due.meta.order_id), Some(1));
     }
 
     /// A feed too old for margin fails the executor's validity check, so the

@@ -12602,3 +12602,155 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
         -position.quote_asset_amount
     );
 }
+
+/// A hand-built `crank_cross_match` over `makers` for `size`, carrying the SOL
+/// spot market so the reservoir payment is priced.
+fn fix4_cross_ix(
+    fixture: &Fixture,
+    conditions: Pubkey,
+    protocol_user: Pubkey,
+    payout: Pubkey,
+    makers: &[&Party],
+    size: u64,
+) -> Instruction {
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    let mut accounts = velocity::accounts::CrankCrossMatch {
+        state: state_pda(),
+        authority: payout,
+        taker: protocol_user,
+        taker_stats: protocol_stats,
+        crank_conditions: conditions,
+        perp_market: perp_market_pda(0),
+        quoter_slab: fixture.quoter_slab,
+        instructions_sysvar: instructions_sysvar(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(spot_market_pda(1), false));
+    for maker in makers {
+        accounts.push(AccountMeta::new(maker.user, false));
+        accounts.push(AccountMeta::new(maker.stats, false));
+    }
+
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CrankCrossMatch {
+            args: CrankCrossMatchArgs {
+                market_index: 0,
+                size,
+            },
+        }
+        .data(),
+    }
+}
+
+/// A cross leg may not take a lapsed taker remainder from behind a maker order
+/// that another remainder's claim covers in part.
+///
+/// The asks are A, a maker at 99, then B, a lapsed taker-origin ask at 100. A
+/// bound remainder R bids 99.5 and claims part of A. The book reports A's free
+/// size, which covers the leg, but execute passes over all of A and fills B at
+/// its own price. The protocol `User` would then keep the gap to the maker bid
+/// at 101, which B was owed as the aggressor. The crank refuses the leg
+/// because it filled B's owner.
+#[test]
+fn fix4_cross_a_leg_cannot_take_a_remainder_behind_a_partly_claimed_maker() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+
+    let lapsed = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let bid_maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let claimant = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let ask_maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+
+    fixture.svm.warp_to_slot(10);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        10,
+    );
+    rest_taker_origin_order(
+        &mut fixture,
+        &lapsed,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &bid_maker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT / 2,
+    );
+
+    warp_past_claim(&mut fixture, 10);
+    let slot = 10 + CLAIM_GRACE_SLOTS;
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        slot,
+    );
+    rest_taker_origin_order(
+        &mut fixture,
+        &claimant,
+        PositionDirection::Long,
+        99 * PRICE + PRICE / 2,
+        3 * UNIT / 10,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &ask_maker,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT,
+    );
+    assert_eq!(clob_ask_count(&fixture), 2);
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let ix = fix4_cross_ix(
+        &fixture,
+        conditions,
+        protocol_user,
+        payout,
+        &[&ask_maker, &lapsed, &bid_maker],
+        UNIT / 2,
+    );
+    let keeper = fixture.keeper.insecure_clone();
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), ix],
+        &[],
+    )
+    .expect_err("the buy leg filled the lapsed remainder");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("CrossedTakerRemainderPending"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+
+    assert_eq!(
+        perp_position(&fixture.svm, &lapsed.user).base_asset_amount,
+        0
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000
+    );
+}

@@ -44,8 +44,10 @@
 //! it crosses, and this crank reads the book without those reservations. The
 //! book withholds the remainder itself only while a counterparty crosses it and
 //! its claim holds. Past that it is ordinary depth at its worst price, and a leg
-//! that took it would give the protocol the gap to the other leg's source. The
-//! crank therefore refuses a cross whose legs can reach any taker-origin row.
+//! that took it would give the protocol the gap to the other leg's source. Each
+//! leg therefore names the owners of the taker-origin rows it can take, and the
+//! crank refuses a leg that filled one of them. The read cannot measure how far
+//! a leg reaches, because the book passes over rows the read reports as depth.
 //! `crank_taker_origin_cross` owes the taker its improvement and is the only
 //! caller that fills such a row.
 //!
@@ -89,7 +91,7 @@ use {
             perp_market_map::MarketSet,
             prop_amm::{
                 DirectionV0, L3RowV0, PriceLevelV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
-                QuoterType, L3_ROW_FLAG_TAKER_ORIGIN,
+                QuoterType, UserRefV0, L3_ROW_FLAG_TAKER_ORIGIN,
             },
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
@@ -98,6 +100,7 @@ use {
         validate,
     },
     anchor_lang::prelude::*,
+    quoter_spec::L3_ROW_FLAG_RESERVED,
     solana_program::sysvar::instructions::ID as IX_ID,
 };
 
@@ -402,7 +405,8 @@ fn run_cross_leg<'info>(
     }
 
     let limit_price = leg_limit_price(taker_direction, cx.band_oracle_price, cx.leg_oracle_band)?;
-    refuse_taker_origin_reach(cx, taker_direction, size, limit_price, cpi_scratch)?;
+    let reach = TakerOriginReach::read(cx, taker_direction, limit_price, cpi_scratch)?;
+    let makers_before = MakerBases::read(cx.makers_and_referrer, cx.market_index)?;
 
     let LegOpening {
         order_id,
@@ -424,30 +428,7 @@ fn run_cross_leg<'info>(
         ..Order::default()
     };
 
-    // A cheap check first. When the route consults a `Custom` quoter, no window was served,
-    // because a prop-AMM has no rest to wait out. This skips the expensive CPI that checking
-    // rested depth on the other quoters would otherwise require.
-    let taker_served_window = if consults_custom_quoter(&cx.accounts.quoter_slab, cx.tail)? {
-        false
-    } else {
-        // Since this is not servicing taker-origin trades, both sides must have served the window
-        // to get the `taker_served_window` set.
-        [DirectionV0::Long, DirectionV0::Short]
-            .iter()
-            .copied()
-            .try_fold(true, |served, side| -> Result<bool> {
-                Ok(served
-                    && super::helpers::crank_common::book_side_rested(
-                        &cx.accounts.quoter_slab,
-                        cx.tail,
-                        cx.market_index,
-                        side,
-                        size,
-                        cx.clock.slot,
-                        cpi_scratch,
-                    )?)
-            })?
-    };
+    let taker_served_window = leg_served_window(cx, size, cpi_scratch)?;
     let filled = RouteFill {
         state: cx.state,
         clock: cx.clock,
@@ -500,6 +481,14 @@ fn run_cross_leg<'info>(
         },
     )?;
 
+    let makers = makers_before.moved(cx.makers_and_referrer, cx.market_index)?;
+    validate!(
+        !reach.taken(&makers, filled.worst_fill_price, taker_direction),
+        ErrorCode::CrossedTakerRemainderPending,
+        "a cross leg of {} took a taker-origin order",
+        size
+    )?;
+
     let quote_after = load!(cx.accounts.taker)?
         .get_perp_position(cx.market_index)
         .map(|position| position.quote_asset_amount)
@@ -511,49 +500,176 @@ fn run_cross_leg<'info>(
     })
 }
 
-/// Refuse a leg that can reach a taker-origin row on a consulted book.
+/// Whether a leg of `size` may report protected flow.
 ///
-/// The book withholds a remainder only while a counterparty crosses it and its
-/// claim holds. Past that the remainder is ordinary depth at its worst price, and
-/// a leg that took it would hand the protocol the gap to the other leg's price.
-/// Each leg reads its side just before it fills, because the buy leg can take
-/// the last ask that crosses a bid remainder and so release it to the sell leg.
-fn refuse_taker_origin_reach<'info>(
+/// The crank serves no taker-origin trade, so both sides must have served the
+/// window. A `Custom` quoter in the route serves none, and checking it first
+/// skips the CPIs that measure the rested depth of the other quoters.
+fn leg_served_window<'info>(
     cx: &CrossMatchContext<'_, 'info>,
-    taker_direction: PositionDirection,
     size: u64,
-    limit_price: u64,
     cpi_scratch: &mut QuoterCpiScratch<'info>,
-) -> Result<()> {
-    let quoter_slab = &cx.accounts.quoter_slab;
-    for slot_index in quoter_slab.consulted_slots(cx.tail)? {
-        // Copied out so that no slab borrow lives across the book CPI.
-        let quoter_slot = quoter_slab.slots()?[slot_index];
-        if quoter_slot.config.quoter_type != QuoterType::Clob || !quoter_slot.quotes() {
-            continue;
-        }
-
-        let rows = super::helpers::crank_common::book_l3_side(
-            &quoter_slot,
-            quoter_slab,
-            cx.market_index,
-            route_direction(taker_direction),
-            CROSS_ROWS_PER_SIDE,
-            cx.tail,
-            cpi_scratch,
-            false,
-            ReachRow::from_row,
-        )?
-        .unwrap_or_default();
-        validate!(
-            !reaches_taker_origin_row(&rows, size, taker_direction, limit_price),
-            ErrorCode::CrossedTakerRemainderPending,
-            "a cross leg of {} can reach a taker-origin order",
-            size
-        )?;
+) -> Result<bool> {
+    if consults_custom_quoter(&cx.accounts.quoter_slab, cx.tail)? {
+        return Ok(false);
     }
 
-    Ok(())
+    [DirectionV0::Long, DirectionV0::Short]
+        .iter()
+        .copied()
+        .try_fold(true, |served, side| -> Result<bool> {
+            Ok(served
+                && super::helpers::crank_common::book_side_rested(
+                    &cx.accounts.quoter_slab,
+                    cx.tail,
+                    cx.market_index,
+                    side,
+                    size,
+                    cx.clock.slot,
+                    cpi_scratch,
+                )?)
+        })
+}
+
+/// One carried maker's base in the crossed market.
+struct MakerBase {
+    user: UserRefV0,
+    base: i64,
+}
+
+/// The base every carried maker holds in the crossed market at one point.
+struct MakerBases(Vec<MakerBase>);
+
+impl MakerBases {
+    fn read(makers: &UserMap, market_index: u16) -> Result<Self> {
+        makers
+            .0
+            .values()
+            .map(|loader| {
+                let user = load!(loader)?;
+                Ok(MakerBase {
+                    user: UserRefV0 {
+                        authority: user.authority,
+                        sub_account_id: user.sub_account_id,
+                    },
+                    base: user
+                        .get_perp_position(market_index)
+                        .map(|position| position.base_asset_amount)
+                        .unwrap_or(0),
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Self)
+    }
+
+    /// The makers whose base moved since this read, which are the makers a
+    /// leg filled. A fill always moves its maker's base.
+    fn moved(&self, makers: &UserMap, market_index: u16) -> Result<Vec<UserRefV0>> {
+        let now = Self::read(makers, market_index)?;
+        Ok(self
+            .0
+            .iter()
+            .zip(now.0)
+            .filter(|(before, after)| before.base != after.base)
+            .map(|(_, after)| after.user)
+            .collect())
+    }
+}
+
+/// The taker-origin orders a leg can take, read just before it fills.
+///
+/// The read cannot say how far the leg reaches. The book passes over a row a
+/// claim covers in part, an owner the margin clamp excludes, and an owner the
+/// transaction does not carry, and the read still reports each of them as
+/// depth. So the leg names who it may not fill, and [`Self::taken`] checks the
+/// fill after it lands.
+#[derive(Default)]
+struct TakerOriginReach {
+    /// The owners of the taker-origin rows inside the leg's limit that the book
+    /// does not withhold.
+    owners: Vec<UserRefV0>,
+    /// For each book whose read filled [`CROSS_ROWS_PER_SIDE`] inside the
+    /// limit, the price of its last row. The rows past it are not read.
+    read_edges: Vec<u64>,
+}
+
+impl TakerOriginReach {
+    fn read<'info>(
+        cx: &CrossMatchContext<'_, 'info>,
+        taker_direction: PositionDirection,
+        limit_price: u64,
+        cpi_scratch: &mut QuoterCpiScratch<'info>,
+    ) -> Result<Self> {
+        let quoter_slab = &cx.accounts.quoter_slab;
+        let mut reach = Self::default();
+        for slot_index in quoter_slab.consulted_slots(cx.tail)? {
+            // Copied out so that no slab borrow lives across the book CPI.
+            let quoter_slot = quoter_slab.slots()?[slot_index];
+            if quoter_slot.config.quoter_type != QuoterType::Clob || !quoter_slot.quotes() {
+                continue;
+            }
+
+            let rows = super::helpers::crank_common::book_l3_side(
+                &quoter_slot,
+                quoter_slab,
+                cx.market_index,
+                route_direction(taker_direction),
+                CROSS_ROWS_PER_SIDE,
+                cx.tail,
+                cpi_scratch,
+                false,
+                ReachRow::from_row,
+            )?
+            .unwrap_or_default();
+            reach.add_side(&rows, taker_direction, limit_price);
+        }
+
+        Ok(reach)
+    }
+
+    /// Add one side of a book, best price first.
+    fn add_side(
+        &mut self,
+        rows: &[ReachRow],
+        taker_direction: PositionDirection,
+        limit_price: u64,
+    ) {
+        let within_limit = |price: u64| match taker_direction {
+            PositionDirection::Long => price <= limit_price,
+            PositionDirection::Short => price >= limit_price,
+        };
+
+        let reachable = rows.iter().take_while(|row| within_limit(row.price));
+        self.owners.extend(
+            reachable
+                .clone()
+                .filter(|row| row.takeable_taker_origin)
+                .map(|row| row.user),
+        );
+
+        if rows.len() >= CROSS_ROWS_PER_SIDE as usize && reachable.count() == rows.len() {
+            self.read_edges.extend(rows.last().map(|row| row.price));
+        }
+    }
+
+    /// Whether a leg that filled `makers`, down to `worst_price`, took a
+    /// taker-origin order. A leg that reached a read edge can have taken a row
+    /// the read did not see.
+    fn taken(
+        &self,
+        makers: &[UserRefV0],
+        worst_price: Option<u64>,
+        taker_direction: PositionDirection,
+    ) -> bool {
+        let reached_edge = worst_price.is_some_and(|worst| {
+            self.read_edges.iter().any(|&edge| match taker_direction {
+                PositionDirection::Long => worst >= edge,
+                PositionDirection::Short => worst <= edge,
+            })
+        });
+
+        reached_edge || makers.iter().any(|maker| self.owners.contains(maker))
+    }
 }
 
 /// The part of an L3 row the reach check reads. The heap never gives memory
@@ -561,52 +677,24 @@ fn refuse_taker_origin_reach<'info>(
 #[derive(Clone, Copy)]
 struct ReachRow {
     price: u64,
-    size: u64,
-    taker_origin: bool,
+    user: UserRefV0,
+    takeable_taker_origin: bool,
 }
 
 impl ReachRow {
     fn from_row(row: &L3RowV0) -> Self {
         Self {
             price: row.price,
-            size: row.size,
-            taker_origin: row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0,
+            user: row.user,
+            takeable_taker_origin: is_takeable_taker_origin(row.flags),
         }
     }
 }
 
-/// Whether a leg of `size` can take a taker-origin row out of `rows`, one side
-/// of a book best price first.
-///
-/// A leg takes book rows in price order, so it reaches a row only while the
-/// matchable depth in front of that row is under `size`. Other sources can only
-/// shorten that reach. A read that fills [`CROSS_ROWS_PER_SIDE`] short of `size`
-/// hides rows the leg can still take, so the answer is then true.
-fn reaches_taker_origin_row(
-    rows: &[ReachRow],
-    size: u64,
-    taker_direction: PositionDirection,
-    limit_price: u64,
-) -> bool {
-    let within_limit = |price: u64| match taker_direction {
-        PositionDirection::Long => price <= limit_price,
-        PositionDirection::Short => price >= limit_price,
-    };
-
-    let mut depth_in_front = 0u64;
-    for row in rows {
-        if depth_in_front >= size || !within_limit(row.price) {
-            return false;
-        }
-
-        if row.size > 0 && row.taker_origin {
-            return true;
-        }
-
-        depth_in_front = depth_in_front.saturating_add(row.size);
-    }
-
-    depth_in_front < size && rows.len() >= CROSS_ROWS_PER_SIDE as usize
+/// Whether a row is a taker-origin order that a leg can take. A claim that
+/// covers any part of an order makes the book pass over the whole order.
+fn is_takeable_taker_origin(flags: u8) -> bool {
+    flags & L3_ROW_FLAG_TAKER_ORIGIN != 0 && flags & L3_ROW_FLAG_RESERVED == 0
 }
 
 /// What a leg reads off the protocol `User` before it fills.
@@ -907,13 +995,19 @@ pub(super) const STALLED_TAKER_ORIGIN_CROSS_SLOTS: u64 = 150;
 
 /// One side of a book as the depth a cross leg may take, best price first.
 ///
-/// The side ends at its first taker-origin row with matchable size, because the
-/// executor refuses a leg that can reach one. A remainder the book withholds
-/// reports no size, so it is skipped and the depth behind it stays.
+/// The executor refuses a leg that fills the owner of a taker-origin row it can
+/// take. So the side ends at the first row of such an owner. A row that a claim
+/// covers in part is no depth, because the book passes over all of it.
 fn crossable_levels(rows: &[L3RowV0]) -> Vec<CrossLevel> {
+    let refused_owners: Vec<UserRefV0> = rows
+        .iter()
+        .filter(|row| is_takeable_taker_origin(row.flags))
+        .map(|row| row.user)
+        .collect();
+
     rows.iter()
-        .take_while(|row| row.size == 0 || row.flags & L3_ROW_FLAG_TAKER_ORIGIN == 0)
-        .filter(|row| row.flags & L3_ROW_FLAG_TAKER_ORIGIN == 0)
+        .take_while(|row| !refused_owners.contains(&row.user))
+        .filter(|row| row.flags & (L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_RESERVED) == 0)
         .map(CrossLevel::from_row)
         .collect()
 }

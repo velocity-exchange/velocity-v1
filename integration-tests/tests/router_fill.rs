@@ -346,6 +346,20 @@ fn ask_clob(
 /// The orders resting on one side, best price first, as the book reports them
 /// through `quote_l3_v0` — one row per order.
 fn clob_side(fixture: &Fixture, direction: DirectionV0) -> Vec<L3RowV0> {
+    clob_side_read(fixture, direction, false)
+}
+
+/// `clob_side` as the cross crank reads it, with every taker-origin row at its
+/// whole size.
+fn clob_side_whole(fixture: &Fixture, direction: DirectionV0) -> Vec<L3RowV0> {
+    clob_side_read(fixture, direction, true)
+}
+
+fn clob_side_read(
+    fixture: &Fixture,
+    direction: DirectionV0,
+    include_taker_origin_reservations: bool,
+) -> Vec<L3RowV0> {
     let mut args = Vec::new();
     velocity::state::prop_amm::write_l3_args(
         &mut args,
@@ -354,7 +368,7 @@ fn clob_side(fixture: &Fixture, direction: DirectionV0) -> Vec<L3RowV0> {
             // Zero describes the side up to `max_rows`.
             size: 0,
             max_rows: 128,
-            include_taker_origin_reservations: false,
+            include_taker_origin_reservations,
         },
     )
     .unwrap();
@@ -2491,7 +2505,12 @@ fn run_cross_resolver(
             clob_program: clob_id(),
             treasury: crank_treasury_pda(),
         }
-        .to_account_metas(None),
+        .to_account_metas(None)
+        .into_iter()
+        // The registered resolver list ends with the perp market, which the
+        // cross resolver reads to price the vAMM.
+        .chain([AccountMeta::new_readonly(perp_market_pda(0), false)])
+        .collect(),
         data: velocity::instruction::ResolveClobCrank {
             fired: fired_condition(
                 fixture.clob_market,
@@ -3556,7 +3575,7 @@ fn a_reduce_only_trigger_rests_at_most_the_position_it_reduces() {
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(maker.orders[0].is_placed_on_clob());
     assert_eq!(maker.perp_positions[0].open_asks, -((UNIT / 4) as i64));
-    let asks = clob_side(&fixture, DirectionV0::Long);
+    let asks = clob_side_whole(&fixture, DirectionV0::Long);
     assert_eq!(asks.len(), 1);
     assert_eq!(asks[0].size, UNIT / 4);
 }
@@ -3587,9 +3606,10 @@ fn a_reduce_only_trigger_with_nothing_to_reduce_is_cancelled() {
     assert_eq!(clob_ask_count(&fixture), 0);
 }
 
-/// A take that consumes a reduce-only book order disarms its owner's
+/// A fill that consumes a reduce-only book order disarms its owner's
 /// reduce-only count. A count left armed would spend one of the router's cap
-/// slots on this maker for every later fill.
+/// slots on this maker for every later fill. The fired stop rests taker-origin,
+/// so the cross crank is what consumes it.
 #[test]
 fn a_consumed_reduce_only_order_disarms_its_owner() {
     let mut fixture = setup();
@@ -3616,35 +3636,21 @@ fn a_consumed_reduce_only_order_disarms_its_owner() {
         40,
     );
 
-    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
-    let mut ix = take_ix(
-        &fixture,
-        &taker,
-        OrderParams {
-            order_type: OrderType::Market,
-            market_type: MarketType::Perp,
-            direction: PositionDirection::Long,
-            base_asset_amount: UNIT / 4,
-            price: 105 * PRICE,
-            market_index: 0,
-            post_only: PostOnlyParam::None,
-            ..OrderParams::default()
-        },
+    let bidder = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    place_clob_order_for(
+        &mut fixture,
+        &bidder,
+        PositionDirection::Long,
+        98 * PRICE,
+        UNIT / 4,
     );
-    let book_accounts = ix.accounts.split_off(ix.accounts.len() - 3);
-    ix.accounts
-        .push(AccountMeta::new(fixture.clob_maker_user, false));
-    ix.accounts.push(AccountMeta::new(stop.maker_stats, false));
-    ix.accounts.extend(book_accounts);
-
-    let authority = taker.authority.insecure_clone();
-    send_with_ixs(
-        &mut fixture.svm,
-        &authority,
-        &[compute_unit_limit_ix(400_000), ix],
-        &[],
-    )
-    .unwrap();
+    let owner = Party {
+        authority: fixture.clob_maker_authority.insecure_clone(),
+        user: fixture.clob_maker_user,
+        stats: stop.maker_stats,
+    };
+    let keeper = party(&mut fixture.svm, 0);
+    send_cross_crank(&mut fixture, &keeper, &owner, &bidder).unwrap();
 
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker.perp_positions[0].base_asset_amount, 0);
@@ -6692,9 +6698,9 @@ fn a_custom_quoter_cross_cannot_reach_a_speed_bumped_book() {
         &[],
     )
     .expect_err("a quoter that prices on demand must not lift a bumped book");
-    // The book quotes nothing, so the buy leg reaches only the vAMM while the
-    // sell leg reaches the midpoint: the two legs do not cross.
-    assert_velocity_error(&err, ErrorCode::CrossMatchLegsDoNotCross);
+    // The book quotes nothing, so both legs reach only the midpoint, and a
+    // cross whose two legs fill one authority is refused.
+    assert_velocity_error(&err, ErrorCode::InvalidMaker);
 
     // The book keeps its ask and the midpoint's user took no position.
     assert_eq!(clob_ask_count(&fixture), 1);
@@ -9639,7 +9645,7 @@ fn a_partly_filled_remainder_keeps_its_id_and_its_queue_position() {
 
     // Half the remainder filled. What is left is the same order — same id,
     // same node — still ahead of the maker that joined after it.
-    let after = clob_side(&fixture, DirectionV0::Short);
+    let after = clob_side_whole(&fixture, DirectionV0::Short);
     assert_eq!(
         after.iter().map(|row| row.order_id).collect::<Vec<_>>(),
         vec![subject.order_id, behind_ref.order_id],
@@ -10583,9 +10589,10 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     // varies a few thousand units with the account keys, and the fixture
     // draws authorities at random, so a tight bound fails about one run in
     // five. This asserts the gap to the maker path. The pair runs the
-    // order-layer steps of a routed fill, which cost about 30,000 units.
+    // order-layer steps of a routed fill, which cost about 30,000 units, and
+    // it prices the vAMM's top on each side before it settles.
     assert!(
-        meta.compute_units_consumed < 130_000,
+        meta.compute_units_consumed < 170_000,
         "crank cost {} CU",
         meta.compute_units_consumed
     );
@@ -10849,14 +10856,15 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
         expected
     );
 
-    // `market_index`, then the depth the resolver found the cross at, then an
-    // empty signed route: a staged crank routes through the market's baseline
-    // and claims none of the taker's own quoters.
+    // `market_index`, then the rows that cross the other side's best plus one
+    // to show where they end, then an empty signed route: a staged crank
+    // routes through the market's baseline and claims none of the taker's own
+    // quoters.
     assert_eq!(
         resolved.data,
         [
             0u16.to_le_bytes().as_slice(),
-            1u16.to_le_bytes().as_slice(),
+            2u16.to_le_bytes().as_slice(),
             0u32.to_le_bytes().as_slice(),
         ]
         .concat(),
@@ -12528,13 +12536,15 @@ fn an_unfillable_reduce_only_remainder_is_cancelled_and_frees_its_side() {
     assert_eq!(clob_bid_count(&fixture), 0);
 }
 
-/// Lets the vAMM fill again with a 10% spread, so it quotes about 95 and 105
-/// around an oracle of 100. A pair priced between those settles.
+/// Lets the vAMM fill again with a 5% spread, so it quotes about 97.5 and
+/// 102.5 around an oracle of 100. A pair priced between those settles.
 fn quote_vamm_outside_the_pair(svm: &mut litesvm::LiteSVM) {
     resume_amm_fill(svm);
     let mut market: PerpMarket = read_zero_copy(svm, &perp_market_pda(0));
-    market.amm.base_spread = 100_000;
-    market.amm.max_spread = 100_000;
+    // A 5% spread puts the vAMM's ask above 101 and its bid below 99. The AMM
+    // requires `max_spread` above `base_spread` and under the initial margin.
+    market.amm.base_spread = 50_000;
+    market.amm.max_spread = 90_000;
     set_zero_copy_account(
         svm,
         perp_market_pda(0),
@@ -13250,10 +13260,13 @@ fn fix4_trig_a_band_cancel_charges_the_payment_value() {
     );
     let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
 
-    // A band of half a percent puts the ask at 99 outside it.
+    // A band of half a percent puts the ask at 99 outside it. The AMM requires
+    // its spreads under the initial margin.
     let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
     market.margin_ratio_initial = 50;
     market.margin_ratio_maintenance = 25;
+    market.amm.base_spread = 2_000;
+    market.amm.max_spread = 4_000;
     set_zero_copy_account(
         &mut fixture.svm,
         perp_market_pda(0),
@@ -13350,10 +13363,10 @@ fn fix4_cross_ix(
 ///
 /// The asks are A, a maker at 99, then B, a lapsed taker-origin ask at 100. A
 /// bound remainder R bids 99.5 and claims part of A. The book reports A's free
-/// size, which covers the leg, but execute passes over all of A and fills B at
-/// its own price. The protocol `User` would then keep the gap to the maker bid
-/// at 101, which B was owed as the aggressor. The crank refuses the leg
-/// because it filled B's owner.
+/// size, which covers the leg, but execute passes over all of A. A fill of B at
+/// its own price would let the protocol `User` keep the gap to the maker bid at
+/// 101, which B was owed as the aggressor. The book withholds B after its
+/// claim lapses, so the leg fills nothing and the crank finds nothing crossed.
 #[test]
 fn fix4_cross_a_leg_cannot_take_a_remainder_behind_a_partly_claimed_maker() {
     let mut fixture = setup();
@@ -13423,12 +13436,8 @@ fn fix4_cross_a_leg_cannot_take_a_remainder_behind_a_partly_claimed_maker() {
         &[compute_unit_limit_ix(1_400_000), ix],
         &[],
     )
-    .expect_err("the buy leg filled the lapsed remainder");
-    assert!(
-        format!("{:?}", err.meta.logs).contains("CrossedTakerRemainderPending"),
-        "unexpected: {:?}",
-        err.meta.logs
-    );
+    .expect_err("the buy leg cannot fill the lapsed remainder");
+    assert_velocity_error(&err, ErrorCode::CrossMatchUnprofitable);
 
     assert_eq!(
         perp_position(&fixture.svm, &lapsed.user).base_asset_amount,
@@ -14522,8 +14531,9 @@ fn fix4_taker_slices_at_the_limit_charge_no_shortfall() {
     assert_eq!(filled, (1000 * SLICES) as i64);
     let paid = -position.quote_asset_amount;
     let at_limit = 99 * PRICE as i64 * filled / UNIT as i64;
+    // The taker fee rounds up to at least one quote unit on each slice.
     assert!(
-        paid <= at_limit + at_limit / 1000,
+        paid <= at_limit + at_limit / 1000 + SLICES as i64,
         "paid {paid} for base worth {at_limit} at its limit"
     );
     assert_eq!(

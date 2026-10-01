@@ -1575,3 +1575,78 @@ mod crossing_reads {
         assert_eq!(stage.read_depth, 3);
     }
 }
+
+/// A bid remainder at 102 crosses a maker ask at 100 and a later ask remainder
+/// at 101. The routed fill ignores every claim, so it stops in front of the
+/// later remainder, and the two then pair at 102.
+mod cross_route_bound {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    fn user(owner: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([owner; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn row(order_id: u64, price: u64, size: u64, owner: u8, taker_origin: bool) -> BookRow {
+        BookRow {
+            order: RestingOrder {
+                order_ref: ClobOrderRefV0 {
+                    node_index: order_id as u32,
+                    order_id,
+                },
+                user: user(owner),
+                price,
+                base_asset_amount: size,
+                taker_origin,
+                reduce_only: false,
+                placed_slot: order_id,
+            },
+            claim_lapsed: false,
+        }
+    }
+
+    #[test]
+    fn the_route_stops_in_front_of_a_later_remainder() {
+        let bids = [row(5, 102, 10, 0xA, true)];
+        let asks = [
+            row(7, 100, 5, 0xB, false),
+            row(8, 100, 3, 0xD, false),
+            row(9, 101, 10, 0xC, true),
+        ];
+
+        let plan = plan_subject(&bids, &asks, user(0xA)).unwrap();
+        assert!(plan.owns_its_claim());
+        assert_eq!(plan.counterparty().unwrap().order_ref.order_id, 7);
+        assert_eq!(plan.route_base(), 8);
+    }
+
+    #[test]
+    fn a_route_with_no_remainder_behind_takes_the_whole_order() {
+        let bids = [row(5, 102, 10, 0xA, true)];
+        let asks = [row(7, 100, 5, 0xB, false)];
+
+        assert_eq!(
+            plan_subject(&bids, &asks, user(0xA)).unwrap().route_base(),
+            10
+        );
+    }
+
+    /// A lapsed remainder is depth, and the subject's own other account is
+    /// passed over, so neither stops the route.
+    #[test]
+    fn a_lapsed_or_own_remainder_does_not_stop_the_route() {
+        let mut lapsed = row(9, 101, 4, 0xC, true);
+        lapsed.claim_lapsed = true;
+        let mut own = row(10, 101, 6, 0xA, true);
+        own.order.user.sub_account_id = 1;
+        let bids = [row(5, 102, 10, 0xA, true)];
+        let asks = [row(7, 100, 5, 0xB, false), lapsed, own];
+
+        assert_eq!(
+            plan_subject(&bids, &asks, user(0xA)).unwrap().route_base(),
+            10
+        );
+    }
+}

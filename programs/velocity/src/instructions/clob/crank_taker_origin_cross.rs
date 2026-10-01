@@ -424,6 +424,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         tail,
         &RoutedRemainder {
             order: &subject_order,
+            base: plan.route_base(),
             claim: &route_claim,
             include_taker_origin_reservations: plan.owns_its_claim(),
         },
@@ -515,6 +516,8 @@ struct SubjectCross {
     order: RestingOrder,
     /// The row that crosses the remainder.
     counterparty: RestingOrder,
+    /// The base the fill may route. See [`base_ahead_of_opposite_remainder`].
+    route_base: u64,
 }
 
 /// One book row, and whether the book still honours its claim.
@@ -570,6 +573,14 @@ impl SubjectPlan {
         match self {
             Self::Cross(subject) => subject.order,
             Self::Route { order, .. } => *order,
+        }
+    }
+
+    /// The base the fill may route.
+    fn route_base(&self) -> u64 {
+        match self {
+            Self::Cross(subject) => subject.route_base,
+            Self::Route { order, .. } => order.base_asset_amount,
         }
     }
 
@@ -735,8 +746,22 @@ fn claimed_subject_cross(
         "the front of the book is a maker cross; crank_cross_match resolves it first"
     )?;
 
-    let crosses = resolve_crosses(&claim_view(bids), &claim_view(asks), MAX_CROSSES_PER_CRANK);
-    subject_cross(&crosses, taker_ref)
+    let (bid_view, ask_view) = (claim_view(bids), claim_view(asks));
+    let crosses = resolve_crosses(&bid_view, &ask_view, MAX_CROSSES_PER_CRANK);
+    let mut subject = subject_cross(&crosses, taker_ref)?;
+    if !subject.counterparty.taker_origin {
+        let opposite = match subject.aggressor_side {
+            SideV0::Bid => &ask_view,
+            SideV0::Ask => &bid_view,
+        };
+        subject.route_base = subject.route_base.min(base_ahead_of_opposite_remainder(
+            &subject.order,
+            subject.aggressor_side,
+            opposite,
+        ));
+    }
+
+    Ok(subject)
 }
 
 /// Whether either best row is a taker remainder. A lapsed one counts, because
@@ -792,7 +817,40 @@ fn subject_cross(crosses: &[Cross], taker_ref: UserRefV0) -> VelocityResult<Subj
         cross: subject,
         order: subject_order,
         counterparty: counterparty_of(&subject, aggressor_side),
+        route_base: subject_order.base_asset_amount,
     })
+}
+
+/// The crossing base on the other side that rests in front of the first live
+/// remainder there. `u64::MAX` when no such remainder crosses the subject.
+///
+/// A Cross plan fills with every claim ignored, so it would take that
+/// remainder at the remainder's own worst price. The two remainders are a pair
+/// instead, and a pair settles at the earlier one's price. The fill stops in
+/// front of it, and the pair is the next crank's work.
+fn base_ahead_of_opposite_remainder(
+    subject: &RestingOrder,
+    side: SideV0,
+    opposite: &[RestingOrder],
+) -> u64 {
+    let mut base_ahead = 0u64;
+    for row in opposite {
+        if !price_crosses(side, subject.price, row.price) {
+            break;
+        }
+
+        if crate::math::crosses::same_authority(&subject.user, &row.user) {
+            continue;
+        }
+
+        if row.taker_origin {
+            return base_ahead;
+        }
+
+        base_ahead = base_ahead.saturating_add(row.base_asset_amount);
+    }
+
+    u64::MAX
 }
 
 /// A row of the subject cross that can never fill.
@@ -1073,6 +1131,8 @@ fn claimed_route_digest(
 /// The remainder one routed fill takes, and how much of the book it reaches.
 struct RoutedRemainder<'a> {
     order: &'a RestingOrder,
+    /// The base this fill may take, at most the order's size.
+    base: u64,
     claim: &'a SignedRouteClaim<'a>,
     /// True only for the first live claim on a book row, which may take the
     /// depth the book reserves for it.
@@ -1100,6 +1160,8 @@ fn route_and_fill_remainder<'info>(
     let subject_order = remainder.order;
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, subject_order);
+    // The fill targets the order's own size, so the bound goes on the order.
+    order.base_asset_amount = remainder.base;
     bind_builder_order(cx, rev_share_escrow, subject_order, &mut order)?;
 
     let mark = crate::instructions::RouteMark::read(maps, cx.market_index)?;
@@ -1119,7 +1181,7 @@ fn route_and_fill_remainder<'info>(
         crate::instructions::RouteRequest {
             order: crate::instructions::RoutedOrder {
                 direction: crate::instructions::route_direction(cx.taker_direction),
-                unfilled: subject_order.base_asset_amount,
+                unfilled: remainder.base,
                 taker: cx.taker_ref,
                 limit_price: subject_order.price,
                 mark,

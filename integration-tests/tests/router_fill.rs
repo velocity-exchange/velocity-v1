@@ -12904,3 +12904,92 @@ fn fix4_taker_a_drawdown_vamm_stages_no_failing_pair() {
         0
     );
 }
+
+/// A bid remainder at 102 rests first, then a maker ask at 100 for half a
+/// unit, then an ask remainder at 101. The bid's crank ignores every claim, and
+/// it used to sweep through the maker into the later ask at 101. It now stops
+/// in front of the later ask, and the two remainders pair at the earlier 102.
+#[test]
+fn fix4_taker_a_maker_cross_stops_in_front_of_a_later_remainder() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_taker_origin_order(
+        &mut fixture,
+        &early,
+        PositionDirection::Long,
+        102 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT / 2,
+    );
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+    rest_taker_origin_order(
+        &mut fixture,
+        &late,
+        PositionDirection::Short,
+        101 * PRICE,
+        UNIT,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+    quote_vamm_outside_the_pair(&mut fixture.svm);
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let route = crank_taker_origin_cross_ix(&fixture, &keeper, &early, &[&maker, &late]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), route],
+        &[],
+    )
+    .expect("the earlier bid takes the maker in front of the later ask");
+    assert_eq!(
+        perp_position(&fixture.svm, &early.user).base_asset_amount,
+        (UNIT / 2) as i64
+    );
+    assert_eq!(perp_position(&fixture.svm, &late.user).base_asset_amount, 0);
+
+    fixture.svm.expire_blockhash();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .expect("the two remainders pair");
+
+    let late_position = perp_position(&fixture.svm, &late.user);
+    assert_eq!(late_position.base_asset_amount, -((UNIT / 2) as i64));
+    assert!(
+        late_position.quote_asset_amount > 50_800_000,
+        "sold half a unit at the earlier 102 less fees, not at its own 101: {}",
+        late_position.quote_asset_amount
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &early.user).base_asset_amount,
+        UNIT as i64
+    );
+}

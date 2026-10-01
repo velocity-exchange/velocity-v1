@@ -74,6 +74,11 @@ aggressor and crosses into it. Rest order is the CLOB order id alone. A book's `
 only increases and never reuses a value, so the lower id rested first and no separate slot
 comparison is needed.
 
+The rule holds when makers rest between the two. A remainder that takes makers fills with every
+claim ignored, so it would take a remainder behind those makers at that remainder's own price. The
+crank therefore stops the fill in front of the first live remainder on the other side, and the cross
+walk pairs a remainder with nothing behind that one. The two remainders then settle as a pair.
+
 Nothing else about R3 changes. The later order is the one that came to trade, which is what
 "taker" means everywhere else in this document, and the earlier order gets the price it was
 already offering, which is all a maker is ever promised. The alternative was the midpoint, and it

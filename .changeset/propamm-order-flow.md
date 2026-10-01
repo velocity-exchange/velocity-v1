@@ -64,8 +64,10 @@ pro rata inside a tier. `PerpFulfillmentMethod` and AMM JIT are gone, and the `j
 and program are deleted. A client that reproduces a fill off chain must model the vAMM as a ladder
 of levels rather than a curve swap. `splitAcrossQuoters` and `vammQuoteLevels` mirror the program's
 math. In `vammQuoteLevels` a last-look rung reprices only base that the rivals at its price also
-fill in the same take, at most `min(D, total - reach(P))` just before the curve reaches the rival
-price `P`, so a rival the take does not reach shades nothing. The ladder's top is the swap's first
+fill in the same take, at most `min(D, total - reach(P) - R)` just before the curve reaches the
+rival price `P`. `R` is the rival depth priced better than `P`, including depth at or inside the
+vAMM top, so a rival the take does not reach shades nothing. The budget reads only the levels the
+router split reads. The ladder's top is the swap's first
 marginal on the spread reserves, and a limit short of it quotes nothing. The rest of the ladder is
 the honest curve.
 
@@ -181,8 +183,9 @@ builders. A caller names a market and nothing else, because the book's account, 
 PDAs resolve from the market's quoter slab. Those instructions take `quoterSlab`, `clobMarket` and
 `clobProgram`, and `clobProgram` is pinned to velocity's CLOB program id. `cancelOrderV1` and
 `modifyOrderV1` take a trailing `takerOrigin` flag, which a `UserClobOrder` row carries. With it
-set, the instruction carries the signed-message record, so a cancelled signed-message remainder
-releases its entry and a modified one keeps its route. `SignedMsgOrderId` gains `marketIndex`,
+set, the instruction carries the signed-message record, so a cancelled or modified signed-message
+remainder releases its entry. A modify of a taker remainder rests the replacement as an ordinary
+maker order. `SignedMsgOrderId` gains `marketIndex`,
 because each book numbers its own orders. The keeper arms are
 `force_cancel_clob_orders`, `crank_clob_evict` and `crank_clob_remove_expired`. `force_cancel_clob_orders`
 cancels during a full exchange halt but pays no keeper fee, so the halt means the same thing for
@@ -199,7 +202,9 @@ is due.
 cancels a CLOB order whose price breaches the maker oracle band, because the router drops a whole
 book from a fill when one of its levels breaches the band. The crank judges the order at the safe MM
 oracle price the fill uses, with the band of the book's quoter entry, and behind the oracle gates of
-the crossed-book cranks. The maker pays the flat removal reward. An order inside the band fails with
+the crossed-book cranks. It takes an optional `solSpotMarket` after `crankConditions`. A
+program-keeper cancel charges the maker `max(flat_filler_fee, payment value)` at the SOL 5-minute
+TWAP, and pays reservoir lamports only while that TWAP is live. An order inside the band fails with
 `ClobOrderInsideOracleBand` (6461). No relay condition wakes this crank, and the SDK has no wrapper
 for it.
 
@@ -332,7 +337,9 @@ account. The quoter program must own it, and it must not be executable, because 
 every slot whose response account rides the fill. `UpdateQuoterApprovedArgs` carries
 `stagedConfigHash`, the SHA-256 of the staged `QuoterConfigV0` bytes, and an approval fails when the
 staged config has another hash, so a maker edit after the admin's review cannot reach the slab. A
-revocation ignores it. A midpoint approval also reads the instance. The instance's `execute_authority` must be the market's quoter slab, its `market_index` must be the
+revocation ignores it. A `Clob` approval requires the CLOB's own `quote_v0`, `execute_v0` and
+`quote_l3_v0` discriminators (`quoter_spec::discriminator`).
+A midpoint approval also reads the instance. The instance's `execute_authority` must be the market's quoter slab, its `market_index` must be the
 entry's market, and its `size_step` must be a nonzero multiple of the market's `order_step_size`. A
 midpoint execute fills any step-aligned prefix of the ladder its quote published.
 `AdminClient.getUpdateQuoterApprovedIx` takes trailing `responseAccount` and `stagedConfigHash`
@@ -451,7 +458,8 @@ A signed-message order is routed when it is placed, and whatever it cannot fill 
 book as a taker-origin remainder rather than in a slot. The activation window then decides
 who fills it on price rather than on who lands a transaction first. A remainder that no book row
 crosses is routed across the vAMM and the quoters by `crank_taker_origin_cross`, and two
-remainders settle as a pair only at a price the vAMM beats for neither. On a book with a speed
+remainders settle as a pair only while the vAMM can fill the earlier one, at a price it beats for
+neither. On a book with a speed
 bump, a keeper submits a signed message with its attestation; an unattested submission must be
 signed by the taker's authority or delegate (`UnattestedSynchronousTake`), so a feed reader cannot
 place a user's order ahead of the attestation. An entry whose order rests no longer blocks a delete
@@ -553,15 +561,17 @@ passes the PDA even when the account does not exist.
 argument and, after `perpMarket`, the read-only `state`, `quoterSlab`, `clobMarket` and
 `clobProgram`. Each resolver stages only the order of the slot that fired, and reports no work for
 every gate the executor applies that it can read: the fill pause, settlement, oracle validity,
-TWAP divergence, a suspended book, a full side, a being-liquidated account, and a reduce-only fire
-with nothing to reduce. A refused fire no longer costs relay a failed simulation and its backoff.
+TWAP divergence, a suspended book, a full side, a bankrupt account, and a reduce-only fire with
+nothing to reduce. An account whose being-liquidated flag is set still stages a fire. The executor
+clears a stale flag and fires, and refuses while the account is in liquidation. A refused fire no longer costs relay a failed simulation and its backoff.
 `UserConditionsV0` grows to 7128 bytes to hold the nine resolver accounts per slot, so every user
 is re-synced after the upgrade. `buildTriggerMarketOrderV1Instruction` takes `triggerConditions` as
 required and an optional `solSpotMarket`; `trigger_limit_order_v1`, `crank_clob_evict` and
 `crank_clob_remove_expired` take the same optional account, which program-keeper mode requires
 when `State` names a SOL market, and a relay-paid removal or trigger crank charges
 `max(flat fee, payment value)`. `placeTriggerOrders` refuses a batch that arms a ninth reduce-only
-stop-loss, and the watch slots rank armed stop-losses first and parked stop-limits last. A fired
+stop-loss. A signed-message bracket and a modify that arm a ninth armed reduce-only stop-loss fail
+with `MaxNumberOfOrders` too, and the watch slots rank armed stop-losses first and parked stop-limits last. A fired
 stop-market keeps its routed fill and cancels the remainder a full side refuses. A relay trigger crank pays at least the `min_payment` its slot
 stores, so a lower market payment does not revert a slot synced before the change.
 
@@ -577,7 +587,8 @@ a spent reduce-only order, an account under liquidation, a size below the book m
 gate.
 
 A fired trigger rests taker-origin. It came to trade, so a cross settles at the counterparty's price
-rather than picking it off at its own. Its owner cannot cancel it inside the activation window.
+rather than picking it off at its own. Its owner cannot cancel it until `reservation_grace_slots`
+after its activation slot.
 Liquidation force-cancel stays exempt and `max_ts` still bounds its life.
 
 An armed trigger past its own `max_ts` is dead, and both endpoints now treat it as no work
@@ -617,6 +628,11 @@ the orders on the book suggest, and a take can fill less than a raw order listin
 is what stops the remainder being frontrun: without it a taker buys the ask the remainder crosses and
 reposts it worse, and the remainder pays the worse price.
 
+The remainder itself is withheld whole from every ordinary read and fill for its whole life, before
+and after its claim lapses, because the vAMM or a quoter can cross it where the book cannot see.
+Only `crank_taker_origin_cross` fills it. `quote_l3_v0` reports such a row at size 0 with
+`L3_ROW_FLAG_RESERVED`. Once the claim lapses its owner can cancel or modify it.
+
 Two consequences to design around. A claim outranks price, so an ordinary order priced better on the
 claimant's own side still takes nothing from claimed depth, and with a maker resting in front of a
 remainder both cross cranks go quiet until the claim lapses. `reservation_grace_slots` bounds that
@@ -631,7 +647,8 @@ keeper must request a budget for it. Cross cranks are permissionless and revert 
 clears both takers' fees and the market's `min_cross_surplus` floor. A leg carries no price of its
 own, so the crank bounds each leg at the last price inside the maker oracle band. It uses the
 narrowest band among the quoters it consults, because the router drops a book whose quote reaches
-past its entry's band.
+past its entry's band. It refuses a leg that fills the owner of a takeable taker-origin order
+(`CrossedTakerRemainderPending`), and a cross whose two legs fill one authority (`InvalidMaker`).
 
 `crank_taker_origin_cross` requires the taker's `RevenueShareEscrow` when the taker carries a
 builder referral, on the routed branch and on a settled pair. The referee discount and the referrer
@@ -657,7 +674,8 @@ user's Custom quoter room.
 
 `crank_cross_match` carries the SOL spot market, read-only, after the quote spot market, when
 `State.solSpotMarketIndex` is not 0. It prices its keeper payment in quote at the live SOL oracle,
-or else at that market's 5-minute TWAP, and fails with `SpotMarketNotFound` without either. The
+or else at that market's 5-minute TWAP. With no SOL market or no usable price it lands unpaid, at a
+surplus floor of `min_cross_surplus`. The
 `crank_taker_origin_cross` resolver stages the same market, because that crank prices its keeper
 payment the same way.
 
@@ -668,6 +686,16 @@ counterparty under liquidation. A taker under liquidation proceeds only when a f
 takes it out of liquidation. The book serves claims oldest first, so `crank_taker_origin_cross`
 settles a side's crosses oldest remainder first and fails with `NoTakerOriginCross` for a named taker
 that is not the oldest aggressor on its side.
+
+Relay's taker-origin crank fills a remainder against the makers it carries and stops short of any
+other owner, so a book with more owners than the crank stages cannot block it. Two remainders settle
+as a pair only while the vAMM can fill the earlier one. With `AmmFill` paused, the vAMM in drawdown
+or the MM oracle divergent, the pair waits. A remainder that takes makers stops in front of a
+remainder on the other side, and the two then settle as a pair at the earlier one's price. Two
+lapsed remainders at the front of the book also settle as a pair. The keeper-payment shortfall
+charged to a taker is capped by what the crank gained it against its rest price. A crank that
+honours every claim may fill a signed-route remainder across the baseline. The crank refuses a
+`cross_rows` read that ends on a row crossing the other side (`NoTakerOriginCross`).
 
 A cross crank runs the market gates a routed fill runs. It refuses a market that is not `Active` or
 `ReduceOnly`, in settlement, or fill-paused. When two crossed taker-origin remainders settle against
@@ -695,8 +723,16 @@ list carries the perp market, so the cross resolver can price the vAMM. `crank_c
 settles funding once before its first leg and counts a period that rolls between the legs against
 the surplus, and each leg refuses to consume a taker-origin row. `settle_pnl` on an expired market
 settles over several calls when the user rests more than one sweep of book orders. The liquidation
-payout is refused only to the liquidated user's authority, and a transaction with no ComputeBudget
-instructions is reimbursed at the rails' priority ceiling.
+payout is refused only to the liquidated user's authority. A transaction with no ComputeBudget price
+is reimbursed the rails' priority ceiling once, shared across its liquidations, and a fill under the
+$10 floor is reimbursed nothing.
+
+A relay resync adds the markets a user entered after its sync, and the liquidation resolver reports
+no work while the stored list lacks one. The stored list holds 48 entries, and eight book markets
+with the quote market use 46. A relay liquidation or force cancel pays at least the payment its
+liveness poll asserts. The resync resolver reports no work inside the paid interval. The liquidation
+resolver skips the liquidation stage under `LiqPaused`, `FillPaused` or the market's liquidation
+pause.
 
 Every user gets a `UserConditionsV0`. `initializeUser` requires the `userConditions` account rather
 than accepting `None`, and the payer funds its rent with the account. Relay can only watch an account
@@ -784,7 +820,9 @@ for every crank would serialize the protocol's cranks into that budget exactly w
 move needs them landing in parallel. `AdminClient.initializeCrankTreasury`, `updateCrankTreasury`,
 `withdrawCrankTreasury` and `sweepCrankReservoir` (CLI `fees init-crank-treasury`,
 `set-crank-treasury`, `withdraw-crank-treasury`, `sweep-crank-reservoir`) create, configure and drain
-it. Funding it is a plain SOL transfer, and the sweep moves lamports back out of a retired or
+it. `updateCrankTreasury` and `fees set-crank-treasury --resync-floor <lamports>` also set
+`resyncFloorLamports`, the balance above rent that paid resyncs leave for refills. Funding it is a
+plain SOL transfer, and the sweep moves lamports back out of a retired or
 over-provisioned market's reservoir, so they do not travel one way only. `clob-market init` takes no
 `--fund-reservoir`.
 
@@ -906,7 +944,11 @@ the velocity signer PDA, and `payer` must be the cold or warm admin. New PDA hel
 
 `HotRole.ConditionsSync` is a new hot role, stored in `StateAccount.hotConditionsSync`. Its key may
 set paid resync terms when it syncs another user's conditions, as the warm admin may.
-`auth set-hot-admin conditionsSync <key>` sets it.
+`auth set-hot-admin conditionsSync <key>` sets it. The pause admin may clear any hot role, by writing
+the default key with `updateHotAdmin` or `auth set-hot-admin`, and cannot set one.
+
+`exchange set-status --multisig` records the live status in the proposal, and `multisig execute`
+refuses a status write that would clear a pause added after it was proposed.
 
 The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`
 and `user init-protocol`, which creates the protocol `User` and its `UserStats` with a warm or cold

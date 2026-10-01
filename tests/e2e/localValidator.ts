@@ -2427,7 +2427,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	});
 
 	it('liquidates an underwater account through the router, with no inventory left behind', async function () {
-		this.timeout(240_000);
+		this.timeout(360_000);
 		// A leveraged long that a price drop puts underwater.
 		const victimKp = Keypair.generate();
 		await airdrop(victimKp.publicKey, 10);
@@ -2502,7 +2502,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// with `PriceBandsBreached` on the staged executor.
 		await setOraclePrice(93);
 
-		await pollUntil('relay to liquidate', 180_000, async () => {
+		// Only the liveness poll wakes the liquidation resolver. It fires every
+		// LIQ_LIVENESS_POLL_SLOTS (300) slots, which a busy local validator can
+		// stretch past two minutes.
+		await pollUntil('relay to liquidate', 300_000, async () => {
 			await victim.fetchAccounts();
 			const position = victim.getUser().getPerpPosition(0);
 			const reduced = !position || position.baseAssetAmount.lt(sizeBefore);

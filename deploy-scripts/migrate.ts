@@ -2046,9 +2046,12 @@ async function bringUpBook(
 		decodeQuoterSlab(slabInfo.data).slots.some((slot) =>
 			slot.entry.equals(quoter)
 		);
-	const attached = await connection.getAccountInfo(
+	const conditionsInfo = await connection.getAccountInfo(
 		getClobCrankConditionsPublicKey(velocity, marketIndex)
 	);
+	const attached =
+		conditionsInfo !== null &&
+		(await carriesQuoteOracle(ctx, market, conditionsInfo.data));
 	if (approved && attached) {
 		console.log(`book market ${marketIndex}: attached`);
 		return 'attached';
@@ -2483,6 +2486,42 @@ async function attachBookIx(
 			systemProgram: SystemProgram.programId,
 		})
 		.instruction();
+}
+
+/**
+ * Whether a market's crank conditions store its quote spot market's oracle. An
+ * attach written before `quote_oracle` existed reads it as the default pubkey,
+ * and a staged cross then fails with `OracleNotFound`. The caller attaches again
+ * in place to write it.
+ */
+async function carriesQuoteOracle(
+	ctx: BookBringUp,
+	market: any,
+	conditionsData: Buffer
+): Promise<boolean> {
+	const { connection, program } = ctx;
+	const quoteSpotMarket = getSpotMarketPublicKeySync(
+		program.programId,
+		market.quoteSpotMarketIndex
+	);
+	const quoteInfo = await connection.getAccountInfo(quoteSpotMarket);
+	if (!quoteInfo) {
+		throw new Error(
+			`quote spot market ${market.quoteSpotMarketIndex} does not exist`
+		);
+	}
+
+	const quote: any = program.coder.accounts.decode(
+		'spotMarket',
+		quoteInfo.data
+	);
+	const expected =
+		'quoteAsset' in quote.oracleSource ? PublicKey.default : quote.oracle;
+	const conditions: any = program.coder.accounts.decode(
+		'clobCrankConditionsV0',
+		conditionsData
+	);
+	return conditions.quoteOracle.equals(expected);
 }
 
 /**

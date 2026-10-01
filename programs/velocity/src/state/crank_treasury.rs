@@ -43,8 +43,9 @@ pub struct CrankTreasuryV0 {
     pub total_paid: u64,
     /// Lifetime lamports moved out to market reservoirs.
     pub total_refilled: u64,
-    /// Reserved.
-    pub padding_u64: u64,
+    /// Paid resyncs leave at least this many lamports above rent, so resync
+    /// payments cannot spend what reservoir refills need. Refills ignore it.
+    pub resync_floor_lamports: u64,
     /// Refill a reservoir up to this many of its most expensive crank.
     ///
     /// Read at refill time, so re-tuning it takes effect on every market at
@@ -66,7 +67,7 @@ impl Default for CrankTreasuryV0 {
         Self {
             total_paid: 0,
             total_refilled: 0,
-            padding_u64: 0,
+            resync_floor_lamports: 0,
             refill_target_cranks: 0,
             refill_watermark_cranks: 0,
             padding: [0; 36],
@@ -98,6 +99,13 @@ impl CrankTreasuryV0 {
     /// the market that stores it.
     pub fn refill_watermark(&self, max_crank_payment: u64) -> VelocityResult<u64> {
         max_crank_payment.safe_mul(u64::from(self.refill_watermark_cranks))
+    }
+
+    /// What a paid resync of `share` lamports may take from a treasury that
+    /// holds `lamports`. It leaves rent and the resync floor behind.
+    pub fn resync_payable(&self, share: u64, lamports: u64, rent_minimum: u64) -> u64 {
+        let reserved = rent_minimum.saturating_add(self.resync_floor_lamports);
+        share.min(lamports.saturating_sub(reserved))
     }
 
     /// Move lamports out of the treasury, never below its own rent exemption.
@@ -151,6 +159,28 @@ const _: () = assert!(CrankTreasuryV0::SIZE == 8 + std::mem::size_of::<CrankTrea
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paid resync stops at the floor, which keeps the lamports that
+    /// reservoir refills draw on.
+    #[test]
+    fn a_resync_leaves_the_floor_for_refills() {
+        let treasury = CrankTreasuryV0 {
+            resync_floor_lamports: 1_000_000,
+            ..CrankTreasuryV0::default()
+        };
+        let (rent, share) = (2_000, 5_000);
+
+        assert_eq!(
+            treasury.resync_payable(share, rent + 1_000_000 + share, rent),
+            share
+        );
+        assert_eq!(
+            treasury.resync_payable(share, rent + 1_000_000 + share - 1, rent),
+            share - 1
+        );
+        assert_eq!(treasury.resync_payable(share, rent + 1_000_000, rent), 0);
+        assert_eq!(treasury.resync_payable(share, rent, rent), 0);
+    }
 
     /// An unpriced treasury stages nothing, rather than staging a refill that
     /// can only revert.

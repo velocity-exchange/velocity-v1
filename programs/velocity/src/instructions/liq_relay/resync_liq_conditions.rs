@@ -125,14 +125,18 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     let treasury = ctx.accounts.treasury.to_account_info();
     let rent_minimum = Rent::get()?.minimum_balance(treasury.data_len());
     // The payment is best effort, as it was when the user's own account paid.
-    // An empty treasury must not fail a resync that already rewrote the block.
-    // Relay's own payment guard protects the keeper, because it skips work
-    // that would not pay.
-    let available = treasury.lamports().saturating_sub(rent_minimum);
+    // A treasury at its floor must not fail a resync that already rewrote the
+    // block. Relay's own payment guard protects the keeper, because it skips
+    // work that would not pay.
+    let payable =
+        ctx.accounts
+            .treasury
+            .load()?
+            .resync_payable(share, treasury.lamports(), rent_minimum);
     let paid = CrankTreasuryV0::pay_out(
         &treasury,
         &ctx.accounts.keeper.to_account_info(),
-        share.min(available),
+        payable,
         rent_minimum,
     )?;
     let mut treasury_state = ctx.accounts.treasury.load_mut()?;

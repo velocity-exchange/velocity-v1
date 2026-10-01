@@ -414,9 +414,14 @@ base is not in the arb crank's matchable set at all, so the cross cannot reach i
 the caller asks for, and the remainder keeps the whole improvement rather than the part nobody
 took first. The claim covers a remainder only while a counterparty crosses it and the claim holds.
 A remainder that nothing crosses, or whose claim lapsed, is ordinary depth at its worst price, and
-a leg that took it would give the protocol `User` the gap to the other leg's source. The executor
-therefore reads each side a leg takes and refuses a cross whose legs can reach any taker-origin
-row. The resolvers end each side at the first such row that the book reports matchable.
+a leg that took it would give the protocol `User` the gap to the other leg's source. Before each
+leg the executor reads the side it takes and names the owners of the taker-origin rows inside the
+leg's limit that the book does not withhold. After the fill it refuses the cross if the leg moved
+one of those owners, or reached the last price of a read that filled its row window. A count of
+the depth in front cannot replace this check. The book passes over rows that L3 reports as depth:
+a row that a claim covers in part, an owner the margin clamp excludes, and an owner the caller did
+not carry. The resolver ends each side at the first row of an owner with such a remainder, and it
+counts a partly claimed row as no depth.
 
 ## What each program carries
 

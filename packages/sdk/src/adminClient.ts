@@ -5983,15 +5983,18 @@ export class AdminClient extends VelocityClient {
 	 * Prices the crank treasury in cranks, not lamports, so one setting serves every market.
 	 * `refillTargetCranks` is how full a refill leaves a reservoir, read at refill time.
 	 * `refillWatermarkCranks` is the level that wakes a refill. It reaches a market at that
-	 * market's next `updatePerpMarketClobQuoter`. Warm or cold admin.
+	 * market's next `updatePerpMarketClobQuoter`. `resyncFloorLamports` is the balance above
+	 * rent that paid resyncs leave for refills. Warm or cold admin.
 	 */
 	public async updateCrankTreasury(
 		refillTargetCranks: number,
-		refillWatermarkCranks: number
+		refillWatermarkCranks: number,
+		resyncFloorLamports: BN
 	): Promise<TransactionSignature> {
 		const ix = await this.getUpdateCrankTreasuryIx(
 			refillTargetCranks,
-			refillWatermarkCranks
+			refillWatermarkCranks,
+			resyncFloorLamports
 		);
 		const tx = await this.buildTransaction(ix);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
@@ -6002,14 +6005,16 @@ export class AdminClient extends VelocityClient {
 	 * Builds the `updateCrankTreasury` instruction without sending it. See `updateCrankTreasury`.
 	 * @param refillTargetCranks - Fill a reservoir to this many of its most expensive crank.
 	 * @param refillWatermarkCranks - Wake the refill when a reservoir can pay fewer than this many.
+	 * @param resyncFloorLamports - Lamports above rent that paid resyncs leave in the treasury.
 	 * @returns The unsigned instruction.
 	 */
 	public async getUpdateCrankTreasuryIx(
 		refillTargetCranks: number,
-		refillWatermarkCranks: number
+		refillWatermarkCranks: number,
+		resyncFloorLamports: BN
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateCrankTreasury(
-			{ refillTargetCranks, refillWatermarkCranks },
+			{ refillTargetCranks, refillWatermarkCranks, resyncFloorLamports },
 			{
 				accounts: {
 					treasury: getCrankTreasuryPublicKey(this.program.programId),

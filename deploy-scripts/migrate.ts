@@ -8,7 +8,8 @@
  *
  *   bun run deploy-scripts/migrate.ts --url <rpc> --keypair <path> \
  *     [--multisig <pda> [--vault-index <n>]] [--fee-rails <i,s,num,den,maxPriority>] \
- *     [--treasury-refill <target,watermark>] [--lift-upgrade-pause] [--watch-creators <pk,pk>] \
+ *     [--treasury-refill <target,watermark[,resyncFloor]>] [--lift-upgrade-pause] \
+ *     [--watch-creators <pk,pk>] \
  *     [--clob-hash <sha256> | --clob-so <path>] [--dry-run]
  *
  * The keypair is the payer and can be any funded key. The admin is the keypair, or with
@@ -230,9 +231,9 @@ type Args = {
 	/** The payer, then every key `--watch-creators` names. A watch by any
 	 * other creator does not count as coverage. */
 	watchCreators: PublicKey[];
-	/** `--treasury-refill <target>,<watermark>`: the crank treasury pricing
-	 * the run writes when the treasury has none. */
-	treasuryRefill?: { targetCranks: number; watermarkCranks: number };
+	/** `--treasury-refill <target>,<watermark>[,<resyncFloor>]`: the crank
+	 * treasury pricing the run writes when the treasury has none. */
+	treasuryRefill?: TreasuryRefill;
 	/** Clear `UPGRADE_PAUSE_BITS` once every book attach is sent or proposed. */
 	liftUpgradePause: boolean;
 	/** The CLOB executable hash the deployed program must have. Required under
@@ -353,20 +354,29 @@ function parseArgs(): ParsedArgs {
 	};
 }
 
-function parseTreasuryRefill(raw: string): {
+type TreasuryRefill = {
 	targetCranks: number;
 	watermarkCranks: number;
-} {
-	const [targetCranks, watermarkCranks] = raw
-		.split(',')
-		.map((value) => Number.parseInt(value, 10));
-	if (!(watermarkCranks > 0 && targetCranks > watermarkCranks)) {
+	resyncFloorLamports: BN;
+};
+
+/** What paid resyncs leave in the treasury above rent when
+ * `--treasury-refill` names no floor: 0.1 SOL, which keeps refills funded
+ * through a burst of resyncs. */
+export const DEFAULT_RESYNC_FLOOR_LAMPORTS = '100000000';
+
+export function parseTreasuryRefill(raw: string): TreasuryRefill {
+	const [target, watermark, floor = DEFAULT_RESYNC_FLOOR_LAMPORTS] = raw.split(',');
+	const targetCranks = Number.parseInt(target, 10);
+	const watermarkCranks = Number.parseInt(watermark, 10);
+	if (!(watermarkCranks > 0 && targetCranks > watermarkCranks) || !/^[1-9]\d*$/.test(floor)) {
 		throw new Error(
-			'--treasury-refill takes <targetCranks>,<watermarkCranks> with the target above the watermark'
+			'--treasury-refill takes <targetCranks>,<watermarkCranks>[,<resyncFloorLamports>] with ' +
+				'the target above the watermark and a floor above zero'
 		);
 	}
 
-	return { targetCranks, watermarkCranks };
+	return { targetCranks, watermarkCranks, resyncFloorLamports: new BN(floor) };
 }
 
 /**
@@ -1015,19 +1025,12 @@ async function ensureCrankTreasury(
 
 	const priced = info !== null && treasuryPricing(program, info.data) !== undefined;
 	if (!priced && args.treasuryRefill) {
-		const { targetCranks, watermarkCranks } = args.treasuryRefill;
+		const { targetCranks, watermarkCranks, resyncFloorLamports } = args.treasuryRefill;
 		console.log(
-			`treasury: pricing to refill to ${targetCranks} cranks at ${watermarkCranks}`
+			`treasury: pricing to refill to ${targetCranks} cranks at ${watermarkCranks}, ` +
+				`resyncs leave ${resyncFloorLamports.toString()} lamports`
 		);
-		ixs.push(
-			await program.methods
-				.updateCrankTreasury({
-					refillTargetCranks: targetCranks,
-					refillWatermarkCranks: watermarkCranks,
-				})
-				.accounts({ treasury, admin: admin.key, state: statePda })
-				.instruction()
-		);
+		ixs.push(await updateCrankTreasuryIx(ctx, statePda, args.treasuryRefill));
 	}
 
 	if (ixs.length === 0) return { treasury, pricingQueued: false };
@@ -1036,13 +1039,37 @@ async function ensureCrankTreasury(
 	return { treasury, pricingQueued: admin.proposes && !priced && !!args.treasuryRefill };
 }
 
-/** The treasury's refill levels, or undefined while it is inert. */
+async function updateCrankTreasuryIx(
+	ctx: Migration | BookBringUp,
+	statePda: PublicKey,
+	refill: TreasuryRefill
+): Promise<TransactionInstruction> {
+	return await ctx.program.methods
+		.updateCrankTreasury({
+			refillTargetCranks: refill.targetCranks,
+			refillWatermarkCranks: refill.watermarkCranks,
+			resyncFloorLamports: refill.resyncFloorLamports,
+		})
+		.accounts({
+			treasury: getCrankTreasuryPublicKey(ctx.program.programId),
+			admin: ctx.admin.key,
+			state: statePda,
+		})
+		.instruction();
+}
+
+/** The treasury's refill levels and resync floor, or undefined while any of
+ * them is zero. A zero floor lets paid resyncs spend what refills need. */
 function treasuryPricing(
 	program: Program,
 	data: Buffer
-): { refillTargetCranks: number; refillWatermarkCranks: number } | undefined {
+):
+	| { refillTargetCranks: number; refillWatermarkCranks: number; resyncFloorLamports: BN }
+	| undefined {
 	const decoded: any = program.coder.accounts.decode('crankTreasuryV0', data);
-	return decoded.refillTargetCranks && decoded.refillWatermarkCranks
+	return decoded.refillTargetCranks &&
+		decoded.refillWatermarkCranks &&
+		!decoded.resyncFloorLamports.isZero()
 		? decoded
 		: undefined;
 }
@@ -1762,7 +1789,8 @@ async function assertTreasuryPriced(
 	const pricing = info ? treasuryPricing(program, info.data) : undefined;
 	if (pricing) {
 		console.log(
-			`\ntreasury: refills to ${pricing.refillTargetCranks} cranks at ${pricing.refillWatermarkCranks}, holds ${info?.lamports} lamports`
+			`\ntreasury: refills to ${pricing.refillTargetCranks} cranks at ${pricing.refillWatermarkCranks}, ` +
+				`resyncs leave ${pricing.resyncFloorLamports.toString()} lamports, holds ${info?.lamports} lamports`
 		);
 		return;
 	}
@@ -1781,7 +1809,7 @@ async function assertTreasuryPriced(
 
 	throw new Error(
 		`the crank treasury ${treasury.toBase58()} is ${info ? 'not priced' : 'not created'}. ` +
-			'Pass --treasury-refill <targetCranks>,<watermarkCranks>, or run velocity-admin fees ' +
+			'Pass --treasury-refill <targetCranks>,<watermarkCranks>[,<resyncFloorLamports>], or run velocity-admin fees ' +
 			'set-crank-treasury, and run this migration again.'
 	);
 }
@@ -1959,22 +1987,14 @@ async function bookBIxs(
 	quoter: PublicKey,
 	steps: { stagedEntry?: Buffer; attach: boolean }
 ): Promise<TransactionInstruction[]> {
-	const { connection, program, admin, args } = ctx;
+	const { connection, program, args } = ctx;
 	const treasury = getCrankTreasuryPublicKey(program.programId);
 	const treasuryInfo = await connection.getAccountInfo(treasury);
 	const unpriced =
 		!treasuryInfo || treasuryPricing(program, treasuryInfo.data) === undefined;
 	const ixs: TransactionInstruction[] = [];
 	if (steps.attach && unpriced && args.treasuryRefill) {
-		ixs.push(
-			await program.methods
-				.updateCrankTreasury({
-					refillTargetCranks: args.treasuryRefill.targetCranks,
-					refillWatermarkCranks: args.treasuryRefill.watermarkCranks,
-				})
-				.accounts({ treasury, admin: admin.key, state: ctx.state })
-				.instruction()
-		);
+		ixs.push(await updateCrankTreasuryIx(ctx, ctx.state, args.treasuryRefill));
 	}
 
 	if (steps.stagedEntry) {

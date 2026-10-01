@@ -403,6 +403,13 @@ function requireEconomics(
 				`crank treasury ${treasuryKey.toBase58()} is not priced`
 			);
 		}
+
+		if (decoded.resyncFloorLamports.isZero()) {
+			verifier.failures.push(
+				`crank treasury ${treasuryKey.toBase58()} has no resync floor, so paid resyncs ` +
+					'can spend what reservoir refills need'
+			);
+		}
 	}
 
 	const hasSolMarket = accounts

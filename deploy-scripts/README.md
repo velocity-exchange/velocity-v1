@@ -290,7 +290,7 @@ velocity-admin --keypair <pause.json> exchange set-status <currentStatus | 114>
 #    pause.
 bun run deploy-scripts/migrate.ts --url "$RPC" --keypair <payer.json> --multisig "$MULTISIG" \
   --clob-hash "$CLOB_HASH" \
-  --treasury-refill <refillTargetCranks>,<refillWatermarkCranks> --lift-upgrade-pause
+  --treasury-refill <refillTargetCranks>,<refillWatermarkCranks>[,<resyncFloorLamports>] --lift-upgrade-pause
 # 6. In the same signing round, let the payer sync users, and resize accounts.
 #    Skip the second when no account needs a resize.
 velocity-admin --multisig "$MULTISIG" auth set-hot-admin conditionsSync <payer>
@@ -359,7 +359,9 @@ A liquidation reimburses at most 4,000 lamports of priority fee, and never more 
 the liquidator fee. Nothing compares the removal payment against what the protocol collects, so it must stay
 under the value of `flat_filler_fee` in SOL. At the default `flat_filler_fee` of $0.01, 7,500
 lamports stays under it while SOL is under $1,333. `--treasury-refill` prices the treasury when it
-has no pricing. Without `--treasury-refill` the script stops before the books until the treasury is
+has no pricing or no resync floor. The resync floor is the balance above rent that paid resyncs
+leave for refills. It defaults to 100,000,000 lamports, and `verify-upgrade.ts` fails while it is
+zero. Without `--treasury-refill` the script stops before the books until the treasury is
 priced, and the upgrade then takes a second round. `--lift-upgrade-pause` clears only the four
 upgrade pause bits, and only once every book B is sent or proposed. The lift writes the whole
 status mask it read, so its proposal also carries that status in a memo. `velocity-admin multisig

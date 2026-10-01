@@ -918,22 +918,31 @@ export function registerFees(parent: Command): void {
 				'set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>'
 			)
 			.description(
-				"Set the two levels a market's crank reservoir is held between. The warm or cold admin signs. Both levels count that market's most expensive crank rather than lamports, so one setting serves every market and a market whose cranks cost more carries a proportionally larger float. <refillWatermarkCranks> is the level at which a refill wakes. It must cover the refill's own round trip, because the reservoir keeps paying cranks while that refill lands. <refillTargetCranks> is how full the refill leaves the reservoir, and it must exceed the watermark. The target reaches every market at once. A new watermark reaches a market on its next quoter set-market-clob. What a refill pays is priced on the market it fills, through --crank-cu-refill."
+				"Set the two levels a market's crank reservoir is held between. The warm or cold admin signs. Both levels count that market's most expensive crank rather than lamports, so one setting serves every market and a market whose cranks cost more carries a proportionally larger float. <refillWatermarkCranks> is the level at which a refill wakes. It must cover the refill's own round trip, because the reservoir keeps paying cranks while that refill lands. <refillTargetCranks> is how full the refill leaves the reservoir, and it must exceed the watermark. The target reaches every market at once. A new watermark reaches a market on its next quoter set-market-clob. What a refill pays is priced on the market it fills, through --crank-cu-refill. --resync-floor is the balance above rent that paid resyncs leave for refills. The instruction writes all three values, so pass the current floor to keep it."
+			)
+			.requiredOption(
+				'--resync-floor <lamports>',
+				'lamports above rent that paid resyncs leave in the treasury'
 			)
 	).action(
 		async (
 			refillTargetCranks: string,
 			refillWatermarkCranks: string,
-			_flags,
+			flags: { resyncFloor: string },
 			cmd: Command
 		) => {
 			const target = Number.parseInt(refillTargetCranks, 10);
 			const watermark = Number.parseInt(refillWatermarkCranks, 10);
+			const resyncFloor = new BN(flags.resyncFloor);
 			const opts = readGlobalOpts(cmd);
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts);
 			try {
-				const ix = await client.getUpdateCrankTreasuryIx(target, watermark);
+				const ix = await client.getUpdateCrankTreasuryIx(
+					target,
+					watermark,
+					resyncFloor
+				);
 				const result = await sendOrPropose(
 					provider,
 					[ix],
@@ -942,7 +951,7 @@ export function registerFees(parent: Command): void {
 				);
 
 				reportDispatch(
-					`crank treasury wakes under ${watermark} cranks, fills to ${target}`,
+					`crank treasury wakes under ${watermark} cranks, fills to ${target}, keeps ${resyncFloor.toString()} lamports from resyncs`,
 					result
 				);
 			} finally {

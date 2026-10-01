@@ -1,5 +1,6 @@
 //! Price the treasury. The two levels say what a refill fills a reservoir up
-//! to, and what balance wakes the refill.
+//! to, and what balance wakes the refill. The resync floor says what paid
+//! resyncs leave behind for refills.
 
 use {
     crate::{
@@ -42,6 +43,8 @@ pub struct UpdateCrankTreasuryArgs {
     pub refill_target_cranks: u16,
     /// Cranks' worth of lamports at or under which a refill wakes.
     pub refill_watermark_cranks: u16,
+    /// Lamports above rent that paid resyncs leave in the treasury.
+    pub resync_floor_lamports: u64,
 }
 
 pub fn handle_update_crank_treasury(
@@ -51,6 +54,7 @@ pub fn handle_update_crank_treasury(
     let UpdateCrankTreasuryArgs {
         refill_target_cranks,
         refill_watermark_cranks,
+        resync_floor_lamports,
     } = args;
 
     validate!(
@@ -74,11 +78,13 @@ pub fn handle_update_crank_treasury(
     let mut treasury = ctx.accounts.treasury.load_mut()?;
     treasury.refill_target_cranks = refill_target_cranks;
     treasury.refill_watermark_cranks = refill_watermark_cranks;
+    treasury.resync_floor_lamports = resync_floor_lamports;
     msg!(
-        "crank treasury wakes a refill under {} cranks and fills to {}; markets take a new \
-         watermark on their next attach",
+        "crank treasury wakes a refill under {} cranks and fills to {}; paid resyncs leave {} \
+         lamports above rent; markets take a new watermark on their next attach",
         refill_watermark_cranks,
-        refill_target_cranks
+        refill_target_cranks,
+        resync_floor_lamports
     );
 
     Ok(())

@@ -13,9 +13,11 @@ import {
 	BookBringUp,
 	CLOB_CONFIG_FIELDS,
 	DEFAULT_FEE_RAILS,
+	DEFAULT_RESYNC_FLOOR_LAMPORTS,
 	findUnnamedBooks,
 	liquidationReimbursementUpdate,
 	parseFeeRails,
+	parseTreasuryRefill,
 } from './migrate';
 
 const velocity = PublicKey.unique();
@@ -176,4 +178,17 @@ test('an upgrade names the SOL spot market and keeps a share already set', () =>
 		),
 		undefined
 	);
+});
+
+test('the treasury pricing sets a resync floor and refuses a zero one', () => {
+	assert.equal(
+		parseTreasuryRefill('200,50').resyncFloorLamports.toString(),
+		DEFAULT_RESYNC_FLOOR_LAMPORTS
+	);
+	assert.equal(
+		parseTreasuryRefill('200,50,5000').resyncFloorLamports.toString(),
+		'5000'
+	);
+	assert.throws(() => parseTreasuryRefill('200,50,0'));
+	assert.throws(() => parseTreasuryRefill('50,200'));
 });

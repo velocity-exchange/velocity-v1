@@ -953,7 +953,9 @@ refuses a status write that would clear a pause added after it was proposed.
 The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`
 and `user init-protocol`, which creates the protocol `User` and its `UserStats` with a warm or cold
 payer. `update_perp_market_clob_quoter` refuses an attach whose derived crank payments are all zero,
-so the fee rails are set before a book is attached.
+so the fee rails are set before a book is attached. The attach takes the market's quote spot market
+and stores its oracle on the crank conditions, so a staged cross carries it. Without it, a cross on a
+market whose quote is priced by an oracle account fails with `OracleNotFound`.
 `clob-market update-config` retunes a live book's mutable config through velocity, and
 `clob-market resize` grows its arena, to at most 1024 slots. `clob-market init` defaults
 `--capacity` to 1024, `--evict-threshold` to a quarter of `--capacity`, and `--blocking-min-size`

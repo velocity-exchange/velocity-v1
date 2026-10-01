@@ -13,8 +13,10 @@ use {
         msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CrankCostUnitsV0, CrankPaymentsV0},
+            oracle::OracleSource,
             perp_market::PerpMarket,
             prop_amm::{ClobMarket, CrankBlockV0, QuoterSlabExt, QuoterSlabV0, QuoterV0},
+            spot_market::SpotMarket,
             state::State,
         },
         validate,
@@ -67,6 +69,16 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
         payer = admin
     )]
     pub crank_conditions: AccountLoader<'info, crate::state::clob_crank::ClobCrankConditionsV0>,
+    /// The market's quote spot market. The attach stores its oracle on the
+    /// conditions, because a staged cross needs it to value collateral.
+    #[account(
+        seeds = [
+            b"spot_market",
+            perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub quote_spot_market: AccountLoader<'info, SpotMarket>,
     /// Read-only. The treasury holds the levels a reservoir is kept between.
     /// The attach resolves the low level onto this market.
     #[account(
@@ -124,6 +136,7 @@ pub fn handle_update_perp_market_clob_quoter(
         quoter_slab: ctx.accounts.quoter_slab.key(),
         state: ctx.accounts.state.key(),
         oracle: perp_market.oracle,
+        quote_oracle: quote_spot_oracle(&*ctx.accounts.quote_spot_market.load()?),
         quote_spot_market_index: perp_market.quote_spot_market_index,
         market_index: perp_market.market_index,
     };
@@ -188,6 +201,15 @@ pub fn handle_update_perp_market_clob_quoter(
     // designation and nothing here writes it. A path that could repoint the
     // market later would put every user a fill carries behind the admin key.
     Ok(())
+}
+
+/// The oracle a staged cross must carry for the quote spot market, or the
+/// default pubkey when the market prices as `QuoteAsset` and reads no account.
+fn quote_spot_oracle(quote_spot_market: &SpotMarket) -> Pubkey {
+    match quote_spot_market.oracle_source {
+        OracleSource::QuoteAsset => Pubkey::default(),
+        _ => quote_spot_market.oracle,
+    }
 }
 
 /// Price each crank from the rails. An attach under zero rails stores zero

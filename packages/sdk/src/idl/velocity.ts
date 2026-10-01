@@ -14114,6 +14114,37 @@ export type Velocity = {
           }
         },
         {
+          "name": "quoteSpotMarket",
+          "docs": [
+            "The market's quote spot market. The attach stores its oracle on the",
+            "conditions, because a staged cross needs it to value collateral."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
           "name": "treasury",
           "docs": [
             "Read-only. The treasury holds the levels a reservoir is kept between.",
@@ -23261,12 +23292,20 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "quoteOracle",
+            "docs": [
+              "The quote spot market's oracle, captured at attach time with [`Self::oracle`].",
+              "The fill's margin check values collateral through it, so a cross staged",
+              "without it fails. It is the default pubkey for a quote market priced as",
+              "`QuoteAsset`, which has no oracle account. It sits after the mirror so the",
+              "watched offsets above it stay where they were."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "docs": [
-              "Tail reserve. It holds 4 bytes of alignment slack plus room for a",
-              "captured pubkey and change. A resolver that needs another fixed account",
-              "takes it from here, instead of forcing an `extend_account` migration on",
-              "every market's conditions."
+              "Tail reserve, kept so the account size stays 8 more than a multiple of 16."
             ],
             "type": {
               "array": [
@@ -29643,6 +29682,15 @@ export type Velocity = {
             "type": "u16"
           },
           {
+            "name": "quoteOracle",
+            "docs": [
+              "The quote spot market's oracle, copied from the market's",
+              "`ClobCrankConditionsV0` at attach time. The default pubkey when the",
+              "quote market has no oracle account."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "docs": [
               "Tail reserve. A resolver that needs another fixed account takes a",
@@ -29653,7 +29701,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                92
+                60
               ]
             }
           }

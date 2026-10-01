@@ -2927,11 +2927,12 @@ fn taker_origin_call(
     makers: &[UserRefV0],
     cross_rows: u16,
 ) -> Result<StagedCall> {
-    let (market_index, oracle, quote_spot_market_index) = {
+    let (market_index, oracle, quote_oracle, quote_spot_market_index) = {
         let conditions = ctx.accounts.crank_conditions.load()?;
         (
             conditions.market_index,
             conditions.oracle,
+            conditions.quote_oracle,
             conditions.quote_spot_market_index,
         )
     };
@@ -2953,7 +2954,7 @@ fn taker_origin_call(
         signed_msg_user_orders: pdas::signed_msg_user_orders(&taker_ref.authority),
         instructions_sysvar: IX_ID,
     })
-    .map_section_named_perp(oracle, quote_spot_market_index);
+    .map_section_named_perp(oracle, quote_oracle, quote_spot_market_index);
     // The SOL spot market prices the keeper payment's floor. It sits after the
     // quote spot market, so the perp market still closes the maps section.
     let call = super::crank_cross_match::with_sol_spot_market(

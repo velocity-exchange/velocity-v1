@@ -504,6 +504,8 @@ export type ClobCrankConditionsV0Account = {
 	refillWatermarkLamports: BN;
 	/** this account's spendable lamports (balance less rent exemption) as of the last payment or refill. It is mirrored into account data because a relay watch reads data and a lamport balance is metadata. It is advisory: the refill instruction reads the real balance */
 	spendableMirror: BN;
+	/** the quote spot market's oracle, captured at attach time. A staged cross carries it, because the fill values collateral through it. The default pubkey for a quote market priced as `QuoteAsset` */
+	quoteOracle: PublicKey;
 	padding: number[];
 };
 
@@ -608,6 +610,8 @@ export type QuoterCrossConditionsV0Account = {
 	oracle: PublicKey;
 	marketIndex: number;
 	quoteSpotMarketIndex: number;
+	/** the quote spot market's oracle, copied from the market's `ClobCrankConditionsV0Account` at attach time */
+	quoteOracle: PublicKey;
 	padding: number[];
 };
 

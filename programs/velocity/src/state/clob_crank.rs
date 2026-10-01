@@ -391,10 +391,13 @@ pub struct ClobCrankConditionsV0 {
     /// balance is metadata, so the mirror is what lets the refill condition wake.
     /// Advisory: the refill instruction reads the real balance.
     pub spendable_mirror: u64,
-    /// Tail reserve. It holds 4 bytes of alignment slack plus room for a
-    /// captured pubkey and change. A resolver that needs another fixed account
-    /// takes it from here, instead of forcing an `extend_account` migration on
-    /// every market's conditions.
+    /// The quote spot market's oracle, captured at attach time with [`Self::oracle`].
+    /// The fill's margin check values collateral through it, so a cross staged
+    /// without it fails. It is the default pubkey for a quote market priced as
+    /// `QuoteAsset`, which has no oracle account. It sits after the mirror so the
+    /// watched offsets above it stay where they were.
+    pub quote_oracle: Pubkey,
+    /// Tail reserve, kept so the account size stays 8 more than a multiple of 16.
     pub padding: [u8; 16],
 }
 
@@ -414,6 +417,7 @@ impl ClobCrankConditionsV0 {
         + 2
         + 8
         + 8
+        + 32
         + 16;
 
     /// Store the resolver account list and describe where it landed.
@@ -579,8 +583,8 @@ mod tests {
     #[test]
     fn the_crank_terms_cost_no_account_space() {
         assert_eq!(CLOB_CRANK_CONDITIONS, 2);
-        assert_eq!(std::mem::size_of::<ClobCrankConditionsV0>(), 800);
-        assert_eq!(ClobCrankConditionsV0::SIZE, 808);
+        assert_eq!(std::mem::size_of::<ClobCrankConditionsV0>(), 832);
+        assert_eq!(ClobCrankConditionsV0::SIZE, 840);
         // The refill condition watches this offset. A field reordered above
         // the mirror moves it, and every market's condition would then wake on
         // whatever moved into its place.

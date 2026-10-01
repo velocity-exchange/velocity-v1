@@ -128,12 +128,13 @@ pub fn handle_initialize_quoter_cross_conditions(
     // is that crank's payment out of the market's reservoir. The watched region
     // comes from the same account. The book reported it when the market
     // attached, so nothing here derives where the book's heads sit.
-    let (keeper_payment_lamports, top_of_book_offset, top_of_book_len) = {
+    let (keeper_payment_lamports, top_of_book_offset, top_of_book_len, quote_oracle) = {
         let market_conditions = ctx.accounts.market_conditions.load()?;
         (
             u64::from(market_conditions.crank_payments.cross),
             market_conditions.top_of_book_offset,
             market_conditions.top_of_book_len,
+            market_conditions.quote_oracle,
         )
     };
 
@@ -210,6 +211,7 @@ pub fn handle_initialize_quoter_cross_conditions(
     conditions.oracle = oracle;
     conditions.market_index = quoter.market;
     conditions.quote_spot_market_index = quote_spot_market_index;
+    conditions.quote_oracle = quote_oracle;
     conditions.init_block()?;
     let resolvers = conditions.write_resolver_list(&resolver_accounts)?;
 

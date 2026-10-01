@@ -105,12 +105,25 @@ impl StagedCall {
     }
 
     /// The margin-map section for an executor that names the perp market in
-    /// its own accounts struct. It appends the oracle as readonly, then the
+    /// its own accounts struct. It appends the oracles as readonly, then the
     /// quote spot market. `load_maps` reads these by order rather than by
-    /// name, so the order lives here once instead of in each resolver.
-    pub fn map_section_named_perp(self, oracle: Pubkey, quote_spot_market_index: u16) -> Self {
-        self.account(oracle, false)
-            .account(pdas::spot_market(quote_spot_market_index), true)
+    /// name, so the order lives here once instead of in each resolver. A
+    /// default `quote_oracle` is a quote market with no oracle account, and
+    /// adds nothing.
+    pub fn map_section_named_perp(
+        self,
+        oracle: Pubkey,
+        quote_oracle: Pubkey,
+        quote_spot_market_index: u16,
+    ) -> Self {
+        let call = self.account(oracle, false);
+        let call = if quote_oracle == Pubkey::default() || quote_oracle == oracle {
+            call
+        } else {
+            call.account(quote_oracle, false)
+        };
+
+        call.account(pdas::spot_market(quote_spot_market_index), true)
     }
 
     /// Append the `(User, UserStats)` pairs of maker identities read off a
@@ -229,4 +242,51 @@ macro_rules! staged_call {
             $crate::accounts::$executor $accounts,
         )
     };
+}
+
+#[cfg(test)]
+mod map_section_tests {
+    use super::*;
+
+    fn empty_call() -> StagedCall {
+        StagedCall {
+            disc: &[],
+            metas: Vec::new(),
+            data: Vec::new(),
+        }
+    }
+
+    fn keys(call: &StagedCall) -> Vec<Pubkey> {
+        call.metas.iter().map(|meta| meta.pubkey).collect()
+    }
+
+    /// The fill values collateral through the quote market's oracle, so a
+    /// staged cross without it fails with `OracleNotFound`.
+    #[test]
+    fn a_quote_market_with_an_oracle_carries_it() {
+        let (oracle, quote_oracle) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let call = empty_call().map_section_named_perp(oracle, quote_oracle, 0);
+
+        assert_eq!(
+            keys(&call),
+            vec![oracle, quote_oracle, pdas::spot_market(0)]
+        );
+        assert!(!call.metas[1].is_writable);
+    }
+
+    #[test]
+    fn a_quote_asset_market_adds_no_oracle() {
+        let oracle = Pubkey::new_unique();
+        let call = empty_call().map_section_named_perp(oracle, Pubkey::default(), 0);
+
+        assert_eq!(keys(&call), vec![oracle, pdas::spot_market(0)]);
+    }
+
+    #[test]
+    fn an_oracle_both_markets_share_is_staged_once() {
+        let oracle = Pubkey::new_unique();
+        let call = empty_call().map_section_named_perp(oracle, oracle, 0);
+
+        assert_eq!(keys(&call), vec![oracle, pdas::spot_market(0)]);
+    }
 }

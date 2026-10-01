@@ -940,11 +940,12 @@ fn stage_maker_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCal
         return Ok(None);
     }
 
-    let (market_index, oracle, quote_spot_market_index) = {
+    let (market_index, oracle, quote_oracle, quote_spot_market_index) = {
         let conditions = ctx.accounts.crank_conditions.load()?;
         (
             conditions.market_index,
             conditions.oracle,
+            conditions.quote_oracle,
             conditions.quote_spot_market_index,
         )
     };
@@ -963,7 +964,7 @@ fn stage_maker_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCal
         quoter_slab: ctx.accounts.quoter_slab.key(),
         instructions_sysvar: IX_ID,
     })
-    .map_section_named_perp(oracle, quote_spot_market_index);
+    .map_section_named_perp(oracle, quote_oracle, quote_spot_market_index);
     let call = with_sol_spot_market(call, &state, quote_spot_market_index)
         .maker_refs(cross.makers.iter().copied());
     Ok(Some(
@@ -1324,10 +1325,11 @@ fn stage_quoter_cross<'info>(
     maker_ref: crate::state::prop_amm::UserRefV0,
     market_index: u16,
 ) -> Result<StagedCall> {
-    let (oracle, quote_spot_market_index, clob_program) = {
+    let (oracle, quote_oracle, quote_spot_market_index, clob_program) = {
         let conditions = ctx.accounts.cross_conditions.load()?;
         (
             conditions.oracle,
+            conditions.quote_oracle,
             conditions.quote_spot_market_index,
             conditions.clob_program,
         )
@@ -1344,7 +1346,7 @@ fn stage_quoter_cross<'info>(
         quoter_slab: ctx.accounts.quoter_slab.key(),
         instructions_sysvar: IX_ID,
     })
-    .map_section_named_perp(oracle, quote_spot_market_index);
+    .map_section_named_perp(oracle, quote_oracle, quote_spot_market_index);
     let call = with_sol_spot_market(call, &*ctx.accounts.state.load()?, quote_spot_market_index);
     // Maker pairs: the quoter's user first, then the CLOB-side makers.
     let mut staged = vec![maker_ref];

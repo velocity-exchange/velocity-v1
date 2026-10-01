@@ -204,7 +204,7 @@ const CLOB_HEADER_PREFIX_BYTES = 176;
  * `ClobCrankConditionsV0::SIZE` and `UserConditionsV0::SIZE`. */
 const QUOTER_V0_BYTES = 792;
 const QUOTER_SLAB_SLOT_BYTES = 776;
-const CRANK_CONDITIONS_BYTES = 808;
+const CRANK_CONDITIONS_BYTES = 840;
 const USER_CONDITIONS_BYTES = 7128;
 /** Squads proposal statuses that can still execute. An `Active` one past the
  * multisig's stale index cannot, and `PendingProposals` drops it. A `Draft`
@@ -350,7 +350,10 @@ function parseArgs(): ParsedArgs {
 			argv.includes('--clob-so') ? get('--clob-so') : undefined
 		),
 		// What `initialize` writes on a new deployment.
-		liqReimbursementBps: Number.parseInt(get('--liq-reimbursement-bps', '500'), 10),
+		liqReimbursementBps: Number.parseInt(
+			get('--liq-reimbursement-bps', '500'),
+			10
+		),
 	};
 }
 
@@ -366,10 +369,14 @@ type TreasuryRefill = {
 export const DEFAULT_RESYNC_FLOOR_LAMPORTS = '100000000';
 
 export function parseTreasuryRefill(raw: string): TreasuryRefill {
-	const [target, watermark, floor = DEFAULT_RESYNC_FLOOR_LAMPORTS] = raw.split(',');
+	const [target, watermark, floor = DEFAULT_RESYNC_FLOOR_LAMPORTS] =
+		raw.split(',');
 	const targetCranks = Number.parseInt(target, 10);
 	const watermarkCranks = Number.parseInt(watermark, 10);
-	if (!(watermarkCranks > 0 && targetCranks > watermarkCranks) || !/^[1-9]\d*$/.test(floor)) {
+	if (
+		!(watermarkCranks > 0 && targetCranks > watermarkCranks) ||
+		!/^[1-9]\d*$/.test(floor)
+	) {
 		throw new Error(
 			'--treasury-refill takes <targetCranks>,<watermarkCranks>[,<resyncFloorLamports>] with ' +
 				'the target above the watermark and a floor above zero'
@@ -441,7 +448,10 @@ class AdminDispatch {
 	/** Send `ixs`, or propose them unless a pending proposal holds exactly
 	 * them. A proposal that differs in any byte or account does not count, so a
 	 * member cannot stand in a proposal of its own for a step. */
-	async run(label: string, ixs: TransactionInstruction[]): Promise<DispatchOutcome> {
+	async run(
+		label: string,
+		ixs: TransactionInstruction[]
+	): Promise<DispatchOutcome> {
 		if (!this.args.multisig) {
 			await this.act(label, ixs);
 			return 'sent';
@@ -462,7 +472,9 @@ class AdminDispatch {
 		);
 		if (result.kind === 'proposed') {
 			this.pending?.record(result.transactionIndex, ixs);
-			this.report.proposed.push(`${label}: proposal #${result.transactionIndex}`);
+			this.report.proposed.push(
+				`${label}: proposal #${result.transactionIndex}`
+			);
 		} else {
 			this.report.proposed.push(label);
 		}
@@ -554,7 +566,8 @@ class PendingProposals {
 			const proposalInfo = proposalInfos[i];
 			const transactionInfo = transactionInfos[i];
 			if (!proposalInfo || !transactionInfo) return;
-			const [proposal] = multisig.accounts.Proposal.fromAccountInfo(proposalInfo);
+			const [proposal] =
+				multisig.accounts.Proposal.fromAccountInfo(proposalInfo);
 			const status = proposal.status.__kind;
 			if (!PENDING_PROPOSAL_STATUSES.includes(status)) return;
 			if (status === 'Active' && index <= stale) return;
@@ -565,7 +578,9 @@ class PendingProposals {
 		});
 
 		console.log(
-			`multisig ${multisigPda.toBase58()}: ${proposals.size} pending proposals in the last ${indexes.length}`
+			`multisig ${multisigPda.toBase58()}: ${
+				proposals.size
+			} pending proposals in the last ${indexes.length}`
 		);
 		return new PendingProposals(velocity, proposals);
 	}
@@ -617,7 +632,9 @@ function decodeVaultTransaction(
 		instructions: message.instructions.map((ix) => ({
 			program: message.accountKeys[ix.programIdIndex],
 			data: Buffer.from(ix.data),
-			accounts: Array.from(ix.accountIndexes).map((i) => message.accountKeys[i]),
+			accounts: Array.from(ix.accountIndexes).map(
+				(i) => message.accountKeys[i]
+			),
 		})),
 	};
 }
@@ -627,10 +644,7 @@ function decodeVaultTransaction(
  * IDL exactly, or `getProgramAccounts` silently returns nothing. `assertNamesAreReal` guards against that.
  */
 function discriminator(name: string): Buffer {
-	return createHash('sha256')
-		.update(`account:${name}`)
-		.digest()
-		.subarray(0, 8);
+	return createHash('sha256').update(`account:${name}`).digest().subarray(0, 8);
 }
 
 /**
@@ -666,7 +680,7 @@ const RESIZABLE: { name: string; size: number }[] = [
 	{ name: 'QuoterV0', size: 792 },
 	// Relay condition hosts. Sizes come from `cargo test -p velocity --lib
 	// sizes_for_the_migration_script -- --show-output` in `state/relay_scratch.rs`. A stale or missing entry here has no symptom until read at the wrong offset.
-	{ name: 'ClobCrankConditionsV0', size: 808 },
+	{ name: 'ClobCrankConditionsV0', size: 840 },
 	{ name: 'QuoterCrossConditionsV0', size: 2424 },
 	{ name: 'UserConditionsV0', size: 7128 },
 ];
@@ -691,7 +705,12 @@ async function main() {
 	const program = new Program(idl, provider);
 	const velocity = program.programId;
 
-	const report: RunReport = { sent: [], proposed: [], awaiting: [], failed: [] };
+	const report: RunReport = {
+		sent: [],
+		proposed: [],
+		awaiting: [],
+		failed: [],
+	};
 	const act: Act = async (label, ixs, signers = [], lookupTable) => {
 		report.sent.push(label);
 		if (args.dryRun) return;
@@ -712,7 +731,13 @@ async function main() {
 	console.log(`velocity ${velocity.toBase58()} @ ${args.url}`);
 	console.log(args.dryRun ? '(dry run — nothing will be sent)\n' : '');
 
-	const admin = await AdminDispatch.create(provider, velocity, args, act, report);
+	const admin = await AdminDispatch.create(
+		provider,
+		velocity,
+		args,
+		act,
+		report
+	);
 	try {
 		await migrate(
 			{ connection, provider, program, payer, admin, args, act, report },
@@ -781,7 +806,12 @@ async function migrate(ctx: Migration, idl: any) {
 	await ensureProtocolUser(ctx, stateAccount);
 	const perpMarkets = await decodeMarkets(connection, program, 'PerpMarket');
 	const spotMarkets = await decodeMarkets(connection, program, 'SpotMarket');
-	await ensureLiquidationReimbursement(ctx, statePda, stateAccount, spotMarkets);
+	await ensureLiquidationReimbursement(
+		ctx,
+		statePda,
+		stateAccount,
+		spotMarkets
+	);
 
 	console.log('');
 	await createMissingQuoterSlabs(
@@ -794,7 +824,16 @@ async function migrate(ctx: Migration, idl: any) {
 
 	await assertTreasuryPriced(ctx, treasury, pricingQueued);
 	const books = await bringUpBooks(
-		{ connection, program, payer, admin, state: statePda, clobProgram, args, act },
+		{
+			connection,
+			program,
+			payer,
+			admin,
+			state: statePda,
+			clobProgram,
+			args,
+			act,
+		},
 		perpMarkets
 	);
 	await liftUpgradePause(ctx, statePda, stateAccount, books);
@@ -907,7 +946,10 @@ async function decodeMarkets(
 	const coderName = name === 'PerpMarket' ? 'perpMarket' : 'spotMarket';
 	return new Map(
 		accounts.map(({ account }) => {
-			const decoded: any = program.coder.accounts.decode(coderName, account.data);
+			const decoded: any = program.coder.accounts.decode(
+				coderName,
+				account.data
+			);
 			return [decoded.marketIndex, decoded];
 		})
 	);
@@ -927,9 +969,7 @@ async function resizeAccounts(
 	const { connection, program, payer, args, act } = ctx;
 	for (const { name, size } of RESIZABLE) {
 		const accounts = await connection.getProgramAccounts(program.programId, {
-			filters: [
-				{ memcmp: { offset: 0, bytes: bs58(discriminator(name)) } },
-			],
+			filters: [{ memcmp: { offset: 0, bytes: bs58(discriminator(name)) } }],
 
 			dataSlice: { offset: 0, length: 0 },
 		});
@@ -969,7 +1009,9 @@ function assertCanExtend(stateAccount: any, payer: PublicKey): void {
 		stateAccount.coldAdmin,
 		stateAccount.warmAdmin,
 		stateAccount.hotAccountExtension,
-	].some((key: PublicKey) => !key.equals(PublicKey.default) && key.equals(payer));
+	].some(
+		(key: PublicKey) => !key.equals(PublicKey.default) && key.equals(payer)
+	);
 	if (!holds) {
 		throw new Error(
 			`the keypair ${payer.toBase58()} cannot sign extend_account. Give it the hot role: ` +
@@ -985,7 +1027,9 @@ function holdsConditionsSync(stateAccount: any, payer: PublicKey): boolean {
 		stateAccount.coldAdmin,
 		stateAccount.warmAdmin,
 		stateAccount.hotConditionsSync,
-	].some((key: PublicKey) => !key.equals(PublicKey.default) && key.equals(payer));
+	].some(
+		(key: PublicKey) => !key.equals(PublicKey.default) && key.equals(payer)
+	);
 }
 
 /**
@@ -1023,9 +1067,11 @@ async function ensureCrankTreasury(
 		);
 	}
 
-	const priced = info !== null && treasuryPricing(program, info.data) !== undefined;
+	const priced =
+		info !== null && treasuryPricing(program, info.data) !== undefined;
 	if (!priced && args.treasuryRefill) {
-		const { targetCranks, watermarkCranks, resyncFloorLamports } = args.treasuryRefill;
+		const { targetCranks, watermarkCranks, resyncFloorLamports } =
+			args.treasuryRefill;
 		console.log(
 			`treasury: pricing to refill to ${targetCranks} cranks at ${watermarkCranks}, ` +
 				`resyncs leave ${resyncFloorLamports.toString()} lamports`
@@ -1036,7 +1082,10 @@ async function ensureCrankTreasury(
 	if (ixs.length === 0) return { treasury, pricingQueued: false };
 
 	await admin.run('migrate: create and price crank treasury', ixs);
-	return { treasury, pricingQueued: admin.proposes && !priced && !!args.treasuryRefill };
+	return {
+		treasury,
+		pricingQueued: admin.proposes && !priced && !!args.treasuryRefill,
+	};
 }
 
 async function updateCrankTreasuryIx(
@@ -1064,7 +1113,11 @@ function treasuryPricing(
 	program: Program,
 	data: Buffer
 ):
-	| { refillTargetCranks: number; refillWatermarkCranks: number; resyncFloorLamports: BN }
+	| {
+			refillTargetCranks: number;
+			refillWatermarkCranks: number;
+			resyncFloorLamports: BN;
+	  }
 	| undefined {
 	const decoded: any = program.coder.accounts.decode('crankTreasuryV0', data);
 	return decoded.refillTargetCranks &&
@@ -1074,7 +1127,9 @@ function treasuryPricing(
 		: undefined;
 }
 
-const NATIVE_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+const NATIVE_MINT = new PublicKey(
+	'So11111111111111111111111111111111111111112'
+);
 
 /**
  * The reimbursement write an upgrade needs, or undefined when State already
@@ -1084,7 +1139,10 @@ const NATIVE_MINT = new PublicKey('So11111111111111111111111111111111111111112')
  * market, which the program reads as unset.
  */
 export function liquidationReimbursementUpdate(
-	stateAccount: { liquidationCrankReimbursementBps: number; solSpotMarketIndex: number },
+	stateAccount: {
+		liquidationCrankReimbursementBps: number;
+		solSpotMarketIndex: number;
+	},
 	spotMarkets: Map<number, { mint: PublicKey }>,
 	defaultShareBps: number
 ): { shareBps: number; solSpotMarketIndex: number } | undefined {
@@ -1124,15 +1182,12 @@ async function ensureLiquidationReimbursement(
 	console.log(
 		`liquidation reimbursement: writing ${update.shareBps}bps, SOL market ${update.solSpotMarketIndex}`
 	);
-	await ctx.admin.run(
-		'migrate: set liquidation reimbursement SOL market',
-		[
-			await ctx.program.methods
-				.updateLiquidationCrankReimbursement(update)
-				.accounts({ admin: ctx.admin.key, state: statePda })
-				.instruction(),
-		]
-	);
+	await ctx.admin.run('migrate: set liquidation reimbursement SOL market', [
+		await ctx.program.methods
+			.updateLiquidationCrankReimbursement(update)
+			.accounts({ admin: ctx.admin.key, state: statePda })
+			.instruction(),
+	]);
 }
 
 /**
@@ -1223,7 +1278,10 @@ async function coverUsers(
 	const sender = new SyncSender(ctx, statePda, markets);
 	for (const { pubkey: user, account } of users) {
 		if (args.limit && covered >= args.limit) break;
-		const decodedUser: any = program.coder.accounts.decode('user', account.data);
+		const decodedUser: any = program.coder.accounts.decode(
+			'user',
+			account.data
+		);
 		const marketIndexes = exposedPerpMarkets(decodedUser);
 		if (marketIndexes.length === 0) continue;
 
@@ -1256,7 +1314,9 @@ async function coverUsers(
 		try {
 			if (!proposesSyncs) {
 				await sender.send(
-					`${existing ? 'sync' : 'create+sync'} user conditions for ${user.toBase58()}`,
+					`${
+						existing ? 'sync' : 'create+sync'
+					} user conditions for ${user.toBase58()}`,
 					ix
 				);
 			}
@@ -1287,7 +1347,9 @@ async function proposeSyncs(
 ): Promise<void> {
 	const { admin } = ctx;
 	const pendingKeys = new Map<string, bigint>();
-	for (const [index, instructions] of admin.pendingCovering(syncs.map((s) => s.ix))) {
+	for (const [index, instructions] of admin.pendingCovering(
+		syncs.map((s) => s.ix)
+	)) {
 		for (const ix of instructions) pendingKeys.set(instructionKey(ix), index);
 	}
 
@@ -1298,7 +1360,10 @@ async function proposeSyncs(
 		else admin.noteAwaiting(`sync ${user.toBase58()}`, pending);
 	}
 
-	for (const batch of await admin.pack(toPropose, 'migrate: sync user conditions')) {
+	for (const batch of await admin.pack(
+		toPropose,
+		'migrate: sync user conditions'
+	)) {
 		try {
 			await admin.run(`migrate: sync ${batch.length} user conditions`, batch);
 		} catch (error) {
@@ -1378,10 +1443,12 @@ class SyncSender {
 		}
 
 		const { value } = await connection.getAddressLookupTable(table);
-		if (!value) throw new Error(`lookup table ${table.toBase58()} did not land`);
+		if (!value)
+			throw new Error(`lookup table ${table.toBase58()} did not land`);
 		console.log(
-			`liq coverage: lookup table ${table.toBase58()} holds ${addresses.length} accounts. ` +
-				'Deactivate and close it after the migration.'
+			`liq coverage: lookup table ${table.toBase58()} holds ${
+				addresses.length
+			} accounts. ` + 'Deactivate and close it after the migration.'
 		);
 		this.lookupTable = value;
 		return value;
@@ -1394,7 +1461,10 @@ function sharedSyncAccounts(
 	statePda: PublicKey,
 	markets: MarketsAndBooks
 ): PublicKey[] {
-	const oracles = [...markets.perpMarkets.values(), ...markets.spotMarkets.values()]
+	const oracles = [
+		...markets.perpMarkets.values(),
+		...markets.spotMarkets.values(),
+	]
 		.map((market) => market.oracle as PublicKey)
 		.filter((oracle) => !oracle.equals(PublicKey.default));
 	const keys = [
@@ -1511,7 +1581,9 @@ function accountMeta(pubkey: PublicKey, isWritable: boolean): AccountMeta {
 /** `UserConditionsV0.sync_payment_lamports`: the fee one sync pays, which the
  * program prices. Zero means the block holds no paid terms. */
 function syncPayment(data: Buffer): number {
-	return Number(data.readBigUInt64LE(data.length - BYTES_AFTER_SYNC_PAYMENT - 8));
+	return Number(
+		data.readBigUInt64LE(data.length - BYTES_AFTER_SYNC_PAYMENT - 8)
+	);
 }
 
 /** Fund fifty syncs. The sync fee comes from the conditions account's own
@@ -1562,17 +1634,23 @@ async function flagVaultUsers(
 		(account: any) => account.name === 'Vault'
 	).discriminator;
 	const vaultAccounts: { publicKey: PublicKey; account: any }[] = [];
-	for (const { pubkey, account } of await provider.connection.getProgramAccounts(
-		vaults.programId,
-		{ filters: [{ memcmp: { offset: 0, bytes: bs58(Buffer.from(vaultDiscriminator)) } }] }
-	)) {
+	for (const {
+		pubkey,
+		account,
+	} of await provider.connection.getProgramAccounts(vaults.programId, {
+		filters: [
+			{ memcmp: { offset: 0, bytes: bs58(Buffer.from(vaultDiscriminator)) } },
+		],
+	})) {
 		try {
 			vaultAccounts.push({
 				publicKey: pubkey,
 				account: vaults.coder.accounts.decode('vault', account.data),
 			});
 		} catch {
-			console.log(`vault ${pubkey.toBase58()}: does not decode under the current layout, skipped`);
+			console.log(
+				`vault ${pubkey.toBase58()}: does not decode under the current layout, skipped`
+			);
 		}
 	}
 
@@ -1616,7 +1694,9 @@ async function clobBookFor(
 	connection: Connection,
 	velocity: PublicKey,
 	marketIndex: number,
-	program: { coder: { accounts: { decode(name: string, data: Buffer): unknown } } }
+	program: {
+		coder: { accounts: { decode(name: string, data: Buffer): unknown } };
+	}
 ): Promise<PublicKey | undefined> {
 	const perpMarket = getPerpMarketPublicKeySync(velocity, marketIndex);
 	const marketInfo = await connection.getAccountInfo(perpMarket);
@@ -1704,7 +1784,9 @@ async function assertClobDeployed(
 
 	const authority = await upgradeAuthority(connection, clobProgram);
 	console.log(
-		`clob ${clobProgram.toBase58()}: deployed, upgrade authority ${authority?.toBase58() ?? 'none'}`
+		`clob ${clobProgram.toBase58()}: deployed, upgrade authority ${
+			authority?.toBase58() ?? 'none'
+		}`
 	);
 	if (admin.proposes && authority && !authority.equals(admin.key)) {
 		throw new Error(
@@ -1727,7 +1809,9 @@ async function assertClobDeployed(
 	const deployed = await deployedProgramHash(connection, clobProgram);
 	if (deployed !== expectedHash) {
 		throw new Error(
-			`the CLOB at ${clobProgram.toBase58()} hashes to ${deployed ?? 'nothing'}, not ${expectedHash}.`
+			`the CLOB at ${clobProgram.toBase58()} hashes to ${
+				deployed ?? 'nothing'
+			}, not ${expectedHash}.`
 		);
 	}
 
@@ -1740,7 +1824,9 @@ async function upgradeAuthority(
 	connection: Connection,
 	program: PublicKey
 ): Promise<PublicKey | undefined> {
-	const programData = await connection.getAccountInfo(getProgramDataAddress(program));
+	const programData = await connection.getAccountInfo(
+		getProgramDataAddress(program)
+	);
 	if (!programData || programData.data[12] === 0) return undefined;
 	return new PublicKey(programData.data.subarray(13, 45));
 }
@@ -1756,21 +1842,24 @@ async function ensureFeeRails(
 	const rails = stateAccount.transactionFeeRails;
 	const chargesCostUnits =
 		rails.resourceFeeNumerator > 0 && rails.resourceFeeDenominator > 0;
-	if (rails.inclusionLamports > 0 || rails.signatureLamports > 0 || chargesCostUnits) {
+	if (
+		rails.inclusionLamports > 0 ||
+		rails.signatureLamports > 0 ||
+		chargesCostUnits
+	) {
 		console.log(`fee rails: ${JSON.stringify(rails)}`);
 		return 'sent';
 	}
 
-	console.log(`fee rails: unpriced, writing ${JSON.stringify(ctx.args.feeRails)}`);
-	return await ctx.admin.run(
-		'migrate: set transaction fee rails',
-		[
-			await ctx.program.methods
-				.updateTransactionFeeRails(ctx.args.feeRails)
-				.accounts({ admin: ctx.admin.key, state: statePda })
-				.instruction(),
-		]
+	console.log(
+		`fee rails: unpriced, writing ${JSON.stringify(ctx.args.feeRails)}`
 	);
+	return await ctx.admin.run('migrate: set transaction fee rails', [
+		await ctx.program.methods
+			.updateTransactionFeeRails(ctx.args.feeRails)
+			.accounts({ admin: ctx.admin.key, state: statePda })
+			.instruction(),
+	]);
 }
 
 /**
@@ -1803,12 +1892,16 @@ async function assertTreasuryPriced(
 	}
 
 	if (args.dryRun && (!info || args.treasuryRefill)) {
-		console.log('\ntreasury: not created or priced yet; the book step needs it priced');
+		console.log(
+			'\ntreasury: not created or priced yet; the book step needs it priced'
+		);
 		return;
 	}
 
 	throw new Error(
-		`the crank treasury ${treasury.toBase58()} is ${info ? 'not priced' : 'not created'}. ` +
+		`the crank treasury ${treasury.toBase58()} is ${
+			info ? 'not priced' : 'not created'
+		}. ` +
 			'Pass --treasury-refill <targetCranks>,<watermarkCranks>[,<resyncFloorLamports>], or run velocity-admin fees ' +
 			'set-crank-treasury, and run this migration again.'
 	);
@@ -1838,12 +1931,16 @@ async function liftUpgradePause(
 	}
 
 	if (!books.allQueued) {
-		console.log('\nexchange: the upgrade pause stays until every book B is proposed');
+		console.log(
+			'\nexchange: the upgrade pause stays until every book B is proposed'
+		);
 		return;
 	}
 
 	const lifted = liftedStatus(status);
-	console.log(`\nexchange: lifting the upgrade pause, status ${status} -> ${lifted}`);
+	console.log(
+		`\nexchange: lifting the upgrade pause, status ${status} -> ${lifted}`
+	);
 	const write = await ctx.program.methods
 		.updateExchangeStatus(lifted)
 		.accounts({ admin: ctx.admin.key, state: statePda })
@@ -2003,7 +2100,8 @@ async function bookBIxs(
 		);
 	}
 
-	if (steps.attach) ixs.push(await attachBookIx(ctx, marketIndex, book, quoter));
+	if (steps.attach)
+		ixs.push(await attachBookIx(ctx, marketIndex, book, quoter));
 	return ixs;
 }
 
@@ -2023,13 +2121,18 @@ async function queueBookB(
 	const label = `migrate: book B market ${marketIndex}`;
 	const stagedEntry = await simulateStagedEntry(ctx, registerIxs, quoter);
 	if (!stagedEntry) {
-		console.log(`book market ${marketIndex}: B waits for a run after the book exists`);
+		console.log(
+			`book market ${marketIndex}: B waits for a run after the book exists`
+		);
 		return 'blocked';
 	}
 
 	await ctx.admin.run(
 		label,
-		await bookBIxs(ctx, marketIndex, book, quoter, { stagedEntry, attach: true })
+		await bookBIxs(ctx, marketIndex, book, quoter, {
+			stagedEntry,
+			attach: true,
+		})
 	);
 	return 'queued';
 }
@@ -2111,7 +2214,9 @@ export async function findUnnamedBooks(
 	const candidates = await ctx.connection.getProgramAccounts(ctx.clobProgram, {
 		filters: [
 			{ dataSize: clobBookSpace(ctx.args.bookCapacity) },
-			{ memcmp: { offset: CLOB_AUTHORITY_OFFSET, bytes: quoterSlab.toBase58() } },
+			{
+				memcmp: { offset: CLOB_AUTHORITY_OFFSET, bytes: quoterSlab.toBase58() },
+			},
 			{
 				memcmp: {
 					offset: CLOB_PLACE_AUTHORITY_OFFSET,
@@ -2183,7 +2288,9 @@ async function createBook(
 		]),
 	});
 
-	console.log(`book market ${marketIndex}: creating ${book.publicKey.toBase58()}`);
+	console.log(
+		`book market ${marketIndex}: creating ${book.publicKey.toBase58()}`
+	);
 	await ctx.act(
 		`create book ${book.publicKey.toBase58()} for market ${marketIndex}`,
 		[createAccount, initBook],
@@ -2255,7 +2362,11 @@ async function registerBookIxs(
  * sit at or under the market's. The remaining settings are the admin CLI's
  * defaults.
  */
-export function bookConfig(marketIndex: number, market: any, capacity: number): Buffer {
+export function bookConfig(
+	marketIndex: number,
+	market: any,
+	capacity: number
+): Buffer {
 	const step: BN = market.orderStepSize;
 	const marketMinimum: BN = market.marketStats.minOrderSize;
 	const bookMinimum = marketMinimum.isZero()
@@ -2328,9 +2439,18 @@ async function attachBookIx(
 	book: PublicKey,
 	quoter: PublicKey
 ): Promise<TransactionInstruction> {
-	const { program, admin, clobProgram, args } = ctx;
+	const { connection, program, admin, clobProgram, args } = ctx;
 	const velocity = program.programId;
 	const units = args.crankCostUnits;
+	const perpMarket = getPerpMarketPublicKeySync(velocity, marketIndex);
+	const perpMarketInfo = await connection.getAccountInfo(perpMarket);
+	if (!perpMarketInfo)
+		throw new Error(`perp market ${marketIndex} does not exist`);
+	const { quoteSpotMarketIndex } = program.coder.accounts.decode(
+		'perpMarket',
+		perpMarketInfo.data
+	);
+
 	return await program.methods
 		.updatePerpMarketClobQuoter({
 			crankCostUnits: {
@@ -2348,12 +2468,16 @@ async function attachBookIx(
 		.accountsStrict({
 			admin: admin.key,
 			state: ctx.state,
-			perpMarket: getPerpMarketPublicKeySync(velocity, marketIndex),
+			perpMarket,
 			quoter,
 			quoterSlab: getQuoterSlabPublicKey(velocity, marketIndex),
 			clobMarket: book,
 			clobProgram,
 			crankConditions: getClobCrankConditionsPublicKey(velocity, marketIndex),
+			quoteSpotMarket: getSpotMarketPublicKeySync(
+				velocity,
+				quoteSpotMarketIndex
+			),
 			treasury: getCrankTreasuryPublicKey(velocity),
 			rent: SYSVAR_RENT_PUBKEY,
 			systemProgram: SystemProgram.programId,
@@ -2384,7 +2508,9 @@ async function ensureWatch(
 
 	for (const impostor of impostors) {
 		console.log(
-			`watch ${target.toBase58()}: ignoring ${describeImpostor(impostor)}, registering our own`
+			`watch ${target.toBase58()}: ignoring ${describeImpostor(
+				impostor
+			)}, registering our own`
 		);
 	}
 
@@ -2392,13 +2518,16 @@ async function ensureWatch(
 	const offset = Buffer.alloc(4);
 	offset.writeUInt32LE(blockOffset);
 	await act(
-		`register watch -> ${target.toBase58()}${impostors.length > 0 ? ' (beside an impostor)' : ''}`,
+		`register watch -> ${target.toBase58()}${
+			impostors.length > 0 ? ' (beside an impostor)' : ''
+		}`,
 		[
 			SystemProgram.createAccount({
 				fromPubkey: payer.publicKey,
 				newAccountPubkey: watch.publicKey,
-				lamports:
-					await connection.getMinimumBalanceForRentExemption(WATCH_V0_LEN),
+				lamports: await connection.getMinimumBalanceForRentExemption(
+					WATCH_V0_LEN
+				),
 				space: WATCH_V0_LEN,
 				programId: RELAY_PROGRAM,
 			}),
@@ -2431,31 +2560,46 @@ async function printReport(
 		if (lines.length > 40) console.log(`  … ${lines.length - 40} more`);
 	};
 
-	console.log(`\n${args.dryRun ? 'would send' : 'sent'} ${report.sent.length} transactions`);
+	console.log(
+		`\n${args.dryRun ? 'would send' : 'sent'} ${
+			report.sent.length
+		} transactions`
+	);
 	list(report.sent);
 	if (report.failed.length > 0) {
-		console.log(`${report.failed.length} steps failed. Fix each one and run again.`);
+		console.log(
+			`${report.failed.length} steps failed. Fix each one and run again.`
+		);
 		list(report.failed);
 	}
 
 	if (!args.multisig) return;
 
 	console.log(
-		`${args.dryRun ? 'would propose' : 'proposed'} ${report.proposed.length} to multisig ${args.multisig.toBase58()}`
+		`${args.dryRun ? 'would propose' : 'proposed'} ${
+			report.proposed.length
+		} to multisig ${args.multisig.toBase58()}`
 	);
 	list(report.proposed);
 	console.log(`waiting on ${report.awaiting.length} earlier proposals`);
 	list(report.awaiting);
 
-	const rent = (bytes: number) => connection.getMinimumBalanceForRentExemption(bytes);
+	const rent = (bytes: number) =>
+		connection.getMinimumBalanceForRentExemption(bytes);
 	const slabSlotRent = (await rent(QUOTER_SLAB_SLOT_BYTES)) - (await rent(0));
 	const perBook =
-		(await rent(QUOTER_V0_BYTES)) + slabSlotRent + (await rent(CRANK_CONDITIONS_BYTES));
+		(await rent(QUOTER_V0_BYTES)) +
+		slabSlotRent +
+		(await rent(CRANK_CONDITIONS_BYTES));
 	const perUser = await rent(USER_CONDITIONS_BYTES);
 	const vaultLamports = await connection.getBalance(admin.key);
 	console.log(
-		`\nvault ${admin.key.toBase58()} holds ${vaultLamports / 1e9} SOL. It pays about ` +
-			`${perBook / 1e9} SOL per book, and ${perUser / 1e9} SOL per user conditions ` +
+		`\nvault ${admin.key.toBase58()} holds ${
+			vaultLamports / 1e9
+		} SOL. It pays about ` +
+			`${perBook / 1e9} SOL per book, and ${
+				perUser / 1e9
+			} SOL per user conditions ` +
 			'account it proposes. A payer with the conditionsSync hot role pays for those instead.'
 	);
 
@@ -2469,10 +2613,15 @@ async function printReport(
 	}
 }
 
-async function getAccountInfosChunked(connection: Connection, keys: PublicKey[]) {
+async function getAccountInfosChunked(
+	connection: Connection,
+	keys: PublicKey[]
+) {
 	const out: Awaited<ReturnType<Connection['getMultipleAccountsInfo']>> = [];
 	for (let i = 0; i < keys.length; i += 100) {
-		out.push(...(await connection.getMultipleAccountsInfo(keys.slice(i, i + 100))));
+		out.push(
+			...(await connection.getMultipleAccountsInfo(keys.slice(i, i + 100)))
+		);
 	}
 
 	return out;
@@ -2496,7 +2645,9 @@ async function getMultipleAccountsChunked(
 function bs58(buffer: Buffer): string {
 	// eslint-disable-next-line @typescript-eslint/no-var-requires
 	const bs58lib = require('bs58');
-	return bs58lib.default ? bs58lib.default.encode(buffer) : bs58lib.encode(buffer);
+	return bs58lib.default
+		? bs58lib.default.encode(buffer)
+		: bs58lib.encode(buffer);
 }
 
 /**

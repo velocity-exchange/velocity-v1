@@ -74,11 +74,15 @@ pub struct QuoterCrossConditionsV0 {
     pub oracle: Pubkey,
     pub market_index: u16,
     pub quote_spot_market_index: u16,
+    /// The quote spot market's oracle, copied from the market's
+    /// `ClobCrankConditionsV0` at attach time. The default pubkey when the
+    /// quote market has no oracle account.
+    pub quote_oracle: Pubkey,
     /// Tail reserve. A resolver that needs another fixed account takes a
     /// pubkey from here. That avoids an `extend_account` migration on every
     /// attached quoter entry. The length also keeps `SIZE - 8` a multiple of
     /// 16.
-    pub padding: [u8; 92],
+    pub padding: [u8; 60],
 }
 
 // `#[derive(Default)]` covers an array of at most 32 elements, and `padding`
@@ -93,7 +97,8 @@ impl Default for QuoterCrossConditionsV0 {
             oracle: Pubkey::default(),
             market_index: 0,
             quote_spot_market_index: 0,
-            padding: [0; 92],
+            quote_oracle: Pubkey::default(),
+            padding: [0; 60],
         }
     }
 }
@@ -104,7 +109,8 @@ impl QuoterCrossConditionsV0 {
         + 4 * 32
         + 2
         + 2
-        + 92;
+        + 32
+        + 60;
 
     /// Write the resolver account list the conditions point at, and
     /// describe where it landed.

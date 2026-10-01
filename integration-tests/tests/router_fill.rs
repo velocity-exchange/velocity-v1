@@ -178,9 +178,20 @@ fn set_trading_perp_market(svm: &mut litesvm::LiteSVM, oracle: Pubkey) {
 }
 
 fn set_quote_spot_market(svm: &mut litesvm::LiteSVM) {
+    set_quote_spot_market_priced_by(svm, OracleSource::QuoteAsset, Pubkey::default());
+}
+
+/// The quote spot market priced through `oracle`, as devnet's dUSDT and
+/// mainnet's USDT are through a Pyth Lazer stablecoin feed.
+fn set_quote_spot_market_priced_by(
+    svm: &mut litesvm::LiteSVM,
+    oracle_source: OracleSource,
+    oracle: Pubkey,
+) {
     let mut market: SpotMarket = Zeroable::zeroed();
     market.market_index = 0;
-    market.oracle_source = OracleSource::QuoteAsset;
+    market.oracle_source = oracle_source;
+    market.oracle = oracle;
     market.cumulative_deposit_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
     market.cumulative_borrow_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
     market.decimals = 6;
@@ -2309,6 +2320,7 @@ fn attach_clob_ix(
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             crank_conditions: conditions,
+            quote_spot_market: spot_market_pda(0),
             treasury: crank_treasury_pda(),
             rent: "SysvarRent111111111111111111111111111111111"
                 .parse()
@@ -10755,6 +10767,86 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
         paid < 50_500_000 + 50_500,
         "crossing cost {paid}, resting would have cost {}",
         50_500_000 + 50_500
+    );
+}
+
+/// A quote market priced through an oracle account. The fill values both
+/// parties' collateral through that oracle, so the staged crank must carry it,
+/// or the executor fails with `OracleNotFound` and no remainder ever crosses.
+#[test]
+fn a_cross_carries_the_quote_markets_oracle() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT / 2,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    // The fixture's own fills carry no quote oracle, so the market is priced
+    // only after both orders rest. The re-attach is what captures the oracle.
+    let quote_oracle = Pubkey::new_unique();
+    set_oracle(&mut fixture.svm, quote_oracle, PRICE_PRECISION as i64, 20);
+    set_quote_spot_market_priced_by(
+        &mut fixture.svm,
+        OracleSource::PythLazerStableCoin,
+        quote_oracle,
+    );
+    init_crank_conditions(&mut fixture, 10_000);
+
+    let resolved =
+        run_cross_resolver(&mut fixture, conditions).expect("a crossed remainder is work");
+    let staged: Vec<Pubkey> = resolved
+        .accounts
+        .iter()
+        .map(|a| Pubkey::new_from_array(a.address))
+        .collect();
+    let perp_oracle_at = staged
+        .iter()
+        .position(|key| *key == fixture.oracle)
+        .expect("the perp oracle opens the map section");
+    assert_eq!(
+        staged[perp_oracle_at..perp_oracle_at + 3],
+        [fixture.oracle, quote_oracle, spot_market_pda(0)],
+        "the quote oracle sits between the perp oracle and the quote spot market"
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR,
+        payout,
+    );
+
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        (UNIT / 2) as i64
     );
 }
 

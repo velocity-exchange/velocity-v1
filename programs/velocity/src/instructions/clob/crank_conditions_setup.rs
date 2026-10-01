@@ -68,6 +68,9 @@ pub struct ClobCrankConditionKeys {
     /// cross resolver can stage the executor's map section without holding
     /// the perp market account.
     pub oracle: Pubkey,
+    /// The quote spot market's oracle, stored for the same reason. The default
+    /// pubkey when the quote market has no oracle account.
+    pub quote_oracle: Pubkey,
     pub quote_spot_market_index: u16,
     pub market_index: u16,
 }
@@ -177,6 +180,7 @@ impl ClobCrankConditionsV0 {
         self.crank_payments = payments;
         self.min_cross_surplus = min_cross_surplus;
         self.oracle = keys.oracle;
+        self.quote_oracle = keys.quote_oracle;
         self.quote_spot_market_index = keys.quote_spot_market_index;
         self.set_condition(
             CLOB_CRANK_CROSS_FALLBACK,

@@ -5809,14 +5809,18 @@ export class AdminClient extends VelocityClient {
 
 		admin?: PublicKey
 	): Promise<TransactionInstruction> {
+		const perpMarket = await getPerpMarketPublicKey(
+			this.program.programId,
+			marketIndex
+		);
+		const { quoteSpotMarketIndex } =
+			this.getPerpMarketAccountOrThrow(marketIndex);
+
 		return await this.program.instruction.updatePerpMarketClobQuoter(args, {
 			accounts: {
 				admin: admin ?? this.wallet.publicKey,
 				state: await this.getStatePublicKey(),
-				perpMarket: await getPerpMarketPublicKey(
-					this.program.programId,
-					marketIndex
-				),
+				perpMarket,
 
 				quoter,
 				quoterSlab: getQuoterSlabPublicKey(this.program.programId, marketIndex),
@@ -5825,6 +5829,10 @@ export class AdminClient extends VelocityClient {
 				crankConditions: getClobCrankConditionsPublicKey(
 					this.program.programId,
 					marketIndex
+				),
+				quoteSpotMarket: await getSpotMarketPublicKey(
+					this.program.programId,
+					quoteSpotMarketIndex
 				),
 
 				treasury: getCrankTreasuryPublicKey(this.program.programId),

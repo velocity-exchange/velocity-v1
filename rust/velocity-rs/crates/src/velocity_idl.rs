@@ -3532,6 +3532,7 @@ pub mod types {
         pub quote_spot_market_index: u16,
         pub refill_watermark_lamports: u64,
         pub spendable_mirror: u64,
+        pub quote_oracle: Pubkey,
         #[serde(skip)]
         pub padding: Padding<16>,
     }
@@ -5858,8 +5859,9 @@ pub mod types {
         pub oracle: Pubkey,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
+        pub quote_oracle: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<92>,
+        pub padding: Padding<60>,
     }
     #[repr(C)]
     #[derive(
@@ -7361,6 +7363,7 @@ pub mod accounts {
         pub quote_spot_market_index: u16,
         pub refill_watermark_lamports: u64,
         pub spendable_mirror: u64,
+        pub quote_oracle: Pubkey,
         #[serde(skip)]
         pub padding: Padding<16>,
     }
@@ -8061,8 +8064,9 @@ pub mod accounts {
         pub oracle: Pubkey,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
+        pub quote_oracle: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<92>,
+        pub padding: Padding<60>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterCrossConditionsV0 {
@@ -24323,6 +24327,7 @@ pub mod accounts {
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub crank_conditions: Pubkey,
+        pub quote_spot_market: Pubkey,
         pub treasury: Pubkey,
         pub rent: Pubkey,
         pub system_program: Pubkey,
@@ -24382,6 +24387,11 @@ pub mod accounts {
                     pubkey: self.crank_conditions,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quote_spot_market,
+                    is_signer: false,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.treasury,

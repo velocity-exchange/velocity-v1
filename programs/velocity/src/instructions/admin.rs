@@ -5319,6 +5319,11 @@ pub fn handle_update_hot_admin(
     new_pubkey: Pubkey,
 ) -> Result<()> {
     let mut state = ctx.accounts.state.load_mut()?;
+    require!(
+        state.may_set_hot_key(&ctx.accounts.admin.key(), &new_pubkey),
+        ErrorCode::Unauthorized
+    );
+
     let prev = state.hot_key(role);
     state.set_hot_key(role, new_pubkey);
     msg!("hot_admin[{:?}]: {:?} -> {:?}", role, prev, new_pubkey);
@@ -5380,12 +5385,13 @@ pub struct UpdatePauseAdmin<'info> {
     pub admin: Signer<'info>,
 }
 
-/// Warm-or-cold gated mutation of an individual hot-role key.
+/// Mutation of an individual hot-role key. Warm or cold sets any key. The
+/// pause admin may only clear one, which the handler checks against the new key.
 #[derive(Accounts)]
 pub struct UpdateHotAdmin<'info> {
     #[account(
         mut,
-        constraint = state.load()?.is_warm(&admin.key()) @ ErrorCode::Unauthorized
+        constraint = state.load()?.is_pause(&admin.key()) @ ErrorCode::Unauthorized
     )]
     pub state: AccountLoader<'info, State>,
     pub admin: Signer<'info>,

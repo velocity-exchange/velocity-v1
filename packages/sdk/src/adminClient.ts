@@ -9174,7 +9174,8 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Rotates one purpose-specific hot-role key on `state`, such as `hotFeeWithdraw`. Warm or
-	 * cold. `PublicKey.default()` unsets the role, so only warm and cold can call its handlers.
+	 * cold sets any key. The pause admin may only write `PublicKey.default()`, which unsets the
+	 * role, so only warm and cold can call its handlers.
 	 */
 	public async updateHotAdmin(
 		role: HotRole,

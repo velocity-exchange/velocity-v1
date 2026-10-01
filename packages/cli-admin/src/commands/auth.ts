@@ -107,7 +107,7 @@ export function registerAuth(parent: Command): void {
 			.description(
 				`Rotate a hot-role pubkey. Roles: ${HOT_ROLES.join(
 					', '
-				)}. On-chain check requires warm or cold to sign.`
+				)}. Warm or cold sets any key. The pause admin may only clear a role, by passing ${PublicKey.default.toBase58()}, so it can stop a compromised hot key without the multisig.`
 			)
 	).action(async (role: string, pubkey: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);

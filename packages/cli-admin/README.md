@@ -63,6 +63,8 @@ velocity-admin auth set-cold-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
 velocity-admin auth set-pause-admin <pubkey>
 velocity-admin auth set-hot-admin <role> <pubkey>
+# The pause key may clear a hot role without the multisig. It cannot set one:
+velocity-admin --keypair <pause.json> auth set-hot-admin flowAuthority 11111111111111111111111111111111
 # Assign the vAMM active-management multisig (its Squads timelock is off-chain policy):
 velocity-admin auth set-hot-admin vammQuoteManagement <multisig-pda>
 

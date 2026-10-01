@@ -2429,19 +2429,24 @@ fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
     assert!(node(&ctx, state.best_bid).is_taker_origin());
 }
 
-/// A taker remainder nobody crosses is ordinary depth — quotable and takeable at
-/// its own price. That is the fallback when no maker lines up during the auction
-/// window, and how the remainder eventually fills if none ever does.
+/// A taker remainder nobody on the book crosses is still withheld while its
+/// claim holds, because the vAMM or a quoter may cross it. Once the claim lapses
+/// it is ordinary depth, quotable and takeable at its own price.
 #[test]
-fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
+fn an_uncrossed_taker_remainder_is_withheld_while_its_claim_holds() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
     place(&mut ctx, taker_origin_args(SideV0::Bid, 101, 5), taker);
-    // Best ask above the bid, so nothing crosses.
+    // Best ask above the bid, so nothing on the book crosses it.
     place(&mut ctx, place_args(SideV0::Ask, 105, 5), maker);
     advance_slot(&mut ctx, 1);
 
+    assert!(quote(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Short, 5).is_empty());
+
+    let grace = market_state(&ctx).reservation_grace_slots as u64;
+    advance_slot(&mut ctx, grace);
     assert_eq!(
         quote(&mut ctx, DirectionV0::Short, u64::MAX),
         vec![(101, 5)]
@@ -2466,19 +2471,13 @@ fn a_maker_only_cross_is_not_gated() {
     assert_eq!(execute(&mut ctx, DirectionV0::Long, 5).len(), 1);
 }
 
-/// The gate turns on with the counterparty's activation slot, not with its
-/// placement: an order inside its auction window cannot be matched by anyone, so
-/// it puts no improvement within reach — and holding the remainder back from the
-/// moment a crossed order was *placed* would cost the book that depth for the
-/// whole window, which is exactly when a migrated remainder is resting there.
+/// The remainder is withheld from the slot it activates until the slot its
+/// claim lapses, whatever the other side holds.
 #[test]
-fn an_unactivated_counterparty_does_not_gate_the_fill() {
+fn a_remainder_is_withheld_until_its_claim_lapses() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
-    let maker = addr(Pubkey::new_unique());
     ctx.svm.warp_to_slot(10);
-
-    // The remainder is live now; the maker's crossing ask only at slot 30.
     let ix = place_ix(
         &ctx,
         PlaceOrderArgsV0 {
@@ -2489,31 +2488,19 @@ fn an_unactivated_counterparty_does_not_gate_the_fill() {
     );
 
     send(&mut ctx, ix).unwrap();
-    let ix = place_ix(
-        &ctx,
-        PlaceOrderArgsV0 {
-            activation_delay_slots: Some(20),
-            ..place_args(SideV0::Ask, 99, 5)
-        },
-        maker,
-    );
+    let lapse_slot = 10 + market_state(&ctx).reservation_grace_slots as u64;
+    assert!(quote(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, DirectionV0::Short, 1).is_empty());
 
-    send(&mut ctx, ix).unwrap();
+    ctx.svm.warp_to_slot(lapse_slot - 1);
+    assert!(execute(&mut ctx, DirectionV0::Short, 1).is_empty());
 
-    // Slot 10: the ask cannot match, so the remainder is ordinary depth.
+    ctx.svm.warp_to_slot(lapse_slot);
     assert_eq!(
         quote(&mut ctx, DirectionV0::Short, u64::MAX),
         vec![(101, 5)]
     );
     assert_eq!(execute(&mut ctx, DirectionV0::Short, 1).len(), 1);
-
-    // Slot 30: the ask is a live counterparty and the remainder drops out of
-    // both the quote and the fill.
-    ctx.svm.warp_to_slot(29);
-    assert_eq!(execute(&mut ctx, DirectionV0::Short, 1).len(), 1);
-    ctx.svm.warp_to_slot(30);
-    assert!(quote(&mut ctx, DirectionV0::Short, u64::MAX).is_empty());
-    assert!(execute(&mut ctx, DirectionV0::Short, 1).is_empty());
 }
 
 /// Quote and the gate on-chain: the crossed remainder's level is absent from the
@@ -2554,16 +2541,20 @@ fn quote_and_execute_skip_the_same_order() {
         vec![(101, 5)]
     );
 
-    // With the cross gone the remainder is ordinary depth again, at its own
-    // price.
+    // With the cross gone the remainder stays withheld until its claim lapses,
+    // and then it is ordinary depth at its own price.
     cancel(&mut ctx, crossing_bid, crosser).unwrap();
+    assert!(quote(&mut ctx, DirectionV0::Long, u64::MAX).is_empty());
+
+    let grace = market_state(&ctx).reservation_grace_slots as u64;
+    advance_slot(&mut ctx, grace);
     assert_eq!(quote(&mut ctx, DirectionV0::Long, u64::MAX), vec![(100, 5)]);
     assert_eq!(execute(&mut ctx, DirectionV0::Long, 5).len(), 1);
 }
 
-/// The gate's cost on quote, which unlike execute walks a whole side: the worst
-/// case is an *uncrossed* taker-origin order at the head, so the counterparty
-/// lookup actually happens and the walk still runs to the level cap afterwards.
+/// The gate's cost on quote, which unlike execute walks a whole side: a
+/// taker-origin order at the head is withheld, and the walk still runs to the
+/// level cap after it.
 #[test]
 fn cu_benchmark_quote_with_a_taker_origin_head() {
     let mut ctx = setup();
@@ -2573,7 +2564,8 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
         send(&mut ctx, ix).unwrap();
     }
 
-    // Best of the bid side, with an ask far above it so nothing crosses.
+    // Best of the bid side, with an ask far above it so nothing on the book
+    // crosses it.
     let ix = place_ix(
         &ctx,
         taker_origin_args(SideV0::Bid, 100 + PER_SIDE as u64, 10),

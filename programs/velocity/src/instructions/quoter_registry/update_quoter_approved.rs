@@ -18,7 +18,9 @@
 //! book's own entry may name the market's book, which closes the window between
 //! the book's designation and its own approval. A `Clob` approval also asks the
 //! book for its own placement rules, and a midpoint approval reads its
-//! instance, so approval refuses a slot that would fail every fill. The
+//! instance, so approval refuses a slot that would fail every fill. A `Clob`
+//! entry's three CPI discriminators must be the book's own quoter calls, so a
+//! leg cannot name another book instruction or skip the L3 leg. The
 //! quoter program must own the response account. A route consults a slot
 //! whenever its response account rides the fill, so this keeps a slot off
 //! fills that carry a program, a sysvar or a velocity account.
@@ -69,6 +71,7 @@ use {
         validate,
     },
     anchor_lang::{prelude::*, solana_program::bpf_loader_upgradeable},
+    quoter_spec::discriminator,
 };
 
 /// Ceiling on a slab's capacity. It is far above any plausible roster. It
@@ -456,7 +459,8 @@ fn validate_reviewed_config(quoter_data: &[u8], reviewed_hash: &[u8; 32]) -> Res
 /// Check that the config is coherent enough to call. Both legs name accounts.
 /// Every index points into the registered list. Both legs forward the response
 /// account. No reserved key sits on the registered list, and only the
-/// response account is writable.
+/// response account is writable. A book entry calls the book's own quoter
+/// instructions.
 fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
     validate!(
         config.quoter_type != QuoterType::Vamm,
@@ -513,7 +517,28 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
             .iter()
             .map(|meta| (&meta.pubkey, meta.is_writable)),
         config.market,
-    )
+    )?;
+
+    validate_book_discriminators(config)
+}
+
+/// A `Clob` entry's legs must call the book's own quoter instructions. A zero
+/// L3 discriminator would make every L3 read answer `None`, and the book-side
+/// rested check and the cross-match reach check would then pass unchecked.
+fn validate_book_discriminators(config: &QuoterConfigV0) -> Result<()> {
+    if config.quoter_type != QuoterType::Clob {
+        return Ok(());
+    }
+
+    validate!(
+        config.quote_v0_discriminator == discriminator::QUOTE_V0
+            && config.execute_v0_discriminator == discriminator::EXECUTE_V0
+            && config.quote_l3_v0_discriminator == discriminator::QUOTE_L3_V0,
+        ErrorCode::InvalidQuoterConfig,
+        "a book entry must call the book's quote_v0, execute_v0 and quote_l3_v0"
+    )?;
+
+    Ok(())
 }
 
 /// Whether a list marks no account writable but its own response account. A
@@ -703,6 +728,51 @@ mod response_owner_tests {
     fn an_executable_account_is_refused() {
         let program_id = Pubkey::new_unique();
         assert!(!accepts(&program_id, true, &program_id));
+    }
+}
+
+#[cfg(test)]
+mod book_discriminator_tests {
+    use super::{discriminator, validate_book_discriminators, QuoterConfigV0, QuoterType};
+
+    fn book_config() -> QuoterConfigV0 {
+        QuoterConfigV0 {
+            quoter_type: QuoterType::Clob,
+            quote_v0_discriminator: discriminator::QUOTE_V0,
+            execute_v0_discriminator: discriminator::EXECUTE_V0,
+            quote_l3_v0_discriminator: discriminator::QUOTE_L3_V0,
+            ..QuoterConfigV0::default()
+        }
+    }
+
+    #[test]
+    fn a_book_entry_with_the_books_discriminators_is_accepted() {
+        assert!(validate_book_discriminators(&book_config()).is_ok());
+    }
+
+    #[test]
+    fn a_book_entry_with_any_other_discriminator_is_refused() {
+        let cancel_all = [212, 11, 203, 11, 184, 40, 88, 95];
+        let edits: [fn(&mut QuoterConfigV0, [u8; 8]); 3] = [
+            |config, value| config.quote_v0_discriminator = value,
+            |config, value| config.execute_v0_discriminator = value,
+            |config, value| config.quote_l3_v0_discriminator = value,
+        ];
+        for edit in edits {
+            for value in [[0u8; 8], cancel_all] {
+                let mut config = book_config();
+                edit(&mut config, value);
+                assert!(validate_book_discriminators(&config).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn a_custom_entry_may_declare_no_l3_leg() {
+        let mut config = book_config();
+        config.quoter_type = QuoterType::Custom;
+        config.quote_l3_v0_discriminator = [0; 8];
+        assert!(validate_book_discriminators(&config).is_ok());
     }
 }
 

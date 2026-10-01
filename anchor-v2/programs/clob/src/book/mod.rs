@@ -55,8 +55,8 @@
 //! [`walk::check_fill_price`].
 //!
 //! Neither instruction trades some of the depth. That depth is the units a
-//! crossing taker remainder has claimed, and the whole of a remainder that a
-//! counterparty crosses. See [`CrossReservation`], which every read of a side
+//! crossing taker remainder has claimed, and the whole of a remainder whose
+//! claim holds. See [`CrossReservation`], which every read of a side
 //! asks, so the depth quote publishes is always depth execute can deliver.
 //! Both pass over claimed units the way they pass over an expired or a
 //! not-yet-activated order, so the rest of the side stays tradeable. Every

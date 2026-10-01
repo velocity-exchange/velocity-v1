@@ -45,6 +45,19 @@ const RUST_LONG_DUST_RIVAL_DEEP =
 const RUST_SHORT_DUST_RIVAL_DEEP =
 	'49999374:12500000000,49998125:12500000000,49996875:12500000000,49995625:12500000000,49994375:12500000000,49993125:12500000000,49991876:12500000000,49990626:12500000000';
 
+/**
+ * `TS_MIRROR long_inside_top_wall`: 5 base at -0.2% and 5 base at +2%, a 6-base
+ * take. The +2% rung shades only what the depth inside the top leaves over.
+ */
+const RUST_LONG_INSIDE_TOP_WALL =
+	'50377835:750000000,50871539:220491406,51000000:14754297,51266523:514754297,51929843:750000000,52732882:750000000,53554692:750000000,54395867:750000000,55257014:750000000,56138776:750000000';
+/** `TS_MIRROR long_two_rungs`: 0.1 base at +0.5% and 5 base at +2%, a 2-base take. */
+const RUST_LONG_TWO_RUNGS =
+	'50074648:149066390,50250000:100000000,51000000:736179313,51007582:14754297,51144356:250000000,51403972:250000000,51665568:250000000,51929168:250000000';
+/** `TS_MIRROR long_out_of_order`: 0.1 base at +1%, then 10 base at +0.5% the split never reads. */
+const RUST_LONG_OUT_OF_ORDER =
+	'50198930:396280980,50500000:100000000,50885447:753719020,51931192:1250000000,53280053:1250000000,54682160:1250000000,56140352:1250000000,57657658:1250000000,59237320:1250000000,60882801:1250000000';
+
 /** `TS_MIRROR spread_state`: the spread reserves `update_amm_quote_state` caches. */
 const RUST_SPREAD_ASK = {
 	baseAssetReserve: new BN('99518776954'),
@@ -319,6 +332,55 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 					BASE_PRECISION.divn(1000)
 				),
 				RUST_SHORT_DUST_RIVAL_DEEP,
+			],
+		];
+
+		for (const [label, actual, dump] of cases) {
+			assertLadderMatches(actual, parse(dump), label);
+		}
+	});
+
+	it('charges rival depth better than a rung to the take, as the Rust does', () => {
+		const mmOraclePriceData = {
+			price: PRICE_PRECISION.muln(50),
+			confidence: ZERO,
+		};
+		const top = PRICE_PRECISION.muln(50);
+		const ladder = (size: BN, levels: { price: BN; size: BN }[]) =>
+			vammQuoteLevels(
+				ammFixture(),
+				mockMarketStats,
+				mmOraclePriceData,
+				PositionDirection.LONG,
+				size,
+				new BN(1),
+				[{ priority: 10, levels, withheld: { price: ZERO, size: ZERO } }]
+			);
+
+		const cases: [string, { price: BN; size: BN }[], string][] = [
+			[
+				'long_inside_top_wall',
+				ladder(BASE_PRECISION.muln(6), [
+					{ price: top.sub(top.divn(500)), size: BASE_PRECISION.muln(5) },
+					{ price: top.add(top.divn(50)), size: BASE_PRECISION.muln(5) },
+				]),
+				RUST_LONG_INSIDE_TOP_WALL,
+			],
+			[
+				'long_two_rungs',
+				ladder(BASE_PRECISION.muln(2), [
+					{ price: top.add(top.divn(200)), size: BASE_PRECISION.divn(10) },
+					{ price: top.add(top.divn(50)), size: BASE_PRECISION.muln(5) },
+				]),
+				RUST_LONG_TWO_RUNGS,
+			],
+			[
+				'long_out_of_order',
+				ladder(BASE_PRECISION.muln(10), [
+					{ price: top.add(top.divn(100)), size: BASE_PRECISION.divn(10) },
+					{ price: top.add(top.divn(200)), size: BASE_PRECISION.muln(10) },
+				]),
+				RUST_LONG_OUT_OF_ORDER,
 			],
 		];
 

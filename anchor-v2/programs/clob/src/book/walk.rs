@@ -105,9 +105,9 @@ pub(crate) fn is_live(node: &OrderNodeV0, slot: u64, now: i64) -> bool {
 /// and the caller's budgets.
 ///
 /// It also withholds whatever [`CrossReservation`] holds back. That is the
-/// units a crossing taker remainder claims, and the whole of a remainder a
-/// counterparty crosses. An order that loses any of its size to a claim is
-/// not offered at all.
+/// units a crossing taker remainder claims, and the whole of a remainder whose
+/// claim holds. An order that loses any of its size to a claim is not offered
+/// at all.
 pub(super) fn quote(
     book: &mut ClobMarketV0,
     args: &QuoteArgsV0,

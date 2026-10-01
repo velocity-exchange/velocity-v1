@@ -340,9 +340,10 @@ pub const L3_ROW_FLAG_BLOCKS_WALK: u8 = 2;
 /// tracking the owner's reduce-only exposure when the order leaves the book.
 pub const L3_ROW_FLAG_REDUCE_ONLY: u8 = 4;
 
-/// A taker-origin order reserves some or all of this row's size, and `size`
-/// already has the reservation subtracted. A caller that settles the cross reads
-/// with `include_taker_origin_reservations` and sees the whole size.
+/// The book withholds some or all of this row's size, and `size` already has
+/// the reservation subtracted. A taker-origin order claims the size, or the row
+/// is a taker-origin order whose claim holds. A caller that settles the cross
+/// reads with `include_taker_origin_reservations` and sees the whole size.
 pub const L3_ROW_FLAG_RESERVED: u8 = 8;
 
 /// A taker-origin order whose claim lapsed. The book no longer withholds depth

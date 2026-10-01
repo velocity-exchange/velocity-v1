@@ -58,6 +58,16 @@ pub use {
     write::{ExecuteWriter, L3Writer, QuoteWriter},
 };
 
+/// Anchor-default discriminators, `sha256("global:<name>")[..8]`, of the three
+/// calls on the quoter surface. Velocity pins a `Clob` entry to them at
+/// approval, and the CLOB asserts them against its own derived values in a
+/// unit test.
+pub mod discriminator {
+    pub const QUOTE_V0: [u8; 8] = [235, 142, 54, 188, 148, 254, 155, 241];
+    pub const EXECUTE_V0: [u8; 8] = [5, 160, 11, 102, 140, 248, 144, 42];
+    pub const QUOTE_L3_V0: [u8; 8] = [144, 3, 174, 58, 132, 92, 241, 246];
+}
+
 /// The all-zero key. A quoter uses it to mean "no key set", which its own
 /// validation then refuses where a real key is required.
 pub const ZERO_ADDRESS: Pubkey = Pubkey::new_from_array([0u8; 32]);

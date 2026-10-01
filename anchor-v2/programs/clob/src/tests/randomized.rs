@@ -613,8 +613,7 @@ fn is_bound(book: &ClobMarketV0, node: &OrderNodeV0, slot: u64) -> bool {
 /// recomputed from the reservation's documented rules: each taker-origin order
 /// on the other side, oldest first, claims the best cover units still
 /// unclaimed that it crosses; a claim withholds at least `min_order_size`; and
-/// a taker-origin order on `cover` that a live counterparty crosses is
-/// withheld whole.
+/// a taker-origin order on `cover` whose claim holds is withheld whole.
 fn reference_withheld(book: &ClobMarketV0, cover: SideV0, slot: u64, now: i64) -> Vec<(u32, u64)> {
     let claiming = cover.opposite();
     let grace = book.reservation_grace_slots as u64;
@@ -651,12 +650,6 @@ fn reference_withheld(book: &ClobMarketV0, cover: SideV0, slot: u64, now: i64) -
         }
     }
 
-    let counterparty = best_first(book, claiming)
-        .into_iter()
-        .map(|(_, node)| node)
-        .find(|node| matchable(node))
-        .map(|node| node.price);
-
     covers
         .iter()
         .zip(claimed)
@@ -665,11 +658,7 @@ fn reference_withheld(book: &ClobMarketV0, cover: SideV0, slot: u64, now: i64) -
                 0 => 0,
                 units => units.max(book.min_order_size).min(node.base_asset_amount),
             };
-            let crossed = counterparty.is_some_and(|price| cover.is_crossed_by(node.price, price));
-            let withheld_whole = claimed < node.base_asset_amount
-                && node.is_taker_origin()
-                && !lapsed(node)
-                && crossed;
+            let withheld_whole = node.is_taker_origin() && !lapsed(node);
 
             (
                 *index,

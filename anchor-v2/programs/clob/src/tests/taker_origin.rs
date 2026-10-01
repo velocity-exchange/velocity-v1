@@ -4,9 +4,9 @@
 //! else's reach.
 //!
 //! The reservation is two directions of one computation, so most of these
-//! tests read both: the remainder is withheld while a counterparty crosses
-//! it, and the depth it crosses is withheld from every caller but the crank
-//! that owes the taker its improvement.
+//! tests read both: the remainder is withheld while its claim holds, and the
+//! depth it crosses is withheld from every caller but the crank that owes the
+//! taker its improvement.
 
 use {
     super::{
@@ -159,11 +159,18 @@ fn a_crossed_taker_remainder_is_passed_over() {
     // And it is still resting, untouched, waiting for its counterparty.
     assert_eq!(book.node_count(SideV0::Bid), 1);
 
-    // With the ask gone the remainder is uncrossed and takeable again.
+    // With the ask gone the remainder stays withheld until its claim lapses.
     book.cancel(maker, counterparty, ACTIVE_SLOT, false)
         .unwrap();
+    assert!(book
+        .execute(&execute_args(DirectionV0::Short, 5), 0, 0)
+        .unwrap()
+        .fills
+        .is_empty());
+
+    let lapsed = book.reservation_grace_slots as u64;
     assert_eq!(
-        book.execute(&execute_args(DirectionV0::Short, 5), 0, 0)
+        book.execute(&execute_args(DirectionV0::Short, 5), lapsed, 0)
             .unwrap()
             .fills
             .len(),
@@ -230,102 +237,77 @@ fn a_maker_only_cross_gates_nothing() {
     );
 }
 
-/// A taker remainder with nothing crossing it is ordinary depth: quotable and
-/// takeable at its own price like any other resting order. This is the fallback
-/// when no maker lines up during the auction window, and it is how the remainder
-/// eventually fills if the mechanism finds nobody — so it must not be gated.
+/// A taker remainder that no book order crosses is still withheld while its
+/// claim holds. The vAMM or a quoter can cross it, and the book cannot see
+/// either, so an ordinary fill would take it at its worst price before the
+/// crank routes it. Once the claim lapses it is ordinary depth at its own price.
 #[test]
-fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
-    let market = TestMarket::new(16);
-    let mut book = market.book();
+fn an_uncrossed_taker_remainder_is_withheld_while_its_claim_holds() {
     let (taker, maker) = (user(0xA), user(0xB));
-    place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
-    // Best ask is above the bid, so nothing crosses.
-    place(&mut book, SideV0::Ask, 105, 5, maker);
+    for ask_rests in [true, false] {
+        let market = TestMarket::new(16);
+        let mut book = market.book();
+        place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
+        if ask_rests {
+            // Best ask is above the bid, so nothing on the book crosses it.
+            place(&mut book, SideV0::Ask, 105, 5, maker);
+        }
 
-    assert_eq!(
-        quoted(&mut book, DirectionV0::Short, u64::MAX, 0),
-        encode_quote(&[PriceLevelV0 {
+        let remainder = encode_quote(&[PriceLevelV0 {
             price: 101,
-            size: 5
-        }])
-    );
-
-    let outcome = book
-        .execute(&execute_args(DirectionV0::Short, 5), 0, 0)
-        .unwrap();
-    assert_eq!(outcome.fills.len(), 1);
-    assert_eq!(book.node_count(SideV0::Bid), 0);
-
-    // An empty other side is not a counterparty either.
-    let market = TestMarket::new(16);
-    let mut book = market.book();
-    place_taker_origin(&mut book, SideV0::Bid, 101, 5, taker);
-    assert_eq!(
-        quoted(&mut book, DirectionV0::Short, u64::MAX, 0),
-        encode_quote(&[PriceLevelV0 {
-            price: 101,
-            size: 5
-        }])
-    );
-    assert_eq!(
-        book.execute(&execute_args(DirectionV0::Short, 5), 0, 0)
+            size: 5,
+        }]);
+        assert_eq!(
+            quoted(&mut book, DirectionV0::Short, u64::MAX, 0),
+            encode_quote(&[])
+        );
+        assert!(book
+            .execute(&execute_args(DirectionV0::Short, 5), 0, 0)
             .unwrap()
             .fills
-            .len(),
-        1
-    );
+            .is_empty());
+        assert_eq!(
+            consuming_quote(&mut book, DirectionV0::Short, u64::MAX, 0),
+            remainder
+        );
+
+        let lapsed = book.reservation_grace_slots as u64;
+        assert_eq!(
+            quoted(&mut book, DirectionV0::Short, u64::MAX, lapsed),
+            remainder
+        );
+        assert_eq!(
+            book.execute(&execute_args(DirectionV0::Short, 5), lapsed, 0)
+                .unwrap()
+                .fills
+                .len(),
+            1
+        );
+        assert_eq!(book.node_count(SideV0::Bid), 0);
+    }
 }
 
-/// The withholding turns on exactly when the counterparty could actually
-/// match.
-///
-/// An order still inside its activation delay — or already expired — cannot be
-/// matched by anyone, so a cross that involves one puts no improvement within
-/// reach and holding the remainder back then would cost the book depth for
-/// nothing.
+/// The remainder is withheld from its activation slot until exactly the slot
+/// its claim lapses, whatever the other side holds.
 #[test]
-fn only_a_counterparty_that_could_match_this_slot_gates_the_fill() {
-    let taker = user(0xA);
-    let maker = user(0xB);
-
-    // Counterparty inside its auction window: the remainder is takeable at 101
-    // until the ask activates, and held back from that slot on.
+fn the_remainder_is_withheld_until_exactly_its_claim_lapses() {
     let market = TestMarket::new(16);
     let mut book = market.book();
-    place_at(&mut book, SideV0::Bid, 101, 5, taker, 0, true);
-    place_at(&mut book, SideV0::Ask, 99, 5, maker, 10, false);
-    assert_eq!(
-        book.execute(&execute_args(DirectionV0::Short, 1), 9, 0)
-            .unwrap()
-            .fills
-            .len(),
-        1
-    );
+    place_at(&mut book, SideV0::Bid, 101, 5, user(0xA), 10, true);
+    let lapse_slot = 10 + book.reservation_grace_slots as u64;
 
-    assert!(book
-        .execute(&execute_args(DirectionV0::Short, 1), 10, 0)
-        .unwrap()
-        .fills
-        .is_empty());
+    for slot in [9, 10, lapse_slot - 1] {
+        assert!(
+            book.execute(&execute_args(DirectionV0::Short, 1), slot, 0)
+                .unwrap()
+                .fills
+                .is_empty(),
+            "slot {slot}"
+        );
+    }
 
-    // An expired counterparty is not one either: execute never matches it, and
-    // reclaiming it goes through `remove_expired_v0`.
-    let market = TestMarket::new(16);
-    let mut book = market.book();
-    place_at(&mut book, SideV0::Bid, 101, 5, taker, 0, true);
-    book.place(PlaceOrderParams {
-        max_ts: 1_000,
-        ..params(SideV0::Ask, 99, 5, maker)
-    })
-    .unwrap();
-    assert!(book
-        .execute(&execute_args(DirectionV0::Short, 1), 0, 1_000)
-        .unwrap()
-        .fills
-        .is_empty());
     assert_eq!(
-        book.execute(&execute_args(DirectionV0::Short, 1), 0, 1_001)
+        book.execute(&execute_args(DirectionV0::Short, 1), lapse_slot, 0)
             .unwrap()
             .fills
             .len(),
@@ -502,11 +484,11 @@ fn quote_and_execute_skip_the_same_order() {
     );
 }
 
-/// Nothing about the order changed — only that a counterparty was standing
-/// against it. Once the cross is gone the remainder is ordinary depth again, at
-/// its own price.
+/// Removing the crossing bid does not release the remainder. It stays out of
+/// the quote until its claim lapses, and then it is ordinary depth at its own
+/// price.
 #[test]
-fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
+fn the_same_book_quotes_that_depth_once_the_claim_lapses() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (taker, maker, crosser) = (user(0xA), user(0xB), user(0xC));
@@ -514,22 +496,29 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
     place_taker_origin(&mut book, SideV0::Ask, 100, 5, taker);
     place(&mut book, SideV0::Ask, 102, 5, maker);
     let crossing_bid = place(&mut book, SideV0::Bid, 101, 5, crosser);
+    let makers_only = encode_quote(&[
+        PriceLevelV0 { price: 99, size: 5 },
+        PriceLevelV0 {
+            price: 102,
+            size: 5,
+        },
+    ]);
 
     assert_eq!(
         quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
-        encode_quote(&[
-            PriceLevelV0 { price: 99, size: 5 },
-            PriceLevelV0 {
-                price: 102,
-                size: 5
-            },
-        ])
+        makers_only
     );
 
     book.cancel(crosser, crossing_bid, ACTIVE_SLOT, false)
         .unwrap();
     assert_eq!(
         quoted(&mut book, DirectionV0::Long, u64::MAX, 0),
+        makers_only
+    );
+
+    let lapsed = book.reservation_grace_slots as u64;
+    assert_eq!(
+        quoted(&mut book, DirectionV0::Long, u64::MAX, lapsed),
         encode_quote(&[
             PriceLevelV0 { price: 99, size: 5 },
             PriceLevelV0 {
@@ -545,40 +534,11 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
 
     // Execute agrees, which is the whole point of the two sharing a predicate.
     assert_eq!(
-        book.execute(&execute_args(DirectionV0::Long, 15), 0, 0)
+        book.execute(&execute_args(DirectionV0::Long, 15), lapsed, 0)
             .unwrap()
             .fills
             .len(),
         3
-    );
-}
-
-/// Quote follows the counterparty's activation slot exactly as execute does:
-/// while the crossing ask is inside its own auction window the remainder is
-/// ordinary depth, and it drops out of the quote the slot that ask could
-/// match. The maker bid behind it is published either way.
-#[test]
-fn quote_follows_the_counterpartys_activation_slot() {
-    let market = TestMarket::new(16);
-    let mut book = market.book();
-    let (taker, maker) = (user(0xA), user(0xB));
-    place_at(&mut book, SideV0::Bid, 101, 5, taker, 0, true);
-    place_at(&mut book, SideV0::Bid, 98, 5, maker, 0, false);
-    place_at(&mut book, SideV0::Ask, 99, 5, maker, 10, false);
-
-    assert_eq!(
-        quoted(&mut book, DirectionV0::Short, u64::MAX, 9),
-        encode_quote(&[
-            PriceLevelV0 {
-                price: 101,
-                size: 5
-            },
-            PriceLevelV0 { price: 98, size: 5 },
-        ])
-    );
-    assert_eq!(
-        quoted(&mut book, DirectionV0::Short, u64::MAX, 10),
-        encode_quote(&[PriceLevelV0 { price: 98, size: 5 }])
     );
 }
 
@@ -1120,9 +1080,10 @@ fn every_removal_path_maintains_the_claimant_list() {
     assert_consistent(&book);
     assert_eq!(book.claimant_count(SideV0::Ask), 0);
 
-    // Execute culling a sub-minimum remainder of an uncrossed remainder.
+    // Execute culling a sub-minimum remainder of a remainder whose claim lapsed.
     let culled = place_taker_origin(&mut book, SideV0::Ask, 200, 5, owner);
-    assert_eq!(executed(&mut book, DirectionV0::Long, 3, 0), vec![3]);
+    let lapsed = book.reservation_grace_slots as u64;
+    assert_eq!(executed(&mut book, DirectionV0::Long, 3, lapsed), vec![3]);
     assert_consistent(&book);
     assert_eq!(book.claimant_count(SideV0::Ask), 0);
     assert!(book.read_node(culled.node_index).unwrap().order_id != culled.order_id);

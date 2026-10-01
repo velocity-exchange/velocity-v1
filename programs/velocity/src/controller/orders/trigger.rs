@@ -661,6 +661,41 @@ pub(super) fn update_trigger_order_params(
     Ok(())
 }
 
+/// Refuse a placement that arms a reduce-only stop-loss past the watch slots.
+/// Orders from `first_new_order_id` on are the ones the placement armed.
+///
+/// Every path that arms a trigger calls this: the trigger batch, the
+/// signed-message bracket and a modify. Relay is the only firer, so a
+/// stop-loss that no slot watches never fires. A placement that arms only
+/// other triggers is not refused.
+pub(crate) fn refuse_unwatched_stop_loss(
+    user: &User,
+    first_new_order_id: u32,
+    now: i64,
+) -> VelocityResult {
+    use crate::{
+        instructions::is_armed_stop_loss, state::user_conditions::TRIGGER_CONDITION_SLOTS,
+    };
+
+    let stop_losses = || {
+        user.orders
+            .iter()
+            .filter(|order| is_armed_stop_loss(order, now))
+    };
+    if !stop_losses().any(|order| order.order_id >= first_new_order_id) {
+        return Ok(());
+    }
+
+    let count = stop_losses().count();
+    validate!(
+        count <= TRIGGER_CONDITION_SLOTS,
+        ErrorCode::MaxNumberOfOrders,
+        "{} armed reduce-only stop-losses exceed the {} watch slots",
+        count,
+        TRIGGER_CONDITION_SLOTS
+    )
+}
+
 #[cfg(test)]
 mod cancel_gate_tests;
 

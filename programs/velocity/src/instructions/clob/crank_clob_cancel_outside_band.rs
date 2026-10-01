@@ -15,16 +15,18 @@
 //! outside the band only after the oracle moves away from it.
 //!
 //! The crank removes the order the way the expiry crank does. The maker pays
-//! the flat removal reward, a placed trigger's shadow is freed, and
-//! program-keeper mode pays reservoir lamports for a crank that collected the
-//! reward. The book refuses to cancel a taker remainder whose claim still
+//! the removal fee, and a placed trigger's shadow is freed. Program-keeper mode
+//! raises the fee to the value of the reservoir payment at the SOL TWAP, and
+//! pays the lamports only when that TWAP priced them. The book refuses to cancel a taker remainder whose claim still
 //! holds, so a crossing remainder keeps its window for the cross crank.
 //!
 //! No relay condition wakes this crank. A resolver needs the market oracle,
 //! and the resolver account list does not carry it, so signed keepers run it.
 
 use {
-    super::helpers::crank_common::{crank_clob_removal, ClobRemoval, RemovalAccounts},
+    super::helpers::crank_common::{
+        crank_clob_removal, payment_sol_price, program_keeper_mode, ClobRemoval, RemovalAccounts,
+    },
     crate::{
         controller::{
             orders::{crank_oracle_preflight, maker_band_oracle_price},
@@ -41,6 +43,7 @@ use {
             prop_amm::{
                 CancelOrderArgsV0, ClobOrderRefV0, ClobReader, QuoterSlabExt, QuoterSlabV0,
             },
+            spot_market::SpotMarket,
             state::State,
             user::{User, UserStats},
         },
@@ -103,6 +106,17 @@ pub struct CrankClobCancelOutsideBand<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// The SOL spot market, whose TWAP values the reservoir payment in quote.
+    /// Program-keeper mode requires it when `State` names a SOL market.
+    #[account(
+        seeds = [
+            b"spot_market",
+            state.load()?.sol_spot_market_index.to_le_bytes().as_ref(),
+        ],
+
+        bump
+    )]
+    pub sol_spot_market: Option<AccountLoader<'info, SpotMarket>>,
 }
 
 /// A taker-origin order passes the owner's signed-message record as the one
@@ -141,6 +155,15 @@ pub fn handle_crank_clob_cancel_outside_band<'info>(
     )?;
 
     let accounts = &*ctx.accounts;
+    let sol_price = payment_sol_price(
+        &*accounts.state.load()?,
+        program_keeper_mode(
+            &accounts.filler,
+            &accounts.state,
+            accounts.crank_conditions.is_some(),
+        )?,
+        accounts.sol_spot_market.as_ref(),
+    )?;
     crank_clob_removal(
         &RemovalAccounts {
             state: &accounts.state,
@@ -161,6 +184,7 @@ pub fn handle_crank_clob_cancel_outside_band<'info>(
             user: order.user,
             force: false,
         }),
+        sol_price,
     )
 }
 

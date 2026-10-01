@@ -80,7 +80,11 @@ pub fn handle_place_trigger_orders_v1<'c: 'info, 'info>(
         arm_triggers(placement, &args.params, clock)?
     };
 
-    refuse_unwatched_stop_loss(&user, first_new_order_id, clock.unix_timestamp)?;
+    controller::orders::refuse_unwatched_stop_loss(
+        &user,
+        first_new_order_id,
+        clock.unix_timestamp,
+    )?;
     enforce_batch_margin(&user, &mut maps, &results)
 }
 
@@ -180,38 +184,6 @@ fn arm_trigger(
     )?)
 }
 
-/// Refuse a batch that arms a reduce-only stop-loss past the watch slots.
-///
-/// Relay is the only firer, so a stop-loss that no slot watches never fires.
-/// A batch that arms only other triggers is not refused, because it leaves no
-/// stop-loss less watched than before.
-fn refuse_unwatched_stop_loss(user: &User, first_new_order_id: u32, now: i64) -> Result<()> {
-    use crate::{
-        instructions::trigger_relay::sync_trigger_conditions::is_armed_stop_loss,
-        state::user_conditions::TRIGGER_CONDITION_SLOTS,
-    };
-
-    let stop_losses = || {
-        user.orders
-            .iter()
-            .filter(|order| is_armed_stop_loss(order, now))
-    };
-    if !stop_losses().any(|order| order.order_id >= first_new_order_id) {
-        return Ok(());
-    }
-
-    let count = stop_losses().count();
-    validate!(
-        count <= TRIGGER_CONDITION_SLOTS,
-        ErrorCode::MaxNumberOfOrders,
-        "{} armed reduce-only stop-losses exceed the {} watch slots",
-        count,
-        TRIGGER_CONDITION_SLOTS
-    )?;
-
-    Ok(())
-}
-
 /// One post-batch margin check, accumulating risk across the whole batch, so it
 /// still runs when the final entry was a no-op. It mirrors what arming each
 /// trigger on its own would have enforced:
@@ -251,12 +223,9 @@ pub(super) fn enforce_batch_margin(
 
 #[cfg(test)]
 mod watch_slot_tests {
-    use {
-        super::refuse_unwatched_stop_loss,
-        crate::{
-            controller::position::PositionDirection,
-            state::user::{Order, OrderStatus, OrderTriggerCondition, OrderType, User},
-        },
+    use crate::{
+        controller::{orders::refuse_unwatched_stop_loss, position::PositionDirection},
+        state::user::{Order, OrderStatus, OrderTriggerCondition, OrderType, User},
     };
 
     fn trigger(order_id: u32, trigger_condition: OrderTriggerCondition) -> Order {

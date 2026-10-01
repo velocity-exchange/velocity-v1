@@ -12651,4 +12651,564 @@ fn audit4_the_pause_key_clears_a_hot_role_and_cannot_set_one() {
         .expect("the pause key clears the hot role");
     let state: State = read_zero_copy(&svm, &state_pda());
     assert_eq!(state.hot_flow_authority.to_bytes(), [0u8; 32]);
+
+/// A synced user whose stop-market buy at 99 the oracle at 100 has crossed.
+struct Fix4TrigCrossedStop {
+    user: Pubkey,
+    conditions: Pubkey,
+}
+
+/// Arm and sync a stop-market buy of one unit at 99, then move the oracle
+/// through it. `edit` changes the user before the sync.
+fn fix4_trig_crossed_stop(
+    fixture: &mut Fixture,
+    payment: u64,
+    edit: impl FnOnce(&mut User),
+) -> Fix4TrigCrossedStop {
+    let conditions = init_crank_conditions(fixture, payment);
+    set_protocol_user(&mut fixture.svm);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    let authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&authority.pubkey(), 1_000_000_000)
+        .unwrap();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Long;
+    order.base_asset_amount = UNIT;
+    order.trigger_price = 99 * PRICE;
+    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    order.max_ts = clock.unix_timestamp + 1_000;
+    let mut state = armed_trigger_user(
+        &authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        order,
+    );
+    state.next_order_id = 2;
+    edit(&mut state);
+    set_user_account(&mut fixture.svm, user, &state);
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+    sync_trigger_conditions(fixture, user, conditions, true);
+
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
+
+    Fix4TrigCrossedStop { user, conditions }
+}
+
+/// A funded account that receives a relay-staged crank's lamports.
+fn fix4_trig_payout(fixture: &mut Fixture) -> Pubkey {
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    payout
+}
+
+/// A healthy account with a stale being-liquidated flag and a crossed
+/// stop-market. The resolver stages the fire, and the executor clears the
+/// flag and fires.
+#[test]
+fn fix4_trig_stale_liquidation_flag_still_fires_the_stop() {
+    let mut fixture = setup();
+    let stop = fix4_trig_crossed_stop(&mut fixture, 25_000, |user| {
+        user.status = velocity::state::user::UserStatus::BeingLiquidated as u8;
+    });
+
+    let resolved = run_trigger_market_resolver(&mut fixture, stop.user)
+        .expect("a stale flag does not hide a crossed stop");
+    let payout = fix4_trig_payout(&mut fixture);
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::TriggerMarketOrderV1::DISCRIMINATOR,
+        payout,
+    );
+
+    let after: User = read_zero_copy(&fixture.svm, &stop.user);
+    assert_eq!(
+        after.status & (velocity::state::user::UserStatus::BeingLiquidated as u8),
+        0
+    );
+    assert_eq!(after.perp_positions[0].open_bids, UNIT as i64);
+}
+
+/// A party long one unit at $100 with eight armed reduce-only stop-losses,
+/// which fill the relay watch slots.
+fn fix4_trig_party_with_eight_stop_losses(fixture: &mut Fixture) -> Party {
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let mut user: User = read_zero_copy(&fixture.svm, &owner.user);
+    let position = &mut user.perp_positions[0];
+    position.base_asset_amount = UNIT as i64;
+    position.quote_asset_amount = -((100 * PRICE) as i64);
+    position.quote_entry_amount = -((100 * PRICE) as i64);
+    position.quote_break_even_amount = -((100 * PRICE) as i64);
+    position.open_orders = 8;
+    for index in 0..8u32 {
+        let mut order = Order::default();
+        order.order_id = index + 1;
+        order.status = OrderStatus::Open;
+        order.order_type = OrderType::TriggerMarket;
+        order.market_type = MarketType::Perp;
+        order.market_index = 0;
+        order.direction = PositionDirection::Short;
+        order.base_asset_amount = UNIT / 16;
+        order.trigger_price = (90 - u64::from(index)) * PRICE;
+        order.trigger_condition = velocity::state::user::OrderTriggerCondition::Below;
+        order.reduce_only = true;
+        user.orders[index as usize] = order;
+    }
+
+    user.open_orders = 8;
+    user.has_open_order = true;
+    user.next_order_id = 9;
+    set_user_account(&mut fixture.svm, owner.user, &user);
+    owner
+}
+
+/// A modify that turns a take-profit into a ninth stop-loss is refused. A
+/// modify of a stop-loss that keeps the count at eight lands.
+#[test]
+fn fix4_trig_a_modify_cannot_arm_a_ninth_stop_loss() {
+    use velocity::state::{order_params::ModifyOrderParams, user::OrderTriggerCondition};
+
+    let mut fixture = setup();
+    let owner = fix4_trig_party_with_eight_stop_losses(&mut fixture);
+    let mut user: User = read_zero_copy(&fixture.svm, &owner.user);
+    let mut take_profit = user.orders[0];
+    take_profit.order_id = 9;
+    take_profit.trigger_price = 120 * PRICE;
+    take_profit.trigger_condition = OrderTriggerCondition::Above;
+    user.orders[8] = take_profit;
+    user.open_orders = 9;
+    user.perp_positions[0].open_orders = 9;
+    user.next_order_id = 10;
+    set_user_account(&mut fixture.svm, owner.user, &user);
+
+    let modify = |fixture: &mut Fixture, order_id: u32, params: ModifyOrderParams| {
+        let mut accounts = velocity::accounts::CancelOrder {
+            state: state_pda(),
+            user: owner.user,
+            authority: owner.authority.pubkey(),
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        let ix = Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::ModifyOrder {
+                order_id: Some(order_id),
+                modify_order_params: params,
+            }
+            .data(),
+        };
+        fixture.svm.expire_blockhash();
+        let authority = owner.authority.insecure_clone();
+        send(&mut fixture.svm, &authority, ix, &[])
+    };
+
+    let err = modify(
+        &mut fixture,
+        9,
+        ModifyOrderParams {
+            trigger_price: Some(80 * PRICE),
+            trigger_condition: Some(OrderTriggerCondition::Below),
+            ..ModifyOrderParams::default()
+        },
+    )
+    .unwrap_err();
+    assert_velocity_error(&err, ErrorCode::MaxNumberOfOrders);
+
+    modify(
+        &mut fixture,
+        1,
+        ModifyOrderParams {
+            trigger_price: Some(85 * PRICE),
+            ..ModifyOrderParams::default()
+        },
+    )
+    .expect("a modified stop-loss keeps the count at eight");
+}
+
+/// The envelope a keeper submits for `message`, signed by `authority`.
+fn fix4_trig_signed_envelope(
+    authority: &Keypair,
+    message: &velocity::state::order_params::SignedMsgOrderParamsMessage,
+) -> Vec<u8> {
+    use {
+        anchor_lang::AnchorSerialize, velocity::state::order_params::SignedMsgOrderParamsMessage,
+    };
+
+    let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
+    message.serialize(&mut borsh_body).unwrap();
+    let hex_msg = hex_lower(&borsh_body);
+    let signed_bytes = velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+    let signature = authority.sign_message(&signed_bytes);
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(signature.as_ref());
+    envelope.extend_from_slice(&authority.pubkey().to_bytes());
+    envelope.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+    envelope.extend_from_slice(hex_msg.as_bytes());
+    envelope
+}
+
+/// A signed-message bracket whose stop-loss would be the ninth is refused.
+#[test]
+fn fix4_trig_a_signed_bracket_cannot_arm_a_ninth_stop_loss() {
+    use velocity::state::order_params::{
+        OrderParams, PostOnlyParam, SignedMsgOrderParamsMessage, SignedMsgTriggerOrderParams,
+    };
+
+    let mut fixture = setup();
+    let taker = fix4_trig_party_with_eight_stop_losses(&mut fixture);
+    let keeper = party(&mut fixture.svm, 0);
+    set_signed_msg_user_orders(&mut fixture.svm, &taker.authority.pubkey(), 8);
+    let slot = fixture.svm.get_sysvar::<solana_clock::Clock>().slot;
+
+    let message = SignedMsgOrderParamsMessage {
+        signed_msg_order_params: OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: UNIT / 16,
+            price: 101 * PRICE,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            ..OrderParams::default()
+        },
+        sub_account_id: 0,
+        slot,
+        uuid: *b"ninthsl1",
+        take_profit_order_params: None,
+        stop_loss_order_params: Some(SignedMsgTriggerOrderParams {
+            trigger_price: 80 * PRICE,
+            base_asset_amount: UNIT / 16,
+        }),
+        max_margin_ratio: None,
+        builder_idx: None,
+        builder_fee_tenth_bps: None,
+        isolated_position_deposit: None,
+        network: Some(velocity::state::order_params::expected_signed_msg_network()),
+        route: None,
+    };
+    let envelope = fix4_trig_signed_envelope(&taker.authority, &message);
+    let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+        authority: keeper.authority.pubkey(),
+        ix_sysvar: instructions_sysvar(),
+        filler: keeper.user,
+        filler_stats: keeper.stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceSignedMsgTakerOrder {
+            signed_msg_order_params_message_bytes: envelope,
+            is_delegate_signer: false,
+            flow_attestation: None,
+        }
+        .data(),
+    };
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[compute_unit_limit_ix(600_000), ix],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&err, ErrorCode::MaxNumberOfOrders);
+}
+
+/// The SOL TWAP the fee-floor tests price lamports at. It is high enough that
+/// every reservoir payment is worth more than the flat fee.
+const FIX4_TRIG_SOL_PRICE: i64 = 10_000;
+
+/// What a program-keeper crank charges for a reservoir payment of `lamports`
+/// at [`FIX4_TRIG_SOL_PRICE`].
+fn fix4_trig_floored_fee(fixture: &Fixture, lamports: u64) -> u64 {
+    let fee = velocity::state::clob_crank::CrankPaymentsV0::lamports_to_quote(
+        lamports,
+        FIX4_TRIG_SOL_PRICE * QUOTE_PRECISION_I64,
+    )
+    .unwrap();
+    let state: State = read_zero_copy(&fixture.svm, &state_pda());
+    assert!(
+        fee > state.perp_fee_structure.flat_filler_fee,
+        "the payment must be worth more than the flat fee"
+    );
+    fee
+}
+
+/// A relay-staged trigger crank charges the owner the value of the reservoir
+/// payment, not the flat fee.
+#[test]
+fn fix4_trig_a_trigger_crank_charges_the_payment_value() {
+    let mut fixture = setup();
+    let stop = fix4_trig_crossed_stop(&mut fixture, 25_000, |_| {});
+    set_sol_spot_market(&mut fixture.svm, FIX4_TRIG_SOL_PRICE);
+    let payments: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &stop.conditions);
+    let expected_fee = fix4_trig_floored_fee(&fixture, u64::from(payments.crank_payments.trigger));
+
+    let resolved = run_trigger_market_resolver(&mut fixture, stop.user).expect("a crossed stop");
+    let before: User = read_zero_copy(&fixture.svm, &stop.user);
+    let payout = fix4_trig_payout(&mut fixture);
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::TriggerMarketOrderV1::DISCRIMINATOR,
+        payout,
+    );
+
+    let after: User = read_zero_copy(&fixture.svm, &stop.user);
+    assert_eq!(
+        before.perp_positions[0].quote_asset_amount - after.perp_positions[0].quote_asset_amount,
+        expected_fee as i64
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + u64::from(payments.crank_payments.trigger)
+    );
+}
+
+/// A stop-market buy rests its remainder on the bid side. With the bid side
+/// full, the resolver reports no work.
+#[test]
+fn fix4_trig_a_full_rest_side_reads_as_no_work() {
+    let mut fixture = setup();
+    let stop = fix4_trig_crossed_stop(&mut fixture, 25_000, |_| {});
+    assert!(run_trigger_market_resolver(&mut fixture, stop.user).is_some());
+
+    let maker = fixture.clob_maker_authority.insecure_clone();
+    let side_full = (0..1_000).find_map(|_| {
+        fixture.svm.expire_blockhash();
+        let ix = place_clob_order_ix(
+            fixture.clob_maker_user,
+            &fixture.clob_maker_authority,
+            fixture.quoter_slab,
+            fixture.clob_market,
+            fixture.oracle,
+            PlaceClobOrderParams {
+                market_index: 0,
+                direction: PositionDirection::Long,
+                price: 90 * PRICE,
+                base_asset_amount: UNIT / 100,
+                max_ts: 0,
+                activation_delay_slots: Some(0),
+                reject_if_crossed: false,
+            },
+        );
+        send(&mut fixture.svm, &maker, ix, &[]).err()
+    });
+    assert_velocity_error(
+        &side_full.expect("the bid side fills"),
+        ErrorCode::MaxNumberOfOrders,
+    );
+
+    fixture.svm.expire_blockhash();
+    assert!(run_trigger_market_resolver(&mut fixture, stop.user).is_none());
+}
+
+/// A program-keeper expiry crank charges the maker the value of the
+/// reservoir payment, not the flat fee.
+#[test]
+fn fix4_trig_an_expiry_crank_charges_the_payment_value() {
+    let mut fixture = setup();
+    let conditions = init_crank_conditions(&mut fixture, 50_000);
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, FIX4_TRIG_SOL_PRICE);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let max_ts = clock.unix_timestamp + 10;
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter_slab,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price: 99 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts,
+            activation_delay_slots: Some(0),
+            reject_if_crossed: false,
+        },
+    );
+    let maker = fixture.clob_maker_authority.insecure_clone();
+    send(&mut fixture.svm, &maker, ix, &[]).unwrap();
+
+    let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    clock.unix_timestamp = max_ts + 10;
+    fixture.svm.set_sysvar(&clock);
+    let resolved = run_resolver(&mut fixture, conditions, true).expect("an expired order");
+
+    let payments: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &conditions);
+    let escalation = velocity::state::clob_crank::CrankPaymentsV0::expiry_escalation(
+        max_ts,
+        clock.unix_timestamp,
+    );
+    let payment = u64::from(payments.crank_payments.removal) + u64::from(escalation);
+    let expected_fee = fix4_trig_floored_fee(&fixture, payment);
+
+    let before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    let payout = fix4_trig_payout(&mut fixture);
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobRemoveExpired::DISCRIMINATOR,
+        payout,
+    );
+
+    let after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        before.perp_positions[0].quote_asset_amount - after.perp_positions[0].quote_asset_amount,
+        expected_fee as i64
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + payment
+    );
+}
+
+/// A band cancel of `order_ref` in program-keeper mode, paying `payout`.
+fn fix4_trig_program_keeper_band_cancel_ix(
+    fixture: &Fixture,
+    protocol_user: Pubkey,
+    payout: Pubkey,
+    order_ref: ClobOrderRefV0,
+) -> Instruction {
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    let accounts = velocity::accounts::CrankClobCancelOutsideBand {
+        state: state_pda(),
+        authority: payout,
+        filler: protocol_user,
+        filler_stats: protocol_stats,
+        user: fixture.clob_maker_user,
+        perp_market: perp_market_pda(0),
+        oracle: fixture.oracle,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        crank_conditions: Some(crank_conditions_pda()),
+        sol_spot_market: Some(spot_market_pda(1)),
+    }
+    .to_account_metas(None)
+    .into_iter()
+    .map(|meta| AccountMeta {
+        is_signer: false,
+        ..meta
+    })
+    .collect();
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CrankClobCancelOutsideBand {
+            args: velocity::instructions::CrankClobCancelOutsideBandArgs {
+                market_index: 0,
+                order_ref,
+            },
+        }
+        .data(),
+    }
+}
+
+/// A program-keeper band cancel charges the maker the value of the
+/// reservoir payment and pays the keeper that payment.
+#[test]
+fn fix4_trig_a_band_cancel_charges_the_payment_value() {
+    let mut fixture = setup();
+    let conditions = init_crank_conditions(&mut fixture, 50_000);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, FIX4_TRIG_SOL_PRICE);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
+    let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    // A band of half a percent puts the ask at 99 outside it.
+    let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    market.margin_ratio_initial = 50;
+    market.margin_ratio_maintenance = 25;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+
+    let payments: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &conditions);
+    let payment = u64::from(payments.crank_payments.removal);
+    let expected_fee = fix4_trig_floored_fee(&fixture, payment);
+
+    let payout = fix4_trig_payout(&mut fixture);
+    let ix = fix4_trig_program_keeper_band_cancel_ix(&fixture, protocol_user, payout, order_ref);
+
+    let before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    let after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(clob_ask_count(&fixture), 0);
+    assert_eq!(
+        before.perp_positions[0].quote_asset_amount - after.perp_positions[0].quote_asset_amount,
+        expected_fee as i64
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + payment
+    );
 }

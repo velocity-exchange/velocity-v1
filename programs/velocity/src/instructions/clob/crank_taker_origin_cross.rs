@@ -2,10 +2,11 @@
 //!
 //! A migrated taker remainder rests on the book with the taker-origin flag. It
 //! rests at the worst price its signer agreed to tolerate. The book withholds
-//! it from every ordinary fill while its claim holds, so the improvement
-//! between that price and whatever crosses it cannot be won by landing a
-//! transaction at the activation slot. This crank hands that improvement to the
-//! taker. It is permissionless and is paid out of the improvement it delivers.
+//! it from every ordinary fill, before and after its claim lapses, so the
+//! improvement between that price and whatever crosses it cannot be won by
+//! landing a transaction at the activation slot. This crank hands that
+//! improvement to the taker. It is permissionless and is paid out of the
+//! improvement it delivers.
 //!
 //! The resolution is an ordinary fill. The remainder becomes a detached limit
 //! order at the price it rested at. The router fills it against everything the
@@ -18,12 +19,10 @@
 //!
 //! - The counterparty keeps its own price. It is an ordinary maker to an
 //!   ordinary fill.
-//! - Price and time decide between two remainders. Lifting the aggressor
-//!   uncrosses the book, so the other remainder stops being held back by the
-//!   taker-origin gate and becomes depth this fill reaches at its own price.
-//!   The handler refuses only the inverse case. A subject that rested before
-//!   the remainder it crosses is the maker of the pair, and the improvement is
-//!   not its to take.
+//! - Price and time decide between two remainders. The book withholds both
+//!   from every ordinary fill, so this crank settles the pair itself at the
+//!   earlier one's price. A subject that rested before the remainder it
+//!   crosses is the maker of the pair, and the improvement is not its to take.
 //!
 //! The subject is an argument, not something this crank discovers. What crosses
 //! a resting remainder is usually a quote ladder rather than another book
@@ -39,9 +38,8 @@
 //! remainders settle as a pair only when the vAMM can fill the earlier one and
 //! beats the counterparty's price for neither side. A remainder whose claim
 //! lapsed claims nothing, so the cross walk reads it as depth. Two lapsed
-//! remainders at the front still settle as a pair, because a claim-honouring
-//! route of one would take the other at its own price, or take nothing where
-//! the book withholds it.
+//! remainders at the front still settle as a pair, because the book withholds
+//! each one from a claim-honouring route of the other.
 //!
 //! `crank_cross_match` middles two crossed makers for the protocol. This crank
 //! does not. One side is the aggressor by construction, the improvement belongs
@@ -731,8 +729,8 @@ fn plan_subject(
 }
 
 /// The cross of the two heads, when both are lapsed remainders, and its
-/// aggressor's side. A claim-honouring route of one would take the other at
-/// its own price, or nothing where the book withholds it.
+/// aggressor's side. The book withholds each one from a claim-honouring route
+/// of the other.
 fn lapsed_pair_at_front(bids: &[BookRow], asks: &[BookRow]) -> Option<(Cross, SideV0)> {
     let lapsed_remainder = |row: &BookRow| row.order.taker_origin && row.claim_lapsed;
     let (bid, ask) = (bids.first()?, asks.first()?);

@@ -89,8 +89,8 @@ wire_type! {
         /// the CPI.
         pub user: UserRefV0,
         /// The order is an unfilled taker remainder the caller migrated onto the book,
-        /// which only the caller can know. The order cannot be taken while a live
-        /// counterparty crosses it, and a cross settles at the counterparty's price.
+        /// which only the caller can know. No ordinary fill can take the order, before
+        /// or after its claim lapses. A cross settles at the counterparty's price.
         pub taker_origin: bool,
         /// The caller's own id for this order. The book stores it and reports it
         /// back on every answer that names the order, so the caller never holds a

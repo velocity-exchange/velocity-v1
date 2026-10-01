@@ -48,8 +48,8 @@
 //!
 //! Two consequences follow. The owner pays taker fees when a counterparty
 //! crosses the order, which is the price of demanding liquidity. The order also
-//! cannot be cancelled before its activation slot, so a trigger commits its
-//! owner for that window. A liquidation force-cancel stays exempt, and `max_ts`
+//! cannot be cancelled until `reservation_grace_slots` after its activation
+//! slot, so a trigger commits its owner for that window. A liquidation force-cancel stays exempt, and `max_ts`
 //! still bounds the order's life.
 //!
 //! Stop-markets never come here. `trigger_market_order_v1` fires them, fills
@@ -325,10 +325,10 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
-        // A fired trigger rests taker-origin, so a live counterparty crosses
-        // it at the counterparty's price, and the activation window decides
-        // the fill by price rather than by who lands a transaction
-        // first. Taker-origin is also what routes it into the cross crank.
+        // A fired trigger rests taker-origin, so no ordinary fill takes it and
+        // a counterparty crosses it at the counterparty's price. The cross
+        // crank decides the fill by price rather than by who lands a
+        // transaction first.
         taker_origin: true,
         // The slot the trigger armed keeps its id. To the owner this is the
         // order they placed, now live, and the shadow slot holds the same

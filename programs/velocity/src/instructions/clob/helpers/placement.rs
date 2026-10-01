@@ -340,8 +340,9 @@ pub struct ClobRestOrder {
     /// The id of the order this rest came off, so it keeps one identity
     /// through the migration.
     pub client_order_id: u32,
-    /// A taker remainder rests taker-origin, so a counterparty crosses it at
-    /// the counterparty's price. A maker quote does not.
+    /// A taker remainder rests taker-origin, so no ordinary fill takes it and a
+    /// counterparty crosses it at the counterparty's price. A maker quote does
+    /// not.
     pub taker_origin: bool,
     /// A post-only maker refuses to rest crossed. A taker remainder rests
     /// crossed, and the cross crank matches it.

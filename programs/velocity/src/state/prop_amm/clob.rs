@@ -49,8 +49,8 @@ pub use clob_wire::EvictWorstArgsV0;
 pub use clob_wire::OrderRulesV0;
 /// `place_order_v0` args on the CLOB wire. `taker_origin` marks an unfilled
 /// taker remainder velocity migrated onto the book, not a quote its owner
-/// posted. The order cannot be taken while a live counterparty crosses it, and
-/// a cross settles at the counterparty's price.
+/// posted. No ordinary fill can take the order, before or after its claim
+/// lapses. A cross settles at the counterparty's price.
 pub use clob_wire::PlaceOrderArgsV0;
 /// `remove_expired_v0` args on the CLOB wire.
 pub use clob_wire::RemoveExpiredArgsV0;

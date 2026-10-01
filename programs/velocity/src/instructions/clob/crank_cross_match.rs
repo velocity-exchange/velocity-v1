@@ -43,11 +43,11 @@
 //!
 //! Neither leg may take a taker-origin order. Such an order reserves the depth
 //! it crosses, and this crank reads the book without those reservations. The
-//! book withholds the remainder itself only while a counterparty crosses it and
-//! its claim holds. Past that it is ordinary depth at its worst price, and a leg
-//! that took it would give the protocol the gap to the other leg's source. Each
-//! leg therefore names the owners of the taker-origin rows it can take, and the
-//! crank refuses a leg that filled one of them. The read cannot measure how far
+//! book withholds the remainder itself whole from every ordinary fill, before
+//! and after its claim lapses. A leg that took one would give the protocol the
+//! gap to the other leg's source, so each leg also names the owners of the
+//! taker-origin rows it can take, and the crank refuses a leg that filled one
+//! of them. The read cannot measure how far
 //! a leg reaches, because the book passes over rows the read reports as depth.
 //! `crank_taker_origin_cross` owes the taker its improvement and is the only
 //! caller that fills such a row.

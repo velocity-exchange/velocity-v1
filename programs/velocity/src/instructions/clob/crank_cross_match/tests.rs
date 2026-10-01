@@ -226,14 +226,56 @@ fn a_maker_that_owns_a_takeable_remainder_ends_its_side() {
 /// the worst price any one source of it reached, and what the leg did to the
 /// protocol `User`'s quote net of the taker fee it paid.
 mod cross_rules {
-    use super::{super::*, PRICE, UNIT};
+    use super::{super::*, user, PRICE, UNIT};
 
     fn leg(base_filled: u64, worst_price: u64, quote_delta: i64) -> CrossLegFill {
         CrossLegFill {
             base_filled,
             quote_delta,
             worst_price,
+            makers: Vec::new(),
         }
+    }
+
+    fn leg_from(makers: &[UserRefV0], worst_price: u64, quote_delta: i64) -> CrossLegFill {
+        CrossLegFill {
+            makers: makers.to_vec(),
+            ..leg(UNIT, worst_price, quote_delta)
+        }
+    }
+
+    fn sub_account(authority: u8, sub_account_id: u16) -> UserRefV0 {
+        UserRefV0 {
+            sub_account_id,
+            ..user(authority)
+        }
+    }
+
+    /// One authority on both sides of a cross pays itself the spread to
+    /// collect maker volume. Its sub-accounts are the same authority.
+    #[test]
+    fn one_authority_on_both_legs_is_refused() {
+        let cross = |buy_makers: &[UserRefV0], sell_makers: &[UserRefV0]| {
+            validate_cross_legs(
+                &leg_from(buy_makers, 99 * PRICE, -99_500_000),
+                &leg_from(sell_makers, 101 * PRICE, 101_000_000),
+                (0, 0),
+                1_000_000,
+            )
+        };
+
+        for (buy_makers, sell_makers) in [
+            (vec![sub_account(1, 0)], vec![sub_account(1, 1)]),
+            (vec![user(1)], vec![user(1)]),
+            (vec![user(2), user(1)], vec![user(3), sub_account(1, 4)]),
+        ] {
+            assert_eq!(
+                cross(&buy_makers, &sell_makers).unwrap_err(),
+                ErrorCode::InvalidMaker.into()
+            );
+        }
+
+        assert!(cross(&[user(1), sub_account(1, 1)], &[user(2)]).is_ok());
     }
 
     /// Bought no worse than it sold, flat afterwards, and the protocol kept
@@ -551,6 +593,7 @@ mod funding_between_legs {
             base_filled: UNIT,
             quote_delta: position.quote_asset_amount - opening.quote_before,
             worst_price: 100 * PRICE,
+            makers: Vec::new(),
         };
 
         market.cumulative_funding_rate_long += RATE_ROLL;
@@ -571,6 +614,7 @@ mod funding_between_legs {
             base_filled: UNIT,
             quote_delta: quote_after - opening.quote_before,
             worst_price: 100_300_000,
+            makers: Vec::new(),
         };
 
         // Accepted, this cross leaves the protocol `User` short of quote.

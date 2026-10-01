@@ -17,13 +17,14 @@
 //! cancellation, and the shared post-fill margin, equity-floor and
 //! open-interest checks.
 //!
-//! Three requirements make the pair a cross rather than two sweeps. The legs
+//! Four requirements make the pair a cross rather than two sweeps. The legs
 //! must match the same base, so the protocol ends flat. Every unit must have
 //! crossed, which the worst price of each leg states exactly. The highest price
 //! the buy leg paid must be at or under the lowest price the sell leg received.
 //! The quote the protocol keeps must clear the market's floor, so a cross the
 //! reservoir pays for never nets less than it costs to land. A cross inside the
-//! fee gulf rests instead.
+//! fee gulf rests instead. No authority may fill both legs, because it would pay
+//! itself the spread to collect maker volume and rebates.
 //!
 //! The surplus lands in the protocol `User`, which the crank incentive loop
 //! drains. The caller's `authority` is paid reservoir lamports when a SOL price
@@ -80,7 +81,7 @@ use {
         math::{
             casting::Cast,
             constants::MARGIN_PRECISION_U128,
-            crosses::{crossing_prefix, CrossLevel, CrossPrefix},
+            crosses::{crossing_prefix, same_authority, CrossLevel, CrossPrefix},
             safe_math::SafeMath,
         },
         msg,
@@ -344,6 +345,7 @@ struct CrossMatchContext<'a, 'info> {
 }
 
 /// What one leg of a cross filled.
+#[derive(Default)]
 struct CrossLegFill {
     base_filled: u64,
     /// What the leg did to the protocol `User`'s quote, net of the taker fee
@@ -352,6 +354,8 @@ struct CrossLegFill {
     /// The worst price any single source of this leg executed at. Zero when
     /// the leg filled nothing.
     worst_price: u64,
+    /// The carried makers this leg filled.
+    makers: Vec<UserRefV0>,
 }
 
 /// The protocol taker's base in this market, or zero when it holds no position
@@ -397,11 +401,7 @@ fn run_cross_leg<'info>(
     cpi_scratch: &mut QuoterCpiScratch<'info>,
 ) -> Result<CrossLegFill> {
     if size == 0 {
-        return Ok(CrossLegFill {
-            base_filled: 0,
-            quote_delta: 0,
-            worst_price: 0,
-        });
+        return Ok(CrossLegFill::default());
     }
 
     let limit_price = leg_limit_price(taker_direction, cx.band_oracle_price, cx.leg_oracle_band)?;
@@ -497,6 +497,7 @@ fn run_cross_leg<'info>(
         base_filled: filled.amounts.base,
         quote_delta: quote_after.safe_sub(quote_before)?,
         worst_price: filled.worst_fill_price.unwrap_or(0),
+        makers,
     })
 }
 
@@ -773,7 +774,10 @@ struct CrossSurplus {
     surplus: i64,
 }
 
-/// The three rules that make a pair of fills a cross.
+/// The rules that make a pair of fills a cross.
+///
+/// No authority may sell to the buy leg and buy from the sell leg. One authority
+/// on both sides pays itself the spread and collects maker volume for it.
 ///
 /// The legs must match the same base and the taker's base must return to where
 /// it started, so the protocol ends flat and carries no position out of the
@@ -818,6 +822,14 @@ fn validate_cross_legs(
         "protocol user base changed: {} -> {}",
         base_before,
         base_after
+    )?;
+    validate!(
+        !buy.makers.iter().any(|bought_from| sell
+            .makers
+            .iter()
+            .any(|sold_to| same_authority(sold_to, bought_from))),
+        ErrorCode::InvalidMaker,
+        "a cross must not match one authority against itself"
     )?;
     validate!(
         buy.worst_price <= sell.worst_price,

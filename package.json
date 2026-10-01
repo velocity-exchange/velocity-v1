@@ -81,6 +81,8 @@
 		"local:logs": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml logs -f",
 		"local:reset": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml down && docker volume rm -f velocity-local_ledger",
 		"local:resnapshot": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml down -v",
+		"local:fund": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml run --rm --no-deps bootstrap bun run local-stack/fund.ts",
+		"local:trader": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml run --rm --no-deps bootstrap bun run local-stack/trader.ts",
 		"test:integration": "cd integration-tests && cargo test",
 		"test:integration:full": "bun run program:build && bun run program:build:clob && cd integration-tests && cargo test",
 		"program:idl": "bash deploy-scripts/build-idl.sh velocity",

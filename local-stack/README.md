@@ -42,6 +42,32 @@ cancels it with the handle the feed returns:
 docker compose -f local-stack/compose.yaml run --rm --no-deps bootstrap bun run local-stack/smoke.ts
 ```
 
+## Test helpers
+
+`local:fund` sends SOL from the stack authority and mints dUSDT from the faucet. The defaults are
+10 SOL and 10000 dUSDT:
+
+```bash
+bun run local:fund <pubkey> [--sol <amount>] [--dusdt <amount>]
+```
+
+`local:trader` is a second party for crosses and maker fills. Its first command funds it and opens
+its account. `--name` picks another trader:
+
+```bash
+bun run local:trader -- rest SOL-PERP ask 130 0.5 --count 3 --step 1
+bun run local:trader -- orders SOL-PERP
+bun run local:trader -- take SOL-PERP buy 0.1 --worst 130
+bun run local:trader -- cancel SOL-PERP
+```
+
+`rest` is post-only unless `--cross` is passed. The usage header of `trader.ts` lists every
+command and flag.
+
+Every book runs a one-slot speed bump, as `migrate.ts` creates it. A take that carries no swift
+attestation therefore does not fill in its own transaction. It rests whole as a taker-origin order,
+and the relay's cross cranks fill it.
+
 ## What runs
 
 | Service          | Port       | Role                                                                |

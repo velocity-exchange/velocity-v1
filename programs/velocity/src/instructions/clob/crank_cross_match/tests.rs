@@ -10,6 +10,7 @@
 use {
     super::*,
     crate::state::prop_amm::{L3RowV0, UserRefV0, L3_ROW_FLAG_TAKER_ORIGIN},
+    quoter_spec::L3_ROW_FLAG_RESERVED,
 };
 
 const UNIT: u64 = crate::math::constants::BASE_PRECISION_U64;
@@ -41,6 +42,24 @@ fn remainder(authority: u8, price: u64, size: u64) -> L3RowV0 {
     L3RowV0 {
         flags: L3_ROW_FLAG_TAKER_ORIGIN,
         ..maker(authority, price, size)
+    }
+}
+
+/// A remainder the book withholds: it crosses a counterparty and its claim
+/// holds, so the book reports it reserved and with no matchable size.
+fn withheld_remainder(authority: u8, price: u64) -> L3RowV0 {
+    L3RowV0 {
+        flags: L3_ROW_FLAG_TAKER_ORIGIN | L3_ROW_FLAG_RESERVED,
+        ..maker(authority, price, 0)
+    }
+}
+
+/// A maker order that a remainder's claim covers in part. The book reports its
+/// free size, and a fill passes over the whole order.
+fn partly_claimed(authority: u8, price: u64, free: u64) -> L3RowV0 {
+    L3RowV0 {
+        flags: L3_ROW_FLAG_RESERVED,
+        ..maker(authority, price, free)
     }
 }
 
@@ -104,7 +123,7 @@ fn a_self_cross_ends_the_prefix() {
 fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
     let cross = find(
         &[
-            remainder(1, 101 * PRICE, 0),
+            withheld_remainder(1, 101 * PRICE),
             maker(2, 100 * PRICE, UNIT / 2),
         ],
         &[maker(3, 99 * PRICE, UNIT)],
@@ -157,20 +176,106 @@ fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
     );
 }
 
+/// A maker order that a claim covers in part is no depth, because a fill
+/// passes over all of it. The prefix crosses the depth behind it instead.
+#[test]
+fn a_partly_claimed_maker_is_not_offered_to_the_arb_crank() {
+    let cross = find(
+        &[maker(1, 101 * PRICE, UNIT)],
+        &[
+            partly_claimed(2, 99 * PRICE, UNIT / 2),
+            maker(3, 100 * PRICE, UNIT / 4),
+        ],
+    );
+
+    assert_eq!(cross.size, UNIT / 4);
+    assert_eq!(cross.makers, vec![user(1), user(3)]);
+}
+
+/// The executor refuses a leg that fills the owner of a remainder it can take,
+/// so a side ends at that owner's first row, even an ordinary one.
+#[test]
+fn a_maker_that_owns_a_takeable_remainder_ends_its_side() {
+    let cross = find(
+        &[
+            maker(2, 102 * PRICE, UNIT / 2),
+            maker(1, 101 * PRICE, UNIT),
+            remainder(1, 98 * PRICE, UNIT),
+        ],
+        &[maker(3, 99 * PRICE, UNIT)],
+    );
+
+    assert_eq!(cross.size, UNIT / 2);
+    assert_eq!(cross.makers, vec![user(2), user(3)]);
+
+    // A withheld remainder cannot be taken, so its owner's maker order stays.
+    let cross = find(
+        &[
+            maker(1, 101 * PRICE, UNIT),
+            withheld_remainder(1, 100 * PRICE),
+        ],
+        &[maker(3, 99 * PRICE, UNIT)],
+    );
+
+    assert_eq!(cross.size, UNIT);
+}
+
 /// The three rules that turn a pair of router fills into a cross.
 ///
 /// Every figure here is what the fill reports back: the base each leg took,
 /// the worst price any one source of it reached, and what the leg did to the
 /// protocol `User`'s quote net of the taker fee it paid.
 mod cross_rules {
-    use super::{super::*, PRICE, UNIT};
+    use super::{super::*, user, PRICE, UNIT};
 
     fn leg(base_filled: u64, worst_price: u64, quote_delta: i64) -> CrossLegFill {
         CrossLegFill {
             base_filled,
             quote_delta,
             worst_price,
+            makers: Vec::new(),
         }
+    }
+
+    fn leg_from(makers: &[UserRefV0], worst_price: u64, quote_delta: i64) -> CrossLegFill {
+        CrossLegFill {
+            makers: makers.to_vec(),
+            ..leg(UNIT, worst_price, quote_delta)
+        }
+    }
+
+    fn sub_account(authority: u8, sub_account_id: u16) -> UserRefV0 {
+        UserRefV0 {
+            sub_account_id,
+            ..user(authority)
+        }
+    }
+
+    /// One authority on both sides of a cross pays itself the spread to
+    /// collect maker volume. Its sub-accounts are the same authority.
+    #[test]
+    fn one_authority_on_both_legs_is_refused() {
+        let cross = |buy_makers: &[UserRefV0], sell_makers: &[UserRefV0]| {
+            validate_cross_legs(
+                &leg_from(buy_makers, 99 * PRICE, -99_500_000),
+                &leg_from(sell_makers, 101 * PRICE, 101_000_000),
+                (0, 0),
+                1_000_000,
+            )
+        };
+
+        for (buy_makers, sell_makers) in [
+            (vec![sub_account(1, 0)], vec![sub_account(1, 1)]),
+            (vec![user(1)], vec![user(1)]),
+            (vec![user(2), user(1)], vec![user(3), sub_account(1, 4)]),
+        ] {
+            assert_eq!(
+                cross(&buy_makers, &sell_makers).unwrap_err(),
+                ErrorCode::InvalidMaker.into()
+            );
+        }
+
+        assert!(cross(&[user(1), sub_account(1, 1)], &[user(2)]).is_ok());
     }
 
     /// Bought no worse than it sold, flat afterwards, and the protocol kept
@@ -361,7 +466,7 @@ mod surplus_floor {
 
     /// A keeper payment of 0.01 SOL. At a SOL price of 100 it is worth one
     /// unit of quote.
-    fn floor(sol_spot_market_index: u16, sol_twap: Option<i64>) -> Result<u64> {
+    fn payment(sol_spot_market_index: u16, sol_twap: Option<i64>) -> CrossPayment {
         let mut conditions = ClobCrankConditionsV0 {
             min_cross_surplus: MIN_CROSS_SURPLUS,
             crank_payments: CrankPaymentsV0 {
@@ -396,17 +501,26 @@ mod surplus_floor {
             ..State::default()
         };
 
-        cross_surplus_floor(
+        cross_payment(
             &conditions,
             &state,
             &spot_market_map,
             &mut OracleMap::empty(),
         )
+        .unwrap()
     }
 
+    const UNPAID: CrossPayment = CrossPayment {
+        min_surplus: MIN_CROSS_SURPLUS,
+        lamports: 0,
+    };
+
+    /// Market index zero is the quote market, so its TWAP must not price the
+    /// payment. The reservoir then pays nothing.
     #[test]
-    fn a_state_with_no_sol_market_keeps_the_admin_floor() {
-        assert_eq!(floor(0, None).unwrap(), MIN_CROSS_SURPLUS);
+    fn a_state_with_no_sol_market_pays_nothing() {
+        assert_eq!(payment(0, None), UNPAID);
+        assert_eq!(payment(0, Some(100 * PRICE as i64)), UNPAID);
     }
 
     /// A relay resolver can stage the SOL spot market but not its oracle. The
@@ -414,19 +528,20 @@ mod surplus_floor {
     #[test]
     fn the_sol_market_twap_prices_the_payment_when_no_oracle_rides() {
         assert_eq!(
-            floor(SOL_MARKET, Some(100 * PRICE as i64)).unwrap(),
-            crate::math::constants::QUOTE_PRECISION_U64
+            payment(SOL_MARKET, Some(100 * PRICE as i64)),
+            CrossPayment {
+                min_surplus: crate::math::constants::QUOTE_PRECISION_U64,
+                lamports: 10_000_000,
+            }
         );
     }
 
-    /// Anyone can call the crank and the reservoir always pays, so a call that
-    /// leaves out the SOL price cannot skip the floor.
+    /// A crank that carries no SOL market, or one whose TWAP is cold, cannot
+    /// value the payment, so the reservoir pays nothing for it.
     #[test]
-    fn a_crank_without_a_sol_price_is_refused() {
-        assert_eq!(
-            floor(SOL_MARKET, None).unwrap_err(),
-            ErrorCode::SpotMarketNotFound.into()
-        );
+    fn a_crank_without_a_sol_price_pays_nothing() {
+        assert_eq!(payment(SOL_MARKET, None), UNPAID);
+        assert_eq!(payment(SOL_MARKET, Some(0)), UNPAID);
     }
 }
 
@@ -478,6 +593,7 @@ mod funding_between_legs {
             base_filled: UNIT,
             quote_delta: position.quote_asset_amount - opening.quote_before,
             worst_price: 100 * PRICE,
+            makers: Vec::new(),
         };
 
         market.cumulative_funding_rate_long += RATE_ROLL;
@@ -498,6 +614,7 @@ mod funding_between_legs {
             base_filled: UNIT,
             quote_delta: quote_after - opening.quote_before,
             worst_price: 100_300_000,
+            makers: Vec::new(),
         };
 
         // Accepted, this cross leaves the protocol `User` short of quote.
@@ -516,55 +633,84 @@ mod funding_between_legs {
     }
 }
 
-/// Which taker-origin rows a cross leg can reach. The sell leg takes bids
+/// Which taker-origin orders a cross leg may not fill. The sell leg takes bids
 /// best price first, down to its limit.
 mod taker_origin_reach {
-    use super::{super::*, maker, remainder, PRICE, UNIT};
+    use super::{
+        super::*, maker, partly_claimed, remainder, user, withheld_remainder, PRICE, UNIT,
+    };
 
     const SELL_LIMIT: u64 = 98 * PRICE;
 
-    fn sell_reaches(bids: &[L3RowV0], size: u64) -> bool {
+    fn sell_reach(bids: &[L3RowV0]) -> TakerOriginReach {
         let rows: Vec<ReachRow> = bids.iter().map(ReachRow::from_row).collect();
-        reaches_taker_origin_row(&rows, size, PositionDirection::Short, SELL_LIMIT)
+        let mut reach = TakerOriginReach::default();
+        reach.add_side(&rows, PositionDirection::Short, SELL_LIMIT);
+        reach
     }
 
-    /// A remainder that no ask crosses rests as the best bid at its worst
-    /// price. The book reports it matchable, and the sell leg would take it.
-    #[test]
-    fn an_uncrossed_remainder_at_the_top_is_reached() {
-        assert!(sell_reaches(&[remainder(1, 102 * PRICE, UNIT)], UNIT / 2));
+    fn taken(reach: &TakerOriginReach, makers: &[UserRefV0], worst_price: u64) -> bool {
+        reach.taken(makers, Some(worst_price), PositionDirection::Short)
     }
 
+    /// A remainder that no ask crosses rests as a bid at its worst price. The
+    /// book reports it matchable, so the leg may not fill its owner.
     #[test]
-    fn a_remainder_behind_enough_maker_depth_is_not_reached() {
-        let bids = [
+    fn a_leg_that_fills_a_takeable_remainders_owner_is_refused() {
+        let reach = sell_reach(&[
             maker(2, 101 * PRICE, UNIT / 2),
             remainder(1, 100 * PRICE, UNIT),
-        ];
-        assert!(!sell_reaches(&bids, UNIT / 2));
-        assert!(sell_reaches(&bids, UNIT / 2 + 1));
+        ]);
+
+        assert!(taken(&reach, &[user(2), user(1)], 100 * PRICE));
+        assert!(!taken(&reach, &[user(2)], 101 * PRICE));
+    }
+
+    /// The book reports a partly claimed maker with its free size, but a fill
+    /// passes over the whole order. Depth in front of a remainder therefore
+    /// says nothing about whether the leg reaches it.
+    #[test]
+    fn a_remainder_behind_a_partly_claimed_maker_is_watched() {
+        let reach = sell_reach(&[
+            partly_claimed(2, 101 * PRICE, 7 * UNIT),
+            remainder(1, 100 * PRICE, UNIT),
+        ]);
+
+        assert_eq!(reach.owners, vec![user(1)]);
+        assert!(taken(&reach, &[user(1)], 100 * PRICE));
     }
 
     #[test]
-    fn a_remainder_past_the_leg_limit_is_not_reached() {
-        let bids = [remainder(1, SELL_LIMIT - 1, UNIT)];
-        assert!(!sell_reaches(&bids, UNIT));
+    fn a_remainder_past_the_leg_limit_is_not_watched() {
+        let reach = sell_reach(&[remainder(1, SELL_LIMIT - 1, UNIT)]);
+        assert!(reach.owners.is_empty());
     }
 
-    /// The book withholds a crossed remainder whose claim holds, and reports
-    /// it with no matchable size.
+    /// The book withholds a crossed remainder whose claim holds, so no leg can
+    /// fill it. Its owner's other orders stay open to the leg.
     #[test]
-    fn a_withheld_remainder_is_not_reached() {
-        let bids = [remainder(1, 102 * PRICE, 0), maker(2, 101 * PRICE, UNIT)];
-        assert!(!sell_reaches(&bids, UNIT));
+    fn a_withheld_remainder_is_not_watched() {
+        let reach = sell_reach(&[
+            withheld_remainder(1, 102 * PRICE),
+            maker(1, 101 * PRICE, UNIT),
+        ]);
+
+        assert!(reach.owners.is_empty());
+        assert!(!taken(&reach, &[user(1)], 101 * PRICE));
     }
 
-    /// A full read short of the leg's size leaves rows unmeasured, and those
-    /// count as reachable. A short read is the whole side.
+    /// A full read inside the limit leaves rows unread. A leg that reaches the
+    /// last price read can have taken one of them. A short read is the whole
+    /// side.
     #[test]
-    fn unmeasured_depth_counts_as_reached() {
+    fn a_leg_that_reaches_past_a_full_read_is_refused() {
         let full_window = vec![maker(2, 101 * PRICE, 1); CROSS_ROWS_PER_SIDE as usize];
-        assert!(sell_reaches(&full_window, UNIT));
-        assert!(!sell_reaches(&full_window[1..], UNIT));
+        let reach = sell_reach(&full_window);
+        assert!(taken(&reach, &[user(2)], 101 * PRICE));
+        assert!(!taken(&reach, &[], 102 * PRICE));
+        assert!(!reach.taken(&[], None, PositionDirection::Short));
+
+        let reach = sell_reach(&full_window[1..]);
+        assert!(!taken(&reach, &[user(2)], 101 * PRICE));
     }
 }

@@ -4102,11 +4102,19 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
         &fixture.clob_maker_authority.pubkey(),
     );
 
-    // Crossed against themselves: ask 0.5 @ 99, bid 0.5 @ 101.
+    // Crossed: ask 0.5 @ 99 from the fixture maker, bid 0.5 @ 101.
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    // The bid is a second authority's, because the crank refuses a cross
+    // between two orders of one authority.
+    let bidder = add_clob_maker(&mut fixture);
+    let bidder_stats = Pubkey::find_program_address(
+        &[b"user_stats", bidder.authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
     let ix = place_clob_order_ix(
-        fixture.clob_maker_user,
-        &fixture.clob_maker_authority,
+        bidder.user,
+        &bidder.authority,
         fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
@@ -4120,8 +4128,8 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
             reject_if_crossed: false,
         },
     );
-    let maker_authority = fixture.clob_maker_authority.insecure_clone();
-    send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
+
+    send(&mut fixture.svm, &bidder.authority, ix, &[]).unwrap();
     fixture.svm.warp_to_slot(12);
     set_oracle(
         &mut fixture.svm,
@@ -4148,6 +4156,8 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
         accounts.push(AccountMeta::new(spot_market_pda(0), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
+        accounts.push(AccountMeta::new(bidder.user, false));
+        accounts.push(AccountMeta::new(bidder_stats, false));
         // The quoter section: the slab each leg assembles its route from,
         // then the book's own accounts.
         accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
@@ -4186,7 +4196,8 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
 
     // Nothing happened: the book still holds both sides.
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
-    assert_eq!(maker.perp_positions[0].open_orders, 2);
+    assert_eq!(maker.perp_positions[0].open_orders, 1);
+    assert_eq!(perp_position(&fixture.svm, &bidder.user).open_orders, 1);
 
     // Re-price the floor to zero — the same cross now lands, so it was the
     // floor that declined it and not the cross itself.
@@ -4200,7 +4211,14 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
     .unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker.perp_positions[0].open_orders, 0);
-    assert_eq!(maker.perp_positions[0].base_asset_amount, 0);
+    assert_eq!(
+        maker.perp_positions[0].base_asset_amount,
+        -((UNIT / 2) as i64)
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &bidder.user).base_asset_amount,
+        (UNIT / 2) as i64
+    );
 }
 
 /// A crossed CLOB (bid above ask) is matched by the cross crank: the
@@ -4214,6 +4232,8 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     const PAYMENT: u64 = 10_000;
     let conditions = init_crank_conditions(&mut fixture, PAYMENT);
     let protocol_user = set_protocol_user(&mut fixture.svm);
+    // The reservoir pays only when a SOL price values the payment.
+    set_sol_spot_market(&mut fixture.svm, 150);
     let (signer, _) = velocity_signer_pda();
     let protocol_stats =
         Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
@@ -4235,11 +4255,19 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         &fixture.clob_maker_authority.pubkey(),
     );
 
-    // The maker quotes crossed against themselves: ask 0.5 @ 99, bid 0.5 @ 101.
+    // Crossed: ask 0.5 @ 99 from the fixture maker, bid 0.5 @ 101.
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    // The bid is a second authority's, because the crank refuses a cross
+    // between two orders of one authority.
+    let bidder = add_clob_maker(&mut fixture);
+    let bidder_stats = Pubkey::find_program_address(
+        &[b"user_stats", bidder.authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
     let ix = place_clob_order_ix(
-        fixture.clob_maker_user,
-        &fixture.clob_maker_authority,
+        bidder.user,
+        &bidder.authority,
         fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
@@ -4253,8 +4281,8 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
             reject_if_crossed: false,
         },
     );
-    let maker_authority = fixture.clob_maker_authority.insecure_clone();
-    send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
+
+    send(&mut fixture.svm, &bidder.authority, ix, &[]).unwrap();
     fixture.svm.warp_to_slot(12);
     set_oracle(
         &mut fixture.svm,
@@ -4280,8 +4308,11 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         // Maps, then the maker pair, then the quoter section.
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
         accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(spot_market_pda(1), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
+        accounts.push(AccountMeta::new(bidder.user, false));
+        accounts.push(AccountMeta::new(bidder_stats, false));
         // The quoter section: the slab each leg assembles its route from,
         // then the book's own accounts.
         accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
@@ -4315,18 +4346,24 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     // units an admin measured — so what this burns is what a market has to
     // register for it.
     println!(
-        "CU — crank_cross_match over a self-crossed book: {}",
+        "CU — crank_cross_match over a crossed book: {}",
         meta.compute_units_consumed
     );
 
-    // The maker round-tripped against themselves: net base zero, they paid
-    // the spread; both orders consumed, aggregates unwound.
+    // Each maker filled at its own price: both orders consumed, aggregates
+    // unwound.
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
-    assert_eq!(maker.perp_positions[0].base_asset_amount, 0);
+    assert_eq!(
+        maker.perp_positions[0].base_asset_amount,
+        -((UNIT / 2) as i64)
+    );
     assert_eq!(maker.perp_positions[0].open_orders, 0);
-    assert_eq!(maker.perp_positions[0].open_bids, 0);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
     assert_eq!(maker.open_orders, 0);
+    let bid_position = perp_position(&fixture.svm, &bidder.user);
+    assert_eq!(bid_position.base_asset_amount, (UNIT / 2) as i64);
+    assert_eq!(bid_position.open_orders, 0);
+    assert_eq!(bid_position.open_bids, 0);
     assert_eq!(clob_ask_count(&fixture), 0);
 
     // The protocol User kept the spread net of fees: bought 0.5 @ 99, sold
@@ -6420,6 +6457,8 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     const PAYMENT: u64 = 10_000;
     let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
     set_protocol_user(&mut fixture.svm);
+    // The reservoir pays only when a SOL price values the payment.
+    set_sol_spot_market(&mut fixture.svm, 150);
     fixture
         .svm
         .airdrop(&market_conditions, 1_000_000_000)
@@ -13210,5 +13249,249 @@ fn fix4_trig_a_band_cancel_charges_the_payment_value() {
     assert_eq!(
         fixture.svm.get_account(&payout).unwrap().lamports,
         1_000_000_000 + payment
+    );
+}
+
+
+/// Warp to `slot` with a fresh oracle price of 100.
+fn fix4_cross_warp(fixture: &mut Fixture, slot: u64) {
+    fixture.svm.warp_to_slot(slot);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        slot,
+    );
+}
+
+/// A hand-built `crank_cross_match` over `makers` for `size`, carrying the SOL
+/// spot market so the reservoir payment is priced.
+fn fix4_cross_ix(
+    fixture: &Fixture,
+    conditions: Pubkey,
+    protocol_user: Pubkey,
+    payout: Pubkey,
+    makers: &[&Party],
+    size: u64,
+) -> Instruction {
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    let mut accounts = velocity::accounts::CrankCrossMatch {
+        state: state_pda(),
+        authority: payout,
+        taker: protocol_user,
+        taker_stats: protocol_stats,
+        crank_conditions: conditions,
+        perp_market: perp_market_pda(0),
+        quoter_slab: fixture.quoter_slab,
+        instructions_sysvar: instructions_sysvar(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(spot_market_pda(1), false));
+    for maker in makers {
+        accounts.push(AccountMeta::new(maker.user, false));
+        accounts.push(AccountMeta::new(maker.stats, false));
+    }
+
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CrankCrossMatch {
+            args: CrankCrossMatchArgs {
+                market_index: 0,
+                size,
+            },
+        }
+        .data(),
+    }
+}
+
+/// A cross leg may not take a lapsed taker remainder from behind a maker order
+/// that another remainder's claim covers in part.
+///
+/// The asks are A, a maker at 99, then B, a lapsed taker-origin ask at 100. A
+/// bound remainder R bids 99.5 and claims part of A. The book reports A's free
+/// size, which covers the leg, but execute passes over all of A and fills B at
+/// its own price. The protocol `User` would then keep the gap to the maker bid
+/// at 101, which B was owed as the aggressor. The crank refuses the leg
+/// because it filled B's owner.
+#[test]
+fn fix4_cross_a_leg_cannot_take_a_remainder_behind_a_partly_claimed_maker() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+
+    let lapsed = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let bid_maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let claimant = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let ask_maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+
+    fix4_cross_warp(&mut fixture, 10);
+    rest_taker_origin_order(
+        &mut fixture,
+        &lapsed,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT,
+    );
+
+    place_clob_order_for(
+        &mut fixture,
+        &bid_maker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT / 2,
+    );
+
+    warp_past_claim(&mut fixture, 10);
+    fix4_cross_warp(&mut fixture, 10 + CLAIM_GRACE_SLOTS);
+    rest_taker_origin_order(
+        &mut fixture,
+        &claimant,
+        PositionDirection::Long,
+        99 * PRICE + PRICE / 2,
+        3 * UNIT / 10,
+    );
+
+    place_clob_order_for(
+        &mut fixture,
+        &ask_maker,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT,
+    );
+
+    assert_eq!(clob_ask_count(&fixture), 2);
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let ix = fix4_cross_ix(
+        &fixture,
+        conditions,
+        protocol_user,
+        payout,
+        &[&ask_maker, &lapsed, &bid_maker],
+        UNIT / 2,
+    );
+    let keeper = fixture.keeper.insecure_clone();
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), ix],
+        &[],
+    )
+    .expect_err("the buy leg filled the lapsed remainder");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("CrossedTakerRemainderPending"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+
+    assert_eq!(
+        perp_position(&fixture.svm, &lapsed.user).base_asset_amount,
+        0
+    );
+}
+
+/// A second funded sub-account of `owner`'s authority, sharing its stats.
+fn fix4_cross_sub_account(svm: &mut litesvm::LiteSVM, owner: &Party, sub_account_id: u16) -> Party {
+    let authority = owner.authority.insecure_clone();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            sub_account_id.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut state = trading_user(
+        &authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+
+    state.sub_account_id = sub_account_id;
+    state.next_order_id = 1;
+    set_user_account(svm, user, &state);
+    Party {
+        authority,
+        user,
+        stats: owner.stats,
+    }
+}
+
+/// The executor refuses a cross whose legs fill one authority on both sides,
+/// even across two sub-accounts. That authority would pay itself the spread to
+/// collect maker volume on both legs.
+#[test]
+fn fix4_cross_one_authority_on_both_legs_is_refused() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+
+    let bidder = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let asker = fix4_cross_sub_account(&mut fixture.svm, &bidder, 1);
+    fix4_cross_warp(&mut fixture, 10);
+    place_clob_order_for(
+        &mut fixture,
+        &asker,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT / 2,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &bidder,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT / 2,
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let ix = fix4_cross_ix(
+        &fixture,
+        conditions,
+        protocol_user,
+        payout,
+        &[&asker, &bidder],
+        UNIT / 2,
+    );
+    let keeper = fixture.keeper.insecure_clone();
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), ix],
+        &[],
+    )
+    .expect_err("one authority filled both legs");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("InvalidMaker"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+
+    assert_eq!(
+        perp_position(&fixture.svm, &asker.user).base_asset_amount,
+        0
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &bidder.user).base_asset_amount,
+        0
     );
 }

@@ -13282,3 +13282,53 @@ fn fix4_taker_a_pair_charges_the_aggressors_builder_fee() {
         "the pair charged the builder fee on the aggressor's order"
     );
 }
+
+/// A bid remainder at 101 and a later ask remainder at 99 both outlive their
+/// claims. A claim-honouring route of either would take the other at its own
+/// price, or nothing where the book withholds it. The later ask now aggresses
+/// the pair and sells at the earlier bid's 101.
+#[test]
+fn fix4_taker_two_lapsed_remainders_settle_as_a_pair() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    rest_crossing_remainders(
+        &mut fixture,
+        &blocker,
+        (&early, PositionDirection::Long, 101 * PRICE, UNIT),
+        (&late, PositionDirection::Short, 99 * PRICE, UNIT / 2),
+        12,
+    );
+
+    warp_past_claim(&mut fixture, 12);
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        clock.slot,
+    );
+    quote_vamm_outside_the_pair(&mut fixture.svm);
+
+    let keeper_authority = keeper.authority.insecure_clone();
+    let pair = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), pair],
+        &[],
+    )
+    .expect("the lapsed pair settles");
+
+    let late_position = perp_position(&fixture.svm, &late.user);
+    assert_eq!(late_position.base_asset_amount, -((UNIT / 2) as i64));
+    assert!(
+        (50_400_000..50_500_000).contains(&late_position.quote_asset_amount),
+        "sold at the earlier order's 101 less fees: {}",
+        late_position.quote_asset_amount
+    );
+}

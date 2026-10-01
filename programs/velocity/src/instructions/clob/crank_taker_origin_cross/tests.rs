@@ -1682,3 +1682,78 @@ mod cross_route_bound {
         );
     }
 }
+
+/// Two remainders whose claims lapsed settle as a pair at the earlier one's
+/// price, not through a claim-honouring route of one into the other.
+mod lapsed_pairs {
+    use {super::*, crate::state::prop_amm::ClobOrderRefV0};
+
+    fn user(owner: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([owner; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn lapsed(order_id: u64, price: u64, owner: u8) -> BookRow {
+        BookRow {
+            order: RestingOrder {
+                order_ref: ClobOrderRefV0 {
+                    node_index: order_id as u32,
+                    order_id,
+                },
+                user: user(owner),
+                price,
+                base_asset_amount: 5,
+                taker_origin: true,
+                reduce_only: false,
+                placed_slot: order_id,
+            },
+            claim_lapsed: true,
+        }
+    }
+
+    const INSIDE: VammTops = VammTops {
+        bid: Some(95),
+        ask: Some(105),
+    };
+
+    #[test]
+    fn the_later_lapsed_remainder_aggresses_the_earlier_one() {
+        let bids = [lapsed(1, 102, 0xA)];
+        let asks = [lapsed(2, 99, 0xB)];
+
+        let SubjectPlan::Cross(subject) = plan_subject(&bids, &asks, user(0xB)).unwrap() else {
+            panic!("the later remainder settles the pair");
+        };
+        assert!(subject.counterparty.taker_origin);
+        assert_eq!(subject.counterparty.price, 102);
+        assert!(!subject.owns_claim, "a lapsed pair takes no claimed depth");
+
+        let earlier = plan_subject(&bids, &asks, user(0xA)).unwrap();
+        assert!(!earlier.owns_its_claim());
+        assert!(earlier.counterparty().is_none());
+    }
+
+    #[test]
+    fn the_resolver_stages_the_lapsed_pair() {
+        let bids = [lapsed(1, 102, 0xA)];
+        let asks = [lapsed(2, 99, 0xB)];
+
+        let stage = choose_stage(&bids, &asks, INSIDE, 3).unwrap();
+        assert_eq!(stage.taker, user(0xB));
+        assert_eq!(stage.makers, vec![user(0xA)]);
+    }
+
+    /// A claim-honouring route of a lapsed remainder cannot take a remainder
+    /// on the other side, so the resolver does not stage one for it.
+    #[test]
+    fn a_remainder_is_not_depth_for_a_routed_stage() {
+        let bids = [lapsed(1, 102, 0xA)];
+        let mut asks = [lapsed(2, 99, 0xB), lapsed(3, 100, 0xC)];
+        asks[0].order.user = user(0xA);
+        asks[0].order.user.sub_account_id = 1;
+
+        assert_eq!(choose_stage(&bids, &asks, VammTops::default(), 3), None);
+    }
+}

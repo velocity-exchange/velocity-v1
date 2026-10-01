@@ -1,11 +1,11 @@
 //! `crank_taker_origin_cross`: route one resting taker remainder.
 //!
 //! A migrated taker remainder rests on the book with the taker-origin flag. It
-//! rests at the worst price its signer agreed to tolerate. The book refuses to
-//! let anyone take it while a live counterparty crosses it, so the improvement
-//! between the two prices cannot be won by landing a transaction at the
-//! activation slot. This crank hands that improvement to the taker. It is
-//! permissionless and is paid out of the improvement it delivers.
+//! rests at the worst price its signer agreed to tolerate. The book withholds
+//! it from every ordinary fill while its claim holds, so the improvement
+//! between that price and whatever crosses it cannot be won by landing a
+//! transaction at the activation slot. This crank hands that improvement to the
+//! taker. It is permissionless and is paid out of the improvement it delivers.
 //!
 //! The resolution is an ordinary fill. The remainder becomes a detached limit
 //! order at the price it rested at. The router fills it against everything the
@@ -38,7 +38,10 @@
 //! who rests a crossing order takes it there. For the same reason, two
 //! remainders settle as a pair only when the vAMM can fill the earlier one and
 //! beats the counterparty's price for neither side. A remainder whose claim
-//! lapsed claims nothing, so the cross walk reads it as depth.
+//! lapsed claims nothing, so the cross walk reads it as depth. Two lapsed
+//! remainders at the front still settle as a pair, because a claim-honouring
+//! route of one would take the other at its own price, or take nothing where
+//! the book withholds it.
 //!
 //! `crank_cross_match` middles two crossed makers for the protocol. This crank
 //! does not. One side is the aggressor by construction, the improvement belongs
@@ -522,6 +525,9 @@ struct SubjectCross {
     counterparty: RestingOrder,
     /// The base the fill may route. See [`base_ahead_of_opposite_remainder`].
     route_base: u64,
+    /// The subject holds the first live claim on the counterparty. A pair of
+    /// remainders whose claims both lapsed claims nothing.
+    owns_claim: bool,
 }
 
 /// One book row, and whether the book still honours its claim.
@@ -593,7 +599,7 @@ impl SubjectPlan {
 
     /// Whether the fill may take the depth the book reserves for the claim.
     fn owns_its_claim(&self) -> bool {
-        matches!(self, Self::Cross(_))
+        matches!(self, Self::Cross(subject) if subject.owns_claim)
     }
 }
 
@@ -706,6 +712,10 @@ fn plan_subject(
         return Ok(SubjectPlan::Cross(Box::new(subject)));
     }
 
+    if let Some(subject) = lapsed_pair_subject(bids, asks, taker_ref) {
+        return Ok(SubjectPlan::Cross(Box::new(subject)));
+    }
+
     let owned = |rows: &[BookRow], side: SideV0| {
         rows.iter()
             .find(|row| row.order.taker_origin && row.order.user == taker_ref)
@@ -718,6 +728,41 @@ fn plan_subject(
     owned(bids, SideV0::Bid)
         .or_else(|| owned(asks, SideV0::Ask))
         .ok_or(ErrorCode::NoTakerOriginCross)
+}
+
+/// The two heads of the book, when both are remainders whose claims lapsed and
+/// they cross. Returns the cross and its aggressor's side.
+///
+/// A claim-honouring route of one would take the other at its own price, or
+/// take nothing where the book withholds it. The pair settles as a pair
+/// instead, at the earlier one's price, as R3 settles two live remainders.
+fn lapsed_pair_at_front(bids: &[BookRow], asks: &[BookRow]) -> Option<(Cross, SideV0)> {
+    let lapsed_remainder = |row: &BookRow| row.order.taker_origin && row.claim_lapsed;
+    let (bid, ask) = (bids.first()?, asks.first()?);
+    if !lapsed_remainder(bid) || !lapsed_remainder(ask) {
+        return None;
+    }
+
+    let cross = *resolve_crosses(&[bid.order], &[ask.order], 1).first()?;
+    Some((cross, cross.kind.aggressor_side()?))
+}
+
+/// The lapsed pair at the front, when the taker's remainder aggresses it.
+fn lapsed_pair_subject(
+    bids: &[BookRow],
+    asks: &[BookRow],
+    taker_ref: UserRefV0,
+) -> Option<SubjectCross> {
+    let (cross, aggressor_side) = lapsed_pair_at_front(bids, asks)?;
+    let order = aggressor_of(&cross, aggressor_side);
+    (order.user == taker_ref).then(|| SubjectCross {
+        aggressor_side,
+        cross,
+        order,
+        counterparty: counterparty_of(&cross, aggressor_side),
+        route_base: order.base_asset_amount,
+        owns_claim: false,
+    })
 }
 
 /// The cross the taker's remainder settles with its claim, when it has one.
@@ -807,6 +852,7 @@ fn subject_cross(crosses: &[Cross], taker_ref: UserRefV0) -> VelocityResult<Subj
         order: subject_order,
         counterparty: counterparty_of(&subject, aggressor_side),
         route_base: subject_order.base_asset_amount,
+        owns_claim: true,
     })
 }
 
@@ -2673,37 +2719,48 @@ fn choose_subject_stage(
     vamm: VammTops,
     slot: u64,
 ) -> Option<ChosenStage> {
-    if let Some((cross, side)) = stageable_cross(bids, asks) {
-        let aggressor = aggressor_of(&cross, side);
-        let counterparty = counterparty_of(&cross, side);
-        let resolution = counterparty
-            .taker_origin
-            .then(|| pair_resolution(vamm, side, counterparty.price));
-        match resolution {
-            Some(PairResolution::CounterpartyRoutesFirst) => {
-                return counterparty_route_stage(bids, asks, &counterparty);
-            }
+    match stageable_cross(bids, asks).or_else(|| lapsed_pair_at_front(bids, asks)) {
+        Some((cross, side)) => cross_stage(bids, asks, &cross, side, vamm, slot),
+        None => routed_stage(bids, asks, vamm),
+    }
+}
 
-            // The executor refuses the pair, and the vAMM cannot fill either
-            // remainder's route. Staging it would fail every attempt.
-            Some(PairResolution::Unpriced) => return routed_stage(bids, asks, vamm),
-            _ => {}
+/// The stage for one cross with an aggressor, as the executor's plan treats it.
+fn cross_stage(
+    bids: &[BookRow],
+    asks: &[BookRow],
+    cross: &Cross,
+    side: SideV0,
+    vamm: VammTops,
+    slot: u64,
+) -> Option<ChosenStage> {
+    let aggressor = aggressor_of(cross, side);
+    let counterparty = counterparty_of(cross, side);
+    let resolution = counterparty
+        .taker_origin
+        .then(|| pair_resolution(vamm, side, counterparty.price));
+    match resolution {
+        Some(PairResolution::CounterpartyRoutesFirst) => {
+            return counterparty_route_stage(bids, asks, &counterparty);
         }
 
-        return Some(ChosenStage {
-            taker: aggressor.user,
-            makers: staged_makers(
-                &aggressor,
-                Some(&counterparty),
-                side,
-                opposite_rows(bids, asks, side),
-            ),
-            read_depth: crossing_read_depth(bids, asks),
-            yields_to_maker_cross: cross_stalled(&cross, slot),
-        });
+        // The executor refuses the pair, and the vAMM cannot fill either
+        // remainder's route. Staging it would fail every attempt.
+        Some(PairResolution::Unpriced) => return routed_stage(bids, asks, vamm),
+        _ => {}
     }
 
-    routed_stage(bids, asks, vamm)
+    Some(ChosenStage {
+        taker: aggressor.user,
+        makers: staged_makers(
+            &aggressor,
+            Some(&counterparty),
+            side,
+            opposite_rows(bids, asks, side),
+        ),
+        read_depth: crossing_read_depth(bids, asks),
+        yields_to_maker_cross: cross_stalled(cross, slot),
+    })
 }
 
 /// The earlier remainder of a pair, routed to the vAMM before the pair
@@ -2803,9 +2860,10 @@ fn is_routed_subject(bids: &[BookRow], asks: &[BookRow], side: SideV0, row: &Boo
 
 /// Whether a remainder that routes with every live claim honoured can fill.
 ///
-/// The vAMM fills it when its top beats the rest price. A book row fills it
+/// The vAMM fills it when its top beats the rest price. A maker row fills it
 /// only when no live claimant on its side could hold that row, which the
-/// resolver's read cannot tell apart row by row.
+/// resolver's read cannot tell apart row by row. A remainder on the other side
+/// is a pair, never depth for this route.
 fn routed_subject_fills(
     row: &BookRow,
     side: SideV0,
@@ -2822,9 +2880,9 @@ fn routed_subject_fills(
         .iter()
         .all(|other| !other.order.taker_origin || other.claim_lapsed);
     no_live_claimant
-        && opposite
-            .iter()
-            .any(|other| crossable_counterparty(&row.order, side, other))
+        && opposite.iter().any(|other| {
+            !other.order.taker_origin && crossable_counterparty(&row.order, side, other)
+        })
 }
 
 /// Whether `other` is a row a fill of `subject` on `side` can take.

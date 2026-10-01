@@ -2,10 +2,7 @@
 //! rules that bind such a remainder to the book while its claim holds.
 
 use {
-    super::{
-        walk::{is_live, walk_side_ref, Walk},
-        BookHeader, ClobBook, NodeArena,
-    },
+    super::{BookHeader, ClobBook, NodeArena},
     crate::{
         error::ClobError,
         state::{ClobMarketV0, OrderNodeV0, SideV0, NIL},
@@ -82,11 +79,6 @@ pub(crate) struct CrossReservation {
     /// Claimants left to read. Each is read at most once for the whole walk,
     /// so the side's own count bounds what a corrupt list can cost.
     reads_left: u16,
-    /// Best price on the other side that could match this slot, resolved on first
-    /// need and reused. The other side cannot change while a walk of `cover` is in
-    /// flight. Resolving eagerly inlines a second side walk into `execute`'s
-    /// prologue, and the frame spills cost more than the lookup.
-    counterparty: Option<Option<u64>>,
 }
 
 impl CrossReservation {
@@ -114,7 +106,6 @@ impl CrossReservation {
             demand: 0,
             demand_price: 0,
             reads_left: book.claimant_count(claiming),
-            counterparty: None,
         }
     }
 
@@ -128,8 +119,8 @@ impl CrossReservation {
     }
 
     /// Units of `node` no ordinary caller may take: the units a crossing remainder
-    /// claims, or the whole of a remainder a counterparty crosses. The second is
-    /// the larger answer whenever it applies, so it wins.
+    /// claims, or the whole of a remainder whose claim holds. The second is the
+    /// larger answer whenever it applies, so it wins.
     #[inline(always)]
     pub(crate) fn withheld(&mut self, book: &ClobMarketV0, node: &OrderNodeV0) -> Result<u64> {
         if !self.may_withhold(node) {
@@ -146,11 +137,9 @@ impl CrossReservation {
         }
 
         let claimed = self.claimed(book, node)?;
-        if claimed < node.base_asset_amount
-            && node.is_taker_origin()
-            && !self.lapsed(node)
-            && self.crossed(book, node.price)?
-        {
+        // Whole, whether or not a book order crosses it. The vAMM or a quoter
+        // can cross it too, and the book cannot see either.
+        if node.is_taker_origin() && !self.lapsed(node) {
             return Ok(node.base_asset_amount);
         }
 
@@ -258,46 +247,4 @@ impl CrossReservation {
     fn lapsed(&self, claimant: &OrderNodeV0) -> bool {
         is_claim_lapsed(claimant, self.slot, self.grace_slots)
     }
-
-    /// Whether a counterparty that could match this slot crosses `price`.
-    #[inline(never)]
-    fn crossed(&mut self, book: &ClobMarketV0, price: u64) -> Result<bool> {
-        let counterparty = match self.counterparty {
-            Some(cached) => cached,
-            None => {
-                let resolved =
-                    best_actionable_price(book, self.cover.opposite(), self.slot, self.now)?;
-                self.counterparty = Some(resolved);
-                resolved
-            }
-        };
-
-        Ok(counterparty.is_some_and(|opposite| self.cover.is_crossed_by(price, opposite)))
-    }
-}
-
-/// Price of the best order on `side` that could be matched this slot at all.
-///
-/// Blind to the caller's user set and self-trade exclusion, which say whether this
-/// caller may fill an order rather than whether the order is a live counterparty.
-/// Unactivated and expired orders are skipped, because a cross involving one is
-/// not actionable by anyone, and firing on one would freeze the book for a whole
-/// auction window.
-fn best_actionable_price(
-    book: &ClobMarketV0,
-    side: SideV0,
-    slot: u64,
-    now: i64,
-) -> Result<Option<u64>> {
-    let mut best = None;
-    walk_side_ref(book, side, |_, node| {
-        if !is_live(node, slot, now) {
-            return Ok(Walk::Continue);
-        }
-
-        best = Some(node.price);
-        Ok(Walk::Stop)
-    })?;
-
-    Ok(best)
 }

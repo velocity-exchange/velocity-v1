@@ -234,8 +234,9 @@ pub struct QuoteArgsV0<'a> {
     /// the swift hold, or the book's activation delay. The caller asserts it. A
     /// quoter that serves only protected flow refuses when this is false.
     pub taker_served_window: bool,
-    /// Fill the depth that a taker-origin order reserves. Only the crank that
-    /// settles the cross sets it. A quoter that reserves no depth ignores it.
+    /// Fill the depth that a taker-origin order reserves, and the taker-origin
+    /// order itself while its claim holds. Only the crank that settles the
+    /// cross sets it. A quoter that reserves no depth ignores it.
     pub include_taker_origin_reservations: bool,
 }
 

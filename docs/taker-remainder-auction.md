@@ -141,9 +141,12 @@ Narrowed to exactly the harm, in three ways:
 - Only a **taker-origin** order claims. An ordinary maker×maker cross is unclaimed arbitrage, not
   somebody's improvement, and a reservation over it would cost takers depth for nothing.
 - A reservation reaches only depth the claimant's own price crosses. A remainder that crosses
-  nothing claims nothing and is ordinary depth, quotable and takeable at its own price. That is
-  the fallback when no maker lines up during the window, and it is how the remainder eventually
-  fills if none ever does.
+  nothing on the book claims nothing.
+- The remainder itself is withheld whole while its claim holds, whether or not a book order
+  crosses it. The vAMM and the quoters are not book orders, and either can cross the remainder.
+  An ordinary fill would then take it at its worst price before the crank routes it. Once the
+  claim lapses the remainder is ordinary depth, quotable and takeable at its own price. That is
+  how it fills if no source ever crosses it.
 - A reservation lapses `reservation_grace_slots` after the claimant activates, 32 on a fresh
   market and settable by `update_market_v0` up to 150. Past that the depth is ordinary again. A
   reservation is what makes the auction deterministic, and a crank has to run to collect it, so a
@@ -244,7 +247,7 @@ takes a taker fee above 100%, because the extra fee on the better price is `rate
 **R6. Rest price.** For a limit remainder, the rest price is the order's own limit. For a market
 remainder it is `auction_end_price`: the order's own `price` is zero, and the auction end is the
 worst fill it already agreed to. R2 to R5 are what make resting there safe rather than a free
-option. The order cannot be taken while a counterparty crosses it, and a cross settles at the
+option. No ordinary fill can take the order while its claim holds, and a cross settles at the
 counterparty's price, so a maker arriving in the activation window competes on price rather than
 on transaction landing. Oracle-offset orders do not migrate, because an oracle-floating price has
 nothing fixed to rest at.
@@ -268,10 +271,9 @@ remainder that waits behind an older claim on its side.
 **R7. Activation delay.** The market's `default_activation_delay_slots`, as with any placement.
 
 A market at 0 is a supported setting rather than a broken one. R4's reservation protects the
-improvement, not the delay, and it keys on whether a live counterparty crosses the order rather
-than on the clock. At 0 a remainder claims its counterparty the moment it rests, so a remainder is
-takeable at its own price only while nothing crosses it, which is exactly when there is no
-improvement to take.
+improvement, not the delay. At 0 a remainder claims its counterparty the moment it rests, and no
+ordinary fill can take the remainder until its claim lapses. Only the crank fills it in that
+window, and the crank routes it to every source that crosses it.
 
 The delay does set the clock a reservation expires on. It lapses `reservation_grace_slots` after
 the claimant activates, so at 0 the window is the grace alone.
@@ -412,9 +414,9 @@ while a smaller cross still ate the best of that depth and left the remainder cr
 rest, since both walks go best price first. The claim removes the need for the predicate. Claimed
 base is not in the arb crank's matchable set at all, so the cross cannot reach it whatever size
 the caller asks for, and the remainder keeps the whole improvement rather than the part nobody
-took first. The claim covers a remainder only while a counterparty crosses it and the claim holds.
-A remainder that nothing crosses, or whose claim lapsed, is ordinary depth at its worst price, and
-a leg that took it would give the protocol `User` the gap to the other leg's source. The executor
+took first. The book withholds a remainder whole while its claim holds. A remainder whose claim
+lapsed is ordinary depth at its worst price, and a leg that took it would give the protocol `User`
+the gap to the other leg's source. The executor
 therefore reads each side a leg takes and refuses a cross whose legs can reach any taker-origin
 row. The resolvers end each side at the first such row that the book reports matchable.
 
@@ -540,9 +542,8 @@ remainder whose fate depends on which route reached it is a bug.
 and zero is the expected default rather than a misconfiguration, because the delay is not what
 protects the improvement. R4's reservation is. A remainder claims the depth it crosses whatever
 the delay, and claimed depth leaves the book's matchable set for every caller but the crank. At
-zero a remainder is takeable at its own price only while nothing crosses it, which is the case
-where there is no improvement to take. The moment a counterparty arrives it is claimed and the
-cross settles at the counterparty's price.
+zero the remainder itself also leaves the matchable set until its claim lapses, so only the crank
+fills it in that window. A cross settles at the counterparty's price.
 
 What a nonzero delay adds is a pre-window in which the order is not matchable at all, so makers can
 line up before anyone can trade with it. It also binds the taker: the cancel refusal keys on the

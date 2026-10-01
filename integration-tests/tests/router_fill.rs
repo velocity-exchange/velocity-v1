@@ -12597,3 +12597,320 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
         -position.quote_asset_amount
     );
 }
+
+/// `place_and_take_perp_order_v1` market order for `taker`, with `makers`
+/// loaded so the book may settle against them.
+fn fix4_router_take_ix(
+    fixture: &Fixture,
+    taker: &Party,
+    direction: PositionDirection,
+    base: u64,
+    limit: u64,
+    makers: &[&Party],
+) -> Instruction {
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        authority: taker.authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    for maker in makers {
+        accounts.push(AccountMeta::new(maker.user, false));
+        accounts.push(AccountMeta::new(maker.stats, false));
+    }
+
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            args: PlaceAndTakePerpOrderV1Args {
+                params: OrderParams {
+                    order_type: OrderType::Market,
+                    market_type: MarketType::Perp,
+                    direction,
+                    base_asset_amount: base,
+                    price: limit,
+                    market_index: 0,
+                    post_only: PostOnlyParam::None,
+                    ..OrderParams::default()
+                },
+                success_condition: None,
+            },
+        }
+        .data(),
+    }
+}
+
+/// A swift market order for one unit, signed by its taker and attested by the
+/// flow authority.
+struct Fix4RouterSignedOrder {
+    envelope: Vec<u8>,
+    attestation: velocity::FlowAttestationV0,
+}
+
+fn fix4_router_signed_order(
+    flow: &Keypair,
+    taker: &Party,
+    direction: PositionDirection,
+    limit: u64,
+    slot: u64,
+) -> Fix4RouterSignedOrder {
+    use {
+        anchor_lang::AnchorSerialize, velocity::state::order_params::SignedMsgOrderParamsMessage,
+    };
+
+    let message = SignedMsgOrderParamsMessage {
+        signed_msg_order_params: OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction,
+            base_asset_amount: UNIT,
+            price: limit,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            ..OrderParams::default()
+        },
+        sub_account_id: 0,
+        slot,
+        uuid: *b"fix4rout",
+        take_profit_order_params: None,
+        stop_loss_order_params: None,
+        max_margin_ratio: None,
+        builder_idx: None,
+        builder_fee_tenth_bps: None,
+        isolated_position_deposit: None,
+        network: Some(velocity::state::order_params::expected_signed_msg_network()),
+        route: None,
+    };
+    let mut borsh_body = SignedMsgOrderParamsMessage::PAYLOAD_DISCRIMINATOR.to_vec();
+    message.serialize(&mut borsh_body).unwrap();
+    let hex_msg = hex_lower(&borsh_body);
+    let signed_bytes = velocity::state::order_params::signed_msg_signing_bytes(hex_msg.as_bytes());
+    let signature = taker.authority.sign_message(&signed_bytes);
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(signature.as_ref());
+    envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());
+    envelope.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+    envelope.extend_from_slice(hex_msg.as_bytes());
+
+    let order_sig = <[u8; 64]>::try_from(signature.as_ref()).unwrap();
+    let mut attest_message = Vec::new();
+    attest_message.extend_from_slice(velocity::FLOW_ATTESTATION_DOMAIN);
+    attest_message.extend_from_slice(&order_sig);
+    attest_message.extend_from_slice(&i64::MAX.to_le_bytes());
+    Fix4RouterSignedOrder {
+        envelope,
+        attestation: velocity::FlowAttestationV0 {
+            signature: <[u8; 64]>::try_from(flow.sign_message(&attest_message).as_ref()).unwrap(),
+            expiry_ts: i64::MAX,
+        },
+    }
+}
+
+/// The keeper-built fill that places `order` for `taker` with `makers` loaded.
+fn fix4_router_attested_swift_ix(
+    fixture: &Fixture,
+    order: Fix4RouterSignedOrder,
+    taker: &Party,
+    keeper: &Party,
+    makers: &[&Party],
+) -> Instruction {
+    let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+        authority: keeper.authority.pubkey(),
+        ix_sysvar: instructions_sysvar(),
+        filler: keeper.user,
+        filler_stats: keeper.stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    for maker in makers {
+        accounts.push(AccountMeta::new(maker.user, false));
+        accounts.push(AccountMeta::new(maker.stats, false));
+    }
+
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceSignedMsgTakerOrder {
+            signed_msg_order_params_message_bytes: order.envelope,
+            is_delegate_signer: false,
+            flow_attestation: Some(order.attestation),
+        }
+        .data(),
+    }
+}
+
+/// Route the victim's resting buy with `crank_taker_origin_cross` and assert it
+/// paid the vAMM's price, not its own bound of 105.
+fn fix4_router_crank_routes_the_victim(fixture: &mut Fixture, keeper: &Party, victim: &Party) {
+    let crank = crank_taker_origin_cross_ix(fixture, keeper, victim, &[]);
+    let authority = keeper.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(1_400_000), crank],
+        &[],
+    )
+    .expect("the crank routes the remainder");
+
+    let position = perp_position(&fixture.svm, &victim.user);
+    assert_eq!(position.base_asset_amount, UNIT as i64);
+    assert!(
+        -position.quote_asset_amount < 104 * PRICE as i64,
+        "paid {}, where its bound is 105",
+        -position.quote_asset_amount
+    );
+}
+
+/// On a zero-delay book, a buy remainder at 105 rests while `AmmFill` is
+/// paused, and the vAMM then asks about 102. Nothing on the book crosses the
+/// remainder. A seller that loads its owner still cannot take it at 105 while
+/// its claim holds, so the crank routes it to the vAMM instead.
+#[test]
+fn fix4_router_a_seller_cannot_take_a_vamm_crossed_remainder_before_the_crank() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let attacker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        105 * PRICE,
+        UNIT,
+    );
+    resume_amm_fill(&mut fixture.svm);
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let sell = fix4_router_take_ix(
+        &fixture,
+        &attacker,
+        PositionDirection::Short,
+        UNIT,
+        90 * PRICE,
+        &[&victim],
+    );
+    let authority = attacker.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(1_400_000), sell],
+        &[],
+    )
+    .expect("the sell lands");
+
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0,
+        "the sell did not reach the remainder"
+    );
+    assert_eq!(clob_bid_count(&fixture), 1);
+    assert!(
+        perp_position(&fixture.svm, &attacker.user).quote_asset_amount < 104 * PRICE as i64,
+        "the seller did not receive the remainder's bound"
+    );
+
+    fix4_router_crank_routes_the_victim(&mut fixture, &attacker, &victim);
+}
+
+/// On a delayed book an unattested buy rests whole at 105 while the vAMM asks
+/// about 102. At activation an attested swift sell that loads the victim does
+/// not take the remainder, so the crank routes it to the vAMM instead.
+#[test]
+fn fix4_router_an_attested_sell_cannot_take_a_vamm_crossed_remainder_before_the_crank() {
+    use velocity::state::state::HotRole;
+
+    let mut fixture = setup();
+    set_clob_default_activation_delay(&mut fixture, 4);
+    let flow = Keypair::new();
+    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
+    state.set_hot_key(HotRole::FlowAuthority, flow.pubkey());
+    set_zero_copy_account(
+        &mut fixture.svm,
+        state_pda(),
+        State::DISCRIMINATOR,
+        &state,
+        State::SIZE,
+    );
+
+    let victim = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let attacker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    set_signed_msg_user_orders(&mut fixture.svm, &attacker.authority.pubkey(), 8);
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+    rest_taker_origin_order(
+        &mut fixture,
+        &victim,
+        PositionDirection::Long,
+        105 * PRICE,
+        UNIT,
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0
+    );
+
+    fixture.svm.warp_to_slot(16);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        16,
+    );
+
+    let order =
+        fix4_router_signed_order(&flow, &attacker, PositionDirection::Short, 90 * PRICE, 16);
+    let sell = fix4_router_attested_swift_ix(&fixture, order, &attacker, &keeper, &[&victim]);
+    let keeper_authority = keeper.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(1_400_000), sell],
+        &[],
+    )
+    .expect("the attested sell lands");
+
+    assert_eq!(
+        perp_position(&fixture.svm, &victim.user).base_asset_amount,
+        0,
+        "the attested sell did not reach the remainder"
+    );
+    assert_eq!(clob_bid_count(&fixture), 1);
+
+    fix4_router_crank_routes_the_victim(&mut fixture, &keeper, &victim);
+}

@@ -10,12 +10,15 @@
 //! staged a quoter tail, such as a keeper that read the book, routes the fill
 //! and rests only the remainder. The relay resolver stages no tail. A resolver
 //! sees only the book and not the propAMMs, so a fill it staged would take a
-//! worse price than the full router. It rests the whole order instead, and the
-//! cross crank fills it across every source at the best price.
+//! worse price than the full router. It rests the whole order instead. The
+//! taker-origin cross crank then fills it against a book order that crosses it,
+//! or against the vAMM. The relay-staged cross crank carries no quoter, so a
+//! quoter's price does not reach the order on that path.
 //!
 //! A full book side refuses a fire that filled nothing, so the trigger stays
 //! armed until an eviction frees room. A fire that filled part of the order
-//! keeps the fill and cancels the remainder the side refuses.
+//! keeps the fill and cancels the remainder the side refuses. The crank logs
+//! the cancelled size, and the rest path emits a cancel record for it.
 //!
 //! The account set is the trigger keeper set plus the market's CLOB accounts
 //! the rest needs. `trigger_limit_order_v1` carries the same superset. CLOB
@@ -236,7 +239,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         clock,
     )?;
 
-    require_room_for_unfilled_fire(accounts, market_index, &fired)?;
+    require_room_for_fired_rest(accounts, market_index, &fired)?;
     rest_fired_remainder(accounts, &mut maps, &fired, clock)?;
 
     // Pay the reservoir and release the trigger wake slot. Drop the state
@@ -269,12 +272,12 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 /// order keeps that fill, and the rest path cancels the remainder the side
 /// refuses. An attacker who keeps the side full then cannot delay the part a
 /// routed fill reaches.
-fn require_room_for_unfilled_fire<'info>(
+fn require_room_for_fired_rest<'info>(
     accounts: &TriggerMarketOrderV1<'info>,
     market_index: u16,
     fired: &Order,
 ) -> Result<()> {
-    if fired.base_asset_amount_filled != 0 {
+    if fired.get_base_asset_amount_unfilled(None)? == 0 {
         return Ok(());
     }
 
@@ -287,18 +290,30 @@ fn require_room_for_unfilled_fire<'info>(
     .reader()
     .order_rules()?;
 
-    unfilled_fire_admission(&rules, fired)
+    fired_rest_admission(&rules, fired)
 }
 
-/// The book's answer for a fired order with no fill, which rests whole.
-fn unfilled_fire_admission(rules: &OrderRulesV0, fired: &Order) -> Result<()> {
+/// The book's answer for the unfilled part of a fired order. A full side
+/// refuses a fire that filled nothing. A fire that filled part logs the
+/// remainder that the rest path then cancels.
+fn fired_rest_admission(rules: &OrderRulesV0, fired: &Order) -> Result<()> {
+    if super::helpers::crank_common::side_has_room(rules, fired.direction) {
+        return Ok(());
+    }
+
     validate!(
-        fired.base_asset_amount_filled != 0
-            || super::helpers::crank_common::side_has_room(rules, fired.direction),
+        fired.base_asset_amount_filled != 0,
         ErrorCode::MaxNumberOfOrders,
         "market {}'s book side is full; the trigger stays armed",
         fired.market_index
     )?;
+
+    msg!(
+        "market {}'s book side is full; the fire keeps its fill of {} and cancels the remaining {}",
+        fired.market_index,
+        fired.base_asset_amount_filled,
+        fired.get_base_asset_amount_unfilled(None)?
+    );
 
     Ok(())
 }
@@ -309,8 +324,8 @@ fn unfilled_fire_admission(rules: &OrderRulesV0, fired: &Order) -> Result<()> {
 /// the book stages one and fills here. The relay resolver stages none and goes
 /// straight to the rest. Relay cannot route, because it sees only the book and
 /// not the propAMMs, so a fill it stages would take a worse price than the full
-/// router. The whole order rests taker-origin instead, and the cross crank
-/// fills it across every source at the best price.
+/// router. The whole order rests taker-origin instead, and the taker-origin
+/// cross crank fills it later. See the module doc.
 ///
 /// Maker priority gates the staged fill the way it gates every taker route. On
 /// a book with a speed bump, only attested flow fills synchronously. An
@@ -447,8 +462,8 @@ fn rest_fired_remainder<'info>(
 /// stop-market to the book.
 ///
 /// The staged executor carries no quoter tail, so it does not fill. The whole
-/// fired order rests taker-origin, and the cross crank fills it across every
-/// source at the best price. A resolver sees only the book and not the
+/// fired order rests taker-origin, and the taker-origin cross crank fills it
+/// later. See the module doc. A resolver sees only the book and not the
 /// propAMMs, so a fill it staged would take a worse price than the full router.
 /// The executor still names the market's CLOB accounts, which the rest places
 /// behind. An armed trigger carries no signed route, so the staged call claims
@@ -557,7 +572,7 @@ pub fn handle_resolve_trigger_market_order_v1(
 #[cfg(test)]
 mod side_room_tests {
     use {
-        super::unfilled_fire_admission,
+        super::fired_rest_admission,
         crate::{
             controller::position::PositionDirection,
             instructions::clob::helpers::crank_common::side_has_room,
@@ -607,8 +622,8 @@ mod side_room_tests {
             ..unfilled
         };
 
-        assert!(unfilled_fire_admission(&rules(), &unfilled).is_err());
-        assert!(unfilled_fire_admission(&rules(), &part_filled).is_ok());
-        assert!(unfilled_fire_admission(&rules(), &long).is_ok());
+        assert!(fired_rest_admission(&rules(), &unfilled).is_err());
+        assert!(fired_rest_admission(&rules(), &part_filled).is_ok());
+        assert!(fired_rest_admission(&rules(), &long).is_ok());
     }
 }

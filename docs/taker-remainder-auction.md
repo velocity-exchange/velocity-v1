@@ -319,7 +319,10 @@ as a claimant. A crank that honours every claim takes no depth the remainder cla
 the remainder across the baseline, even when its signer chose a route. A lapsed remainder is always
 in that plan, and so is a remainder that only the vAMM or unclaimed depth crosses. Relay cannot
 read the taker's route, so only a remainder that takes claimed depth with a signed route holds
-relay back, and only for its claim window. A keeper that names the route lands it.
+relay back, and only for its claim window. A keeper that names the route lands it. Two lapsed
+remainders at the front of the book settle as a pair at the earlier one's price, under the same
+vAMM rule as two live ones, because a claim-honouring route of one would take the other at its own
+price.
 
 No new slot and no new watch. A taker-origin cross can newly appear for one of two reasons. A
 side's best moved, which the cross condition's 8-byte `OnAccountChange` over `best_bid` and

@@ -32,6 +32,7 @@ import {
 	createInitializeMintInstruction,
 	createMintToInstruction,
 	MintLayout,
+	NATIVE_MINT,
 	TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import {
@@ -72,7 +73,10 @@ import {
 	TestClient,
 	Wallet,
 } from '../../packages/sdk/src';
-import { initializeQuoteSpotMarket } from '../velocity/testHelpers';
+import {
+	initializeQuoteSpotMarket,
+	initializeSolSpotMarket,
+} from '../velocity/testHelpers';
 
 const RPC_URL = process.env.E2E_RPC_URL ?? 'http://127.0.0.1:8899';
 /** solana-test-validator serves its websocket one port above its RPC port. */
@@ -112,6 +116,8 @@ const WATCH_V0_LEN = 112;
  * `oracle_watch` registers the same offset for push feeds, so a test reading
  * the feed and a relay watch reading it see the same bytes. */
 const PYTH_AGG_PRICE_OFFSET = 208;
+
+const SOL_SPOT_MARKET_INDEX = 1;
 
 const UNIT = BASE_PRECISION; // 1e9
 const USDC = new BN(10).pow(new BN(6));
@@ -1412,6 +1418,17 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 		oracle = feed.publicKey;
 
+		const solFeed = Keypair.generate();
+		await send(
+			[
+				await createAccount(solFeed.publicKey, 3312, PYTH_ID),
+				pythProgram.instruction.initialize(usd(150), -6, usd(0.01), {
+					accounts: { price: solFeed.publicKey },
+				}),
+			],
+			[solFeed]
+		);
+
 		// Protocol init through the real admin instructions.
 		admin = newClient(payer);
 		statePdaCache = await admin.getStatePublicKey();
@@ -1447,6 +1464,21 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		]);
 
 		await initializeQuoteSpotMarket(admin, usdcMint.publicKey);
+
+		// A program-keeper crank pays its reservoir lamports only at a SOL
+		// price, and relay rejects a crank that pays less than it advertised.
+		// Production names the SOL market the same way through the migration.
+		await initializeSolSpotMarket(
+			admin,
+			solFeed.publicKey,
+			NATIVE_MINT,
+			OracleSource.PYTH
+		);
+		await admin.updateLiquidationCrankReimbursement(
+			admin.getStateAccount().liquidationCrankReimbursementBps,
+			SOL_SPOT_MARKET_INDEX
+		);
+
 		await admin.initializePerpMarket(
 			0,
 			oracle,

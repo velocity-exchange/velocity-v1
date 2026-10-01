@@ -466,7 +466,13 @@ fn pay_liquidation_crank<'info>(
             market_index
         )?;
 
-        let flat = progress.flat_payment(&conditions.crank_payments);
+        let flat = raise_to_poll_floor(
+            progress.flat_payment(&conditions.crank_payments),
+            crate::instructions::optional_accounts::liveness_poll_min_payment(
+                ctx.remaining_accounts,
+                &ctx.accounts.user.key(),
+            ),
+        );
 
         // The liquidations batched into one transaction do not share the flat
         // payment. A relay crank carries its own payment guard, which measures
@@ -493,6 +499,16 @@ fn pay_liquidation_crank<'info>(
     Ok(())
 }
 
+/// A paid flat figure, raised to what the user's liveness poll asks relay to
+/// assert. A call that earns nothing stays at nothing.
+fn raise_to_poll_floor(flat: u64, poll_floor: u64) -> u64 {
+    if flat == 0 {
+        0
+    } else {
+        flat.max(poll_floor)
+    }
+}
+
 /// Only the authority counts. The user sets its delegate to any key, so a
 /// delegate test lets the user name a turner's payout address and make every
 /// relay liquidation of the account pay zero.
@@ -517,6 +533,12 @@ fn liquidation_reimbursement<'info>(
     let Some(sysvar) = instructions_sysvar else {
         return 0;
     };
+
+    // A fill under the floor earns no flat payment, so it earns no priority
+    // fee either. Otherwise slicing one liquidation pays a fee per slice.
+    if filled_quote < LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
+        return 0;
+    }
 
     if state.liquidation_crank_reimbursement_bps == 0 || state.sol_spot_market_index == 0 {
         return 0;
@@ -553,32 +575,34 @@ fn liquidation_reimbursement<'info>(
 ///
 /// A transaction that states its price is reimbursed that price on its unit
 /// limit. `crank_priority_lamports` bounds both, so a caller cannot bill room
-/// it does not use. The liquidations batched into that transaction share the
-/// one fee, so each claims a share.
-///
-/// A transaction that states no price is priced at `max_price_per_unit` on the
-/// reimbursed unit figure. Relay's turner sends only v1 transactions, which
-/// carry the fee in the message header where no program can read it. Each
-/// batched liquidation is priced on its own units, so the figure is not shared.
+/// it does not use. A transaction that states no price is priced at
+/// `max_price_per_unit` on the reimbursed unit figure, because relay's turner
+/// sends v1 transactions, whose fee sits in the message header where no
+/// program can read it. Either figure is one fee per transaction, so the
+/// liquidations batched into it share it.
 fn reimbursed_priority_lamports(
     instructions_sysvar: &AccountInfo,
     max_price_per_unit: u64,
 ) -> VelocityResult<u64> {
     let budget = crate::instructions::optional_accounts::tx_compute_budget(instructions_sysvar)?;
-    let Some(price_per_unit) = budget.price_per_unit else {
-        return CrankPaymentsV0::crank_priority_lamports(
+    let whole_transaction = match budget.price_per_unit {
+        Some(price_per_unit) => CrankPaymentsV0::crank_priority_lamports(
+            price_per_unit,
+            budget.unit_limit,
+            max_price_per_unit,
+        )?,
+        None => CrankPaymentsV0::crank_priority_lamports(
             max_price_per_unit,
             crate::state::clob_crank::LIQUIDATION_CRANK_REIMBURSED_UNITS,
             max_price_per_unit,
-        );
+        )?,
     };
 
     let claimants = crate::instructions::optional_accounts::tx_reimbursement_claimants(
         instructions_sysvar,
         crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
     )?;
-    CrankPaymentsV0::crank_priority_lamports(price_per_unit, budget.unit_limit, max_price_per_unit)?
-        .safe_div(u64::from(claimants))
+    whole_transaction.safe_div(u64::from(claimants))
 }
 
 #[access_control(
@@ -1008,7 +1032,8 @@ mod tests {
 
     /// Relay's turner sends a v1 transaction. Its compute budget sits in the
     /// message header, so the sysvar holds only the guard and the crank. Such
-    /// a crank is priced at the rails' ceiling on the reimbursed units.
+    /// a transaction is priced at the rails' ceiling on the reimbursed units,
+    /// and the liquidations batched into it share that one figure.
     #[test]
     fn a_v1_liquidation_is_reimbursed_at_the_priority_ceiling() {
         use {
@@ -1039,7 +1064,110 @@ mod tests {
             &[guard, liquidation.clone(), liquidation, assert_paid],
             |sysvar| reimbursed_priority_lamports(sysvar, ceiling).unwrap(),
         );
-        assert_eq!(batched, paid);
+        assert_eq!(batched, paid / 2);
+    }
+
+    /// A fill under the floor earns no flat payment, so it earns no priority
+    /// fee either. One liquidation sliced into such fills is paid nothing.
+    #[test]
+    fn a_fill_under_the_floor_is_not_reimbursed() {
+        use {
+            crate::{
+                create_anchor_account_info,
+                math::time::SlotClock,
+                state::{
+                    clob_crank::{
+                        LIQUIDATION_CRANK_REIMBURSED_UNITS,
+                        LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
+                    },
+                    oracle::{HistoricalOracleData, OracleSource},
+                    pyth_lazer_oracle::PythLazerOracle,
+                    spot_market::SpotMarket,
+                    state::TransactionFeeRails,
+                },
+                test_utils::get_pyth_price,
+            },
+            anchor_lang::Discriminator,
+            solana_program::instruction::Instruction,
+        };
+
+        let slot = 100;
+        let mut sol_price = get_pyth_price(150, 6);
+        sol_price.posted_slot = slot;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(sol_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut sol_market = SpotMarket {
+            market_index: 1,
+            oracle: oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            historical_oracle_data: HistoricalOracleData::default_price(sol_price.price),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_market, SpotMarket, sol_info);
+        let spot_market_map = SpotMarketMap::load_one(&sol_info, true).unwrap();
+        let state = State {
+            liquidation_crank_reimbursement_bps: 5_000,
+            sol_spot_market_index: 1,
+            transaction_fee_rails: TransactionFeeRails {
+                max_priority_micro_lamports_per_cu: 10_000,
+                ..TransactionFeeRails::FLAT_PER_SIGNATURE
+            },
+            ..State::default()
+        };
+
+        let liquidation = Instruction::new_with_bytes(
+            crate::ID,
+            crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+            vec![],
+        );
+        let mut sysvar_data = solana_program::sysvar::instructions::construct_instructions_data(&[
+            solana_program::sysvar::instructions::BorrowedInstruction {
+                program_id: &liquidation.program_id,
+                accounts: vec![],
+                data: &liquidation.data,
+            },
+        ]);
+        let (sysvar_key, sysvar_owner) =
+            (solana_program::sysvar::instructions::ID, Pubkey::default());
+        let mut sysvar_lamports = 0;
+        let sysvar_info = AccountInfo::new(
+            &sysvar_key,
+            false,
+            false,
+            &mut sysvar_lamports,
+            &mut sysvar_data,
+            &sysvar_owner,
+            false,
+        );
+        let sysvar = Some(UncheckedAccount::try_from(&sysvar_info));
+        let reimbursed = |filled_quote| {
+            let mut oracle_map =
+                OracleMap::load_one(&oracle_info, slot, SlotClock::baseline(), None).unwrap();
+            liquidation_reimbursement(
+                &sysvar,
+                &state,
+                &spot_market_map,
+                &mut oracle_map,
+                filled_quote,
+            )
+        };
+
+        let ceiling = 10_000 * u64::from(LIQUIDATION_CRANK_REIMBURSED_UNITS) / 1_000_000;
+        assert_eq!(
+            reimbursed(LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE),
+            ceiling
+        );
+        assert_eq!(reimbursed(LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE - 1), 0);
+    }
+
+    /// A slot synced before the admin lowered the payment still asks relay
+    /// for the old figure, so a paid crank pays that figure and lands.
+    #[test]
+    fn a_paid_liquidation_rises_to_the_poll_floor() {
+        use super::raise_to_poll_floor;
+        assert_eq!(raise_to_poll_floor(3_000, 5_000), 5_000);
+        assert_eq!(raise_to_poll_floor(7_000, 5_000), 7_000);
+        assert_eq!(raise_to_poll_floor(0, 5_000), 0);
     }
 
     /// A transaction that states its price is reimbursed that price, and the

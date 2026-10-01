@@ -10,7 +10,8 @@
 //! margin requirement, so it reaches an account before the account fails
 //! maintenance, and it takes only the side of a book that adds risk. A latched
 //! account skips it. An account with no work returns NoWork, and the poll
-//! wakes the resolver again later.
+//! wakes the resolver again later. So does an account that holds a market the
+//! stored list lacks. A pause that refuses the liquidation skips that stage.
 
 use {
     crate::{
@@ -78,7 +79,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
 
         // The stored account list carries the user's full margin maps, so the
         // real calculation runs here under simulation.
-        let stored = ctx.accounts.liq_conditions.load()?.read_sync_accounts();
+        let stored = executor_refs(&ctx.accounts.liq_conditions)?;
         validate!(
             !ctx.remaining_accounts.is_empty(),
             ErrorCode::ResolverMarginMapMissing,
@@ -100,6 +101,10 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
         // may settle against belong between the map and the quoter tail.
         let map_section = ctx.remaining_accounts.len() - account_iter.len();
 
+        if !maps_cover_positions(&*crate::load!(ctx.accounts.user)?, &maps) {
+            return Ok(None);
+        }
+
         // An account that already fails maintenance goes straight to the
         // liquidation, which sweeps the book orders in its scope. A cancel
         // first would cost the account a full poll interval.
@@ -109,13 +114,15 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             state.liquidation_margin_buffer_ratio,
         )?;
         if let Some(market_index) = failing_market {
-            if liquidation_can_pay_the_crank(
-                &ctx.accounts.user,
-                &mut maps,
-                &state,
-                market_index,
-                clock.slot,
-            )? {
+            if liquidation_is_open(&state, &maps, market_index)?
+                && liquidation_can_pay_the_crank(
+                    &ctx.accounts.user,
+                    &mut maps,
+                    &state,
+                    market_index,
+                    clock.slot,
+                )?
+            {
                 return stage_liquidate_perp(
                     ctx.accounts.state.key(),
                     &ctx.accounts.user,
@@ -153,6 +160,57 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
         // allow-verbose: no other comment says why a liquidatable account returns no work.
         Ok(None)
     })
+}
+
+/// The stored list, then the conditions block itself. The executors read the
+/// payment the liveness poll asserts off the block. It goes last, where every
+/// section parser has stopped.
+fn executor_refs(
+    liq_conditions: &AccountLoader<UserConditionsV0>,
+) -> Result<Vec<relay_spec::AccountRefV0>> {
+    let mut refs = liq_conditions.load()?.read_sync_accounts();
+    refs.push(relay_spec::AccountRefV0::readonly(
+        liq_conditions.key().to_bytes(),
+    ));
+    Ok(refs)
+}
+
+/// Whether the maps hold every market the user's positions name, and the
+/// quote market. The margin calculation fails without one. That failure is
+/// the stored list's, so the resolver reports no work while the resync adds
+/// the market.
+fn maps_cover_positions(user: &User, maps: &AccountMaps) -> bool {
+    let perps_covered = user
+        .perp_positions
+        .iter()
+        .filter(|position| !position.is_available())
+        .all(|position| maps.perp_market_map.0.contains_key(&position.market_index));
+    let holds_perp = user.perp_positions.iter().any(|p| !p.is_available());
+    let spots_covered = user
+        .spot_positions
+        .iter()
+        .filter(|position| !position.is_available())
+        .map(|position| position.market_index)
+        .chain(holds_perp.then_some(crate::math::constants::QUOTE_SPOT_MARKET_INDEX))
+        .all(|index| maps.spot_market_map.0.contains_key(&index));
+
+    perps_covered && spots_covered
+}
+
+/// False while a pause refuses `liquidate_perp_with_fill` on `market_index`.
+/// A staged call that fails backs relay off past the lift.
+fn liquidation_is_open(state: &State, maps: &AccountMaps, market_index: u16) -> Result<bool> {
+    use crate::state::{paused_operations::PerpOperation, state::ExchangeStatus};
+
+    let status = state.get_exchange_status()?;
+    let exchange_open =
+        !status.contains(ExchangeStatus::LiqPaused) && !status.contains(ExchangeStatus::FillPaused);
+    let market_open = !maps
+        .perp_market_map
+        .get_ref(&market_index)?
+        .is_operation_paused(PerpOperation::Liquidation);
+
+    Ok(exchange_open && market_open)
 }
 
 /// Stage one of the ladder. Finds a book that still holds a risk-increasing
@@ -654,6 +712,76 @@ mod tests {
         );
 
         assert_eq!(find_cancel_target(&user_loader, &mut maps).unwrap(), None);
+    }
+
+    /// A deposit in a market the stored list does not carry leaves the margin
+    /// calculation without that market. The resolver reports no work rather
+    /// than failing.
+    #[test]
+    fn a_position_outside_the_stored_list_is_no_work() {
+        use {
+            super::maps_cover_positions,
+            crate::state::{spot_market::SpotMarket, user::SpotPosition},
+        };
+
+        let mut spot = SpotMarket::default();
+        create_anchor_account_info!(spot, SpotMarket, spot_info);
+        let maps = AccountMaps::new(
+            PerpMarketMap::empty(),
+            SpotMarketMap::load_one(&spot_info, true).unwrap(),
+            OracleMap::empty(),
+        );
+
+        let mut user = User::default();
+        assert!(maps_cover_positions(&user, &maps));
+        user.spot_positions[1] = SpotPosition {
+            market_index: 1,
+            scaled_balance: 1,
+            ..SpotPosition::default()
+        };
+        assert!(!maps_cover_positions(&user, &maps));
+    }
+
+    /// The executor refuses a liquidation under either pause, so the resolver
+    /// must not stage one.
+    #[test]
+    fn a_paused_liquidation_is_not_staged() {
+        use {
+            super::liquidation_is_open,
+            crate::state::{
+                paused_operations::PerpOperation,
+                perp_market::PerpMarket,
+                state::{ExchangeStatus, State},
+            },
+        };
+
+        let mut market = PerpMarket::default();
+        create_anchor_account_info!(market, PerpMarket, market_info);
+        let maps = AccountMaps::new(
+            PerpMarketMap::load_one(&market_info, false).unwrap(),
+            SpotMarketMap::empty(),
+            OracleMap::empty(),
+        );
+        let paused = |status: ExchangeStatus| State {
+            exchange_status: status as u8,
+            ..State::default()
+        };
+
+        assert!(liquidation_is_open(&State::default(), &maps, 0).unwrap());
+        assert!(!liquidation_is_open(&paused(ExchangeStatus::LiqPaused), &maps, 0).unwrap());
+        assert!(!liquidation_is_open(&paused(ExchangeStatus::FillPaused), &maps, 0).unwrap());
+
+        let mut market = PerpMarket {
+            paused_operations: PerpOperation::Liquidation as u8,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_info);
+        let maps = AccountMaps::new(
+            PerpMarketMap::load_one(&market_info, false).unwrap(),
+            SpotMarketMap::empty(),
+            OracleMap::empty(),
+        );
+        assert!(!liquidation_is_open(&State::default(), &maps, 0).unwrap());
     }
 }
 

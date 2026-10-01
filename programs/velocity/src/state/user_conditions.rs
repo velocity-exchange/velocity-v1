@@ -95,10 +95,10 @@ pub const TRIGGER_RESOLVERS_OFFSET: usize =
 /// Account-data offset of the relay block (what a `WatchV0` registers at).
 pub const USER_CONDITIONS_BLOCK_OFFSET: usize = relay_spec::block_offset!(UserConditionsV0, relay);
 
-/// Capacity of the stored sync account list: four fixed resolver accounts plus roughly
-/// three per market the user is exposed in, so forty-eight covers about fourteen markets.
-/// A list that does not fit reverts the sync rather than truncating, which would deny the
-/// opt-in to the accounts carrying the most risk.
+/// Capacity of the stored sync account list. Four resolver accounts lead it. A book market
+/// costs five: market, oracle, crank account, slab and book. The shared book program costs
+/// one, any other market two, and the quote market one, so eight book markets fill 46. A
+/// list that does not fit reverts the sync, and only the keeper bots then cover the user.
 pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 48;
 
 /// The stored list starts with the resolver's named accounts, which are
@@ -289,6 +289,13 @@ impl UserConditionsV0 {
             .map(|condition| condition.min_payment())
     }
 
+    /// The keeper payment the liveness poll asks relay to assert. Zero when
+    /// no poll is armed.
+    pub fn liveness_min_payment(&self) -> u64 {
+        ConditionBlock::read_condition(&self.relay, LIQ_LIVENESS_POLL)
+            .map_or(0, |condition| condition.min_payment())
+    }
+
     /// Rewrite trigger slot `index`'s wake in place. Its resolver list and
     /// keeper payment stay as the sync wrote them.
     pub fn set_trigger_wake(&mut self, index: usize, wake: relay_spec::WakeView) -> Result<()> {
@@ -331,7 +338,11 @@ impl UserConditionsV0 {
             .map_err(|_| error!(ErrorCode::InvalidConditionBlock))?;
 
         self.relay.write_resolvers(refs).map_err(|_| {
-            msg!("sync account list of {} exceeds the region", refs.len());
+            msg!(
+                "sync account list of {} exceeds the {} the block holds; relay cannot cover this user",
+                refs.len(),
+                LIQ_SYNC_ACCOUNTS_MAX
+            );
             error!(ErrorCode::ConditionResolverListTooLarge)
         })
     }
@@ -394,6 +405,29 @@ mod tests {
         assert_eq!(margin_map_len(&stored), 5);
         assert_eq!(margin_map_len(&stored[..5]), 5);
         assert_eq!(margin_map_len(&[]), 0);
+    }
+
+    /// A crank reads the poll's payment back, so it can pay at least what
+    /// relay asserts after the admin lowers the market's figure.
+    #[test]
+    fn the_liveness_poll_payment_reads_back() {
+        let mut conditions = Box::new(UserConditionsV0::default());
+        conditions.init_block().unwrap();
+        assert_eq!(conditions.liveness_min_payment(), 0);
+
+        let resolvers = conditions.write_sync_accounts(&[]).unwrap();
+        let spec = relay_spec::CrankSpecV0 {
+            resolver_program: [1; 32],
+            resolver_disc: [2; 8],
+            min_payment: 7_000,
+        };
+        conditions
+            .set_condition(
+                LIQ_LIVENESS_POLL,
+                &relay_spec::ConditionV0::every_slots(LIQ_LIVENESS_POLL_SLOTS, spec, resolvers),
+            )
+            .unwrap();
+        assert_eq!(conditions.liveness_min_payment(), 7_000);
     }
 
     #[test]

@@ -66,24 +66,26 @@ command and flag.
 
 Every book runs a one-slot speed bump, as `migrate.ts` creates it. A take that carries no swift
 attestation therefore does not fill in its own transaction. It rests whole as a taker-origin order,
-and the relay's cross cranks fill it.
+and the relay's cross cranks fill it. A swift order carries an attestation, so it can fill in the transaction that `swift-placer` sends.
 
 ## What runs
 
-| Service          | Port       | Role                                                                |
-| ---------------- | ---------- | ------------------------------------------------------------------- |
-| `snapshot`       |            | Dumps devnet into the `state` volume on the first run only          |
-| `validator`      | 8899, 8900 | `solana-test-validator` at the dump's slot                          |
-| `oracle`         | 7070       | Signs and posts every Pyth Lazer feed, and moves a price on request |
-| `rpc`            |            | Serves HTTP and websocket RPC on 8899 and on 8900                   |
-| `bootstrap`      |            | Keys, `migrate.ts`, CLOB books, crank treasury, configs             |
-| `redis`          |            | One-node cluster. The TypeScript client has no plain mode           |
-| `book-publisher` |            | Books, the user-orders feed, and the cross fast path                |
-| `dlob-server`    | 6969       | HTTP: `/l2`, `/batchL2`, `/userOrders`, `/marketOrderParams`        |
-| `dlob-ws`        | 3000       | Websocket: `orderbook`, `user_orders`                               |
-| `relay-turner`   |            | Triggers, liquidations, expiry and crosses                          |
-| `keepers`        |            | Funding and PnL settlement, and the mark TWAP with a Lazer token    |
-| `swift`          | 3003       | Signed-message orders                                               |
+| Service          | Port       | Role                                                                  |
+| ---------------- | ---------- | --------------------------------------------------------------------- |
+| `snapshot`       |            | Dumps devnet into the `state` volume on the first run only            |
+| `validator`      | 8899, 8900 | `solana-test-validator` at the dump's slot                            |
+| `oracle`         | 7070       | Signs and posts every Pyth Lazer feed, and moves a price on request   |
+| `rpc`            |            | Serves HTTP and websocket RPC on 8899 and on 8900                     |
+| `bootstrap`      |            | Keys, `migrate.ts`, CLOB books, crank treasury, configs               |
+| `redis`          |            | One-node cluster. The TypeScript client has no plain mode             |
+| `book-publisher` |            | Books, the user-orders feed, and the cross fast path                  |
+| `dlob-server`    | 6969       | HTTP: `/l2`, `/batchL2`, `/userOrders`, `/marketOrderParams`          |
+| `dlob-ws`        | 3000       | Websocket: `orderbook`, `user_orders`                                 |
+| `relay-turner`   |            | Triggers, liquidations, expiry and crosses                            |
+| `keepers`        |            | Funding and PnL settlement, and the mark TWAP with a Lazer token      |
+| `swift`          | 3003       | Signed-message intake and `/attest`                                   |
+| `swift-ws`       |            | Swift's order websocket, which keepers subscribe to                   |
+| `swift-placer`   |            | Attests each swift order and places it, as keep-rs does in production |
 
 The bootstrap writes `ui.env.local` into the `state` volume. It holds the overrides that point the
 webapp at these ports:

@@ -228,7 +228,7 @@ services:
 
   swift:
     image: velocity-local/swift:dev
-    build:
+    build: &swift-build
       context: ..
       dockerfile: docker/rust-app.Dockerfile
       args:
@@ -251,6 +251,37 @@ services:
       PORT: '3003'
       DISABLE_RPC_SIM: 'true'
       RUST_LOG: info
+
+  swift-ws:
+    image: velocity-local/swift:dev
+    build: *swift-build
+    user: '0'
+    depends_on: *after-bootstrap
+    command: ['--server', 'ws']
+    environment:
+      ENV: devnet
+      ENDPOINT: http://rpc:8899
+      ELASTICACHE_HOST: redis
+      ELASTICACHE_PORT: '6379'
+      USE_SSL: 'false'
+      WS_PORT: '3004'
+      RUST_LOG: info
+
+  swift-placer:
+    <<: *ts-tools
+    command: ['bun', 'run', 'local-stack/swift-placer.ts']
+    restart: unless-stopped
+    depends_on:
+      <<: *after-bootstrap
+      swift:
+        condition: service_started
+      swift-ws:
+        condition: service_started
+    environment:
+      RPC_URL: http://rpc:8899
+      DLOB_URL: http://dlob-server:6969
+      SWIFT_URL: http://swift:3003
+      SWIFT_WS_URL: ws://swift-ws:3004
 
 volumes:
   state:

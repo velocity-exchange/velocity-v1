@@ -289,6 +289,13 @@ impl UserConditionsV0 {
             .map(|condition| condition.min_payment())
     }
 
+    /// The keeper payment the liveness poll asks relay to assert. Zero when
+    /// no poll is armed.
+    pub fn liveness_min_payment(&self) -> u64 {
+        ConditionBlock::read_condition(&self.relay, LIQ_LIVENESS_POLL)
+            .map_or(0, |condition| condition.min_payment())
+    }
+
     /// Rewrite trigger slot `index`'s wake in place. Its resolver list and
     /// keeper payment stay as the sync wrote them.
     pub fn set_trigger_wake(&mut self, index: usize, wake: relay_spec::WakeView) -> Result<()> {
@@ -394,6 +401,29 @@ mod tests {
         assert_eq!(margin_map_len(&stored), 5);
         assert_eq!(margin_map_len(&stored[..5]), 5);
         assert_eq!(margin_map_len(&[]), 0);
+    }
+
+    /// A crank reads the poll's payment back, so it can pay at least what
+    /// relay asserts after the admin lowers the market's figure.
+    #[test]
+    fn the_liveness_poll_payment_reads_back() {
+        let mut conditions = Box::new(UserConditionsV0::default());
+        conditions.init_block().unwrap();
+        assert_eq!(conditions.liveness_min_payment(), 0);
+
+        let resolvers = conditions.write_sync_accounts(&[]).unwrap();
+        let spec = relay_spec::CrankSpecV0 {
+            resolver_program: [1; 32],
+            resolver_disc: [2; 8],
+            min_payment: 7_000,
+        };
+        conditions
+            .set_condition(
+                LIQ_LIVENESS_POLL,
+                &relay_spec::ConditionV0::every_slots(LIQ_LIVENESS_POLL_SLOTS, spec, resolvers),
+            )
+            .unwrap();
+        assert_eq!(conditions.liveness_min_payment(), 7_000);
     }
 
     #[test]

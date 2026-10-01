@@ -9,6 +9,8 @@
 //!
 //! The instruction relay stages therefore takes no payer and allocates
 //! nothing. The opt-in sync created the account before relay ever stages this.
+//! A staged resync replays the stored account list and adds the accounts of
+//! every market the user entered since, so coverage follows new exposure.
 //! The keeper is paid from the protocol crank treasury, and only for a resync
 //! that found the user's positions changed. The stored payment prices a whole
 //! transaction, so resyncs batched into one transaction share it. A resync
@@ -31,7 +33,7 @@ use {
             user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
         },
     },
-    anchor_lang::prelude::*,
+    anchor_lang::{prelude::*, Discriminator},
 };
 
 #[derive(Accounts)]
@@ -166,14 +168,16 @@ fn batch_share(payment: u64, instructions_sysvar: &AccountInfo) -> u64 {
 }
 
 /// Resolver for the self-sync conditions. It reports work when the user's
-/// positions no longer match the thresholds the block was built from.
+/// positions no longer match the thresholds the block was built from, and the
+/// resync would be paid what the block advertises.
 ///
-/// The match test is cheap and conservative. The resolver cannot re-derive a
-/// threshold without the market and oracle accounts, which its short account
-/// list cannot carry. It compares the shape of the user's exposures against
-/// the recorded slots instead, so it catches a new market, a closed position,
-/// or a first opt-in with no slots yet. The staged executor recomputes
-/// everything from the account list the last sync stored.
+/// The match test is cheap and conservative. It compares a digest of the
+/// user's exposures against the one the last sync stamped, so it catches a
+/// new market, a closed position, or a first opt-in. The staged executor
+/// recomputes everything from the stored account list, plus the accounts of
+/// any market the user entered since. A resync inside the paid interval pays
+/// nothing, and relay asserts the advertised payment, so the fallback poll
+/// takes that change once the interval ends.
 #[derive(Accounts)]
 pub struct ResolveResyncLiqConditions<'info> {
     /// The shared staging account, at index 0 by convention. A resolver's
@@ -195,19 +199,34 @@ pub fn handle_resolve_resync_liq_conditions(
         &[ctx.accounts.scratch.key()],
     )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
-        let stale = {
+        let slot = Clock::get()?.slot;
+        let (stale, paid) = {
             let conditions = ctx.accounts.liq_conditions.load()?;
             let user = crate::load!(ctx.accounts.user)?;
-            // A digest mismatch means the thresholds came from different
-            // exposures. The sync stamps the digest it ran against, so a
-            // rewrite that produces no watchable threshold still stops the
-            // wake.
-            UserConditionsV0::digest_positions(&user) != conditions.positions_digest
+            let terms = SyncLiqConditionsTerms {
+                sync_payment_lamports: conditions.sync_payment_lamports,
+                sync_fallback_slots: conditions.sync_fallback_slots,
+            };
+            let due_slot = conditions
+                .last_paid_sync_slot
+                .saturating_add(conditions.sync_fallback_slots);
+
+            (
+                UserConditionsV0::digest_positions(&user) != conditions.positions_digest,
+                terms.payable_lamports() > 0 && slot >= due_slot,
+            )
         };
 
-        if !stale {
+        if !stale || !paid {
             return Ok(None);
         }
+
+        let stored = ctx.accounts.liq_conditions.load()?.read_sync_accounts();
+        let entered = entered_market_accounts(
+            &*crate::load!(ctx.accounts.user)?,
+            ctx.remaining_accounts,
+            &stored,
+        );
 
         // The builder enforces the no-signer rule for every resolver. That
         // rule is why this instruction exists.
@@ -219,10 +238,111 @@ pub fn handle_resolve_resync_liq_conditions(
                 treasury: crate::state::pdas::crank_treasury(),
                 instructions_sysvar: solana_program::sysvar::instructions::ID,
             })
-            // The margin-map + reservoir accounts the last sync stored.
-            .refs(ctx.accounts.liq_conditions.load()?.read_sync_accounts()),
+            .refs(stored)
+            .refs(entered),
         ))
     })
+}
+
+/// The accounts of every market the user holds a position in that the stored
+/// list does not carry. `stored_accounts` is that list as relay passed it.
+///
+/// A perp market brings its crank account and slab, which exist only for a
+/// market with a book. The executor skips an account that does not exist. Every
+/// perp market quotes in the quote spot market, so a first perp position also
+/// brings that market. The executor stores each market's oracle from the market
+/// account, so no oracle is named here.
+fn entered_market_accounts(
+    user: &User,
+    stored_accounts: &[AccountInfo],
+    stored: &[relay_spec::AccountRefV0],
+) -> Vec<relay_spec::AccountRefV0> {
+    use crate::state::{pdas, perp_market::PerpMarket, spot_market::SpotMarket};
+
+    let covered_perps: Vec<u16> = stored_accounts
+        .iter()
+        .filter_map(|info| {
+            stored_market_index(
+                info,
+                PerpMarket::DISCRIMINATOR,
+                core::mem::offset_of!(PerpMarket, market_index),
+            )
+        })
+        .collect();
+    let covered_spots: Vec<u16> = stored_accounts
+        .iter()
+        .filter_map(|info| {
+            stored_market_index(
+                info,
+                SpotMarket::DISCRIMINATOR,
+                core::mem::offset_of!(SpotMarket, market_index),
+            )
+        })
+        .collect();
+
+    let entered_perps = user
+        .perp_positions
+        .iter()
+        .filter(|position| !position.is_available())
+        .map(|position| position.market_index)
+        .filter(|index| !covered_perps.contains(index));
+    let perp_keys = entered_perps.flat_map(|index| {
+        [
+            pdas::perp_market(index),
+            pdas::clob_crank_conditions(index),
+            pdas::quoter_slab(index),
+        ]
+    });
+
+    let holds_perp = user.perp_positions.iter().any(|p| !p.is_available());
+    let quote_market = holds_perp.then_some(crate::math::constants::QUOTE_SPOT_MARKET_INDEX);
+    let entered_spots = user
+        .spot_positions
+        .iter()
+        .filter(|position| !position.is_available())
+        .map(|position| position.market_index)
+        .chain(quote_market)
+        .filter(|index| !covered_spots.contains(index));
+    let spot_keys = entered_spots.map(pdas::spot_market);
+
+    let stored_keys: Vec<Pubkey> = stored
+        .iter()
+        .map(|account| Pubkey::new_from_array(account.address))
+        .collect();
+    perp_keys
+        .chain(spot_keys)
+        .fold(Vec::new(), |mut entered, key| {
+            if !stored_keys.contains(&key) && !entered.contains(&key) {
+                entered.push(key);
+            }
+
+            entered
+        })
+        .into_iter()
+        .map(|key| relay_spec::AccountRefV0::readonly(key.to_bytes()))
+        .collect()
+}
+
+/// The index of the market `info` holds, read at `index_offset` past the
+/// discriminator. The resolver's accounts and their lifetimes differ, so it
+/// cannot build an `AccountLoader` over them.
+fn stored_market_index(
+    info: &AccountInfo,
+    discriminator: &[u8],
+    index_offset: usize,
+) -> Option<u16> {
+    if info.owner != &crate::ID {
+        return None;
+    }
+
+    let data = info.try_borrow_data().ok()?;
+    if !data.starts_with(discriminator) {
+        return None;
+    }
+
+    let at = discriminator.len() + index_offset;
+    let bytes = data.get(at..at + 2)?;
+    Some(u16::from_le_bytes([bytes[0], bytes[1]]))
 }
 
 #[cfg(test)]
@@ -234,6 +354,75 @@ mod tests {
             Discriminator,
         },
     };
+
+    /// A user synced over spot market 0 and perp market 0 deposits in spot
+    /// market 1 and opens perp market 2. The staged resync names those
+    /// markets, the perp market's crank account and slab, and nothing the
+    /// stored list already holds.
+    #[test]
+    fn a_resync_names_the_markets_the_user_entered() {
+        use {
+            super::entered_market_accounts,
+            crate::{
+                create_anchor_account_info,
+                state::{
+                    pdas,
+                    perp_market::PerpMarket,
+                    spot_market::SpotMarket,
+                    user::{PerpPosition, SpotPosition, User},
+                },
+            },
+            relay_spec::AccountRefV0,
+        };
+
+        let (perp_key, spot_key) = (pdas::perp_market(0), pdas::spot_market(0));
+        let mut perp = PerpMarket::default();
+        create_anchor_account_info!(perp, &perp_key, PerpMarket, perp_info);
+        let mut spot = SpotMarket::default();
+        create_anchor_account_info!(spot, &spot_key, SpotMarket, spot_info);
+        let stored_accounts = [spot_info, perp_info];
+        let stored: Vec<AccountRefV0> = stored_accounts
+            .iter()
+            .map(|info| AccountRefV0::writable(info.key.to_bytes()))
+            .collect();
+
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            base_asset_amount: 1,
+            ..PerpPosition::default()
+        };
+        user.spot_positions[0] = SpotPosition {
+            market_index: 0,
+            scaled_balance: 1,
+            ..SpotPosition::default()
+        };
+        assert!(entered_market_accounts(&user, &stored_accounts, &stored).is_empty());
+
+        user.spot_positions[1] = SpotPosition {
+            market_index: 1,
+            scaled_balance: 1,
+            ..SpotPosition::default()
+        };
+        user.perp_positions[1] = PerpPosition {
+            market_index: 2,
+            base_asset_amount: 1,
+            ..PerpPosition::default()
+        };
+        let entered: Vec<Pubkey> = entered_market_accounts(&user, &stored_accounts, &stored)
+            .iter()
+            .map(|account| Pubkey::new_from_array(account.address))
+            .collect();
+        assert_eq!(
+            entered,
+            vec![
+                pdas::perp_market(2),
+                pdas::clob_crank_conditions(2),
+                pdas::quoter_slab(2),
+                pdas::spot_market(1),
+            ]
+        );
+    }
 
     #[test]
     fn a_resync_of_unchanged_positions_is_not_paid() {

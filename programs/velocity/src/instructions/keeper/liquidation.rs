@@ -466,7 +466,13 @@ fn pay_liquidation_crank<'info>(
             market_index
         )?;
 
-        let flat = progress.flat_payment(&conditions.crank_payments);
+        let flat = raise_to_poll_floor(
+            progress.flat_payment(&conditions.crank_payments),
+            crate::instructions::optional_accounts::liveness_poll_min_payment(
+                ctx.remaining_accounts,
+                &ctx.accounts.user.key(),
+            ),
+        );
 
         // The liquidations batched into one transaction do not share the flat
         // payment. A relay crank carries its own payment guard, which measures
@@ -491,6 +497,16 @@ fn pay_liquidation_crank<'info>(
     )?;
 
     Ok(())
+}
+
+/// A paid flat figure, raised to what the user's liveness poll asks relay to
+/// assert. A call that earns nothing stays at nothing.
+fn raise_to_poll_floor(flat: u64, poll_floor: u64) -> u64 {
+    if flat == 0 {
+        0
+    } else {
+        flat.max(poll_floor)
+    }
 }
 
 /// Only the authority counts. The user sets its delegate to any key, so a

@@ -408,6 +408,10 @@ fn collect_sync_inputs<'info>(
     let mut book_programs: BTreeSet<Pubkey> = BTreeSet::new();
 
     for info in remaining_accounts {
+        if is_absent(info) {
+            continue;
+        }
+
         if info.owner == &crate::ID {
             if let Some(loader) = loader_of::<PerpMarket>(info) {
                 let market = loader.load()?;
@@ -482,6 +486,7 @@ fn collect_sync_inputs<'info>(
     // program. The slab stores them in the tail already, so neither is an
     // oracle candidate.
     oracles.retain(|key| !slab_books.contains(key) && !book_programs.contains(key));
+    oracles.extend(market_oracles(&perps, &spots));
     Ok(SyncInputs {
         perps,
         spots,
@@ -491,6 +496,26 @@ fn collect_sync_inputs<'info>(
     })
 }
 
+/// An account that does not exist. A staged resync names every account a
+/// new market may have, and a market without a book has no crank account or
+/// slab.
+fn is_absent(info: &AccountInfo) -> bool {
+    info.lamports() == 0 && info.owner == &anchor_lang::system_program::ID
+}
+
+/// The oracle each market names. It is stored from the market account, so a
+/// resync that adds a market need not carry the oracle account itself.
+fn market_oracles<'a>(
+    perps: &'a BTreeMap<u16, MarketInputs>,
+    spots: &'a BTreeMap<u16, MarketInputs>,
+) -> impl Iterator<Item = Pubkey> + 'a {
+    perps
+        .values()
+        .chain(spots.values())
+        .filter_map(|inputs| inputs.oracle)
+        .filter(|oracle| *oracle != Pubkey::default())
+}
+
 /// Every market the user has exposure in has to be present.
 ///
 /// Both entry points are permissionless, and the maps come from whatever
@@ -498,7 +523,7 @@ fn collect_sync_inputs<'info>(
 /// user holds writes a partial stored account list, and one that passes none
 /// writes an empty one. The staged resolvers read their account list back out
 /// of that stored list, so an empty one makes the liquidation resolver load no
-/// markets and fail. The staged repair inherits it and cannot recover.
+/// markets and fail until the staged repair adds every market back.
 ///
 /// The emptiness test is the margin engine's own `is_available` rather than a
 /// non-zero base amount. A position that carries only open orders, unsettled
@@ -507,7 +532,9 @@ fn collect_sync_inputs<'info>(
 /// A market entry is usable only if its oracle account rode along. The
 /// resolver reads the price off that account, so without it every wake fails
 /// and the block reads healthy while the user is never liquidated. This also
-/// stops a caller from omitting an oracle to shield a user. A perp entry filed
+/// stops a caller from omitting an oracle to shield a user. The liquidation
+/// pass adds every market's oracle from the market account, so only the
+/// trigger pass can fail this check. A perp entry filed
 /// only from a `ClobCrankConditionsV0` sets no oracle, so the `PerpMarket`
 /// itself must be present. The quote market's default oracle needs no account.
 ///
@@ -1101,6 +1128,36 @@ mod tests {
 
         assert_eq!(first.len(), 4 + 6);
         assert_eq!(first, second);
+    }
+
+    /// A staged resync names the accounts of a market the user entered. It
+    /// names no oracle, and a market without a book has no slab. The oracle is
+    /// stored from the market, and the absent slab is skipped.
+    #[test]
+    fn a_resync_adds_a_market_without_its_oracle_account() {
+        use super::collect_sync_inputs;
+
+        let market_key = Pubkey::new_unique();
+        let mut market = PerpMarket {
+            oracle: ORACLE,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, &market_key, PerpMarket, market_info);
+        let (absent_key, system) = (Pubkey::new_unique(), anchor_lang::system_program::ID);
+        let (mut lamports, mut data) = (0, vec![]);
+        let absent = AccountInfo::new(
+            &absent_key,
+            false,
+            false,
+            &mut lamports,
+            &mut data,
+            &system,
+            false,
+        );
+
+        let inputs = collect_sync_inputs(&[market_info, absent]).unwrap();
+        assert!(inputs.coverage().refuse_unnamed_oracles().is_ok());
+        assert_eq!(inputs.oracles, BTreeSet::from([ORACLE]));
     }
 
     #[test]

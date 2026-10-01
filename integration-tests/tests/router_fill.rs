@@ -8059,6 +8059,22 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     account.perp_positions[1].market_index = 0;
     set_user_account(&mut fixture.svm, user, &account);
 
+    // The treasury pays for this account at most once per fallback interval,
+    // and opting in stamped the slot. A resync inside that interval pays
+    // nothing, and relay asserts the advertised payment, so the resolver
+    // reports no work until the interval ends.
+    let ix = resolver_ix();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    assert!(
+        !velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data)
+            .unwrap()
+            .has_work(),
+        "a resync inside the paid interval is not work"
+    );
+
+    fixture
+        .svm
+        .warp_to_slot(fixture.svm.get_sysvar::<anchor_lang::prelude::Clock>().slot + 3_000);
     let ix = resolver_ix();
     let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
@@ -8075,32 +8091,6 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     let payout_before = fixture.svm.get_balance(&payout).unwrap();
     let conditions_before = fixture.svm.get_balance(&conditions).unwrap();
     let treasury_before = fixture.svm.get_balance(&crank_treasury_pda()).unwrap();
-
-    // The treasury pays for this account at most once per fallback interval.
-    // Opting in stamped the slot, so a resync inside that interval does the
-    // work and pays nothing: opting in is permissionless and the payer is
-    // protocol funds, so an unbounded rate is a drain by repetition.
-    run_staged_executor(
-        &mut fixture,
-        &resolved,
-        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
-        payout,
-    );
-
-    assert_eq!(
-        fixture.svm.get_balance(&payout).unwrap(),
-        payout_before,
-        "a resync inside the interval is not paid for"
-    );
-
-    fixture
-        .svm
-        .warp_to_slot(fixture.svm.get_sysvar::<anchor_lang::prelude::Clock>().slot + 3_000);
-    // The treasury pays only a resync that finds the positions changed, and
-    // the resync above already recorded the close.
-    let mut account: User = read_zero_copy(&fixture.svm, &user);
-    account.perp_positions[1].quote_asset_amount = -1;
-    set_user_account(&mut fixture.svm, user, &account);
     run_staged_executor(
         &mut fixture,
         &resolved,
@@ -8117,6 +8107,24 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     assert_eq!(
         fixture.svm.get_balance(&crank_treasury_pda()).unwrap(),
         treasury_before - SYNC_FEE
+    );
+
+    // A second change inside the new interval still resyncs when cranked by
+    // hand, and the treasury does not pay it: opting in is permissionless and
+    // the payer is protocol funds, so an unbounded rate is a drain.
+    let mut account: User = read_zero_copy(&fixture.svm, &user);
+    account.perp_positions[1].quote_asset_amount = -1;
+    set_user_account(&mut fixture.svm, user, &account);
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
+        payout,
+    );
+    assert_eq!(
+        fixture.svm.get_balance(&payout).unwrap(),
+        payout_before + SYNC_FEE,
+        "a resync inside the interval is not paid for"
     );
 
     // The user's own account pays nothing: a resync nobody is paid to run
@@ -12595,5 +12603,246 @@ fn a_pair_the_vamm_beats_for_the_earlier_remainder_routes_it_first() {
         -position.quote_asset_amount < 104 * PRICE as i64,
         "paid {}, where the pair would have charged 105",
         -position.quote_asset_amount
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Liquidation coverage after a sync.
+// ---------------------------------------------------------------------------
+
+/// The stored list as relay hands it to a resolver or an executor.
+fn fix4_liq_stored_metas(fixture: &Fixture, user: Pubkey) -> Vec<AccountMeta> {
+    let conditions: velocity::state::user_conditions::UserConditionsV0 =
+        read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
+    conditions
+        .read_sync_accounts()
+        .iter()
+        .map(|r| AccountMeta {
+            pubkey: Pubkey::new_from_array(r.address),
+            is_signer: false,
+            is_writable: r.is_writable(),
+        })
+        .collect()
+}
+
+/// Run a resolver over its fixed accounts and the stored list, and return
+/// the call it stages.
+fn fix4_liq_resolve(
+    fixture: &mut Fixture,
+    user: Pubkey,
+    mut accounts: Vec<AccountMeta>,
+    data: Vec<u8>,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    accounts.extend(fix4_liq_stored_metas(fixture, user));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data,
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).expect("the resolver does not fail");
+    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    if !pointer.has_work() {
+        return None;
+    }
+
+    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
+    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+}
+
+fn fix4_liq_resolve_liquidation(
+    fixture: &mut Fixture,
+    user: Pubkey,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let accounts = velocity::accounts::ResolveLiquidatePerpWithFill {
+        scratch: relay_scratch_pda(),
+        liq_conditions: user_conditions_pda(&user),
+        user,
+        state: state_pda(),
+    }
+    .to_account_metas(None);
+    let data = velocity::instruction::ResolveLiquidatePerpWithFill {}.data();
+    fix4_liq_resolve(fixture, user, accounts, data)
+}
+
+fn fix4_liq_resolve_resync(
+    fixture: &mut Fixture,
+    user: Pubkey,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let accounts = velocity::accounts::ResolveResyncLiqConditions {
+        scratch: relay_scratch_pda(),
+        liq_conditions: user_conditions_pda(&user),
+        user,
+    }
+    .to_account_metas(None);
+    let data = velocity::instruction::ResolveResyncLiqConditions {}.data();
+    fix4_liq_resolve(fixture, user, accounts, data)
+}
+
+/// A user long 10 units at $100 with $50 of USDC, synced over perp market 0.
+fn fix4_liq_synced_long(
+    fixture: &mut Fixture,
+    market_conditions: Pubkey,
+    sync_cost_units: u32,
+) -> Pubkey {
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut account = trading_user(&authority.pubkey(), 50 * SPOT_BALANCE_PRECISION_U64, None);
+    account.perp_positions[0].market_index = 0;
+    account.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    set_user_account(&mut fixture.svm, user, &account);
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+
+    let conditions = sync_liq_conditions(fixture, user, market_conditions, sync_cost_units);
+    fixture.svm.airdrop(&conditions, 100_000_000).unwrap();
+    user
+}
+
+/// A synced user deposits dust in a spot market the sync never saw. The
+/// liquidation resolver reports no work instead of failing, and the resync
+/// waits for its paid interval. The resync then adds the market, and relay
+/// stages the liquidation of the underwater account again.
+#[test]
+fn fix4_liq_a_dust_deposit_in_a_new_market_keeps_relay_coverage() {
+    let mut fixture = setup();
+    arm_liquidation_throttle(&mut fixture.svm);
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+    let user = fix4_liq_synced_long(&mut fixture, market_conditions, ANY_SYNC_COST_UNITS);
+
+    set_sol_spot_market(&mut fixture.svm, 150);
+    let sol_market: velocity::state::spot_market::SpotMarket =
+        read_zero_copy(&fixture.svm, &spot_market_pda(1));
+    let sol_oracle = Pubkey::new_from_array(sol_market.oracle.to_bytes());
+    let mut account: User = read_zero_copy(&fixture.svm, &user);
+    account.spot_positions[1].market_index = 1;
+    account.spot_positions[1].balance_type = SpotBalanceType::Deposit;
+    account.spot_positions[1].scaled_balance = 1;
+    set_user_account(&mut fixture.svm, user, &account);
+
+    let underwater_at = |fixture: &mut Fixture, slot: u64| {
+        fixture.svm.warp_to_slot(slot);
+        set_oracle(
+            &mut fixture.svm,
+            fixture.oracle,
+            (80 * PRICE_PRECISION) as i64,
+            slot,
+        );
+        set_oracle(
+            &mut fixture.svm,
+            sol_oracle,
+            (150 * PRICE_PRECISION) as i64,
+            slot,
+        );
+    };
+
+    underwater_at(&mut fixture, 12);
+    assert!(
+        fix4_liq_resolve_liquidation(&mut fixture, user).is_none(),
+        "the stored list lacks spot market 1, so the resolver reports no work"
+    );
+    assert!(
+        fix4_liq_resolve_resync(&mut fixture, user).is_none(),
+        "a resync inside the paid interval pays nothing, so it is not work"
+    );
+
+    underwater_at(&mut fixture, 3_100);
+    let resync = fix4_liq_resolve_resync(&mut fixture, user).expect("the new market is work");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let payout_before = fixture.svm.get_balance(&payout).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resync,
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
+        payout,
+    );
+    assert!(fixture.svm.get_balance(&payout).unwrap() > payout_before);
+
+    let stored: Vec<Pubkey> = fix4_liq_stored_metas(&fixture, user)
+        .iter()
+        .map(|meta| meta.pubkey)
+        .collect();
+    assert!(stored.contains(&spot_market_pda(1)));
+    assert!(stored.contains(&sol_oracle));
+
+    let liquidation =
+        fix4_liq_resolve_liquidation(&mut fixture, user).expect("relay covers the user again");
+    assert_eq!(
+        liquidation.executor_disc,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR
+    );
+}
+
+/// The admin lowers the market's crank payments after a user's sync. The
+/// liveness poll still asks relay for the old figure, so the staged
+/// liquidation pays that figure and relay's payment guard holds.
+#[test]
+fn fix4_liq_a_liquidation_pays_the_poll_floor_after_a_price_cut() {
+    let mut fixture = setup();
+    arm_liquidation_throttle(&mut fixture.svm);
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    set_protocol_user(&mut fixture.svm);
+    place_clob_bid(&mut fixture, 80 * PRICE, 5 * UNIT);
+    let user = fix4_liq_synced_long(&mut fixture, market_conditions, 0);
+
+    let conditions: velocity::state::user_conditions::UserConditionsV0 =
+        read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
+    assert_eq!(conditions.liveness_min_payment(), 10_000);
+
+    let mut crank: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &market_conditions);
+    crank.crank_payments.liquidation = 3_000;
+    crank.crank_payments.force_cancel = 3_000;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        market_conditions,
+        velocity::state::clob_crank::ClobCrankConditionsV0::DISCRIMINATOR,
+        &crank,
+        velocity::state::clob_crank::ClobCrankConditionsV0::SIZE,
+    );
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (80 * PRICE_PRECISION) as i64,
+        12,
+    );
+    let resolved = fix4_liq_resolve_liquidation(&mut fixture, user)
+        .expect("an underwater account stages a liquidation");
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let reservoir_before = fixture.svm.get_balance(&market_conditions).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+        payout,
+    );
+    assert_eq!(
+        reservoir_before - fixture.svm.get_balance(&market_conditions).unwrap(),
+        10_000,
+        "the liquidation pays what the poll asserts, not the lowered figure"
     );
 }

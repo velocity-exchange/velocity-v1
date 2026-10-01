@@ -604,6 +604,28 @@ pub fn tx_reimbursement_claimants(
     Ok(claimants.max(1))
 }
 
+/// The payment the liveness poll of `user`'s conditions block asserts, when
+/// that block rides in `accounts`. Zero when it does not.
+///
+/// The sync stores the payment of its time, so after the admin lowers it, a
+/// poll that was not synced again asks relay for the old figure. A crank pays
+/// at least this figure, which is bounded by a payment the admin once set.
+pub fn liveness_poll_min_payment<'info>(
+    accounts: &'info [AccountInfo<'info>],
+    user: &Pubkey,
+) -> u64 {
+    use crate::{instructions::loader_of, state::user_conditions::UserConditionsV0};
+
+    accounts
+        .iter()
+        .filter_map(loader_of::<UserConditionsV0>)
+        .find_map(|loader| {
+            let conditions = loader.load().ok()?;
+            (conditions.user == *user).then(|| conditions.liveness_min_payment())
+        })
+        .unwrap_or(0)
+}
+
 /// False for a call that another program makes through CPI. Such a program
 /// counts as one claimant in [`tx_reimbursement_claimants`] however many calls it makes.
 pub fn is_top_level_call(instructions_sysvar: &AccountInfo, discriminator: &[u8]) -> bool {

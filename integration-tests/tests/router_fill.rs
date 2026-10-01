@@ -13059,3 +13059,102 @@ fn fix4_trig_an_expiry_crank_charges_the_payment_value() {
         1_000_000_000 + payment
     );
 }
+
+/// A band cancel of `order_ref` in program-keeper mode, paying `payout`.
+fn fix4_trig_program_keeper_band_cancel_ix(
+    fixture: &Fixture,
+    protocol_user: Pubkey,
+    payout: Pubkey,
+    order_ref: ClobOrderRefV0,
+) -> Instruction {
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    let accounts = velocity::accounts::CrankClobCancelOutsideBand {
+        state: state_pda(),
+        authority: payout,
+        filler: protocol_user,
+        filler_stats: protocol_stats,
+        user: fixture.clob_maker_user,
+        perp_market: perp_market_pda(0),
+        oracle: fixture.oracle,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        crank_conditions: Some(crank_conditions_pda()),
+        sol_spot_market: Some(spot_market_pda(1)),
+    }
+    .to_account_metas(None)
+    .into_iter()
+    .map(|meta| AccountMeta {
+        is_signer: false,
+        ..meta
+    })
+    .collect();
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CrankClobCancelOutsideBand {
+            args: velocity::instructions::CrankClobCancelOutsideBandArgs {
+                market_index: 0,
+                order_ref,
+            },
+        }
+        .data(),
+    }
+}
+
+/// A program-keeper band cancel charges the maker the value of the
+/// reservoir payment and pays the keeper that payment.
+#[test]
+fn fix4_trig_a_band_cancel_charges_the_payment_value() {
+    let mut fixture = setup();
+    let conditions = init_crank_conditions(&mut fixture, 50_000);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, FIX4_TRIG_SOL_PRICE);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
+    let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    // A band of half a percent puts the ask at 99 outside it.
+    let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    market.margin_ratio_initial = 50;
+    market.margin_ratio_maintenance = 25;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+
+    let payments: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &conditions);
+    let payment = u64::from(payments.crank_payments.removal);
+    let expected_fee = fix4_trig_floored_fee(&fixture, payment);
+
+    let payout = fix4_trig_payout(&mut fixture);
+    let ix = fix4_trig_program_keeper_band_cancel_ix(&fixture, protocol_user, payout, order_ref);
+
+    let before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    let after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(clob_ask_count(&fixture), 0);
+    assert_eq!(
+        before.perp_positions[0].quote_asset_amount - after.perp_positions[0].quote_asset_amount,
+        expected_fee as i64
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + payment
+    );
+}

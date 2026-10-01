@@ -5,7 +5,7 @@
 
 use {
     super::helpers::crank_common::{
-        clob_reader, crank_priced_clob_removal, removal_call, ClobRemoval, CrankClobOrderRemoval,
+        clob_reader, crank_clob_removal, removal_call, ClobRemoval, CrankClobOrderRemoval,
         ResolveClobCrank,
     },
     crate::{
@@ -27,7 +27,7 @@ pub fn handle_crank_clob_evict<'info>(
     args: CrankClobEvictArgs,
 ) -> Result<()> {
     let CrankClobEvictArgs { market_index, side } = args;
-    crank_priced_clob_removal(
+    crank_clob_removal(
         &ctx.accounts.removal_accounts(ctx.remaining_accounts),
         market_index,
         ClobRemoval::Evict(EvictWorstArgsV0 { side }),

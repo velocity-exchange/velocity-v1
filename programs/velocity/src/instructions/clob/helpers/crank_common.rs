@@ -284,23 +284,14 @@ impl ClobRemoval {
 
 /// The shared crank body. It CPIs the removal, checks that the removal hit the
 /// passed maker, unwinds the aggregates, and pays the keeper. Both modes pay
-/// quote from the maker. Program-keeper mode adds reservoir lamports for a
-/// removal that collected the fee.
+/// quote from the maker. Program-keeper mode raises the fee to the reservoir
+/// payment's value at `sol_price` (see [`keeper_crank_fee`]), and adds
+/// reservoir lamports for a removal that collected the fee.
 ///
 /// The removal is ungated, because a halted market still needs its orders
 /// reclaimed. The fee follows `force_cancel_clob_orders`: a full exchange halt
 /// stops the fee and not the removal.
 pub fn crank_clob_removal(
-    accounts: &RemovalAccounts,
-    market_index: u16,
-    removal: ClobRemoval,
-) -> Result<()> {
-    crank_priced_clob_removal(accounts, market_index, removal, None)
-}
-
-/// [`crank_clob_removal`] with the fee raised to the reservoir payment's value
-/// at `sol_price`. See [`keeper_crank_fee`].
-pub fn crank_priced_clob_removal(
     accounts: &RemovalAccounts,
     market_index: u16,
     removal: ClobRemoval,

@@ -730,12 +730,9 @@ fn plan_subject(
         .ok_or(ErrorCode::NoTakerOriginCross)
 }
 
-/// The two heads of the book, when both are remainders whose claims lapsed and
-/// they cross. Returns the cross and its aggressor's side.
-///
-/// A claim-honouring route of one would take the other at its own price, or
-/// take nothing where the book withholds it. The pair settles as a pair
-/// instead, at the earlier one's price, as R3 settles two live remainders.
+/// The cross of the two heads, when both are lapsed remainders, and its
+/// aggressor's side. A claim-honouring route of one would take the other at
+/// its own price, or nothing where the book withholds it.
 fn lapsed_pair_at_front(bids: &[BookRow], asks: &[BookRow]) -> Option<(Cross, SideV0)> {
     let lapsed_remainder = |row: &BookRow| row.order.taker_origin && row.claim_lapsed;
     let (bid, ask) = (bids.first()?, asks.first()?);
@@ -1146,14 +1143,10 @@ fn signed_route_digest(
     Ok(digest)
 }
 
-/// The route claim the crank is held to.
-///
-/// A fill that honours every claim takes no depth the remainder claims, and
-/// a remainder whose claim lapsed is in that plan too. A crank that names no
-/// route may fill such a remainder across the baseline, which can only
-/// improve on its rest price. Relay cannot read the taker's record, so
-/// holding that fill to the digest fails every staged crank for the claim
-/// window.
+/// The route claim the crank is held to. A fill that honours every claim
+/// takes no claimed depth, so a crank that names no route may fill it across
+/// the baseline. Relay cannot read the taker's record, so the digest would
+/// fail every staged crank for the claim window.
 fn claimed_route_digest(
     signed_digest: crate::state::order_params::RouteDigest,
     honours_every_claim: bool,
@@ -2706,13 +2699,10 @@ fn choose_stage(
     Some(stage)
 }
 
-/// The remainder the resolver stages, and the makers its crank carries.
-///
-/// A cross the taker claims goes first. Only when the book has none does the
-/// resolver stage a remainder that routes with every live claim honoured:
-/// one the vAMM crosses, or one whose claim lapsed and that crosses a row no
-/// live claim covers. The executor applies the same plan, so a stage it would
-/// refuse is never chosen for a reason the resolver can see.
+/// The remainder the resolver stages, and the makers its crank carries. A
+/// cross the taker claims or a lapsed pair goes first. Otherwise the resolver
+/// stages a remainder that routes with every live claim honoured. The executor
+/// applies the same plan, so a stage it would refuse is never chosen.
 fn choose_subject_stage(
     bids: &[BookRow],
     asks: &[BookRow],

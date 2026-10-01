@@ -12905,6 +12905,16 @@ fn fix4_taker_a_drawdown_vamm_stages_no_failing_pair() {
     );
 }
 
+fn fix4_taker_warp_at_oracle_100(fixture: &mut Fixture, slot: u64) {
+    fixture.svm.warp_to_slot(slot);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        slot,
+    );
+}
+
 /// A bid remainder at 102 rests first, then a maker ask at 100 for half a
 /// unit, then an ask remainder at 101. The bid's crank ignores every claim, and
 /// it used to sweep through the maker into the later ask at 101. It now stops
@@ -12932,13 +12942,7 @@ fn fix4_taker_a_maker_cross_stops_in_front_of_a_later_remainder() {
         100 * PRICE,
         UNIT / 2,
     );
-    fixture.svm.warp_to_slot(12);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        12,
-    );
+    fix4_taker_warp_at_oracle_100(&mut fixture, 12);
     rest_taker_origin_order(
         &mut fixture,
         &late,
@@ -12947,13 +12951,7 @@ fn fix4_taker_a_maker_cross_stops_in_front_of_a_later_remainder() {
         UNIT,
     );
 
-    fixture.svm.warp_to_slot(20);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        20,
-    );
+    fix4_taker_warp_at_oracle_100(&mut fixture, 20);
     quote_vamm_outside_the_pair(&mut fixture.svm);
 
     let keeper_authority = keeper.authority.insecure_clone();

@@ -516,7 +516,8 @@ export type CrankTreasuryV0Account = {
 	totalPaid: BN;
 	/** lifetime lamports moved out to market reservoirs */
 	totalRefilled: BN;
-	paddingU64: BN;
+	/** paid resyncs leave at least this many lamports above rent, so they cannot spend what reservoir refills need. Refills ignore it. Set by `updateCrankTreasury`. */
+	resyncFloorLamports: BN;
 	/** a refill fills a reservoir to this many of its most expensive crank. Read at refill time, so re-tuning it reaches every market at once. */
 	refillTargetCranks: number;
 	/** wake a refill when a reservoir can pay fewer than this many of its most expensive crank. The attach resolves it to lamports and writes it onto the market (`ClobCrankConditionsV0.refillWatermarkLamports`), because that is the threshold the market's wake condition carries. A new watermark therefore reaches a market on its next attach. It must be under `refillTargetCranks`, or a refill would leave the reservoir still due */

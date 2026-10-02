@@ -5439,8 +5439,10 @@ pub mod types {
         pub reduce_only_clob_orders: u16,
         pub max_margin_ratio: u16,
         pub market_index: u16,
-        pub open_orders: u8,
+        pub open_orders: u16,
         pub position_flag: u8,
+        #[serde(skip)]
+        pub padding: Padding<7>,
     }
     #[repr(C)]
     #[derive(
@@ -7095,14 +7097,14 @@ pub mod types {
         pub status: u8,
         pub is_margin_trading_enabled: bool,
         pub idle: bool,
-        pub open_orders: u8,
         pub has_open_order: bool,
+        pub open_orders: u16,
         pub open_auctions: u8,
         pub has_open_auction: bool,
         pub pool_id: u8,
         pub special_user_status: u8,
         #[serde(skip)]
-        pub padding: Padding<3>,
+        pub padding: Padding<2>,
         pub equity_floor: u64,
         pub equity_floor_buffer: u64,
     }
@@ -8862,14 +8864,14 @@ pub mod accounts {
         pub status: u8,
         pub is_margin_trading_enabled: bool,
         pub idle: bool,
-        pub open_orders: u8,
         pub has_open_order: bool,
+        pub open_orders: u16,
         pub open_auctions: u8,
         pub has_open_auction: bool,
         pub pool_id: u8,
         pub special_user_status: u8,
         #[serde(skip)]
-        pub padding: Padding<3>,
+        pub padding: Padding<2>,
         pub equity_floor: u64,
         pub equity_floor_buffer: u64,
     }

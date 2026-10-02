@@ -4778,8 +4778,8 @@ fn a_maker_cannot_outrun_cleanup_by_resting_more_orders() {
     // whole side is reclaimable.
     let mut broke = trading_user(&fixture.clob_maker_authority.pubkey(), 1_000, None);
     broke.perp_positions[0].open_asks = -(total_base as i64);
-    broke.perp_positions[0].open_orders = RESTED as u8;
-    broke.open_orders = RESTED as u8;
+    broke.perp_positions[0].open_orders = RESTED as u16;
+    broke.open_orders = RESTED as u16;
     broke.has_open_order = true;
     broke.next_order_id = RESTED as u32 + 1;
     set_user_account(&mut fixture.svm, fixture.clob_maker_user, &broke);

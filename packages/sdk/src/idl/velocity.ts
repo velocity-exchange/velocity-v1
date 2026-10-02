@@ -28665,11 +28665,20 @@ export type Velocity = {
             "docs": [
               "The number of open orders"
             ],
-            "type": "u8"
+            "type": "u16"
           },
           {
             "name": "positionFlag",
             "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
           }
         ]
       }
@@ -33253,18 +33262,18 @@ export type Velocity = {
             "type": "bool"
           },
           {
-            "name": "openOrders",
-            "docs": [
-              "number of open orders"
-            ],
-            "type": "u8"
-          },
-          {
             "name": "hasOpenOrder",
             "docs": [
               "Whether or not user has open order"
             ],
             "type": "bool"
+          },
+          {
+            "name": "openOrders",
+            "docs": [
+              "number of open orders"
+            ],
+            "type": "u16"
           },
           {
             "name": "openAuctions",
@@ -33294,7 +33303,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                3
+                2
               ]
             }
           },

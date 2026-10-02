@@ -2085,7 +2085,7 @@ pub async fn liquidation_books(
 /// How many of the account's open orders in `market_index` rest on a CLOB book
 /// rather than in a `User.orders` slot. Mirrors `User::clob_resident_open_orders`.
 /// A placed-trigger shadow row counts as book-resident.
-pub fn clob_resident_open_orders(user: &User, market_index: u16) -> u8 {
+pub fn clob_resident_open_orders(user: &User, market_index: u16) -> u16 {
     let placed_on_clob = program::state::user::OrderBitFlag::PlacedOnClob as u8;
     let listed = user
         .orders
@@ -2097,7 +2097,7 @@ pub fn clob_resident_open_orders(user: &User, market_index: u16) -> u8 {
                 && order.bit_flags & placed_on_clob == 0
         })
         .count()
-        .min(u8::MAX as usize) as u8;
+        .min(u16::MAX as usize) as u16;
 
     user.perp_positions
         .iter()

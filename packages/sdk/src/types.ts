@@ -2138,8 +2138,8 @@ export type UserAccount = {
 	isMarginTradingEnabled: boolean;
 	/** true if the account hasn't interacted with the protocol in ~1 week and has no orders/positions/borrows; off-chain keepers may ignore idle accounts */
 	idle: boolean;
-	openOrders: number;
 	hasOpenOrder: boolean;
+	openOrders: number;
 	openAuctions: number;
 	hasOpenAuction: boolean;
 	poolId: number;

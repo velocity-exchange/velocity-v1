@@ -79,7 +79,7 @@ pub enum SpecialUserStatus {
 
 // implement SIZE const for User
 impl Size for User {
-    const SIZE: usize = 4496;
+    const SIZE: usize = 4560;
 }
 
 #[account(zero_copy(unsafe))]
@@ -137,10 +137,10 @@ pub struct User {
     /// User is idle if they haven't interacted with the protocol in 1 week and they have no orders, perp positions or borrows
     /// Off-chain keeper bots can ignore users that are idle
     pub idle: bool,
-    /// number of open orders
-    pub open_orders: u8,
     /// Whether or not user has open order
     pub has_open_order: bool,
+    /// number of open orders
+    pub open_orders: u16,
     /// Always zero. These counted orders that ran an auction. Nothing
     /// auctions now, and `User` is a fixed layout, so the two stay.
     pub open_auctions: u8,
@@ -148,7 +148,7 @@ pub struct User {
     pub pool_id: u8,
     /// Whether the user is a special user (vamm hedger, etc)
     pub special_user_status: u8,
-    pub padding: [u8; 3],
+    pub padding: [u8; 2],
     /// Minimum account net equity (unweighted assets plus perp pnl minus
     /// spot liabilities, see `calculate_user_equity`). Below this the
     /// permissionless breaker can trip. Risk-increasing orders, fills,
@@ -635,7 +635,7 @@ impl User {
     /// open, flagged [`OrderBitFlag::PlacedOnClob`], reusing that slot. Both
     /// count here. A consumer also counting `Order` rows must skip rows
     /// [`Order::is_placed_on_clob`] reports, or double-counts a fired trigger order.
-    pub fn clob_resident_open_orders(&self, market_index: u16) -> u8 {
+    pub fn clob_resident_open_orders(&self, market_index: u16) -> u16 {
         let listed = self
             .orders
             .iter()
@@ -646,7 +646,7 @@ impl User {
                     && !order.is_placed_on_clob()
             })
             .count()
-            .min(u8::MAX as usize) as u8;
+            .min(u16::MAX as usize) as u16;
         self.get_perp_position(market_index)
             .map(|position| position.open_orders)
             .unwrap_or(0)
@@ -1305,8 +1305,9 @@ pub struct PerpPosition {
     /// The market index for the perp market
     pub market_index: u16,
     /// The number of open orders
-    pub open_orders: u8,
+    pub open_orders: u16,
     pub position_flag: u8,
+    pub padding: [u8; 7],
 }
 
 impl PerpPosition {
@@ -2713,7 +2714,7 @@ mod clob_resident_open_orders_tests {
         order
     }
 
-    fn user_with(reserved_open_orders: u8, rows: Vec<Order>) -> User {
+    fn user_with(reserved_open_orders: u16, rows: Vec<Order>) -> User {
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
             market_index: MARKET,

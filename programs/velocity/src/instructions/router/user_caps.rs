@@ -816,7 +816,7 @@ fn rests_ordinary_clob_orders(maker: &crate::state::user::User, market_index: u1
     let reduce_only_orders = maker
         .get_perp_position(market_index)
         .map_or(0, |position| position.reduce_only_clob_orders);
-    u16::from(maker.clob_resident_open_orders(market_index)) > reduce_only_orders
+    maker.clob_resident_open_orders(market_index) > reduce_only_orders
 }
 
 /// The base a fill of the orders on `resting_side` can take before it grows

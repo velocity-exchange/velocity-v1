@@ -36,7 +36,7 @@ pub struct OrderReservation {
     pub market_index: u16,
     pub open_bids: u64,
     pub open_asks: u64,
-    pub open_orders: u8,
+    pub open_orders: u16,
     pub reduce_only_book_orders: u16,
 }
 

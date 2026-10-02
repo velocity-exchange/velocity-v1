@@ -252,7 +252,7 @@ pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>)
 
 /// The counters that `update_user_open_orders_count` writes back.
 pub struct UserOpenOrderCounts {
-    pub open_orders: u8,
+    pub open_orders: u16,
     pub open_auctions: u8,
 }
 
@@ -269,7 +269,7 @@ pub struct UserOpenOrderCounts {
 /// reuses the `open_orders` slot that row already holds. The row pass skips it
 /// because `clob_resident_open_orders` counts it, so it counts exactly once.
 pub fn count_user_open_orders(user: &User) -> UserOpenOrderCounts {
-    let mut open_orders = 0_u8;
+    let mut open_orders = 0_u16;
     let open_auctions = 0_u8;
 
     for order in user.orders.iter() {
@@ -374,7 +374,7 @@ mod open_order_count_tests {
         order
     }
 
-    fn user_with(reserved_open_orders: u8, rows: Vec<Order>) -> User {
+    fn user_with(reserved_open_orders: u16, rows: Vec<Order>) -> User {
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
             market_index: MARKET,

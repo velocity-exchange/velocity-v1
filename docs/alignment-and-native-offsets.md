@@ -104,7 +104,7 @@ Current sizes, all verified against the assertions and `Size` impls listed in th
 | `PerpMarket` | 1552 | 1560 | `state/perp_market.rs:540`, `:626` |
 | `SpotMarket` | 1056 | 1064 | `state/spot_market.rs:278`, `:363` |
 | `State` | 1744 | 1752 | `state/state.rs:658`, `:639` |
-| `User` | 4488 | 4496 | `state/user.rs:83` (`Size` impl only) |
+| `User` | 4552 | 4560 | `state/user.rs:83` (`Size` impl only) |
 | `UserStats` | 232 | 240 | `state/user.rs:2034` (`Size` impl only) |
 | `LPPool` | 496 | 504 | `vlp/hedge/state.rs:222` (`Size` impl only) |
 | `MarketStats` | 216 | embedded, no discriminator | `state/perp_market.rs:1862` |

@@ -591,7 +591,7 @@ pub fn release_reserved_open_base_for_exit(
 /// The counterpart to [`release_reserved_open_base`] for the order count a
 /// quoter reports it retired. A saturating subtraction would let one report
 /// collapse the count that backs orders which still rest.
-pub fn release_reserved_open_orders(position: &mut PerpPosition, count: u8) -> VelocityResult {
+pub fn release_reserved_open_orders(position: &mut PerpPosition, count: u16) -> VelocityResult {
     validate!(
         count <= position.open_orders,
         ErrorCode::QuoterReportExceedsReservation,

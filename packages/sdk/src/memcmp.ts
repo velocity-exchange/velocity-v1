@@ -22,22 +22,23 @@ export function getUserFilter(): MemcmpFilter {
  * file alone, plus a warning earned by a failure mode that already happened once.
  *
  * Byte offsets of the trailing scalar flags in the `User` account. These MUST match the
- * on-chain layout decoded in `decode/user.ts`. The current layout is 4496 bytes:
- *   status(4468) isMarginTradingEnabled(4469) idle(4470) openOrders(4471)
- *   hasOpenOrder(4472) openAuctions(4473) hasOpenAuction(4474) poolId(4475)
- *   specialUserStatus(4476)
+ * on-chain layout decoded in `decode/user.ts`. The current layout is 4560 bytes:
+ *   status(4532) isMarginTradingEnabled(4533) idle(4534) hasOpenOrder(4535)
+ *   openOrders(4536, u16) openAuctions(4538) hasOpenAuction(4539) poolId(4540)
+ *   specialUserStatus(4541)
+ * `programs/velocity/tests/user_layout.rs` pins them.
  *
  * These offsets previously targeted the older 4376-byte layout. After `PerpPosition`
  * grew by 120 bytes, the offsets shifted but the filters were not updated, so
  * `getUserWithOrderFilter()` matched zero accounts and the user map never populated.
  * Keep these in sync with `decode/user.ts` if the `User` layout changes again.
  */
-const USER_IDLE_OFFSET = 4470;
-const USER_HAS_OPEN_ORDER_OFFSET = 4472;
-const USER_POOL_ID_OFFSET = 4475;
+const USER_IDLE_OFFSET = 4534;
+const USER_HAS_OPEN_ORDER_OFFSET = 4535;
+const USER_POOL_ID_OFFSET = 4540;
 
 /**
- * Builds a memcmp filter matching `User` accounts whose `idle` flag (offset 4470) is `false`.
+ * Builds a memcmp filter matching `User` accounts whose `idle` flag (offset 4534) is `false`.
  * Idle sub-accounts have no open positions/orders and have been inactive past the idle threshold;
  * this filter excludes them, e.g. when scanning for accounts that need active monitoring.
  * @returns A memcmp filter for non-idle `User` accounts.
@@ -52,7 +53,7 @@ export function getNonIdleUserFilter(): MemcmpFilter {
 }
 
 /**
- * Builds a memcmp filter matching `User` accounts with `hasOpenOrder` (offset 4472) set to
+ * Builds a memcmp filter matching `User` accounts with `hasOpenOrder` (offset 4535) set to
  * `true`, i.e. at least one live order.
  */
 export function getUserWithOrderFilter(): MemcmpFilter {
@@ -65,7 +66,7 @@ export function getUserWithOrderFilter(): MemcmpFilter {
 }
 
 /**
- * Builds a memcmp filter matching `User` accounts with `hasOpenOrder` (offset 4472) set to `false`
+ * Builds a memcmp filter matching `User` accounts with `hasOpenOrder` (offset 4535) set to `false`
  * — i.e. no live orders.
  * @returns A memcmp filter for `User` accounts with no open orders.
  */
@@ -95,7 +96,7 @@ export function getUserWithName(name: string): MemcmpFilter {
 }
 
 /**
- * Builds a memcmp filter matching `User` accounts whose `poolId` (single byte, offset 4475) equals
+ * Builds a memcmp filter matching `User` accounts whose `poolId` (single byte, offset 4540) equals
  * `poolId`. Used to scope account scans to a specific isolated pool.
  * @param poolId - Pool id byte (0 = main/cross pool) to match.
  * @returns A memcmp filter for `User` accounts in the given pool.

@@ -31,14 +31,7 @@ describe('Custom user decode', () => {
 			i,
 			userAccountBufferString,
 		] of userAccountBufferStrings.entries()) {
-			// captured buffers end at the old declared-field length; on-chain
-			// accounts are 4496 bytes (tail padding + equityFloor +
-			// equityFloorBuffer), so zero-extend
-			const raw = Buffer.from(userAccountBufferString, 'base64');
-			const userAccountBuffer =
-				raw.length < 4496
-					? Buffer.concat([raw, Buffer.alloc(4496 - raw.length)])
-					: raw;
+			const userAccountBuffer = Buffer.from(userAccountBufferString, 'base64');
 			const [anchorSize, customSize, anchorTime, customTime] =
 				testUserAccountDecode(program, userAccountBuffer, i);
 			totalAnchorSize += anchorSize;

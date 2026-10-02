@@ -622,7 +622,7 @@ fn reserve_remainder(
     }
 
     let position = user.get_perp_position(order.market_index).ok();
-    if position.is_some_and(|position| position.open_orders == u8::MAX) {
+    if position.is_some_and(|position| position.open_orders == u16::MAX) {
         return Ok(RemainderReservation::Refused(
             RestRefusal::PositionAtOrderLimit,
         ));

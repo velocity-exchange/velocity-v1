@@ -17,13 +17,7 @@ describe('Extended account decode', () => {
 		const program = new Program(velocityIDL as Idl, provider);
 
 		for (const userAccountBufferString of userAccountBufferStrings) {
-			// captured buffers end at the old declared-field length; on-chain
-			// accounts are 4496 bytes, so zero-extend to current size first
-			const raw = Buffer.from(userAccountBufferString, 'base64');
-			const buffer =
-				raw.length < 4496
-					? Buffer.concat([raw, Buffer.alloc(4496 - raw.length)])
-					: raw;
+			const buffer = Buffer.from(userAccountBufferString, 'base64');
 			// non-zero tail so any decode that reads past the struct is caught
 			const extended = Buffer.concat([buffer, Buffer.alloc(128, 0xaa)]);
 

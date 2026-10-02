@@ -108,8 +108,8 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			buffer,
 			offset + 64
 		);
-		const openOrders = buffer.readUInt8(offset + 78);
-		const positionFlag = buffer.readUInt8(offset + 79);
+		const openOrders = buffer.readUInt16LE(offset + 78);
+		const positionFlag = buffer.readUInt8(offset + 80);
 
 		if (
 			baseAssetAmount.eq(ZERO) &&
@@ -122,7 +122,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 				0
 			)
 		) {
-			offset += 80;
+			offset += 88;
 			continue;
 		}
 
@@ -144,7 +144,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		const maxMarginRatio = buffer.readUInt16LE(offset); // offset+74
 		offset += 2;
 		const marketIndex = buffer.readUInt16LE(offset); // offset+76
-		offset += 4; // advance past marketIndex(2) + openOrders(1) + positionFlag(1)
+		offset += 12; // advance past marketIndex(2) + openOrders(2) + positionFlag(1) + padding(7)
 		perpPositions.push({
 			lastCumulativeFundingRate,
 			baseAssetAmount,
@@ -357,11 +357,11 @@ export function decodeUser(buffer: Buffer): UserAccount {
 	const idle = buffer.readUInt8(offset) === 1;
 	offset += 1;
 
-	const openOrders = buffer.readUInt8(offset);
-	offset += 1;
-
 	const hasOpenOrder = buffer.readUInt8(offset) === 1;
 	offset += 1;
+
+	const openOrders = buffer.readUInt16LE(offset);
+	offset += 2;
 
 	const openAuctions = buffer.readUInt8(offset);
 	offset += 1;
@@ -375,7 +375,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 	const specialUserStatus = buffer.readUInt8(offset);
 	offset += 1;
 
-	offset += 3; // padding
+	offset += 2; // padding
 	const equityFloor = readUnsignedBigInt64LE(buffer, offset);
 	offset += 8;
 	const equityFloorBuffer = readUnsignedBigInt64LE(buffer, offset);

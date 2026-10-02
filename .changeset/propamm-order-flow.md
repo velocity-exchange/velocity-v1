@@ -616,6 +616,10 @@ a stop. `isOracleValidForTriggerOrder` mirrors the rule. The relay resolvers can
 they can stage a fire on such an oracle. The executor's simulation then refuses it, and the turner
 sends nothing.
 
+`PerpPosition.openOrders` and `UserAccount.openOrders` count to 65535, so a market can hold more than
+255 resting orders. The `User` account is 4560 bytes. `decodeUser`, `USER_ACCOUNT_SIZE_BYTES` and the
+`idle`, `hasOpenOrder` and `poolId` memcmp filters follow the new layout.
+
 `PerpPosition.reduceOnlyClobOrders` counts the reduce-only orders the owner has resting on the CLOB.
 While it is nonzero the router caps that user's reduce-only fills to the position they reduce, so a
 reduce-only stop can rest its remainder on the book without over-filling. A reduce-only order also

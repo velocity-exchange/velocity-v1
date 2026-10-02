@@ -57,7 +57,7 @@ struct Case {
     reduce_only_market: bool,
     /// Orders the maker rests on the book, and how many of them are
     /// reduce-only.
-    clob_orders: u8,
+    clob_orders: u16,
     reduce_only_clob_orders: u16,
     exchange_match_fills_allowed: bool,
 }
@@ -312,7 +312,7 @@ fn a_maker_resting_nothing_cannot_be_hurt() {
 /// so the breaker does not refuse it. An ordinary bid has no such bound.
 #[test]
 fn a_book_bounded_to_the_cover_is_judged_as_reducing() {
-    let latched_short = |clob_orders: u8| Case {
+    let latched_short = |clob_orders: u16| Case {
         latched: true,
         position_base: -BASE_PRECISION_I64,
         open_bids: 2 * BASE_PRECISION_I64,

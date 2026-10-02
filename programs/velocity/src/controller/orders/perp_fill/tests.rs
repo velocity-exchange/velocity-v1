@@ -348,7 +348,7 @@ impl Scenario {
             SpotMarketMap::load_one(leak_account(spot_market, Pubkey::new_unique()), true).unwrap();
 
         let maker_key = Pubkey::new_unique();
-        let book_orders = case.book_orders.len() as u8;
+        let book_orders = case.book_orders.len() as u16;
         let reduce_only_book_orders = case.book_orders.iter().filter(|&&flag| flag).count();
         let maker = User {
             authority: case.maker_authority,

@@ -43,7 +43,7 @@ import { grpcSubscription } from './grpcSubscription';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 
-export const USER_ACCOUNT_SIZE_BYTES = 4496;
+export const USER_ACCOUNT_SIZE_BYTES = 4560;
 
 /** Public surface implemented by `UserMap`. */
 export interface UserMapInterface {

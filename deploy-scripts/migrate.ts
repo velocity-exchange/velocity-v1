@@ -675,7 +675,7 @@ function ixDiscriminator(name: string): Buffer {
  * unit test `the_migration_script_resizes_to_the_real_sizes` parses these
  * entries, so keep each one on one line with a plain number. */
 const RESIZABLE: { name: string; size: number }[] = [
-	{ name: 'User', size: 4496 },
+	{ name: 'User', size: 4560 },
 	{ name: 'PerpMarket', size: 1560 },
 	{ name: 'QuoterV0', size: 792 },
 	// Relay condition hosts. Sizes come from `cargo test -p velocity --lib

@@ -27,6 +27,7 @@ use {
         state::{
             prop_amm::{QuoterSlotV0, UserRefV0},
             router_quote::QuotedSourceKind,
+            spot_market::SpotMarket,
             state::State,
         },
     },
@@ -271,20 +272,34 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         .to_account_metas(None)
     };
 
-    accounts.push(AccountMeta::new_readonly(*oracle, false));
+    // The executor prices its keeper payment off the SOL spot market, and
+    // refuses a cross that carries no SOL price.
+    let mut spot_markets = vec![quote_spot_market_index];
+    if state.sol_spot_market_index != 0 && state.sol_spot_market_index != quote_spot_market_index {
+        spot_markets.push(state.sol_spot_market_index);
+    }
+
+    // The account maps read every oracle before the first market, and each
+    // spot market loads only with its own oracle present.
+    let mut oracles = vec![*oracle];
+    for &index in &spot_markets {
+        let market: SpotMarket =
+            fetch_zero_copy(source, &spot_market_pda(velocity, index), "spot market").await?;
+        if !oracles.contains(&market.oracle) {
+            oracles.push(market.oracle);
+        }
+    }
+
+    accounts.extend(oracles.iter().map(|key| AccountMeta::new_readonly(*key, false)));
     accounts.push(AccountMeta::new(
         spot_market_pda(velocity, quote_spot_market_index),
         false,
     ));
-
-    // The executor prices its keeper payment off the SOL spot market, and
-    // refuses a cross that carries no SOL price.
-    if state.sol_spot_market_index != 0 && state.sol_spot_market_index != quote_spot_market_index {
-        accounts.push(AccountMeta::new_readonly(
-            spot_market_pda(velocity, state.sol_spot_market_index),
-            false,
-        ));
-    }
+    accounts.extend(
+        spot_markets[1..]
+            .iter()
+            .map(|&index| AccountMeta::new_readonly(spot_market_pda(velocity, index), false)),
+    );
 
     for maker in &makers {
         accounts.push(AccountMeta::new(pdas::user_of(velocity, maker), false));

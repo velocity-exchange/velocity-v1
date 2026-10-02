@@ -242,8 +242,9 @@ pub fn decode_quote_buffer(data: &[u8]) -> Result<QuoteView> {
 pub const PASS_ACCOUNT_BUDGET: usize = {
     // Signature and its count, the three header bytes, the blockhash, the
     // key and account-index counts, the program index, the data length, and
-    // `QuoteRouterArgs` behind its discriminator.
-    const ENVELOPE: usize = 64 + 1 + 3 + 32 + 2 + 1 + 2 + 2 + 24;
+    // `QuoteRouterArgs` behind its discriminator. The compute limit adds its
+    // program index, empty account list, data length and 5 data bytes.
+    const ENVELOPE: usize = 64 + 1 + 3 + 32 + 2 + 1 + 2 + 2 + 24 + COMPUTE_LIMIT_IX_BYTES;
     (PACKET_DATA_SIZE - ENVELOPE) / (32 + 1)
 };
 
@@ -253,8 +254,17 @@ pub const PACKET_DATA_SIZE: usize = 1280 - 40 - 8;
 
 /// Keys every pass carries, whatever it quotes. They are the instruction's own
 /// three accounts, the oracle, spot market and perp market map, the market's
-/// quoter slab, and velocity as the program the message invokes.
-pub const PASS_FIXED_ACCOUNTS: usize = 3 + 3 + 1 + 1;
+/// quoter slab, velocity as the program the message invokes, and the compute
+/// budget program.
+pub const PASS_FIXED_ACCOUNTS: usize = 3 + 3 + 1 + 1 + 1;
+
+/// The compute limit a view simulates under. The runtime default of 200,000
+/// is less than a deep book costs, and a view that runs out returns nothing,
+/// so the health layer drops the quoter it was in. This is the runtime maximum.
+pub const QUOTE_VIEW_COMPUTE_LIMIT: u32 = 1_400_000;
+
+/// The bytes the compute-limit instruction adds to a pass, besides its key.
+const COMPUTE_LIMIT_IX_BYTES: usize = 1 + 1 + 1 + 5;
 
 /// The CPI accounts a set of quoter slots is consulted through, keyed by
 /// account and valued by writability.
@@ -570,7 +580,12 @@ pub async fn simulate_quote_view_with_cost<S: ChainSource>(
     quote_buffer: &Pubkey,
 ) -> Result<(QuoteView, u64)> {
     let blockhash = source.latest_blockhash().await?;
-    let message = Message::new_with_blockhash(&[instruction], Some(payer), &blockhash.hash);
+    let compute_limit =
+        solana_compute_budget_interface::ComputeBudgetInstruction::set_compute_unit_limit(
+            QUOTE_VIEW_COMPUTE_LIMIT,
+        );
+    let message =
+        Message::new_with_blockhash(&[compute_limit, instruction], Some(payer), &blockhash.hash);
     // The planner sizes passes to fit this limit. Measuring the built message
     // keeps a disagreement between the two away from the runtime. The runtime
     // answers an oversized transaction with a panic inside its own

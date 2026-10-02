@@ -180,6 +180,10 @@ pub enum TxIntent {
         market_index: u16,
         subaccount: Pubkey,
     },
+    ResolveBankruptcy {
+        market_index: u16,
+        liquidatee: Pubkey,
+    },
     /// standalone trigger of a trigger order whose condition is met but that does not yet cross
     Trigger {
         market_index: u16,
@@ -205,6 +209,7 @@ impl TxIntent {
             TxIntent::LiquidateSpot { .. } => "liq_spot",
             TxIntent::Derisk { .. } => "derisk",
             TxIntent::SettlePnl { .. } => "settle_pnl",
+            TxIntent::ResolveBankruptcy { .. } => "resolve_bankruptcy",
             TxIntent::Trigger { .. } => "trigger",
         }
     }
@@ -227,6 +232,7 @@ impl TxIntent {
             TxIntent::LiquidateSpot { .. } => 0,
             TxIntent::Derisk { .. } => 0,
             TxIntent::SettlePnl { .. } => 0,
+            TxIntent::ResolveBankruptcy { .. } => 0,
             TxIntent::Trigger { .. } => 0,
         }
     }
@@ -254,6 +260,7 @@ impl TxIntent {
             Self::LiquidateSpot { slot, .. } => *slot,
             TxIntent::Derisk { .. } => 0,
             TxIntent::SettlePnl { .. } => 0,
+            TxIntent::ResolveBankruptcy { .. } => 0,
             TxIntent::Trigger { slot, .. } => *slot,
         }
     }
@@ -284,6 +291,7 @@ impl TxIntent {
             | Self::LiquidatePerp { market_index, .. }
             | Self::Derisk { market_index, .. }
             | Self::SettlePnl { market_index, .. }
+            | Self::ResolveBankruptcy { market_index, .. }
             | Self::Trigger { market_index, .. } => Some(*market_index),
             Self::LiquidatePerpPnlForDeposit {
                 perp_market_index, ..
@@ -341,7 +349,8 @@ impl TxIntent {
             | Self::LiquidatePerp { liquidatee, .. }
             | Self::LiquidatePerpPnlForDeposit { liquidatee, .. }
             | Self::LiquidateBorrowForPerpPnl { liquidatee, .. }
-            | Self::LiquidateSpot { liquidatee, .. } => Some(*liquidatee),
+            | Self::LiquidateSpot { liquidatee, .. }
+            | Self::ResolveBankruptcy { liquidatee, .. } => Some(*liquidatee),
             _ => None,
         }
     }
@@ -355,6 +364,7 @@ impl TxIntent {
                 | Self::LiquidatePerpPnlForDeposit { .. }
                 | Self::LiquidateBorrowForPerpPnl { .. }
                 | Self::LiquidateSpot { .. }
+                | Self::ResolveBankruptcy { .. }
         )
     }
 }

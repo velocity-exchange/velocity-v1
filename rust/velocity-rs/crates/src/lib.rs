@@ -4218,6 +4218,53 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Resolve a bankrupt user's loss on one perp market. The insurance fund covers what
+    /// it can, and the market socializes the rest. The liquidator is this builder's
+    /// subaccount.
+    pub fn resolve_perp_bankruptcy(
+        mut self,
+        liquidatee: &User,
+        perp_market_index: u16,
+        quote_spot_market_index: u16,
+    ) -> Self {
+        let quote_market = self
+            .program_data
+            .spot_market_config_by_index(quote_spot_market_index)
+            .expect("spot markets syncd");
+        let accounts = build_accounts(
+            self.program_data,
+            program::accounts::ResolveBankruptcy {
+                state: *state_account(),
+                authority: self.authority,
+                liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
+                user: Wallet::derive_user_account(&liquidatee.authority, liquidatee.sub_account_id),
+                user_stats: Wallet::derive_stats_account(&liquidatee.authority),
+                spot_market_vault: quote_market.vault,
+                insurance_fund_vault: quote_market.insurance_fund.vault,
+                velocity_signer: constants::derive_velocity_signer(),
+                token_program: quote_market.token_program(),
+            },
+            [&self.account_data, liquidatee].into_iter(),
+            std::iter::empty(),
+            [
+                MarketId::perp(perp_market_index),
+                MarketId::spot(quote_spot_market_index),
+            ]
+            .iter(),
+        );
+
+        self.ixs.push(Instruction {
+            program_id: PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&program::instruction::ResolvePerpBankruptcy {
+                quote_spot_market_index,
+                market_index: perp_market_index,
+            }),
+        });
+        self
+    }
+
     /// Liquidate borrows using perp pnl for a given user.
     ///
     /// This method constructs a liquidation instruction for a borrow position's pnl.

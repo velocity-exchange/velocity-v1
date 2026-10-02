@@ -854,9 +854,7 @@ impl LiquidatorBot {
                     }
                 };
 
-                if margin_info.total_collateral < config.min_collateral as i128
-                    && margin_info.margin_requirement < config.min_collateral as u128
-                {
+                if is_dust(&margin_info, &user, config.min_collateral) {
                     exclude_count += 1;
                     // log::debug!(target: TARGET, "excluding user: {:?}. insignificant collateral: {}/{}", user.authority, margin_info.total_collateral, margin_info.margin_requirement);
                 } else {
@@ -1016,9 +1014,7 @@ impl LiquidatorBot {
                             }
                         };
 
-                        if margin_info.total_collateral < config.min_collateral as i128
-                            && margin_info.margin_requirement < config.min_collateral as u128
-                        {
+                        if is_dust(&margin_info, &user, config.min_collateral) {
                             // log::debug!(target: TARGET, "filtered account with dust collateral: {pubkey:?}");
                             high_risk.remove(&pubkey);
                             users.remove(&pubkey);
@@ -1533,6 +1529,14 @@ async fn refresh_collateral(
     }
 }
 
+/// An account too small to be worth a liquidation. One with negative collateral
+/// or already in liquidation is a loss to cover, however small, so it is never dust.
+fn is_dust(margin_info: &SimplifiedMarginCalculation, user: &User, min_collateral: u64) -> bool {
+    (0..min_collateral as i128).contains(&margin_info.total_collateral)
+        && margin_info.margin_requirement < min_collateral as u128
+        && !user.is_being_liquidated()
+}
+
 async fn get_collateral_info_per_subaccount(
     velocity: &VelocityClient,
     subaccounts: &[Pubkey],
@@ -1542,7 +1546,7 @@ async fn get_collateral_info_per_subaccount(
         match velocity.get_user_account(&subaccount_pubkey).await {
             Ok(user_account) => {
                 match calculate_collateral(
-                    &velocity,
+                    velocity,
                     &user_account,
                     MarginRequirementType::Maintenance,
                 ) {
@@ -3889,6 +3893,70 @@ impl PrimaryLiquidationStrategy {
     }
 
     // Settle perp pnl
+    /// Resolve a bankrupt account's loss on each of `market_indexes`, in one transaction.
+    async fn resolve_perp_bankruptcy(
+        velocity: &VelocityClient,
+        subaccount: Pubkey,
+        liquidatee: Pubkey,
+        market_indexes: &[u16],
+        tx_sender: TxSender,
+        priority_fee: u64,
+        cu_limit: u32,
+    ) -> LiquidationOutcome {
+        if market_indexes.is_empty() {
+            return LiquidationOutcome::Skipped("no_bankrupt_markets");
+        }
+
+        let (Ok(keeper_account), Ok(liquidatee_account)) = (
+            velocity.try_get_account::<User>(&subaccount),
+            velocity.try_get_account::<User>(&liquidatee),
+        ) else {
+            return LiquidationOutcome::Skipped("account_lookup_failed");
+        };
+
+        let mut tx_builder = TransactionBuilder::new(
+            velocity.program_data(),
+            subaccount,
+            std::borrow::Cow::Owned(keeper_account),
+            false,
+        )
+        .with_priority_fee(priority_fee, Some(cu_limit));
+        for &market_index in market_indexes {
+            let Some(market) = velocity
+                .program_data()
+                .perp_market_config_by_index(market_index)
+            else {
+                return LiquidationOutcome::Skipped("perp_market_lookup_failed");
+            };
+            tx_builder = tx_builder.resolve_perp_bankruptcy(
+                &liquidatee_account,
+                market_index,
+                market.quote_spot_market_index,
+            );
+        }
+
+        match tx_sender
+            .send_tx(
+                tx_builder.build(),
+                TxIntent::ResolveBankruptcy {
+                    market_index: market_indexes[0],
+                    liquidatee,
+                },
+                cu_limit as u64,
+            )
+            .await
+        {
+            Some(sig) => {
+                log::info!(
+                    target: TARGET,
+                    "liquidation tx sent: kind=resolve_bankruptcy liquidatee={liquidatee:?} markets={market_indexes:?} sig={sig}",
+                );
+                LiquidationOutcome::TxSent
+            }
+            None => LiquidationOutcome::Skipped("tx_send_failed"),
+        }
+    }
+
     async fn settle_perp_pnl(
         velocity: &VelocityClient,
         subaccount: Pubkey,
@@ -3968,6 +4036,29 @@ impl LiquidationStrategy for PrimaryLiquidationStrategy {
         pyth_price_updates: BTreeMap<u16, PythPriceUpdate>,
         status: UserMarginStatus,
     ) -> futures_util::future::BoxFuture<'a, LiquidationOutcome> {
+        // A bankrupt account holds no assets for any other liquidation to take.
+        if user_account.is_bankrupt() {
+            let markets: Vec<u16> = user_account
+                .perp_positions
+                .iter()
+                .filter(|p| p.base_asset_amount == 0 && p.quote_asset_amount < 0)
+                .map(|p| p.market_index)
+                .collect();
+            return async move {
+                Self::resolve_perp_bankruptcy(
+                    &self.velocity,
+                    self.subaccounts[0],
+                    liquidatee,
+                    &markets,
+                    tx_sender,
+                    priority_fee,
+                    cu_limit,
+                )
+                .await
+            }
+            .boxed();
+        }
+
         let perp_positions = Self::get_perp_positions_info(
             Arc::clone(&self.market_state),
             &user_account.perp_positions,
@@ -4189,6 +4280,19 @@ mod tests {
             base_amount: 100,
             quote_amount: 0,
         }
+    }
+
+    #[test]
+    fn a_loss_or_a_liquidation_is_never_dust() {
+        let healthy = User::default();
+        assert!(is_dust(&margin_calc(500_000, 0), &healthy, 1_000_000));
+        assert!(!is_dust(&margin_calc(-300_000, 0), &healthy, 1_000_000));
+
+        let liquidated = User {
+            status: velocity_rs::program::state::user::UserStatus::BeingLiquidated as u8,
+            ..User::default()
+        };
+        assert!(!is_dust(&margin_calc(500_000, 0), &liquidated, 1_000_000));
     }
 
     #[test]

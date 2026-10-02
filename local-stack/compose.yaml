@@ -31,7 +31,9 @@ services:
     <<: *ts-tools
     entrypoint: ['sh', '-c']
     command:
-      - test -e /state/snapshot/manifest.json || bun run deploy-scripts/snapshot-devnet.ts --out /state/snapshot
+      - >-
+        (test -e /state/snapshot/manifest.json || bun run deploy-scripts/snapshot-devnet.ts --out /state/snapshot)
+        && bun run local-stack/relayout-users.ts /state/snapshot/accounts
     environment:
       DEVNET_RPC_URL: ${DEVNET_RPC_URL:-https://api.devnet.solana.com}
 

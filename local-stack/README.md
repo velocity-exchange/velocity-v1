@@ -72,7 +72,7 @@ and the relay's cross cranks fill it. A swift order carries an attestation, so i
 
 | Service          | Port       | Role                                                                  |
 | ---------------- | ---------- | --------------------------------------------------------------------- |
-| `snapshot`       |            | Dumps devnet into the `state` volume on the first run only            |
+| `snapshot`       |            | Dumps devnet on the first run only, then re-lays out its `User`s      |
 | `validator`      | 8899, 8900 | `solana-test-validator` at the dump's slot                            |
 | `oracle`         | 7070       | Signs and posts every Pyth Lazer feed, and moves a price on request   |
 | `rpc`            |            | Serves HTTP and websocket RPC on 8899 and on 8900                     |

@@ -566,12 +566,25 @@ pub fn calculate_spot_if_fee(
     Ok(max_if_fee.min(implied_if_fee))
 }
 
+/// How far from the oracle a liquidation fill may execute, in
+/// `LIQUIDATION_FEE_PRECISION`. The liquidator fee alone can be zero, and no
+/// source quotes at the oracle, so the fill would find nothing. The liquidatee
+/// may lose up to its maintenance margin to slippage, which is what that
+/// margin is for.
+pub fn liquidation_fill_slippage(
+    liquidator_fee: u32,
+    maintenance_margin_ratio: u32,
+) -> VelocityResult<u32> {
+    Ok(liquidator_fee
+        .max(maintenance_margin_ratio.safe_mul(LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO)?))
+}
+
 pub fn get_liquidation_order_params(
     market_index: u16,
     existing_direction: PositionDirection,
     base_asset_amount: u64,
     oracle_price: i64,
-    liquidation_fee: u32,
+    max_slippage: u32,
 ) -> VelocityResult<OrderParams> {
     let direction = existing_direction.opposite();
 
@@ -580,14 +593,14 @@ pub fn get_liquidation_order_params(
         PositionDirection::Long => oracle_price_u128
             .safe_add(
                 oracle_price_u128
-                    .safe_mul(liquidation_fee.cast()?)?
+                    .safe_mul(max_slippage.cast()?)?
                     .safe_div(LIQUIDATION_FEE_PRECISION_U128)?,
             )?
             .cast::<u64>()?,
         PositionDirection::Short => oracle_price_u128
             .safe_sub(
                 oracle_price_u128
-                    .safe_mul(liquidation_fee.cast()?)?
+                    .safe_mul(max_slippage.cast()?)?
                     .safe_div(LIQUIDATION_FEE_PRECISION_U128)?,
             )?
             .cast::<u64>()?,

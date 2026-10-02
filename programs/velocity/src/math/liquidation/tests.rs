@@ -1344,3 +1344,34 @@ mod validate_swap_within_liquidation_boundaries {
         .unwrap_err();
     }
 }
+
+mod liquidation_fill_limit {
+    use crate::{
+        controller::position::PositionDirection,
+        math::{
+            constants::PRICE_PRECISION_U64,
+            liquidation::{get_liquidation_order_params, liquidation_fill_slippage},
+        },
+    };
+
+    /// A zero liquidator fee left the fill at the oracle, where no source
+    /// quotes, so a 5% maintenance margin now sets the bound.
+    #[test]
+    fn a_zero_fee_market_fills_inside_its_maintenance_margin() {
+        let slippage = liquidation_fill_slippage(0, 500).unwrap();
+        assert_eq!(slippage, 50_000);
+
+        let oracle = 100 * PRICE_PRECISION_U64 as i64;
+        let sell =
+            get_liquidation_order_params(0, PositionDirection::Long, 1, oracle, slippage).unwrap();
+        let buy =
+            get_liquidation_order_params(0, PositionDirection::Short, 1, oracle, slippage).unwrap();
+        assert_eq!(sell.price, 95 * PRICE_PRECISION_U64);
+        assert_eq!(buy.price, 105 * PRICE_PRECISION_U64);
+    }
+
+    #[test]
+    fn a_fee_above_the_margin_keeps_the_fee() {
+        assert_eq!(liquidation_fill_slippage(80_000, 500).unwrap(), 80_000);
+    }
+}

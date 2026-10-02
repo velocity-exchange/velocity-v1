@@ -46,7 +46,7 @@ use {
                 calculate_liquidation_multiplier, calculate_max_pct_to_liquidate,
                 calculate_perp_if_fee, calculate_spot_if_fee,
                 calculate_user_protective_asset_price, calculate_user_protective_liability_price,
-                get_liquidation_fee, get_liquidation_order_params,
+                get_liquidation_fee, get_liquidation_order_params, liquidation_fill_slippage,
                 validate_swap_within_liquidation_boundaries,
                 validate_transfer_satisfies_limit_price, LiquidationMultiplierType,
             },
@@ -1306,13 +1306,20 @@ pub fn place_liquidation_order<'info>(
     };
 
     let existing_direction = user.perp_positions[position_index].get_direction();
+    let maintenance_margin_ratio = maps
+        .perp_market_map
+        .get_ref(&market_index)?
+        .get_margin_ratio(
+            base_asset_amount.cast()?,
+            MarginRequirementType::Maintenance,
+        )?;
 
     let order_params = get_liquidation_order_params(
         market_index,
         existing_direction,
         base_asset_amount,
         oracle_price,
-        liquidator_fee,
+        liquidation_fill_slippage(liquidator_fee, maintenance_margin_ratio)?,
     )?;
 
     let fill_record_id = maps

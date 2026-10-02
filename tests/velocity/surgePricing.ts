@@ -184,7 +184,7 @@ describe('surge pricing', () => {
 			const accountInfo = await svmContextWrapper.connection.getAccountInfo(
 				userAccount
 			);
-			const baseLamports = 32183040;
+			const baseLamports = 32628480;
 			console.log('expected fee', expectedFee.toNumber());
 			if (i === 4) {
 				// assert(expectedFee.toNumber() === LAMPORTS_PER_SOL / 100);

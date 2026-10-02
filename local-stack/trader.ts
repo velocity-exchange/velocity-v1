@@ -16,7 +16,7 @@
  * way a cross match needs. `--count` rests a ladder that steps away from the touch. `cancel`
  * without an order id cancels the trader's every order on the market. The default trader is `b`.
  * Its key lives in /state/keys/trader-<name>.json, and its first command funds it and opens its
- * account with 10000 dUSDT.
+ * account with 10000 dUSDT, or with `--deposit <dUSDT>` on that first command.
  */
 import { BN } from '@coral-xyz/anchor';
 import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
@@ -114,7 +114,8 @@ function describeOrder(order: UserClobOrder): string {
 /** Funds the trader and opens its account on first use. */
 async function openSession(
 	connection: Connection,
-	name: string
+	name: string,
+	depositDusdt: string
 ): Promise<Session> {
 	const trader = loadKey(`/state/keys/trader-${name}.json`);
 	const client = await connectClient(connection, trader);
@@ -126,10 +127,10 @@ async function openSession(
 			connection,
 			trader.publicKey,
 			10,
-			INITIAL_DEPOSIT_DUSDT
+			depositDusdt
 		);
 		await client.initializeUserAccountAndDepositCollateral(
-			parseDecimal(INITIAL_DEPOSIT_DUSDT, 6),
+			parseDecimal(depositDusdt, 6),
 			tokenAccount
 		);
 	} else if (
@@ -297,7 +298,8 @@ async function main() {
 	const connection = new Connection(RPC_URL, 'confirmed');
 	const session = await openSession(
 		connection,
-		stringFlag(flags, 'name') ?? 'b'
+		stringFlag(flags, 'name') ?? 'b',
+		stringFlag(flags, 'deposit') ?? INITIAL_DEPOSIT_DUSDT
 	);
 
 	try {

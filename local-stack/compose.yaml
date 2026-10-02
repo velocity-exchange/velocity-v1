@@ -254,6 +254,31 @@ services:
       DISABLE_RPC_SIM: 'true'
       RUST_LOG: info
 
+  liquidator:
+    image: velocity-local/keep-rs:dev
+    build:
+      context: ..
+      dockerfile: docker/rust-app.Dockerfile
+      args:
+        APP_BIN: keeprs
+    user: '0'
+    depends_on: *after-bootstrap
+    volumes:
+      - state:/state
+    # The validator has no geyser plugin and no live Lazer feed, so the bot reads accounts over
+    # websockets and prices margin from the local oracle.
+    command:
+      - --liquidator
+      - --init-user
+      - --all-markets
+      - --account-source=websocket
+      - --no-pyth
+    environment:
+      BOT_PRIVATE_KEY: /state/keys/liquidator.json
+      RPC_URL: http://rpc:8899
+      MAINNET: 'false'
+      RUST_LOG: info
+
   swift-ws:
     image: velocity-local/swift:dev
     build: *swift-build

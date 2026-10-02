@@ -82,6 +82,7 @@ and the relay's cross cranks fill it. A swift order carries an attestation, so i
 | `dlob-server`    | 6969       | HTTP: `/l2`, `/batchL2`, `/userOrders`, `/marketOrderParams`          |
 | `dlob-ws`        | 3000       | Websocket: `orderbook`, `user_orders`                                 |
 | `relay-turner`   |            | Triggers, liquidations, expiry and crosses                            |
+| `liquidator`     |            | keep-rs liquidator over websockets, the keeper floor under relay      |
 | `keepers`        |            | Funding and PnL settlement, and the mark TWAP with a Lazer token      |
 | `swift`          | 3003       | Signed-message intake and `/attest`                                   |
 | `swift-ws`       |            | Swift's order websocket, which keepers subscribe to                   |

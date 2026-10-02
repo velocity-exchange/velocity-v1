@@ -10,7 +10,8 @@
  *   3. Price and fund the crank treasury, then run migrate.ts again. It creates every perp
  *      market's CLOB book and the users' liquidation conditions.
  *   4. Make swift's key the flow authority.
- *   5. Mint dUSDT to the keeper for the insurance-fund stake the mark TWAP crank needs.
+ *   5. Mint dUSDT to the keeper for the insurance-fund stake the mark TWAP crank needs, and to
+ *      the keep-rs liquidator, which deposits it as collateral for takeover liquidations.
  *   6. Write the keeper config and the UI's env file into /state.
  */
 import { execFileSync } from 'child_process';
@@ -49,6 +50,7 @@ const SERVICE_KEYS = [
 	'turner',
 	'turner-payout',
 	'swift-flow',
+	'liquidator',
 ] as const;
 const SERVICE_SOL = 100;
 /** Crank budget the treasury refills each reservoir to, and the level that triggers a refill. */
@@ -270,6 +272,7 @@ async function main() {
 		keys['swift-flow'].publicKey.toBase58(),
 	]);
 	await mintKeeperDusdt(provider, keys.keeper.publicKey);
+	await mintKeeperDusdt(provider, keys.liquidator.publicKey);
 
 	writeKeeperConfig();
 	writeUiEnv();

@@ -1568,6 +1568,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateCrankTreasury {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateDefaultUserSyncTerms {
+        pub args: UpdateDefaultUserSyncTermsArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateDefaultUserSyncTerms {
+        const DISCRIMINATOR: &[u8] = &[93, 215, 43, 154, 176, 194, 84, 168];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateDefaultUserSyncTerms {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateDiscountMint {
         pub discount_mint: Pubkey,
     }
@@ -6619,7 +6629,11 @@ pub mod types {
         pub padding_0: Padding<2>,
         pub hot_conditions_sync: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<78>,
+        pub padding_1: Padding<2>,
+        pub default_user_sync_cost_units: u32,
+        pub default_user_sync_fallback_slots: u32,
+        #[serde(skip)]
+        pub padding: Padding<68>,
     }
     #[repr(C)]
     #[derive(
@@ -6899,6 +6913,23 @@ pub mod types {
         pub refill_target_cranks: u16,
         pub refill_watermark_cranks: u16,
         pub resync_floor_lamports: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct UpdateDefaultUserSyncTermsArgs {
+        pub sync_cost_units: u32,
+        pub sync_fallback_slots: u32,
     }
     #[repr(C)]
     #[derive(
@@ -8788,7 +8819,11 @@ pub mod accounts {
         pub padding_0: Padding<2>,
         pub hot_conditions_sync: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<78>,
+        pub padding_1: Padding<2>,
+        pub default_user_sync_cost_units: u32,
+        pub default_user_sync_fallback_slots: u32,
+        #[serde(skip)]
+        pub padding: Padding<68>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -22063,6 +22098,70 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for UpdateCrankTreasury {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateDefaultUserSyncTerms {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateDefaultUserSyncTerms {
+        const DISCRIMINATOR: &[u8] = &[21, 237, 173, 209, 223, 145, 113, 244];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateDefaultUserSyncTerms {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateDefaultUserSyncTerms {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateDefaultUserSyncTerms {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateDefaultUserSyncTerms {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateDefaultUserSyncTerms {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateDefaultUserSyncTerms {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateDefaultUserSyncTerms {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

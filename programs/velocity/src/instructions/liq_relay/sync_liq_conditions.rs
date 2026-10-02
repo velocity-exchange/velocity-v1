@@ -326,6 +326,29 @@ pub fn rewrite_liq_conditions<'info>(
     arm_self_maintenance(&mut conditions, user_key, args, fallback_slots, resolvers)
 }
 
+/// Arm a new user's block so the first change to its positions wakes a paid
+/// resync. The user has no exposure yet, so the block stores no market and arms
+/// no liveness poll. The resync adds both once the user enters a market.
+pub fn arm_new_user_conditions(
+    conditions: &mut UserConditionsV0,
+    conditions_key: Pubkey,
+    user_key: Pubkey,
+    terms: SyncLiqConditionsTerms,
+) -> Result<()> {
+    conditions.sync_payment_lamports = terms.payable_lamports();
+    conditions.sync_fallback_slots = terms.sync_fallback_slots;
+    conditions.positions_digest = UserConditionsV0::EMPTY_POSITIONS_DIGEST;
+
+    let sync_accounts = build_sync_accounts(conditions_key, user_key, vec![], vec![], vec![]);
+    let resolvers = conditions.write_sync_accounts(&sync_accounts)?;
+    let fallback_slots = conditions.sync_fallback_slots.max(1);
+    let terms = SyncLiqConditionsTerms {
+        sync_payment_lamports: conditions.sync_payment_lamports,
+        sync_fallback_slots: fallback_slots,
+    };
+    arm_self_maintenance(conditions, user_key, terms, fallback_slots, resolvers)
+}
+
 /// The classified `remaining_accounts`. It holds the per-market inputs and the
 /// account references a staged executor reuses.
 struct SyncInputs {
@@ -870,6 +893,9 @@ mod tests {
                 perp_market::PerpMarket,
                 spot_market::SpotMarket,
                 user::{PerpPosition, User},
+                user_conditions::{
+                    UserConditionsV0, LIQ_LIVENESS_POLL, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH,
+                },
             },
             test_utils::{create_account_info, get_anchor_account_bytes},
         },
@@ -878,6 +904,48 @@ mod tests {
     };
 
     const ORACLE: Pubkey = Pubkey::new_from_array([7; 32]);
+
+    fn new_user_conditions(sync_payment_lamports: u64) -> Box<UserConditionsV0> {
+        let mut conditions = Box::new(UserConditionsV0::default());
+        conditions.init_block().unwrap();
+        super::arm_new_user_conditions(
+            &mut conditions,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            super::SyncLiqConditionsTerms {
+                sync_payment_lamports,
+                sync_fallback_slots: 3_000,
+            },
+        )
+        .unwrap();
+        conditions
+    }
+
+    fn min_payment(conditions: &UserConditionsV0, index: usize) -> u64 {
+        relay_spec::ConditionBlock::read_condition(&conditions.relay, index)
+            .map_or(0, |condition| condition.min_payment())
+    }
+
+    /// The first position change has to wake a paid resync, or a new user's
+    /// coverage waits for a manual sync that nobody sends.
+    #[test]
+    fn a_new_user_is_armed_to_resync_on_its_first_position() {
+        let conditions = new_user_conditions(5_000);
+        assert_eq!(min_payment(&conditions, LIQ_SYNC_WATCH), 5_000);
+        assert_eq!(min_payment(&conditions, LIQ_SYNC_FALLBACK), 5_000);
+        assert_eq!(min_payment(&conditions, LIQ_LIVENESS_POLL), 0);
+        assert_eq!(
+            conditions.positions_digest,
+            UserConditionsV0::digest_positions(&User::default())
+        );
+    }
+
+    #[test]
+    fn unpaid_default_terms_arm_nothing() {
+        let conditions = new_user_conditions(0);
+        assert_eq!(min_payment(&conditions, LIQ_SYNC_WATCH), 0);
+        assert_eq!(min_payment(&conditions, LIQ_SYNC_FALLBACK), 0);
+    }
 
     /// A user long on perp market 0, and the coverage of a call that carried
     /// that market, its oracle, its crank account and its slab.

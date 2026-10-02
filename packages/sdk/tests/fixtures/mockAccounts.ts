@@ -722,6 +722,8 @@ export const mockStateAccount: StateAccount = {
 
 	liquidationCrankReimbursementBps: 0,
 	solSpotMarketIndex: 0,
+	defaultUserSyncCostUnits: 0,
+	defaultUserSyncFallbackSlots: 0,
 };
 
 export class MockUserMap implements UserMapInterface {

@@ -109,6 +109,48 @@ export function registerFees(parent: Command): void {
 	withGlobalOptions(
 		fees
 			.command(
+				'set-default-user-sync-terms <syncCostUnits> <syncFallbackSlots>'
+			)
+			.description(
+				'Set the sync terms initialize_user arms on each new user\'s relay conditions. The warm or cold admin signs. A new user\'s first position change then wakes a resync the crank treasury pays for, and that resync writes its liquidation coverage. <syncCostUnits> prices the resync against the transaction rails, and 0 arms nothing. <syncFallbackSlots> is the fallback poll interval. Existing users keep the terms already on their conditions.'
+			)
+	).action(
+		async (
+			syncCostUnits: string,
+			syncFallbackSlots: string,
+			_flags,
+			cmd: Command
+		) => {
+			const costUnits = Number.parseInt(syncCostUnits, 10);
+			const fallbackSlots = Number.parseInt(syncFallbackSlots, 10);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getUpdateDefaultUserSyncTermsIx(
+					costUnits,
+					fallbackSlots
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees set-default-user-sync-terms'
+				);
+
+				reportDispatch(
+					`default_user_sync_terms = ${costUnits} units every ${fallbackSlots} slots`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
+
+	withGlobalOptions(
+		fees
+			.command(
 				'set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>'
 			)
 			.description(

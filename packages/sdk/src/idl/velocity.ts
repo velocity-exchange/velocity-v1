@@ -6186,8 +6186,8 @@ export type Velocity = {
             "Coverage first matters when somebody else's transaction gives the user a",
             "position. The user signs nothing there, so no rent can be charged to",
             "them. `deploy-scripts/migrate.ts` backfills the accounts that predate",
-            "the field. An empty block is fine, because the first sync writes the",
-            "thresholds."
+            "the field. The block is armed with `State`'s default sync terms, so the",
+            "first position change wakes a resync that writes the coverage."
           ],
           "writable": true,
           "pda": {
@@ -12847,6 +12847,42 @@ export type Velocity = {
           "type": {
             "defined": {
               "name": "updateCrankTreasuryArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "updateDefaultUserSyncTerms",
+      "docs": [
+        "Set the sync terms `initialize_user` arms on each new user's conditions."
+      ],
+      "discriminator": [
+        93,
+        215,
+        43,
+        154,
+        176,
+        194,
+        84,
+        168
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateDefaultUserSyncTermsArgs"
             }
           }
         }
@@ -32153,17 +32189,38 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "padding1",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
+            "name": "defaultUserSyncCostUnits",
+            "docs": [
+              "The sync terms `initialize_user` arms on a new user's conditions, so the",
+              "first change to its positions wakes a paid resync. Zero cost units arm",
+              "nothing, which leaves a new user to a manual sync."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "defaultUserSyncFallbackSlots",
+            "type": "u32"
+          },
+          {
             "name": "padding",
             "docs": [
-              "Former padding, now sized so the quote-management key, the slot-duration",
-              "archive, the fee-rails fields and the conditions-sync key all fit while",
+              "Former padding, now sized so every field above fits while",
               "`size_of::<State>()` stays 1744 on x86_64 (u128 align 16) and SBF (u128",
               "align 8). The offsets below pin it."
             ],
             "type": {
               "array": [
                 "u8",
-                78
+                68
               ]
             }
           }
@@ -32792,6 +32849,22 @@ export type Velocity = {
               "Lamports above rent that paid resyncs leave in the treasury."
             ],
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateDefaultUserSyncTermsArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "syncCostUnits",
+            "type": "u32"
+          },
+          {
+            "name": "syncFallbackSlots",
+            "type": "u32"
           }
         ]
       }

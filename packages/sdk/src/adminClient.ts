@@ -5597,6 +5597,48 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
+	 * Sets the sync terms `initializeUser` arms on each new user's conditions. A new user's
+	 * first position change then wakes a resync the crank treasury pays for, which writes its
+	 * liquidation coverage. The program refuses terms a sync would refuse.
+	 * @param syncCostUnits - Cost units the resync is priced at. `0` arms no sync.
+	 * @param syncFallbackSlots - Fallback poll interval in slots.
+	 */
+	public async updateDefaultUserSyncTerms(
+		syncCostUnits: number,
+		syncFallbackSlots: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateDefaultUserSyncTermsIx(
+			syncCostUnits,
+			syncFallbackSlots
+		);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateDefaultUserSyncTerms` instruction without sending it. See
+	 * `updateDefaultUserSyncTerms`.
+	 * @returns The unsigned instruction.
+	 */
+	public async getUpdateDefaultUserSyncTermsIx(
+		syncCostUnits: number,
+		syncFallbackSlots: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateDefaultUserSyncTerms(
+			{ syncCostUnits, syncFallbackSlots },
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
 	 * Builds the `initializeQuoter` instruction, which creates a market's staging
 	 * `QuoterV0` registry entry. Nothing fills from it until an admin approves it
 	 * into the market's slab. A CLOB entry passes the slab and the book, because the

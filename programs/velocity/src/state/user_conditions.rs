@@ -57,6 +57,11 @@ pub const LIQ_SYNC_MAX_COST_UNITS: u32 = 40_000;
 /// enough that the poll never fires and the block reads as covered. Roughly a day.
 pub const LIQ_SYNC_MAX_FALLBACK_SLOTS: u64 = 216_000;
 
+/// The terms a new `State` arms on each new user's conditions. They match the defaults
+/// `deploy-scripts/migrate.ts` syncs existing users with.
+pub const DEFAULT_USER_SYNC_COST_UNITS: u32 = 20_000;
+pub const DEFAULT_USER_SYNC_FALLBACK_SLOTS: u32 = 3_000;
+
 /// PDA seed: `["user_conditions", user key]`.
 pub const USER_CONDITIONS_PDA_SEED: &[u8] = b"user_conditions";
 
@@ -172,10 +177,13 @@ impl UserConditionsV0 {
         + 8
         + 64;
 
+    /// The digest of a user with no live position: the FNV-1a offset basis.
+    pub const EMPTY_POSITIONS_DIGEST: u64 = 0xcbf2_9ce4_8422_2325;
+
     /// FNV-1a over every live position. It is cheap enough for the executor to
     /// recompute on each sync.
     pub fn digest_positions(user: &crate::state::user::User) -> u64 {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut hash = Self::EMPTY_POSITIONS_DIGEST;
         let mut fold = |value: u64| {
             for byte in value.to_le_bytes() {
                 hash ^= byte as u64;

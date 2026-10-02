@@ -184,7 +184,11 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         sol_spot_market_index: 0,
         padding_0: [0; 2],
         hot_conditions_sync: Pubkey::default(),
-        padding: [0; 78],
+        padding_1: [0; 2],
+        default_user_sync_cost_units: crate::state::user_conditions::DEFAULT_USER_SYNC_COST_UNITS,
+        default_user_sync_fallback_slots:
+            crate::state::user_conditions::DEFAULT_USER_SYNC_FALLBACK_SLOTS,
+        padding: [0; 68],
     };
 
     Ok(())
@@ -2655,6 +2659,41 @@ pub fn handle_update_liquidation_crank_reimbursement(
 
     state.liquidation_crank_reimbursement_bps = share_bps;
     state.sol_spot_market_index = sol_spot_market_index;
+    Ok(())
+}
+
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct UpdateDefaultUserSyncTermsArgs {
+    pub sync_cost_units: u32,
+    pub sync_fallback_slots: u32,
+}
+
+/// Set the sync terms `initialize_user` arms on a new user's conditions. The
+/// terms are refused as a sync refuses them, so a default cannot arm a paid
+/// loop.
+pub fn handle_update_default_user_sync_terms(
+    ctx: Context<AdminUpdateState>,
+    args: UpdateDefaultUserSyncTermsArgs,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+    crate::instructions::price_sync_terms(
+        &state.transaction_fee_rails,
+        &crate::instructions::SyncLiqConditionsArgs {
+            sync_cost_units: args.sync_cost_units,
+            sync_fallback_slots: u64::from(args.sync_fallback_slots),
+        },
+    )?;
+
+    msg!(
+        "default user sync terms: {} units every {} slots -> {} units every {} slots",
+        state.default_user_sync_cost_units,
+        state.default_user_sync_fallback_slots,
+        args.sync_cost_units,
+        args.sync_fallback_slots
+    );
+
+    state.default_user_sync_cost_units = args.sync_cost_units;
+    state.default_user_sync_fallback_slots = args.sync_fallback_slots;
     Ok(())
 }
 

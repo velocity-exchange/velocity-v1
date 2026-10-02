@@ -1412,6 +1412,14 @@ pub mod velocity {
         handle_update_liquidation_crank_reimbursement(ctx, args)
     }
 
+    /// Set the sync terms `initialize_user` arms on each new user's conditions.
+    pub fn update_default_user_sync_terms(
+        ctx: Context<AdminUpdateState>,
+        args: UpdateDefaultUserSyncTermsArgs,
+    ) -> Result<()> {
+        handle_update_default_user_sync_terms(ctx, args)
+    }
+
     pub fn update_perp_fee_structure(
         ctx: Context<AdminUpdateState>,
         fee_structure: FeeStructure,

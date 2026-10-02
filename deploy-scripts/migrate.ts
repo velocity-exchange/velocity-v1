@@ -51,7 +51,8 @@
  *      `extend_account` resolves the target size from the discriminator, so this step covers
  *      past and future growth the same way. Then create the singletons and the per-market
  *      accounts the new code loads: the SOL spot market that prices the liquidation
- *      reimbursement, the relay scratch, the crank treasury, the protocol User
+ *      reimbursement, the relay scratch, the crank treasury, the default sync terms a new
+ *      user's conditions are armed with, the protocol User
  *      that every relay crank names as its filler or taker, and the quoter slab of every perp
  *      market that predates it. The protocol User needs a warm payer, so under `--multisig` it
  *      is a proposal the vault pays for.
@@ -803,6 +804,7 @@ async function migrate(ctx: Migration, idl: any) {
 	}
 
 	const { treasury, pricingQueued } = await ensureCrankTreasury(ctx, statePda);
+	await ensureDefaultUserSyncTerms(ctx, statePda, stateAccount);
 	await ensureProtocolUser(ctx, stateAccount);
 	const perpMarkets = await decodeMarkets(connection, program, 'PerpMarket');
 	const spotMarkets = await decodeMarkets(connection, program, 'SpotMarket');
@@ -1185,6 +1187,39 @@ async function ensureLiquidationReimbursement(
 	await ctx.admin.run('migrate: set liquidation reimbursement SOL market', [
 		await ctx.program.methods
 			.updateLiquidationCrankReimbursement(update)
+			.accounts({ admin: ctx.admin.key, state: statePda })
+			.instruction(),
+	]);
+}
+
+/**
+ * The sync terms `initialize_user` arms on a new user. A `State` that predates
+ * the fields reads zero, which arms nothing, so a user created after the
+ * upgrade would have no liquidation coverage. The run writes the terms it
+ * syncs existing users with.
+ */
+async function ensureDefaultUserSyncTerms(
+	ctx: Migration,
+	statePda: PublicKey,
+	stateAccount: any
+): Promise<void> {
+	if (stateAccount.defaultUserSyncCostUnits !== 0) {
+		console.log(
+			`default user sync terms: ${stateAccount.defaultUserSyncCostUnits} units every ${stateAccount.defaultUserSyncFallbackSlots} slots`
+		);
+		return;
+	}
+
+	const terms = {
+		syncCostUnits: ctx.args.syncCostUnits,
+		syncFallbackSlots: Number(ctx.args.fallbackSlots),
+	};
+	console.log(
+		`default user sync terms: writing ${terms.syncCostUnits} units every ${terms.syncFallbackSlots} slots`
+	);
+	await ctx.admin.run('migrate: set default user sync terms', [
+		await ctx.program.methods
+			.updateDefaultUserSyncTerms(terms)
 			.accounts({ admin: ctx.admin.key, state: statePda })
 			.instruction(),
 	]);

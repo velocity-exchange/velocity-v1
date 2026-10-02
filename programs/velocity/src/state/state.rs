@@ -178,11 +178,16 @@ pub struct State {
     /// A keeper holds it so a migration syncs every user without a multisig
     /// proposal per batch.
     pub hot_conditions_sync: Pubkey,
-    /// Former padding, now sized so the quote-management key, the slot-duration
-    /// archive, the fee-rails fields and the conditions-sync key all fit while
+    pub padding_1: [u8; 2],
+    /// The sync terms `initialize_user` arms on a new user's conditions, so the
+    /// first change to its positions wakes a paid resync. Zero cost units arm
+    /// nothing, which leaves a new user to a manual sync.
+    pub default_user_sync_cost_units: u32,
+    pub default_user_sync_fallback_slots: u32,
+    /// Former padding, now sized so every field above fits while
     /// `size_of::<State>()` stays 1744 on x86_64 (u128 align 16) and SBF (u128
     /// align 8). The offsets below pin it.
-    pub padding: [u8; 78],
+    pub padding: [u8; 68],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -302,7 +307,10 @@ impl Default for State {
             sol_spot_market_index: 0,
             padding_0: [0; 2],
             hot_conditions_sync: Pubkey::default(),
-            padding: [0; 78],
+            padding_1: [0; 2],
+            default_user_sync_cost_units: 0,
+            default_user_sync_fallback_slots: 0,
+            padding: [0; 68],
         }
     }
 }
@@ -744,6 +752,14 @@ static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_vamm_quote_m
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_flow_authority), 1576);
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, transaction_fee_rails), 1608);
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_conditions_sync), 1634);
+static_assertions::const_assert_eq!(
+    std::mem::offset_of!(State, default_user_sync_cost_units),
+    1668
+);
+static_assertions::const_assert_eq!(
+    std::mem::offset_of!(State, default_user_sync_fallback_slots),
+    1672
+);
 
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 #[repr(C)]

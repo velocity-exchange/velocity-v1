@@ -14,13 +14,28 @@ use super::*;
 fn init_user_conditions(
     user_conditions: &AccountLoader<'_, UserConditionsV0>,
     user_key: Pubkey,
+    state: &AccountLoader<'_, State>,
 ) -> Result<()> {
+    let state = state.load()?;
+    let terms = crate::instructions::price_sync_terms(
+        &state.transaction_fee_rails,
+        &crate::instructions::SyncLiqConditionsArgs {
+            sync_cost_units: state.default_user_sync_cost_units,
+            sync_fallback_slots: u64::from(state.default_user_sync_fallback_slots),
+        },
+    )?;
+
     let mut conditions = user_conditions
         .load_init()
         .or_else(|_| user_conditions.load_mut())?;
     conditions.user = user_key;
     conditions.init_block()?;
-    Ok(())
+    crate::instructions::arm_new_user_conditions(
+        &mut conditions,
+        user_conditions.key(),
+        user_key,
+        terms,
+    )
 }
 
 /// Close the conditions block of a `User` that is being deleted, and send
@@ -152,7 +167,7 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
     name: [u8; 32],
 ) -> Result<()> {
     let user_key = ctx.accounts.user.key();
-    init_user_conditions(&ctx.accounts.user_conditions, user_key)?;
+    init_user_conditions(&ctx.accounts.user_conditions, user_key, &ctx.accounts.state)?;
 
     let mut user = ctx
         .accounts
@@ -364,8 +379,8 @@ pub struct InitializeUser<'info> {
     /// Coverage first matters when somebody else's transaction gives the user a
     /// position. The user signs nothing there, so no rent can be charged to
     /// them. `deploy-scripts/migrate.ts` backfills the accounts that predate
-    /// the field. An empty block is fine, because the first sync writes the
-    /// thresholds.
+    /// the field. The block is armed with `State`'s default sync terms, so the
+    /// first position change wakes a resync that writes the coverage.
     #[account(
         init_if_needed,
         seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],

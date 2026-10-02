@@ -6180,8 +6180,8 @@
             "Coverage first matters when somebody else's transaction gives the user a",
             "position. The user signs nothing there, so no rent can be charged to",
             "them. `deploy-scripts/migrate.ts` backfills the accounts that predate",
-            "the field. An empty block is fine, because the first sync writes the",
-            "thresholds."
+            "the field. The block is armed with `State`'s default sync terms, so the",
+            "first position change wakes a resync that writes the coverage."
           ],
           "writable": true,
           "pda": {
@@ -12841,6 +12841,42 @@
           "type": {
             "defined": {
               "name": "UpdateCrankTreasuryArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_default_user_sync_terms",
+      "docs": [
+        "Set the sync terms `initialize_user` arms on each new user's conditions."
+      ],
+      "discriminator": [
+        93,
+        215,
+        43,
+        154,
+        176,
+        194,
+        84,
+        168
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "UpdateDefaultUserSyncTermsArgs"
             }
           }
         }
@@ -32147,17 +32183,38 @@
             "type": "pubkey"
           },
           {
+            "name": "padding_1",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
+            "name": "default_user_sync_cost_units",
+            "docs": [
+              "The sync terms `initialize_user` arms on a new user's conditions, so the",
+              "first change to its positions wakes a paid resync. Zero cost units arm",
+              "nothing, which leaves a new user to a manual sync."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "default_user_sync_fallback_slots",
+            "type": "u32"
+          },
+          {
             "name": "padding",
             "docs": [
-              "Former padding, now sized so the quote-management key, the slot-duration",
-              "archive, the fee-rails fields and the conditions-sync key all fit while",
+              "Former padding, now sized so every field above fits while",
               "`size_of::<State>()` stays 1744 on x86_64 (u128 align 16) and SBF (u128",
               "align 8). The offsets below pin it."
             ],
             "type": {
               "array": [
                 "u8",
-                78
+                68
               ]
             }
           }
@@ -32786,6 +32843,22 @@
               "Lamports above rent that paid resyncs leave in the treasury."
             ],
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UpdateDefaultUserSyncTermsArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "sync_cost_units",
+            "type": "u32"
+          },
+          {
+            "name": "sync_fallback_slots",
+            "type": "u32"
           }
         ]
       }

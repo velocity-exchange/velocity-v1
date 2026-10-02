@@ -1467,6 +1467,10 @@ export type StateAccount = {
 	solSpotMarketIndex: number;
 	/** hot key that may set paid resync terms when it syncs another user's conditions, as warm may */
 	hotConditionsSync: PublicKey;
+	/** cost units `initializeUser` prices a new user's self-maintaining liquidation sync at; 0 arms no sync */
+	defaultUserSyncCostUnits: number;
+	/** fallback poll interval, in slots, armed on a new user's conditions */
+	defaultUserSyncFallbackSlots: number;
 	/** treasury PERP protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes perp fee withdrawals inert */
 	protocolFeeRecipientPerp: PublicKey;
 	/** treasury SPOT protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes spot fee withdrawals inert */

@@ -749,6 +749,13 @@ also what makes every later sync permissionless, because the account is already 
 can keep it current. Vault velocity users are no exception, so `initializeVault` and
 `initializeVaultWithProtocol` take `velocityUserConditions`.
 
+`initializeUser` arms the new user's self-maintaining liquidation sync with the default terms on
+`State`. The user's first position change then wakes a resync the crank treasury pays for, and that
+resync writes the user's liquidation coverage. `AdminClient.updateDefaultUserSyncTerms` and
+`velocity-admin fees set-default-user-sync-terms` set the terms, and
+`StateAccount.defaultUserSyncCostUnits` and `defaultUserSyncFallbackSlots` hold them. Zero cost
+units arm nothing.
+
 A relay turner cranks a user's conditions only after a `WatchV0` names them. The SDK's user-creation
 builders therefore add two instructions after `initializeUser`. They create the watch at the payer's
 seed address and call relay's `register_watch_v0`. The payer pays the watch rent and can close it

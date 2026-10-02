@@ -749,6 +749,13 @@ also what makes every later sync permissionless, because the account is already 
 can keep it current. Vault velocity users are no exception, so `initializeVault` and
 `initializeVaultWithProtocol` take `velocityUserConditions`.
 
+A relay turner cranks a user's conditions only after a `WatchV0` names them. The SDK's user-creation
+builders therefore add two instructions after `initializeUser`. They create the watch at the payer's
+seed address and call relay's `register_watch_v0`. The payer pays the watch rent and can close it
+later. The builders skip the watch where the relay program does not exist. `relayProgramId` in
+`VelocityClientConfig` overrides `RELAY_PROGRAM_ID`, and `getRegisterWatchIxs` builds a watch for any
+conditions block.
+
 `delete_user` and `force_delete_user` close the user's `UserConditionsV0` and send its lamports to
 the user's authority. Both take the `["user_conditions", user]` PDA as a required writable account
 after `revenue_share_escrow`. A user created before the account existed has none there, and the

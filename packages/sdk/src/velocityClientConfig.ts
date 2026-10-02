@@ -62,6 +62,8 @@ export type VelocityClientConfig = {
 	delistedMarketSetting?: DelistedMarketSetting;
 	useHotWalletAdmin?: boolean;
 	coder?: Coder;
+	/** Defaults to `RELAY_PROGRAM_ID`. A new user registers its conditions watch there. */
+	relayProgramId?: PublicKey;
 };
 
 type GrpcVelocityClientAccountSubscriberCtor = new (

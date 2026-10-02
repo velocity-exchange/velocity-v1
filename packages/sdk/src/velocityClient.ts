@@ -17,6 +17,13 @@ import { calculateEquityFloorAutoDelta } from './math/margin';
 import type { ProgramAccount } from '@coral-xyz/anchor';
 import bs58 from 'bs58';
 import {
+	getRegisterWatchIxs,
+	RELAY_PROGRAM_ID,
+	RELAY_WATCH_V0_LEN,
+	USER_CONDITIONS_BLOCK_OFFSET,
+	userConditionsWatchSeed,
+} from './relay/watch';
+import {
 	ASSOCIATED_TOKEN_PROGRAM_ID,
 	createAssociatedTokenAccountInstruction,
 	createAssociatedTokenAccountIdempotentInstruction,
@@ -302,6 +309,11 @@ import { TitanClient } from './titan/titanClient';
  */
 export type SwapClient = TitanClient | JupiterClient;
 
+type InitializeUserIxs = {
+	userAccountPublicKey: PublicKey;
+	ixs: TransactionInstruction[];
+};
+
 type RemainingAccountParams =
 	import('./core/remainingAccounts').RemainingAccountParams;
 
@@ -328,6 +340,8 @@ export class VelocityClient {
 	connection: Connection;
 	wallet: IWallet;
 	public program: VelocityProgram;
+	relayProgramId: PublicKey;
+	private relayDeployed?: Promise<boolean>;
 	provider: AnchorProvider;
 	env: VelocityEnv;
 	opts: ConfirmOptions;
@@ -454,6 +468,7 @@ export class VelocityClient {
 		this.connection = config.connection;
 		this.wallet = config.wallet;
 		this.env = config.env ?? 'mainnet-beta';
+		this.relayProgramId = config.relayProgramId ?? RELAY_PROGRAM_ID;
 		this.opts = config.opts || {
 			...DEFAULT_CONFIRMATION_OPTS,
 		};
@@ -1339,7 +1354,7 @@ export class VelocityClient {
 	): Promise<[TransactionInstruction[], PublicKey]> {
 		const initializeIxs: TransactionInstruction[] = [];
 
-		const [userAccountPublicKey, initializeUserAccountIx] =
+		const { userAccountPublicKey, ixs: initializeUserIxs } =
 			await this.getInitializeUserInstructions(
 				subAccountId,
 				name,
@@ -1354,7 +1369,7 @@ export class VelocityClient {
 			}
 		}
 
-		initializeIxs.push(initializeUserAccountIx);
+		initializeIxs.push(...initializeUserIxs);
 
 		if (poolId) {
 			initializeIxs.push(
@@ -2011,7 +2026,7 @@ export class VelocityClient {
 		overrides?: {
 			externalWallet?: PublicKey;
 		}
-	): Promise<[PublicKey, TransactionInstruction]> {
+	): Promise<InitializeUserIxs> {
 		// Use external wallet as payer if provided, otherwise use the wallet
 		const payer = overrides?.externalWallet ?? this.wallet.publicKey;
 		// The authority is the account owner (this.authority), not the payer
@@ -2080,7 +2095,40 @@ export class VelocityClient {
 				remainingAccounts,
 			});
 
-		return [userAccountPublicKey, initializeUserAccountIx];
+		return {
+			userAccountPublicKey,
+			ixs: [
+				initializeUserAccountIx,
+				...(await this.getUserConditionsWatchIxs(payer, userAccountPublicKey)),
+			],
+		};
+	}
+
+	/**
+	 * The relay watch over a new user's conditions. Without it no turner fires
+	 * the user's triggers or liquidations. Empty where relay is not deployed.
+	 */
+	private async getUserConditionsWatchIxs(
+		payer: PublicKey,
+		userAccountPublicKey: PublicKey
+	): Promise<TransactionInstruction[]> {
+		this.relayDeployed ??= this.checkIfAccountExists(this.relayProgramId);
+		if (!(await this.relayDeployed)) return [];
+
+		const { ixs } = await getRegisterWatchIxs({
+			payer,
+			target: getUserConditionsPublicKey(
+				this.program.programId,
+				userAccountPublicKey
+			),
+			blockOffset: USER_CONDITIONS_BLOCK_OFFSET,
+			seed: userConditionsWatchSeed(userAccountPublicKey),
+			rentLamports: await this.connection.getMinimumBalanceForRentExemption(
+				RELAY_WATCH_V0_LEN
+			),
+			relayProgram: this.relayProgramId,
+		});
+		return ixs;
 	}
 
 	/**
@@ -4415,7 +4463,7 @@ export class VelocityClient {
 	}> {
 		const ixs = [];
 
-		const [userAccountPublicKey, initializeUserAccountIx] =
+		const { userAccountPublicKey, ixs: initializeUserIxs } =
 			await this.getInitializeUserInstructions(
 				subAccountId,
 				name,
@@ -4524,7 +4572,7 @@ export class VelocityClient {
 				ixs.push(await this.getInitializeUserStatsIx(overrides));
 			}
 		}
-		ixs.push(initializeUserAccountIx);
+		ixs.push(...initializeUserIxs);
 
 		if (poolId) {
 			ixs.push(await this.getUpdateUserPoolIdIx(poolId, subAccountId));
@@ -4710,7 +4758,7 @@ export class VelocityClient {
 				amount
 			);
 
-		const [userAccountPublicKey, initializeUserAccountIx] =
+		const { userAccountPublicKey, ixs: initializeUserIxs } =
 			await this.getInitializeUserInstructions(
 				subAccountId,
 				name,
@@ -4735,7 +4783,7 @@ export class VelocityClient {
 				ixs.push(await this.getInitializeUserStatsIx());
 			}
 		}
-		ixs.push(initializeUserAccountIx, depositCollateralIx);
+		ixs.push(...initializeUserIxs, depositCollateralIx);
 
 		const tx = await this.buildTransaction(ixs, txParams);
 

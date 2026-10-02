@@ -756,6 +756,14 @@ resync writes the user's liquidation coverage. `AdminClient.updateDefaultUserSyn
 `StateAccount.defaultUserSyncCostUnits` and `defaultUserSyncFallbackSlots` hold them. Zero cost
 units arm nothing.
 
+A resync is paid at most once a minute. While a user's positions keep changing, its fallback poll runs
+every minute, so a change inside the paid minute is still picked up. The first resync that finds the
+user idle restores the stored interval.
+
+A liquidation fill may execute up to the market's maintenance margin from the oracle, or the
+liquidator fee when that is larger. A market whose liquidator fee is 0 limited the fill to the oracle
+price, where no source quotes, so a relay liquidation never filled.
+
 A relay turner cranks a user's conditions only after a `WatchV0` names them. The SDK's user-creation
 builders therefore add two instructions after `initializeUser`. They create the watch at the payer's
 seed address and call relay's `register_watch_v0`. The payer pays the watch rent and can close it

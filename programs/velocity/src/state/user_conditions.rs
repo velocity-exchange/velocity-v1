@@ -41,9 +41,8 @@ pub struct TriggerSlotMetaV0 {
     pub padding: [u8; 2],
 }
 
-/// The shortest fallback interval a paid self-sync may ask for. The interval is also the
-/// rate limit on what the treasury pays to resync one account, so a caller free to name
-/// one slot would be paid every slot. Roughly a minute of slots.
+/// The shortest fallback interval a paid self-sync may ask for. A poll every slot would
+/// wake a resolver every slot. Roughly a minute of slots.
 pub const LIQ_SYNC_MIN_FALLBACK_SLOTS: u64 = 150;
 
 /// The most cost units a self-sync may price its resync at. Opting in is permissionless,
@@ -56,6 +55,12 @@ pub const LIQ_SYNC_MAX_COST_UNITS: u32 = 40_000;
 /// permissionless, so without an upper bound a third party could name an interval long
 /// enough that the poll never fires and the block reads as covered. Roughly a day.
 pub const LIQ_SYNC_MAX_FALLBACK_SLOTS: u64 = 216_000;
+
+/// The fallback poll's interval while the user is active, and the shortest gap between two
+/// paid resyncs of one account. A resync that finds a change shortens the poll to this, so
+/// a change inside the paid window is still picked up. A resync that finds none restores
+/// the stored interval. Roughly a minute of slots.
+pub const LIQ_SYNC_ACTIVE_POLL_SLOTS: u64 = LIQ_SYNC_MIN_FALLBACK_SLOTS;
 
 /// The terms a new `State` arms on each new user's conditions. They match the defaults
 /// `deploy-scripts/migrate.ts` syncs existing users with.
@@ -139,7 +144,7 @@ pub struct UserConditionsV0 {
     /// whose exposures arm no condition, and the level-triggered wake then fires forever.
     pub positions_digest: u64,
     /// Slot the treasury last paid a keeper for resyncing this account. A resync is paid
-    /// at most once per [`Self::sync_fallback_slots`]. Opting in is permissionless and the
+    /// at most once per [`LIQ_SYNC_ACTIVE_POLL_SLOTS`]. Opting in is permissionless and the
     /// instruction succeeds whether or not it had work, so without this slot anyone could
     /// crank the same account in a loop and draw the fee every time.
     pub last_paid_sync_slot: u64,
@@ -295,6 +300,26 @@ impl UserConditionsV0 {
         ConditionBlock::read_condition(&self.relay, TRIGGER_SLOT_BASE + index)
             .ok()
             .map(|condition| condition.min_payment())
+    }
+
+    /// True while the fallback poll runs at the active interval.
+    pub fn sync_poll_is_active(&self) -> bool {
+        ConditionBlock::read_condition(&self.relay, LIQ_SYNC_FALLBACK).is_ok_and(|condition| {
+            condition.min_payment() > 0 && condition.wake_slot() < self.sync_fallback_slots
+        })
+    }
+
+    /// Set the armed fallback poll's interval. An unarmed poll stays unarmed.
+    pub fn set_sync_poll_slots(&mut self, slots: u64) -> Result<()> {
+        let armed = ConditionBlock::read_condition(&self.relay, LIQ_SYNC_FALLBACK)
+            .is_ok_and(|condition| condition.min_payment() > 0);
+        if !armed {
+            return Ok(());
+        }
+
+        ConditionBlock::condition_mut(&mut self.relay, LIQ_SYNC_FALLBACK)
+            .map(|condition| condition.set_wake(relay_spec::WakeView::EverySlots { slots }))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     /// The keeper payment the liveness poll asks relay to assert. Zero when
@@ -487,8 +512,7 @@ mod merged_size_tests {
         assert!(validate_sync_args(&args(u32::MAX)).is_err());
     }
 
-    /// The interval is also the rate limit on what the treasury pays for one account, so a
-    /// paid sync cannot name one short enough to be paid every slot. The rule reads the
+    /// A paid sync cannot name a fallback poll short enough to wake every slot. The rule reads the
     /// terms a block holds, so a pricing change cannot move a paid block past it.
     #[test]
     fn a_paid_self_sync_cannot_ask_to_be_paid_every_slot() {

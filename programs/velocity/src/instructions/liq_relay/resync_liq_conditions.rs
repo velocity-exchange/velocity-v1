@@ -30,7 +30,9 @@ use {
         state::{
             crank_treasury::{CrankTreasuryV0, CRANK_TREASURY_PDA_SEED},
             user::User,
-            user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
+            user_conditions::{
+                UserConditionsV0, LIQ_SYNC_ACTIVE_POLL_SLOTS, USER_CONDITIONS_PDA_SEED,
+            },
         },
     },
     anchor_lang::{prelude::*, Discriminator},
@@ -67,14 +69,18 @@ pub struct ResyncLiqConditions<'info> {
 pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     ctx: Context<'info, ResyncLiqConditions<'info>>,
 ) -> Result<()> {
-    let (args, digest_before) = {
+    let (args, digest_before, poll_was_active) = {
         let conditions = ctx.accounts.liq_conditions.load()?;
         let terms = SyncLiqConditionsTerms {
             sync_payment_lamports: conditions.sync_payment_lamports,
             sync_fallback_slots: conditions.sync_fallback_slots,
         };
 
-        (terms, conditions.positions_digest)
+        (
+            terms,
+            conditions.positions_digest,
+            conditions.sync_poll_is_active(),
+        )
     };
 
     rewrite_liq_conditions(
@@ -90,21 +96,31 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     // above already zeroes and silences a block armed before the floor
     // existed, so this also covers that case.
     let payment = args.payable_lamports();
-    let digest_after = ctx.accounts.liq_conditions.load()?.positions_digest;
-    if !resync_earns_payment(payment, digest_before, digest_after) {
+    let changed = {
+        let mut conditions = ctx.accounts.liq_conditions.load_mut()?;
+        let changed = conditions.positions_digest != digest_before;
+        let poll_slots = if changed {
+            LIQ_SYNC_ACTIVE_POLL_SLOTS
+        } else {
+            conditions.sync_fallback_slots
+        };
+        conditions.set_sync_poll_slots(poll_slots)?;
+        changed
+    };
+
+    if !resync_earns_payment(payment, changed, poll_was_active) {
         return Ok(());
     }
 
-    // Paid at most once per fallback interval, the fallback poll's own
-    // cadence. A user who changes positions every slot still draws the fee
-    // once per interval.
+    // A user who changes positions every slot still draws the fee once per
+    // active interval.
     let slot = Clock::get()?.slot;
-    let due_slot = {
-        let conditions = ctx.accounts.liq_conditions.load()?;
-        conditions
-            .last_paid_sync_slot
-            .saturating_add(conditions.sync_fallback_slots)
-    };
+    let due_slot = ctx
+        .accounts
+        .liq_conditions
+        .load()?
+        .last_paid_sync_slot
+        .saturating_add(LIQ_SYNC_ACTIVE_POLL_SLOTS);
 
     if slot < due_slot {
         msg!(
@@ -120,7 +136,11 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
         return Ok(());
     }
 
-    ctx.accounts.liq_conditions.load_mut()?.last_paid_sync_slot = slot;
+    // The resync that only restores the long poll leaves the window open, so a
+    // change right after it is paid at once instead of waiting a long poll.
+    if changed {
+        ctx.accounts.liq_conditions.load_mut()?.last_paid_sync_slot = slot;
+    }
 
     let treasury = ctx.accounts.treasury.to_account_info();
     let rent_minimum = Rent::get()?.minimum_balance(treasury.data_len());
@@ -145,10 +165,11 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
 }
 
 /// Whether a resync may draw its payment at all. The treasury pays for a
-/// position change, not for a rewrite of the same exposures. Without the
-/// digest test a keeper could crank an unchanged account every interval.
-fn resync_earns_payment(payment: u64, digest_before: u64, digest_after: u64) -> bool {
-    payment > 0 && digest_before != digest_after
+/// position change, and once for the resync that finds an active user idle and
+/// restores the long poll. A rewrite of unchanged exposures under the long poll
+/// earns nothing, or a keeper could crank an idle account every interval.
+fn resync_earns_payment(payment: u64, changed: bool, poll_was_active: bool) -> bool {
+    payment > 0 && (changed || poll_was_active)
 }
 
 /// This resync's share of a payment that prices a whole transaction. A resync
@@ -181,7 +202,9 @@ fn batch_share(payment: u64, instructions_sysvar: &AccountInfo) -> u64 {
 /// recomputes everything from the stored account list, plus the accounts of
 /// any market the user entered since. A resync inside the paid interval pays
 /// nothing, and relay asserts the advertised payment, so the fallback poll
-/// takes that change once the interval ends.
+/// takes that change once the interval ends. While the poll runs at the active
+/// interval, an unchanged user also reports work, so the resync that finds it
+/// idle restores the long poll.
 #[derive(Accounts)]
 pub struct ResolveResyncLiqConditions<'info> {
     /// The shared staging account, at index 0 by convention. A resolver's
@@ -213,10 +236,11 @@ pub fn handle_resolve_resync_liq_conditions(
             };
             let due_slot = conditions
                 .last_paid_sync_slot
-                .saturating_add(conditions.sync_fallback_slots);
+                .saturating_add(LIQ_SYNC_ACTIVE_POLL_SLOTS);
 
             (
-                UserConditionsV0::digest_positions(&user) != conditions.positions_digest,
+                UserConditionsV0::digest_positions(&user) != conditions.positions_digest
+                    || conditions.sync_poll_is_active(),
                 terms.payable_lamports() > 0 && slot >= due_slot,
             )
         };
@@ -430,9 +454,16 @@ mod tests {
 
     #[test]
     fn a_resync_of_unchanged_positions_is_not_paid() {
-        assert!(!resync_earns_payment(5_000, 42, 42));
-        assert!(resync_earns_payment(5_000, 42, 43));
-        assert!(!resync_earns_payment(0, 42, 43));
+        assert!(!resync_earns_payment(5_000, false, false));
+        assert!(resync_earns_payment(5_000, true, false));
+        assert!(!resync_earns_payment(0, true, false));
+    }
+
+    /// The resync that finds an active user idle restores the long poll, and
+    /// is paid once for it. A later one under the long poll is not.
+    #[test]
+    fn the_resync_that_restores_the_long_poll_is_paid() {
+        assert!(resync_earns_payment(5_000, false, true));
     }
 
     /// A payment divides by the resyncs in the transaction. The instructions

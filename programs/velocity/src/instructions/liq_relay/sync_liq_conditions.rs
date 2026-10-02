@@ -103,8 +103,7 @@ pub struct SyncLiqConditionsTerms {
 impl SyncLiqConditionsTerms {
     /// True when a paid block also names an interval at or above the floor.
     ///
-    /// The interval rate-limits what the treasury pays for one account. A
-    /// payment with a one-slot interval is a paid loop anyone can crank.
+    /// A one-slot fallback poll would wake a resolver every slot.
     pub fn interval_is_sound(&self) -> bool {
         self.sync_payment_lamports == 0 || self.sync_fallback_slots >= LIQ_SYNC_MIN_FALLBACK_SLOTS
     }
@@ -894,7 +893,8 @@ mod tests {
                 spot_market::SpotMarket,
                 user::{PerpPosition, User},
                 user_conditions::{
-                    UserConditionsV0, LIQ_LIVENESS_POLL, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH,
+                    UserConditionsV0, LIQ_LIVENESS_POLL, LIQ_SYNC_ACTIVE_POLL_SLOTS,
+                    LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH,
                 },
             },
             test_utils::{create_account_info, get_anchor_account_bytes},
@@ -938,6 +938,28 @@ mod tests {
             conditions.positions_digest,
             UserConditionsV0::digest_positions(&User::default())
         );
+    }
+
+    /// The poll shortens while the user is active and returns to the stored
+    /// interval, so an idle user is polled at the long interval again.
+    #[test]
+    fn the_sync_poll_runs_short_only_while_active() {
+        let mut conditions = new_user_conditions(5_000);
+        assert!(!conditions.sync_poll_is_active());
+
+        conditions
+            .set_sync_poll_slots(LIQ_SYNC_ACTIVE_POLL_SLOTS)
+            .unwrap();
+        assert!(conditions.sync_poll_is_active());
+
+        conditions.set_sync_poll_slots(3_000).unwrap();
+        assert!(!conditions.sync_poll_is_active());
+
+        let mut unarmed = new_user_conditions(0);
+        unarmed
+            .set_sync_poll_slots(LIQ_SYNC_ACTIVE_POLL_SLOTS)
+            .unwrap();
+        assert!(!unarmed.sync_poll_is_active());
     }
 
     #[test]

@@ -19,9 +19,10 @@ import { assert } from '../../src/assert/assert';
 // Each case pairs an in-band market with an out-of-band market built the same way, so a passing
 // assertion pins the clamp and not some other bound. The in-band case must return the raw offset.
 //
-// The fixtures move the bid/ask TWAP and the 5min mark TWAP together. The program then takes its
-// blend path and the SDK its only path, and with zero AMM spreads both return the premium exactly,
-// so the fixture is not sensitive to the SDK's missing 50bps fast-only branch.
+// The fixtures match the program's market_with_mark_5min_premium helper (order_params/tests.rs):
+// the bid/ask TWAPs sit at oracle and only the 5min mark TWAP carries the premium, so the fast and
+// slow offsets differ by more than 50bps of the 5min TWAP and both implementations return the fast
+// offset alone. The asserted numbers are the ones the program's own tests assert.
 describe('baseline auction start offset clamp parity', () => {
 	const ORACLE_TWAP = new BN(100).mul(PRICE_PRECISION);
 	// getTriggerAuctionStartPrice applies a -500 bps (tier A/B) or -3500 bps start buffer on top of
@@ -32,8 +33,8 @@ describe('baseline auction start offset clamp parity', () => {
 	function makeMarket(contractTier: ContractTier, markPremium: BN) {
 		const market = _.cloneDeep(mockPerpMarkets[0]);
 		market.contractTier = contractTier;
-		market.marketStats.lastBidPriceTwap = ORACLE_TWAP.add(markPremium);
-		market.marketStats.lastAskPriceTwap = ORACLE_TWAP.add(markPremium);
+		market.marketStats.lastBidPriceTwap = ORACLE_TWAP;
+		market.marketStats.lastAskPriceTwap = ORACLE_TWAP;
 		market.marketStats.lastMarkPriceTwap5Min = ORACLE_TWAP.add(markPremium);
 		market.marketStats.volume24H = new BN(1_000_000).mul(PRICE_PRECISION);
 		market.marketStats.historicalOracleData.lastOraclePrice = ORACLE_TWAP;
@@ -158,6 +159,59 @@ describe('baseline auction start offset clamp parity', () => {
 		assert(
 			appliedOffset(outOfBand, PositionDirection.LONG, START_BUFFER_A_B).eq(
 				PRICE_PRECISION.muln(2) // raw 4%, cut to 2%
+			)
+		);
+	});
+
+	// The 50bps selector. slow is 0 (bid TWAP at oracle) and fast is the premium, so |slow - fast| is
+	// the premium and the threshold is floor((oracle + premium) / 200). 502_512 is the largest
+	// premium still inside it: blend, which with zero spreads is min(0, premium) = 0. One unit more
+	// leaves the band and the fast offset passes through alone.
+	it('switches from the blend to the fast offset past 50bps of divergence', () => {
+		const inside = makeMarket(ContractTier.A, new BN(502_512));
+		assert(
+			appliedOffset(inside, PositionDirection.LONG, START_BUFFER_A_B).eq(
+				new BN(0)
+			)
+		);
+
+		const outside = makeMarket(ContractTier.A, new BN(502_513));
+		assert(
+			appliedOffset(outside, PositionDirection.LONG, START_BUFFER_A_B).eq(
+				new BN(502_513)
+			)
+		);
+	});
+
+	// Inside the band the slow offset is blended with fractions of the AMM's cached per-side spreads,
+	// each scaled by the slow mark TWAP / (PRICE_PRECISION * 10). Same inputs and numbers as
+	// blends_the_slow_offset_with_the_amm_spreads_inside_the_band in order_params/tests.rs.
+	it('blends the slow offset with the AMM spreads inside the band', () => {
+		// long: slow 200_000, fast 300_000, |diff| 100_000 <= 100_300_000 / 200.
+		// fracLong = 1000 * 100_200_000 / 1e7 = 10_020.
+		// fracShort = 2000 * 100_200_000 / 1e7 = 20_040.
+		// min(200_000 + 10_020, 300_000 - 20_040) = 210_020.
+		const long = makeMarket(ContractTier.A, new BN(300_000));
+		long.marketStats.lastBidPriceTwap = ORACLE_TWAP.addn(200_000);
+		long.amm.longSpread = 1000;
+		long.amm.shortSpread = 2000;
+		assert(
+			appliedOffset(long, PositionDirection.LONG, START_BUFFER_A_B).eq(
+				new BN(210_020)
+			)
+		);
+
+		// short: slow -200_000, fast -300_000, |diff| 100_000 <= 99_700_000 / 200.
+		// fracLong = 1000 * 99_800_000 / 1e7 = 9_980.
+		// fracShort = 2000 * 99_800_000 / 1e7 = 19_960.
+		// max(-200_000 - 19_960, -300_000 + 9_980) = -219_960.
+		const short = makeMarket(ContractTier.A, new BN(-300_000));
+		short.marketStats.lastAskPriceTwap = ORACLE_TWAP.subn(200_000);
+		short.amm.longSpread = 1000;
+		short.amm.shortSpread = 2000;
+		assert(
+			appliedOffset(short, PositionDirection.SHORT, START_BUFFER_A_B).eq(
+				new BN(-219_960)
 			)
 		);
 	});

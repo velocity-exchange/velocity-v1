@@ -46,26 +46,7 @@ pub async fn reduce_only_depth<S: ChainSource + ?Sized>(
         return Ok(ReduceOnlyDepth::default());
     }
 
-    let owners: Vec<Pubkey> = {
-        let mut owners: Vec<Pubkey> = orders.iter().map(|(owner, _)| *owner).collect();
-        owners.sort();
-        owners.dedup();
-        owners
-    };
-    let accounts = source.get_multiple_accounts(&owners).await?;
-    let position_base: BTreeMap<Pubkey, i64> = owners
-        .iter()
-        .zip(accounts)
-        .filter_map(|(owner, account)| {
-            let user: User = read_zero_copy(&account?.data).ok()?;
-            let base = user
-                .perp_positions
-                .iter()
-                .find(|position| position.market_index == market_index)
-                .map_or(0, |position| position.base_asset_amount);
-            Some((*owner, base))
-        })
-        .collect();
+    let position_base = position_bases(source, &orders, market_index).await?;
 
     // Best price first on each side, then the book's own time priority.
     orders.sort_by(|(_, a), (_, b)| {
@@ -112,6 +93,33 @@ pub async fn reduce_only_depth<S: ChainSource + ?Sized>(
     }
 
     Ok(depth)
+}
+
+/// Each owner's base in `market_index`. An owner whose account does not load is left out, so its
+/// orders cover nothing.
+async fn position_bases<S: ChainSource + ?Sized>(
+    source: &S,
+    orders: &[(Pubkey, OrderNodeV0)],
+    market_index: u16,
+) -> Result<BTreeMap<Pubkey, i64>> {
+    let mut owners: Vec<Pubkey> = orders.iter().map(|(owner, _)| *owner).collect();
+    owners.sort();
+    owners.dedup();
+
+    let accounts = source.get_multiple_accounts(&owners).await?;
+    Ok(owners
+        .iter()
+        .zip(accounts)
+        .filter_map(|(owner, account)| {
+            let user: User = read_zero_copy(&account?.data).ok()?;
+            let base = user
+                .perp_positions
+                .iter()
+                .find(|position| position.market_index == market_index)
+                .map_or(0, |position| position.base_asset_amount);
+            Some((*owner, base))
+        })
+        .collect())
 }
 
 fn is_ask(node: &OrderNodeV0) -> bool {

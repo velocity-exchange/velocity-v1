@@ -9,6 +9,7 @@ mod quoter;
 mod relayer;
 mod taker;
 mod util;
+mod ws_source;
 
 use {
     crate::{
@@ -155,6 +156,16 @@ pub struct Config {
     /// Disable Pyth price feed subscription
     #[clap(long, default_value = "false")]
     pub no_pyth: bool,
+    /// Where the liquidator reads account updates. `websocket` runs against an RPC node with
+    /// no geyser plugin, such as a local validator.
+    #[clap(long, env = "ACCOUNT_SOURCE", value_enum, default_value = "grpc")]
+    pub account_source: AccountSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum AccountSource {
+    Grpc,
+    Websocket,
 }
 
 enum UseMarkets {

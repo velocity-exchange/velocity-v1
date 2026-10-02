@@ -630,9 +630,15 @@ impl LiquidatorBot {
         let rt = tokio::runtime::Handle::current();
         let tx_sender = tx_worker.run(rt);
 
-        let events_rx =
-            setup_grpc(velocity.clone(), tx_sender.clone(), perp_market_ids.clone()).await;
-        log::info!(target: TARGET, "subscribed gRPC");
+        let events_rx = match config.account_source {
+            crate::AccountSource::Grpc => {
+                setup_grpc(velocity.clone(), tx_sender.clone(), perp_market_ids.clone()).await
+            }
+            crate::AccountSource::Websocket => {
+                crate::ws_source::setup_websocket(velocity.clone()).await
+            }
+        };
+        log::info!(target: TARGET, "subscribed {:?}", config.account_source);
 
         // populate market data
         let mut market_state = MarketStateData::default();
@@ -663,25 +669,30 @@ impl LiquidatorBot {
 
         let market_state = Arc::new(RwLock::new(MarketState::new(market_state)));
 
-        let pyth_access_token = std::env::var("PYTH_LAZER_TOKEN").expect("pyth access token");
-        let pyth_feed_cli = pyth_lazer_client::LazerClient::new(
-            "wss://pyth-lazer.dourolabs.app/v1/stream",
-            pyth_access_token.as_str(),
-        )
-        .expect("pyth price feed connects");
+        let pyth_price_feed = if config.no_pyth {
+            log::info!(target: TARGET, "no pyth feed, margin uses the on-chain oracle");
+            None
+        } else {
+            let pyth_access_token = std::env::var("PYTH_LAZER_TOKEN").expect("pyth access token");
+            let pyth_feed_cli = pyth_lazer_client::LazerClient::new(
+                "wss://pyth-lazer.dourolabs.app/v1/stream",
+                pyth_access_token.as_str(),
+            )
+            .expect("pyth price feed connects");
+            let spot_feeds: &[_] = if config.use_spot_liquidation {
+                &spot_market_ids
+            } else {
+                &[]
+            };
 
-        let pyth_price_feed: tokio::sync::mpsc::Receiver<_> = if config.use_spot_liquidation {
-            crate::util::subscribe_price_feeds(
+            log::info!(target: TARGET, "subscribed pyth price feeds");
+            Some(crate::util::subscribe_price_feeds(
                 pyth_feed_cli,
                 &perp_market_ids,
-                &spot_market_ids,
+                spot_feeds,
                 &[],
-            )
-        } else {
-            crate::util::subscribe_price_feeds(pyth_feed_cli, &perp_market_ids, &[], &[])
+            ))
         };
-
-        log::info!(target: TARGET, "subscribed pyth price feeds");
 
         let cu_limit = std::env::var("FILL_CU_LIMIT")
             .ok()
@@ -753,7 +764,7 @@ impl LiquidatorBot {
             config,
             market_state,
             liq_tx,
-            pyth_price_feed: Some(pyth_price_feed),
+            pyth_price_feed,
             dashboard_state,
             subaccount_pubkeys,
             collateral_info_per_subaccount,
@@ -807,6 +818,7 @@ impl LiquidatorBot {
         let mut initial_high_risk_count = 0;
 
         let mut last_collateral_refresh_ms: u64 = 0;
+        let mut last_slot_duration_refresh_ms: u64 = 0;
         const COLLATERAL_REFRESH_INTERVAL_MS: u64 = 5_000;
 
         log::info!(target: TARGET, "starting user account initialization");
@@ -875,13 +887,7 @@ impl LiquidatorBot {
         let mut oracle_update;
 
         // Pyth Feed
-        let mut pyth_price_feed = match self.pyth_price_feed {
-            Some(rx) => rx,
-            None => {
-                log::error!(target: TARGET, "pyth price feed not initialized");
-                return;
-            }
-        };
+        let mut pyth_price_feed = self.pyth_price_feed;
         let mut pyth_perp_prices = BTreeMap::<u16, PythPriceUpdate>::new();
 
         log::info!(target: TARGET, "entering main event loop");
@@ -890,8 +896,8 @@ impl LiquidatorBot {
             oracle_update = false;
 
             // Drain pyth updates first (non-blocking)
-            'pyth: loop {
-                match pyth_price_feed.try_recv() {
+            'pyth: while let Some(feed) = pyth_price_feed.as_mut() {
+                match feed.try_recv() {
                     Ok(update) => {
                         let market_id = update.market_id;
                         let price = update.price;
@@ -945,6 +951,23 @@ impl LiquidatorBot {
                     slot_clock = velocity_rs::slot_clock_from_state(&state);
                 }
             }
+
+            // On the wall clock, so a quiet chain still retries a calculation
+            // that failed before the market data loaded.
+            if batch_now_ms.saturating_sub(last_collateral_refresh_ms)
+                >= COLLATERAL_REFRESH_INTERVAL_MS
+            {
+                last_collateral_refresh_ms = batch_now_ms;
+                refresh_collateral(
+                    velocity,
+                    &self.subaccount_pubkeys,
+                    &self.collateral_info_per_subaccount,
+                    &self.free_collateral_per_subaccount,
+                    &self.txs_in_flight,
+                    &self.tx_sig_to_collateral,
+                )
+                .await;
+            }
             for event in event_buffer.drain(..) {
                 match event {
                     GrpcEvent::UserUpdate {
@@ -953,10 +976,10 @@ impl LiquidatorBot {
                         slot: update_slot,
                     } => {
                         let now_ms = current_time_millis();
-                        if now_ms.saturating_sub(last_collateral_refresh_ms)
+                        if now_ms.saturating_sub(last_slot_duration_refresh_ms)
                             >= COLLATERAL_REFRESH_INTERVAL_MS
                         {
-                            last_collateral_refresh_ms = now_ms;
+                            last_slot_duration_refresh_ms = now_ms;
 
                             // Pick up a mid-run slot-duration flip
                             slot_duration =
@@ -964,37 +987,6 @@ impl LiquidatorBot {
                             // re-pace the worker's rate limiter on the flip
                             self.liquidation_slot_duration_ms
                                 .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);
-
-                            // Update collaterals
-                            let new_collateral = get_collateral_info_per_subaccount(
-                                &velocity,
-                                &self.subaccount_pubkeys,
-                            )
-                            .await;
-
-                            self.collateral_info_per_subaccount.clear();
-
-                            for (subaccount_pubkey, collateral_info) in new_collateral {
-                                self.collateral_info_per_subaccount
-                                    .insert(subaccount_pubkey, collateral_info);
-                            }
-
-                            // Update free collateral accounting for in flight txs
-                            for entry in self.collateral_info_per_subaccount.iter() {
-                                let subaccount_pubkey = entry.key();
-                                let collateral_info = entry.value();
-                                let mut free = collateral_info.free;
-
-                                if let Some(in_flight) = self.txs_in_flight.get(subaccount_pubkey) {
-                                    for sig in in_flight.value().iter() {
-                                        if let Some(reserved) = self.tx_sig_to_collateral.get(sig) {
-                                            free = free.saturating_sub(reserved.value().0 as i128);
-                                        }
-                                    }
-                                }
-                                self.free_collateral_per_subaccount
-                                    .insert(*subaccount_pubkey, free.max(0) as u128);
-                            }
                         }
 
                         let now_ms = current_time_millis();
@@ -1508,6 +1500,37 @@ fn spawn_derisk_loop(
             }
         }
     });
+}
+
+/// Recompute each subaccount's collateral, and its free collateral net of the
+/// collateral that in-flight liquidations reserve.
+async fn refresh_collateral(
+    velocity: &VelocityClient,
+    subaccounts: &[Pubkey],
+    collateral_info: &DashMap<Pubkey, CollateralInfo>,
+    free_collateral: &DashMap<Pubkey, u128>,
+    txs_in_flight: &DashMap<Pubkey, HashSet<Signature>>,
+    tx_sig_to_collateral: &DashMap<Signature, (u128, u64)>,
+) {
+    let new_collateral = get_collateral_info_per_subaccount(velocity, subaccounts).await;
+    collateral_info.clear();
+    for (subaccount_pubkey, info) in new_collateral {
+        collateral_info.insert(subaccount_pubkey, info);
+    }
+
+    for entry in collateral_info.iter() {
+        let reserved: i128 = txs_in_flight
+            .get(entry.key())
+            .map(|in_flight| {
+                in_flight
+                    .iter()
+                    .filter_map(|sig| tx_sig_to_collateral.get(sig).map(|r| r.value().0 as i128))
+                    .sum()
+            })
+            .unwrap_or(0);
+        let free = entry.value().free.saturating_sub(reserved);
+        free_collateral.insert(*entry.key(), free.max(0) as u128);
+    }
 }
 
 async fn get_collateral_info_per_subaccount(
@@ -2208,6 +2231,11 @@ impl PrimaryLiquidationStrategy {
         }
         match (liability.market_type, asset.map(|a| a.market_type)) {
             (MarketType::Perp, None) => LiquidationType::PerpTakeover,
+            // `liquidate_perp_pnl_for_deposit` refuses an open position, so the
+            // position is liquidated first and its pnl after.
+            (MarketType::Perp, Some(MarketType::Spot)) if liability.base_amount != 0 => {
+                LiquidationType::PerpTakeover
+            }
             (MarketType::Perp, Some(MarketType::Spot)) => LiquidationType::PerpPnlForDeposit,
             (MarketType::Spot, Some(MarketType::Perp)) => LiquidationType::BorrowForPerpPnl,
             (MarketType::Spot, Some(MarketType::Spot)) => LiquidationType::SpotForSpot,
@@ -4161,6 +4189,22 @@ mod tests {
             base_amount: 100,
             quote_amount: 0,
         }
+    }
+
+    #[test]
+    fn an_open_position_is_liquidated_before_its_pnl() {
+        let deposit = spot_info(0, true);
+        let open = perp_info(0, false, 900_000_000, -20_000_000);
+        let closed = perp_info(0, false, 0, -20_000_000);
+
+        assert_eq!(
+            PrimaryLiquidationStrategy::decide_liquidation_type(&open, Some(&deposit), false),
+            LiquidationType::PerpTakeover
+        );
+        assert_eq!(
+            PrimaryLiquidationStrategy::decide_liquidation_type(&closed, Some(&deposit), false),
+            LiquidationType::PerpPnlForDeposit
+        );
     }
 
     #[test]

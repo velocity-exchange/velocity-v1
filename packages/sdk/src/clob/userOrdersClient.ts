@@ -294,6 +294,7 @@ export function deserializeUserClobOrder(row: any): UserClobOrder {
 		activationSlot: new BN(row.activationSlot),
 		placedSlot: new BN(row.placedSlot),
 		takerOrigin: !!row.takerOrigin,
+		reduceOnly: !!row.reduceOnly,
 		venue: 'clob',
 	};
 }

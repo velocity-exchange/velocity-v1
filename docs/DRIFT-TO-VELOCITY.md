@@ -570,7 +570,8 @@ These public exports were added, or restored, relative to the fork point:
 - `UserClobOrdersClient` and `UserClobOrder` (feat/propamm) read a user's resting book orders
   over the dlob-server's `GET /userOrders` and its `user_orders` websocket channel. This
   replaces `user.getOpenOrders()` for orders that rest on a book, which have no `User.orders`
-  slot. Every row carries the handle a cancel or a modify takes.
+  slot. Every row carries the handle a cancel or a modify takes, and `reduceOnly` and
+  `takerOrigin` flags.
 - `liquiditySource`, and so `L2Level['sources']`, gains `'clob'` and `'propamm'`
   (feat/propamm).
 - Liquidation book accounts (feat/propamm). `VelocityClient.getLiquidationBookMetas(userAccount)`

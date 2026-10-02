@@ -18,10 +18,11 @@
 //! until the DLOB dies.
 
 use {
+    crate::reduce_only::ReduceOnlyDepth,
     anyhow::{anyhow, Result},
     program::state::{
-        oracle::OraclePriceData, perp_market::PerpMarket, prop_amm::UserRefV0,
-        router_quote::QuotedSourceKind, state::State,
+        oracle::OraclePriceData, perp_market::PerpMarket, router_quote::QuotedSourceKind,
+        state::State,
     },
     serde_json::{json, Map, Value},
     solana_sdk::pubkey::Pubkey,
@@ -61,8 +62,17 @@ fn source_label(kind: QuotedSourceKind, key: &Pubkey, entries: &[CarriedEntry]) 
     }
 }
 
-fn aggregate(side: SideQuote) -> SideLevels {
+/// One side's ladders, plus book rows the view could not quote.
+fn aggregate(side: SideQuote, extra_rows: &[BookRow]) -> SideLevels {
     let mut levels_by_price: SideLevels = BTreeMap::new();
+    for row in extra_rows {
+        *levels_by_price
+            .entry(row.price)
+            .or_default()
+            .entry(row.source)
+            .or_default() += row.size as u128;
+    }
+
     for book in &side.view.books {
         let label = source_label(book.kind, &book.key, side.entries);
         for level in &book.levels {
@@ -171,11 +181,12 @@ pub fn l2_payload(
     market_name: &str,
     asks: SideQuote,
     bids: SideQuote,
+    reduce_only: &ReduceOnlyDepth,
     decorations: &Decorations,
     ts_ms: u128,
 ) -> Value {
-    let ask_levels = aggregate(asks);
-    let bid_levels = aggregate(bids);
+    let ask_levels = aggregate(asks, &reduce_only.asks);
+    let bid_levels = aggregate(bids, &reduce_only.bids);
 
     let best_ask = ask_levels.keys().next().copied();
     let best_bid = bid_levels.keys().next_back().copied();
@@ -637,6 +648,7 @@ mod tests {
                 view: &bids,
                 entries: &entries,
             },
+            &crate::reduce_only::ReduceOnlyDepth::default(),
             &decorations(),
             1_234,
         );
@@ -688,6 +700,7 @@ mod tests {
                 view: &bids,
                 entries: &entries,
             },
+            &crate::reduce_only::ReduceOnlyDepth::default(),
             &decorations(),
             0,
         );
@@ -730,6 +743,7 @@ mod tests {
                 view: &bids,
                 entries: &entries,
             },
+            &crate::reduce_only::ReduceOnlyDepth::default(),
             &decorations(),
             9,
         );

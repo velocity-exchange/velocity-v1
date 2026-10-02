@@ -9,6 +9,7 @@
   "activationSlot": "1234",
   "placedSlot": "1233",
   "takerOrigin": false,
+  "reduceOnly": false,
   "venue": "clob",
   "clobOrderId": "18446744073709551615"
 }

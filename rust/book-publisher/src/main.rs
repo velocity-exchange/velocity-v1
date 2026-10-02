@@ -16,6 +16,7 @@
 mod cross;
 mod metrics_server;
 mod payload;
+mod reduce_only;
 mod user_orders;
 
 use {
@@ -440,8 +441,9 @@ async fn publish_market(
     // market account is the source for L3 and for best makers. The slot is
     // vacant until a book is approved.
     let slab_slots = velocity_router_sim::quoter_slab_slots(source, velocity, market_index).await?;
-    let clob_book_key = program::state::prop_amm::clob_slot_index(&slab_slots)
-        .map(|index| slab_slots[index].config.response_account);
+    let clob_slot =
+        program::state::prop_amm::clob_slot_index(&slab_slots).map(|index| &slab_slots[index]);
+    let clob_book_key = clob_slot.map(|slot| slot.config.response_account);
 
     // A long taker consumes asks and a short taker consumes bids. Both go
     // through the health layer, so a quoter that breaks the simulation costs
@@ -509,7 +511,37 @@ async fn publish_market(
         book_slot,
     )?;
     let name = market_name(&perp_market);
-    let l2 = payload::l2_payload(market_index, &name, asks, bids, &decorations, ts_ms);
+
+    // The book's own account, which the reduce-only depth and the user-orders
+    // feed both read.
+    let book = match clob_book_key {
+        Some(book_key) => Some(fetch_account(source.as_ref(), &book_key, "clob market").await?),
+        None => None,
+    };
+    let reduce_only = match (clob_slot, &book) {
+        (Some(slot), Some(book)) => {
+            reduce_only::reduce_only_depth(
+                source.as_ref(),
+                velocity,
+                market_index,
+                slot.entry,
+                slot.config.priority,
+                &book.data,
+                &clock,
+            )
+            .await?
+        }
+        _ => reduce_only::ReduceOnlyDepth::default(),
+    };
+    let l2 = payload::l2_payload(
+        market_index,
+        &name,
+        asks,
+        bids,
+        &reduce_only,
+        &decorations,
+        ts_ms,
+    );
 
     // The channel gets the full document and the key gets a depth-100 slice,
     // which matches the TypeScript publisher's split between publish and SET.
@@ -542,8 +574,14 @@ async fn publish_market(
     // describes its depth through `quote_l3_v0`; every other source describes
     // it against the one user its registry entry names. So this reads rows
     // rather than decoding a book.
-    let l3_bids = payload::view_rows(velocity, bids);
-    let l3_asks = payload::view_rows(velocity, asks);
+    let l3_bids: Vec<_> = payload::view_rows(velocity, bids)
+        .into_iter()
+        .chain(reduce_only.bids)
+        .collect();
+    let l3_asks: Vec<_> = payload::view_rows(velocity, asks)
+        .into_iter()
+        .chain(reduce_only.asks)
+        .collect();
     if bids.view.rows_truncated || asks.view.rows_truncated {
         warn!(
             market_index,
@@ -579,8 +617,7 @@ async fn publish_market(
     // Who is resting what, off the book's own account. This is independent of
     // the ladders above. A quoted book is what a taker of one size would reach,
     // and a maker that asks after their own orders wants all of them.
-    if let Some(book_key) = clob_book_key {
-        let book = fetch_account(source.as_ref(), &book_key, "clob market").await?;
+    if let Some(book) = &book {
         let written = user_orders::publish(
             user_orders,
             redis,

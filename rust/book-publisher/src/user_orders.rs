@@ -91,6 +91,7 @@ fn order_json_at(node: &OrderNodeV0, node_index: u32, market_index: u16) -> Valu
         "activationSlot": node.activation_slot.to_string(),
         "placedSlot": node.placed_slot.to_string(),
         "takerOrigin": node.is_taker_origin(),
+        "reduceOnly": node.is_reduce_only(),
         "venue": "clob",
     })
 }

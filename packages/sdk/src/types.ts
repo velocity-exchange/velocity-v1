@@ -702,6 +702,8 @@ export type UserClobOrder = {
 	placedSlot: BN;
 	/** a migrated taker remainder. It demands liquidity, and a cross settles at the other side's price */
 	takerOrigin: boolean;
+	/** fills only up to the owner's position in the reduce direction */
+	reduceOnly: boolean;
 	venue: 'clob';
 };
 

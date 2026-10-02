@@ -47,4 +47,11 @@ describe('user CLOB orders feed', () => {
 			deserializeUserClobOrder({ ...row, takerOrigin: true }).takerOrigin
 		).to.equal(true);
 	});
+
+	it('reports a reduce-only order as one', () => {
+		expect(deserializeUserClobOrder(row).reduceOnly).to.equal(false);
+		expect(
+			deserializeUserClobOrder({ ...row, reduceOnly: true }).reduceOnly
+		).to.equal(true);
+	});
 });

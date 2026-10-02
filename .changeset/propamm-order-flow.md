@@ -248,11 +248,13 @@ not minted is still a no-op, and `cancelOrdersByIds` skips a placed trigger.
 
 `UserClobOrdersClient` reads a user's resting book orders from the dlob-server, over
 `GET /userOrders` or the `user_orders` websocket channel. Book orders have no `User.orders` slot, so
-this replaces `user.getOpenOrders()` for them. Every row carries the order's handle.
+this replaces `user.getOpenOrders()` for them. Every row carries the order's handle, and
+`reduceOnly` and `takerOrigin` flags.
 
 `liquiditySource`, and so `L2Level['sources']`, gains `'clob'` and `'propamm'`, the two sources the
 book publisher adds to each price level. `L3RowV0` carries `node_index` and `placed_slot` and is 72
-bytes. `ClobRestUnavailable` is a new error.
+bytes. `ClobRestUnavailable` is a new error. The published L2 and L3 show a reduce-only maker order
+at the size its owner's position covers.
 
 A limit order can no longer carry an oracle price offset. The program refuses any `OrderType.LIMIT`
 order whose `oraclePriceOffset` is nonzero with `InvalidOrderOracleOffset` (6055). An

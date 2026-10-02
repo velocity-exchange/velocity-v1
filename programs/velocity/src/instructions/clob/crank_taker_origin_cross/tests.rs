@@ -873,8 +873,20 @@ mod builder_binding {
         crate::state::user::{Order, OrderBitFlag},
     };
 
-    /// The book names the remainder by its own handle. A builder row for the
-    /// velocity id renames the order and flags it, so the fill charges the fee.
+    /// The book names the remainder by its own handle. The velocity id renames
+    /// the order, so its fill record matches its place record.
+    #[test]
+    fn a_remainder_is_named_by_its_velocity_id() {
+        let mut order = Order {
+            order_id: 41,
+            ..Order::default()
+        };
+
+        apply_velocity_order_id(&mut order, Some(7), false);
+        assert_eq!(order.order_id, 7);
+        assert!(!order.is_bit_flag_set(OrderBitFlag::HasBuilder));
+    }
+
     #[test]
     fn a_remainder_with_a_builder_row_is_charged_the_builder_fee() {
         let mut order = Order {
@@ -882,19 +894,19 @@ mod builder_binding {
             ..Order::default()
         };
 
-        apply_builder_row(&mut order, 7, true);
+        apply_velocity_order_id(&mut order, Some(7), true);
         assert_eq!(order.order_id, 7);
         assert!(order.is_bit_flag_set(OrderBitFlag::HasBuilder));
     }
 
     #[test]
-    fn a_remainder_with_no_builder_row_is_left_as_the_book_named_it() {
+    fn a_remainder_the_book_no_longer_holds_keeps_the_book_handle() {
         let mut order = Order {
             order_id: 41,
             ..Order::default()
         };
 
-        apply_builder_row(&mut order, 7, false);
+        apply_velocity_order_id(&mut order, None, true);
         assert_eq!(order.order_id, 41);
         assert!(!order.is_bit_flag_set(OrderBitFlag::HasBuilder));
     }

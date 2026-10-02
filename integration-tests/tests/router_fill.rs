@@ -9163,6 +9163,22 @@ fn place_clob_order_for(
 /// `place_and_take_perp_order_v1` with nothing to fill against (empty book,
 /// vAMM paused) is exactly the R1 path a keeper fill takes, and the only way
 /// to get the flag set.
+/// The velocity order id the user's next placement takes.
+fn next_order_id(svm: &litesvm::LiteSVM, user: &Pubkey) -> u32 {
+    let user: User = read_zero_copy(svm, user);
+    user.next_order_id
+}
+
+/// The fill records a transaction emitted.
+fn fill_records(
+    meta: &litesvm::types::TransactionMetadata,
+) -> Vec<velocity::state::events::OrderActionRecord> {
+    events::<velocity::state::events::OrderActionRecord>(meta)
+        .into_iter()
+        .filter(|record| record.action == velocity::state::events::OrderAction::Fill)
+        .collect()
+}
+
 fn rest_taker_origin_order(
     fixture: &mut Fixture,
     party: &Party,
@@ -9443,6 +9459,7 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     let keeper = party(&mut fixture.svm, 0);
 
     // The remainder: a whole unfilled unit resting at its limit of 101.
+    let taker_order_id = next_order_id(&fixture.svm, &taker.user);
     let _subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
@@ -9459,6 +9476,10 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     );
 
     // Makers line up inside the window: 0.5 at 100, then 0.5 at 99.
+    let maker_order_ids = [
+        next_order_id(&fixture.svm, &worse.user),
+        next_order_id(&fixture.svm, &best.user),
+    ];
     place_clob_order_for(
         &mut fixture,
         &worse,
@@ -9507,6 +9528,20 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
         ),
         "settled at the counterparties' prices, not the resting one: {logs}"
     );
+
+    // Each fill names both orders by the velocity id their place records used,
+    // never by the book's own id.
+    let fills = fill_records(&meta);
+    assert_eq!(fills.len(), 2, "one fill per maker");
+    for fill in &fills {
+        assert_eq!(fill.taker_order_id, Some(taker_order_id));
+        assert!(
+            fill.maker_order_id
+                .is_some_and(|id| maker_order_ids.contains(&id)),
+            "maker named {:?}, placed as {maker_order_ids:?}",
+            fill.maker_order_id
+        );
+    }
 
     // The taker is long its whole unit, bought at a 99.5 average rather than
     // its own 101. Its quote is that notional plus the taker fee plus the
@@ -10562,6 +10597,8 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let keeper = party(&mut fixture.svm, 0);
 
+    let early_order_id = next_order_id(&fixture.svm, &early.user);
+    let late_order_id = next_order_id(&fixture.svm, &late.user);
     let _subject = rest_crossing_remainders(
         &mut fixture,
         &blocker,
@@ -10615,6 +10652,13 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
         "settled at the earlier order's price: {:?}",
         meta.logs
     );
+
+    // The pair's fill names both remainders by their velocity ids. The later
+    // one aggresses, so it is the taker.
+    let fills = fill_records(&meta);
+    assert_eq!(fills.len(), 1);
+    assert_eq!(fills[0].taker_order_id, Some(late_order_id));
+    assert_eq!(fills[0].maker_order_id, Some(early_order_id));
 
     // The seller sold at 101, not at the 99 it was resting at: it receives the
     // 50.5 notional less its taker fee and the cranker's cut, comfortably above

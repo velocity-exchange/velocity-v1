@@ -1191,7 +1191,7 @@ fn route_and_fill_remainder<'info>(
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, subject_order);
     // The fill targets the order's own size, so the bound goes on the order.
     order.base_asset_amount = remainder.base;
-    bind_builder_order(cx, rev_share_escrow, subject_order, &mut order)?;
+    bind_velocity_order_ids(cx, rev_share_escrow, subject_order, None, &mut order)?;
 
     let mark = crate::instructions::RouteMark::read(maps, cx.market_index)?;
 
@@ -1276,59 +1276,71 @@ fn route_and_fill_remainder<'info>(
     Ok(filled)
 }
 
-/// Carry the taker's builder terms onto the order the crank fills.
+/// Name the order the crank fills by its velocity id, and carry the taker's
+/// builder terms. Returns the counterparty's velocity id when one is passed.
 ///
-/// The escrow keys a builder row by velocity order id, and a book row names
-/// the book's handle instead. The book keeps the velocity id as the order's
-/// `client_order_id`, so the crank reads it back. A live row for that id,
+/// A book row names the book's handle, but a fill record must name the velocity
+/// id the place record used, or no reader can match the two. The book keeps the
+/// velocity id as the order's `client_order_id`, so one read returns both ids.
+/// The escrow keys a builder row by the same id. A live row for that id,
 /// sub-account and market is this order's own. Velocity order ids only
 /// increase, and a placement that stops early clears the row it wrote.
-fn bind_builder_order<'info>(
+fn bind_velocity_order_ids<'info>(
     cx: &TakerOriginContext<'_, 'info>,
     rev_share_escrow: &Option<RevenueShareEscrowZeroCopyMut<'info>>,
     resting: &RestingOrder,
+    counterparty: Option<&RestingOrder>,
     order: &mut crate::state::user::Order,
-) -> Result<()> {
-    let Some(escrow) = rev_share_escrow.as_ref() else {
-        return Ok(());
-    };
-
-    let Some(view) = ClobReader {
+) -> Result<Option<u32>> {
+    let refs = std::iter::once(resting.order_ref)
+        .chain(counterparty.map(|counterparty| counterparty.order_ref))
+        .collect();
+    let views = ClobReader {
         market: &cx.accounts.clob_market,
         program: &cx.accounts.clob_program,
     }
-    .orders(vec![resting.order_ref])?
-    .first()
-    .copied()
-    .filter(|view| view.found()) else {
-        return Ok(());
+    .orders(refs)?;
+
+    let subject_id = velocity_order_id(views.first());
+    let counterparty_id = counterparty.and(velocity_order_id(views.get(1)));
+    let has_builder_row = match (subject_id, rev_share_escrow.as_ref()) {
+        (Some(id), Some(escrow)) => escrow
+            .find_builder_order_index(
+                cx.taker_ref.sub_account_id,
+                id,
+                cx.market_index,
+                MarketType::Perp,
+            )
+            .is_some(),
+        _ => false,
     };
 
-    let builder_row = escrow.find_builder_order_index(
-        cx.taker_ref.sub_account_id,
-        view.client_order_id,
-        cx.market_index,
-        MarketType::Perp,
-    );
-
-    apply_builder_row(order, view.client_order_id, builder_row.is_some());
-    Ok(())
+    apply_velocity_order_id(order, subject_id, has_builder_row);
+    Ok(counterparty_id)
 }
 
-/// Name the order by its velocity id and flag its builder, so the fill finds
-/// the escrow row and charges the builder fee. An order with no row is left
-/// as the book named it.
-fn apply_builder_row(
+/// The velocity id a book view carries. A fill or a crank that got there first
+/// leaves no view, and a placement that named no id leaves zero.
+fn velocity_order_id(view: Option<&crate::state::prop_amm::OrderViewV0>) -> Option<u32> {
+    view.filter(|view| view.found() && view.client_order_id != 0)
+        .map(|view| view.client_order_id)
+}
+
+/// Rename the order to its velocity id, and flag its builder so the fill finds
+/// the escrow row and charges the builder fee. With no id the book's handle stays.
+fn apply_velocity_order_id(
     order: &mut crate::state::user::Order,
-    velocity_order_id: u32,
+    velocity_order_id: Option<u32>,
     has_builder_row: bool,
 ) {
-    if !has_builder_row {
+    let Some(velocity_order_id) = velocity_order_id else {
         return;
-    }
+    };
 
     order.order_id = velocity_order_id;
-    order.add_bit_flag(OrderBitFlag::HasBuilder);
+    if has_builder_row {
+        order.add_bit_flag(OrderBitFlag::HasBuilder);
+    }
 }
 
 /// Whether the cranker is paid a reward out of the improvement.
@@ -1746,6 +1758,8 @@ struct RemainderPair<'a> {
     counterparty: &'a RestingOrder,
     /// The counterparty's margin account, as the user map keys it.
     maker_key: Pubkey,
+    /// The velocity id the counterparty's fill record names it by.
+    counterparty_order_id: u32,
     base_filled: u64,
     quote_filled: u64,
 }
@@ -1865,8 +1879,22 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
 ) -> Result<()> {
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, aggressor);
-    bind_builder_order(cx, rev_share_escrow, aggressor, &mut order)?;
-    let pair = bind_pair(cx, cross, aggressor, counterparty, &mut order, maps)?;
+    let counterparty_order_id = bind_velocity_order_ids(
+        cx,
+        rev_share_escrow,
+        aggressor,
+        Some(counterparty),
+        &mut order,
+    )?;
+    let pair = bind_pair(
+        cx,
+        cross,
+        aggressor,
+        counterparty,
+        counterparty_order_id,
+        &mut order,
+        maps,
+    )?;
     admit_pair_parties(
         &cx.accounts.taker,
         cx.makers_and_referrer,
@@ -1964,6 +1992,7 @@ fn bind_pair<'a>(
     cross: &Cross,
     aggressor: &'a RestingOrder,
     counterparty: &'a RestingOrder,
+    counterparty_order_id: Option<u32>,
     order: &mut crate::state::user::Order,
     maps: &AccountMaps,
 ) -> Result<RemainderPair<'a>> {
@@ -1993,6 +2022,8 @@ fn bind_pair<'a>(
         aggressor,
         counterparty,
         maker_key,
+        counterparty_order_id: counterparty_order_id
+            .unwrap_or(counterparty.order_ref.order_id as u32),
         base_filled,
         quote_filled: controller::orders::clob_notional(counterparty.price, base_filled)?,
     })
@@ -2326,7 +2357,7 @@ fn settle_pair_match<'info>(
         // Velocity reserves a CLOB order's worst case at placement, so the
         // fill unwinds that reservation.
         true,
-        Some(pair.counterparty.order_ref.order_id as u32),
+        Some(pair.counterparty_order_id),
     )?;
 
     controller::orders::settle_external_match_fill(

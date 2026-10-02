@@ -935,9 +935,10 @@ New endpoints take a single args struct (`PlaceAndTakePerpOrderV1Args`, `Trigger
 `OrderActionExplanation` gains `CLOB_ORDER_EVICTED` and `CLOB_REMAINDER_CULLED`, which name a book
 order that a crank evicted and a remainder that a fill culled under the book's minimum.
 
-`getPlaceAndMakePerpOrderIx` and `getPlaceTriggerOrdersIx` take `overrides.authority`, and
-`getSyncTriggerConditionsIx` takes `overrides.payer`, so a delegated signer can place book orders
-and triggers as `getPlaceAndTakePerpOrderIx` already allowed.
+`getPlaceAndMakePerpOrderIx`, `getPlaceTriggerOrdersIx`, `getCancelOrderV1Ix`,
+`getCancelOrdersV1Ix` and `getModifyOrderV1Ix` take `overrides.authority`, and
+`getSyncTriggerConditionsIx` takes `overrides.payer`. A delegated signer can then place, cancel and
+modify book orders and triggers, as `getPlaceAndTakePerpOrderIx` already allowed.
 
 `decodeClobOrderRefV0` reads the `ClobOrderRefV0` that `placeAndMakePerpOrderV1` writes as return
 data, so a client can cancel or modify an order before the user-orders feed shows it.

@@ -13354,11 +13354,15 @@ export class VelocityClient {
 	 * @param takerOrigin - The order is a taker remainder, as the user-orders feed flags it. The
 	 * instruction then carries the signed-message record, so a signed-message remainder releases
 	 * its entry.
+	 * @param overrides - `authority` overrides the signing authority, which defaults to `this.wallet.publicKey`.
 	 */
 	public async getCancelOrderV1Ix(
 		params: CancelOrderV1Params,
 		subAccountId?: number,
-		takerOrigin = false
+		takerOrigin = false,
+		overrides?: {
+			authority?: PublicKey;
+		}
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
 		return await this.program.instruction.cancelOrderV1(params, {
@@ -13369,7 +13373,7 @@ export class VelocityClient {
 				),
 
 				user: await this.getUserAccountPublicKey(subAccountId),
-				authority: this.wallet.publicKey,
+				authority: overrides?.authority ?? this.wallet.publicKey,
 				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
@@ -13428,11 +13432,15 @@ export class VelocityClient {
 	 * `placeAndMake` would rest it.
 	 * @param takerOrigin - The order is a taker remainder. The instruction then carries the
 	 * signed-message record, so the remainder's route entry is released.
+	 * @param overrides - `authority` overrides the signing authority, which defaults to `this.wallet.publicKey`.
 	 */
 	public async getModifyOrderV1Ix(
 		params: ModifyOrderV1Params,
 		subAccountId?: number,
-		takerOrigin = false
+		takerOrigin = false,
+		overrides?: {
+			authority?: PublicKey;
+		}
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
 		const remainingAccounts = this.getRemainingAccounts({
@@ -13447,7 +13455,7 @@ export class VelocityClient {
 			accounts: {
 				state: await this.getStatePublicKey(),
 				user: await this.getUserAccountPublicKey(subAccountId),
-				authority: this.wallet.publicKey,
+				authority: overrides?.authority ?? this.wallet.publicKey,
 				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
@@ -13488,16 +13496,20 @@ export class VelocityClient {
 	 * taker-origin remainder on the book, because it cannot release the remainder's signed-message
 	 * entry. Remove one with `cancelOrderV1` and `takerOrigin` set.
 	 * @param subAccountId - Sub-account holding the orders; defaults to the active one.
+	 * @param overrides - `authority` overrides the signing authority, which defaults to `this.wallet.publicKey`.
 	 */
 	public async getCancelOrdersV1Ix(
 		params: CancelOrdersV1Params,
-		subAccountId?: number
+		subAccountId?: number,
+		overrides?: {
+			authority?: PublicKey;
+		}
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
 		return await this.program.instruction.cancelOrdersV1(params, {
 			accounts: {
 				user: await this.getUserAccountPublicKey(subAccountId),
-				authority: this.wallet.publicKey,
+				authority: overrides?.authority ?? this.wallet.publicKey,
 				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,

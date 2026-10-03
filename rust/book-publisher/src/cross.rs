@@ -25,7 +25,7 @@ use {
     program::{
         instructions::CrankCrossMatchArgs,
         state::{
-            prop_amm::{QuoterSlotV0, UserRefV0},
+            prop_amm::{QuoterSlotV0, QuoterType, UserRefV0},
             router_quote::QuotedSourceKind,
             state::State,
         },
@@ -44,6 +44,17 @@ use {
         quoter_slab_pda, quoter_slab_slots,
     },
 };
+
+fn speed_bump_refuses(legs: &[QuoterSlotV0]) -> bool {
+    let custom = legs
+        .iter()
+        .any(|slot| slot.config.quoter_type == QuoterType::Custom);
+    let bumped_book = legs.iter().any(|slot| {
+        slot.config.quoter_type == QuoterType::Clob
+            && slot.config.book_default_activation_delay_slots > 0
+    });
+    custom && bumped_book
+}
 
 /// Makers a submitted cross may touch, bounded to keep the transaction
 /// small. The walk stops before admitting an unstaged maker, so the sized
@@ -224,6 +235,12 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         vec![slot_for(ask_book.key)?, slot_for(bid_book.key)?]
     };
 
+    // A cross that consults a Custom quoter quotes a speed-bumped book no
+    // depth, so it cannot settle. See `consults_custom_quoter` in the program.
+    if speed_bump_refuses(&legs) {
+        return Ok(None);
+    }
+
     // Maker pairs per leg, capped. The cross size shrinks to what the staged
     // makers cover. Both legs answer the same way, because the view describes
     // every source the same way.
@@ -319,4 +336,24 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         size,
         estimated_surplus,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(quoter_type: QuoterType, delay: u32) -> QuoterSlotV0 {
+        let mut slot = QuoterSlotV0::default();
+        slot.config.quoter_type = quoter_type;
+        slot.config.book_default_activation_delay_slots = delay;
+        slot
+    }
+
+    #[test]
+    fn a_custom_quoter_cannot_cross_a_speed_bumped_book() {
+        let custom = slot(QuoterType::Custom, 0);
+        assert!(speed_bump_refuses(&[custom, slot(QuoterType::Clob, 1)]));
+        assert!(!speed_bump_refuses(&[custom, slot(QuoterType::Clob, 0)]));
+        assert!(!speed_bump_refuses(&[slot(QuoterType::Clob, 1)]));
+    }
 }

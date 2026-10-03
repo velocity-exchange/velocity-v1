@@ -323,7 +323,7 @@ fn cancel_reduce_only_trigger_orders(
 /// confidence-bounded form of that price. The caller passes the raw price data
 /// it already holds, so this never repeats the map lookup and never reorders
 /// it.
-fn safe_mm_oracle_state(
+pub(crate) fn safe_mm_oracle_state(
     market: &PerpMarket,
     state: &State,
     oracle_price_data: &OraclePriceData,

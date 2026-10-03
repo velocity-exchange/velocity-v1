@@ -535,6 +535,26 @@ impl<'info> ViewQuote<'_, 'info> {
     }
 }
 
+/// The fill path's hard gates on the vAMM. A quote that lists depth past them
+/// promises depth that no fill takes. The timing half of the fill check needs
+/// an order, so a quote does not apply it.
+fn vamm_fill_gates_ok(
+    perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
+    state: &State,
+    oracle_price: &crate::state::oracle::OraclePriceData,
+    slot: u64,
+    market_index: u16,
+) -> Result<bool> {
+    if state.amm_paused()? {
+        return Ok(false);
+    }
+
+    let market = perp_market_map.get_ref(&market_index)?;
+    let (mm_oracle_price_data, safe_validity) =
+        crate::controller::orders::safe_mm_oracle_state(&market, state, oracle_price, slot)?;
+    Ok(market.amm_fill_gates_ok(safe_validity, &mm_oracle_price_data)?)
+}
+
 /// Quote the vAMM into the buffer, with every book already in it as the
 /// vAMM's rivals.
 ///
@@ -551,7 +571,15 @@ fn quote_vamm(
     slot: u64,
     buffer: &mut RouterQuoteBufferV0,
 ) -> Result<()> {
-    if !args.include_vamm {
+    if !args.include_vamm
+        || !vamm_fill_gates_ok(
+            perp_market_map,
+            state,
+            &oracle_price,
+            slot,
+            args.market_index,
+        )?
+    {
         return Ok(());
     }
 
@@ -813,5 +841,69 @@ mod tests {
             asks(&[(100 * PRICE, 1_000)]),
             "1,000 base settles"
         );
+    }
+
+    mod vamm_gates {
+        use {
+            super::super::vamm_fill_gates_ok,
+            crate::{
+                create_anchor_account_info,
+                math::constants::PRICE_PRECISION_I64,
+                state::{
+                    oracle::OraclePriceData,
+                    paused_operations::PerpOperation,
+                    perp_market::PerpMarket,
+                    perp_market_map::PerpMarketMap,
+                    state::{ExchangeStatus, State},
+                },
+            },
+            anchor_lang::prelude::*,
+        };
+
+        fn oracle() -> OraclePriceData {
+            OraclePriceData {
+                price: 100 * PRICE_PRECISION_I64,
+                confidence: 1,
+                delay: 0,
+                has_sufficient_number_of_data_points: true,
+                sequence_id: None,
+            }
+        }
+
+        fn gates_ok(mut market: PerpMarket, state: &State) -> bool {
+            create_anchor_account_info!(market, PerpMarket, market_account_info);
+            let map = PerpMarketMap::load_one(&market_account_info, false).unwrap();
+            vamm_fill_gates_ok(&map, state, &oracle(), 0, market.market_index).unwrap()
+        }
+
+        fn market() -> PerpMarket {
+            let mut market = PerpMarket::default_test();
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap = 100 * PRICE_PRECISION_I64;
+            market
+        }
+
+        #[test]
+        fn a_healthy_market_quotes_its_vamm() {
+            assert!(gates_ok(market(), &State::default()));
+        }
+
+        #[test]
+        fn a_paused_amm_fill_quotes_no_vamm() {
+            let mut paused = market();
+            paused.paused_operations = PerpOperation::AmmFill as u8;
+            assert!(!gates_ok(paused, &State::default()));
+        }
+
+        #[test]
+        fn a_global_amm_pause_quotes_no_vamm() {
+            let state = State {
+                exchange_status: ExchangeStatus::AmmPaused as u8,
+                ..State::default()
+            };
+            assert!(!gates_ok(market(), &state));
+        }
     }
 }

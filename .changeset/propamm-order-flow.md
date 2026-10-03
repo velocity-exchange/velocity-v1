@@ -981,6 +981,9 @@ the velocity signer PDA, and `payer` must be the cold or warm admin. New PDA hel
 `getQuoterCrossConditionsPublicKey` and `getProgramDataAddress`, beside the exported
 `BPF_LOADER_UPGRADEABLE_ID`.
 
+`AdminClient.getInitializeQuoterIx` and `getUpdateQuoterApprovedIx` pass the program id for an
+omitted optional account, so a Custom quoter registers and approves through them.
+
 `HotRole.ConditionsSync` is a new hot role, stored in `StateAccount.hotConditionsSync`. Its key may
 set paid resync terms when it syncs another user's conditions, as the warm admin may.
 `auth set-hot-admin conditionsSync <key>` sets it. The pause admin may clear any hot role, by writing

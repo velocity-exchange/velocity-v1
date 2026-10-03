@@ -5684,10 +5684,12 @@ export class AdminClient extends VelocityClient {
 						marketIndex
 					),
 
+					// This client reads a null as a missing account, so an omitted
+					// optional account travels as the program id.
 					quoterSlab: isClob
 						? getQuoterSlabPublicKey(this.program.programId, marketIndex)
-						: null,
-					clobMarket: isClob ? args.responseAccount : null,
+						: this.program.programId,
+					clobMarket: isClob ? args.responseAccount : this.program.programId,
 					quoterProgram,
 					user,
 					rent: SYSVAR_RENT_PUBKEY,
@@ -5824,9 +5826,16 @@ export class AdminClient extends VelocityClient {
 					),
 
 					quoterProgram,
-					quoterProgramData: approved ? quoterProgramData : null,
-					clobMarket: approved ? clobMarket : null,
-					responseAccount: approved ? responseAccount : null,
+					// An omitted optional account travels as the program id.
+					quoterProgramData: approved
+						? quoterProgramData
+						: this.program.programId,
+					clobMarket:
+						approved && clobMarket ? clobMarket : this.program.programId,
+					responseAccount:
+						approved && responseAccount
+							? responseAccount
+							: this.program.programId,
 					systemProgram: SystemProgram.programId,
 				},
 			}

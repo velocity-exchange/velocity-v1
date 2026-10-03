@@ -83,6 +83,7 @@
 		"local:resnapshot": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml down -v",
 		"local:fund": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml run --rm --no-deps bootstrap bun run local-stack/fund.ts",
 		"local:trader": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml run --rm --no-deps bootstrap bun run local-stack/trader.ts",
+		"local:midpoint": "DOCKER_DEFAULT_PLATFORM= docker compose -f local-stack/compose.yaml run --rm --no-deps bootstrap bun run local-stack/midpoint.ts",
 		"test:integration": "cd integration-tests && cargo test",
 		"test:integration:full": "bun run program:build && bun run program:build:clob && cd integration-tests && cargo test",
 		"program:idl": "bash deploy-scripts/build-idl.sh velocity",

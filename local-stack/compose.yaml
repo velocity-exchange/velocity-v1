@@ -19,6 +19,7 @@ x-ts-tools: &ts-tools
   volumes:
     - ../deploy-scripts:/app/deploy-scripts:ro
     - ../local-stack:/app/local-stack:ro
+    - ../tests/e2e/idl:/app/tests/e2e/idl:ro
     - state:/state
 
 x-velocity-env: &velocity-env

@@ -27,7 +27,6 @@ use {
         state::{
             prop_amm::{QuoterSlotV0, UserRefV0},
             router_quote::QuotedSourceKind,
-            spot_market::SpotMarket,
             state::State,
         },
     },
@@ -39,8 +38,8 @@ use {
     velocity_router_sim::{
         pdas,
         quote_view::{
-            cpi_account_metas, fetch_zero_copy, perp_market_pda, quoter_cpi_union, read_zero_copy,
-            spot_market_pda, state_pda, user_stats_pda, QuoteView, QuotedBook,
+            cpi_account_metas, fetch_zero_copy, map_oracles, perp_market_pda, quoter_cpi_union,
+            read_zero_copy, spot_market_pda, state_pda, user_stats_pda, QuoteView, QuotedBook,
         },
         quoter_slab_pda, quoter_slab_slots,
     },
@@ -279,18 +278,12 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         spot_markets.push(state.sol_spot_market_index);
     }
 
-    // The account maps read every oracle before the first market, and each
-    // spot market loads only with its own oracle present.
-    let mut oracles = vec![*oracle];
-    for &index in &spot_markets {
-        let market: SpotMarket =
-            fetch_zero_copy(source, &spot_market_pda(velocity, index), "spot market").await?;
-        if !oracles.contains(&market.oracle) {
-            oracles.push(market.oracle);
-        }
-    }
-
-    accounts.extend(oracles.iter().map(|key| AccountMeta::new_readonly(*key, false)));
+    let oracles = map_oracles(source, velocity, *oracle, &spot_markets).await?;
+    accounts.extend(
+        oracles
+            .iter()
+            .map(|key| AccountMeta::new_readonly(*key, false)),
+    );
     accounts.push(AccountMeta::new(
         spot_market_pda(velocity, quote_spot_market_index),
         false,

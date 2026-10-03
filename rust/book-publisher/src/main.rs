@@ -686,7 +686,21 @@ async fn publish_market(
                     // A fill raced the crank, or the cross sits inside the
                     // on-chain fee gulf. This happens sometimes, because the
                     // estimate is conservative.
-                    warn!(market_index, error = %err, "cross match simulation failed; not sent");
+                    let reason = sim
+                        .logs
+                        .iter()
+                        .rev()
+                        .find(|line| {
+                            line.starts_with("Program log: ") && !line.contains("AnchorError")
+                        })
+                        .map(String::as_str)
+                        .unwrap_or_default();
+                    warn!(
+                        market_index,
+                        error = %err,
+                        reason,
+                        "cross match simulation failed; not sent"
+                    );
                 }
             }
         }

@@ -30,6 +30,7 @@ use {
             perp_market::PerpMarket,
             prop_amm::{DirectionV0, QuoterSlotV0, QuoterType, UserRefV0, L3_ROW_FLAG_BLOCKS_WALK},
             router_quote::{QuotedLevelV0, QuotedSourceKind, RouterQuoteBufferV0},
+            spot_market::SpotMarket,
             traits::Size,
             user::User,
         },
@@ -100,6 +101,26 @@ where
     let account = fetch_account(source, key, what).await?;
 
     read_zero_copy(&account.data)
+}
+
+/// The oracles a map section carries ahead of its markets: `perp_oracle`, then each spot
+/// market's own oracle once. The program loads a spot market only with its oracle present.
+pub async fn map_oracles<S: ChainSource + ?Sized>(
+    source: &S,
+    velocity: &Pubkey,
+    perp_oracle: Pubkey,
+    spot_market_indexes: &[u16],
+) -> Result<Vec<Pubkey>> {
+    let mut oracles = vec![perp_oracle];
+    for &index in spot_market_indexes {
+        let market: SpotMarket =
+            fetch_zero_copy(source, &spot_market_pda(velocity, index), "spot market").await?;
+        if !oracles.contains(&market.oracle) {
+            oracles.push(market.oracle);
+        }
+    }
+
+    Ok(oracles)
 }
 
 /// One source's verified book, decoded from the quote buffer.
@@ -479,9 +500,20 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         quote_buffer: *quote_buffer,
     }
     .to_account_metas(None);
-    // Map section: the oracle, the quote spot market, and the writable perp
+    // Map section: the oracles, the quote spot market, and the writable perp
     // market.
-    accounts.push(AccountMeta::new_readonly(perp_market.oracle, false));
+    let oracles = map_oracles(
+        source,
+        velocity,
+        perp_market.oracle,
+        &[perp_market.quote_spot_market_index],
+    )
+    .await?;
+    accounts.extend(
+        oracles
+            .iter()
+            .map(|key| AccountMeta::new_readonly(*key, false)),
+    );
     accounts.push(AccountMeta::new(quote_spot_market, false));
     accounts.push(AccountMeta::new(perp_market_key, false));
     // User-map section: the User and UserStats pairs above. They are writable,

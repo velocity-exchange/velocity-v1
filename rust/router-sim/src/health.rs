@@ -273,6 +273,14 @@ pub async fn quote_with_health<S: ChainSource>(
                     return Err(err);
                 }
 
+                tracing::warn!(
+                    market_index = request.market_index,
+                    dropped = ?last_dropped,
+                    reason = ?last_reason,
+                    error = %failure.err,
+                    last_log = failure.logs.last().map(String::as_str).unwrap_or(""),
+                    "quote simulation failed; retrying without the named quoters"
+                );
                 excluded.extend(last_dropped.iter().copied());
                 error = Some(err);
             }

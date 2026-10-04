@@ -177,6 +177,9 @@ services:
     environment:
       <<: *dlob-env
       WS_PORT: '3000'
+      # The stack feeds one Redis source. With the default pair, the stream
+      # selector finds the second one silent and warns every second.
+      REDIS_CLIENT: DLOB
 
   keepers:
     image: velocity-local/keeper-bots-v2:dev

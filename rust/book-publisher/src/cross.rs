@@ -39,7 +39,7 @@ use {
         pdas,
         quote_view::{
             cpi_account_metas, fetch_zero_copy, map_oracles, perp_market_pda, quoter_cpi_union,
-            read_zero_copy, spot_market_pda, state_pda, user_stats_pda, QuoteView, QuotedBook,
+            spot_market_pda, state_pda, user_stats_pda, QuoteView, QuotedBook,
         },
         quoter_slab_pda, quoter_slab_slots,
     },

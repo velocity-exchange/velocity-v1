@@ -356,6 +356,7 @@ async fn main() -> Result<()> {
 
     loop {
         tick.tick().await;
+        let mut redis_failed = false;
         for (market_index, buffer) in &market_buffers {
             if let Err(err) = publish_market(
                 &source,
@@ -374,6 +375,19 @@ async fn main() -> Result<()> {
             .await
             {
                 warn!(market_index, error = %format!("{err:#}"), "tick failed");
+                if err.chain().any(|cause| cause.is::<redis::RedisError>()) {
+                    user_orders.republish_market(*market_index, std::iter::empty());
+                    redis_failed = true;
+                }
+            }
+        }
+
+        // A multiplexed connection stays broken once its driver stops, so a
+        // Redis restart would fail every later tick without this.
+        if redis_failed {
+            match redis_client.get_multiplexed_tokio_connection().await {
+                Ok(connection) => redis = connection,
+                Err(err) => warn!(error = %format!("{err:#}"), "redis reconnect failed"),
             }
         }
 

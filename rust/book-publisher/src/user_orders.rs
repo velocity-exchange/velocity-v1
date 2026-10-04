@@ -68,6 +68,31 @@ pub struct UserOrdersIndex {
     carried_over: HashMap<u16, HashSet<Pubkey>>,
 }
 
+impl UserOrdersIndex {
+    /// Forget what this market's documents hold, so the next tick rewrites
+    /// them. A failed write can mean that Redis lost what it stored. Each user
+    /// is carried over: one who still rests is written with their rows, and
+    /// one who does not is cleared. `unwritten` names emptied users the index
+    /// no longer holds.
+    pub fn republish_market(&mut self, market_index: u16, unwritten: impl Iterator<Item = Pubkey>) {
+        self.arenas.remove(&market_index);
+        let indexed: Vec<Pubkey> = self
+            .users
+            .keys()
+            .filter(|(_, market)| *market == market_index)
+            .map(|(user, _)| *user)
+            .collect();
+        for user in &indexed {
+            self.users.remove(&(*user, market_index));
+        }
+
+        self.carried_over
+            .entry(market_index)
+            .or_default()
+            .extend(indexed.into_iter().chain(unwritten));
+    }
+}
+
 /// One resting order, as a subscriber reads it.
 ///
 /// `orderId` is velocity's, minted from the `User`'s own counter. It is the id
@@ -267,8 +292,16 @@ pub async fn publish(
         return Ok(0);
     };
 
-    for (user, rows) in &changed {
-        write_user(redis, prefix, user, market_index, slot, ts_ms, rows.clone()).await?;
+    for (written, (user, rows)) in changed.iter().enumerate() {
+        if let Err(err) =
+            write_user(redis, prefix, user, market_index, slot, ts_ms, rows.clone()).await
+        {
+            index.republish_market(
+                market_index,
+                changed[written..].iter().map(|(user, _)| *user),
+            );
+            return Err(err);
+        }
     }
 
     Ok(changed.len())
@@ -444,6 +477,40 @@ mod tests {
 
         // Reconciliation runs once. The next tick is the ordinary quiet one.
         assert!(changed_users(&mut index, &velocity(), 0, &market(&[node(2, 20, 7)])).is_none());
+    }
+
+    /// A failed write must not count as published. Otherwise a document stays
+    /// missing until that user's rows change again.
+    #[test]
+    fn a_republished_market_rewrites_every_resting_user() {
+        let mut index = UserOrdersIndex::default();
+        let data = market(&[node(1, 10, 5), node(2, 20, 7)]);
+        let first = changed_users(&mut index, &velocity(), 0, &data).unwrap();
+
+        index.republish_market(0, std::iter::empty());
+
+        let mut retried = changed_users(&mut index, &velocity(), 0, &data).unwrap();
+        retried.sort_by_key(|(user, _)| *user);
+        let mut expected = first.clone();
+        expected.sort_by_key(|(user, _)| *user);
+        assert_eq!(retried, expected);
+        assert!(changed_users(&mut index, &velocity(), 0, &data).is_none());
+    }
+
+    /// The index forgets an emptied user as it publishes the emptying. A failed
+    /// clear therefore has to be carried over, or the stale document stays.
+    #[test]
+    fn an_unwritten_emptying_is_cleared_on_the_next_tick() {
+        let mut index = UserOrdersIndex::default();
+        changed_users(&mut index, &velocity(), 0, &market(&[node(1, 10, 5)])).unwrap();
+
+        let empty = market(&[]);
+        let changed = changed_users(&mut index, &velocity(), 0, &empty).unwrap();
+        index.republish_market(0, changed.iter().map(|(user, _)| *user));
+
+        let retried = changed_users(&mut index, &velocity(), 0, &empty).unwrap();
+        assert_eq!(retried, changed);
+        assert!(changed_users(&mut index, &velocity(), 0, &empty).is_none());
     }
 
     #[test]

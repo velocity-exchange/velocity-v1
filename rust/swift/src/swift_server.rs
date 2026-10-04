@@ -34,7 +34,7 @@ use {
     dotenv::dotenv,
     log::warn,
     prometheus::Registry,
-    redis::{aio::MultiplexedConnection, AsyncCommands},
+    redis::{aio::ConnectionManager, AsyncCommands},
     solana_account_decoder_client_types::UiAccountEncoding,
     solana_clock::Slot,
     solana_hash::Hash,
@@ -140,7 +140,7 @@ pub struct ServerParams {
     route: crate::route::RouteContext,
     slot_subscriber: Arc<SuperSlotSubscriber>,
     metrics: SwiftServerMetrics,
-    redis_pool: MultiplexedConnection,
+    redis_pool: ConnectionManager,
     user_account_fetcher: UserAccountFetcher,
     config: Arc<Config>,
     farmer_pubkeys: HashSet<Pubkey>,
@@ -814,9 +814,11 @@ pub async fn start_server() {
             format!("redis://{}:{}", elasticache_host, elasticache_port)
         };
         log::info!(target: "redis", "connecting to redis at {connection_string}");
+        // A connection manager reconnects after Redis restarts. A bare
+        // multiplexed connection fails every publish from then on.
         let client = redis::Client::open(connection_string).expect("valid redis URL");
         client
-            .get_multiplexed_tokio_connection()
+            .get_connection_manager()
             .await
             .expect("redis connected")
     };
@@ -2667,7 +2669,7 @@ mod tests {
 
         let redis_pool = redis::Client::open("redis://localhost:6379")
             .expect("valid redis URL")
-            .get_multiplexed_tokio_connection()
+            .get_connection_manager()
             .await
             .expect("redis connected");
         let server_params = ServerParams {

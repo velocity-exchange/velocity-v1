@@ -41,7 +41,7 @@ nanoid = "0.4.0"
 # with it protobuf 2.x (RUSTSEC-2024-0437).
 prometheus = { version = "0.13", default-features = false }
 rand = "0.8"
-redis = { version = "0.29.1", features = ["tokio-comp", "tokio-native-tls-comp"] }
+redis = { version = "0.29.1", features = ["tokio-comp", "tokio-native-tls-comp", "connection-manager"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.127"
 # The crate is `#![cfg(feature = "agave-unstable-api")]` and gates Base64Zstd

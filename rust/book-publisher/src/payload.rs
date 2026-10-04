@@ -199,9 +199,11 @@ pub fn l2_payload(
         _ => None,
     };
 
-    // PERCENTAGE_PRECISION (1e6), matching the TS payload's units.
+    // A percent in PERCENTAGE_PRECISION (1e6), as common-ts `calculateSpreadPct`
+    // writes it: a 2% spread is 2_000_000. The webapp and `/marketOrderParams`
+    // read it so.
     let spread_pct = match (spread_quote, mark) {
-        (Some(spread), Some(mark)) if mark > 0 => Some(spread * 1_000_000 / mark as i128),
+        (Some(spread), Some(mark)) if mark > 0 => Some(spread * 100 * 1_000_000 / mark as i128),
         _ => None,
     };
 
@@ -675,8 +677,8 @@ mod tests {
         assert_eq!(payload["bestBidPrice"], "97");
         assert_eq!(payload["markPrice"], "98");
         assert_eq!(payload["spreadQuote"], "2");
-        // 2 / 98 in PERCENTAGE_PRECISION.
-        assert_eq!(payload["spreadPct"], "20408");
+        // 2 / 98 is 2.0408%, in PERCENTAGE_PRECISION.
+        assert_eq!(payload["spreadPct"], "2040816");
     }
 
     #[test]

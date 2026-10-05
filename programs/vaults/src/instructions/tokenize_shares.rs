@@ -109,7 +109,6 @@ pub fn tokenize_shares<'info>(
         &mut vault,
         &mut vp,
         &mut None,
-        total_supply_before,
         vault_equity,
         shares_transferred,
         clock.unix_timestamp,

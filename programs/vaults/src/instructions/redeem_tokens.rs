@@ -80,7 +80,6 @@ pub fn redeem_tokens<'info>(
         &mut vault,
         &mut vp,
         &mut fee_update,
-        total_supply_before,
         vault_equity,
         tokens_to_burn,
         clock.unix_timestamp,
@@ -120,11 +119,9 @@ pub fn redeem_tokens<'info>(
     // #140: if that emptied the pool of shares and tokens, its cost basis is now orphaned with nobody
     // behind it. Above value it is a free loss shelter for the next tokenizer; below value it is an
     // unearned fee liability for them. Clear it.
-    //
-    // Test `tokens_to_burn == total_supply_before` rather than reading the post-burn supply: the
-    // depositor is dropped before `ctx.burn(...)` runs. The two are equivalent, given the
-    // `supply_delta == tokens_to_burn` assertion this instruction already makes.
-    if tokenized_vault_depositor.get_vault_shares() == 0 && tokens_to_burn == total_supply_before {
+    if tokenized_vault_depositor.get_vault_shares() == 0
+        && tokenized_vault_depositor.get_issued_supply() == 0
+    {
         msg!("tokenized depositor emptied; clearing orphaned cost basis");
         tokenized_vault_depositor.reset_orphaned_cost_basis();
     }

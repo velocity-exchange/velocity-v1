@@ -15,6 +15,7 @@ import {
 	SpecialUserStatus,
 	TestClient,
 	ZERO,
+	getLimitOrderParams,
 	getMarketOrderParams,
 	isVariant,
 } from '../../packages/sdk/src';
@@ -204,11 +205,15 @@ describe('transfer perp position with stale borrow interest', () => {
 
 	// Lets the SOL borrow index go stale, expects `send` to revert, then cranks
 	// the market and expects the same call to land.
-	async function assertRejectedUntilCranked(send: () => Promise<unknown>) {
+	async function letSolInterestGoStale() {
 		await svmContextWrapper.moveTimeForward(2 * 60 * 60);
 		await setFeedPriceNoProgram(svmContextWrapper, 1, perpOracle);
 		await setFeedPriceNoProgram(svmContextWrapper, 100, solOracle);
 		await velocityClient.fetchAccounts();
+	}
+
+	async function assertRejectedUntilCranked(send: () => Promise<unknown>) {
+		await letSolInterestGoStale();
 
 		let error = '';
 		try {
@@ -272,5 +277,82 @@ describe('transfer perp position with stale borrow interest', () => {
 			)
 		);
 		assert(perpBase(TO_SUB)?.isZero() ?? true);
+	});
+	// The SDK prepends the crank on cross-to-isolated transfers, so a borrower
+	// with a stale market needs no extra step. The SDK measures staleness on the
+	// local clock, so pin it to the warped chain clock for these cases.
+	async function withChainClock(run: () => Promise<void>) {
+		const realNow = Date.now;
+		Date.now = () =>
+			Number(svmContextWrapper.context.getClock().unixTimestamp) * 1000;
+		try {
+			await run();
+		} finally {
+			Date.now = realNow;
+		}
+	}
+
+	it('cranks before a cross-to-isolated deposit transfer', async () => {
+		await withChainClock(async () => {
+			await letSolInterestGoStale();
+			const isolatedBefore = velocityClient.getIsolatedPerpPositionTokenAmount(
+				PERP_MARKET_INDEX,
+				TO_SUB
+			);
+
+			await velocityClient.transferIsolatedPerpPositionDeposit(
+				QUOTE_PRECISION,
+				PERP_MARKET_INDEX,
+				TO_SUB,
+				undefined,
+				undefined,
+				true
+			);
+			await velocityClient.fetchAccounts();
+
+			assert(
+				velocityClient
+					.getIsolatedPerpPositionTokenAmount(PERP_MARKET_INDEX, TO_SUB)
+					.gt(isolatedBefore)
+			);
+		});
+	});
+
+	it('cranks before the isolated deposit an order prepends', async () => {
+		await withChainClock(async () => {
+			await letSolInterestGoStale();
+			const isolatedBefore = velocityClient.getIsolatedPerpPositionTokenAmount(
+				PERP_MARKET_INDEX,
+				TO_SUB
+			);
+
+			// prepareMarketOrderTxs prepends the deposit as a required instruction;
+			// placePerpOrder only adds it when there is room, so it can't pin this.
+			const { marketOrderTx } = await velocityClient.prepareMarketOrderTxs(
+				getLimitOrderParams({
+					marketIndex: PERP_MARKET_INDEX,
+					direction: PositionDirection.LONG,
+					baseAssetAmount: BASE_PRECISION,
+					price: PRICE_PRECISION.divn(2),
+				}),
+				await velocityClient.getUserAccountPublicKey(TO_SUB),
+				velocityClient.getUserAccount(TO_SUB),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				QUOTE_PRECISION
+			);
+			await velocityClient.sendTransaction(marketOrderTx);
+			await velocityClient.fetchAccounts();
+
+			assert(
+				velocityClient
+					.getIsolatedPerpPositionTokenAmount(PERP_MARKET_INDEX, TO_SUB)
+					.gt(isolatedBefore)
+			);
+		});
 	});
 });

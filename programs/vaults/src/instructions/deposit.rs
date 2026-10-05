@@ -7,7 +7,7 @@ use {
         error::ErrorCode,
         implement_deposit, refresh_velocity_spot_market,
         state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor, VaultProtocolProvider},
-        token_cpi::TokenTransferCPI,
+        token_cpi::{validate_transit_settled, TokenTransferCPI},
         validate,
         velocity_cpi::DepositCPI,
         AccountMapProvider,
@@ -95,9 +95,14 @@ pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Resul
     drop(user);
     drop(vp);
 
+    let transit_balance_before = ctx.accounts.vault_token_account.amount;
     ctx.token_transfer(deposit_amount)?;
 
     ctx.velocity_deposit(deposit_amount)?;
+    validate_transit_settled(
+        &mut ctx.accounts.vault_token_account,
+        transit_balance_before,
+    )?;
 
     Ok(())
 }

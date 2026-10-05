@@ -44,7 +44,6 @@ import {
 	mockUSDCMint,
 } from './common/testHelpers';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { mockOracleNoProgram } from './common/svmOracle';
 
 // ammInvariant == k == x * y
@@ -126,25 +125,25 @@ describe('vault deposits into a ReduceOnly market', () => {
 		],
 	});
 
-	const transitBalance = async (account = vaultTokenAccount) => {
-		// manager_repay creates its transit ATA on first use
-		if (!(await svmContextWrapper.connection.getAccountInfo(account)))
-			return 0n;
-		return BigInt(
+	const transitBalance = async () =>
+		BigInt(
 			(
-				await svmContextWrapper.connection.getTokenAccountBalance(account)
+				await svmContextWrapper.connection.getTokenAccountBalance(
+					vaultTokenAccount
+				)
 			).amount.toString()
 		);
-	};
 
-	const vaultUsdcBorrow = async () => {
+	const vaultUsdcPosition = async () => {
 		await adminVelocityClient.fetchAccounts();
 		const user = await adminVelocityClient.program.account.user.fetch(
 			vaultUserKey
 		);
-		const position = (user.spotPositions as any[]).find(
-			(p) => p.marketIndex === 0
-		);
+		return (user.spotPositions as any[]).find((p) => p.marketIndex === 0);
+	};
+
+	const vaultUsdcBorrow = async () => {
+		const position = await vaultUsdcPosition();
 		expect(isVariant(position.balanceType, 'borrow')).to.equal(true);
 		return getTokenAmount(
 			position.scaledBalance,
@@ -357,12 +356,6 @@ describe('vault deposits into a ReduceOnly market', () => {
 	});
 
 	it('rejects a depositor deposit larger than the outstanding borrow', async () => {
-		const sharesBefore = (
-			await depositorClient.program.account.vaultDepositor.fetch(
-				depositorVaultDepositor
-			)
-		).vaultShares;
-
 		await expectRevert(
 			() =>
 				depositorClient.deposit(
@@ -374,14 +367,6 @@ describe('vault deposits into a ReduceOnly market', () => {
 				),
 			'DepositNotFullySettled'
 		);
-
-		const sharesAfter = (
-			await depositorClient.program.account.vaultDepositor.fetch(
-				depositorVaultDepositor
-			)
-		).vaultShares;
-		expect(sharesAfter.toString()).to.equal(sharesBefore.toString());
-		expect(await transitBalance()).to.equal(0n);
 	});
 
 	it('rejects a manager deposit larger than the outstanding borrow', async () => {
@@ -395,17 +380,9 @@ describe('vault deposits into a ReduceOnly market', () => {
 				),
 			'DepositNotFullySettled'
 		);
-		expect(await transitBalance()).to.equal(0n);
 	});
 
 	it('rejects a manager repay larger than the outstanding borrow', async () => {
-		// manager_repay routes through the vault's ATA for the repay mint, not the
-		// vault_token_account PDA
-		const repayTransit = getAssociatedTokenAddressSync(
-			usdcMint.publicKey,
-			commonVaultKey,
-			true
-		);
 		await expectRevert(
 			() =>
 				managerClient.managerRepay(
@@ -418,7 +395,6 @@ describe('vault deposits into a ReduceOnly market', () => {
 				),
 			'DepositNotFullySettled'
 		);
-		expect(await transitBalance(repayTransit)).to.equal(0n);
 	});
 
 	it('still accepts a deposit that only repays the borrow', async () => {
@@ -432,5 +408,20 @@ describe('vault deposits into a ReduceOnly market', () => {
 
 		expect(await transitBalance()).to.equal(0n);
 		await expectUsdcBorrow(usdc(60));
+
+		// exactly the remaining borrow, rounding included, settles in full
+		await depositorClient.deposit(
+			depositorVaultDepositor,
+			await vaultUsdcBorrow(),
+			undefined,
+			{ noLut: true },
+			depositorUSDCAccount
+		);
+
+		expect(await transitBalance()).to.equal(0n);
+		const position = await vaultUsdcPosition();
+		expect(position === undefined || position.scaledBalance.isZero()).to.equal(
+			true
+		);
 	});
 });

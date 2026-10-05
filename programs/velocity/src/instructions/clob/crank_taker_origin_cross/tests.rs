@@ -1769,3 +1769,130 @@ mod lapsed_pairs {
         assert_eq!(choose_stage(&bids, &asks, VammTops::default(), 3), None);
     }
 }
+
+mod custom_quoter_staging {
+    use {
+        super::super::{custom_quoter_accounts, CrossStaged, QuotedMaker},
+        crate::state::{
+            pdas,
+            prop_amm::{AmmAccountMeta, QuoterSlotV0, QuoterType, MAX_ROUTE_QUOTERS},
+        },
+        anchor_lang::prelude::Pubkey,
+    };
+
+    fn slot(quoter_type: QuoterType, priority: u8, shared: Pubkey) -> QuoterSlotV0 {
+        let mut slot = QuoterSlotV0 {
+            entry: Pubkey::new_unique(),
+            ..QuoterSlotV0::default()
+        };
+        slot.config.quoter_type = quoter_type;
+        slot.config.is_active = true;
+        slot.config.priority = priority;
+        slot.config.user = Pubkey::new_unique();
+        slot.config.authority = Pubkey::new_unique();
+        slot.config.program_id = Pubkey::new_unique();
+        slot.config.response_account = Pubkey::new_unique();
+        slot.config.accounts[0] = AmmAccountMeta {
+            pubkey: shared,
+            is_writable: false,
+            ..AmmAccountMeta::default()
+        };
+        slot.config.accounts_count = 1;
+        slot
+    }
+
+    fn staged<'a>(tail: &'a [Pubkey], book_makers: &'a [Pubkey]) -> CrossStaged<'a> {
+        CrossStaged {
+            tail,
+            taker: Pubkey::new_unique(),
+            book_makers,
+        }
+    }
+
+    /// A remainder that served the speed bump reaches the market's PropAMMs, so
+    /// the relay's cross carries each quoting Custom slot's CPI accounts.
+    #[test]
+    fn stages_each_quoting_custom_slot_once() {
+        let book = Pubkey::new_unique();
+        let shared = Pubkey::new_unique();
+        let clob = slot(QuoterType::Clob, 10, book);
+        let first = slot(QuoterType::Custom, 20, shared);
+        let second = slot(QuoterType::Custom, 20, shared);
+        let mut inactive = slot(QuoterType::Custom, 20, Pubkey::new_unique());
+        inactive.config.is_active = false;
+
+        let tail =
+            custom_quoter_accounts(&[clob, first, second, inactive], &staged(&[book], &[])).tail;
+
+        let keys: Vec<Pubkey> = tail.iter().map(|(key, _)| *key).collect();
+        assert!(!keys.contains(&book), "the book is staged already");
+        assert_eq!(keys.iter().filter(|key| **key == shared).count(), 1);
+        for live in [first, second] {
+            assert!(tail.contains(&(live.config.response_account, true)));
+            assert!(tail.contains(&(live.config.program_id, false)));
+        }
+        assert!(!keys.contains(&inactive.config.response_account));
+    }
+
+    #[test]
+    fn stages_no_more_custom_slots_than_one_route_holds() {
+        let slots: Vec<QuoterSlotV0> = (0..MAX_ROUTE_QUOTERS + 2)
+            .map(|index| slot(QuoterType::Custom, index as u8, Pubkey::new_unique()))
+            .collect();
+
+        let tail = custom_quoter_accounts(&slots, &staged(&[], &[])).tail;
+
+        let staged_programs = slots
+            .iter()
+            .filter(|slot| tail.contains(&(slot.config.program_id, false)))
+            .count();
+        assert_eq!(staged_programs, MAX_ROUTE_QUOTERS - 1);
+        // The lowest priorities are the ones kept.
+        assert!(tail.contains(&(slots[0].config.program_id, false)));
+        assert!(!tail.contains(&(slots[MAX_ROUTE_QUOTERS + 1].config.program_id, false)));
+    }
+
+    /// The router settles a Custom quoter's fill against its maker, so the
+    /// maker's user and stats ride the counterparty section.
+    #[test]
+    fn stages_each_quoted_maker_once_with_its_stats() {
+        let first = slot(QuoterType::Custom, 20, Pubkey::new_unique());
+        let mut same_maker = slot(QuoterType::Custom, 21, Pubkey::new_unique());
+        same_maker.config.user = first.config.user;
+        same_maker.config.authority = first.config.authority;
+
+        let makers = custom_quoter_accounts(&[first, same_maker], &staged(&[], &[])).makers;
+
+        assert_eq!(
+            makers,
+            vec![QuotedMaker {
+                user: first.config.user,
+                stats: pdas::user_stats(&first.config.authority),
+            }]
+        );
+    }
+
+    #[test]
+    fn does_not_repeat_a_maker_the_book_staged() {
+        let quoter = slot(QuoterType::Custom, 20, Pubkey::new_unique());
+
+        let accounts = custom_quoter_accounts(&[quoter], &staged(&[], &[quoter.config.user]));
+
+        assert!(accounts.makers.is_empty());
+        assert!(accounts.tail.contains(&(quoter.config.program_id, false)));
+    }
+
+    #[test]
+    fn leaves_out_a_quoter_for_the_taker() {
+        let quoter = slot(QuoterType::Custom, 20, Pubkey::new_unique());
+        let cross = CrossStaged {
+            taker: quoter.config.user,
+            ..staged(&[], &[])
+        };
+
+        let accounts = custom_quoter_accounts(&[quoter], &cross);
+
+        assert!(accounts.makers.is_empty());
+        assert!(accounts.tail.is_empty());
+    }
+}

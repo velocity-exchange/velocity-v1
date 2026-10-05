@@ -2988,6 +2988,20 @@ fn taker_origin_call(
     .map_section_named_perp(oracle, quote_oracle, quote_spot_market_index);
     // The SOL spot market prices the keeper payment's floor. It sits after the
     // quote spot market, so the perp market still closes the maps section.
+    let custom = custom_quoter_accounts(
+        &ctx.accounts.quoter_slab.slots()?,
+        &CrossStaged {
+            tail: &[
+                ctx.accounts.clob_market.key(),
+                crate::ids::clob_program::id(),
+            ],
+            taker,
+            book_makers: &makers
+                .iter()
+                .map(|maker| pdas::user(&maker.authority, maker.sub_account_id))
+                .collect::<Vec<Pubkey>>(),
+        },
+    );
     let call = super::crank_cross_match::with_sol_spot_market(
         call,
         &*ctx.accounts.state.load()?,
@@ -2995,24 +3009,113 @@ fn taker_origin_call(
     )
     .account(pdas::perp_market(market_index), true)
     .maker_refs(makers.iter().copied());
+    let call = custom
+        .makers
+        .iter()
+        .fold(call, |call, maker| call.user_pair(maker.user, maker.stats));
     let call = if ctx.accounts.state.load()?.builder_codes_enabled() {
         call.account(revenue_share_escrow(&taker_ref.authority), true)
     } else {
         call
     };
 
-    // The quoter tail. The crank routes the remainder like any other fill, and
-    // every router fill carries the market's slab and consults its book. The
-    // resolver stages no quoters of its own, so it claims no route. A keeper
-    // that wants a taker's custom quoters consulted builds the call itself.
-    call.account(ctx.accounts.quoter_slab.key(), false)
+    // The crank routes the remainder like any other fill, so the market's
+    // quoting Custom slots ride the quoter tail. The call claims no route.
+    let call = call
+        .account(ctx.accounts.quoter_slab.key(), false)
         .account(ctx.accounts.clob_market.key(), true)
-        .account(crate::ids::clob_program::id(), false)
+        .account(crate::ids::clob_program::id(), false);
+    custom
+        .tail
+        .into_iter()
+        .fold(call, |call, (key, writable)| call.account(key, writable))
         .arg(CrankTakerOriginCrossArgs {
             market_index,
             cross_rows,
             signed_route: Vec::new(),
         })
+}
+
+/// The accounts a cross already stages, which a Custom slot must not repeat.
+struct CrossStaged<'a> {
+    tail: &'a [Pubkey],
+    taker: Pubkey,
+    /// The counterparty section holds each user once.
+    book_makers: &'a [Pubkey],
+}
+
+/// A Custom quoter's maker, staged in the counterparty section so the router
+/// can settle the balance changes the quoter returns.
+#[derive(Debug, PartialEq)]
+struct QuotedMaker {
+    user: Pubkey,
+    stats: Pubkey,
+}
+
+#[derive(Debug, Default)]
+struct CustomQuoterAccounts {
+    makers: Vec<QuotedMaker>,
+    tail: Vec<(Pubkey, bool)>,
+}
+
+/// The accounts of the market's quoting `Custom` slots, lowest routing priority
+/// first and at most one fewer than `MAX_ROUTE_QUOTERS`, since the book takes one.
+/// Each slot adds its registered accounts, its response account and its program
+/// to the tail, and its maker to the counterparty section. A tail key that two
+/// slots share keeps one entry, writable when any slot needs it so. A slot that
+/// quotes for the taker is left out, because the taker cannot be its own maker.
+fn custom_quoter_accounts(
+    slots: &[crate::state::prop_amm::QuoterSlotV0],
+    staged: &CrossStaged,
+) -> CustomQuoterAccounts {
+    let mut custom: Vec<&crate::state::prop_amm::QuoterSlotV0> = slots
+        .iter()
+        .filter(|slot| {
+            slot.quotes()
+                && slot.config.quoter_type == crate::state::prop_amm::QuoterType::Custom
+                && slot.config.user != staged.taker
+        })
+        .collect();
+    custom.sort_by_key(|slot| slot.config.priority);
+    custom.truncate(crate::state::prop_amm::MAX_ROUTE_QUOTERS - 1);
+
+    let mut accounts = CustomQuoterAccounts::default();
+    for slot in custom {
+        let config = &slot.config;
+        let maker_is_staged = staged.book_makers.contains(&config.user)
+            || accounts
+                .makers
+                .iter()
+                .any(|maker| maker.user == config.user);
+        if !maker_is_staged {
+            // A Custom entry's authority is the quoted user's authority.
+            accounts.makers.push(QuotedMaker {
+                user: config.user,
+                stats: pdas::user_stats(&config.authority),
+            });
+        }
+
+        let registered = config.accounts[..config.accounts_count as usize]
+            .iter()
+            .map(|meta| (meta.pubkey, meta.is_writable));
+        let fixed = [(config.response_account, true), (config.program_id, false)];
+        for (key, writable) in registered.chain(fixed) {
+            if staged.tail.contains(&key) {
+                continue;
+            }
+
+            match accounts
+                .tail
+                .iter_mut()
+                .find(|(staged_key, _)| *staged_key == key)
+            {
+                Some(entry) => entry.1 |= writable,
+                None => accounts.tail.push((key, writable)),
+            }
+        }
+    }
+
+    accounts
 }
 
 /// The taker's `RevenueShareEscrow` PDA.

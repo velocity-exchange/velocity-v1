@@ -178,6 +178,11 @@ replacement that fits inside the position still requires initial margin and clea
 equity floor when other orders rest behind it. A modify that passed before may now fail for a
 caller resting several orders against one position.
 
+`VelocityClient.getCustomQuoterRoute(marketIndex)` returns the `QuoterV0` entry keys of the
+market's quoting Custom quoters, at most `MAX_ROUTE_QUOTERS - 1`. A signed message that names them
+as its `route` reaches those PropAMMs once it has served the market's speed bump. The relay's
+taker-origin cross stages the same quoters for a remainder placed on chain.
+
 `VelocityClient.getModifyOrderIxs` returns `modifyOrder` and, for a trigger order,
 `syncTriggerConditions`. A modify replaces the order under a new order id, so an edited trigger fires
 only after the sync re-arms its relay watch.

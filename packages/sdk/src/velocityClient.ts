@@ -92,7 +92,7 @@ import {
 	AmmCache,
 	FlowAttestationV0,
 } from './types';
-import { decodeQuoterSlab } from './quoterSlab';
+import { decodeQuoterSlab, MAX_ROUTE_QUOTERS } from './quoterSlab';
 import { VelocityCore } from './core/VelocityCore';
 
 /** Client-side guardrail; mirrors on-chain `ErrorCode::SpotDlobTradingDisabled`. */
@@ -13291,6 +13291,27 @@ export class VelocityClient {
 		}
 
 		return decodeQuoterSlab(info.data);
+	}
+
+	/**
+	 * The `QuoterV0` entry keys of the market's quoting `Custom` slots, lowest routing priority
+	 * first, at most `MAX_ROUTE_QUOTERS - 1`. A signed message names them as its `route`. A
+	 * filler then carries those PropAMMs, and they fill the order once it has served the
+	 * market's speed bump. The CLOB and the vAMM are implicit in every route.
+	 */
+	public async getCustomQuoterRoute(marketIndex: number): Promise<PublicKey[]> {
+		const { slots } = await this.getQuoterSlabAccount(marketIndex);
+		return slots
+			.filter(
+				(slot) =>
+					!slot.entry.equals(PublicKey.default) &&
+					!slot.suspended &&
+					slot.config.isActive &&
+					isVariant(slot.config.quoterType, 'custom')
+			)
+			.sort((a, b) => a.config.priority - b.config.priority)
+			.slice(0, MAX_ROUTE_QUOTERS - 1)
+			.map((slot) => slot.entry);
 	}
 
 	/** The writable `(User, UserStats)` pair each named maker contributes. */

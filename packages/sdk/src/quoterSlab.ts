@@ -18,6 +18,12 @@ export const QUOTER_SLAB_SLOT_REGION_OFFSET = 8 + 160;
 /** Bytes one `QuoterSlotV0` occupies in the slot region. */
 export const QUOTER_SLAB_SLOT_SIZE = 776;
 
+/**
+ * Quoters one transaction may consult, mirroring the program's `MAX_ROUTE_QUOTERS`. The market's
+ * book is always one of them, so a signed route names at most one fewer.
+ */
+export const MAX_ROUTE_QUOTERS = 8;
+
 /** Registered accounts one quoter's unified CPI list can hold. */
 export const MAX_QUOTER_ACCOUNTS = 12;
 

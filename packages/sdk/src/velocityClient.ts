@@ -5467,8 +5467,9 @@ export class VelocityClient {
 	 * preconditions, or `InvalidTransferPerpPosition` if the oracle is invalid, fills are paused for
 	 * `marketIndex`, `amount`'s sign/magnitude/step-size don't satisfy the constraints above, or
 	 * `fromSubAccountId` has no position in `marketIndex`, or `SpotMarketInterestStaleForMargin` if
-	 * either sub-account borrows from a spot market whose interest is stale (prepend
-	 * `getStaleSpotInterestCrankIxs` for both accounts to avoid it).
+	 * either sub-account borrows from a spot market whose interest is stale. To avoid that, build the
+	 * transaction yourself from `getStaleSpotInterestCrankIxs([fromUserAccount, toUserAccount])`
+	 * followed by `getTransferPerpPositionIx`.
 	 */
 	public async transferPerpPosition(
 		fromSubAccountId: number,

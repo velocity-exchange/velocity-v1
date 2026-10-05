@@ -201,8 +201,13 @@ describe('transfer perp position with stale borrow interest', () => {
 		await velocityClient.unsubscribe();
 	});
 
-	it('rejects the transfer until the recipient borrow market is cranked', async () => {
-		// Past the SOL market's staleness window, with live oracles.
+	// Lets the SOL borrow index go stale, expects the transfer to revert, then
+	// cranks the market and expects the same transfer to land.
+	async function assertRejectedUntilCranked(
+		fromSub: number,
+		toSub: number,
+		amount: BN
+	) {
 		await svmContextWrapper.moveTimeForward(2 * 60 * 60);
 		await setFeedPriceNoProgram(svmContextWrapper, 1, perpOracle);
 		await setFeedPriceNoProgram(svmContextWrapper, 100, solOracle);
@@ -211,10 +216,10 @@ describe('transfer perp position with stale borrow interest', () => {
 		let error = '';
 		try {
 			await velocityClient.transferPerpPosition(
-				FROM_SUB,
-				TO_SUB,
+				fromSub,
+				toSub,
 				PERP_MARKET_INDEX,
-				BASE_PRECISION
+				amount
 			);
 		} catch (e) {
 			error = e.toString();
@@ -227,20 +232,31 @@ describe('transfer perp position with stale borrow interest', () => {
 
 		await velocityClient.updateSpotMarketCumulativeInterest(SOL_MARKET_INDEX);
 		await velocityClient.fetchAccounts();
-
 		await velocityClient.transferPerpPosition(
-			FROM_SUB,
-			TO_SUB,
+			fromSub,
+			toSub,
 			PERP_MARKET_INDEX,
-			BASE_PRECISION
+			amount
 		);
-
 		await velocityClient.fetchAccounts();
-		assert(
-			velocityClient
-				.getUserAccount(TO_SUB)
-				.perpPositions.find((p) => p.marketIndex === PERP_MARKET_INDEX)
-				?.baseAssetAmount.eq(BASE_PRECISION)
-		);
+	}
+
+	function perpBase(sub: number): BN | undefined {
+		return velocityClient
+			.getUserAccount(sub)
+			.perpPositions.find((p) => p.marketIndex === PERP_MARKET_INDEX)
+			?.baseAssetAmount;
+	}
+
+	it('rejects the transfer until the recipient borrow market is cranked', async () => {
+		await assertRejectedUntilCranked(FROM_SUB, TO_SUB, BASE_PRECISION);
+		assert(perpBase(TO_SUB)?.eq(BASE_PRECISION));
+	});
+
+	it('rejects the transfer until the sender borrow market is cranked', async () => {
+		// TO_SUB now holds the long and the borrow; the recipient has no borrows,
+		// so only the sender gate can reject.
+		await assertRejectedUntilCranked(TO_SUB, FROM_SUB, BASE_PRECISION);
+		assert(perpBase(FROM_SUB)?.eq(BASE_PRECISION));
 	});
 });

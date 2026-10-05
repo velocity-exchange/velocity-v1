@@ -314,7 +314,7 @@ impl TokenizedVaultDepositor {
         )?;
 
         msg!(
-            "shares_transferred: {}, tokenized_vd.last_vault_shares: {}, token_supply_before: {}, tokens_to_mint: {}",
+            "shares_transferred: {}, tokenized_vd.last_vault_shares: {}, issued_supply_before: {}, tokens_to_mint: {}",
             shares_transferred,
             self.last_vault_shares,
             self.issued_supply,
@@ -419,7 +419,7 @@ impl TokenizedVaultDepositor {
         )?;
 
         msg!(
-            "tokens_to_burn: {}, tokenized_vd.vault_shares: {}, token_supply_before: {}, shares_to_redeem: {}",
+            "tokens_to_burn: {}, tokenized_vd.vault_shares: {}, issued_supply_before: {}, shares_to_redeem: {}",
             tokens_to_burn,
             self.last_vault_shares,
             self.issued_supply,

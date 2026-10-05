@@ -2567,7 +2567,8 @@ be moved from outside. The shares behind burned tokens stay in the pool and nobo
 them, which is the burner's own loss.
 
 `redeem_tokens` now clears an orphaned cost basis when both `vault_shares` and `issued_supply`
-reach zero, instead of comparing the burn against the mint supply.
+reach zero, instead of comparing the burn against the mint supply. After any direct burn the pool can never
+fully empty, so that reset no longer fires for that tokenized depositor.
 
 Account layout: `issued_supply: u64` takes the first word of the trailing padding, which is now
 `[u64; 9]`, and `SIZE` is unchanged. The IDL gains the field. No instruction signature, account

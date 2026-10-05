@@ -6625,7 +6625,8 @@ export class VelocityClient {
 	 */
 	private async getTriggerResyncIxs(
 		order: Order | undefined,
-		subAccountId?: number
+		subAccountId?: number,
+		payer?: PublicKey
 	): Promise<TransactionInstruction[]> {
 		if (
 			!order ||
@@ -6636,7 +6637,9 @@ export class VelocityClient {
 		}
 
 		return [
-			await this.getSyncTriggerConditionsIx([order.marketIndex], subAccountId),
+			await this.getSyncTriggerConditionsIx([order.marketIndex], subAccountId, {
+				payer,
+			}),
 		];
 	}
 
@@ -9286,6 +9289,35 @@ export class VelocityClient {
 			this.opts
 		);
 		return txSig;
+	}
+
+	/**
+	 * The `modifyOrder` instruction, followed by `syncTriggerConditions` when the order is a
+	 * trigger. A modify replaces the order under a new order id, so a modified trigger fires
+	 * only after the sync re-arms its relay watch. Takes the same arguments as `getModifyOrderIx`.
+	 * The sync's payer is `overrides.authority` when set, since it signs the transaction.
+	 */
+	public async getModifyOrderIxs(
+		orderParams: Parameters<VelocityClient['getModifyOrderIx']>[0],
+		subAccountId?: number,
+		overrides?: {
+			user?: User;
+			authority?: PublicKey;
+		}
+	): Promise<TransactionInstruction[]> {
+		const user = overrides?.user ?? this.getUser(subAccountId);
+		const resyncSubAccountId = overrides?.user
+			? overrides.user.getUserAccountOrThrow().subAccountId
+			: subAccountId;
+
+		return [
+			await this.getModifyOrderIx(orderParams, subAccountId, overrides),
+			...(await this.getTriggerResyncIxs(
+				user.getOrder(orderParams.orderId),
+				resyncSubAccountId,
+				overrides?.authority
+			)),
+		];
 	}
 
 	/**

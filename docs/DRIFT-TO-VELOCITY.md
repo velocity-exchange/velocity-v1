@@ -627,7 +627,10 @@ room, stepSize)` (`math/router`) mirrors the trim of a `Custom` quoter's ladder:
   `sync_trigger_conditions`. `placeTriggerOrders`, the bracket orders of
   `preparePlaceAndTakePerpOrderWithAdditionalOrders`, and `modifyOrder` /
   `modifyOrderByUserOrderId` on a trigger order append it after the placement, because relay
-  fires only a trigger that the sync armed.
+  fires only a trigger that the sync armed. `getModifyOrderIxs(orderParams, subAccountId?,
+  overrides?)` returns `modifyOrder` and, for a trigger order, the sync. A modify replaces the
+  order under a new order id, so a caller that sends `getModifyOrderIx` alone leaves the edited
+  trigger disarmed.
 - velocity-rs signed messages (feat/propamm). `swift_order_subscriber::decode_signed_msg_payload`
   decodes a hex signed-message payload and refuses one shorter than a discriminator or longer
   than `MAX_SIGNED_MSG_BORSH_LEN`, which moves from swift to velocity-rs.

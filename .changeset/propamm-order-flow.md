@@ -178,6 +178,10 @@ replacement that fits inside the position still requires initial margin and clea
 equity floor when other orders rest behind it. A modify that passed before may now fail for a
 caller resting several orders against one position.
 
+`VelocityClient.getModifyOrderIxs` returns `modifyOrder` and, for a trigger order,
+`syncTriggerConditions`. A modify replaces the order under a new order id, so an edited trigger fires
+only after the sync re-arms its relay watch.
+
 `VelocityClient` gains `cancelOrderV1`, `cancelOrdersV1` and `modifyOrderV1` with their `get*Ix`
 builders. A caller names a market and nothing else, because the book's account, its program and the
 PDAs resolve from the market's quoter slab. Those instructions take `quoterSlab`, `clobMarket` and

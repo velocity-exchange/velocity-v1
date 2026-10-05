@@ -2808,7 +2808,7 @@ impl PrimaryLiquidationStrategy {
         let mut tx_builder = TransactionBuilder::new(
             velocity.program_data(),
             subaccount,
-            std::borrow::Cow::Owned(keeper_account.clone()),
+            std::borrow::Cow::Borrowed(&keeper_account),
             false,
         )
         .with_priority_fee(priority_fee, Some(cu_limit));
@@ -3404,7 +3404,7 @@ impl PrimaryLiquidationStrategy {
         let mut tx_builder = TransactionBuilder::new(
             velocity.program_data(),
             subaccount,
-            std::borrow::Cow::Owned(keeper_account.clone()),
+            std::borrow::Cow::Borrowed(&keeper_account),
             false,
         )
         .with_priority_fee(priority_fee, Some(cu_limit));
@@ -3579,7 +3579,7 @@ impl PrimaryLiquidationStrategy {
         let mut tx_builder = TransactionBuilder::new(
             velocity.program_data(),
             subaccount,
-            std::borrow::Cow::Owned(keeper_account.clone()),
+            std::borrow::Cow::Borrowed(&keeper_account),
             false,
         )
         .with_priority_fee(priority_fee, Some(cu_limit));

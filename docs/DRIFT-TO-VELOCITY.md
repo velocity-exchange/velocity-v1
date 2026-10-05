@@ -651,7 +651,7 @@ These public exports were added, or restored, relative to the fork point:
   `VelocityClient.getStaleSpotInterestCrankIxs` (fill-stale-margin-bad-debt). They name the
   spot markets whose interest must be accrued before a set of accounts can be used on a
   value-releasing path, and they build the permissionless cranks for them. Prepend the cranks
-  to a fill, withdraw, transfer, or swap. Each market gets its own window from its rate
+  to a fill, withdraw, transfer, swap, or (for the liquidator's account) a liquidation. Each market gets its own window from its rate
   ceiling, so a market that may charge more interest must be cranked more often. The program
   exempts a borrow whose un-booked interest is still under one token unit, which these
   helpers do not model, so they name a superset. The Rust SDK gains the equivalent pair,
@@ -1860,12 +1860,15 @@ calculation, which costs CU on every fill's margin loop and needs an SDK mirror,
 refreshing every position's market, which would require clients to pass them writable and so
 break the ABI.
 
-Integrator-visible: a withdrawal, transfer, swap, isolated-position withdrawal, or perp fill
-can now revert with `SpotMarketInterestStaleForMargin`. Recovery needs no privileges, since
+Integrator-visible: a withdrawal, transfer (including a perp-position, vAMM-hedger or
+cross-to-isolated deposit transfer), swap, isolated-position withdrawal, perp fill, or
+liquidation (for the liquidator's own borrows only) can now revert with
+`SpotMarketInterestStaleForMargin`. Recovery needs no privileges, since
 `update_spot_market_cumulative_interest` is permissionless and can be bundled into the same
 transaction. Both SDKs gained helpers that name the markets and build the cranks (§4.6), and
 both fillers (`apps/keeper-bots-v2` and `keep-rs`) bundle them ahead of every
-`fill_perp_order`. The IDL gains error 6371, with no instruction or account-layout change, and
+`fill_perp_order`, and both liquidators bundle them for their own account ahead of each
+liquidation. The IDL gains error 6371, with no instruction or account-layout change, and
 no SDK mirror of the margin validity flags exists.
 
 #### if-carveout-floor

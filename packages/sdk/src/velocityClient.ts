@@ -6138,7 +6138,7 @@ export class VelocityClient {
 	 * The program refuses to value a spot **borrow** for margin through an index that
 	 * has not accrued recently (`SpotMarketInterestStaleForMargin`). It applies on
 	 * withdraw, transfer deposit, transfer pools, transfer perp position (including
-	 * the vAMM-hedger transfer), swap, isolated-position deposit transfer and
+	 * the vAMM-hedger transfer), swap, cross-to-isolated deposit transfer, isolated-position
 	 * withdraw, any perp fill — for the taker and for every maker alike — and the
 	 * liquidator's own account on `liquidatePerp`, `liquidateSpot`,
 	 * `liquidateBorrowForPerpPnl` and `liquidatePerpPnlForDeposit`. Only borrow
@@ -6188,7 +6188,8 @@ export class VelocityClient {
 	/**
 	 * Builds one `updateSpotMarketCumulativeInterest` instruction per market that
 	 * `getStaleSpotInterestMarketIndexes` names. Prepend them to a withdraw, swap,
-	 * transfer, or fill so the margin check sees a current borrow index.
+	 * transfer, fill, or (for the liquidator's account) a liquidation so the margin
+	 * check sees a current borrow index.
 	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
 	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
 	 * @returns The instructions, in ascending market-index order.

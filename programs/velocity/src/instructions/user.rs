@@ -2329,6 +2329,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         )
     };
 
+    // OtterSec #135: this handler cranks no spot market, so un-booked borrow
+    // interest is missing from both checks below. Both accounts are gated, as on
+    // the perp fill this transfer mirrors.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(from_user, &spot_market_map, now)?;
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(to_user, &spot_market_map, now)?;
+
     let from_user_margin_context = MarginContext::standard(MarginRequirementType::Maintenance);
 
     let from_user_margin_calculation =

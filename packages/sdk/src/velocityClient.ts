@@ -5466,7 +5466,9 @@ export class VelocityClient {
 	 * @throws (on-chain `UserBankrupt`/`CantTransferBetweenSameUserAccount`) for the standard transfer
 	 * preconditions, or `InvalidTransferPerpPosition` if the oracle is invalid, fills are paused for
 	 * `marketIndex`, `amount`'s sign/magnitude/step-size don't satisfy the constraints above, or
-	 * `fromSubAccountId` has no position in `marketIndex`.
+	 * `fromSubAccountId` has no position in `marketIndex`, or `SpotMarketInterestStaleForMargin` if
+	 * either sub-account borrows from a spot market whose interest is stale (prepend
+	 * `getStaleSpotInterestCrankIxs` for both accounts to avoid it).
 	 */
 	public async transferPerpPosition(
 		fromSubAccountId: number,
@@ -6134,9 +6136,10 @@ export class VelocityClient {
 	 *
 	 * The program refuses to value a spot **borrow** for margin through an index that
 	 * has not accrued recently (`SpotMarketInterestStaleForMargin`). It applies on
-	 * withdraw, transfer deposit, transfer pools, swap, isolated-position withdraw,
-	 * and any perp fill — for the taker and for every maker alike. Only borrow
-	 * positions count; a stale deposit index understates collateral and is allowed.
+	 * withdraw, transfer deposit, transfer pools, transfer perp position, swap,
+	 * isolated-position withdraw, and any perp fill — for the taker and for every
+	 * maker alike. Only borrow positions count; a stale deposit index understates
+	 * collateral and is allowed.
 	 *
 	 * Each market earns its own window from its rate ceiling
 	 * (`maxSpotInterestStalenessForMargin`), so a market that may charge more

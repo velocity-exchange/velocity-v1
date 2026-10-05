@@ -1814,8 +1814,9 @@ arrive read-only so they cannot be refreshed in place.
 Every value-releasing path now requires recent accrual on any market carrying one of the
 account's borrows. Those paths are `handle_withdraw`, the perp fill for the taker and every
 maker whichever direction each moves, `handle_transfer_deposit`, `handle_transfer_pools` for
-both accounts since the transfer moves debt onto the recipient, `handle_end_swap`, and
-`withdraw_from_isolated_perp_position`. The last four reach the same check through
+both accounts since the transfer moves debt onto the recipient, `handle_transfer_perp_position`
+for both accounts like the fill it mirrors, `handle_end_swap`, and
+`withdraw_from_isolated_perp_position`. The withdraw-shaped paths reach the same check through
 `meets_withdraw_margin_requirement*` and crank only the market they touch, so #135 applies to
 them unchanged. New error `SpotMarketInterestStaleForMargin` (6371 / `0x18E3`), appended at
 the enum tail.

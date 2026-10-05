@@ -220,6 +220,7 @@ test_files=(
   switchOracle.ts
   triggerOrders.ts
   transferPerpPosition.ts
+  transferPerpPositionStaleBorrow.ts
   userAccount.ts
   userDelegate.ts
   userOrderId.ts

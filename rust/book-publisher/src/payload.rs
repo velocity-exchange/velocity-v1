@@ -190,12 +190,9 @@ pub fn l2_payload(
 
     let best_ask = ask_levels.keys().next().copied();
     let best_bid = bid_levels.keys().next_back().copied();
-    let mark = match (best_bid, best_ask) {
-        (Some(bid), Some(ask)) => Some((bid as u128 + ask as u128) / 2),
-        _ => None,
-    };
+    let mark = book_mark_price(best_bid, best_ask, decorations.oracle);
     let spread_quote = match (best_bid, best_ask) {
-        (Some(bid), Some(ask)) => Some((ask as i128) - (bid as i128)),
+        (Some(bid), Some(ask)) => Some(ask.saturating_sub(bid) as i128),
         _ => None,
     };
 
@@ -207,14 +204,7 @@ pub fn l2_payload(
         _ => None,
     };
 
-    fn opt_string<T: ToString>(value: Option<T>) -> Value {
-        match value {
-            Some(value) => json!(value.to_string()),
-            None => Value::Null,
-        }
-    }
-
-    json!({
+    let mut payload = json!({
         // Asks best-first (ascending), bids best-first (descending).
         "asks": levels_json(ask_levels.iter()),
         "bids": levels_json(bid_levels.iter().rev()),
@@ -223,8 +213,6 @@ pub fn l2_payload(
         "marketIndex": market_index,
         "ts": ts_ms as u64,
         "slot": asks.view.slot.max(bids.view.slot),
-        "bestAskPrice": opt_string(best_ask),
-        "bestBidPrice": opt_string(best_bid),
         // An empty book falls back to the numeric oracle price, exactly as
         // the TS publisher assigns `l2Formatted['oracle']` into markPrice.
         "markPrice": match mark {
@@ -232,13 +220,49 @@ pub fn l2_payload(
             None => json!(decorations.oracle),
         },
 
-        "spreadQuote": opt_string(spread_quote),
-        "spreadPct": opt_string(spread_pct),
         "oracle": decorations.oracle,
         "oracleData": decorations.oracle_data,
         "mmOracleData": decorations.mm_oracle_data,
         "marketSlot": decorations.market_slot,
-    })
+    });
+
+    // A missing value is left out rather than written as null, as the TS
+    // publisher's `JSON.stringify` drops `undefined`. The webapp turns a null
+    // into a BN, which bn.js cannot parse and runs out of memory on.
+    let optional_fields = [
+        ("bestAskPrice", best_ask.map(|price| price.to_string())),
+        ("bestBidPrice", best_bid.map(|price| price.to_string())),
+        ("spreadQuote", spread_quote.map(|spread| spread.to_string())),
+        ("spreadPct", spread_pct.map(|pct| pct.to_string())),
+    ];
+    for (key, value) in optional_fields {
+        if let Some(value) = value {
+            payload[key] = json!(value);
+        }
+    }
+
+    payload
+}
+
+/// The book's mark price, as common-ts `calculateMarkPrice` computes it. A
+/// crossed book takes the side nearer the oracle, or the oracle when it sits
+/// between them. `None` when a side is empty, and the caller falls back to
+/// the oracle.
+fn book_mark_price(best_bid: Option<u64>, best_ask: Option<u64>, oracle: i64) -> Option<u128> {
+    let (bid, ask) = (best_bid?, best_ask?);
+    if bid <= ask || oracle <= 0 {
+        return Some((bid as u128 + ask as u128) / 2);
+    }
+
+    let oracle = oracle as u64;
+    let mark = if bid > oracle && ask > oracle {
+        bid.min(ask)
+    } else if bid < oracle && ask < oracle {
+        bid.max(ask)
+    } else {
+        oracle
+    };
+    Some(mark as u128)
 }
 
 /// The serving side's grouping ladder: bucket sizes in ticks, each channel
@@ -620,6 +644,50 @@ mod tests {
             mm_oracle_data: json!({"price": "98", "slot": "100", "confidence": "1", "hasSufficientNumberOfDataPoints": true}),
             market_slot: 100,
         }
+    }
+
+    /// A book with no asks, as when vAMM fills are paused. A field the book
+    /// cannot fill is left out, and the mark falls back to the oracle.
+    #[test]
+    fn a_one_sided_book_omits_what_it_cannot_price() {
+        let clob_entry = Pubkey::new_unique();
+        let asks = view(0, vec![]);
+        let bids = view(
+            1,
+            vec![book(QuotedSourceKind::Quoter, clob_entry, &[(97, 4)])],
+        );
+        let entries = [clob(clob_entry)];
+        let payload = l2_payload(
+            7,
+            "SOL-PERP",
+            SideQuote {
+                view: &asks,
+                entries: &entries,
+            },
+            SideQuote {
+                view: &bids,
+                entries: &entries,
+            },
+            &crate::reduce_only::ReduceOnlyDepth::default(),
+            &decorations(),
+            1_234,
+        );
+
+        for key in ["bestAskPrice", "spreadQuote", "spreadPct"] {
+            assert!(payload.get(key).is_none(), "{key} must be absent");
+        }
+        assert_eq!(payload["bestBidPrice"], "97");
+        assert_eq!(payload["markPrice"], 98);
+    }
+
+    /// The crossed-book rule of common-ts `calculateMarkPrice`.
+    #[test]
+    fn a_crossed_book_marks_at_the_side_nearer_the_oracle() {
+        assert_eq!(book_mark_price(Some(99), Some(101), 98), Some(100));
+        assert_eq!(book_mark_price(Some(103), Some(101), 98), Some(101));
+        assert_eq!(book_mark_price(Some(97), Some(95), 98), Some(97));
+        assert_eq!(book_mark_price(Some(99), Some(97), 98), Some(98));
+        assert_eq!(book_mark_price(None, Some(97), 98), None);
     }
 
     #[test]

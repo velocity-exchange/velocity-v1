@@ -1336,10 +1336,11 @@ async fn try_swift_place(
 /// through a stale index and understates the debt. `fill_perp_order`
 /// receives those markets read-only and cannot refresh them, so the permissionless
 /// crank rides in the same transaction. Call this before `fill_perp_order`, which
-/// also keeps the fill as the last instruction for the account-count check.
+/// also keeps the fill as the last instruction for the account-count check. The
+/// liquidator reuses it for its own account, passing no makers.
 ///
 /// A market this misses only costs a reverted fill.
-fn with_spot_interest_cranks<'a>(
+pub(crate) fn with_spot_interest_cranks<'a>(
     mut tx_builder: TransactionBuilder<'a>,
     velocity: &VelocityClient,
     taker: &User,

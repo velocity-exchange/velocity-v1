@@ -12,6 +12,7 @@ import {
 	PRICE_PRECISION,
 	PositionDirection,
 	QUOTE_PRECISION,
+	SpecialUserStatus,
 	TestClient,
 	ZERO,
 	getMarketOrderParams,
@@ -201,13 +202,9 @@ describe('transfer perp position with stale borrow interest', () => {
 		await velocityClient.unsubscribe();
 	});
 
-	// Lets the SOL borrow index go stale, expects the transfer to revert, then
-	// cranks the market and expects the same transfer to land.
-	async function assertRejectedUntilCranked(
-		fromSub: number,
-		toSub: number,
-		amount: BN
-	) {
+	// Lets the SOL borrow index go stale, expects `send` to revert, then cranks
+	// the market and expects the same call to land.
+	async function assertRejectedUntilCranked(send: () => Promise<unknown>) {
 		await svmContextWrapper.moveTimeForward(2 * 60 * 60);
 		await setFeedPriceNoProgram(svmContextWrapper, 1, perpOracle);
 		await setFeedPriceNoProgram(svmContextWrapper, 100, solOracle);
@@ -215,12 +212,7 @@ describe('transfer perp position with stale borrow interest', () => {
 
 		let error = '';
 		try {
-			await velocityClient.transferPerpPosition(
-				fromSub,
-				toSub,
-				PERP_MARKET_INDEX,
-				amount
-			);
+			await send();
 		} catch (e) {
 			error = e.toString();
 		}
@@ -232,14 +224,17 @@ describe('transfer perp position with stale borrow interest', () => {
 
 		await velocityClient.updateSpotMarketCumulativeInterest(SOL_MARKET_INDEX);
 		await velocityClient.fetchAccounts();
-		await velocityClient.transferPerpPosition(
+		await send();
+		await velocityClient.fetchAccounts();
+	}
+
+	const transfer = (fromSub: number, toSub: number) => () =>
+		velocityClient.transferPerpPosition(
 			fromSub,
 			toSub,
 			PERP_MARKET_INDEX,
-			amount
+			BASE_PRECISION
 		);
-		await velocityClient.fetchAccounts();
-	}
 
 	function perpBase(sub: number): BN | undefined {
 		return velocityClient
@@ -249,14 +244,33 @@ describe('transfer perp position with stale borrow interest', () => {
 	}
 
 	it('rejects the transfer until the recipient borrow market is cranked', async () => {
-		await assertRejectedUntilCranked(FROM_SUB, TO_SUB, BASE_PRECISION);
+		await assertRejectedUntilCranked(transfer(FROM_SUB, TO_SUB));
 		assert(perpBase(TO_SUB)?.eq(BASE_PRECISION));
 	});
 
 	it('rejects the transfer until the sender borrow market is cranked', async () => {
 		// TO_SUB now holds the long and the borrow; the recipient has no borrows,
 		// so only the sender gate can reject.
-		await assertRejectedUntilCranked(TO_SUB, FROM_SUB, BASE_PRECISION);
+		await assertRejectedUntilCranked(transfer(TO_SUB, FROM_SUB));
 		assert(perpBase(FROM_SUB)?.eq(BASE_PRECISION));
+	});
+
+	it('rejects a vamm-hedger transfer until its borrow market is cranked', async () => {
+		// Hand the long back to the borrower while the index is fresh, then flag it.
+		await transfer(FROM_SUB, TO_SUB)();
+		await velocityClient.fetchAccounts();
+		const toUser = await velocityClient.getUserAccountPublicKey(TO_SUB);
+		await velocityClient.updateSpecialUserStatus(
+			toUser,
+			SpecialUserStatus.VAMM_HEDGER
+		);
+
+		await assertRejectedUntilCranked(() =>
+			velocityClient.specialTransferPerpPositionToVamm(
+				toUser,
+				PERP_MARKET_INDEX
+			)
+		);
+		assert(perpBase(TO_SUB)?.isZero() ?? true);
 	});
 });

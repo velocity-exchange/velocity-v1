@@ -639,6 +639,15 @@ pub fn liquidate_perp(
         flag_perp_bankruptcy_claim(user, market_index, perp_market_map)?;
     }
 
+    // The liquidator takes on exposure like a risk-increasing fill, so its own
+    // borrows must be valued through a fresh index (OtterSec #135). The crank is
+    // permissionless; only the liquidator's own stale borrows can block it here.
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        liquidator,
+        spot_market_map,
+        now,
+    )?;
+
     let liquidator_meets_initial_margin_requirement =
         meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;
 
@@ -1912,6 +1921,15 @@ pub fn liquidate_spot(
         user.enter_cross_margin_bankruptcy();
     }
 
+    // The liquidator takes on exposure like a risk-increasing fill, so its own
+    // borrows must be valued through a fresh index (OtterSec #135). The crank is
+    // permissionless; only the liquidator's own stale borrows can block it here.
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        liquidator,
+        spot_market_map,
+        now,
+    )?;
+
     let liq_margin_context = MarginContext::standard(MarginRequirementType::Initial);
 
     let liquidator_meets_initial_margin_requirement =
@@ -3150,6 +3168,15 @@ pub fn liquidate_borrow_for_perp_pnl(
         flag_perp_bankruptcy_claim(user, perp_market_index, perp_market_map)?;
     }
 
+    // The liquidator takes on exposure like a risk-increasing fill, so its own
+    // borrows must be valued through a fresh index (OtterSec #135). The crank is
+    // permissionless; only the liquidator's own stale borrows can block it here.
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        liquidator,
+        spot_market_map,
+        now,
+    )?;
+
     let liquidator_meets_initial_margin_requirement =
         meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;
 
@@ -3761,6 +3788,15 @@ pub fn liquidate_perp_pnl_for_deposit(
         liquidation_mode.enter_bankruptcy(user)?;
         flag_perp_bankruptcy_claim(user, perp_market_index, perp_market_map)?;
     }
+
+    // The liquidator takes on exposure like a risk-increasing fill, so its own
+    // borrows must be valued through a fresh index (OtterSec #135). The crank is
+    // permissionless; only the liquidator's own stale borrows can block it here.
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        liquidator,
+        spot_market_map,
+        now,
+    )?;
 
     let liquidator_meets_initial_margin_requirement =
         meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;

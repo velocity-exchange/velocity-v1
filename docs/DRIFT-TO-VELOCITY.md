@@ -1347,7 +1347,7 @@ long carry a one-line summary here and a link into §6.2.
 | swift-resting-limit-placement | `place_signed_msg_taker_order` accepts a resting limit, meaning a limit order with no auction, ahead of its message slot. For such an order the message slot is the placement deadline rather than an auction start, so `max_slot = order_slot + 0`, and with the #470 gate rejecting `order_slot > clock.slot` the order was placeable in exactly one slot and never landed. Clients stamp a no-auction limit its whole signing budget, about 14s, ahead (`@velocity-exchange/common` `MINIMUM_SWIFT_NON_AUCTION_ORDER_SIGNING_BUDGET_MS`), which under Drift was placed before the stamp arrived. The future-slot rejection now applies only to orders with an auction. A resting limit stamped ahead is accepted while the lead is within 30s (`max_resting_limit_lead`, and the UI stamps about 14s), and still rejected with `InvalidSignedMsgOrderParam` (6288) beyond it. The stored order slot is unchanged at `min(clock.slot, message slot)`, and the `max_slot < clock.slot` no-op still applies after the stamp. keep-rs places a resting limit on arrival instead of deferring it, since its 10s deferral bound dropped the roughly 14s stamp outright. The TS filler mirrors the gate via the new SDK `signedMsgOrderPlaceable` (§4.6) but still ignores no-auction signed-msg orders in `dlobBuilder`, so keep-rs remains the placer of resting swift limits. Rollout: deploy the program upgrade before the keep-rs release, because keep-rs against the old program sends a place tx per resting swift limit that fails with 6288, which is the same net outcome as dropping it plus the fee. Side effect: a resting limit's `SignedMsgOrderId.max_slot` is now its future stamp, so the entry occupies the per-user id ring for the lead plus the eviction buffer, about 18s for the UI's stamp and up to about 34s at the bound, instead of about 4s. A burst of resting swift limits can therefore reach `SignedMsgUserOrdersAccountFull` sooner. No account-layout, IDL or error-code change |
 | tokenized-pooled-basis-gate | Fix a High audit finding (OtterSec #140) in the `vaults` program, where a newcomer tokenizing into an under-water tokenized depositor captured part of the existing holders' loss shelter. [Details](#tokenized-pooled-basis-gate) |
 | tokenized-rebase-backing | Fix a Medium audit finding (OtterSec #122) in the `vaults` program, where the signerless `apply_rebase_tokenized_depositor` could floor a tokenized depositor's backing shares to zero while the mint supply was live. [Details](#tokenized-rebase-backing) |
-| transfer-perp-position-stale-interest | Close the #135 gap in `transfer_perp_position`, which checked margin on both sub-accounts without the borrow-interest freshness gate, so a stale `cumulative_borrow_interest` let the recipient take on exposure against understated debt. Both accounts are now gated, as on the perp fill, and the instruction can revert with `SpotMarketInterestStaleForMargin` (6371). Prepend the permissionless `update_spot_market_cumulative_interest` crank (`getStaleSpotInterestCrankIxs`) to avoid it. [Details](#fill-stale-margin-bad-debt) |
+| transfer-perp-position-stale-interest | Close the remaining #135 gaps: paths that checked margin without the borrow-interest freshness gate, so a stale `cumulative_borrow_interest` understated the account's debt. Now gated: `transfer_perp_position` (both accounts, as on the perp fill), `special_transfer_perp_position_to_vamm`, the cross-to-isolated direction of `transfer_isolated_perp_position_deposit`, and the liquidator side of `liquidate_perp`, `liquidate_spot`, `liquidate_borrow_for_perp_pnl` and `liquidate_perp_pnl_for_deposit`. Each can now revert with `SpotMarketInterestStaleForMargin` (6371). Prepend the permissionless `update_spot_market_cumulative_interest` crank (`getStaleSpotInterestCrankIxs`) to avoid it. The keeper-bots-v2 and keep-rs liquidators now do this for their own account. [Details](#fill-stale-margin-bad-debt) |
 | vault-nav-interest-refresh | Fix two High audit findings on vault NAV pricing (OtterSec #136, #137), where a vault priced shares off a stale spot-market interest index. Changed 19 vault instruction account lists (ABI). [Details](#vault-nav-interest-refresh) |
 | vault-nav-spot-market-refresh | Follow-up to `vault-nav-interest-refresh`, which fixed OtterSec #136 and #137 for one market only. Changed 20 vault instruction account lists (ABI) and added `refresh_spot_market_interest`. [Details](#vault-nav-spot-market-refresh) |
 | vault-share-pricing-hardening | Fix four High audit findings on vault share pricing (OtterSec #91 through #94). Adds `UserStatus::VaultOwned` and the CPI-only velocity instruction `update_user_vault_owned`. [Details](#vault-share-pricing-hardening) |
@@ -1787,7 +1787,7 @@ matching profit out of the PnL pool, so a gate that exempted reducing fills woul
 neither seat. `meets_withdraw_margin_requirement` draws the same line and exempts no
 direction.
 
-Liquidations are excluded on both sides. The taker block is already
+Liquidation fills are excluded on both sides. The taker block is already
 `if !fill_mode.is_liquidation()`, and the maker loop runs for liquidation fills too so its
 gate carries the same condition. Otherwise one maker's stale spot oracle, or one maker's
 un-cranked borrow market, would block the liquidation of an unrelated account.
@@ -1820,8 +1820,14 @@ for both accounts like the fill it mirrors, `handle_end_swap`, and
 `withdraw_from_isolated_perp_position`. `handle_transfer_deposit`, `handle_transfer_pools`,
 `handle_end_swap` and the isolated withdraw reach the same check through
 `meets_withdraw_margin_requirement*` and crank only the market they touch, so #135 applies to
-them unchanged. `handle_transfer_perp_position` cranks no spot market at all. New error `SpotMarketInterestStaleForMargin` (6371 / `0x18E3`), appended at
-the enum tail.
+them unchanged. `handle_transfer_perp_position` cranks no spot market at all. The same gate
+also covers `handle_special_transfer_perp_position_to_vamm`, the cross-to-isolated direction
+of `transfer_isolated_perp_position_deposit`, and the **liquidator** (never the liquidatee) in
+`liquidate_perp`, `liquidate_spot`, `liquidate_borrow_for_perp_pnl` and
+`liquidate_perp_pnl_for_deposit`, because the liquidator takes on exposure against its own
+borrows. Only the liquidator's own stale borrows can block its liquidation, and it can crank
+them in the same transaction. New error `SpotMarketInterestStaleForMargin` (6371 / `0x18E3`),
+appended at the enum tail.
 
 The quantity held down is the share of the debt the omission hides, not the elapsed time. The
 omission is `debt x rate x elapsed / year`, and the rate is per-market configuration with no

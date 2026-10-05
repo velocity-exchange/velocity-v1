@@ -5004,6 +5004,10 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         // `crate::vlp::amm::math::spread::update_amm_quote_state` on each crank/fill.
     }
 
+    // OtterSec #135: this handler cranks no spot market, so un-booked borrow
+    // interest would be missing from the check below.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(&user, &spot_market_map, now)?;
+
     let user_margin_context = MarginContext::standard(MarginRequirementType::Maintenance);
 
     let user_margin_calculation =

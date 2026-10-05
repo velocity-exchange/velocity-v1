@@ -6137,10 +6137,12 @@ export class VelocityClient {
 	 *
 	 * The program refuses to value a spot **borrow** for margin through an index that
 	 * has not accrued recently (`SpotMarketInterestStaleForMargin`). It applies on
-	 * withdraw, transfer deposit, transfer pools, transfer perp position, swap,
-	 * isolated-position withdraw, and any perp fill — for the taker and for every
-	 * maker alike. Only borrow positions count; a stale deposit index understates
-	 * collateral and is allowed.
+	 * withdraw, transfer deposit, transfer pools, transfer perp position (including
+	 * the vAMM-hedger transfer), swap, isolated-position deposit transfer and
+	 * withdraw, any perp fill — for the taker and for every maker alike — and the
+	 * liquidator's own account on `liquidatePerp`, `liquidateSpot`,
+	 * `liquidateBorrowForPerpPnl` and `liquidatePerpPnlForDeposit`. Only borrow
+	 * positions count; a stale deposit index understates collateral and is allowed.
 	 *
 	 * Each market earns its own window from its rate ceiling
 	 * (`maxSpotInterestStalenessForMargin`), so a market that may charge more

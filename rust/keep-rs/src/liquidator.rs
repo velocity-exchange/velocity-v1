@@ -8,7 +8,7 @@
 //!
 use {
     crate::{
-        filler::{TxSender, TxWorker},
+        filler::{with_spot_interest_cranks, TxSender, TxWorker},
         http::{
             DashboardState, DashboardStateRef, HighRiskUser, MarginStatus, Metrics,
             OraclePriceInfo, UserMarginStatus,
@@ -2804,10 +2804,11 @@ impl PrimaryLiquidationStrategy {
             return LiquidationOutcome::Skipped("liquidatee_account_lookup_failed");
         }
 
+        let keeper_account = keeper_account_data.unwrap();
         let mut tx_builder = TransactionBuilder::new(
             velocity.program_data(),
             subaccount,
-            std::borrow::Cow::Owned(keeper_account_data.unwrap()),
+            std::borrow::Cow::Owned(keeper_account.clone()),
             false,
         )
         .with_priority_fee(priority_fee, Some(cu_limit));
@@ -2817,6 +2818,7 @@ impl PrimaryLiquidationStrategy {
                 tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
         }
 
+        tx_builder = with_spot_interest_cranks(tx_builder, velocity, &keeper_account, &[]);
         tx_builder = tx_builder.liquidate_perp(
             market_index,
             &liquidatee_subaccount_data.unwrap(),
@@ -3402,7 +3404,7 @@ impl PrimaryLiquidationStrategy {
         let mut tx_builder = TransactionBuilder::new(
             velocity.program_data(),
             subaccount,
-            std::borrow::Cow::Owned(keeper_account),
+            std::borrow::Cow::Owned(keeper_account.clone()),
             false,
         )
         .with_priority_fee(priority_fee, Some(cu_limit));
@@ -3412,6 +3414,7 @@ impl PrimaryLiquidationStrategy {
                 tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
         }
 
+        tx_builder = with_spot_interest_cranks(tx_builder, velocity, &keeper_account, &[]);
         tx_builder = tx_builder.liquidate_perp_pnl_for_deposit(
             &liquidatee_account,
             liability.market_index,
@@ -3576,7 +3579,7 @@ impl PrimaryLiquidationStrategy {
         let mut tx_builder = TransactionBuilder::new(
             velocity.program_data(),
             subaccount,
-            std::borrow::Cow::Owned(keeper_account),
+            std::borrow::Cow::Owned(keeper_account.clone()),
             false,
         )
         .with_priority_fee(priority_fee, Some(cu_limit));
@@ -3586,6 +3589,7 @@ impl PrimaryLiquidationStrategy {
                 tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
         }
 
+        tx_builder = with_spot_interest_cranks(tx_builder, velocity, &keeper_account, &[]);
         tx_builder = tx_builder.liquidate_borrow_for_perp_pnl(
             &liquidatee_account,
             asset.market_index,

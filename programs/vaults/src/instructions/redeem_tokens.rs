@@ -116,15 +116,18 @@ pub fn redeem_tokens<'info>(
     // last_vault_shares to the post-transfer balance so future tokenize_shares still works.
     tokenized_vault_depositor.checkpoint_vault_shares();
 
-    // #140: if that emptied the pool of shares and tokens, its cost basis is now orphaned with nobody
-    // behind it. Above value it is a free loss shelter for the next tokenizer; below value it is an
-    // unearned fee liability for them. Clear it.
-    if tokenized_vault_depositor.get_vault_shares() == 0
-        && tokenized_vault_depositor.get_issued_supply() == 0
-    {
-        msg!("tokenized depositor emptied; clearing orphaned cost basis");
-        tokenized_vault_depositor.reset_orphaned_cost_basis();
-    }
+    // #140: a drained pool's cost basis has nobody behind it. Test the live supply, not
+    // `issued_supply`, because a direct SPL burn keeps `issued_supply` above zero forever.
+    let released_shares = if tokens_to_burn == total_supply_before {
+        let released_shares = tokenized_vault_depositor.release_unredeemable_shares(&mut vault)?;
+        msg!(
+            "live token supply drained; released {} unredeemable shares",
+            released_shares
+        );
+        released_shares
+    } else {
+        0
+    };
 
     let manager_shares_after = vault.get_manager_shares(&mut vp)?;
     let protocol_shares_after = vault.get_protocol_shares(&mut vp);
@@ -132,7 +135,8 @@ pub fn redeem_tokens<'info>(
         .get_vault_shares()
         .safe_add(tokenized_vault_depositor.get_vault_shares())?
         .safe_add(manager_shares_after)?
-        .safe_add(protocol_shares_after)?;
+        .safe_add(protocol_shares_after)?
+        .safe_add(released_shares)?;
 
     validate!(
         total_shares_after.eq(&total_shares_before),

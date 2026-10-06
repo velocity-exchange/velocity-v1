@@ -497,6 +497,28 @@ impl TokenizedVaultDepositor {
         self.last_vault_shares = self.vault_shares;
     }
 
+    /// Close out the pool once the live token supply reaches zero, and return the shares released.
+    ///
+    /// The shares that remain back tokens burned outside this program, so nobody can redeem them.
+    /// Releasing them gives every vault depositor a pro rata gain and lets the orphaned basis clear.
+    /// They stay if they are the whole vault, which would then give its equity to the next depositor.
+    pub fn release_unredeemable_shares(&mut self, vault: &mut Vault) -> Result<u128> {
+        let unredeemable_shares = self.get_vault_shares();
+        if unredeemable_shares > 0 && unredeemable_shares == vault.total_shares {
+            return Ok(0);
+        }
+
+        self.decrease_vault_shares(unredeemable_shares, vault)?;
+        vault.total_shares = vault.total_shares.safe_sub(unredeemable_shares)?;
+        vault.user_shares = vault.user_shares.safe_sub(unredeemable_shares)?;
+
+        self.last_vault_shares = 0;
+        self.issued_supply = 0;
+        self.reset_orphaned_cost_basis();
+
+        Ok(unredeemable_shares)
+    }
+
     /// Clear the pooled cost basis once the pool holds no shares and no tokens (#140).
     ///
     /// Both `transfer_shares` legs move basis by the current value of the shares moved. A full
@@ -958,6 +980,67 @@ mod tests {
             .unwrap();
         assert_eq!(attacker_shares, 1);
         assert_eq!(tvd.get_issued_supply(), 298);
+    }
+
+    /// One token burned outside the program must not stop a drained pool from clearing its basis.
+    #[test]
+    fn drained_pool_releases_shares_behind_externally_burned_tokens() {
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
+
+        tvd.vault_shares = 100;
+        tvd.net_deposits = 100;
+        vault.total_shares = 300;
+        vault.user_shares = 300;
+        tvd.tokenize_shares(vault, &mut None, &mut None, 300, 100, now, 0)
+            .unwrap();
+
+        // One token is burned directly, so the live supply is 99 and `issued_supply` stays 100.
+        let (redeemed_shares, _) = tvd
+            .redeem_tokens(vault, &mut None, &mut None, 300, 99, now, 0)
+            .unwrap();
+        assert_eq!(redeemed_shares, 99);
+
+        tvd.vault_shares -= redeemed_shares as u128;
+        tvd.checkpoint_vault_shares();
+        assert_eq!(tvd.get_issued_supply(), 1);
+
+        let released_shares = tvd.release_unredeemable_shares(vault).unwrap();
+
+        assert_eq!(released_shares, 1);
+        assert_eq!(tvd.get_vault_shares(), 0);
+        assert_eq!(tvd.get_issued_supply(), 0);
+        assert_eq!(vault.total_shares, 299);
+        assert_eq!(vault.user_shares, 299);
+        assert_eq!(tvd.get_net_deposits(), 0);
+        assert_eq!(tvd.get_cumulative_profit_share_amount(), 0);
+
+        tvd.vault_shares = 50;
+        let tokens = tvd
+            .tokenize_shares(vault, &mut None, &mut None, 299, 50, now, 0)
+            .unwrap();
+        assert_eq!(tokens, 50);
+    }
+
+    #[test]
+    fn unredeemable_shares_that_are_the_whole_vault_stay() {
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
+        tvd.vault_shares = 1;
+        tvd.last_vault_shares = 1;
+        tvd.issued_supply = 1;
+        vault.total_shares = 1;
+        vault.user_shares = 1;
+
+        let released_shares = tvd.release_unredeemable_shares(vault).unwrap();
+
+        assert_eq!(released_shares, 0);
+        assert_eq!(tvd.get_vault_shares(), 1);
+        assert_eq!(vault.total_shares, 1);
     }
 
     /// #140: draining a pool must not leave its cost basis behind for the next tokenizer.

@@ -2566,9 +2566,12 @@ take no supply argument. A direct burn leaves the counter unchanged, so the pric
 be moved from outside. The shares behind burned tokens stay in the pool and nobody can redeem
 them, which is the burner's own loss.
 
-`redeem_tokens` now clears an orphaned cost basis when both `vault_shares` and `issued_supply`
-reach zero, instead of comparing the burn against the mint supply. After any direct burn the pool can never
-fully empty, so that reset no longer fires for that tokenized depositor.
+When a `redeem_tokens` call burns the whole live supply, the shares that remain back only tokens
+burned outside the program. The program removes them from `vault.total_shares` and
+`vault.user_shares`, so every vault depositor gains pro rata. It then zeroes `issued_supply` and
+clears the orphaned cost basis. Without this step, one burned base unit kept the pool from ever
+emptying, and an under-water pool then refused every later tokenization. The shares stay if they
+are the whole vault, because a vault with zero shares gives its equity to the next depositor.
 
 Account layout: `issued_supply: u64` takes the first word of the trailing padding, which is now
 `[u64; 9]`, and `SIZE` is unchanged. The IDL gains the field. No instruction signature, account

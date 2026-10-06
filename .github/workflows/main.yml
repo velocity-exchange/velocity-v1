@@ -156,6 +156,7 @@ jobs:
             # velocity program source (drives fmt-clippy + unit-tests)
             program:
               - 'programs/**'
+              - 'crates/**'
               - 'idls/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -234,12 +235,14 @@ jobs:
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
       - name: Cargo fmt
         run: cargo +${{ env.RUST_NIGHTLY_TOOLCHAIN }} fmt -- --check
-      # Every program crate, tests included. The second run is the anchor-test flavor that
-      # `bun run program:build` compiles, where cfg-gated code differs from the default build.
+      # Every program crate, tests included, in each velocity flavor `build-sbf.sh` builds. The
+      # default run is mainnet. The others are the anchor-test flavor `bun run program:build`
+      # compiles and the devnet flavor, where cfg-gated code differs from mainnet.
       - name: Cargo clippy
         run: |
           cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
+          cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,isolated-position,vlp-hedge -- -D warnings
   unit-tests:
     name: Unit tests
     needs: changes
@@ -563,7 +566,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           profile: minimal
-          components: rustfmt
+          components: rustfmt, clippy
           override: true
       # The stable rustfmt above stays: velocity-rs's build.rs shells out to the
       # default-toolchain rustfmt when regenerating velocity_idl.rs. The nightly
@@ -598,10 +601,10 @@ jobs:
       # packages/sdk/src/idl/velocity.json; the velocity program crate is compiled as a host lib path-dep.
       - name: cargo check rust workspace
         run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets
-      # The live tests need RPC credentials to run, but only compiling them catches imports or
-      # helpers that the default build sees as unused.
-      - name: cargo check rust workspace (rpc_tests)
-        run: cargo check --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests
+      # Lints every target with the live tests compiled in. The live tests need RPC credentials to
+      # run, but compiling them catches imports or helpers that the default build sees as unused.
+      - name: cargo clippy rust workspace
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests -- -D warnings
       # build.rs just regenerated velocity_idl.rs from the canonical IDL; a diff
       # means the committed copy is stale. External (git-dep) consumers may build
       # without regenerating — e.g. from a read-only or vendored source dir — so

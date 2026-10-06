@@ -59,13 +59,13 @@ impl<const N: usize> OrderSlotLimiter<N> {
             let past_g = g.saturating_sub(i);
             let past_idx = (past_g % N as u64) as usize;
 
-            if self.generations[past_idx] == past_g {
-                if self.slots[past_idx].binary_search(&id).is_ok() {
-                    count += 1;
-                    if count >= 1 {
-                        // Already appeared once, so this would be the second time
-                        return false;
-                    }
+            if self.generations[past_idx] == past_g
+                && self.slots[past_idx].binary_search(&id).is_ok()
+            {
+                count += 1;
+                if count >= 1 {
+                    // Already appeared once, so this would be the second time
+                    return false;
                 }
             }
         }
@@ -825,10 +825,9 @@ pub fn subscribe_price_feeds(
             };
 
             // sub per feed
-            let mut sub_id = 0;
-            for feed_id in feed_ids.iter() {
+            for (sub_id, feed_id) in feed_ids.iter().enumerate() {
                 let subscribe_request = SubscribeRequest {
-                    subscription_id: SubscriptionId(sub_id),
+                    subscription_id: SubscriptionId(sub_id as u64),
                     params: SubscriptionParams::new(SubscriptionParamsRepr {
                         price_feed_ids: vec![*feed_id],
                         // velocity program requires exponent + feed_update_timestamp to apply the update
@@ -846,7 +845,6 @@ pub fn subscribe_price_feeds(
                     })
                     .expect("invalid subscription params"),
                 };
-                sub_id += 1;
                 if let Err(err) = cli
                     .subscribe(pyth_lazer_protocol::subscription::Request::Subscribe(
                         subscribe_request,
@@ -879,107 +877,97 @@ pub fn subscribe_price_feeds(
                 match update {
                     Ok(AnyResponse::Binary(outer)) => {
                         for message in outer.messages {
-                            match message {
-                                Message::Solana(solana) => {
-                                    let mut buf = Vec::with_capacity(solana.payload.len() + 128);
-                                    solana.serialize(&mut buf).expect("serialized");
-                                    let data =
-                                        PayloadData::deserialize_slice_le(&solana.payload).unwrap();
+                            if let Message::Solana(solana) = message {
+                                let mut buf = Vec::with_capacity(solana.payload.len() + 128);
+                                solana.serialize(&mut buf).expect("serialized");
+                                let data =
+                                    PayloadData::deserialize_slice_le(&solana.payload).unwrap();
 
-                                    log::trace!(target: "pyth", "got update: {data:?}");
-                                    for f in data.feeds {
-                                        // the program gates staleness and monotonicity on the
-                                        // per-feed `FeedUpdateTimestamp` (see
-                                        // `instructions/pyth_lazer_oracle.rs`), not the payload
-                                        // timestamp — a fixed-rate channel keeps ticking a fresh
-                                        // payload timestamp even when a feed's price is stalled,
-                                        // so stamp updates with the timestamp the program checks
-                                        let feed_update_ts = f
-                                            .properties
-                                            .iter()
-                                            .find_map(|p| match p {
-                                                PayloadPropertyValue::FeedUpdateTimestamp(ts) => {
-                                                    *ts
-                                                }
-                                                _ => None,
-                                            })
-                                            .unwrap_or(data.timestamp_us);
-                                        for p in f.properties {
-                                            if let PayloadPropertyValue::Price(Some(new_price)) = p
+                                log::trace!(target: "pyth", "got update: {data:?}");
+                                for f in data.feeds {
+                                    // the program gates staleness and monotonicity on the
+                                    // per-feed `FeedUpdateTimestamp` (see
+                                    // `instructions/pyth_lazer_oracle.rs`), not the payload
+                                    // timestamp — a fixed-rate channel keeps ticking a fresh
+                                    // payload timestamp even when a feed's price is stalled,
+                                    // so stamp updates with the timestamp the program checks
+                                    let feed_update_ts = f
+                                        .properties
+                                        .iter()
+                                        .find_map(|p| match p {
+                                            PayloadPropertyValue::FeedUpdateTimestamp(ts) => *ts,
+                                            _ => None,
+                                        })
+                                        .unwrap_or(data.timestamp_us);
+                                    for p in f.properties {
+                                        if let PayloadPropertyValue::Price(Some(new_price)) = p {
+                                            // TODO: bulk msg to avoid bouncing around tokio, bucket in some way, one message updates multiple markets...
+                                            let feed_id = f.feed_id.0;
+                                            let price: u64 = new_price.0.unsigned_abs().into();
+
+                                            if let Some(market_id) =
+                                                pyth_lazer_feed_id_to_perp_market_index(feed_id)
                                             {
-                                                // TODO: bulk msg to avoid bouncing around tokio, bucket in some way, one message updates multiple markets...
-                                                let feed_id = f.feed_id.0;
-                                                let price: u64 = new_price.0.unsigned_abs().into();
+                                                let scaled_price = to_price_precision(
+                                                    price,
+                                                    feed_id,
+                                                    MarketType::Perp,
+                                                );
+                                                let _ = price_tx.try_send(PythPriceUpdate {
+                                                    market_type: MarketType::Perp,
+                                                    market_id,
+                                                    feed_id,
+                                                    price: scaled_price,
+                                                    message: buf.clone(),
+                                                    ts: feed_update_ts,
+                                                });
+                                            }
 
-                                                if let Some(market_id) =
-                                                    pyth_lazer_feed_id_to_perp_market_index(feed_id)
-                                                {
-                                                    let scaled_price = to_price_precision(
-                                                        price,
-                                                        feed_id,
-                                                        MarketType::Perp,
-                                                    );
-                                                    let _ = price_tx.try_send(PythPriceUpdate {
-                                                        market_type: MarketType::Perp,
-                                                        market_id,
-                                                        feed_id,
-                                                        price: scaled_price,
-                                                        message: buf.clone(),
-                                                        ts: feed_update_ts,
-                                                    });
-                                                }
+                                            if let Some(market_id) =
+                                                pyth_lazer_feed_id_to_spot_market_index(feed_id)
+                                            {
+                                                let scaled_price = to_price_precision(
+                                                    price,
+                                                    feed_id,
+                                                    MarketType::Spot,
+                                                );
+                                                let _ = price_tx.try_send(PythPriceUpdate {
+                                                    market_type: MarketType::Spot,
+                                                    market_id,
+                                                    feed_id,
+                                                    price: scaled_price,
+                                                    message: buf.clone(),
+                                                    ts: feed_update_ts,
+                                                });
+                                            }
 
-                                                if let Some(market_id) =
-                                                    pyth_lazer_feed_id_to_spot_market_index(feed_id)
-                                                {
-                                                    let scaled_price = to_price_precision(
-                                                        price,
-                                                        feed_id,
-                                                        MarketType::Spot,
-                                                    );
-                                                    let _ = price_tx.try_send(PythPriceUpdate {
-                                                        market_type: MarketType::Spot,
-                                                        market_id,
-                                                        feed_id,
-                                                        price: scaled_price,
-                                                        message: buf.clone(),
-                                                        ts: feed_update_ts,
-                                                    });
-                                                }
-
-                                                // Extra feeds (cluster-specific): emit a synthetic
-                                                // update so the relayer ships them. velocity-rs
-                                                // derives the oracle PDA from feed_id alone, so
-                                                // market_id is informational only.
-                                                if extra_feeds.contains(&feed_id)
-                                                    && pyth_lazer_feed_id_to_perp_market_index(
-                                                        feed_id,
-                                                    )
+                                            // Extra feeds (cluster-specific): emit a synthetic
+                                            // update so the relayer ships them. velocity-rs
+                                            // derives the oracle PDA from feed_id alone, so
+                                            // market_id is informational only.
+                                            if extra_feeds.contains(&feed_id)
+                                                && pyth_lazer_feed_id_to_perp_market_index(feed_id)
                                                     .is_none()
-                                                    && pyth_lazer_feed_id_to_spot_market_index(
-                                                        feed_id,
-                                                    )
+                                                && pyth_lazer_feed_id_to_spot_market_index(feed_id)
                                                     .is_none()
-                                                {
-                                                    let scaled_price = to_price_precision(
-                                                        price,
-                                                        feed_id,
-                                                        MarketType::Spot,
-                                                    );
-                                                    let _ = price_tx.try_send(PythPriceUpdate {
-                                                        market_type: MarketType::Spot,
-                                                        market_id: u16::MAX,
-                                                        feed_id,
-                                                        price: scaled_price,
-                                                        message: buf.clone(),
-                                                        ts: feed_update_ts,
-                                                    });
-                                                }
+                                            {
+                                                let scaled_price = to_price_precision(
+                                                    price,
+                                                    feed_id,
+                                                    MarketType::Spot,
+                                                );
+                                                let _ = price_tx.try_send(PythPriceUpdate {
+                                                    market_type: MarketType::Spot,
+                                                    market_id: u16::MAX,
+                                                    feed_id,
+                                                    price: scaled_price,
+                                                    message: buf.clone(),
+                                                    ts: feed_update_ts,
+                                                });
                                             }
                                         }
                                     }
                                 }
-                                _ => (),
                             }
                         }
                     }

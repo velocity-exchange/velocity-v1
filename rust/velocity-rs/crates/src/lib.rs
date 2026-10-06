@@ -1543,10 +1543,10 @@ impl VelocityClientBackend {
 
         if sync {
             // the VelocityClientBackend syncs marketmaps by default
-            if self.perp_market_map.len() == 0 {
+            if self.perp_market_map.is_empty() {
                 self.perp_market_map.sync(&self.rpc_client).await?;
             }
-            if self.spot_market_map.len() == 0 {
+            if self.spot_market_map.is_empty() {
                 self.spot_market_map.sync(&self.rpc_client).await?;
             }
             let spot_markets = self
@@ -4666,9 +4666,11 @@ mod tests {
 
         // Referred taker (BuilderReferral bit set): escrow MUST be attached even
         // though the order has no builder. This is the regressed case.
-        let mut referred_stats = UserStats::default();
-        referred_stats.referrer = Pubkey::new_unique();
-        referred_stats.referrer_status = 0b0000_0100;
+        let referred_stats = UserStats {
+            referrer: Pubkey::new_unique(),
+            referrer_status: 0b0000_0100,
+            ..Default::default()
+        };
         assert!(referred_stats.has_builder_referral());
         let tx = TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false)
             .fill_perp_order(

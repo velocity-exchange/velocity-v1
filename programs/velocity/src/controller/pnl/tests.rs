@@ -1410,16 +1410,6 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
-    expected_user.perp_positions[0].quote_asset_amount = -100 * QUOTE_PRECISION_I64;
-    expected_user.perp_positions[0].settled_pnl = 50 * QUOTE_PRECISION_I64;
-    expected_user.spot_positions[0].scaled_balance = 150 * SPOT_BALANCE_PRECISION_U64;
-    expected_user.spot_positions[0].cumulative_deposits = 50 * QUOTE_PRECISION_I64;
-
-    let mut expected_market = market;
-    expected_market.pnl_pool.scaled_balance = 0;
-    expected_market.quote_asset_amount = -200 * QUOTE_PRECISION_I128;
-
     assert!(settle_pnl(
         0,
         &mut user,

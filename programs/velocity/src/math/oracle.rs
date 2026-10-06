@@ -276,7 +276,6 @@ pub fn block_operation(
     let OracleStatus {
         oracle_validity,
         mark_too_divergent: is_oracle_mark_too_divergent,
-        oracle_reserve_price_spread_pct: _,
         ..
     } = get_oracle_status(
         market,

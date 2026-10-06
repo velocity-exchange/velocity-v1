@@ -1108,6 +1108,8 @@ fn evaluate_swift_crosses(
 }
 
 /// Outcome of evaluating a swift order against current liquidity.
+// Returned by value once per swift order; boxing `MakerCrosses` would add an allocation per order.
+#[allow(clippy::large_enum_variant)]
 enum SwiftEval {
     /// Crosses resting liquidity / vAMM right now: fill it immediately.
     Fillable(MakerCrosses),
@@ -1475,10 +1477,8 @@ async fn try_auction_fill(
 
             let can_trigger = if trigger_above && trigger_price > actual_order.trigger_price {
                 true
-            } else if !trigger_above && trigger_price < actual_order.trigger_price {
-                true
             } else {
-                false
+                !trigger_above && trigger_price < actual_order.trigger_price
             };
             if !can_trigger {
                 continue;
@@ -1759,8 +1759,8 @@ async fn try_uncross(
     log::debug!(
         target: TARGET,
         "X asks: {:?}, X bids: {:?}",
-        &crosses.crossing_asks.iter().take(3),
-        &crosses.crossing_bids.iter().take(3),
+        crosses.crossing_asks.iter().take(3),
+        crosses.crossing_bids.iter().take(3),
     );
 
     // try valid combinations of taker/maker with all crossing asks/bids
@@ -2375,8 +2375,7 @@ async fn subscribe_grpc(
     let _res = velocity
         .grpc_subscribe(
             std::env::var("GRPC_ENDPOINT")
-                .unwrap_or_else(|_| "https://api.rpcpool.com".to_string())
-                .into(),
+                .unwrap_or_else(|_| "https://api.rpcpool.com".to_string()),
             std::env::var("GRPC_X_TOKEN").expect("GRPC_X_TOKEN set"),
             GrpcSubscribeOpts::default()
                 .commitment(solana_commitment_config::CommitmentLevel::Processed)
@@ -2403,6 +2402,8 @@ async fn subscribe_grpc(
         .await;
 }
 
+// Sent through the tx worker channel by value; boxing would add an allocation per transaction.
+#[allow(clippy::large_enum_variant)]
 pub enum TxWork {
     Send {
         tx: VersionedTransaction,
@@ -3326,8 +3327,10 @@ mod tests {
     #[test]
     fn unset_mm_immediate_threshold_scales_per_gate() {
         use velocity_rs::program::math::time::SlotClock;
-        let mut market = PerpMarket::default();
-        market.oracle_slot_delay_override = -1; // unset -> source-aware fallback
+        let mut market = PerpMarket {
+            oracle_slot_delay_override: -1, // unset -> source-aware fallback
+            ..Default::default()
+        };
         market.market_stats.mm_oracle_slot = 1_000;
         // MM_ORACLE_MIN_WRITE_GAP = 800ms: 2 slots at 400ms, 4 at 200ms
         for (clock, threshold) in [

@@ -1,4 +1,9 @@
 //! Pyth oracle stub — exposes `Price` account layout for Velocity to deserialize. No program logic.
+
+// Anchor's `#[program]` emits a `let _: T = panic!()` type check per instruction argument at the
+// crate root, outside any item this crate can annotate.
+#![allow(clippy::diverging_sub_expression)]
+
 use anchor_lang::prelude::*;
 pub mod pc;
 use pc::Price;

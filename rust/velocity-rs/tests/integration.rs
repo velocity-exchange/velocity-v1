@@ -207,12 +207,12 @@ async fn place_and_cancel_orders() {
     .cancel_all_orders()
     .place_orders(vec![
         NewOrder::limit(btc_perp)
-            .amount(1 * BASE_PRECISION_I64)
+            .amount(BASE_PRECISION_I64)
             .price(40 * PRICE_PRECISION_U64)
             .post_only(PostOnlyParam::MustPostOnly)
             .build(),
         NewOrder::limit(sol_spot)
-            .amount(-1 * LAMPORTS_PER_SOL_I64)
+            .amount(-LAMPORTS_PER_SOL_I64)
             .price(400 * PRICE_PRECISION_U64)
             .post_only(PostOnlyParam::MustPostOnly)
             .build(),
@@ -243,7 +243,7 @@ async fn place_and_take() {
     let sol_perp = client.market_lookup("sol-perp").expect("exists");
 
     let order = NewOrder::limit(sol_perp)
-        .amount(1 * BASE_PRECISION_I64)
+        .amount(BASE_PRECISION_I64)
         .price(40 * PRICE_PRECISION_U64)
         .build();
     let tx = client
@@ -367,7 +367,7 @@ async fn settle_pnl_txs() {
                 .post_only(PostOnlyParam::None)
                 .build(),
             NewOrder::limit(sol_perp)
-                .amount(-1 * BASE_PRECISION_I64)
+                .amount(-BASE_PRECISION_I64)
                 .price(10 * PRICE_PRECISION_U64)
                 .post_only(PostOnlyParam::None)
                 .build(),
@@ -398,8 +398,10 @@ async fn initialize_user_subaccount_0() {
     .await
     .expect("connects");
 
-    let mut user = User::default();
-    user.authority = *wallet.authority();
+    let user = User {
+        authority: *wallet.authority(),
+        ..Default::default()
+    };
 
     let tx = TransactionBuilder::new(
         client.program_data(),
@@ -454,7 +456,7 @@ async fn place_order_sim_via_privy_account() {
         ..Default::default()
     };
 
-    let isolated_deposit = Some(379918_u64);
+    let isolated_deposit = 379_918_u64;
     let market_index = taker_order_params.market_index;
 
     let message = TransactionBuilder::new(
@@ -463,7 +465,7 @@ async fn place_order_sim_via_privy_account() {
         std::borrow::Cow::Owned(user),
         false,
     )
-    .transfer_isolated_perp_position_deposit(isolated_deposit.unwrap() as i64, market_index)
+    .transfer_isolated_perp_position_deposit(isolated_deposit as i64, market_index)
     .place_orders(vec![taker_order_params])
     .fee_payer(solana_pubkey::pubkey!(
         "4feEEMTPNnzwRiFeCNsogqXzHj3QyYowkYn4Y5BFv3rH" // some privy fee payer

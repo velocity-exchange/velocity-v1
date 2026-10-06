@@ -179,7 +179,7 @@ mod tests {
     fn dlob_util_test_remove_order_via_cancel() {
         let pubkey = Pubkey::new_unique();
         let mut order = create_test_order(1, OrderStatus::Open);
-        let old = create_test_user(vec![order.clone()]);
+        let old = create_test_user(vec![order]);
         order.status = OrderStatus::Canceled;
         let new = create_test_user(vec![order]);
 
@@ -387,11 +387,11 @@ mod tests {
 
         // Order A has user_order_id=1, Order B has user_order_id=2
         let order_a = create_logical_order(5, 1, OrderStatus::Open);
-        let old = create_test_user(vec![order_a.clone()]);
+        let old = create_test_user(vec![order_a]);
 
         let order_b = create_logical_order(5, 2, OrderStatus::Open);
         let order_a_new = create_logical_order(6, 1, OrderStatus::Open);
-        let new = create_test_user(vec![order_b.clone(), order_a_new.clone()]);
+        let new = create_test_user(vec![order_b, order_a_new]);
 
         let (_, deltas) = compare_user_orders(pubkey, &old, &new);
 
@@ -449,7 +449,7 @@ mod tests {
         let old = create_test_user(vec![order_filled]);
 
         let order_open = create_logical_order(4, 1, OrderStatus::Open);
-        let new = create_test_user(vec![order_open.clone()]);
+        let new = create_test_user(vec![order_open]);
 
         let (_, deltas) = compare_user_orders(pubkey, &old, &new);
 
@@ -477,7 +477,7 @@ mod tests {
         let pubkey = Pubkey::new_unique();
 
         let order_a = create_logical_order(4, 1, OrderStatus::Open);
-        let old = create_test_user(vec![order_a.clone()]);
+        let old = create_test_user(vec![order_a]);
 
         // New user has no order at index 0 (or has default order with order_id=0)
         let new = create_test_user(vec![]);

@@ -1020,7 +1020,7 @@ mod test {
         let mut log_stream = LogEventStream {
             cache: Arc::new(cache.into()),
             provider: Arc::new(
-                PubsubClient::new("wss://api.devnet.solana.com".into())
+                PubsubClient::new("wss://api.devnet.solana.com")
                     .await
                     .unwrap(),
             ),
@@ -1351,7 +1351,7 @@ mod test {
                         None,
                         None,
                         None,
-                        Some(sub_account.clone()),
+                        Some(sub_account),
                         Some(Order {
                             order_id: id,
                             ..Default::default()
@@ -1481,7 +1481,7 @@ mod test {
                 market_out: 1,
                 fee: 0,
                 ts: 1746413978,
-                signature: sig.try_into().unwrap(),
+                signature: sig.into(),
                 tx_idx: 3,
             }
         );
@@ -1675,8 +1675,10 @@ mod test {
         signature: Signature,
         logs: Option<Vec<String>>,
     ) -> EncodedTransactionWithStatusMeta {
-        let mut meta = TransactionStatusMeta::default();
-        meta.log_messages = logs;
+        let meta = TransactionStatusMeta {
+            log_messages: logs,
+            ..Default::default()
+        };
         VersionedTransactionWithStatusMeta {
             transaction: VersionedTransaction {
                 signatures: vec![signature],
@@ -1748,10 +1750,7 @@ mod test {
             base_asset_amount_filled,
             quote_asset_amount_filled,
             taker_fee,
-            maker_fee: match maker_rebate {
-                Some(maker_rebate) => Some(maker_rebate as i64),
-                None => None,
-            },
+            maker_fee: maker_rebate.map(|maker_rebate| maker_rebate as i64),
             referrer_reward: match referrer_reward {
                 Some(referrer_reward) if referrer_reward > 0 => {
                     Some(referrer_reward.try_into().unwrap())

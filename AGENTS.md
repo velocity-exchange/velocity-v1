@@ -48,7 +48,8 @@ ABI discriminants, and both error out in `get_oracle_price`.
 ## Toolchain
 
 On Apple Silicon, build with an x86_64 toolchain (`rustup default stable-x86_64-apple-darwin`),
-never a native aarch64 one. Native ARM changes the zero-copy memory layout. Use Rust 1.89 or newer.
+never a native aarch64 one. Native ARM changes the zero-copy memory layout. Use Rust 1.89 or newer,
+and run clippy on the version CI pins (see [`docs/agents/testing.md`](./docs/agents/testing.md#formatting-and-lint)).
 
 Build the programs with the `program:*` scripts in the root `package.json`, never with a bare
 `anchor build`. The scripts carry the right feature flags for each program.
@@ -219,8 +220,8 @@ accounts, and the feature flags.
 CI fails the PR unless these are clean. Run them before you call the work done.
 
 - Rust: `bun run fmt:rust` (nightly rustfmt, see [`docs/agents/testing.md`](./docs/agents/testing.md))
-  and the two clippy commands in [`docs/agents/testing.md`](./docs/agents/testing.md#formatting-and-lint).
-  Any clippy warning fails CI, in tests and in both build flavors.
+  and the clippy commands in [`docs/agents/testing.md`](./docs/agents/testing.md#formatting-and-lint).
+  Any clippy warning fails CI, in tests, in every velocity build flavor and in `rust/`.
 - SDK: `cd packages/sdk/ && bun run prettify && bun run lint`.
 - When you touch a feature-gated subsystem, check both flavors as described in `build.md`.
 

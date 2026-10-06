@@ -116,21 +116,30 @@ cd packages/sdk/ && bun run test:ci      # CI subset
 ```bash
 bun run fmt:rust                 # all Rust in the repo (wraps nightly rustfmt, see below)
 bun run fmt:rust:check           # verify without writing (what CI enforces)
-cargo clippy --workspace --all-targets -- -D warnings  # CI, part 1: every crate, tests included
-cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings  # CI, part 2
+cargo +1.91.1 clippy --workspace --all-targets -- -D warnings
+cargo +1.91.1 clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
+cargo +1.91.1 clippy -p velocity --all-targets --no-default-features --features no-entrypoint,isolated-position,vlp-hedge -- -D warnings
+cargo +1.91.1 clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests -- -D warnings
 cd packages/sdk/ && bun run prettify:fix  # SDK (TypeScript)
 ```
 
-Clippy runs with `-D warnings`, so a new warning fails the PR, including warnings in tests. The
-second run covers the anchor-test flavor that `bun run program:build` compiles, because code behind
-`#[cfg(feature = "mainnet-beta")]` and `#[cfg(feature = "anchor-test")]` differs between the two
-builds. A variable used only inside a `mainnet-beta` block belongs inside that block, or the other
-flavor warns that it is unused.
+These are the commands CI runs. Clippy runs with `-D warnings`, so a new warning fails the PR,
+including warnings in tests. The first three cover the program workspace in each velocity flavor
+`build-sbf.sh` builds: mainnet (the default features), the anchor-test flavor that
+`bun run program:build` compiles, and devnet. Code behind `#[cfg(feature = "mainnet-beta")]` and
+`#[cfg(feature = "anchor-test")]` differs between them. A variable used only inside a `mainnet-beta`
+block belongs inside that block, or another flavor warns that it is unused. The last command covers
+the `rust/` workspace with the live tests compiled in.
+
+Run clippy on the toolchain CI pins (`RUST_TOOLCHAIN` in `.github/workflows/main.yml`, currently
+1.91.1). Each Rust release adds lints, so a newer toolchain can report warnings that CI does not.
 
 Lint settings shared by every program crate live in `[workspace.lints]` in the root `Cargo.toml`,
-which each program inherits with `[lints] workspace = true`. Velocity also denies
-`clippy::wildcard_enum_match_arm` in `lib.rs`. Fix a warning rather than allowing it. Where an allow
-is the right call, put it on the narrowest item and say why in a comment.
+which each program inherits with `[lints] workspace = true`. The `rust/` workspace has its own
+block in `rust/Cargo.toml`. Each crate with an Anchor `#[program]` module allows
+`clippy::diverging_sub_expression` in its `lib.rs`, for the type check the macro generates.
+Velocity also denies `clippy::wildcard_enum_match_arm`. Fix a warning rather than allowing it.
+Where an allow is the right call, put it on the narrowest item and say why in a comment.
 
 Rust formatting requires nightly rustfmt. `rustfmt.toml` sets `imports_granularity = "One"` and
 `group_imports = "One"`, which merge all `use` items in a module into a single `use { ... }` block.

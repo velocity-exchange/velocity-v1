@@ -186,8 +186,8 @@ impl ProgramData {
         lookup_tables: Vec<AddressLookupTableAccount>,
         state: State,
     ) -> Self {
-        spot.sort_by(|a, b| a.market_index.cmp(&b.market_index));
-        perp.sort_by(|a, b| a.market_index.cmp(&b.market_index));
+        spot.sort_by_key(|a| a.market_index);
+        perp.sort_by_key(|a| a.market_index);
         // other code relies on aligned indexes for fast lookups
         assert!(
             spot.iter()

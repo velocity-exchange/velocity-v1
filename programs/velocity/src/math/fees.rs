@@ -544,7 +544,6 @@ fn determine_perp_fee_tier(
 
     let mut fee_tier_index = VOLUME_THRESHOLDS
         .iter()
-        .take(PERP_FEE_TIER_MAX_INDEX)
         .position(|threshold| total_30d_volume < *threshold)
         .unwrap_or(PERP_FEE_TIER_MAX_INDEX);
 

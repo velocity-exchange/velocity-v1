@@ -253,6 +253,10 @@ where
         self.marketmap.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.marketmap.is_empty()
+    }
+
     pub fn contains(&self, market_index: &u16) -> bool {
         self.marketmap.contains_key(market_index)
     }
@@ -391,7 +395,7 @@ pub async fn get_market_accounts_with_fallback<T: Market + Pod + Discriminator>(
                     target: LOG_TARGET,
                     "failed to fetch market accounts: {err:?}"
                 );
-                return Err(err)?;
+                Err(err)?;
             }
         }
     }
@@ -415,7 +419,7 @@ pub async fn get_market_accounts_with_fallback<T: Market + Pod + Discriminator>(
             }
             Err(err) => {
                 log::warn!("failed to fetch market account: {err:?}");
-                return Err(err)?;
+                Err(err)?;
             }
         }
     }
@@ -472,13 +476,13 @@ mod tests {
             get_market_accounts_with_fallback::<PerpMarket>(&RpcClient::new(devnet_endpoint()))
                 .await;
 
-        assert!(result.is_ok_and(|r| r.0.len() > 0 && r.1 > 0));
+        assert!(result.is_ok_and(|r| !r.0.is_empty() && r.1 > 0));
 
         let result =
             get_market_accounts_with_fallback::<SpotMarket>(&RpcClient::new(devnet_endpoint()))
                 .await;
 
-        assert!(result.is_ok_and(|r| r.0.len() > 0 && r.1 > 0));
+        assert!(result.is_ok_and(|r| !r.0.is_empty() && r.1 > 0));
     }
 }
 

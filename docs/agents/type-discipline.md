@@ -51,7 +51,8 @@ document requires you to find or introduce across the repo.
   Two typed accounts can refer to the same account. Sequential mutable borrows do not prove
   distinctness after the first borrow ends.
 - Match enums exhaustively. Group explicit variants when they share behavior. The crate denies
-  `clippy::wildcard_enum_match_arm`, so a `_` arm on an enum fails the build. A fallback that
+  `clippy::wildcard_enum_match_arm`, so a `_` arm on an enum fails clippy and CI. `cargo build`,
+  `cargo test` and `bun run program:build` still accept one, so run clippy. A fallback that
   rejects unknown raw bytes at a parser boundary matches on the integer, not the enum, and is
   fine. Preserve persisted enum discriminants and error codes.
 - Use an enum for mutually exclusive lifecycle states or flags that permit invalid combinations.

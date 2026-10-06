@@ -29,11 +29,6 @@ unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(feature, values("anchor-debug", "custom-heap", "custom-panic", "no-log-ix-name"))',
 ] }
 
-# Anchor's `#[program]` emits a `let _: T = panic!()` type check per instruction argument at the
-# crate root, outside any item a crate can annotate.
-[workspace.lints.clippy]
-diverging_sub_expression = "allow"
-
 [profile.release]
 lto = "fat"
 codegen-units = 1

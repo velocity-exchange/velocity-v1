@@ -1455,7 +1455,7 @@ impl L3Book {
     /// - `count`: Maximum number of bids to return
     /// - `oracle_price`: Current oracle price for floating order price adjustments
     /// - `perp_market`: Used to calculate VAMM fallback price of market/oracle (taker) auctions.
-    ///    use `None` if only interested in maker orders
+    ///   use `None` if only interested in maker orders
     /// - `trigger_price`: Optional trigger price for calculating post-trigger prices of trigger orders.
     ///
     /// # Returns
@@ -1476,11 +1476,11 @@ impl L3Book {
     /// # Parameters
     /// - `oracle_price`: oracle price for floating order price calculations
     /// - `perp_market`: Used to calculate VAMM fallback price of market/oracle (taker) auctions. i.e finished their
-    ///  auction period and did not specify a custom limit price
+    ///   auction period and did not specify a custom limit price
     /// - `trigger_price`: Optional trigger price for calculating post-trigger prices of trigger orders.
-    ///  If provided, trigger orders will be included, sorted by their post-trigger price, and
-    ///  yielded with `price` set to that post-trigger price (the price the program fills at
-    ///  once the trigger lands).
+    ///   If provided, trigger orders will be included, sorted by their post-trigger price, and
+    ///   yielded with `price` set to that post-trigger price (the price the program fills at
+    ///   once the trigger lands).
     ///
     /// # Returns
     /// Returns an iterator over the asks
@@ -1917,17 +1917,18 @@ impl L3Book {
         }
 
         // Sort bids in descending order (highest first)
-        self.bids.sort_by(|a, b| b.price.cmp(&a.price));
+        self.bids.sort_by_key(|a| std::cmp::Reverse(a.price));
         // Sort asks in ascending order (lowest first)
-        self.asks.sort_by(|a, b| a.price.cmp(&b.price));
+        self.asks.sort_by_key(|a| a.price);
         // sort by expiry time (smallest buffer from vamm price first)
-        self.vamm_bids.sort_by(|a, b| a.max_ts.cmp(&b.max_ts));
+        self.vamm_bids.sort_by_key(|a| a.max_ts);
         // sort by expiry time (smallest buffer from vamm price first)
-        self.vamm_asks.sort_by(|a, b| a.max_ts.cmp(&b.max_ts));
+        self.vamm_asks.sort_by_key(|a| a.max_ts);
         // Sort bids in descending order (highest first)
-        self.floating_bids.sort_by(|a, b| b.price.cmp(&a.price));
+        self.floating_bids
+            .sort_by_key(|a| std::cmp::Reverse(a.price));
         // Sort asks in ascending order (lowest first)
-        self.floating_asks.sort_by(|a, b| a.price.cmp(&b.price));
+        self.floating_asks.sort_by_key(|a| a.price);
     }
 }
 

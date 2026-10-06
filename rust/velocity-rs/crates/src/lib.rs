@@ -15,7 +15,7 @@ use crate::{
     blockhash_subscriber::BlockhashSubscriber,
     constants::{
         derive_perp_market_account, derive_revenue_share_escrow, derive_spot_market_account,
-        state_account, MarketExt, ProgramData, DEFAULT_PUBKEY, PYTH_LAZER_STORAGE_ACCOUNT_KEY,
+        state_account, MarketExt, ProgramData, PYTH_LAZER_STORAGE_ACCOUNT_KEY,
         SYSVAR_INSTRUCTIONS_PUBKEY, SYSVAR_RENT_PUBKEY,
     },
     grpc::grpc_subscriber::{AccountFilter, GeyserSubscribeOpts, VelocityGrpcClient},
@@ -3428,7 +3428,7 @@ impl<'a> TransactionBuilder<'a> {
                 ix.program_id != TOKEN_PROGRAM_ID
                     && ix.program_id != TOKEN_2022_PROGRAM_ID
                     && ix.program_id != ASSOCIATED_TOKEN_PROGRAM_ID
-                    && ix.program_id != DEFAULT_PUBKEY
+                    && ix.program_id != constants::DEFAULT_PUBKEY
             })
             .collect();
 

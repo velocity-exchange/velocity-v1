@@ -14,6 +14,9 @@ pub use quoter_spec::{
     L3_ROW_FLAG_BLOCKS_WALK, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN, USER_CAPS_BYTES,
     USER_CAPS_CAPACITY, USER_SET_CAPACITY,
 };
+// Only the host build CPIs through the SDK. The SBF build calls the syscall directly.
+#[cfg(not(target_os = "solana"))]
+use solana_program::program::invoke_signed;
 use {
     super::{get_quoter_slab_signer_seeds, AmmAccountMeta, QuoterSlabV0, QuoterSlotV0, QuoterType},
     crate::{
@@ -28,7 +31,7 @@ use {
     quoter_spec::{wincode::SchemaWrite, ArgsConfig},
     solana_program::{
         instruction::{AccountMeta, Instruction},
-        program::{get_return_data, invoke_signed},
+        program::get_return_data,
     },
 };
 

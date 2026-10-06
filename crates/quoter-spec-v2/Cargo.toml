@@ -3,6 +3,7 @@ name = "quoter-spec-v2"
 description = "quoter-spec wire types compiled against the velocity anchor v2 fork, for the CLOB/midpoint IDL. Same source as quoter-spec (via include!), one anchor per crate so v1 and v2 never collide."
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 [dependencies]
 solana-address.workspace = true
 wincode.workspace = true

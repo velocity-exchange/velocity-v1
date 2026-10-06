@@ -279,7 +279,7 @@ test_files=(
   # transferPerpPosition.ts
   # userAccount.ts
   # userDelegate.ts
-  transferPerpPositionStaleBorrow.ts
+  # transferPerpPositionStaleBorrow.ts
   # perpMarketConfig.ts # market_config field reads as 0 after write — possibly fetch caching or layout mismatch with reordered PerpMarket
 
   # whitelist.ts

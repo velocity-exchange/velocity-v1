@@ -24,6 +24,7 @@ describe('VelocityCore trigger builders', () => {
 		};
 
 		const clobMarket = pk();
+		const triggerConditions = pk();
 		const ix = await VelocityCore.buildTriggerMarketOrderV1Instruction({
 			program,
 			marketIndex: 3,
@@ -37,6 +38,7 @@ describe('VelocityCore trigger builders', () => {
 			quoterSlab: pk(),
 			clobMarket,
 			clobProgram: pk(),
+			triggerConditions,
 			remainingAccounts: [],
 		});
 
@@ -53,7 +55,8 @@ describe('VelocityCore trigger builders', () => {
 		expect(accounts.clobMarket).toBe(clobMarket);
 		// An omitted optional account encodes as the program id (anchor's `None`).
 		expect(accounts.crankConditions).toBe(programId);
-		expect(accounts.triggerConditions).toBe(programId);
+		expect(accounts.solSpotMarket).toBe(programId);
+		expect(accounts.triggerConditions).toBe(triggerConditions);
 	});
 
 	test('buildSyncTriggerConditionsInstruction names every IDL account', async () => {

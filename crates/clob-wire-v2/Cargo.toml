@@ -3,6 +3,7 @@ name = "clob-wire-v2"
 description = "clob-wire compiled against anchor v2 (fork) for the CLOB IDL. Shared source with clob-wire via include!; one anchor per crate."
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 [dependencies]
 quoter-spec = { package = "quoter-spec-v2", path = "../quoter-spec-v2" }
 solana-address.workspace = true

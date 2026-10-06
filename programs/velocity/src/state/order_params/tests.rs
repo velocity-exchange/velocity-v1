@@ -1503,13 +1503,15 @@ mod update_perp_auction_params {
         // test sanitize laxing on stale/mismatched mark/oracle twap timestamps
 
         // not too late, should be the same
-        market_stats
+        let mut lagging_market = perp_market;
+        lagging_market
+            .market_stats
             .historical_oracle_data
             .last_oracle_price_twap_ts = 17000000;
-        market_stats.last_mark_price_twap_ts = 17000000 - 55;
+        lagging_market.market_stats.last_mark_price_twap_ts = 17000000 - 55;
         let mut order_params_after_2 = order_params_before;
         order_params_after_2
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(&lagging_market, oracle_price, false)
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1524,36 +1526,43 @@ mod update_perp_auction_params {
             order_params_after_2.auction_duration.unwrap()
         );
 
+        // A speculative market whose twaps can't be trusted starts from 1% of the bid twap instead
+        // (`get_perp_baseline_start_price_offset`), minus the same 25 bps buffer.
+        let uncertain_start_price =
+            perp_market.market_stats.last_bid_price_twap as i64 / 100 - oracle_price / 400;
+
         // test sanitize skip on stale/mismatched mark/oracle twap timestamps
-        market_stats
+        let mut stale_market = perp_market;
+        stale_market
+            .market_stats
             .historical_oracle_data
             .last_oracle_price_twap_ts = 17000000;
-        market_stats.last_mark_price_twap_ts = 17000000 - 65;
+        stale_market.market_stats.last_mark_price_twap_ts = 17000000 - 65;
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(&stale_market, oracle_price, false)
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
-            17238 - oracle_price / 400
+            uncertain_start_price
         );
         assert_eq!(order_params_after.auction_end_price.unwrap(), 1207026);
 
         // test sanitize skip on low volume
-        market_stats
+        let mut quiet_market = perp_market;
+        quiet_market
+            .market_stats
             .historical_oracle_data
             .last_oracle_price_twap_ts = 17000000;
-        market_stats.last_mark_price_twap_ts = market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_ts;
-        market_stats.volume_24h = 183953; // under $1
+        quiet_market.market_stats.last_mark_price_twap_ts = 17000000;
+        quiet_market.market_stats.volume_24h = 183953; // under $1
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(&quiet_market, oracle_price, false)
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
-            17238 - oracle_price / 400
+            uncertain_start_price
         );
         assert_eq!(order_params_after.auction_end_price.unwrap(), 1207026);
 

@@ -110,8 +110,14 @@ cd packages/sdk/ && bun run test:ci      # CI subset
 ```bash
 bun run fmt:rust                 # all Rust in the repo (wraps nightly rustfmt, see below)
 bun run fmt:rust:check           # verify without writing (what CI enforces)
+cargo clippy -p velocity -- -D warnings  # what CI enforces; any warning fails
 cd packages/sdk/ && bun run prettify:fix  # SDK (TypeScript)
 ```
+
+Clippy runs with `-D warnings`, so a new warning fails the PR. The crate also denies
+`clippy::wildcard_enum_match_arm` in `lib.rs`. Fix a warning rather than allowing it. Where an allow
+is the right call, put it on the narrowest item and say why in a comment, as `lib.rs` does for
+Anchor's generated code.
 
 Rust formatting requires nightly rustfmt. `rustfmt.toml` sets `imports_granularity = "One"` and
 `group_imports = "One"`, which merge all `use` items in a module into a single `use { ... }` block.

@@ -219,7 +219,7 @@ accounts, and the feature flags.
 CI fails the PR unless these are clean. Run them before you call the work done.
 
 - Rust: `bun run fmt:rust` (nightly rustfmt, see [`docs/agents/testing.md`](./docs/agents/testing.md))
-  and `cargo clippy -p velocity`.
+  and `cargo clippy -p velocity -- -D warnings`. Any clippy warning fails CI.
 - SDK: `cd packages/sdk/ && bun run prettify && bun run lint`.
 - When you touch a feature-gated subsystem, check both flavors as described in `build.md`.
 

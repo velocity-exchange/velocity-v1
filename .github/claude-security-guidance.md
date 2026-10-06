@@ -5,7 +5,7 @@ false-positive filtering instructions. It records the intentional patterns in th
 codebase that a generic security model tends to flag by mistake. Treat them as expected and
 do not report them, unless the change clearly violates the invariant described here.
 
-For deeper context, read `CLAUDE.md`, `ARCHITECTURE.md` and
+For deeper context, read `AGENTS.md`, `ARCHITECTURE.md` and
 `docs/alignment-and-native-offsets.md`.
 
 ## Intentional patterns, do not flag

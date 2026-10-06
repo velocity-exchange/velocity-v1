@@ -287,7 +287,7 @@ step prints the last 30 lines of what it produced. Add `--verbose` to stream the
 
 ## Runbook
 
-1. Build both programs, using an x86_64 toolchain as described in the root `CLAUDE.md`.
+1. Build both programs, using an x86_64 toolchain as described in `docs/agents/build.md`.
 
    ```
    bash deploy-scripts/build-devnet.sh

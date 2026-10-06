@@ -27,7 +27,8 @@ apps/*/dist
 !.vscode/settings.json
 .zed/*
 !.zed/settings.json
-.claude
+.claude/*
+!.claude/skills/
 migrations
 /**/*.env
 vendor

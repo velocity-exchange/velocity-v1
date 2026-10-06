@@ -838,7 +838,7 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: 'thin'
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
         # Clean any restored SBF artifacts first — building incrementally on top
-        # of them can emit a .so with wrong offsets (see CLAUDE.md). The program
+        # of them can emit a .so with wrong offsets (see docs/agents/build.md). The program
         # cache reuses the *final* .so on a hit; on a miss we always build fresh.
         run: |
           rm -rf target/sbpf*-solana-solana target/deploy

@@ -9,20 +9,31 @@
  *   bun run local:trader [--name <trader>] rest <market> <bid|ask> <price> <size>
  *       [--cross] [--reduce-only] [--expire-secs <s>] [--count <n> --step <price>]
  *   bun run local:trader [--name <trader>] take <market> <buy|sell> <size> [--worst <price>]
+ *   bun run local:trader [--name <trader>] swift <market> <buy|sell> <size> --worst <price>
  *   bun run local:trader [--name <trader>] cancel <market> [orderId]
  *
  * A market is a symbol such as SOL-PERP or its index. Prices are in USD and sizes in base units.
  * `rest` is post-only unless `--cross` is passed, and `--cross` rests through the other side the
- * way a cross match needs. `--count` rests a ladder that steps away from the touch. `cancel`
+ * way a cross match needs. `--count` rests a ladder that steps away from the touch. `swift` signs
+ * a market order with the market's PropAMM route and sends it to swift, which attests and places
+ * it. It prints the placement's signature once the order fills or rests. `cancel`
  * without an order id cancels the trader's every order on the market. The default trader is `b`.
  * Its key lives in /state/keys/trader-<name>.json, and its first command funds it and opens its
  * account with 10000 dUSDT, or with `--deposit <dUSDT>` on that first command.
  */
 import { BN } from '@coral-xyz/anchor';
-import { Connection, Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import {
+	Connection,
+	Keypair,
+	LAMPORTS_PER_SOL,
+	PublicKey,
+} from '@solana/web3.js';
 import {
 	BASE_PRECISION_EXP,
 	CancelSidesV0,
+	generateSignedMsgUuid,
+	getMarketOrderParams,
+	getOrderParams,
 	OrderType,
 	PositionDirection,
 	PostOnlyParams,
@@ -41,6 +52,10 @@ import {
 	RPC_URL,
 	userAccountPublicKey,
 } from './tools';
+
+const SWIFT_URL = process.env.SWIFT_URL ?? 'http://swift:3003';
+const SWIFT_PLACEMENT_TIMEOUT_MS = 30_000;
+const SWIFT_POLL_MS = 500;
 
 const INITIAL_DEPOSIT_DUSDT = '10000';
 const CANCEL_ALL_MAX_CALLS = 10;
@@ -250,6 +265,98 @@ async function take(
 	console.log(`took ${side} ${size}: ${signature}`);
 }
 
+/** Waits for the swift placement on `user` that `before` did not list, and returns its signature. */
+async function nextPlacement(
+	connection: Connection,
+	user: PublicKey,
+	before: Set<string>
+): Promise<string> {
+	const deadline = Date.now() + SWIFT_PLACEMENT_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		const fresh = (
+			await connection.getSignaturesForAddress(user, { limit: 10 })
+		).filter((s) => !before.has(s.signature) && !s.err);
+		for (const { signature } of fresh) {
+			before.add(signature);
+			const tx = await connection.getTransaction(signature, {
+				commitment: 'confirmed',
+				maxSupportedTransactionVersion: 1,
+			});
+			const logs = tx?.meta?.logMessages ?? [];
+			if (logs.some((log) => log.includes('PlaceSignedMsgTakerOrder'))) {
+				return signature;
+			}
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, SWIFT_POLL_MS));
+	}
+
+	throw new Error(`no placement landed in ${SWIFT_PLACEMENT_TIMEOUT_MS} ms`);
+}
+
+async function swift(
+	session: Session,
+	[market, side, size]: string[],
+	flags: Flags
+): Promise<void> {
+	const worst = stringFlag(flags, 'worst');
+	if (!market || !['buy', 'sell'].includes(side) || !size || !worst) {
+		throw new Error('swift <market> <buy|sell> <size> --worst <price>');
+	}
+
+	const { client, trader } = session;
+	const marketIndex = perpMarketIndex(market);
+	const user = userAccountPublicKey(client, trader.publicKey);
+	const [slot, route, earlier] = await Promise.all([
+		client.connection.getSlot('confirmed'),
+		client.getCustomQuoterRoute(marketIndex),
+		client.connection.getSignaturesForAddress(user, { limit: 10 }),
+	]);
+
+	const { orderParams, signature } = client.signSignedMsgOrderParamsMessage({
+		signedMsgOrderParams: getOrderParams(
+			getMarketOrderParams({
+				marketIndex,
+				direction:
+					side === 'buy' ? PositionDirection.LONG : PositionDirection.SHORT,
+				baseAssetAmount: parseDecimal(size, BASE_DECIMALS),
+				price: parseDecimal(worst, PRICE_DECIMALS),
+			})
+		),
+		subAccountId: 0,
+		slot: new BN(slot),
+		uuid: generateSignedMsgUuid(),
+		takeProfitOrderParams: null,
+		stopLossOrderParams: null,
+		route: route.length ? route : null,
+	});
+
+	const response = await fetch(`${SWIFT_URL}/orders`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({
+			market_index: marketIndex,
+			market_type: 'perp',
+			message: orderParams.toString(),
+			signature: Buffer.from(signature).toString('base64'),
+			signing_authority: trader.publicKey.toBase58(),
+			taker_authority: trader.publicKey.toBase58(),
+		}),
+	});
+	if (!response.ok) {
+		throw new Error(`swift refused the order: ${await response.text()}`);
+	}
+
+	const placed = await nextPlacement(
+		client.connection,
+		user,
+		new Set(earlier.map((s) => s.signature))
+	);
+	console.log(
+		`swift ${side} ${size} with ${route.length} PropAMM(s) routed: ${placed}`
+	);
+}
+
 async function cancel(
 	session: Session,
 	[market, orderId]: string[]
@@ -307,14 +414,18 @@ async function main() {
 		else if (command === 'orders') await orders(session, args[0]);
 		else if (command === 'rest') await rest(session, args, flags);
 		else if (command === 'take') await take(session, args, flags);
+		else if (command === 'swift') await swift(session, args, flags);
 		else if (command === 'cancel') await cancel(session, args);
-		else throw new Error('commands: account, orders, rest, take, cancel');
+		else
+			throw new Error('commands: account, orders, rest, take, swift, cancel');
 	} finally {
 		await session.client.unsubscribe();
 	}
 }
 
-main().catch((error) => {
-	console.error(error instanceof Error ? error.message : error);
-	process.exit(1);
-});
+main()
+	.then(() => process.exit(0))
+	.catch((error) => {
+		console.error(error instanceof Error ? error.message : error);
+		process.exit(1);
+	});

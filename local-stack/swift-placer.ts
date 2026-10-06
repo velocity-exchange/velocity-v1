@@ -1,9 +1,12 @@
 /**
  * The stack's swift keeper, in the shape of keep-rs `try_swift_place`. keep-rs needs gRPC.
  */
+import * as fs from 'fs';
 import { BN } from '@coral-xyz/anchor';
 import {
 	AccountMeta,
+	AddressLookupTableAccount,
+	AddressLookupTableProgram,
 	ComputeBudgetProgram,
 	Connection,
 	Keypair,
@@ -40,6 +43,9 @@ import {
 const SWIFT_URL = process.env.SWIFT_URL ?? 'http://swift:3003';
 const SWIFT_WS_URL = process.env.SWIFT_WS_URL ?? 'ws://swift-ws:3004';
 const KEY_PATH = '/state/keys/swift-placer.json';
+const LOOKUP_TABLE_PATH = '/state/keys/swift-placer-lookup-table.json';
+const LOOKUP_TABLE_EXTEND_BATCH = 20;
+const LOOKUP_TABLE_POLL_MS = 400;
 const FILLER_DEPOSIT_DUSDT = '100';
 const MAKERS_PER_PLACEMENT = 4;
 const ATTEST_ATTEMPTS = 8;
@@ -272,6 +278,121 @@ async function place(client: VelocityClient, order: SwiftOrder): Promise<void> {
 	}
 }
 
+/**
+ * The placer's address lookup table. A placement that routes to two PropAMMs names more accounts
+ * than a transaction holds, so every placement compiles against this table. The placer adds each
+ * account it has not seen to the table before the placement that needs it.
+ */
+let lookupTable: AddressLookupTableAccount | undefined;
+
+async function sendWithoutTable(
+	client: VelocityClient,
+	instruction: TransactionInstruction
+): Promise<void> {
+	const { blockhash } = await client.connection.getLatestBlockhash();
+	const payer = (client.wallet as unknown as { payer: Keypair }).payer;
+	const tx = new VersionedTransaction(
+		new TransactionMessage({
+			payerKey: payer.publicKey,
+			recentBlockhash: blockhash,
+			instructions: [instruction],
+		}).compileToV0Message()
+	);
+	tx.sign([payer]);
+	const signature = await client.connection.sendRawTransaction(tx.serialize());
+	await client.connection.confirmTransaction(signature, 'confirmed');
+}
+
+/** Fetches the table until it lists `count` addresses and a later slot than its last extension. */
+async function awaitLookupTable(
+	client: VelocityClient,
+	address: PublicKey,
+	count: number
+): Promise<AddressLookupTableAccount> {
+	for (;;) {
+		const [table, slot] = await Promise.all([
+			client.connection.getAddressLookupTable(address),
+			client.connection.getSlot('confirmed'),
+		]);
+		const value = table.value;
+		if (
+			value &&
+			value.state.addresses.length >= count &&
+			slot > Number(value.state.lastExtendedSlot)
+		) {
+			return value;
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, LOOKUP_TABLE_POLL_MS));
+	}
+}
+
+async function openLookupTable(
+	client: VelocityClient
+): Promise<AddressLookupTableAccount> {
+	if (fs.existsSync(LOOKUP_TABLE_PATH)) {
+		const address = new PublicKey(
+			JSON.parse(fs.readFileSync(LOOKUP_TABLE_PATH, 'utf-8'))
+		);
+		return awaitLookupTable(client, address, 0);
+	}
+
+	const authority = client.wallet.publicKey;
+	const [create, address] = AddressLookupTableProgram.createLookupTable({
+		authority,
+		payer: authority,
+		recentSlot: await client.connection.getSlot('finalized'),
+	});
+	await sendWithoutTable(client, create);
+	fs.writeFileSync(LOOKUP_TABLE_PATH, JSON.stringify(address.toBase58()));
+	console.log(`placer lookup table ${address.toBase58()} created`);
+	return awaitLookupTable(client, address, 0);
+}
+
+/** Adds every account of `instructions` the table lacks, except the signer, and returns the table. */
+async function lookupTableFor(
+	client: VelocityClient,
+	instructions: TransactionInstruction[]
+): Promise<AddressLookupTableAccount> {
+	lookupTable ??= await openLookupTable(client);
+	const known = new Set(
+		lookupTable.state.addresses.map((key) => key.toBase58())
+	);
+	const missing = [
+		...new Set(
+			instructions.flatMap((ix) => [
+				ix.programId.toBase58(),
+				...ix.keys
+					.filter((meta) => !meta.isSigner)
+					.map((meta) => meta.pubkey.toBase58()),
+			])
+		),
+	].filter((key) => !known.has(key));
+	if (missing.length === 0) return lookupTable;
+
+	const authority = client.wallet.publicKey;
+	for (let at = 0; at < missing.length; at += LOOKUP_TABLE_EXTEND_BATCH) {
+		await sendWithoutTable(
+			client,
+			AddressLookupTableProgram.extendLookupTable({
+				lookupTable: lookupTable.key,
+				authority,
+				payer: authority,
+				addresses: missing
+					.slice(at, at + LOOKUP_TABLE_EXTEND_BATCH)
+					.map((key) => new PublicKey(key)),
+			})
+		);
+	}
+
+	lookupTable = await awaitLookupTable(
+		client,
+		lookupTable.key,
+		known.size + missing.length
+	);
+	return lookupTable;
+}
+
 /** Sends a v0 transaction and prints its logs when it fails. */
 async function send(
 	client: VelocityClient,
@@ -283,11 +404,20 @@ async function send(
 			payerKey: client.wallet.publicKey,
 			recentBlockhash: blockhash,
 			instructions,
-		}).compileToV0Message()
+		}).compileToV0Message([await lookupTableFor(client, instructions)])
 	);
-	tx.sign([(client.wallet as unknown as { payer: Keypair }).payer]);
+	try {
+		tx.sign([(client.wallet as unknown as { payer: Keypair }).payer]);
+	} catch (err) {
+		const keys = tx.message.staticAccountKeys.length;
+		const data = instructions.reduce((sum, ix) => sum + ix.data.length, 0);
+		throw new Error(
+			`a placement of ${keys} accounts and ${data} data bytes does not fit a transaction: ${err}`
+		);
+	}
 
-	const signature = await client.connection.sendRawTransaction(tx.serialize());
+	const wire = tx.serialize();
+	const signature = await client.connection.sendRawTransaction(wire);
 	const result = await client.connection.confirmTransaction(
 		signature,
 		'confirmed'

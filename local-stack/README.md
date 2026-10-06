@@ -58,6 +58,7 @@ its account. `--name` picks another trader:
 bun run local:trader -- rest SOL-PERP ask 130 0.5 --count 3 --step 1
 bun run local:trader -- orders SOL-PERP
 bun run local:trader -- take SOL-PERP buy 0.1 --worst 130
+bun run local:trader -- swift SOL-PERP buy 0.1 --worst 130
 bun run local:trader -- cancel SOL-PERP
 ```
 
@@ -67,6 +68,51 @@ command and flag.
 Every book runs a one-slot speed bump, as `migrate.ts` creates it. A take that carries no swift
 attestation therefore does not fill in its own transaction. It rests whole as a taker-origin order,
 and the relay's cross cranks fill it. A swift order carries an attestation, so it can fill in the transaction that `swift-placer` sends.
+
+## Fill scenarios
+
+`local:scenario` checks how a buy on SOL-PERP splits across the PropAMMs, the book and the vAMM.
+Each scenario arranges the market, buys as trader b, and decodes every fill leg. The check fails
+when a source fills other than the scenario expects, when a source fills at another cost than its
+published L2 depth, or when a source fills above a price where another source left depth.
+
+```bash
+bun run local:scenario list
+bun run local:scenario run three-way                 # swift, with the market's PropAMM route
+bun run local:scenario run three-way --path onchain  # rests behind the speed bump, relay crosses it
+```
+
+| Scenario       | Arrangement                                                     | Expected fill                          |
+| -------------- | --------------------------------------------------------------- | -------------------------------------- |
+| `rung-walk`    | Midpoint `a` at the oracle. The vAMM quotes far above.          | 1.5 from `a`, across both of its rungs |
+| `partial-rest` | Midpoint `a` at the oracle. The vAMM is paused.                 | 2 from `a`, and 0.5 rests on the book  |
+| `three-way`    | Midpoint `a` and a book ask from trader c, both near the vAMM   | `a`, 0.5 from the book, and the vAMM   |
+| `two-propamms` | Midpoint `b` 20 bps above `a`                                   | 2 from `a`, then 0.5 from `b`          |
+| `propamm-tie`  | Midpoints `a` and `b` at the same mid                           | 1.25 from each, pro rata               |
+
+Run each scenario on both paths after a change to the router, the quoter slab, the swift placement
+or the taker-origin cross. `arrange <name>` sets the market up without buying, and
+`verify <name> --authority <wallet>` checks an order that another client placed after the arrange.
+The webapp's `propamm-local` Playwright project uses the two to record each scenario through the
+trade form:
+
+```bash
+cd ~/source/protocol-v2-mono-wt/local-dev/e2e-test
+TEST_LOCAL_STACK=true BASE_URL=http://localhost:3001 SWIFT_SERVER_URL=http://localhost:3003 \
+  VELOCITY_V1_PATH=~/source/velocity-v1 PW_BROWSER_CHANNEL=chrome bun run propamm:local
+```
+
+The videos land in `e2e-test/test-results/*/video.webm`. Playwright's own ffmpeg is unsigned on
+Apple Silicon, and macOS kills it. Link a Homebrew ffmpeg into its place once:
+
+```bash
+ln -sf /opt/homebrew/bin/ffmpeg ~/Library/Caches/ms-playwright/ffmpeg-1010/ffmpeg-mac
+```
+
+A midpoint instance that a scenario leaves out quotes 10% above the oracle, so it stays approved
+but fills nothing. `swift-placer` compiles every placement against its own address lookup table
+and extends the table with any account that a placement adds. A placement routed to two PropAMMs
+names more accounts than a transaction holds without one.
 
 ## What runs
 

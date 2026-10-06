@@ -3,16 +3,17 @@
  *
  * A PropAMM on SOL-PERP, so a test can cross the book against a quoter that is not a CLOB:
  *
- *   bun run local:midpoint up [mid]
- *   bun run local:midpoint mid <price>
+ *   bun run local:midpoint up [mid] [--name <instance>]
+ *   bun run local:midpoint mid <price> [--name <instance>]
  *
  * `up` funds the maker and opens its account, creates the midpoint instance, quotes two rungs a
  * side around `mid`, registers the instance as a Custom quoter entry, and approves the entry. It
  * skips what already exists, so it runs again safely. `mid` defaults to the oracle price.
  *
  * `mid` re-quotes around a new price. The instance stops quoting once its mid is 1000 slots old,
- * about seven minutes, so a test refreshes it before it relies on the quote. The keys live in
- * /state/keys/midpoint-*.json.
+ * about seven minutes, so a test refreshes it before it relies on the quote. `--name` picks
+ * another instance with its own maker, so two PropAMMs can quote one market. The default instance
+ * keeps its keys in /state/keys/midpoint-*.json, and instance `x` in /state/keys/midpoint-x-*.json.
  */
 import * as fs from 'fs';
 import { createHash } from 'crypto';
@@ -85,11 +86,17 @@ async function send(
 	);
 }
 
-function keys() {
+const DEFAULT_INSTANCE = 'a';
+
+function keys(name: string) {
+	const prefix =
+		name === DEFAULT_INSTANCE
+			? '/state/keys/midpoint'
+			: `/state/keys/midpoint-${name}`;
 	return {
-		maker: loadKey('/state/keys/midpoint-maker.json'),
-		config: loadKey('/state/keys/midpoint-config.json'),
-		hot: loadKey('/state/keys/midpoint-hot.json'),
+		maker: loadKey(`${prefix}-maker.json`),
+		config: loadKey(`${prefix}-config.json`),
+		hot: loadKey(`${prefix}-hot.json`),
 		authority: loadKey(AUTHORITY_PATH),
 	};
 }
@@ -248,8 +255,13 @@ async function registerEntry(
 	console.log('quoter entry approved');
 }
 
-async function up(connection: Connection, program: Program, midArg?: string) {
-	const stackKeys = keys();
+async function up(
+	connection: Connection,
+	program: Program,
+	name: string,
+	midArg?: string
+) {
+	const stackKeys = keys(name);
 	const makerClient = await connectClient(connection, stackKeys.maker);
 	const makerUser = userAccountPublicKey(
 		makerClient,
@@ -283,15 +295,20 @@ async function up(connection: Connection, program: Program, midArg?: string) {
 }
 
 async function main() {
-	const [command, price] = process.argv.slice(2);
+	const argv = process.argv.slice(2);
+	const nameAt = argv.indexOf('--name');
+	const name = nameAt === -1 ? DEFAULT_INSTANCE : argv.splice(nameAt, 2)[1];
+	if (!name) throw new Error('--name needs a value');
+
+	const [command, price] = argv;
 	const connection = new Connection(RPC_URL, 'confirmed');
-	const { maker, hot } = keys();
+	const { maker, hot } = keys(name);
 	const program = new Program(
 		MIDPOINT_IDL,
 		new AnchorProvider(connection, new Wallet(maker) as never, {})
 	);
 
-	if (command === 'up') await up(connection, program, price);
+	if (command === 'up') await up(connection, program, name, price);
 	else if (command === 'mid' && price)
 		await setLevels(
 			program,
@@ -300,10 +317,15 @@ async function main() {
 			hot,
 			parseDecimal(price, 6)
 		);
-	else throw new Error('commands: up [mid], mid <price>');
+	else
+		throw new Error(
+			'commands: up [mid], mid <price>, with [--name <instance>]'
+		);
 }
 
-main().catch((error) => {
-	console.error(error instanceof Error ? error.message : error);
-	process.exit(1);
-});
+main()
+	.then(() => process.exit(0))
+	.catch((error) => {
+		console.error(error instanceof Error ? error.message : error);
+		process.exit(1);
+	});

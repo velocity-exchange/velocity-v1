@@ -1109,8 +1109,10 @@ pub struct ResolveCrankCrossMatchQuoter<'info> {
 /// This CPIs the entry's registered `quote_v0`, the same interface every fill
 /// uses. Resolvers run only under simulation, so the CPI costs nothing. It then
 /// walks the CLOB's bytes against the returned levels in both directions and
-/// stages `crank_cross_match` for the profitable side. It works for any quoter
-/// program with a registry entry, and velocity carries no per-program code.
+/// stages `crank_cross_match` for the profitable side. A taker's remainder that
+/// the quote crosses goes first, through `crank_taker_origin_cross`. It works
+/// for any quoter program with a registry entry, and velocity carries no
+/// per-program code.
 pub fn handle_resolve_crank_cross_match_quoter<'info>(
     ctx: Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
 ) -> Result<()> {
@@ -1164,6 +1166,38 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             msg!("quoter slab holds no book slot");
             error!(ErrorCode::QuoterNotOnSlab)
         })?;
+
+        // A taker's remainder that this quote crosses goes first. The
+        // improvement belongs to the taker, so it fills through the taker's
+        // own crank rather than a cross the protocol middles.
+        let remainder = {
+            let conditions = ctx.accounts.cross_conditions.load()?;
+            super::crank_taker_origin_cross::stage_quoter_crossed_remainder(
+                super::crank_taker_origin_cross::QuoterCrossedRead {
+                    keys: super::crank_taker_origin_cross::TakerOriginKeys {
+                        market_index,
+                        state: ctx.accounts.state.key(),
+                        quoter_slab: ctx.accounts.quoter_slab.key(),
+                        clob_market: ctx.accounts.clob_market.key(),
+                        oracle: conditions.oracle,
+                        quote_oracle: conditions.quote_oracle,
+                        quote_spot_market_index: conditions.quote_spot_market_index,
+                    },
+                    state: &*ctx.accounts.state.load()?,
+                    quoter_slab: &ctx.accounts.quoter_slab,
+                    clob_accounts: &clob_accounts,
+                    quoter: super::crank_taker_origin_cross::QuoterTops {
+                        bid: quoter_bids.first().map(|level| level.price),
+                        ask: quoter_asks.first().map(|level| level.price),
+                    },
+                    quoter_user: maker_ref,
+                },
+                &mut cpi_scratch,
+            )?
+        };
+        if remainder.is_some() {
+            return Ok(remainder);
+        }
 
         // A `Custom` entry in the route stops the crank reporting protected
         // flow, so a book with a speed bump quotes that cross no depth and the

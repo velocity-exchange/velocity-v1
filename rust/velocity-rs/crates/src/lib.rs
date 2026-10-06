@@ -28,7 +28,7 @@ use crate::{
         commitment_config::CommitmentLevel,
         compute_budget::ComputeBudgetInstruction,
         instruction::{AccountMeta, Instruction},
-        message::{v0, Hash, Message, VersionedMessage},
+        message::{v0, v1, Hash, Message, VersionedMessage},
         signature::Signature,
     },
     swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
@@ -4401,6 +4401,24 @@ impl<'a> TransactionBuilder<'a> {
         }
     }
 
+    /// Build a v1 message. It holds 4096 bytes and 64 accounts with no lookup
+    /// table, which a placement that routes to several PropAMMs needs. A v1
+    /// message states its compute budget in its config, so the builder's
+    /// compute budget instructions move there.
+    pub fn build_v1(self) -> VersionedMessage {
+        let payer = self.fee_payer.unwrap_or(self.authority);
+        let config = v1_budget(&self.ixs);
+        let ixs: Vec<Instruction> = self
+            .ixs
+            .into_iter()
+            .filter(|ix| ix.program_id != solana_compute_budget_interface::id())
+            .collect();
+
+        let message = v1::Message::try_compile_with_config(&payer, &ixs, Hash::default(), config)
+            .expect("ok");
+        VersionedMessage::V1(message)
+    }
+
     pub fn program_data(&self) -> &ProgramData {
         self.program_data
     }
@@ -4528,6 +4546,53 @@ pub fn build_accounts<'a>(
 /// Whether `ix` is the compute budget program's `SetLoadedAccountsDataSizeLimit`.
 /// Matched by program id and discriminator byte rather than decoding, so an
 /// instruction built by hand matches the same as one from this builder.
+/// The v1 config for the compute budget instructions in `ixs`. A v1 field left
+/// out is zero rather than a default, and a transaction that requests zero
+/// compute units or zero loaded-accounts data cannot land, so every field is
+/// set. The priority fee is a total in lamports, where the instruction states a
+/// price in micro-lamports per compute unit.
+fn v1_budget(ixs: &[Instruction]) -> v1::TransactionConfig {
+    let mut unit_limit = MAX_COMPUTE_UNIT_LIMIT;
+    let mut unit_price = 0u64;
+    let mut loaded_accounts_data_size = crate::constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT;
+    let mut heap_size = None;
+    for ix in ixs
+        .iter()
+        .filter(|ix| ix.program_id == solana_compute_budget_interface::id())
+    {
+        let u32_arg = || {
+            ix.data
+                .get(1..5)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        };
+        match ix.data.first() {
+            Some(1) => heap_size = u32_arg(),
+            Some(2) => unit_limit = u32_arg().unwrap_or(unit_limit),
+            Some(3) => {
+                unit_price = ix
+                    .data
+                    .get(1..9)
+                    .map_or(0, |b| u64::from_le_bytes(b.try_into().unwrap()))
+            }
+            Some(4) => loaded_accounts_data_size = u32_arg().unwrap_or(loaded_accounts_data_size),
+            _ => {}
+        }
+    }
+
+    let priority_fee = (u128::from(unit_price) * u128::from(unit_limit)).div_ceil(1_000_000);
+    let config = v1::TransactionConfig::empty()
+        .with_compute_unit_limit(unit_limit)
+        .with_loaded_accounts_data_size_limit(loaded_accounts_data_size)
+        .with_priority_fee(u64::try_from(priority_fee).unwrap_or(u64::MAX));
+    match heap_size {
+        Some(size) => config.with_heap_size(size),
+        None => config,
+    }
+}
+
+/// The runtime's ceiling on one transaction's compute units.
+const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
+
 fn is_loaded_accounts_data_size_ix(ix: &Instruction) -> bool {
     ix.program_id == solana_compute_budget_interface::id() && ix.data.first() == Some(&4)
 }
@@ -4738,6 +4803,33 @@ mod tests {
 
     /// A book fill settles only against users the program loaded, so the
     /// placement carries each maker's `User` and `UserStats` as writable metas.
+    #[test]
+    fn v1_budget_moves_the_compute_budget_into_the_config() {
+        let config = super::v1_budget(&[
+            ComputeBudgetInstruction::set_compute_unit_limit(200_000),
+            ComputeBudgetInstruction::set_compute_unit_price(5_000),
+        ]);
+
+        assert_eq!(config.compute_unit_limit, Some(200_000));
+        assert_eq!(config.priority_fee, Some(1_000));
+        assert_eq!(
+            config.loaded_accounts_data_size_limit,
+            Some(crate::constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT)
+        );
+    }
+
+    #[test]
+    fn v1_budget_sets_every_field_when_the_builder_states_none() {
+        let config = super::v1_budget(&[]);
+
+        assert_eq!(
+            config.compute_unit_limit,
+            Some(super::MAX_COMPUTE_UNIT_LIMIT)
+        );
+        assert_eq!(config.priority_fee, Some(0));
+        assert!(config.loaded_accounts_data_size_limit.is_some());
+    }
+
     #[test]
     fn place_swift_order_carries_book_makers() {
         let program_data = ProgramData::new(

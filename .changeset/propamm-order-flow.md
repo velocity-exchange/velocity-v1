@@ -1021,7 +1021,9 @@ accounts on register, approve, set-active, set-config, set-accounts and set-watc
 `quoter set-approved` passes the entry's response account and the hash of the entry it reads, and
 `--config-hash <hex>` refuses to send when that hash differs from the reviewed one. `clob-market init`
 approves in a second transaction, after the entry exists. `quoter attach-cross --fallback-slots` takes a
-value other than 1500 only from the maker's authority.
+value other than 1500 only from the maker's authority. `quoter attach-cross` also registers the relay
+watch over the conditions, which a turner needs to wake them. `QUOTER_CROSS_BLOCK_OFFSET` is the offset
+that watch registers at.
 
 ## Vaults
 

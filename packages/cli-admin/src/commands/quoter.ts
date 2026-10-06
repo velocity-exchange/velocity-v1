@@ -7,7 +7,10 @@ import {
 	getQuoterCrossConditionsPublicKey,
 	getQuoterPublicKey,
 	getQuoterSlabPublicKey,
+	getRegisterWatchIxs,
+	QUOTER_CROSS_BLOCK_OFFSET,
 	QuoterType,
+	RELAY_WATCH_V0_LEN,
 } from '@velocity-exchange/sdk';
 import { parseEnable } from '../lib/args';
 import {
@@ -852,7 +855,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('attach-cross <quoter>')
 			.description(
-				"Create or re-price a Custom quoter's relay cross-discovery conditions. That per-entry account holds the resolver which prices the quoter through its registered quote_v0 surface and stages crank_cross_match. Permissionless, and the signer pays the rent. The entry must be active and approved, and the market's canonical CLOB must be attached."
+				"Create or re-price a Custom quoter's relay cross-discovery conditions, and register the relay watch turners find them by. That per-entry account holds the resolver which prices the quoter through its registered quote_v0 surface and stages crank_cross_match, or crank_taker_origin_cross for a taker remainder the quote crosses. Permissionless, and the signer pays the rent. The entry must be active and approved, and the market's canonical CLOB must be attached."
 			)
 			.option(
 				'--fallback-slots <n>',
@@ -909,9 +912,25 @@ export function registerQuoter(parent: Command): void {
 						},
 					}
 				);
-				const result = await sendOrPropose(provider, [ix], undefined, '');
+				const { watch, ixs: register } = await getRegisterWatchIxs({
+					payer: provider.wallet.publicKey,
+					target: crossConditions,
+					blockOffset: QUOTER_CROSS_BLOCK_OFFSET,
+					seed: `cross-${quoterKey.toBase58().slice(0, 26)}`,
+					rentLamports:
+						await provider.connection.getMinimumBalanceForRentExemption(
+							RELAY_WATCH_V0_LEN
+						),
+				});
+				const watched = !!(await provider.connection.getAccountInfo(watch));
+				const result = await sendOrPropose(
+					provider,
+					watched ? [ix] : [ix, ...register],
+					undefined,
+					''
+				);
 				reportDispatch(
-					`cross conditions ${crossConditions.toBase58()} attached for quoter ${quoterArg}`,
+					`cross conditions ${crossConditions.toBase58()} attached for quoter ${quoterArg}, relay watch ${watch.toBase58()}`,
 					result
 				);
 			} finally {

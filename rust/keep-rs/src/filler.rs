@@ -922,9 +922,12 @@ async fn try_swift_place(
         tx_builder = tx_builder.set_ix(last, place_ix);
     }
 
+    // A route to several PropAMMs names more accounts than a v0 message holds
+    // without a lookup table that knows every quoter's accounts. A v1 message
+    // holds 64 accounts and 4096 bytes.
     tx_worker_ref
         .send_tx(
-            tx_builder.build(),
+            tx_builder.build_v1(),
             TxIntent::SwiftPlace {
                 uuid: swift_order.order_uuid(),
                 market_index,
@@ -2003,6 +2006,19 @@ fn size_compute_limit(units: u64) -> u32 {
 /// is the one that was simulated, except for the number it asks for. This does
 /// nothing when the message carries no such instruction.
 fn set_compute_unit_limit(message: &mut VersionedMessage, units: u32) {
+    // A v1 message states its budget in its config, and its priority fee as a
+    // total in lamports. The fee scales with the limit, so the price per unit
+    // the builder asked for holds.
+    if let VersionedMessage::V1(v1) = message {
+        let old_units = v1.config.compute_unit_limit.unwrap_or(units).max(1);
+        v1.config.priority_fee = v1.config.priority_fee.map(|fee| {
+            let scaled = (u128::from(fee) * u128::from(units)).div_ceil(u128::from(old_units));
+            u64::try_from(scaled).unwrap_or(u64::MAX)
+        });
+        v1.config.compute_unit_limit = Some(units);
+        return;
+    }
+
     let compute_budget = compute_budget_id();
     let keys = message.static_account_keys().to_vec();
     let instructions = match message {
@@ -2059,6 +2075,28 @@ mod tests {
             ts: 0,
             bit_flags: 0,
         }
+    }
+
+    /// A v1 message keeps its price per compute unit when the limit is resized.
+    #[test]
+    fn a_v1_resize_scales_the_priority_fee_with_the_limit() {
+        use velocity_rs::types::solana_sdk::message::{v1, Hash, VersionedMessage};
+
+        let payer = Pubkey::new_unique();
+        let config = v1::TransactionConfig::empty()
+            .with_compute_unit_limit(200_000)
+            .with_priority_fee(1_000);
+        let mut message = VersionedMessage::V1(
+            v1::Message::try_compile_with_config(&payer, &[], Hash::default(), config).unwrap(),
+        );
+
+        super::set_compute_unit_limit(&mut message, 100_000);
+
+        let VersionedMessage::V1(resized) = message else {
+            unreachable!()
+        };
+        assert_eq!(resized.config.compute_unit_limit, Some(100_000));
+        assert_eq!(resized.config.priority_fee, Some(500));
     }
 
     #[test]

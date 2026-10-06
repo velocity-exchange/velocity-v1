@@ -23,6 +23,9 @@ const REGISTER_WATCH_V0_DISCRIMINATOR = Buffer.from([
 /** `UserConditionsV0` holds its relay block as its first field. */
 export const USER_CONDITIONS_BLOCK_OFFSET = 8;
 
+/** `QuoterCrossConditionsV0` holds its relay block as its first field. */
+export const QUOTER_CROSS_BLOCK_OFFSET = 8;
+
 export type WatchRegistration = {
 	payer: PublicKey;
 	target: PublicKey;

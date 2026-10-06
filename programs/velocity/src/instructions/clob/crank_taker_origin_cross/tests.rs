@@ -1238,6 +1238,63 @@ mod resolver_stages {
         assert_eq!(choose_stage(&bids, &[], NO_VAMM, 1), None);
     }
 
+    const QUOTER_ASK_AT_101: QuoterTops = QuoterTops {
+        bid: Some(99),
+        ask: Some(101),
+    };
+
+    /// A PropAMM ask at 101 crosses a buy remainder resting at 102 once the
+    /// remainder has served the speed bump.
+    #[test]
+    fn a_served_remainder_the_quote_crosses_is_staged() {
+        let bids = [row(1, 102, 0xA, true)];
+
+        let stage = quoter_crossed_stage(&bids, &[], QUOTER_ASK_AT_101, user(0xB), 3).unwrap();
+        assert_eq!(stage.taker, user(0xA));
+        assert!(stage.makers.is_empty());
+    }
+
+    /// A remainder inside the speed bump gets no PropAMM depth, so staging it
+    /// would fail.
+    #[test]
+    fn a_remainder_inside_the_bump_is_not_staged() {
+        let bids = [row(1, 102, 0xA, true)];
+
+        assert_eq!(
+            quoter_crossed_stage(&bids, &[], QUOTER_ASK_AT_101, user(0xB), 2),
+            None
+        );
+    }
+
+    #[test]
+    fn a_remainder_the_quote_does_not_cross_is_not_staged() {
+        let bids = [row(1, 100, 0xA, true)];
+        let asks = [row(2, 100, 0xC, true)];
+
+        assert_eq!(
+            quoter_crossed_stage(&bids, &asks, QUOTER_ASK_AT_101, user(0xB), 9),
+            None
+        );
+    }
+
+    /// The quoter's own remainder cannot fill against the quoter.
+    #[test]
+    fn the_quoters_own_remainder_is_not_staged() {
+        let bids = [row(1, 102, 0xB, true), row(2, 102, 0xA, true)];
+
+        let stage = quoter_crossed_stage(&bids, &[], QUOTER_ASK_AT_101, user(0xB), 9).unwrap();
+        assert_eq!(stage.taker, user(0xA));
+    }
+
+    /// Of two crossed remainders, the older one goes first.
+    #[test]
+    fn the_older_crossed_remainder_goes_first() {
+        let bids = [row(2, 103, 0xA, true), row(1, 102, 0xC, true)];
+
+        let stage = quoter_crossed_stage(&bids, &[], QUOTER_ASK_AT_101, user(0xB), 9).unwrap();
+        assert_eq!(stage.taker, user(0xC));
+    }
+
     /// A book cross the taker claims goes before any routed remainder.
     #[test]
     fn a_claimed_cross_goes_first() {

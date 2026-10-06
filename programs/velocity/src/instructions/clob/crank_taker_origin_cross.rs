@@ -28,7 +28,10 @@
 //! a resting remainder is usually a quote ladder rather than another book
 //! order, and a book cannot report that. Finding work to stage is the
 //! resolver's job. See [`stage_taker_origin_cross`], which the cross
-//! conditions' resolver reaches. This crank has no condition of its own.
+//! conditions' resolver reaches. This crank has no condition of its own. The
+//! book's resolver carries no `Custom` quoter accounts, so a remainder that
+//! only a PropAMM crosses is found by that quoter's cross conditions, through
+//! [`stage_quoter_crossed_remainder`].
 //!
 //! A remainder that no book row crosses still routes. So does one that waits
 //! behind an older claim on its side. That fill honours every live claim, so it
@@ -2615,18 +2618,19 @@ pub(super) fn stage_taker_origin_cross(
         return Ok(None);
     };
 
-    // The protocol `User` is the filler on this path, and the crank loads each
-    // margin account once, so it cannot also be a side of the cross it
-    // resolves.
-    let (protocol_user, _) = pdas::protocol_user_pair();
-    let is_protocol_user =
-        |user: &UserRefV0| pdas::user(&user.authority, user.sub_account_id) == protocol_user;
-    if is_protocol_user(&stage.taker) || stage.makers.iter().any(is_protocol_user) {
+    if stage_names_protocol_user(&stage) {
         return Ok(None);
     }
 
     Ok(Some(TakerOriginStage {
-        call: taker_origin_call(ctx, stage.taker, &stage.makers, stage.read_depth)?,
+        call: taker_origin_call(
+            &TakerOriginKeys::of_book_conditions(ctx)?,
+            &*ctx.accounts.state.load()?,
+            &ctx.accounts.quoter_slab.slots()?,
+            stage.taker,
+            &stage.makers,
+            stage.read_depth,
+        )?,
         yields_to_maker_cross: stage.yields_to_maker_cross,
     }))
 }
@@ -2848,18 +2852,140 @@ fn routed_stage(bids: &[BookRow], asks: &[BookRow], vamm: VammTops) -> Option<Ch
                 )
         })
         .min_by_key(|(_, _, row)| row.order.order_ref.order_id)
-        .map(|(side, position, row)| {
-            let makers = staged_makers(&row.order, None, side, opposite_rows(bids, asks, side));
-            let opposite_depth = makers_depth(opposite_rows(bids, asks, side), &makers);
-            ChosenStage {
-                taker: row.order.user,
-                makers,
-                read_depth: (position.max(opposite_depth) as u16)
-                    .saturating_add(1)
-                    .min(MAX_CROSS_ROWS),
-                yields_to_maker_cross: true,
-            }
+        .map(|(side, position, row)| routed_row_stage(bids, asks, side, position, row))
+}
+
+/// The stage that routes `row`, the remainder at `position` on `side`.
+fn routed_row_stage(
+    bids: &[BookRow],
+    asks: &[BookRow],
+    side: SideV0,
+    position: usize,
+    row: &BookRow,
+) -> ChosenStage {
+    let makers = staged_makers(&row.order, None, side, opposite_rows(bids, asks, side));
+    let opposite_depth = makers_depth(opposite_rows(bids, asks, side), &makers);
+    ChosenStage {
+        taker: row.order.user,
+        makers,
+        read_depth: (position.max(opposite_depth) as u16)
+            .saturating_add(1)
+            .min(MAX_CROSS_ROWS),
+        yields_to_maker_cross: true,
+    }
+}
+
+/// The best price a `Custom` quoter's quote offers on each side.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct QuoterTops {
+    pub bid: Option<u64>,
+    pub ask: Option<u64>,
+}
+
+/// The oldest remainder the quoter's quote crosses, among those that served
+/// the speed bump and that the crank would route. The quoter's own user is
+/// never the taker, because it cannot fill against itself.
+fn quoter_crossed_stage(
+    bids: &[BookRow],
+    asks: &[BookRow],
+    quoter: QuoterTops,
+    quoter_user: UserRefV0,
+    slot: u64,
+) -> Option<ChosenStage> {
+    let quoter_crosses = |side: SideV0, price: u64| match side {
+        SideV0::Bid => quoter.ask.is_some_and(|ask| price >= ask),
+        SideV0::Ask => quoter.bid.is_some_and(|bid| price <= bid),
+    };
+
+    [(SideV0::Bid, bids), (SideV0::Ask, asks)]
+        .iter()
+        .flat_map(|&(side, rows)| {
+            rows.iter()
+                .enumerate()
+                .map(move |(position, row)| (side, position, row))
         })
+        .filter(|(side, _, row)| {
+            row.order.taker_origin
+                && row.order.user != quoter_user
+                && crate::math::crosses::served_window(row.order.placed_slot, slot)
+                && quoter_crosses(*side, row.order.price)
+                && is_routed_subject(bids, asks, *side, row)
+        })
+        .min_by_key(|(_, _, row)| row.order.order_ref.order_id)
+        .map(|(side, position, row)| {
+            let mut stage = routed_row_stage(bids, asks, side, position, row);
+            stage.read_depth = stage.read_depth.max(crossing_read_depth(bids, asks));
+            stage
+        })
+}
+
+/// What the quoter-cross resolver hands this crank's discovery: the book to
+/// read, and the quoter's quote it already took.
+pub(super) struct QuoterCrossedRead<'a, 'info> {
+    pub keys: TakerOriginKeys,
+    pub state: &'a State,
+    pub quoter_slab: &'a AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
+    pub clob_accounts: &'a [AccountInfo<'info>],
+    pub quoter: QuoterTops,
+    pub quoter_user: UserRefV0,
+}
+
+/// Stage this crank for a remainder that a `Custom` quoter's quote crosses.
+///
+/// Only the quoter-cross resolver carries a quoter's accounts, so only it can
+/// price the quoter. The book's resolver cannot, and it never stages a cross
+/// that only a quoter fills.
+pub(super) fn stage_quoter_crossed_remainder<'info>(
+    read: QuoterCrossedRead<'_, 'info>,
+    cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+) -> Result<Option<StagedCall>> {
+    let market_index = read.keys.market_index;
+    let book_slot = read.quoter_slab.clob_slot(market_index)?;
+    if !book_slot.quotes() {
+        return Ok(None);
+    }
+
+    let Some(BookSides { bids, asks }) = book_l3_sides(
+        &book_slot,
+        read.quoter_slab,
+        market_index,
+        MAX_CROSS_ROWS,
+        read.clob_accounts,
+        cpi_scratch,
+        true,
+        BookRow::from_row,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let slot = Clock::get()?.slot;
+    let Some(stage) = quoter_crossed_stage(&bids, &asks, read.quoter, read.quoter_user, slot)
+    else {
+        return Ok(None);
+    };
+
+    if stage_names_protocol_user(&stage) {
+        return Ok(None);
+    }
+
+    Ok(Some(taker_origin_call(
+        &read.keys,
+        read.state,
+        &read.quoter_slab.slots()?,
+        stage.taker,
+        &stage.makers,
+        stage.read_depth,
+    )?))
+}
+
+/// The protocol `User` fills every relay crank, and the crank loads each
+/// margin account once, so it cannot also be a side of the cross.
+fn stage_names_protocol_user(stage: &ChosenStage) -> bool {
+    let (protocol_user, _) = pdas::protocol_user_pair();
+    let is_protocol_user =
+        |user: &UserRefV0| pdas::user(&user.authority, user.sub_account_id) == protocol_user;
+    is_protocol_user(&stage.taker) || stage.makers.iter().any(is_protocol_user)
 }
 
 fn opposite_rows<'a>(bids: &'a [BookRow], asks: &'a [BookRow], side: SideV0) -> &'a [BookRow] {
@@ -2952,49 +3078,64 @@ fn makers_depth(opposite: &[BookRow], makers: &[UserRefV0]) -> usize {
 /// `(authority, sub_account_id)`, which the book stores for this use. The
 /// taker's escrow derives from its authority. A crank that needs it and lacks
 /// it fails, and a taker with no escrow leaves the account unread.
+/// The keys a staged taker-origin crank names. The book's cross conditions and
+/// a quoter's cross conditions both stage the crank, and each fills these in.
+pub(super) struct TakerOriginKeys {
+    pub market_index: u16,
+    pub state: Pubkey,
+    pub quoter_slab: Pubkey,
+    pub clob_market: Pubkey,
+    pub oracle: Pubkey,
+    pub quote_oracle: Pubkey,
+    pub quote_spot_market_index: u16,
+}
+
+impl TakerOriginKeys {
+    fn of_book_conditions(ctx: &Context<ResolveClobCrank>) -> Result<Self> {
+        let conditions = ctx.accounts.crank_conditions.load()?;
+        Ok(Self {
+            market_index: conditions.market_index,
+            state: ctx.accounts.state.key(),
+            quoter_slab: ctx.accounts.quoter_slab.key(),
+            clob_market: ctx.accounts.clob_market.key(),
+            oracle: conditions.oracle,
+            quote_oracle: conditions.quote_oracle,
+            quote_spot_market_index: conditions.quote_spot_market_index,
+        })
+    }
+}
+
 fn taker_origin_call(
-    ctx: &Context<ResolveClobCrank>,
+    keys: &TakerOriginKeys,
+    state: &State,
+    slots: &[crate::state::prop_amm::QuoterSlotV0],
     taker_ref: UserRefV0,
     makers: &[UserRefV0],
     cross_rows: u16,
 ) -> Result<StagedCall> {
-    let (market_index, oracle, quote_oracle, quote_spot_market_index) = {
-        let conditions = ctx.accounts.crank_conditions.load()?;
-        (
-            conditions.market_index,
-            conditions.oracle,
-            conditions.quote_oracle,
-            conditions.quote_spot_market_index,
-        )
-    };
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
     let (taker, taker_stats) = pdas::user_pair(&taker_ref.authority, taker_ref.sub_account_id);
     let call = crate::staged_call!(CrankTakerOriginCross {
-        state: ctx.accounts.state.key(),
+        state: keys.state,
         authority: pdas::keeper_placeholder(),
         filler: protocol_user,
         filler_stats: protocol_user_stats,
         taker,
         taker_stats,
-        quoter_slab: ctx.accounts.quoter_slab.key(),
-        clob_market: ctx.accounts.clob_market.key(),
+        quoter_slab: keys.quoter_slab,
+        clob_market: keys.clob_market,
         clob_program: crate::ids::clob_program::id(),
-        crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+        crank_conditions: Some(pdas::clob_crank_conditions(keys.market_index)),
         // The route the taker signed rides its own signed-message record,
         // derived from the authority the book stores on the node.
         signed_msg_user_orders: pdas::signed_msg_user_orders(&taker_ref.authority),
         instructions_sysvar: IX_ID,
     })
-    .map_section_named_perp(oracle, quote_oracle, quote_spot_market_index);
-    // The SOL spot market prices the keeper payment's floor. It sits after the
-    // quote spot market, so the perp market still closes the maps section.
+    .map_section_named_perp(keys.oracle, keys.quote_oracle, keys.quote_spot_market_index);
     let custom = custom_quoter_accounts(
-        &ctx.accounts.quoter_slab.slots()?,
+        slots,
         &CrossStaged {
-            tail: &[
-                ctx.accounts.clob_market.key(),
-                crate::ids::clob_program::id(),
-            ],
+            tail: &[keys.clob_market, crate::ids::clob_program::id()],
             taker,
             book_makers: &makers
                 .iter()
@@ -3002,18 +3143,17 @@ fn taker_origin_call(
                 .collect::<Vec<Pubkey>>(),
         },
     );
-    let call = super::crank_cross_match::with_sol_spot_market(
-        call,
-        &*ctx.accounts.state.load()?,
-        quote_spot_market_index,
-    )
-    .account(pdas::perp_market(market_index), true)
-    .maker_refs(makers.iter().copied());
+    // The SOL spot market prices the keeper payment's floor. It sits after the
+    // quote spot market, so the perp market still closes the maps section.
+    let call =
+        super::crank_cross_match::with_sol_spot_market(call, state, keys.quote_spot_market_index)
+            .account(pdas::perp_market(keys.market_index), true)
+            .maker_refs(makers.iter().copied());
     let call = custom
         .makers
         .iter()
         .fold(call, |call, maker| call.user_pair(maker.user, maker.stats));
-    let call = if ctx.accounts.state.load()?.builder_codes_enabled() {
+    let call = if state.builder_codes_enabled() {
         call.account(revenue_share_escrow(&taker_ref.authority), true)
     } else {
         call
@@ -3022,15 +3162,15 @@ fn taker_origin_call(
     // The crank routes the remainder like any other fill, so the market's
     // quoting Custom slots ride the quoter tail. The call claims no route.
     let call = call
-        .account(ctx.accounts.quoter_slab.key(), false)
-        .account(ctx.accounts.clob_market.key(), true)
+        .account(keys.quoter_slab, false)
+        .account(keys.clob_market, true)
         .account(crate::ids::clob_program::id(), false);
     custom
         .tail
         .into_iter()
         .fold(call, |call, (key, writable)| call.account(key, writable))
         .arg(CrankTakerOriginCrossArgs {
-            market_index,
+            market_index: keys.market_index,
             cross_rows,
             signed_route: Vec::new(),
         })

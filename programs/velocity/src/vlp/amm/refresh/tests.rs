@@ -1057,8 +1057,10 @@ pub fn refresh_for_mark_sample_keeps_the_curve_when_the_repeg_is_unaffordable() 
     let (bid, ask) = read_quote(&market);
     assert!(
         bid <= oracle_price && ask >= oracle_price,
-        "{}",
-        "{bid} {ask} {oracle_price}"
+        "{} {} {}",
+        bid,
+        ask,
+        oracle_price
     );
 }
 

@@ -240,7 +240,7 @@ mod tests {
     }
 }
 
-#[cfg(feature = "rpc_tests")]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod rpc_tests {
     use super::*;
     use crate::{

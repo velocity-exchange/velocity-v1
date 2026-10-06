@@ -130,7 +130,7 @@ impl WebsocketProgramAccountSubscriber {
     }
 }
 
-#[cfg(feature = "rpc_tests")]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod tests {
     use super::*;
     use crate::{

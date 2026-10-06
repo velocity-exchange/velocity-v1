@@ -10689,8 +10689,8 @@ pub mod builder_fee_margin_gate {
         // About 1% of a fill worth about $100.
         assert!(
             fees_accrued > 900_000 && fees_accrued < 1_100_000,
-            "{}",
-            "expected about 1% of notional, got {fees_accrued}"
+            "expected about 1% of notional, got {}",
+            fees_accrued
         );
     }
 
@@ -10705,8 +10705,8 @@ pub mod builder_fee_margin_gate {
         assert_eq!(base_filled, BASE_PRECISION_U64);
         assert!(
             fees_accrued > 900_000 && fees_accrued < 1_100_000,
-            "{}",
-            "expected about 1% of notional, got {fees_accrued}"
+            "expected about 1% of notional, got {}",
+            fees_accrued
         );
     }
 

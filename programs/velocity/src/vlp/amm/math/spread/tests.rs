@@ -2719,25 +2719,37 @@ mod test {
                     .unwrap();
                 assert!(
                     read_bid as i64 <= oracle,
-                    "{}",
-                    "read bid {read_bid} above oracle {oracle}"
+                    "read bid {} above oracle {}",
+                    read_bid,
+                    oracle
                 );
                 assert!(
                     read_ask as i64 >= oracle,
-                    "{}",
-                    "read ask {read_ask} below oracle {oracle}"
+                    "read ask {} below oracle {}",
+                    read_ask,
+                    oracle
                 );
                 assert!(
                     bid as i64 <= oracle,
-                    "{}",
-                    "bid {bid} above oracle {oracle} (reserve {reserve_price}, long {long}, \
-                     short {short}, offset {offset})"
+                    "bid {} above oracle {} (reserve {}, long {}, \
+                     short {}, offset {})",
+                    bid,
+                    oracle,
+                    reserve_price,
+                    long,
+                    short,
+                    offset
                 );
                 assert!(
                     ask as i64 >= oracle,
-                    "{}",
-                    "ask {ask} below oracle {oracle} (reserve {reserve_price}, long {long}, \
-                     short {short}, offset {offset})"
+                    "ask {} below oracle {} (reserve {}, long {}, \
+                     short {}, offset {})",
+                    ask,
+                    oracle,
+                    reserve_price,
+                    long,
+                    short,
+                    offset
                 );
 
                 // and a widened side is widened by no more than a few units of
@@ -2768,7 +2780,7 @@ mod test {
                 }
             }
             // the sample exercises both the binding and the non-binding case
-            assert!(widened > 200 && widened < 1900, "{}", "widened {widened}");
+            assert!(widened > 200 && widened < 1900, "widened {}", widened);
         }
 
         #[test]
@@ -2796,14 +2808,14 @@ mod test {
             // curve 2% below the oracle: the ask needs 2 * (sqrt(1/0.98) - 1)
             let (long, short) = apply_oracle_guard(100, 100, 0, 980_000, 1_000_000).unwrap();
             assert_eq!(short, 100);
-            assert!(long > 20_000, "{}", "long {long}");
+            assert!(long > 20_000, "long {}", long);
             let amm = curve(
                 100 * AMM_RESERVE_PRECISION,
                 98 * AMM_RESERVE_PRECISION,
                 PEG_PRECISION,
             );
             let (_, ask) = quoted_prices(&amm, long, short, 0);
-            assert!(ask >= 1_000_000, "{}", "ask {ask}");
+            assert!(ask >= 1_000_000, "ask {}", ask);
         }
 
         #[test]
@@ -2816,7 +2828,7 @@ mod test {
             assert_eq!(long, 20_000);
             let amm = AMM::default();
             let (_, read_ask) = amm.bid_ask_price(1_000_000, long, 100, 0).unwrap();
-            assert!(read_ask >= 1_020_000, "{}", "read ask {read_ask}");
+            assert!(read_ask >= 1_020_000, "read ask {}", read_ask);
         }
 
         #[test]
@@ -2878,8 +2890,8 @@ mod test {
             ] {
                 assert!(
                     guarded_quote_is_safe(0, 0, 0, r, oracle),
-                    "{}",
-                    "oracle {oracle}"
+                    "oracle {}",
+                    oracle
                 );
             }
             assert!(!guarded_quote_is_safe(0, 0, 0, r, 200_000));
@@ -2957,11 +2969,7 @@ mod test {
                 amm.peg_multiplier,
             )
             .unwrap();
-            assert!(
-                bid as i64 <= oracle,
-                "{}",
-                "bid {bid} above oracle {oracle}"
-            );
+            assert!(bid as i64 <= oracle, "bid {} above oracle {}", bid, oracle);
         }
 
         #[test]

@@ -37,6 +37,12 @@ rejects with `0x7d3`.
 offline Rust gate stays clean only because no member enables `rpc_tests`. Live tests are split out
 under that feature rather than hidden behind `#[ignore]`.
 
+CI compiles the live tests without running them, with
+`cargo check --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests`.
+That catches imports and helpers the default build sees as unused. Gate a test module that holds
+only live tests with `#[cfg(all(test, feature = "rpc_tests"))]`. Without `test` in the condition,
+the module also compiles into the library when the feature is on, and its imports warn as unused.
+
 ## App jest suites use swc, not ts-jest
 
 The `apps/*` suites share `jest.config.app.cjs` (@swc/jest plus `jest.setup.app.ts`). The app

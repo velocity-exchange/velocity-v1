@@ -578,6 +578,10 @@ async fn get_multi_account_data_with_fallback(
 #[cfg(all(test, feature = "rpc_tests"))]
 mod tests {
     use super::*;
+    use crate::utils::{
+        get_ws_url,
+        test_envs::{devnet_endpoint, mainnet_endpoint},
+    };
 
     // SOL pyth-lazer oracle on the velocity devnet (shared by SOL-PERP perp 0 and SOL spot 1).
     const SOL_PERP_ORACLE: Pubkey =

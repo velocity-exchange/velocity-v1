@@ -135,6 +135,7 @@ run_check "eslint"                    bun run lint
 
 # CI job: rust-workspace-check (static parts)
 run_check "rust workspace check"      cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+run_check "rust workspace (rpc_tests)" cargo check --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests
 run_check "velocity_idl.rs in sync"   git diff --exit-code rust/velocity-rs/crates/src/velocity_idl.rs
 
 # Not a standalone CI job, but the anchor-tests build compiles this flavor;

@@ -600,6 +600,16 @@ mod tests {
 
     use super::*;
     use crate::accounts::User;
+    #[cfg(feature = "rpc_tests")]
+    use {
+        crate::{
+            constants::{state_account, DEFAULT_PUBKEY},
+            types::accounts::State,
+            utils::{get_ws_url, test_envs::mainnet_endpoint},
+            Wallet,
+        },
+        std::time::Duration,
+    };
 
     #[test]
     fn account_ref_is_alignment_safe_and_validates() {

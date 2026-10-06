@@ -5946,15 +5946,11 @@ mod native_auth_tests {
         assert_eq!(observed[0], 1_010_000, "first write must land at the cap");
         // Monotonic toward the target, and strictly moving until it arrives.
         for pair in observed.windows(2) {
-            assert!(
-                pair[1] >= pair[0],
-                "{}",
-                "price moved backwards: {observed:?}"
-            );
+            assert!(pair[1] >= pair[0], "price moved backwards: {:?}", observed);
             assert!(
                 pair[0] == target || pair[1] > pair[0],
-                "{}",
-                "price stalled before reaching the target: {observed:?}"
+                "price stalled before reaching the target: {:?}",
+                observed
             );
         }
         assert_eq!(
@@ -5964,8 +5960,8 @@ mod native_auth_tests {
         );
         assert!(
             observed.iter().all(|p| *p <= target),
-            "{}",
-            "must never overshoot: {observed:?}"
+            "must never overshoot: {:?}",
+            observed
         );
     }
 
@@ -5979,15 +5975,11 @@ mod native_auth_tests {
 
         assert_eq!(observed[0], 990_000, "first write must land at the cap");
         for pair in observed.windows(2) {
-            assert!(
-                pair[1] <= pair[0],
-                "{}",
-                "price moved backwards: {observed:?}"
-            );
+            assert!(pair[1] <= pair[0], "price moved backwards: {:?}", observed);
             assert!(
                 pair[0] == target || pair[1] < pair[0],
-                "{}",
-                "price stalled before reaching the target: {observed:?}"
+                "price stalled before reaching the target: {:?}",
+                observed
             );
         }
         assert_eq!(*observed.last().unwrap(), target);
@@ -6958,8 +6950,8 @@ mod native_batch_tests {
             let accounts = [market_info.clone(), signer, state_info];
             assert!(
                 update_mm_oracle(&accounts, &single_payload(price, 6), SLOT).is_err(),
-                "{}",
-                "price {price} must be a hard error on opcode 0"
+                "price {} must be a hard error on opcode 0",
+                price
             );
             assert_eq!(read_stats(&market_info), initial);
         }

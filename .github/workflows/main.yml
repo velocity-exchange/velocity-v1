@@ -598,6 +598,10 @@ jobs:
       # packages/sdk/src/idl/velocity.json; the velocity program crate is compiled as a host lib path-dep.
       - name: cargo check rust workspace
         run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+      # The live tests need RPC credentials to run, but only compiling them catches imports or
+      # helpers that the default build sees as unused.
+      - name: cargo check rust workspace (rpc_tests)
+        run: cargo check --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests
       # build.rs just regenerated velocity_idl.rs from the canonical IDL; a diff
       # means the committed copy is stale. External (git-dep) consumers may build
       # without regenerating — e.g. from a read-only or vendored source dir — so

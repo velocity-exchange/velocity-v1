@@ -2033,6 +2033,8 @@ mod tests {
             SignedMsgTriggerOrderParams,
         },
     };
+    #[cfg(feature = "rpc_tests")]
+    use {std::collections::HashMap, velocity_rs::types::accounts::User};
 
     fn is_isolated_deposit(signed_msg: &SignedOrderType) -> bool {
         match signed_msg {

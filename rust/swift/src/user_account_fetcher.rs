@@ -150,8 +150,13 @@ impl UserAccountFetcher {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod tests {
+    use {
+        super::*,
+        solana_keypair::Keypair,
+        velocity_rs::{Context, RpcClient},
+    };
 
     #[ignore]
     #[cfg(feature = "rpc_tests")]

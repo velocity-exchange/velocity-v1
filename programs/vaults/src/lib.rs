@@ -1,5 +1,6 @@
-#![allow(clippy::diverging_sub_expression, unexpected_cfgs)]
 #![allow(deprecated)]
+// Test fixtures build a default value and then set the fields under test.
+#![cfg_attr(test, allow(clippy::field_reassign_with_default))]
 
 use {anchor_lang::prelude::*, instructions::*, state::*};
 

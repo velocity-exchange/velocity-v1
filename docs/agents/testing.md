@@ -110,14 +110,21 @@ cd packages/sdk/ && bun run test:ci      # CI subset
 ```bash
 bun run fmt:rust                 # all Rust in the repo (wraps nightly rustfmt, see below)
 bun run fmt:rust:check           # verify without writing (what CI enforces)
-cargo clippy -p velocity -- -D warnings  # what CI enforces; any warning fails
+cargo clippy --workspace --all-targets -- -D warnings  # CI, part 1: every crate, tests included
+cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings  # CI, part 2
 cd packages/sdk/ && bun run prettify:fix  # SDK (TypeScript)
 ```
 
-Clippy runs with `-D warnings`, so a new warning fails the PR. The crate also denies
+Clippy runs with `-D warnings`, so a new warning fails the PR, including warnings in tests. The
+second run covers the anchor-test flavor that `bun run program:build` compiles, because code behind
+`#[cfg(feature = "mainnet-beta")]` and `#[cfg(feature = "anchor-test")]` differs between the two
+builds. A variable used only inside a `mainnet-beta` block belongs inside that block, or the other
+flavor warns that it is unused.
+
+Lint settings shared by every program crate live in `[workspace.lints]` in the root `Cargo.toml`,
+which each program inherits with `[lints] workspace = true`. Velocity also denies
 `clippy::wildcard_enum_match_arm` in `lib.rs`. Fix a warning rather than allowing it. Where an allow
-is the right call, put it on the narrowest item and say why in a comment, as `lib.rs` does for
-Anchor's generated code.
+is the right call, put it on the narrowest item and say why in a comment.
 
 Rust formatting requires nightly rustfmt. `rustfmt.toml` sets `imports_granularity = "One"` and
 `group_imports = "One"`, which merge all `use` items in a module into a single `use { ... }` block.

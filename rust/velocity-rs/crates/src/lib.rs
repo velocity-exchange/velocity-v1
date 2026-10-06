@@ -1143,7 +1143,7 @@ impl VelocityClient {
         let oracle_data = self
             .try_get_oracle_price_data_and_slot(MarketId::perp(market_index))
             .ok_or(SdkError::InvalidOracle)?;
-        let mut perp_market = self.try_get_perp_market_account(market_index)?;
+        let perp_market = self.try_get_perp_market_account(market_index)?;
         // One `State` read serves both the guard rails and the slot duration.
         let state = self.state_account()?;
         let oracle_validity_guard_rails = state.oracle_guard_rails.validity;
@@ -4443,7 +4443,7 @@ mod tests {
     use std::str::FromStr;
 
     use crate::solana_sdk::keypair::Keypair;
-    use anchor_lang::prelude::system_instruction;
+
     use program::state::perp_market::PerpMarket;
     use serde_json::json;
     use solana_account_decoder_client_types::{UiAccount, UiAccountData, UiAccountEncoding};

@@ -16,10 +16,7 @@ use {
         },
         error::ErrorCode,
         get_then_update_id,
-        ids::{
-            lighthouse, marinade_mainnet, WHITELISTED_EXTERNAL_DEPOSITORS,
-            WHITELISTED_SWAP_PROGRAMS,
-        },
+        ids::{lighthouse, marinade_mainnet, WHITELISTED_SWAP_PROGRAMS},
         instructions::{
             constraints::*,
             optional_accounts::{
@@ -234,11 +231,12 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
         )?;
     }
 
+    #[cfg(feature = "mainnet-beta")]
     let authority_is_signer = ctx.accounts.authority.is_signer;
     #[cfg(feature = "mainnet-beta")]
     if !authority_is_signer && ctx.accounts.authority.key() != ctx.accounts.payer.key() {
         validate!(
-            WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.payer.key()),
+            crate::ids::WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.payer.key()),
             ErrorCode::DefaultError,
             "Authority is not the payer"
         )?;
@@ -279,11 +277,12 @@ pub fn handle_initialize_user_stats<'c: 'info, 'info>(
         ErrorCode::MaxNumberOfUsers
     )?;
 
+    #[cfg(feature = "mainnet-beta")]
     let authority_is_signer = ctx.accounts.authority.is_signer;
     #[cfg(feature = "mainnet-beta")]
     if !authority_is_signer && ctx.accounts.authority.key() != ctx.accounts.payer.key() {
         validate!(
-            WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.payer.key()),
+            crate::ids::WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.payer.key()),
             ErrorCode::DefaultError,
             "Authority is not the payer"
         )?;
@@ -731,7 +730,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
     {
         #[cfg(feature = "mainnet-beta")]
         validate!(
-            WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.authority.key()),
+            crate::ids::WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.authority.key()),
             ErrorCode::DefaultError,
             "Not whitelisted external depositor"
         )?;

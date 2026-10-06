@@ -1,9 +1,8 @@
 use {
     crate::{
         constraints::{is_tokenized_depositor_for_vault, is_user_for_vault},
-        refresh_velocity_spot_market,
-        state::traits::VaultDepositorBase,
-        AccountMapProvider, TokenizedVaultDepositor, Vault, VaultProtocolProvider,
+        refresh_velocity_spot_market, AccountMapProvider, TokenizedVaultDepositor, Vault,
+        VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
     velocity::{

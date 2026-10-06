@@ -11,10 +11,7 @@ use {
         subscription::{Response, SubscribeRequest, SubscriptionId},
     },
     solana_signature::Signature,
-    std::{
-        collections::HashSet,
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    },
+    std::{collections::HashSet, time::Duration},
     velocity_rs::{
         constants::{
             perp_market_index_to_pyth_lazer_feed_id, pyth_lazer_feed_id_to_perp_market_index,
@@ -83,25 +80,12 @@ impl<const N: usize> OrderSlotLimiter<N> {
             }
         }
     }
-
-    pub fn check_event(&self, g: u64, id: u32) -> bool {
-        // Check generations g - 1 and g - 4
-        for i in 1..=4 {
-            let past_g = g.saturating_sub(i);
-            let past_idx = (past_g % N as u64) as usize;
-
-            if self.generations[past_idx] == past_g {
-                if self.slots[past_idx].binary_search(&id).is_ok() {
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
 }
 
+// Variant fields are log context, read through `Debug` (`{intent:?}`), which dead-code analysis
+// ignores.
 #[derive(Clone, Default, Debug)]
+#[allow(dead_code)]
 pub enum TxIntent {
     #[default]
     None,
@@ -392,17 +376,12 @@ pub struct PendingTxMeta {
     pub signature: Signature,
     pub intent: TxIntent,
     pub cu_limit: u64,
-    pub ts: u64,
 }
 
 impl PendingTxMeta {
     pub fn new(sig: Signature, intent: TxIntent, cu_limit: u64) -> Self {
         Self {
             signature: sig,
-            ts: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
             intent,
             cu_limit,
         }

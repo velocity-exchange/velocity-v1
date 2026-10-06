@@ -234,8 +234,12 @@ jobs:
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
       - name: Cargo fmt
         run: cargo +${{ env.RUST_NIGHTLY_TOOLCHAIN }} fmt -- --check
+      # Every program crate, tests included. The second run is the anchor-test flavor that
+      # `bun run program:build` compiles, where cfg-gated code differs from the default build.
       - name: Cargo clippy
-        run: cargo clippy -p velocity -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
   unit-tests:
     name: Unit tests
     needs: changes

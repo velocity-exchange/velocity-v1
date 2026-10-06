@@ -36,7 +36,7 @@ use tokio::{
 pub use velocity_pubsub_client::PubsubClient;
 
 use crate::{
-    constants::{self, PROGRAM_ID},
+    constants::PROGRAM_ID,
     grpc::{
         grpc_subscriber::{GeyserSubscribeOpts, GrpcConnectionOpts, VelocityGrpcClient},
         TransactionUpdate,
@@ -959,7 +959,7 @@ impl TxSignatureCache {
             }
         }
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rpc_tests"))]
     fn reset(&mut self) {
         self.entries.clear()
     }
@@ -1287,7 +1287,7 @@ mod test {
             fn get_tx(
                 &self,
                 signature: Signature,
-            ) -> BoxFuture<SdkResult<EncodedTransactionWithStatusMeta>> {
+            ) -> BoxFuture<'_, SdkResult<EncodedTransactionWithStatusMeta>> {
                 ready(
                     self.tx_responses
                         .get(signature.to_string().as_str())
@@ -1301,7 +1301,7 @@ mod test {
                 _account: Pubkey,
                 after: Option<Signature>,
                 _limit: Option<usize>,
-            ) -> BoxFuture<SdkResult<Vec<String>>> {
+            ) -> BoxFuture<'_, SdkResult<Vec<String>>> {
                 async move {
                     let after = after.map(|s| s.to_string());
                     let mut self_signatures = self.signatures.lock().await;
@@ -1541,7 +1541,7 @@ mod test {
             fn get_tx(
                 &self,
                 _signature: Signature,
-            ) -> BoxFuture<SdkResult<EncodedTransactionWithStatusMeta>> {
+            ) -> BoxFuture<'_, SdkResult<EncodedTransactionWithStatusMeta>> {
                 ready(Ok(self.tx.clone())).boxed()
             }
             fn get_tx_signatures(
@@ -1549,7 +1549,7 @@ mod test {
                 _account: Pubkey,
                 _after: Option<Signature>,
                 limit: Option<usize>,
-            ) -> BoxFuture<SdkResult<Vec<String>>> {
+            ) -> BoxFuture<'_, SdkResult<Vec<String>>> {
                 // the limited call is the initial cursor fetch; serve the tx to the
                 // poll loop only, so it is processed exactly once
                 let signatures = if limit.is_some() {
@@ -1684,8 +1684,8 @@ mod test {
                     v0::Message::try_compile(
                         &account,
                         &[Instruction {
-                            program_id: constants::PROGRAM_ID,
-                            accounts: vec![AccountMeta::new_readonly(constants::PROGRAM_ID, true)],
+                            program_id: PROGRAM_ID,
+                            accounts: vec![AccountMeta::new_readonly(PROGRAM_ID, true)],
                             data: Default::default(),
                         }],
                         &[],

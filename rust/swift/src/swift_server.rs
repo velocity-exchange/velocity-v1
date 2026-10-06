@@ -2028,13 +2028,9 @@ mod tests {
         super::*,
         ed25519_dalek::Signature as Ed25519Signature,
         solana_native_token::LAMPORTS_PER_SOL,
-        std::collections::HashMap,
-        velocity_rs::{
-            program::math::time::SlotDuration,
-            types::{
-                accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
-                SignedMsgTriggerOrderParams,
-            },
+        velocity_rs::types::{
+            SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+            SignedMsgTriggerOrderParams,
         },
     };
 

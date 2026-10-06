@@ -787,7 +787,6 @@ impl UserStatsExt for UserStats {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
 
     use crate::solana_sdk::{
         instruction::error::InstructionError, pubkey::Pubkey, transaction::TransactionError,

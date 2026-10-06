@@ -161,7 +161,7 @@ mod deposit_cap_does_not_lock_exits {
             market_status::MarketStatus,
             oracle::OracleSource,
             spot_market::{SpotBalanceType, SpotMarket},
-            user::{SpotPosition, User},
+            user::User,
         },
     };
 

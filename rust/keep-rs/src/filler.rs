@@ -2408,13 +2408,11 @@ pub enum TxWork {
         tx: VersionedTransaction,
         simulation_tx: Option<VersionedMessage>,
         require_fill_event: bool,
-        ts: u64,
         intent: TxIntent,
         cu_limit: u64,
     },
     Confirm {
         tx: Signature,
-        ts: u64,
     },
 }
 
@@ -2462,7 +2460,6 @@ impl TxWorker {
                         tx,
                         simulation_tx,
                         require_fill_event,
-                        ts: _,
                         intent,
                         cu_limit,
                     } => {
@@ -2472,7 +2469,7 @@ impl TxWorker {
                         }
                         self.send_tx(&rt, tx, simulation_tx, require_fill_event, intent, cu_limit);
                     }
-                    TxWork::Confirm { tx, ts: _ } => {
+                    TxWork::Confirm { tx } => {
                         self.confirm_tx(&rt, tx);
                     }
                 }
@@ -2711,7 +2708,6 @@ impl TxWorker {
                 signature,
                 intent,
                 cu_limit: sent_cu_limit,
-                ts: _,
             } = pending_tx_meta.unwrap();
 
             let intent_label = intent.label();
@@ -3249,15 +3245,7 @@ pub struct TxSender {
 
 impl TxSender {
     pub fn confirm_tx(&self, tx: Signature) {
-        self.tx
-            .send(TxWork::Confirm {
-                tx,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-            })
-            .expect("sent");
+        self.tx.send(TxWork::Confirm { tx }).expect("sent");
     }
 
     pub async fn send_tx(
@@ -3303,10 +3291,6 @@ impl TxSender {
                 tx: signed_tx,
                 simulation_tx,
                 require_fill_event,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
                 intent,
                 cu_limit,
             })

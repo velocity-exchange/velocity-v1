@@ -92,7 +92,7 @@ impl PolledAccountSubscriber {
 #[cfg(test)]
 mod tests {
     use crate::solana_sdk::account::Account;
-    use anchor_lang::AccountSerialize;
+
     use serde_json::json;
     use solana_account_decoder::encode_ui_account;
     use solana_account_decoder_client_types::UiAccountEncoding;

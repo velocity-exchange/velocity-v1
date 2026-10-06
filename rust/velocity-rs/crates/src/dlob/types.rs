@@ -374,15 +374,6 @@ pub(crate) struct TriggerOrder {
 }
 
 impl TriggerOrder {
-    /// Returns true if the order would trigger at the given `oracle_price`
-    pub fn will_trigger_at(&self, oracle_price: u64) -> bool {
-        oracle_price != 0
-            && match self.condition {
-                OrderTriggerCondition::Above => oracle_price > self.price,
-                OrderTriggerCondition::Below => oracle_price < self.price,
-                _ => true, // technically unreachable
-            }
-    }
     /// Returns order price if it were triggered at `slot` with the current market parameters, `oracle_price` and `perp_market`
     pub fn get_price(
         &self,

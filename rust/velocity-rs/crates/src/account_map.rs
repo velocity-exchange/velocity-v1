@@ -597,16 +597,9 @@ impl<T: Pod + Discriminator> Deref for AccountRef<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use super::*;
-    use crate::{
-        accounts::User,
-        constants::{state_account, DEFAULT_PUBKEY},
-        types::accounts::State,
-        utils::{get_ws_url, test_envs::mainnet_endpoint},
-        Wallet,
-    };
+    use crate::accounts::User;
 
     #[test]
     fn account_ref_is_alignment_safe_and_validates() {

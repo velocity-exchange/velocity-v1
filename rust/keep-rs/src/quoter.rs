@@ -59,7 +59,6 @@ pub struct QuoterBot {
 struct MarketSnapshot {
     market_index: u16,
     oracle_price: u64,
-    tick_size: u64,
     target_bid: u64,
     target_ask: u64,
     base_position: i64,
@@ -353,7 +352,6 @@ impl QuoterBot {
         Ok(MarketSnapshot {
             market_index,
             oracle_price,
-            tick_size: _assert_tick(tick_size),
             target_bid,
             target_ask,
             base_position,
@@ -726,11 +724,6 @@ fn make_reduce_market(
         user_order_id,
         ..Default::default()
     }
-}
-
-fn _assert_tick(t: u64) -> u64 {
-    debug_assert!(t > 0);
-    t
 }
 
 #[cfg(test)]

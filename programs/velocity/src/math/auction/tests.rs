@@ -445,7 +445,7 @@ mod calculate_auction_price {
         let price =
             calculate_auction_price(&order, 5, tick_size, oracle_price, SlotClock::baseline())
                 .unwrap();
-        assert_eq!(price, 107_5 * PRICE_PRECISION_U64 / 10);
+        assert_eq!(price, 1075 * PRICE_PRECISION_U64 / 10);
 
         // End of auction
         let price =
@@ -480,7 +480,7 @@ mod calculate_auction_price {
         let price =
             calculate_auction_price(&order, 5, tick_size, oracle_price, SlotClock::baseline())
                 .unwrap();
-        assert_eq!(price, 92_5 * PRICE_PRECISION_U64 / 10);
+        assert_eq!(price, 925 * PRICE_PRECISION_U64 / 10);
 
         // End of auction
         let price =

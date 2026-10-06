@@ -9,10 +9,7 @@
 use {
     crate::{
         filler::{with_spot_interest_cranks, TxSender, TxWorker},
-        http::{
-            DashboardState, DashboardStateRef, HighRiskUser, MarginStatus, Metrics,
-            OraclePriceInfo, UserMarginStatus,
-        },
+        http::{MarginStatus, Metrics, UserMarginStatus},
         util::{preview_pyth_lazer_oracle, PerpFillFallback, PythPriceUpdate, TxIntent},
         Config, UseMarkets,
     },
@@ -150,23 +147,19 @@ const BLOCKED_SPOT_MARKETS: &[u16] = &[40];
 #[derive(Clone, Debug)]
 struct UserAccountMetadata {
     user: User,
-    last_updated_slot: u64,
-    last_updated_timestamp_ms: u64,
 }
 
 /// Metadata tracking for oracle prices to detect staleness
 #[derive(Clone, Debug)]
 struct OraclePriceMetadata {
-    price_data: OraclePriceData,
     last_updated_slot: u64,
-    last_updated_timestamp_ms: u64,
 }
 
 /// Errors indicating data staleness
 #[derive(Debug, Clone)]
 enum StalenessError {
     OraclePriceStale { market: MarketId, age_slots: u64 },
-    PythPriceStale { market_id: u16, age_ms: u64 },
+    PythPriceStale,
 }
 
 /// Helper to get current time in milliseconds since epoch
@@ -231,149 +224,10 @@ fn validate_pyth_price_freshness(pyth_update: &PythPriceUpdate) -> Result<(), St
     let age_ms = now_ms.saturating_sub(pyth_ts_ms);
 
     if age_ms > MAX_PYTH_AGE_MS {
-        return Err(StalenessError::PythPriceStale {
-            market_id: pyth_update.market_id,
-            age_ms,
-        });
+        return Err(StalenessError::PythPriceStale);
     }
 
     Ok(())
-}
-
-/// Update dashboard state with current high-risk users and oracle prices
-async fn update_dashboard_state(
-    velocity: &VelocityClient,
-    dashboard_state: &DashboardStateRef,
-    users: &BTreeMap<Pubkey, UserAccountMetadata>,
-    oracle_prices: &HashMap<MarketId, OraclePriceMetadata>,
-    high_risk: &HashSet<Pubkey>,
-    current_slot: u64,
-    market_state: &'static MarketState,
-    liquidation_margin_buffer_ratio: u32,
-) {
-    let now_ms = current_time_millis();
-    let mut high_risk_users = Vec::new();
-
-    for pubkey in high_risk {
-        if let Some(user_meta) = users.get(pubkey) {
-            let margin_info = match market_state.calculate_simplified_margin_requirement(
-                &user_meta.user,
-                MarginRequirementType::Maintenance,
-                Some(liquidation_margin_buffer_ratio),
-            ) {
-                Ok(info) => info,
-                Err(_) => continue,
-            };
-
-            let free_margin = margin_info.total_collateral - margin_info.margin_requirement as i128;
-            let free_margin_ratio = if margin_info.margin_requirement > 0 {
-                free_margin as f64 / margin_info.margin_requirement as f64
-            } else {
-                0.0
-            };
-
-            let status = check_margin_status(&margin_info);
-            let display_status = if status.is_liquidatable() {
-                MarginStatus::Liquidatable
-            } else if status.is_at_risk() {
-                MarginStatus::HighRisk
-            } else {
-                continue;
-            };
-
-            let mut positions = Vec::new();
-            for pos in &user_meta.user.perp_positions {
-                if pos.base_asset_amount != 0 {
-                    positions.push(crate::http::PositionInfo {
-                        market_type: crate::http::MarketType::Perp,
-                        market_index: pos.market_index,
-                        base_asset_amount: pos.base_asset_amount,
-                        quote_asset_amount: pos.quote_asset_amount,
-                    });
-                }
-            }
-            for pos in &user_meta.user.spot_positions {
-                if pos.scaled_balance != 0 {
-                    // Calculate quote_asset_amount = base_asset_amount * spot oracle price
-                    // Note: base_asset_amount calculation would require spot market access
-                    // which isn't directly available from MarketState in this context.
-                    // We'll calculate an approximation using scaled_balance and oracle price.
-                    let spot_market = match velocity.try_get_spot_market_account(pos.market_index) {
-                        Ok(market) => market,
-                        Err(_) => continue,
-                    };
-                    let (base, quote) = if let Some(oracle_meta) =
-                        oracle_prices.get(&MarketId::spot(pos.market_index))
-                    {
-                        let base = match pos.get_signed_token_amount(&spot_market) {
-                            Ok(amount) => amount,
-                            Err(_) => continue,
-                        };
-                        (
-                            base,
-                            base.saturating_mul(oracle_meta.price_data.price as i128)
-                                / PRICE_PRECISION as i128,
-                        )
-                    } else {
-                        (0, 0) // No oracle price available
-                    };
-
-                    positions.push(crate::http::PositionInfo {
-                        market_type: crate::http::MarketType::Spot,
-                        market_index: pos.market_index,
-                        base_asset_amount: base as i64,
-                        quote_asset_amount: quote as i64,
-                    });
-                }
-            }
-
-            high_risk_users.push(HighRiskUser {
-                pubkey: pubkey.to_string(),
-                authority: user_meta.user.authority.to_string(),
-                total_collateral: margin_info.total_collateral,
-                margin_requirement: margin_info.margin_requirement,
-                free_margin,
-                free_margin_ratio,
-                status: display_status,
-                last_updated_slot: user_meta.last_updated_slot,
-                last_updated_ms: user_meta.last_updated_timestamp_ms,
-                positions,
-            });
-        }
-    }
-
-    let mut oracle_price_infos = Vec::new();
-    let slot_clock = velocity.slot_clock();
-    for (market_id, oracle_meta) in oracle_prices {
-        let age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
-        let age_ms = now_ms.saturating_sub(oracle_meta.last_updated_timestamp_ms);
-        let is_stale =
-            slot_clock.elapsed(oracle_meta.last_updated_slot, current_slot) > MAX_ORACLE_AGE;
-
-        oracle_price_infos.push(OraclePriceInfo {
-            market_type: if market_id.is_perp() {
-                crate::http::MarketType::Perp
-            } else {
-                crate::http::MarketType::Spot
-            },
-            market_index: market_id.index(),
-            price: oracle_meta.price_data.price,
-            last_updated_slot: oracle_meta.last_updated_slot,
-            last_updated_ms: oracle_meta.last_updated_timestamp_ms,
-            age_slots,
-            age_ms,
-            is_stale,
-        });
-    }
-
-    let dashboard_data = DashboardState {
-        high_risk_users,
-        oracle_prices: oracle_price_infos,
-        current_slot,
-        last_updated_ms: now_ms,
-    };
-
-    *dashboard_state.write().await = Some(dashboard_data);
 }
 
 /// Check margin status (liquidatable, high-risk, or safe)
@@ -491,8 +345,6 @@ pub struct LiquidatorBot {
     /// sends liquidatable accounts to work thread
     liq_tx: tokio::sync::mpsc::Sender<LiquidationRequest>,
     pyth_price_feed: Option<tokio::sync::mpsc::Receiver<PythPriceUpdate>>,
-    /// Dashboard state for HTTP API
-    dashboard_state: DashboardStateRef,
     subaccount_pubkeys: Vec<Pubkey>,
     /// Track collateral info per subaccount
     collateral_info_per_subaccount: Arc<DashMap<Pubkey, CollateralInfo>>,
@@ -508,12 +360,7 @@ pub struct LiquidatorBot {
 }
 
 impl LiquidatorBot {
-    pub async fn new(
-        config: Config,
-        velocity: VelocityClient,
-        metrics: Arc<Metrics>,
-        dashboard_state: DashboardStateRef,
-    ) -> Self {
+    pub async fn new(config: Config, velocity: VelocityClient, metrics: Arc<Metrics>) -> Self {
         let dlob: &'static DLOB = Box::leak(Box::new(DLOB::default()));
 
         let mut perp_market_ids = match config.use_markets() {
@@ -736,7 +583,6 @@ impl LiquidatorBot {
             market_state,
             liq_tx,
             pyth_price_feed: Some(pyth_price_feed),
-            dashboard_state,
             subaccount_pubkeys,
             collateral_info_per_subaccount,
             txs_in_flight,
@@ -797,7 +643,7 @@ impl LiquidatorBot {
         velocity
             .backend()
             .account_map()
-            .iter_accounts_with::<User>(|pubkey, user, slot| {
+            .iter_accounts_with::<User>(|pubkey, user, _slot| {
                 let margin_info = match self
                     .market_state
                     .read()
@@ -817,8 +663,6 @@ impl LiquidatorBot {
                             *pubkey,
                             UserAccountMetadata {
                                 user: *user,
-                                last_updated_slot: slot,
-                                last_updated_timestamp_ms: current_time_millis(),
                             },
                         );
                         return;
@@ -831,13 +675,10 @@ impl LiquidatorBot {
                     exclude_count += 1;
                     // log::debug!(target: TARGET, "excluding user: {:?}. insignificant collateral: {}/{}", user.authority, margin_info.total_collateral, margin_info.margin_requirement);
                 } else {
-                    let now_ms = current_time_millis();
                     users.insert(
                         *pubkey,
                         UserAccountMetadata {
                             user: *user,
-                            last_updated_slot: slot,
-                            last_updated_timestamp_ms: now_ms,
                         },
                     );
                     // Check margin status and add to high-risk set if needed
@@ -981,15 +822,7 @@ impl LiquidatorBot {
 
                         let old_user = users.get(&pubkey).map(|m| &m.user);
                         dlob_notifier.user_update(pubkey, old_user, &user, update_slot);
-                        let now_ms = current_time_millis();
-                        users.insert(
-                            pubkey,
-                            UserAccountMetadata {
-                                user: user.clone(),
-                                last_updated_slot: update_slot,
-                                last_updated_timestamp_ms: now_ms,
-                            },
-                        );
+                        users.insert(pubkey, UserAccountMetadata { user: user.clone() });
 
                         // calculate user margin after update
                         let margin_info = match self
@@ -1049,13 +882,10 @@ impl LiquidatorBot {
                                         .set_spot_oracle_price(market.index(), oracle_price_data);
                                 }
                             }
-                            let now_ms = current_time_millis();
                             oracle_prices.insert(
                                 market,
                                 OraclePriceMetadata {
-                                    price_data: oracle_price_data,
                                     last_updated_slot: slot,
-                                    last_updated_timestamp_ms: now_ms,
                                 },
                             );
                             current_slot = slot;
@@ -1084,19 +914,6 @@ impl LiquidatorBot {
 
                 let _t0 = current_time_millis();
                 let mut liquidatable_users = Vec::new();
-
-                // Update dashboard state
-                // update_dashboard_state(
-                //     velocity,
-                //     &self.dashboard_state,
-                //     &users,
-                //     &oracle_prices,
-                //     &high_risk,
-                //     current_slot,
-                //     self.market_state,
-                //     liquidation_margin_buffer_ratio,
-                // )
-                // .await;
 
                 for pubkey in &high_risk {
                     if let Some(user_meta) = users.get(&pubkey) {

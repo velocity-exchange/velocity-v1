@@ -425,18 +425,6 @@ pub async fn get_market_accounts_with_fallback<T: Market + Pod + Discriminator>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::solana_sdk::commitment_config::CommitmentConfig;
-    use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-    use velocity_pubsub_client::PubsubClient;
-
-    use super::{get_market_accounts_with_fallback, MarketMap};
-    use crate::{
-        accounts::{PerpMarket, SpotMarket},
-        utils::{get_ws_url, test_envs::devnet_endpoint},
-        MarketId,
-    };
 
     #[cfg(feature = "rpc_tests")]
     #[tokio::test]

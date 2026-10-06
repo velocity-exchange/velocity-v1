@@ -1651,7 +1651,7 @@ impl L3Book {
         let mut missing_metadata_count = 0u32;
         let mut total_orders_count = 0u32;
 
-        let mut missing_fn = move |order_id: u64| {
+        let mut missing_fn = |order_id: u64| {
             missing_metadata_count += 1;
             DLOB::log_missing_order_events_helper(order_id, order_events);
             log::info!(target: TARGET, "missing order id: {:?}", order_id);

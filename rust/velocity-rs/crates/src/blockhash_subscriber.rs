@@ -107,11 +107,6 @@ impl BlockhashSubscriber {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-    use solana_rpc_client::rpc_client::Mocks;
-    use solana_rpc_client_api::request::RpcRequest;
-
-    use super::*;
 
     #[cfg(feature = "rpc_tests")]
     #[tokio::test]

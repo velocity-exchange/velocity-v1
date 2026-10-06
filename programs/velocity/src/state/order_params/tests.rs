@@ -56,6 +56,10 @@ mod get_auction_duration {
 }
 
 mod update_perp_auction_params {
+    // Most tests here are compiled out under anchor-test, which leaves their imports and helpers
+    // unused in that build.
+    #![cfg_attr(feature = "anchor-test", allow(unused_imports, dead_code))]
+
     use crate::{
         state::{
             order_params::PostOnlyParam,
@@ -66,6 +70,8 @@ mod update_perp_auction_params {
         PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_U64,
     };
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_extreme_sanitize_oracle_order() {
         let oracle_price = 145 * PRICE_PRECISION_I64;
@@ -169,6 +175,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after3.auction_duration, Some(58));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_orders_oracle() {
         let oracle_price = 100 * PRICE_PRECISION_I64;
@@ -493,6 +501,8 @@ mod update_perp_auction_params {
         assert_eq!(sanitized, false);
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_orders_limit() {
         let oracle_price = 100 * PRICE_PRECISION_I64;
@@ -620,6 +630,8 @@ mod update_perp_auction_params {
         assert_eq!(sanitized, true);
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_extreme_sanitize_oracle_order_huge_market_prem() {
         let oracle_price = 145 * PRICE_PRECISION_I64;
@@ -677,6 +689,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.auction_duration, Some(42));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_sanitize_limit() {
         let oracle_price = 100 * PRICE_PRECISION_I64;
@@ -859,6 +873,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.auction_duration, Some(126));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_sanitize_oracle_limit() {
         let oracle_price = 100 * PRICE_PRECISION_I64;
@@ -1021,6 +1037,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.oracle_price_offset, Some(-199003));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_market_sanitize() {
         let oracle_price = 99 * PRICE_PRECISION_I64;
@@ -1135,6 +1153,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.auction_duration, Some(102));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_oracle_market_sanitize() {
         let oracle_price = 99 * PRICE_PRECISION_I64;
@@ -1231,6 +1251,8 @@ mod update_perp_auction_params {
         assert_eq!(sanitized, false,);
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_market_sanatize_no_auction_params() {
         let oracle_price = 99 * PRICE_PRECISION_I64;
@@ -1386,6 +1408,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.auction_duration, Some(88));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_oracle_market_sanitize_no_auction_params() {
         let oracle_price = 99 * PRICE_PRECISION_I64;
@@ -1623,6 +1647,8 @@ mod update_perp_auction_params {
         perp_market
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_tail_market_duration_floor_uses_requested_spread() {
         // HYPE scenario: signed-msg market order on a tail-tier market with a
@@ -1682,6 +1708,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_before, order_params_after);
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_tail_market_short_end_mutation_floors_on_sanitized_spread() {
         // Short with a fat-finger end far below baseline: sanitization pulls
@@ -1726,6 +1754,8 @@ mod update_perp_auction_params {
         );
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_duration_grace_boundary() {
         // Grace: the floor only overrides a signed-msg duration when it

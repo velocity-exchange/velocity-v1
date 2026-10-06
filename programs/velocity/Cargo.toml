@@ -59,10 +59,5 @@ bytes = "1.2.0"
 pyth = { path = "../pyth", features = ["no-entrypoint"]}
 base64 = "0.13.0"
 
-[lints.rust]
-# `solana_program::entrypoint!` and Anchor's `#[program]` check these cfgs. Declared here so the
-# lint stays on for real typos, without adding features that would change the build if enabled.
-unexpected_cfgs = { level = "warn", check-cfg = [
-  'cfg(target_os, values("solana"))',
-  'cfg(feature, values("custom-heap", "custom-panic", "no-log-ix-name"))',
-] }
+[lints]
+workspace = true

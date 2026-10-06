@@ -1,15 +1,9 @@
 use {
     crate::{
-        math::{
-            constants::ONE_BPS_DENOMINATOR,
-            oracle::{self, oracle_validity},
-            time::{legacy_slot_duration_u8, SlotClock},
-        },
+        math::{constants::ONE_BPS_DENOMINATOR, time::SlotClock},
         state::{
-            fill_mode::FillMode,
             oracle_map::OracleMap,
-            perp_market::PerpMarket,
-            state::{FeeStructure, FeeTier, State},
+            state::{FeeStructure, FeeTier},
             user::{MarketType, Order, PerpPosition},
         },
     },
@@ -67,64 +61,6 @@ fn get_fee_structure() -> FeeStructure {
 
 fn get_user_keys() -> (Pubkey, Pubkey, Pubkey) {
     (Pubkey::default(), Pubkey::default(), Pubkey::default())
-}
-
-fn get_state(min_auction_duration: u8) -> State {
-    State {
-        min_perp_auction_duration: legacy_slot_duration_u8(min_auction_duration),
-        ..State::default()
-    }
-}
-
-pub fn get_amm_is_available(
-    order: &Order,
-    min_auction_duration: u8,
-    market: &PerpMarket,
-    oracle_map: &mut OracleMap,
-    slot: u64,
-    user_can_skip_auction_duration: bool,
-) -> bool {
-    let state = get_state(min_auction_duration);
-    let oracle_price_data = oracle_map.get_price_data(&market.oracle_id()).unwrap();
-    let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(
-            *oracle_price_data,
-            slot,
-            &state.oracle_guard_rails.validity,
-            SlotClock::baseline(),
-        )
-        .unwrap();
-    let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
-    let safe_oracle_validity = oracle_validity(
-        MarketType::Perp,
-        market.market_index,
-        market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap,
-        &safe_oracle_price_data,
-        &state.oracle_guard_rails.validity,
-        market.get_max_confidence_interval_multiplier().unwrap(),
-        &market.oracle_source,
-        oracle::LogMode::SafeMMOracle,
-        market.oracle_slot_delay_override,
-        mm_oracle_price_data.is_safe_price_mm_sourced(),
-        market.oracle_low_risk_slot_delay_override,
-        slot,
-        SlotClock::baseline(),
-    )
-    .unwrap();
-    market
-        .amm_can_fill_order(
-            order,
-            slot,
-            FillMode::Fill,
-            &state,
-            safe_oracle_validity,
-            user_can_skip_auction_duration,
-            &mm_oracle_price_data,
-        )
-        .unwrap()
 }
 
 #[cfg(test)]
@@ -240,7 +176,7 @@ pub mod amm_jit {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -567,7 +503,7 @@ pub mod amm_jit {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {

@@ -25,7 +25,7 @@ MODE="${1:-}"
 build_programs() {
   # Clean any restored/incremental SBF artifacts first — building on top of stale
   # .rlibs can emit a .so with wrong offsets after a Cargo.lock change (see
-  # CLAUDE.md "Access violation" note). The program cache reuses the final .so on
+  # docs/agents/build.md "Access violation" note). The program cache reuses the final .so on
   # a hit; on a miss we always build fresh.
   rm -rf target/sbpf*-solana-solana target/deploy
   # build-sbf.sh gives each program its own feature flags. Applying velocity's

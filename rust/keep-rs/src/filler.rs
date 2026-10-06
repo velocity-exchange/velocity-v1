@@ -4,12 +4,11 @@ use {
         http::{FeedHealth, Metrics},
         util::{
             is_resting_swift_limit, should_poll_swift, swift_order_expired,
-            swift_slot_wait_if_known, OrderSlotLimiter, PendingTxMeta, PendingTxs,
-            PerpFillFallback, PythPriceUpdate, SwiftSlotWait, TxIntent,
+            swift_slot_wait_if_known, PendingTxMeta, PendingTxs, PerpFillFallback, PythPriceUpdate,
+            SwiftSlotWait, TxIntent,
         },
         Config, UseMarkets,
     },
-    anchor_lang::Discriminator,
     dashmap::DashMap,
     futures_util::StreamExt,
     solana_account_decoder_client_types::UiAccountEncoding,
@@ -36,10 +35,7 @@ use {
     velocity_rs::{
         constants::PROGRAM_ID,
         event_subscriber::{parse_velocity_logs, VelocityEvent},
-        grpc::{
-            grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
-            AccountUpdate, TransactionUpdate,
-        },
+        grpc::{grpc_subscriber::GrpcConnectionOpts, AccountUpdate, TransactionUpdate},
         market_book,
         priority_fee_subscriber::PriorityFeeSubscriber,
         program::{
@@ -51,7 +47,7 @@ use {
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
         types::{
             accounts::User, CommitmentConfig, MarketId, MarketStatus, OrderType, PositionDirection,
-            RpcSendTransactionConfig, SdkResult, StateExt, VersionedMessage, VersionedTransaction,
+            RpcSendTransactionConfig, SdkResult, VersionedMessage, VersionedTransaction,
         },
         utils::quoter_cpi_section,
         GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
@@ -65,7 +61,6 @@ pub struct FillerBot {
     filler_subaccount: Pubkey,
     slot_rx: tokio::sync::mpsc::Receiver<u64>,
     swift_order_stream: SwiftOrderStream,
-    limiter: OrderSlotLimiter<40>,
     market_ids: Vec<MarketId>,
     config: Config,
     tx_worker_ref: TxSender,
@@ -176,7 +171,6 @@ impl FillerBot {
             filler_subaccount,
             slot_rx,
             swift_order_stream,
-            limiter: OrderSlotLimiter::new(),
             market_ids,
             config,
             tx_worker_ref,
@@ -190,7 +184,6 @@ impl FillerBot {
     pub async fn run(self) {
         let mut swift_order_stream = self.swift_order_stream;
         let mut slot_rx = self.slot_rx;
-        let _limiter = self.limiter;
         let velocity: &'static VelocityClient = Box::leak(Box::new(self.velocity));
         // Attested flow runs only when the chain names a flow authority and a
         // swift endpoint is reachable. Without either one, fills run unattested.
@@ -214,30 +207,12 @@ impl FillerBot {
         // skipped exact multiple would stall the refresh for another window.
         const CONFIG_REFRESH_SLOTS: u64 = 300;
         let mut last_config_refresh_slot: u64 = 0;
-        let mut use_median_trigger_price = velocity
-            .state_account()
-            .map(|s| s.has_median_trigger_price_feature())
-            .unwrap_or(false);
         // Seed with the real chain slot, so a bot started after a gate switch reads
         // the new value at once and not only after the first config refresh.
         let startup_slot = velocity.get_slot().await;
         let mut slot = startup_slot.unwrap_or(0);
         let mut slot_is_known = startup_slot.is_some();
         let mut slot_clock = velocity.slot_clock();
-        // The AMM staleness window as wall clock. The on-chain value is in 400ms
-        // baseline units. The comparison sites integrate oracle age across slot
-        // duration regimes, which mirrors `oracle_validity`.
-        let mut stale_for_amm_threshold = velocity
-            .state_account()
-            .map(|s| {
-                Millis::from_stored_units(
-                    s.oracle_guard_rails
-                        .validity
-                        .slots_before_stale_for_amm
-                        .max(0) as u64,
-                )
-            })
-            .unwrap_or(Millis::from_stored_units(10));
         let mut pyth_oracle_prices = BTreeMap::<u16, PythPriceUpdate>::new();
         // per-market consecutive perp-market/oracle cache-miss counters (see slot loop)
         let _cache_misses = BTreeMap::<u16, u32>::new();
@@ -407,18 +382,6 @@ impl FillerBot {
                         if let Ok(state) = velocity.state_account() {
                             slot_clock = slot_clock_from_state(&state);
                         }
-                        use_median_trigger_price = velocity
-                            .state_account()
-                            .map(|s| s.has_median_trigger_price_feature())
-                            .unwrap_or(false);
-                        stale_for_amm_threshold = velocity
-                            .state_account()
-                            .map(|s| {
-                                Millis::from_stored_units(
-                                    s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
-                                )
-                            })
-                            .unwrap_or(Millis::from_stored_units(10));
                     }
 
                     let duration = std::time::SystemTime::now().duration_since(t0).unwrap().as_millis();
@@ -628,9 +591,7 @@ fn on_slot_update_fn(
         for market in market_ids.iter() {
             // a transiently missing oracle must not kill the gRPC dispatch thread;
             // skip the market this slot and let the next tick retry
-            let Ok(oracle_price_data) =
-                velocity.try_get_mmoracle_for_perp_market(market.index(), new_slot)
-            else {
+            let Ok(_) = velocity.try_get_mmoracle_for_perp_market(market.index(), new_slot) else {
                 let mut misses = consecutive_misses_ref.lock().unwrap();
                 let count = misses.entry(market.index()).or_insert(0);
                 *count += 1;
@@ -983,8 +944,9 @@ async fn try_swift_place(
 /// `fill_perp_order` receives those markets read-only, so the permissionless
 /// crank rides in the same transaction. Call this before `fill_perp_order`,
 /// which also keeps the fill as the last instruction for the account-count
-/// check. A market this misses only costs a reverted fill.
-fn with_spot_interest_cranks<'a>(
+/// check. The liquidator reuses it for its own account, passing no makers. A
+/// market this misses only costs a reverted fill.
+pub(crate) fn with_spot_interest_cranks<'a>(
     mut tx_builder: TransactionBuilder<'a>,
     velocity: &VelocityClient,
     taker: &User,
@@ -1101,7 +1063,6 @@ pub async fn sync_user_accounts(
     match sync_result {
         Ok(accounts) => {
             for (pubkey, account) in accounts {
-                let user = velocity_rs::utils::deser_zero_copy::<User>(&account.data);
                 velocity.backend().account_map().on_account_fn()(&AccountUpdate {
                     pubkey,
                     data: &account.data,
@@ -1164,8 +1125,7 @@ async fn subscribe_grpc(
     let _res = velocity
         .grpc_subscribe(
             std::env::var("GRPC_ENDPOINT")
-                .unwrap_or_else(|_| "https://api.rpcpool.com".to_string())
-                .into(),
+                .unwrap_or_else(|_| "https://api.rpcpool.com".to_string()),
             std::env::var("GRPC_X_TOKEN").expect("GRPC_X_TOKEN set"),
             GrpcSubscribeOpts::default()
                 .commitment(solana_commitment_config::CommitmentLevel::Processed)
@@ -1187,6 +1147,8 @@ async fn subscribe_grpc(
         .await;
 }
 
+// Sent through the tx worker channel by value; boxing would add an allocation per transaction.
+#[allow(clippy::large_enum_variant)]
 pub enum TxWork {
     Send {
         tx: VersionedTransaction,
@@ -1196,13 +1158,11 @@ pub enum TxWork {
         presimulated: Option<SdkResult<RpcSimulateTransactionResult>>,
         simulation_tx: Option<VersionedMessage>,
         require_fill_event: bool,
-        ts: u64,
         intent: TxIntent,
         cu_limit: u64,
     },
     Confirm {
         tx: Signature,
-        ts: u64,
     },
 }
 
@@ -1251,7 +1211,6 @@ impl TxWorker {
                         presimulated,
                         simulation_tx,
                         require_fill_event,
-                        ts: _,
                         intent,
                         cu_limit,
                     } => {
@@ -1270,7 +1229,7 @@ impl TxWorker {
                             cu_limit,
                         );
                     }
-                    TxWork::Confirm { tx, ts: _ } => {
+                    TxWork::Confirm { tx } => {
                         self.confirm_tx(&rt, tx);
                     }
                 }
@@ -1531,7 +1490,6 @@ impl TxWorker {
                 signature,
                 intent,
                 cu_limit: sent_cu_limit,
-                ts: _,
             } = pending_tx_meta.unwrap();
 
             let intent_label = intent.label();
@@ -1952,15 +1910,7 @@ pub struct TxSender {
 
 impl TxSender {
     pub fn confirm_tx(&self, tx: Signature) {
-        self.tx
-            .send(TxWork::Confirm {
-                tx,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-            })
-            .expect("sent");
+        self.tx.send(TxWork::Confirm { tx }).expect("sent");
     }
 
     pub async fn send_tx(
@@ -1970,17 +1920,6 @@ impl TxSender {
         cu_limit: u64,
     ) -> Option<Signature> {
         self.queue_tx(tx, None, false, intent, cu_limit).await
-    }
-
-    pub async fn send_fill_tx(
-        &self,
-        tx: VersionedMessage,
-        simulation_tx: Option<VersionedMessage>,
-        intent: TxIntent,
-        cu_limit: u64,
-    ) -> Option<Signature> {
-        self.queue_tx(tx, simulation_tx, true, intent, cu_limit)
-            .await
     }
 
     async fn queue_tx(
@@ -2036,10 +1975,6 @@ impl TxSender {
                 presimulated: Some(simulation),
                 simulation_tx,
                 require_fill_event,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
                 intent,
                 cu_limit,
             })

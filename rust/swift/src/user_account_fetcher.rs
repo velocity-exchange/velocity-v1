@@ -4,7 +4,6 @@ use {
     redis::{aio::MultiplexedConnection, AsyncCommands},
     solana_clock::Slot,
     solana_pubkey::Pubkey,
-    std::collections::HashMap,
     velocity_rs::{types::accounts::User, VelocityClient},
 };
 
@@ -19,8 +18,9 @@ const MAX_CACHED_USER_AGE_SLOTS: u64 = 225;
 enum Fallback {
     /// Lookup from RPC
     Rpc(VelocityClient),
-    /// Lookup from some mocked hashmap
-    Mock(HashMap<Pubkey, User>),
+    /// Lookup from some mocked hashmap. Only the live `rpc_tests` suite uses it.
+    #[cfg(all(test, feature = "rpc_tests"))]
+    Mock(std::collections::HashMap<Pubkey, User>),
 }
 
 /// Fetches users from UserMap server
@@ -31,8 +31,8 @@ pub struct UserAccountFetcher {
 }
 
 impl UserAccountFetcher {
-    #[cfg(test)]
-    pub fn mock(mocks: HashMap<Pubkey, User>) -> Self {
+    #[cfg(all(test, feature = "rpc_tests"))]
+    pub fn mock(mocks: std::collections::HashMap<Pubkey, User>) -> Self {
         Self {
             fallback: Fallback::Mock(mocks),
             redis: None,
@@ -95,6 +95,7 @@ impl UserAccountFetcher {
                 Fallback::Rpc(velocity) => {
                     velocity.get_account_value(account).await.map_err(|_| ())
                 }
+                #[cfg(all(test, feature = "rpc_tests"))]
                 Fallback::Mock(mocks) => mocks.get(account).copied().ok_or(()),
             },
         }
@@ -147,7 +148,7 @@ impl UserAccountFetcher {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod tests {
     use {
         super::*,

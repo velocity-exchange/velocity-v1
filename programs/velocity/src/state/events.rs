@@ -694,6 +694,7 @@ pub fn emit_stack<T: AnchorSerialize + Discriminator, const N: usize>(event: T) 
     #[cfg(feature = "velocity-rs")]
     // don't emit anything for offchain use
     {
+        let _ = event;
         Ok(())
     }
 }

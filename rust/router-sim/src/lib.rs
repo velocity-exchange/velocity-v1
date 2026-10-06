@@ -246,9 +246,11 @@ mod tests {
     #[test]
     fn slab_slots_round_trip_through_the_decoder() {
         let capacity = 3usize;
-        let mut header = QuoterSlabV0::default();
-        header.market = 7;
-        header.capacity = capacity as u16;
+        let header = QuoterSlabV0 {
+            market: 7,
+            capacity: capacity as u16,
+            ..Default::default()
+        };
         let mut slots = vec![QuoterSlotV0::default(); capacity];
         slots[0].entry = Pubkey::new_unique();
         slots[0].config.market = 7;

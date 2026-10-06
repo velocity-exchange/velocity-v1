@@ -162,7 +162,16 @@ pub fn oracle_watch(oracle: &AccountInfo, source: OracleSource) -> Option<Oracle
         }
 
         // See the module docs: no affine raw threshold exists for these.
-        _ => return None,
+        OracleSource::DeprecatedSwitchboard
+        | OracleSource::QuoteAsset
+        | OracleSource::PythStableCoin
+        | OracleSource::Prelaunch
+        | OracleSource::PythPull
+        | OracleSource::Pyth1KPull
+        | OracleSource::Pyth1MPull
+        | OracleSource::PythStableCoinPull
+        | OracleSource::DeprecatedSwitchboardOnDemand
+        | OracleSource::PythLazerStableCoin => return None,
     };
 
     let data = oracle.try_borrow_data().ok()?;

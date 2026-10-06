@@ -253,6 +253,10 @@ where
         self.marketmap.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.marketmap.is_empty()
+    }
+
     pub fn contains(&self, market_index: &u16) -> bool {
         self.marketmap.contains_key(market_index)
     }
@@ -391,7 +395,7 @@ pub async fn get_market_accounts_with_fallback<T: Market + Pod + Discriminator>(
                     target: LOG_TARGET,
                     "failed to fetch market accounts: {err:?}"
                 );
-                return Err(err)?;
+                Err(err)?;
             }
         }
     }
@@ -415,7 +419,7 @@ pub async fn get_market_accounts_with_fallback<T: Market + Pod + Discriminator>(
             }
             Err(err) => {
                 log::warn!("failed to fetch market account: {err:?}");
-                return Err(err)?;
+                Err(err)?;
             }
         }
     }
@@ -425,17 +429,18 @@ pub async fn get_market_accounts_with_fallback<T: Market + Pod + Discriminator>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::solana_sdk::commitment_config::CommitmentConfig;
-    use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-    use velocity_pubsub_client::PubsubClient;
-
-    use super::{get_market_accounts_with_fallback, MarketMap};
-    use crate::{
-        accounts::{PerpMarket, SpotMarket},
-        utils::{get_ws_url, test_envs::devnet_endpoint},
-        MarketId,
+    #[cfg(feature = "rpc_tests")]
+    use {
+        super::{get_market_accounts_with_fallback, MarketMap},
+        crate::{
+            accounts::{PerpMarket, SpotMarket},
+            solana_sdk::commitment_config::CommitmentConfig,
+            utils::{get_ws_url, test_envs::devnet_endpoint},
+            MarketId,
+        },
+        solana_rpc_client::nonblocking::rpc_client::RpcClient,
+        std::sync::Arc,
+        velocity_pubsub_client::PubsubClient,
     };
 
     #[cfg(feature = "rpc_tests")]
@@ -471,17 +476,17 @@ mod tests {
             get_market_accounts_with_fallback::<PerpMarket>(&RpcClient::new(devnet_endpoint()))
                 .await;
 
-        assert!(result.is_ok_and(|r| r.0.len() > 0 && r.1 > 0));
+        assert!(result.is_ok_and(|r| !r.0.is_empty() && r.1 > 0));
 
         let result =
             get_market_accounts_with_fallback::<SpotMarket>(&RpcClient::new(devnet_endpoint()))
                 .await;
 
-        assert!(result.is_ok_and(|r| r.0.len() > 0 && r.1 > 0));
+        assert!(result.is_ok_and(|r| !r.0.is_empty() && r.1 > 0));
     }
 }
 
-#[cfg(feature = "rpc_tests")]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod rpc_tests {
     use crate::solana_sdk::commitment_config::CommitmentConfig;
 

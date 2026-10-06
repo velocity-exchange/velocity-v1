@@ -738,7 +738,7 @@ fn fill_admitted_levels<'l>(
                 clamped: false,
             })
         }
-        _ => Ok(AdmittedLadder {
+        QuoterType::Vamm | QuoterType::Clob => Ok(AdmittedLadder {
             levels,
             clamped: false,
         }),

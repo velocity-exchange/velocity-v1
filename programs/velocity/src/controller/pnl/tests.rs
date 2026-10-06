@@ -71,7 +71,7 @@ pub fn user_no_position() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -193,7 +193,7 @@ pub fn user_does_not_meet_maintenance_requirement() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -322,7 +322,7 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -461,7 +461,7 @@ pub fn user_unsettled_negative_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -602,7 +602,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -741,7 +741,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -883,7 +883,7 @@ pub fn market_fee_pool_receives_portion() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map =
+    let oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let mut market = PerpMarket {
@@ -1021,7 +1021,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1169,7 +1169,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1311,7 +1311,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1396,16 +1396,6 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
-    expected_user.perp_positions[0].quote_asset_amount = -100 * QUOTE_PRECISION_I64;
-    expected_user.perp_positions[0].settled_pnl = 50 * QUOTE_PRECISION_I64;
-    expected_user.spot_positions[0].scaled_balance = 150 * SPOT_BALANCE_PRECISION_U64;
-    expected_user.spot_positions[0].cumulative_deposits = 50 * QUOTE_PRECISION_I64;
-
-    let mut expected_market = market;
-    expected_market.pnl_pool.scaled_balance = 0;
-    expected_market.quote_asset_amount = -200 * QUOTE_PRECISION_I128;
-
     assert!(settle_pnl(
         0,
         &mut user,
@@ -1450,7 +1440,7 @@ pub fn user_long_negative_unrealized_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1592,7 +1582,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1734,7 +1724,7 @@ pub fn user_short_negative_unrealized_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1877,7 +1867,7 @@ pub fn user_invalid_oracle_position() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -2194,7 +2184,7 @@ pub fn isolated_perp_position_negative_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -2332,7 +2322,7 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),

@@ -92,7 +92,7 @@ impl PolledAccountSubscriber {
 #[cfg(test)]
 mod tests {
     use crate::solana_sdk::account::Account;
-    use anchor_lang::AccountSerialize;
+
     use serde_json::json;
     use solana_account_decoder::encode_ui_account;
     use solana_account_decoder_client_types::UiAccountEncoding;
@@ -119,7 +119,7 @@ mod tests {
         };
 
         let mut buf = Vec::<u8>::with_capacity(8 + std::mem::size_of::<User>());
-        buf.extend_from_slice(&<User as anchor_lang::Discriminator>::DISCRIMINATOR);
+        buf.extend_from_slice(<User as anchor_lang::Discriminator>::DISCRIMINATOR);
         buf.extend_from_slice(bytemuck::bytes_of(&mock_user));
 
         let mock_account = Account {

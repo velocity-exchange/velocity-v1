@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use {
         crate::{
@@ -1280,7 +1281,7 @@ mod swap_tests {
             ConstituentSpotBalance {
                 scaled_balance: out_token_amount.unsigned_abs()
                     * (SPOT_BALANCE_PRECISION / 10_u128.pow(6)),
-                balance_type: SpotBalanceType::Deposit,
+                balance_type: SpotBalanceType::Borrow,
                 market_index: 0,
                 ..ConstituentSpotBalance::default()
             }
@@ -1674,6 +1675,8 @@ mod swap_fee_tests {
         assert_eq!(fee_out, -6 * PERCENTAGE_PRECISION_I128 / 100000); // -0.6 bps
     }
 
+    // anchor-test raises the staleness limits this test exercises.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_target_delays() {
         let lp_pool = LPPool {

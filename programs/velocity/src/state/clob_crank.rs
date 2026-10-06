@@ -763,7 +763,7 @@ mod tests {
     fn size_matches_the_layout_and_the_spec() {
         // The account must fit anchor init's 10,240-byte CPI allocation
         // ceiling, or an attach of a CLOB to a market fails.
-        assert!(ClobCrankConditionsV0::SIZE <= 10_240);
+        const { assert!(ClobCrankConditionsV0::SIZE <= 10_240) };
         // The watch registers at the relay block, which is the first field.
         assert_eq!(CLOB_CRANK_BLOCK_OFFSET, 8);
         // The u64 reservoir fields must land 8-aligned, past the block.
@@ -957,7 +957,7 @@ mod tests {
     fn priority_lamports_match_what_the_runtime_charges() {
         let price = 37_500;
         let units = 250_000;
-        let charged = u64::from(price) * u64::from(units) / 1_000_000;
+        let charged = price * u64::from(units) / 1_000_000;
         assert_eq!(
             CrankPaymentsV0::crank_priority_lamports(price, units, u64::MAX).unwrap(),
             charged

@@ -75,7 +75,7 @@ fewer chunked writes per deploy and less rent on the buffer account.
 
 The old suite ran on `solana-bankrun@0.4.0`, which embeds an Agave 2.x runtime. It rejects a v3
 `.so` at the first instruction with `Program is not deployed` / `invalid account data for
-instruction`. Note that CLAUDE.md attributes that same text to 896-byte stub `.so` files built with
+instruction`. Note that docs/agents/testing.md attributes that same text to 896-byte stub `.so` files built with
 the wrong feature flags; under v3 it means the runtime does not recognize the bytecode version.
 
 `solana-bankrun` stopped at 0.4.0 and will not gain v3 support. The `litesvm` npm package is its

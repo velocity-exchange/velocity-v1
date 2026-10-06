@@ -284,7 +284,7 @@ impl<'a> SpotMarketMap<'a> {
         }
 
         crate::validate!(
-            !(!must_be_writable && is_writable),
+            must_be_writable || !is_writable,
             ErrorCode::SpotMarketWrongMutability,
             "spot market {} not expected to be writeable",
             market_index

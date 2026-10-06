@@ -660,7 +660,7 @@ mod revoke_completed_orders_tests {
     /// byte path production uses.
     fn escrow_backing(orders: &[RevenueShareOrder]) -> Vec<u128> {
         let n = RevenueShareEscrow::space(orders.len(), 0);
-        let mut backing = vec![0u128; (n + 15) / 16];
+        let mut backing = vec![0u128; n.div_ceil(16)];
         {
             let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
             let buf = &mut full[..n];
@@ -847,7 +847,7 @@ mod builder_order_index_tests {
         body: impl FnOnce(&RevenueShareEscrowZeroCopyMut),
     ) {
         let n = RevenueShareEscrow::space(orders.len(), 0);
-        let mut backing = vec![0u128; (n + 15) / 16];
+        let mut backing = vec![0u128; n.div_ceil(16)];
         let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
         let buf = &mut full[..n];
 
@@ -944,7 +944,7 @@ mod delete_user_orphan_tests {
     /// Build an escrow data buffer: `[4 padding0][4 orders len][orders...]`.
     fn buf(orders: &[RevenueShareOrder]) -> Vec<u8> {
         let size = std::mem::size_of::<RevenueShareOrder>();
-        let mut v = vec![0u8; 8 + orders.len() * size];
+        let mut v = vec![0u8; 8 + std::mem::size_of_val(orders)];
         v[4..8].copy_from_slice(&(orders.len() as u32).to_le_bytes());
         for (i, o) in orders.iter().enumerate() {
             let start = 8 + i * size;

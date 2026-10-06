@@ -345,7 +345,10 @@ fn resolve_order_terms(
             params.direction,
             params.price,
         )?,
-        _ => params.price,
+        OrderType::Limit
+        | OrderType::TriggerMarket
+        | OrderType::TriggerLimit
+        | OrderType::Oracle => params.price,
     };
 
     let max_ts = match params.max_ts {
@@ -373,7 +376,7 @@ fn default_order_max_ts(order_type: OrderType, now: i64) -> VelocityResult<i64> 
         OrderType::Market | OrderType::Oracle => {
             now.safe_add(DEFAULT_MARKET_ORDER_LIFETIME_SECONDS)
         }
-        _ => Ok(0_i64),
+        OrderType::Limit | OrderType::TriggerMarket | OrderType::TriggerLimit => Ok(0_i64),
     }
 }
 

@@ -953,7 +953,8 @@ fn fired_view(armed: &Order) -> Order {
     fired.trigger_condition = match armed.trigger_condition {
         OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
         OrderTriggerCondition::Below => OrderTriggerCondition::TriggeredBelow,
-        other => other,
+        other @ OrderTriggerCondition::TriggeredAbove
+        | other @ OrderTriggerCondition::TriggeredBelow => other,
     };
 
     fired

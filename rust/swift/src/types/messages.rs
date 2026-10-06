@@ -575,7 +575,7 @@ mod tests {
             signed_msg_order_params: OrderParams {
                 market_index: 24,
                 market_type: MarketType::Perp,
-                base_asset_amount: 123456_789,
+                base_asset_amount: 123_456_789,
                 order_type: OrderType::Limit,
                 ..Default::default()
             },

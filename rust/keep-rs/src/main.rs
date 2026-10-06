@@ -14,10 +14,7 @@ mod ws_source;
 use {
     crate::{
         filler::FillerBot,
-        http::{
-            dashboard_api_handler, dashboard_handler, health_handler, metrics_handler,
-            DashboardStateRef, Metrics,
-        },
+        http::{health_handler, metrics_handler, Metrics},
         liquidator::LiquidatorBot,
         quoter::QuoterBot,
         taker::TakerBot,
@@ -214,7 +211,6 @@ async fn main() {
 
     let config = Config::parse();
     let metrics = Arc::new(Metrics::new());
-    let dashboard_state: DashboardStateRef = Arc::new(tokio::sync::RwLock::new(None));
 
     // Start Prometheus metrics server
     let metrics_port = std::env::var("METRICS_PORT")
@@ -229,7 +225,6 @@ async fn main() {
     let feed_health = Arc::new(crate::http::FeedHealth::default());
     let app_state = crate::http::AppState {
         metrics: Arc::clone(&metrics),
-        dashboard_state: Arc::clone(&dashboard_state),
         feed_health: Arc::clone(&feed_health),
     };
     let _http_task = tokio::spawn(async move {
@@ -238,9 +233,6 @@ async fn main() {
             axum::Router::new()
                 .route("/metrics", axum::routing::get(metrics_handler))
                 .route("/health", axum::routing::get(health_handler))
-                .route("/", axum::routing::get(dashboard_handler))
-                .route("/dashboard", axum::routing::get(dashboard_handler))
-                .route("/api/dashboard", axum::routing::get(dashboard_api_handler))
                 .with_state(app_state),
         )
         .await
@@ -302,7 +294,7 @@ async fn main() {
     if config.relayer {
         relayer::run(config, velocity).await;
     } else if config.liquidator {
-        let bot = LiquidatorBot::new(config, velocity, metrics, dashboard_state).await;
+        let bot = LiquidatorBot::new(config, velocity, metrics).await;
         bot.run().await;
     } else if config.quoter {
         let bot = std::sync::Arc::new(QuoterBot::new(config, velocity.clone()).await);

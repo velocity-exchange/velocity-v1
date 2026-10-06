@@ -50,6 +50,22 @@ export function parseMarketIndex(raw: string): number {
 }
 
 /**
+ * Parse a `<markets>` positional: one index, a comma-separated list (`0,1,4`),
+ * or `all`. Returns `'all'` for the caller to expand against onchain state.
+ * Duplicates are rejected, since they would write the same market twice.
+ */
+export function parseMarketList(raw: string): number[] | 'all' {
+	if (raw === 'all') {
+		return 'all';
+	}
+	const indexes = raw.split(',').map(parseMarketIndex);
+	if (new Set(indexes).size !== indexes.length) {
+		throw new Error(`markets must not repeat an index, got "${raw}"`);
+	}
+	return indexes;
+}
+
+/**
  * Parse an unsigned decimal integer argument of any width into a `BN`. Use it
  * for a u64 or u128 amount that overflows `number`.
  */

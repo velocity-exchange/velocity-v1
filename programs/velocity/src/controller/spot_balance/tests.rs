@@ -1622,7 +1622,7 @@ fn attempt_borrow_with_massive_upnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map =
+    let oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     // sol coin

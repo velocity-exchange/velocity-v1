@@ -3,15 +3,13 @@ use {
     axum::{
         extract::State,
         http::{header::CONTENT_TYPE, Response, StatusCode},
-        response::{Html, IntoResponse, Json},
+        response::{IntoResponse, Json},
     },
     prometheus::{
-        Encoder, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
-        TextEncoder,
+        Encoder, HistogramVec, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder,
     },
     serde::{Deserialize, Serialize},
     std::sync::Arc,
-    tokio::sync::RwLock,
     velocity_quoter_health::{
         metrics::Metrics as QuoterMetrics, store::now_ms, Health, Policy as QuoterPolicy,
     },
@@ -50,14 +48,6 @@ impl UserMarginStatus {
     }
 }
 
-/// Market type for positions and oracles
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum MarketType {
-    Perp,
-    Spot,
-}
-
 #[derive(Debug)]
 pub struct Metrics {
     pub tx_sent: IntCounterVec,
@@ -78,7 +68,6 @@ pub struct Metrics {
     pub liquidation_skipped: IntCounterVec,
     pub liquidation_backoff_skips: IntCounter,
     pub swap_quote_latency_ms: IntGauge,
-    pub pyth_price_age_ms: IntGaugeVec,
     pub jupiter_quote_failures: IntCounter,
     pub titan_quote_failures: IntCounter,
     pub confirmation_slots: HistogramVec,
@@ -254,18 +243,6 @@ impl Metrics {
             .register(Box::new(swap_quote_latency_ms.clone()))
             .unwrap();
 
-        let pyth_price_age_ms = IntGaugeVec::new(
-            prometheus::Opts::new(
-                "rfb_pyth_price_age_ms",
-                "Wall-clock age of the last-consumed pyth-lazer price update, in milliseconds",
-            ),
-            &["market"],
-        )
-        .unwrap();
-        registry
-            .register(Box::new(pyth_price_age_ms.clone()))
-            .unwrap();
-
         let jupiter_quote_failures = IntCounter::new(
             "rfb_jupiter_quote_failures_total",
             "Number of Jupiter quote failures",
@@ -327,7 +304,6 @@ impl Metrics {
             liquidation_skipped,
             liquidation_backoff_skips,
             swap_quote_latency_ms,
-            pyth_price_age_ms,
             jupiter_quote_failures,
             titan_quote_failures,
             confirmation_slots,
@@ -385,57 +361,10 @@ pub async fn health_handler(State(state): State<AppState>) -> impl IntoResponse 
     )
 }
 
-/// Dashboard state shared between liquidator and HTTP server
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DashboardState {
-    pub high_risk_users: Vec<HighRiskUser>,
-    pub oracle_prices: Vec<OraclePriceInfo>,
-    pub current_slot: u64,
-    pub last_updated_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HighRiskUser {
-    pub pubkey: String,
-    pub authority: String,
-    pub total_collateral: i128,
-    pub margin_requirement: u128,
-    pub free_margin: i128,
-    pub free_margin_ratio: f64,
-    pub status: MarginStatus,
-    pub last_updated_slot: u64,
-    pub last_updated_ms: u64,
-    pub positions: Vec<PositionInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PositionInfo {
-    pub market_type: MarketType,
-    pub market_index: u16,
-    pub base_asset_amount: i64,
-    pub quote_asset_amount: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OraclePriceInfo {
-    pub market_type: MarketType,
-    pub market_index: u16,
-    pub price: i64,
-    pub last_updated_slot: u64,
-    pub last_updated_ms: u64,
-    pub age_slots: u64,
-    pub age_ms: u64,
-    pub is_stale: bool,
-}
-
-/// Shared dashboard state
-pub type DashboardStateRef = Arc<RwLock<Option<DashboardState>>>;
-
 /// Combined state for HTTP handlers
 #[derive(Clone)]
 pub struct AppState {
     pub metrics: Arc<Metrics>,
-    pub dashboard_state: DashboardStateRef,
     pub feed_health: Arc<FeedHealth>,
 }
 
@@ -509,22 +438,4 @@ impl FeedHealth {
             .load(std::sync::atomic::Ordering::Relaxed);
         last == 0 || Self::unix_now_ms().saturating_sub(last) < Self::PYTH_STALE_LIMIT_MS
     }
-}
-
-/// API endpoint to get dashboard data
-pub async fn dashboard_api_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let dashboard_state = state.dashboard_state.read().await;
-    match dashboard_state.as_ref() {
-        Some(data) => Json(data.clone()).into_response(),
-        None => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Dashboard data not available"})),
-        )
-            .into_response(),
-    }
-}
-
-/// Serve the dashboard HTML page
-pub async fn dashboard_handler() -> Html<&'static str> {
-    Html(include_str!("../static/dashboard.html"))
 }

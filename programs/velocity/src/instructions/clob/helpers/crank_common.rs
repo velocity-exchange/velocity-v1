@@ -936,7 +936,7 @@ pub(crate) fn market_status_admits_trigger(
         MarketStatus::ReduceOnly => {
             order.reduce_only || order.order_type == OrderType::TriggerMarket
         }
-        _ => false,
+        MarketStatus::Initialized | MarketStatus::Settlement | MarketStatus::Delisted => false,
     }
 }
 

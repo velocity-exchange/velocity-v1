@@ -2069,7 +2069,7 @@ pub mod meets_withdraw_margin_requirement {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {

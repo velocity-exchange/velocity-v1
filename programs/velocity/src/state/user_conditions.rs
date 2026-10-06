@@ -492,7 +492,7 @@ mod merged_size_tests {
         assert_eq!(TRIGGER_SLOT_BASE, 3);
         assert_eq!(relay_spec::CONDITION_LEN, 192);
         println!("UserConditionsV0::SIZE = {}", UserConditionsV0::SIZE);
-        assert!(UserConditionsV0::SIZE <= 10_240);
+        const { assert!(UserConditionsV0::SIZE <= 10_240) };
     }
 
     /// Opting in is permissionless and the protocol treasury pays the resync

@@ -149,7 +149,7 @@ impl SlotSubscriber {
     }
 }
 
-#[cfg(feature = "rpc_tests")]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod tests {
     use super::*;
     use crate::utils::{get_ws_url, test_envs::mainnet_endpoint};

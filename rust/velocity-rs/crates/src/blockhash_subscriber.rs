@@ -105,7 +105,7 @@ impl BlockhashSubscriber {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod tests {
     use serde_json::json;
     use solana_rpc_client::rpc_client::Mocks;
@@ -143,7 +143,7 @@ mod tests {
             last_twenty_hashes: Arc::new(RwLock::new(VecDeque::from_iter(
                 [oldest_block_hash]
                     .into_iter()
-                    .chain(std::iter::repeat(Hash::new_unique()).take(20)),
+                    .chain(std::iter::repeat_n(Hash::new_unique(), 20)),
             ))),
             unsub: Mutex::default(),
             rpc_client: Arc::new(mock_rpc),

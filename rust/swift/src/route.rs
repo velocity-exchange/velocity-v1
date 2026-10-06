@@ -474,11 +474,3 @@ fn derive_user_accounts(
     let stats = Pubkey::find_program_address(&[b"user_stats", authority.as_ref()], velocity).0;
     (user, stats)
 }
-
-/// Wall clock in seconds, for the book walk's expiry check.
-fn chrono_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default()
-}

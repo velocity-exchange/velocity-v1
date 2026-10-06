@@ -698,7 +698,8 @@ fn watch_direction(order: &crate::state::user::Order) -> Option<WatchDirection> 
     let trigger_side = match order.trigger_condition {
         crate::state::user::OrderTriggerCondition::Above => WatchDirection::AtOrAbove,
         crate::state::user::OrderTriggerCondition::Below => WatchDirection::AtOrBelow,
-        _ => return None,
+        crate::state::user::OrderTriggerCondition::TriggeredAbove
+        | crate::state::user::OrderTriggerCondition::TriggeredBelow => return None,
     };
 
     if !order.is_bit_flag_set(crate::state::user::OrderBitFlag::AwaitingTriggerRecross)
@@ -757,7 +758,7 @@ fn route_trigger_resolver(
     let disc = match order.order_type {
         OrderType::TriggerLimit => crate::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR,
         OrderType::TriggerMarket => crate::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR,
-        _ => {
+        OrderType::Market | OrderType::Limit | OrderType::Oracle => {
             msg!("order {} is not a trigger order", order.order_id);
             return Err(ErrorCode::OrderNotTriggerable.into());
         }

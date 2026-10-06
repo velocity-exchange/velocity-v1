@@ -115,7 +115,7 @@ pub fn update_amms(
     let now = clock.unix_timestamp;
 
     let updated = true; // todo
-    for (_key, market_account_loader) in perp_market_map.0.iter_mut() {
+    for market_account_loader in perp_market_map.0.values_mut() {
         let market = &mut load_mut!(market_account_loader)?;
         let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
         let mm_oracle_price_data = market.get_mm_oracle_price_data(

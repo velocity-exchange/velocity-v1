@@ -512,6 +512,31 @@ export class LiquidatorBot implements Bot {
 		return this.velocityClient.getUser(subAccountId);
 	}
 
+	/**
+	 * Prepends the permissionless interest crank for every stale spot market the
+	 * liquidating sub-account borrows from. The program values those borrows for the
+	 * liquidator's own initial-margin check and reverts with
+	 * `SpotMarketInterestStaleForMargin` when one is stale.
+	 *
+	 * A failure here only costs a reverted liquidation, so it is logged and the
+	 * liquidation is attempted anyway.
+	 */
+	private async withLiquidatorInterestCranks(
+		subAccountId: number,
+		ix: TransactionInstruction
+	): Promise<Array<TransactionInstruction>> {
+		try {
+			const liquidator = this.velocityClient.getUserAccount(subAccountId);
+			const cranks = liquidator
+				? await this.velocityClient.getStaleSpotInterestCrankIxs([liquidator])
+				: [];
+			return [...cranks, ix];
+		} catch (e) {
+			logger.warn(`failed to build spot interest crank ixs: ${e}`);
+			return [ix];
+		}
+	}
+
 	private async buildVersionedTransactionWithSimulatedCus(
 		ixs: Array<TransactionInstruction>,
 		luts: Array<AddressLookupTableAccount>,
@@ -1183,7 +1208,7 @@ export class LiquidatorBot implements Bot {
 			subAccountToLiqSpot
 		);
 		const simResult = await this.buildVersionedTransactionWithSimulatedCus(
-			[ix],
+			await this.withLiquidatorInterestCranks(subAccountToLiqSpot, ix),
 			this.velocityLookupTables!,
 			Math.floor(this.priorityFeeSubscriber.getCustomStrategyResult())
 		);
@@ -1401,7 +1426,7 @@ export class LiquidatorBot implements Bot {
 					subAccountToLiqBorrow
 				);
 				const simResult = await this.buildVersionedTransactionWithSimulatedCus(
-					[ix],
+					await this.withLiquidatorInterestCranks(subAccountToLiqBorrow, ix),
 					this.velocityLookupTables!,
 					Math.floor(this.priorityFeeSubscriber.getCustomStrategyResult())
 				);
@@ -1494,7 +1519,10 @@ export class LiquidatorBot implements Bot {
 					subAccountToTakeOverPerpPnl
 				);
 				const simResult = await this.buildVersionedTransactionWithSimulatedCus(
-					[ix],
+					await this.withLiquidatorInterestCranks(
+						subAccountToTakeOverPerpPnl,
+						ix
+					),
 					this.velocityLookupTables!,
 					Math.floor(this.priorityFeeSubscriber.getCustomStrategyResult())
 				);
@@ -1823,7 +1851,7 @@ export class LiquidatorBot implements Bot {
 		// The liquidation cancels the liquidatee's CLOB orders itself. The SDK
 		// builder carries the books of the markets that hold them.
 		const simResult = await this.buildVersionedTransactionWithSimulatedCus(
-			[ix],
+			await this.withLiquidatorInterestCranks(subAccountToLiqPerp, ix),
 			this.velocityLookupTables!,
 			Math.floor(this.priorityFeeSubscriber.getCustomStrategyResult())
 		);

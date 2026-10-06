@@ -4447,11 +4447,17 @@ export type Vaults = {
 					{
 						name: 'openOrders';
 						docs: ['The number of open orders'];
-						type: 'u8';
+						type: 'u16';
 					},
 					{
 						name: 'positionFlag';
 						type: 'u8';
+					},
+					{
+						name: 'padding';
+						type: {
+							array: ['u8', 7];
+						};
 					},
 				];
 			};
@@ -5644,14 +5650,14 @@ export type Vaults = {
 						type: 'bool';
 					},
 					{
-						name: 'openOrders';
-						docs: ['number of open orders'];
-						type: 'u8';
-					},
-					{
 						name: 'hasOpenOrder';
 						docs: ['Whether or not user has open order'];
 						type: 'bool';
+					},
+					{
+						name: 'openOrders';
+						docs: ['number of open orders'];
+						type: 'u16';
 					},
 					{
 						name: 'openAuctions';
@@ -5677,7 +5683,7 @@ export type Vaults = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 3];
+							array: ['u8', 2];
 						};
 					},
 					{

@@ -185,7 +185,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
     let mut oracle_price = get_pyth_price(100, 6);
     let oracle_key = Pubkey::from_str(AUTHORITY).unwrap();
     create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
-    let mut oracle_map = crate::state::oracle_map::OracleMap::load_one(
+    let oracle_map = crate::state::oracle_map::OracleMap::load_one(
         &oracle_info,
         slot,
         crate::math::time::SlotClock::baseline(),

@@ -212,7 +212,7 @@ async fn place_and_cancel_orders() {
     .cancel_all_orders()
     .place_and_make(
         NewOrder::limit(btc_perp)
-            .amount(1 * BASE_PRECISION_I64)
+            .amount(BASE_PRECISION_I64)
             .price(40 * PRICE_PRECISION_U64)
             .post_only(PostOnlyParam::MustPostOnly)
             .build(),
@@ -243,7 +243,7 @@ async fn place_and_take() {
     let sol_perp = client.market_lookup("sol-perp").expect("exists");
 
     let order = NewOrder::limit(sol_perp)
-        .amount(1 * BASE_PRECISION_I64)
+        .amount(BASE_PRECISION_I64)
         .price(40 * PRICE_PRECISION_U64)
         .build();
     let clob = clob_accounts(&client, sol_perp.index()).await;
@@ -376,7 +376,7 @@ async fn settle_pnl_txs() {
         )
         .place_and_make(
             NewOrder::limit(sol_perp)
-                .amount(-1 * BASE_PRECISION_I64)
+                .amount(-BASE_PRECISION_I64)
                 .price(10 * PRICE_PRECISION_U64)
                 .post_only(PostOnlyParam::None)
                 .build(),
@@ -408,8 +408,10 @@ async fn initialize_user_subaccount_0() {
     .await
     .expect("connects");
 
-    let mut user = User::default();
-    user.authority = *wallet.authority();
+    let user = User {
+        authority: *wallet.authority(),
+        ..Default::default()
+    };
 
     let tx = TransactionBuilder::new(
         client.program_data(),
@@ -458,13 +460,10 @@ async fn place_order_sim_via_privy_account() {
         post_only: velocity_rs::types::PostOnlyParam::None,
         bit_flags: 0,
         oracle_price_offset: Some(62656166),
-        auction_duration: Some(20),
-        auction_start_price: Some(21469327),
-        auction_end_price: Some(62656166),
         ..Default::default()
     };
 
-    let isolated_deposit = Some(379918_u64);
+    let isolated_deposit = 379_918_u64;
     let market_index = taker_order_params.market_index;
     let clob = clob_accounts(&client, market_index).await;
 
@@ -474,7 +473,7 @@ async fn place_order_sim_via_privy_account() {
         std::borrow::Cow::Owned(user),
         false,
     )
-    .transfer_isolated_perp_position_deposit(isolated_deposit.unwrap() as i64, market_index)
+    .transfer_isolated_perp_position_deposit(isolated_deposit as i64, market_index)
     .place_and_take(taker_order_params, clob, None)
     .fee_payer(solana_pubkey::pubkey!(
         "4feEEMTPNnzwRiFeCNsogqXzHj3QyYowkYn4Y5BFv3rH" // some privy fee payer

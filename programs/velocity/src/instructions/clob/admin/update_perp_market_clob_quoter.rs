@@ -208,7 +208,21 @@ pub fn handle_update_perp_market_clob_quoter(
 fn quote_spot_oracle(quote_spot_market: &SpotMarket) -> Pubkey {
     match quote_spot_market.oracle_source {
         OracleSource::QuoteAsset => Pubkey::default(),
-        _ => quote_spot_market.oracle,
+        OracleSource::Pyth
+        | OracleSource::DeprecatedSwitchboard
+        | OracleSource::Pyth1K
+        | OracleSource::Pyth1M
+        | OracleSource::PythStableCoin
+        | OracleSource::Prelaunch
+        | OracleSource::PythPull
+        | OracleSource::Pyth1KPull
+        | OracleSource::Pyth1MPull
+        | OracleSource::PythStableCoinPull
+        | OracleSource::DeprecatedSwitchboardOnDemand
+        | OracleSource::PythLazer
+        | OracleSource::PythLazer1K
+        | OracleSource::PythLazer1M
+        | OracleSource::PythLazerStableCoin => quote_spot_market.oracle,
     }
 }
 

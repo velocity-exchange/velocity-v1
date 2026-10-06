@@ -96,17 +96,21 @@ macro_rules! digest_struct_hex {
     }};
 }
 
-/// same as `solana_program::msg!` but it can compile away for off-chain use
+/// Same as `solana_program::msg!`, but it does nothing in the off-chain `velocity-rs` build. The
+/// arguments are still type-checked there, so variables used only for logging don't warn as
+/// unused, and the branch never runs, so they are never evaluated off-chain.
 #[macro_export]
 macro_rules! msg {
     ($msg:expr) => {
-        #[cfg(not(feature = "velocity-rs"))]
-        ::solana_program::msg!($msg)
+        if cfg!(not(feature = "velocity-rs")) {
+            ::solana_program::msg!($msg)
+        }
     };
     ($($arg:tt)*) => {
-        #[cfg(not(feature = "velocity-rs"))]
-        (::solana_program::msg!(&format!($($arg)*)));
-    }
+        if cfg!(not(feature = "velocity-rs")) {
+            ::solana_program::msg!(&format!($($arg)*))
+        }
+    };
 }
 
 #[macro_export]

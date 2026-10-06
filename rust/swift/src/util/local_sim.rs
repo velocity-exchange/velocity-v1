@@ -69,7 +69,7 @@ pub fn simulate_detached_perp_order(
     let state = NativeState::try_deserialize(&mut state_aligned.as_slice())
         .map_err(|_| ErrorCode::UnableToLoadAccountLoader)?;
 
-    let mut user = user.clone();
+    let mut user = *user;
     if let Some(max_margin_ratio) = max_margin_ratio {
         user.update_perp_position_max_margin_ratio(order_params.market_index, max_margin_ratio)?;
     }
@@ -81,7 +81,7 @@ pub fn simulate_detached_perp_order(
     let perp_map = PerpMarketMap::load(&Default::default(), &mut perp_infos.iter().peekable())?;
 
     let oracle_infos = build_infos(&mut accounts.oracles);
-    let mut oracle_map = OracleMap::load(
+    let oracle_map = OracleMap::load(
         &mut oracle_infos.iter().peekable(),
         accounts.latest_slot,
         accounts.slot_clock,

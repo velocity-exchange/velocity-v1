@@ -1425,8 +1425,7 @@ pub(super) fn fill_from_liquidity_sources(
     // ---- Quote, split, and take the vAMM's share while the curve is held. ----
     let routed = fill.route_across_sources(&venue, &mut amm_quoter, target_size)?;
 
-    // ---- Release `market.amm`, then settle each source. ----
-    drop(amm_quoter);
+    // ---- `amm_quoter`'s borrow of `market.amm` ends above, so settle each source. ----
     fill.settle_routed_fill(market.deref_mut(), filler, &mut venue, &routed)?;
 
     let filled = fill.close_out(market.deref_mut(), &mut venue, &filler.key)?;

@@ -798,7 +798,6 @@ fn validate_formats(formats: &[Format]) -> Result<(), &'static str> {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, From, Default)]
 #[serde(rename_all = "camelCase")]
-
 pub enum MarketSession {
     #[default]
     Regular,
@@ -810,7 +809,6 @@ pub enum MarketSession {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, From, Default)]
 #[serde(rename_all = "camelCase")]
-
 pub enum TradingStatus {
     #[default]
     Open,

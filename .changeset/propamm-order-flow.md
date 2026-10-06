@@ -44,6 +44,8 @@ top-of-book quote amounts). `L2Level`, `L2OrderBook`, `L3Level`, `L3OrderBook`, 
 `uncrossL2` move from `dlob/orderBookLevels` to `orderBookLevels`; the package barrel re-exports
 them from the same names, so an import from `@velocity-exchange/sdk` does not move. A level's
 `sources` now reports `'vamm'`, `'clob'` or `'propamm'` — `'dlob'` and `'indicative'` are gone.
+`calculateEstimatedPerpEntryPrice` takes an `L2OrderBook` in place of the `dlob`, `slot`,
+`usersToSkip` and `slotDurationState` arguments.
 
 Read resting liquidity from the book instead — `UserClobOrdersClient` for a user's own orders, the
 dlob-server's `/l2`, `/l3` and `/userOrders` for the market's, and `quoteRouter` for what a taker of

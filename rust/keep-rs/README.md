@@ -23,8 +23,7 @@ Optional: `MARKET_IDS` (default `0,1,2`), `MAINNET` (default `true`), `DRY_RUN`,
 the filler's swift order feed at a different swift ws server. The liquidator reads
 `DLOB_SERVER_URL` (default `http://localhost:6969`) to get a liquidatee's resting CLOB
 orders, which it force-cancels before a perp liquidation. `.env.example` lists the
-per-bot knobs. Every bot serves `/metrics`, `/health`, and a dashboard at `/` on
-`METRICS_PORT`.
+per-bot knobs. Every bot serves `/metrics` and `/health` on `METRICS_PORT`.
 
 `--mainnet` is a switch, so `--mainnet false` is rejected as an unexpected argument. Set
 `MAINNET=false` in the environment to run against devnet.

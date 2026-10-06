@@ -63,6 +63,15 @@ wincode = { version = "0.6", features = ["derive"] }
 # stops compiling rather than changing the bytes the other program reads.
 bytemuck = { version = "1.14", features = ["derive"] }
 
+# Shared by every program crate through `[lints] workspace = true`. `solana_program::entrypoint!`
+# and Anchor's macros check these cfgs inside the calling crate. Declaring them keeps the lint on
+# for real typos without adding features that would change the build if someone enabled them.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(target_os, values("solana"))',
+  'cfg(feature, values("anchor-debug", "custom-heap", "custom-panic", "no-log-ix-name"))',
+] }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

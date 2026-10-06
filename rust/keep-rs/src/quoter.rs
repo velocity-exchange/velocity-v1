@@ -61,7 +61,6 @@ pub struct QuoterBot {
 struct MarketSnapshot {
     market_index: u16,
     oracle_price: u64,
-    tick_size: u64,
     target_bid: u64,
     target_ask: u64,
     base_position: i64,
@@ -207,7 +206,7 @@ impl QuoterBot {
     /// can tell at a glance whether the bot is funded. Warns if total deposit
     /// notional is zero or below `LOW_DEPOSIT_USD`.
     async fn log_deposits(&self) -> Result<(), String> {
-        const LOW_DEPOSIT_USD: u128 = 10 * QUOTE_PRECISION as u128;
+        const LOW_DEPOSIT_USD: u128 = 10 * QUOTE_PRECISION;
 
         let user = self
             .velocity
@@ -261,7 +260,7 @@ impl QuoterBot {
                 "subaccount {} has LOW deposits: total={} (QUOTE_PRECISION, ~${})",
                 self.subaccount,
                 total_deposit_usd,
-                total_deposit_usd / QUOTE_PRECISION as u128,
+                total_deposit_usd / QUOTE_PRECISION,
             );
         } else {
             log::info!(
@@ -269,7 +268,7 @@ impl QuoterBot {
                 "subaccount {} total deposit notional={} (~${})",
                 self.subaccount,
                 total_deposit_usd,
-                total_deposit_usd / QUOTE_PRECISION as u128,
+                total_deposit_usd / QUOTE_PRECISION,
             );
         }
         Ok(())
@@ -355,7 +354,6 @@ impl QuoterBot {
         Ok(MarketSnapshot {
             market_index,
             oracle_price,
-            tick_size: _assert_tick(tick_size),
             target_bid,
             target_ask,
             base_position,
@@ -442,7 +440,7 @@ impl QuoterBot {
         let mut tx = TransactionBuilder::new(
             self.velocity.program_data(),
             self.subaccount,
-            std::borrow::Cow::Owned(user.clone()),
+            std::borrow::Cow::Owned(*user),
             false,
         )
         .with_priority_fee(self.config.priority_fee, Some(self.config.fill_cu_limit));
@@ -750,11 +748,6 @@ fn make_reduce_market(
         user_order_id,
         ..Default::default()
     }
-}
-
-fn _assert_tick(t: u64) -> u64 {
-    debug_assert!(t > 0);
-    t
 }
 
 #[cfg(test)]

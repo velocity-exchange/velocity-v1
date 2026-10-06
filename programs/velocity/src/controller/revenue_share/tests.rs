@@ -216,7 +216,7 @@ fn escrow_backing(
             buf[start..start + order_size].copy_from_slice(bytemuck::bytes_of(order));
         }
 
-        let builders_len_offset = header + 12 + orders.len() * order_size;
+        let builders_len_offset = header + 12 + std::mem::size_of_val(orders);
         let builder_size = std::mem::size_of::<BuilderInfo>();
         buf[builders_len_offset..builders_len_offset + 4]
             .copy_from_slice(&(builders.len() as u32).to_le_bytes());
@@ -304,7 +304,7 @@ fn builder_row_pays_builder_and_frees_the_slot() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -372,7 +372,7 @@ fn referral_row_pays_referrer_and_keeps_the_row() {
     create_anchor_account_info!(referrer_user, User, referrer_user_info);
     let mut referrer_rev_share = revenue_share(referrer_authority);
     create_anchor_account_info!(referrer_rev_share, RevenueShare, referrer_rev_share_info);
-    let accounts = vec![referrer_user_info, referrer_rev_share_info];
+    let accounts = [referrer_user_info, referrer_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -439,7 +439,7 @@ fn sweep_skips_rows_that_are_not_payable_for_this_market() {
     create_anchor_account_info!(referrer_user, User, referrer_user_info);
     let mut referrer_rev_share = revenue_share(referrer_authority);
     create_anchor_account_info!(referrer_rev_share, RevenueShare, referrer_rev_share_info);
-    let accounts = vec![
+    let accounts = [
         builder_user_info,
         builder_rev_share_info,
         referrer_user_info,
@@ -525,7 +525,7 @@ fn vault_owned_referrer_forfeits_the_reward() {
     create_anchor_account_info!(referrer_user, User, referrer_user_info);
     let mut referrer_rev_share = revenue_share(referrer_authority);
     create_anchor_account_info!(referrer_rev_share, RevenueShare, referrer_rev_share_info);
-    let accounts = vec![referrer_user_info, referrer_rev_share_info];
+    let accounts = [referrer_user_info, referrer_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -593,7 +593,7 @@ fn vault_owned_builder_forfeits_the_reward_and_frees_the_slot() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -676,7 +676,7 @@ fn sweep_reserves_positive_net_user_pnl() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -800,7 +800,7 @@ fn sweep_reserves_the_bankruptcy_if_tranche() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -908,7 +908,7 @@ fn reservation_is_a_floor_across_every_row() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -998,7 +998,7 @@ fn settle_rev_pool_pause_stops_the_sweep() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -1091,7 +1091,7 @@ fn disabled_builder_codes_leaves_builder_rows_but_pays_referrals() {
     create_anchor_account_info!(referrer_user, User, referrer_user_info);
     let mut referrer_rev_share = revenue_share(referrer_authority);
     create_anchor_account_info!(referrer_rev_share, RevenueShare, referrer_rev_share_info);
-    let accounts = vec![
+    let accounts = [
         builder_user_info,
         builder_rev_share_info,
         referrer_user_info,
@@ -1160,7 +1160,7 @@ fn missing_beneficiary_accounts_leave_the_claim_intact() {
     // the builder's User is supplied but its RevenueShare is not
     let mut builder_user = beneficiary(builder_authority, false);
     create_anchor_account_info!(builder_user, User, builder_user_info);
-    let accounts = vec![builder_user_info];
+    let accounts = [builder_user_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
     assert!(revenue_share_map
@@ -1255,7 +1255,7 @@ fn revenue_share_map_only_accepts_subaccount_zero() {
     let mut sibling = beneficiary(authority, false);
     sibling.sub_account_id = 1;
     create_anchor_account_info!(sibling, User, sibling_info);
-    let accounts = vec![sibling_info];
+    let accounts = [sibling_info];
     let mut account_iter = accounts.iter().peekable();
     assert_eq!(
         load_revenue_share_map(&mut account_iter).err(),
@@ -1265,7 +1265,7 @@ fn revenue_share_map_only_accepts_subaccount_zero() {
     // control: the same account at subaccount 0 loads and resolves.
     let mut canonical = beneficiary(authority, false);
     create_anchor_account_info!(canonical, User, canonical_info);
-    let accounts = vec![canonical_info];
+    let accounts = [canonical_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
     assert_eq!(
@@ -1301,7 +1301,7 @@ fn an_unaffordable_row_does_not_block_later_rows() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -1363,7 +1363,7 @@ fn an_unaffordable_row_does_not_block_a_later_referral_row() {
     create_anchor_account_info!(referrer_user, User, referrer_user_info);
     let mut referrer_rev_share = revenue_share(referrer_authority);
     create_anchor_account_info!(referrer_rev_share, RevenueShare, referrer_rev_share_info);
-    let accounts = vec![referrer_user_info, referrer_rev_share_info];
+    let accounts = [referrer_user_info, referrer_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -1425,7 +1425,7 @@ fn every_row_is_reconsidered_after_a_skip() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -1506,7 +1506,7 @@ fn settlement_status_values_the_reserve_at_expiry_price() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -1611,7 +1611,7 @@ fn settlement_leaves_exactly_the_owed_amount_available() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -1692,7 +1692,7 @@ fn a_wound_down_market_can_pay_its_whole_liability() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -1757,7 +1757,7 @@ fn settlement_pays_an_open_builder_row() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 
@@ -1811,7 +1811,7 @@ fn a_live_market_still_requires_a_completed_builder_row() {
     create_anchor_account_info!(builder_user, User, builder_user_info);
     let mut builder_rev_share = revenue_share(builder_authority);
     create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
-    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let accounts = [builder_user_info, builder_rev_share_info];
     let mut account_iter = accounts.iter().peekable();
     let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
 

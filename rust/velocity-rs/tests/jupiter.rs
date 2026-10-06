@@ -15,7 +15,7 @@ use velocity_rs::{
     TransactionBuilder, VelocityClient, Wallet,
 };
 
-const VELOCITY_CLIENT: OnceCell<VelocityClient> = OnceCell::const_new();
+static VELOCITY_CLIENT: OnceCell<VelocityClient> = OnceCell::const_new();
 
 async fn velocity_client() -> VelocityClient {
     VELOCITY_CLIENT
@@ -70,9 +70,8 @@ async fn jupiter_swap_usdc_to_sol() {
         .spot_market_config_by_index(token_out.index())
         .unwrap();
 
-    let in_token_account = Wallet::derive_associated_token_address(&wallet.authority(), &in_market);
-    let out_token_account =
-        Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
+    let in_token_account = Wallet::derive_associated_token_address(wallet.authority(), in_market);
+    let out_token_account = Wallet::derive_associated_token_address(wallet.authority(), out_market);
 
     let tx = TransactionBuilder::new(
         client.program_data(),
@@ -82,8 +81,8 @@ async fn jupiter_swap_usdc_to_sol() {
     )
     .jupiter_swap(
         jupiter_swap_info,
-        &in_market,
-        &out_market,
+        in_market,
+        out_market,
         &in_token_account,
         &out_token_account,
         None,
@@ -94,14 +93,11 @@ async fn jupiter_swap_usdc_to_sol() {
     let result = client.simulate_tx(tx).await;
     dbg!(&result);
     let err = result.expect("sim ok").err;
-    match err {
-        Some(err) => {
-            assert_eq!(
-                err,
-                TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
-            )
-        }
-        None => assert!(true),
+    if let Some(err) = err {
+        assert_eq!(
+            err,
+            TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
+        )
     }
 }
 
@@ -142,9 +138,8 @@ async fn jupiter_swap_sol_unwrap() {
         .await
         .expect("got jup swap ixs");
 
-    let in_token_account = Wallet::derive_associated_token_address(&wallet.authority(), &in_market);
-    let out_token_account =
-        Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
+    let in_token_account = Wallet::derive_associated_token_address(wallet.authority(), in_market);
+    let out_token_account = Wallet::derive_associated_token_address(wallet.authority(), out_market);
 
     let tx = TransactionBuilder::new(
         client.program_data(),
@@ -154,8 +149,8 @@ async fn jupiter_swap_sol_unwrap() {
     )
     .jupiter_swap(
         jupiter_swap_info,
-        &in_market,
-        &out_market,
+        in_market,
+        out_market,
         &in_token_account,
         &out_token_account,
         None,
@@ -167,13 +162,10 @@ async fn jupiter_swap_sol_unwrap() {
     dbg!(&result);
     let err = result.expect("sim ok").err;
     // either swap OK or it would incur borrow which is fine (test account missing 'token in' amount)
-    match err {
-        Some(err) => {
-            assert_eq!(
-                err,
-                TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
-            )
-        }
-        None => assert!(true),
+    if let Some(err) = err {
+        assert_eq!(
+            err,
+            TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
+        )
     }
 }

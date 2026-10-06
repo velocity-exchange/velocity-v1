@@ -110,9 +110,11 @@ ln -sf /opt/homebrew/bin/ffmpeg ~/Library/Caches/ms-playwright/ffmpeg-1010/ffmpe
 ```
 
 A midpoint instance that a scenario leaves out quotes 10% above the oracle, so it stays approved
-but fills nothing. `swift-placer` compiles every placement against its own address lookup table
-and extends the table with any account that a placement adds. A placement routed to two PropAMMs
-names more accounts than a transaction holds without one.
+but fills nothing. `local:midpoint up` attaches each instance's relay cross conditions with a
+10-slot poll and registers their watch. Those conditions are how relay finds an on-chain remainder
+that only a PropAMM crosses, because the book's own resolver cannot price a PropAMM. `swift-placer`
+sends each placement as a v1 transaction, as keep-rs does. A placement routed to two PropAMMs
+names more accounts than a v0 transaction holds without a lookup table.
 
 ## What runs
 

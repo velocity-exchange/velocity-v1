@@ -23,14 +23,21 @@ import {
 	PublicKey,
 	sendAndConfirmTransaction,
 	SystemProgram,
+	SYSVAR_RENT_PUBKEY,
 	Transaction,
 	TransactionInstruction,
 } from '@solana/web3.js';
 import {
 	AdminClient,
 	BulkAccountLoader,
+	getClobCrankConditionsPublicKey,
+	getPerpMarketPublicKeySync,
+	getQuoterCrossConditionsPublicKey,
 	getQuoterPublicKey,
 	getQuoterSlabPublicKey,
+	getRegisterWatchIxs,
+	QUOTER_CROSS_BLOCK_OFFSET,
+	RELAY_WATCH_V0_LEN,
 	QuoterType,
 	Wallet,
 } from '@velocity-exchange/sdk';
@@ -55,6 +62,11 @@ const BASE = new BN(1_000_000_000);
 const MAKER_DEPOSIT_DUSDT = '10000';
 /** 10 bps and 30 bps from the mid, one SOL each, on both sides. */
 const RUNG_OFFSETS_PPM = [1000, 3000];
+/**
+ * The cross conditions' poll interval. The entry declares no reprice watch, so the poll is how
+ * relay finds a remainder this quoter crosses. Only the maker's authority may pick it.
+ */
+const CROSS_FALLBACK_SLOTS = 10;
 
 const u16 = (value: number) => {
 	const buffer = Buffer.alloc(2);
@@ -204,7 +216,7 @@ async function registerEntry(
 	{ maker, authority }: Keys,
 	makerUser: PublicKey,
 	slab: PublicKey
-): Promise<void> {
+): Promise<PublicKey> {
 	const quoter = instance(maker.publicKey);
 	const makerAdmin = adminClient(connection, maker);
 	const entry = getQuoterPublicKey(
@@ -213,7 +225,7 @@ async function registerEntry(
 		MIDPOINT_ID,
 		makerUser
 	);
-	if (await connection.getAccountInfo(entry)) return;
+	if (await connection.getAccountInfo(entry)) return entry;
 
 	const register = await makerAdmin.getInitializeQuoterIx(
 		MARKET_INDEX,
@@ -253,6 +265,57 @@ async function registerEntry(
 	);
 	await send(connection, [approve], [authority]);
 	console.log('quoter entry approved');
+	return entry;
+}
+
+/**
+ * Attaches the entry's relay cross conditions, or re-prices them, and registers the relay watch
+ * that turners find them by. They let relay find a taker remainder or a book order that this
+ * quoter's quote crosses.
+ */
+async function attachCrossConditions(
+	connection: Connection,
+	{ maker }: Keys,
+	entry: PublicKey
+): Promise<void> {
+	const makerAdmin = adminClient(connection, maker);
+	const programId = makerAdmin.program.programId;
+	const ix = makerAdmin.program.instruction.initializeQuoterCrossConditions(
+		{ expireFallbackSlots: new BN(CROSS_FALLBACK_SLOTS) },
+		{
+			accounts: {
+				payer: maker.publicKey,
+				state: await makerAdmin.getStatePublicKey(),
+				quoter: entry,
+				perpMarket: getPerpMarketPublicKeySync(programId, MARKET_INDEX),
+				quoterSlab: getQuoterSlabPublicKey(programId, MARKET_INDEX),
+				marketConditions: getClobCrankConditionsPublicKey(
+					programId,
+					MARKET_INDEX
+				),
+				crossConditions: getQuoterCrossConditionsPublicKey(programId, entry),
+				rent: SYSVAR_RENT_PUBKEY,
+				systemProgram: SystemProgram.programId,
+			},
+		}
+	);
+	await send(connection, [ix], [maker]);
+
+	const { watch, ixs: register } = await getRegisterWatchIxs({
+		payer: maker.publicKey,
+		target: getQuoterCrossConditionsPublicKey(programId, entry),
+		blockOffset: QUOTER_CROSS_BLOCK_OFFSET,
+		seed: `cross-${entry.toBase58().slice(0, 26)}`,
+		rentLamports: await connection.getMinimumBalanceForRentExemption(
+			RELAY_WATCH_V0_LEN
+		),
+	});
+	if (await connection.getAccountInfo(watch)) return;
+
+	await send(connection, register, [maker]);
+	console.log(
+		`relay watch ${watch.toBase58()} registered for ${entry.toBase58()}`
+	);
 }
 
 async function up(
@@ -288,7 +351,8 @@ async function up(
 			stackKeys.hot,
 			mid
 		);
-		await registerEntry(connection, stackKeys, makerUser, slab);
+		const entry = await registerEntry(connection, stackKeys, makerUser, slab);
+		await attachCrossConditions(connection, stackKeys, entry);
 	} finally {
 		await makerClient.unsubscribe();
 	}

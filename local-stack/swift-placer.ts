@@ -1,12 +1,9 @@
 /**
  * The stack's swift keeper, in the shape of keep-rs `try_swift_place`. keep-rs needs gRPC.
  */
-import * as fs from 'fs';
 import { BN } from '@coral-xyz/anchor';
 import {
 	AccountMeta,
-	AddressLookupTableAccount,
-	AddressLookupTableProgram,
 	ComputeBudgetProgram,
 	Connection,
 	Keypair,
@@ -14,7 +11,6 @@ import {
 	PublicKey,
 	TransactionInstruction,
 	TransactionMessage,
-	VersionedTransaction,
 } from '@solana/web3.js';
 import {
 	decodeQuoterSlab,
@@ -29,6 +25,7 @@ import {
 	UserAccount,
 	VelocityClient,
 } from '@velocity-exchange/sdk';
+import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import {
 	connectClient,
@@ -43,9 +40,6 @@ import {
 const SWIFT_URL = process.env.SWIFT_URL ?? 'http://swift:3003';
 const SWIFT_WS_URL = process.env.SWIFT_WS_URL ?? 'ws://swift-ws:3004';
 const KEY_PATH = '/state/keys/swift-placer.json';
-const LOOKUP_TABLE_PATH = '/state/keys/swift-placer-lookup-table.json';
-const LOOKUP_TABLE_EXTEND_BATCH = 20;
-const LOOKUP_TABLE_POLL_MS = 400;
 const FILLER_DEPOSIT_DUSDT = '100';
 const MAKERS_PER_PLACEMENT = 4;
 const ATTEST_ATTEMPTS = 8;
@@ -278,157 +272,134 @@ async function place(client: VelocityClient, order: SwiftOrder): Promise<void> {
 	}
 }
 
+const V1_VERSION_PREFIX = 0x81;
+const V1_COMPUTE_UNIT_LIMIT_BIT = 0b100;
+const V1_LOADED_ACCOUNTS_DATA_SIZE_BIT = 0b1000;
+const V1_LOADED_ACCOUNTS_DATA_SIZE = 12 * 1024 * 1024;
+const V1_DEFAULT_COMPUTE_UNITS = 1_400_000;
+
+/** The compute unit limit a `SetComputeUnitLimit` instruction in `instructions` asks for. */
+function computeUnitLimit(instructions: TransactionInstruction[]): number {
+	const limit = instructions.find(
+		(ix) =>
+			ix.programId.equals(ComputeBudgetProgram.programId) && ix.data[0] === 2
+	);
+	return limit ? limit.data.readUInt32LE(1) : V1_DEFAULT_COMPUTE_UNITS;
+}
+
 /**
- * The placer's address lookup table. A placement that routes to two PropAMMs names more accounts
- * than a transaction holds, so every placement compiles against this table. The placer adds each
- * account it has not seen to the table before the placement that needs it.
+ * Serializes a signed v1 transaction, the layout `solana_message::v1` writes. A v1 message holds
+ * 4096 bytes and 64 accounts with no lookup table, which a placement that routes to two PropAMMs
+ * needs. Its compute budget lives in a config ahead of the instructions, so the compute budget
+ * instructions move there. web3.js compiles the keys, by the same ordering rules.
  */
-let lookupTable: AddressLookupTableAccount | undefined;
-
-async function sendWithoutTable(
-	client: VelocityClient,
-	instruction: TransactionInstruction
-): Promise<void> {
-	const { blockhash } = await client.connection.getLatestBlockhash();
-	const payer = (client.wallet as unknown as { payer: Keypair }).payer;
-	const tx = new VersionedTransaction(
-		new TransactionMessage({
-			payerKey: payer.publicKey,
-			recentBlockhash: blockhash,
-			instructions: [instruction],
-		}).compileToV0Message()
+function signedV1Transaction(
+	payer: Keypair,
+	instructions: TransactionInstruction[],
+	blockhash: string
+): { wire: Buffer; signature: string } {
+	const budget = instructions.filter((ix) =>
+		ix.programId.equals(ComputeBudgetProgram.programId)
 	);
-	tx.sign([payer]);
-	const signature = await client.connection.sendRawTransaction(tx.serialize());
-	await client.connection.confirmTransaction(signature, 'confirmed');
-}
-
-/** Fetches the table until it lists `count` addresses and a later slot than its last extension. */
-async function awaitLookupTable(
-	client: VelocityClient,
-	address: PublicKey,
-	count: number
-): Promise<AddressLookupTableAccount> {
-	for (;;) {
-		const [table, slot] = await Promise.all([
-			client.connection.getAddressLookupTable(address),
-			client.connection.getSlot('confirmed'),
-		]);
-		const value = table.value;
-		if (
-			value &&
-			value.state.addresses.length >= count &&
-			slot > Number(value.state.lastExtendedSlot)
-		) {
-			return value;
-		}
-
-		await new Promise((resolve) => setTimeout(resolve, LOOKUP_TABLE_POLL_MS));
-	}
-}
-
-async function openLookupTable(
-	client: VelocityClient
-): Promise<AddressLookupTableAccount> {
-	if (fs.existsSync(LOOKUP_TABLE_PATH)) {
-		const address = new PublicKey(
-			JSON.parse(fs.readFileSync(LOOKUP_TABLE_PATH, 'utf-8'))
-		);
-		return awaitLookupTable(client, address, 0);
+	const compiled = new TransactionMessage({
+		payerKey: payer.publicKey,
+		recentBlockhash: blockhash,
+		instructions: instructions.filter((ix) => !budget.includes(ix)),
+	}).compileToV0Message();
+	if (compiled.header.numRequiredSignatures !== 1) {
+		throw new Error('a placement must have the placer as its only signer');
 	}
 
-	const authority = client.wallet.publicKey;
-	const [create, address] = AddressLookupTableProgram.createLookupTable({
-		authority,
-		payer: authority,
-		recentSlot: await client.connection.getSlot('finalized'),
-	});
-	await sendWithoutTable(client, create);
-	fs.writeFileSync(LOOKUP_TABLE_PATH, JSON.stringify(address.toBase58()));
-	console.log(`placer lookup table ${address.toBase58()} created`);
-	return awaitLookupTable(client, address, 0);
-}
-
-/** Adds every account of `instructions` the table lacks, except the signer, and returns the table. */
-async function lookupTableFor(
-	client: VelocityClient,
-	instructions: TransactionInstruction[]
-): Promise<AddressLookupTableAccount> {
-	lookupTable ??= await openLookupTable(client);
-	const known = new Set(
-		lookupTable.state.addresses.map((key) => key.toBase58())
-	);
-	const missing = [
-		...new Set(
-			instructions.flatMap((ix) => [
-				ix.programId.toBase58(),
-				...ix.keys
-					.filter((meta) => !meta.isSigner)
-					.map((meta) => meta.pubkey.toBase58()),
+	const u32 = (value: number) => {
+		const out = Buffer.alloc(4);
+		out.writeUInt32LE(value);
+		return out;
+	};
+	const u16 = (value: number) => {
+		const out = Buffer.alloc(2);
+		out.writeUInt16LE(value);
+		return out;
+	};
+	const ixs = compiled.compiledInstructions;
+	const message = Buffer.concat([
+		Buffer.from([
+			V1_VERSION_PREFIX,
+			compiled.header.numRequiredSignatures,
+			compiled.header.numReadonlySignedAccounts,
+			compiled.header.numReadonlyUnsignedAccounts,
+		]),
+		u32(V1_COMPUTE_UNIT_LIMIT_BIT | V1_LOADED_ACCOUNTS_DATA_SIZE_BIT),
+		bs58.decode(blockhash),
+		Buffer.from([ixs.length, compiled.staticAccountKeys.length]),
+		...compiled.staticAccountKeys.map((key) => key.toBuffer()),
+		u32(computeUnitLimit(budget)),
+		u32(V1_LOADED_ACCOUNTS_DATA_SIZE),
+		...ixs.map((ix) =>
+			Buffer.concat([
+				Buffer.from([ix.programIdIndex, ix.accountKeyIndexes.length]),
+				u16(ix.data.length),
 			])
 		),
-	].filter((key) => !known.has(key));
-	if (missing.length === 0) return lookupTable;
+		...ixs.map((ix) =>
+			Buffer.concat([Buffer.from(ix.accountKeyIndexes), Buffer.from(ix.data)])
+		),
+	]);
 
-	const authority = client.wallet.publicKey;
-	for (let at = 0; at < missing.length; at += LOOKUP_TABLE_EXTEND_BATCH) {
-		await sendWithoutTable(
-			client,
-			AddressLookupTableProgram.extendLookupTable({
-				lookupTable: lookupTable.key,
-				authority,
-				payer: authority,
-				addresses: missing
-					.slice(at, at + LOOKUP_TABLE_EXTEND_BATCH)
-					.map((key) => new PublicKey(key)),
-			})
-		);
-	}
-
-	lookupTable = await awaitLookupTable(
-		client,
-		lookupTable.key,
-		known.size + missing.length
-	);
-	return lookupTable;
+	const signature = nacl.sign.detached(message, payer.secretKey);
+	return {
+		wire: Buffer.concat([message, Buffer.from(signature)]),
+		signature: bs58.encode(signature),
+	};
 }
 
-/** Sends a v0 transaction and prints its logs when it fails. */
+/** The logs of a landed transaction. web3.js cannot parse a v1 transaction, so this asks the RPC directly. */
+async function transactionLogs(
+	client: VelocityClient,
+	signature: string
+): Promise<string[] | undefined> {
+	const response = await fetch(client.connection.rpcEndpoint, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'getTransaction',
+			params: [
+				signature,
+				{ commitment: 'confirmed', maxSupportedTransactionVersion: 1 },
+			],
+		}),
+	});
+	const { result } = (await response.json()) as {
+		result?: { meta?: { logMessages?: string[] } };
+	};
+	return result?.meta?.logMessages;
+}
+
+/** Sends a v1 transaction and prints its logs when it fails. */
 async function send(
 	client: VelocityClient,
 	instructions: TransactionInstruction[]
 ): Promise<string | undefined> {
 	const { blockhash } = await client.connection.getLatestBlockhash();
-	const tx = new VersionedTransaction(
-		new TransactionMessage({
-			payerKey: client.wallet.publicKey,
-			recentBlockhash: blockhash,
-			instructions,
-		}).compileToV0Message([await lookupTableFor(client, instructions)])
+	const payer = (client.wallet as unknown as { payer: Keypair }).payer;
+	const { wire, signature } = signedV1Transaction(
+		payer,
+		instructions,
+		blockhash
 	);
-	try {
-		tx.sign([(client.wallet as unknown as { payer: Keypair }).payer]);
-	} catch (err) {
-		const keys = tx.message.staticAccountKeys.length;
-		const data = instructions.reduce((sum, ix) => sum + ix.data.length, 0);
-		throw new Error(
-			`a placement of ${keys} accounts and ${data} data bytes does not fit a transaction: ${err}`
-		);
-	}
 
-	const wire = tx.serialize();
-	const signature = await client.connection.sendRawTransaction(wire);
+	await client.connection.sendRawTransaction(wire);
 	const result = await client.connection.confirmTransaction(
 		signature,
 		'confirmed'
 	);
 	if (!result.value.err) return signature;
 
-	const landed = await client.connection.getTransaction(signature, {
-		commitment: 'confirmed',
-		maxSupportedTransactionVersion: 0,
-	});
-	console.warn(`placement ${signature} failed`, landed?.meta?.logMessages);
+	console.warn(
+		`placement ${signature} failed`,
+		await transactionLogs(client, signature)
+	);
 	return undefined;
 }
 

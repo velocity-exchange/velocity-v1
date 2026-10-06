@@ -497,6 +497,19 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
 
     let existing = apply_perp_transfer(parties, &mut maps, &fill)?;
 
+    // This handler cranks no spot market, so un-booked borrow interest would be missing from both
+    // margin checks. Both accounts are gated, as on the perp fill this transfer mirrors.
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        parties.from_user,
+        &maps.spot_market_map,
+        now,
+    )?;
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        parties.to_user,
+        &maps.spot_market_map,
+        now,
+    )?;
+
     validate_transfer_margin(parties, &mut maps)?;
 
     validate_open_interest_did_not_grow(
@@ -746,6 +759,14 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
     let position_delta = price_vamm_transfer(&market, transfer_amount, direction_to_close)?;
 
     apply_vamm_transfer(&mut user, &mut maps, market_index, &position_delta)?;
+
+    // This handler cranks no spot market, so un-booked borrow interest would be missing from the
+    // check below.
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        &user,
+        &maps.spot_market_map,
+        now,
+    )?;
 
     let user_margin_calculation =
         calculate_margin_requirement_and_total_collateral_and_liability_info(

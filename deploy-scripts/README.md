@@ -96,7 +96,7 @@ upgrade keypair.
 
 | Target | Trigger | Workflow |
 | --- | --- | --- |
-| mainnet | Push tag `program-<name>-v<version>` where `<name>` is the program lib name, `velocity` (for example `program-velocity-v2.163.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
+| mainnet | Push tag `program-<name>-v<version>` where `<name>` is the program lib name, `velocity` or `protocol_revenue_router` (for example `program-velocity-v2.163.0`, `program-protocol_revenue_router-v0.2.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
 | devnet | Run **Manual Devnet Program Deploy** from the Actions tab, picking program and branch | [`.github/workflows/manual-devnet-deploy.yaml`](../.github/workflows/manual-devnet-deploy.yaml) |
 
 Both workflows do the same thing on different multisigs.
@@ -172,6 +172,12 @@ batch are involved, because the deployer sends the chunked writes directly.
 The Anchor CLI does not do this. `anchor deploy` only deploys the program, and `anchor idl init`
 targets the legacy onchain IDL account rather than the program-metadata account velocity's clients
 resolve. Use the program-metadata CLI explicitly.
+
+> protocol-revenue-router: steps 1 through 5 apply unchanged, substituting `protocol_revenue_router`
+> for `velocity`, setting `PROGRAM_ID=rout8Eh6aU911sDDyJaDWGY61mSfVhSNXqk1Bw9xeNn`, and building with
+> `bash deploy-scripts/build-sbf.sh mainnet protocol-revenue-router` (default features keep the
+> mainnet init gate on). It has a program keypair like velocity. It has no
+> devnet workflow: devnet deploys use the same commands against the devnet cluster.
 
 Run this once per cluster, against a private RPC, in the order given, and before transferring the
 upgrade authority to the multisig. Mainnet is not deployed yet. Devnet's account already exists.
@@ -459,7 +465,7 @@ step prints the last 30 lines of what it produced. Add `--verbose` to stream the
 
 ## Runbook
 
-1. Build both programs, using an x86_64 toolchain as described in the root `CLAUDE.md`.
+1. Build both programs, using an x86_64 toolchain as described in `docs/agents/build.md`.
 
    ```
    bash deploy-scripts/build-devnet.sh
@@ -762,8 +768,8 @@ For an end-to-end smoke test, use a second wallet to call
   not strip these properties.
 
 - The dUSDT oracle is a two-step init. `handle_initialize_spot_market`
-  (`programs/velocity/src/instructions/admin.rs:287-298`) requires the quote spot market to use
+  (`programs/velocity/src/instructions/admin.rs:318-325`) requires the quote spot market to use
   `OracleSource::QuoteAsset` with `oracle = Pubkey::default()`. Switching to `PythLazerStableCoin`
   afterwards happens in Phase E through `update_spot_market_oracle`, which itself reads the new
-  oracle (`programs/velocity/src/instructions/admin.rs:1056-1061`), so the USDT lazer PDA must
+  oracle (`programs/velocity/src/instructions/admin.rs:1155-1160`), so the USDT lazer PDA must
   already hold a posted price. That is why Phase C+ runs before Phase E and must succeed.

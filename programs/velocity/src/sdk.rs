@@ -270,7 +270,7 @@ pub fn calculate_margin(
     let perp_map = PerpMarketMap::load(&Default::default(), &mut perp_infos.iter().peekable())?;
 
     let oracle_infos = build_infos(&mut accounts.oracles);
-    let mut oracle_map = OracleMap::load(
+    let oracle_map = OracleMap::load(
         &mut oracle_infos.iter().peekable(),
         accounts.latest_slot,
         accounts.slot_clock,

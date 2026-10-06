@@ -274,7 +274,14 @@ impl OracleSource {
             | OracleSource::PythLazerStableCoin => 1,
             OracleSource::Pyth1K | OracleSource::PythLazer1K => 1000,
             OracleSource::Pyth1M | OracleSource::PythLazer1M => 1000000,
-            _ => {
+            OracleSource::DeprecatedSwitchboard
+            | OracleSource::QuoteAsset
+            | OracleSource::Prelaunch
+            | OracleSource::PythPull
+            | OracleSource::Pyth1KPull
+            | OracleSource::Pyth1MPull
+            | OracleSource::PythStableCoinPull
+            | OracleSource::DeprecatedSwitchboardOnDemand => {
                 panic!("Calling get_pyth_multiple on non-pyth oracle source");
             }
         }
@@ -610,13 +617,10 @@ pub fn get_pyth_price(
         let price_data = load_pyth_push_price(pyth_price_data)?;
         oracle_price = price_data.agg.price;
         oracle_conf = price_data.agg.conf;
-        #[cfg_attr(not(feature = "mainnet-beta"), allow(unused_variables))]
-        let min_publishers = price_data.num.min(3);
-        #[cfg_attr(not(feature = "mainnet-beta"), allow(unused_variables))]
-        let publisher_count = price_data.num_qt;
-
         #[cfg(feature = "mainnet-beta")]
         {
+            let min_publishers = price_data.num.min(3);
+            let publisher_count = price_data.num_qt;
             has_sufficient_number_of_data_points = publisher_count >= min_publishers;
         }
         #[cfg(not(feature = "mainnet-beta"))]

@@ -75,7 +75,7 @@ fn user_has_position_with_base() {
         ..User::default()
     };
 
-    healthy_maps!(|perp_map, spot_map| {
+    healthy_maps!(|_perp_map, spot_map| {
         assert!(!is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
@@ -91,7 +91,7 @@ fn user_has_position_with_positive_quote() {
     };
 
     // A lone positive claim leaves the estate net solvent, so it still vetoes.
-    healthy_maps!(|perp_map, spot_map| {
+    healthy_maps!(|_perp_map, spot_map| {
         assert!(!is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
@@ -107,7 +107,7 @@ fn user_with_deposit() {
         ..User::default()
     };
 
-    healthy_maps!(|perp_map, spot_map| {
+    healthy_maps!(|_perp_map, spot_map| {
         assert!(!is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
@@ -122,7 +122,7 @@ fn user_has_position_with_negative_quote() {
         ..User::default()
     };
 
-    healthy_maps!(|perp_map, spot_map| {
+    healthy_maps!(|_perp_map, spot_map| {
         assert!(is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
@@ -138,7 +138,7 @@ fn user_with_borrow() {
         ..User::default()
     };
 
-    healthy_maps!(|perp_map, spot_map| {
+    healthy_maps!(|_perp_map, spot_map| {
         assert!(is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
@@ -146,7 +146,7 @@ fn user_with_borrow() {
 #[test]
 fn user_with_empty_position_and_balances() {
     let user = User::default();
-    healthy_maps!(|perp_map, spot_map| {
+    healthy_maps!(|_perp_map, spot_map| {
         assert!(!is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
@@ -176,7 +176,7 @@ fn zero_token_deposit_residue_does_not_veto_bankruptcy() {
     };
 
     // cumulative_deposit_interest floored at 1 => the row converts to 0 tokens.
-    with_maps!(1_000_000, 1, |perp_map, spot_map| {
+    with_maps!(1_000_000, 1, |_perp_map, spot_map| {
         assert!(
             is_cross_margin_bankrupt(&user, &spot_map).unwrap(),
             "a zero-token deposit residue must not veto bankruptcy"
@@ -186,7 +186,7 @@ fn zero_token_deposit_residue_does_not_veto_bankruptcy() {
     // A deposit actually worth >= 1 token still vetoes.
     let mut solvent = user;
     solvent.spot_positions[0].scaled_balance = SPOT_BALANCE_PRECISION as u64;
-    healthy_maps!(|perp_map, spot_map| {
+    healthy_maps!(|_perp_map, spot_map| {
         assert!(
             !is_cross_margin_bankrupt(&solvent, &spot_map).unwrap(),
             "a deposit worth >= 1 token must still veto"
@@ -204,7 +204,7 @@ fn user_with_isolated_position() {
         ..User::default()
     };
 
-    healthy_maps!(|perp_map, spot_map| {
+    healthy_maps!(|_perp_map, spot_map| {
         let mut user_with_scaled_balance = user;
         user_with_scaled_balance.perp_positions[0].isolated_position_scaled_balance =
             1000000000000000000;
@@ -301,7 +301,7 @@ fn unfundable_positive_claim_does_not_veto_bankruptcy() {
     let user = cross_market_estate(500, -1_000);
 
     // Claim market's pool is empty: the 500 cannot be realized at all.
-    with_two_perp_markets!(500, 0, |perp_map, spot_map| {
+    with_two_perp_markets!(500, 0, |_perp_map, spot_map| {
         assert!(
             is_cross_margin_bankrupt(&user, &spot_map).unwrap(),
             "an unfundable claim must not strand a resolvable loss in another market"
@@ -324,7 +324,7 @@ fn pool_state_never_vetoes_bankruptcy() {
 
     // Empty, part-funded, and funded past the claim: the answer is the same.
     for pool in [0, 200, 1_000] {
-        with_two_perp_markets!(500, pool, |perp_map, spot_map| {
+        with_two_perp_markets!(500, pool, |_perp_map, spot_map| {
             assert!(
                 is_cross_margin_bankrupt(&user, &spot_map).unwrap(),
                 "pool state must not gate admission (pool = {})",
@@ -345,7 +345,7 @@ fn pool_state_never_vetoes_bankruptcy() {
 fn net_solvent_estate_is_never_bankrupt_however_unfundable() {
     let user = cross_market_estate(5_000, -1_000);
 
-    with_two_perp_markets!(5_000, 0, |perp_map, spot_map| {
+    with_two_perp_markets!(5_000, 0, |_perp_map, spot_map| {
         assert!(
             !is_cross_margin_bankrupt(&user, &spot_map).unwrap(),
             "a net-solvent estate must never be admitted, or the extinguish step over-confiscates"
@@ -364,7 +364,7 @@ fn net_solvent_estate_is_never_bankrupt_however_unfundable() {
 fn the_stale_latch_check_is_scoped_to_spot_deposits() {
     let user = cross_market_estate(500, -1_000);
 
-    with_two_perp_markets!(500, 1_000, |perp_map, spot_map| {
+    with_two_perp_markets!(500, 1_000, |_perp_map, spot_map| {
         assert!(
             !has_realizable_spot_assets_for_setoff(&user, &spot_map).unwrap(),
             "a perp claim belongs to the resolver's recovery pass, not to the un-latch"
@@ -379,7 +379,7 @@ fn the_stale_latch_check_is_scoped_to_spot_deposits() {
         ..SpotPosition::default()
     };
 
-    with_two_perp_markets!(500, 0, |perp_map, spot_map| {
+    with_two_perp_markets!(500, 0, |_perp_map, spot_map| {
         assert!(
             has_realizable_spot_assets_for_setoff(&with_deposit, &spot_map).unwrap(),
             "a deposit ordinary liquidation can seize must un-latch"

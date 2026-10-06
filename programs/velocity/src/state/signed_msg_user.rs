@@ -403,6 +403,10 @@ impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
         (self.data.len() / ENTRY_LEN) as u32
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn get(&self, index: u32) -> &SignedMsgOrderId {
         entry_at(&self.data, index)
     }
@@ -433,6 +437,10 @@ pub struct SignedMsgUserOrdersZeroCopyMut<'a> {
 impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     pub fn len(&self) -> u32 {
         self.fixed.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn get(&self, index: u32) -> &SignedMsgOrderId {

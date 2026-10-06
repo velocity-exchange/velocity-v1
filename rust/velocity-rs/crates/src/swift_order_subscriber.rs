@@ -661,8 +661,8 @@ pub fn deser_signed_msg_type<'de, D>(deserializer: D) -> Result<SignedOrderType,
 where
     D: serde::Deserializer<'de>,
 {
-    let payload: std::borrow::Cow<String> = serde::Deserialize::deserialize(deserializer)?;
-    decode_signed_msg_payload(payload.as_str()).map_err(serde::de::Error::custom)
+    let payload: std::borrow::Cow<str> = serde::Deserialize::deserialize(deserializer)?;
+    decode_signed_msg_payload(&payload).map_err(serde::de::Error::custom)
 }
 
 /// Decode a hex signed message payload. The length is checked before the hex decode, so
@@ -769,7 +769,7 @@ mod tests {
                 "uuid":"ru9YBLRt"
             }
         }"#;
-        let result: Result<OrderNotification, _> = serde_json::from_str(&msg);
+        let result: Result<OrderNotification, _> = serde_json::from_str(msg);
         assert!(result.is_err());
 
         let msg = r#"{
@@ -785,7 +785,7 @@ mod tests {
                 "uuid":"ru9YBLRt"
             }
         }"#;
-        let result: Result<OrderNotification, _> = serde_json::from_str(&msg);
+        let result: Result<OrderNotification, _> = serde_json::from_str(msg);
         assert!(result.is_err());
     }
 

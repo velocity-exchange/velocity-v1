@@ -212,6 +212,7 @@ test_files=(
   # An entry that carries its own reason is commented for that reason instead.
   # builderCodes.ts
   decodeUser.ts
+  initMarket.ts
   admin.ts
   bidAskTwapCrank.ts
   accountExtension.ts
@@ -278,6 +279,7 @@ test_files=(
   # transferPerpPosition.ts
   # userAccount.ts
   # userDelegate.ts
+  transferPerpPositionStaleBorrow.ts
   # perpMarketConfig.ts # market_config field reads as 0 after write — possibly fetch caching or layout mismatch with reordered PerpMarket
 
   # whitelist.ts

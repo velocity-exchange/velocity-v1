@@ -1,5 +1,4 @@
 #[cfg(test)]
-#[cfg(test)]
 use crate::state::oracle::OraclePriceData;
 #[cfg(test)]
 use crate::state::perp_market::{MarketConfigFlag, PerpMarket};

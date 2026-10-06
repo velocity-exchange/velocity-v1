@@ -2472,6 +2472,7 @@ mod amm_fill_gate_tests {
                 !market
                     .amm_fill_gates_ok(validity, &mm_oracle(validity))
                     .unwrap(),
+                "{}",
                 "{validity:?} must suppress AMM fills"
             );
         }

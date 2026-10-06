@@ -132,10 +132,7 @@ impl AccountMap {
             subscriptions: Arc::default(),
         }
     }
-    pub fn iter_accounts_with<'a, T: Pod + Discriminator>(
-        &self,
-        mut f: impl FnMut(&Pubkey, &T, u64),
-    ) {
+    pub fn iter_accounts_with<T: Pod + Discriminator>(&self, mut f: impl FnMut(&Pubkey, &T, u64)) {
         self.inner
             .iter()
             .filter(|x| x.raw.len() >= 8 && &x.raw[..8] == T::DISCRIMINATOR)
@@ -597,15 +594,18 @@ impl<T: Pod + Discriminator> Deref for AccountRef<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use super::*;
-    use crate::{
-        accounts::User,
-        constants::{state_account, DEFAULT_PUBKEY},
-        types::accounts::State,
-        utils::{get_ws_url, test_envs::mainnet_endpoint},
-        Wallet,
+    use crate::accounts::User;
+    #[cfg(feature = "rpc_tests")]
+    use {
+        crate::{
+            constants::{state_account, DEFAULT_PUBKEY},
+            types::accounts::State,
+            utils::{get_ws_url, test_envs::mainnet_endpoint},
+            Wallet,
+        },
+        std::time::Duration,
     };
 
     #[test]

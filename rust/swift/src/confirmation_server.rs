@@ -111,7 +111,7 @@ pub async fn get_all_hashes<T: Clone + AsyncCommands>(
     };
 
     let mut map = serde_json::Map::new();
-    for (mut key, value) in keys.into_iter().zip(values.into_iter()) {
+    for (mut key, value) in keys.into_iter().zip(values) {
         if let Some(value) = value {
             if key.starts_with(HASH_KEY_PREFIX) {
                 key.drain(0..HASH_KEY_PREFIX.len());
@@ -393,7 +393,7 @@ mod tests {
         let body_str = from_utf8(&body_bytes).unwrap();
         let response: HashesResponse = serde_json::from_str(body_str).unwrap();
 
-        assert!(response.hashes.len() > 0);
+        assert!(!response.hashes.is_empty());
         // The `swift-hashes::` prefix must be stripped from returned keys, and
         // the value preserved.
         assert_eq!(

@@ -93,7 +93,7 @@ pub fn restable_remainder_price(
                 order.price
             }
         }
-        _ => return None,
+        OrderType::TriggerLimit | OrderType::Oracle => return None,
     };
 
     (price != 0).then_some(price)
@@ -228,7 +228,15 @@ impl RestRefusal {
         match self {
             RestRefusal::SizeBelowMinimum => OrderActionExplanation::ClobRemainderCulled,
             RestRefusal::FailsMarginGate => OrderActionExplanation::InsufficientFreeCollateral,
-            _ => OrderActionExplanation::None,
+            RestRefusal::BookClosed
+            | RestRefusal::SizeOffStep
+            | RestRefusal::PriceOffTick
+            | RestRefusal::ExpiryPassed
+            | RestRefusal::DelayAboveMaximum
+            | RestRefusal::ExpiresBeforeActivation
+            | RestRefusal::SideAtCapacity
+            | RestRefusal::OwnerBankrupt
+            | RestRefusal::PositionAtOrderLimit => OrderActionExplanation::None,
         }
     }
 }

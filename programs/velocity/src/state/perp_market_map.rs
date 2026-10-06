@@ -127,7 +127,7 @@ impl<'a> PerpMarketMap<'a> {
 
             let is_writable = account_info.is_writable;
             crate::validate!(
-                !(writable_markets.contains(&market_index) && !is_writable),
+                !writable_markets.contains(&market_index) || is_writable,
                 ErrorCode::MarketWrongMutability,
                 "Market {} is not writable",
                 market_index
@@ -178,7 +178,7 @@ impl<'a> PerpMarketMap<'a> {
             AccountLoader::try_from(account_info).or(Err(ErrorCode::InvalidMarketAccount))?;
 
         crate::validate!(
-            !(must_be_writable && !is_writable),
+            !must_be_writable || is_writable,
             ErrorCode::MarketWrongMutability,
             "Market {} is not writable",
             market_index
@@ -225,7 +225,7 @@ impl<'a> PerpMarketMap<'a> {
                 AccountLoader::try_from(account_info).or(Err(ErrorCode::InvalidMarketAccount))?;
 
             crate::validate!(
-                !(must_be_writable && !is_writable),
+                !must_be_writable || is_writable,
                 ErrorCode::MarketWrongMutability,
                 "Market {} is not writable",
                 market_index

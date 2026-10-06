@@ -5150,11 +5150,20 @@
             "docs": [
               "The number of open orders"
             ],
-            "type": "u8"
+            "type": "u16"
           },
           {
             "name": "position_flag",
             "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
           }
         ]
       }
@@ -6422,18 +6431,18 @@
             "type": "bool"
           },
           {
-            "name": "open_orders",
-            "docs": [
-              "number of open orders"
-            ],
-            "type": "u8"
-          },
-          {
             "name": "has_open_order",
             "docs": [
               "Whether or not user has open order"
             ],
             "type": "bool"
+          },
+          {
+            "name": "open_orders",
+            "docs": [
+              "number of open orders"
+            ],
+            "type": "u16"
           },
           {
             "name": "open_auctions",
@@ -6463,7 +6472,7 @@
             "type": {
               "array": [
                 "u8",
-                3
+                2
               ]
             }
           },

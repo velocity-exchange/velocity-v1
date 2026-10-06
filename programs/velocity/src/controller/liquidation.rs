@@ -640,21 +640,7 @@ pub fn liquidate_perp(
         flag_perp_bankruptcy_claim(user, market_index, &maps.perp_market_map)?;
     }
 
-    let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, maps)?;
-
-    validate!(
-        liquidator_meets_initial_margin_requirement,
-        ErrorCode::InsufficientCollateral,
-        "Liquidator doesnt have enough collateral to take over perp position"
-    )?;
-
-    // The liquidation adds exposure to the liquidator the way a risk-increasing
-    // fill does, so the liquidator subaccount must clear its own buffered
-    // equity floor before it accepts the exposure.
-    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
-        liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
-    }
+    validate_liquidator_can_take_on_exposure(liquidator, maps, now)?;
 
     // get ids for order fills
     let user_order_id = get_then_update_id!(user, next_order_id);
@@ -2111,28 +2097,7 @@ pub fn liquidate_spot(
         user.enter_cross_margin_bankruptcy();
     }
 
-    let liq_margin_context = MarginContext::standard(MarginRequirementType::Initial);
-
-    let liquidator_meets_initial_margin_requirement =
-        calculate_margin_requirement_and_total_collateral_and_liability_info(
-            liquidator,
-            maps,
-            liq_margin_context,
-        )
-        .map(|calc| calc.meets_margin_requirement())?;
-
-    validate!(
-        liquidator_meets_initial_margin_requirement,
-        ErrorCode::InsufficientCollateral,
-        "Liquidator doesnt have enough collateral to take over borrow"
-    )?;
-
-    // The liquidation adds exposure to the liquidator the way a risk-increasing
-    // fill does, so the liquidator subaccount must clear its own buffered
-    // equity floor before it accepts the exposure.
-    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
-        liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
-    }
+    validate_liquidator_can_take_on_exposure(liquidator, maps, now)?;
 
     emit!(LiquidationRecord {
         ts: now,
@@ -3354,21 +3319,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         flag_perp_bankruptcy_claim(user, perp_market_index, &maps.perp_market_map)?;
     }
 
-    let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, maps)?;
-
-    validate!(
-        liquidator_meets_initial_margin_requirement,
-        ErrorCode::InsufficientCollateral,
-        "Liquidator doesnt have enough collateral to take over borrow"
-    )?;
-
-    // The liquidation adds exposure to the liquidator the way a risk-increasing
-    // fill does, so the liquidator subaccount must clear its own buffered
-    // equity floor before it accepts the exposure.
-    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
-        liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
-    }
+    validate_liquidator_can_take_on_exposure(liquidator, maps, now)?;
 
     let market_oracle_price = {
         let market = maps.perp_market_map.get_ref_mut(&perp_market_index)?;
@@ -3946,21 +3897,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         flag_perp_bankruptcy_claim(user, perp_market_index, &maps.perp_market_map)?;
     }
 
-    let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, maps)?;
-
-    validate!(
-        liquidator_meets_initial_margin_requirement,
-        ErrorCode::InsufficientCollateral,
-        "Liquidator doesnt have enough collateral to take over borrow"
-    )?;
-
-    // The liquidation adds exposure to the liquidator the way a risk-increasing
-    // fill does, so the liquidator subaccount must clear its own buffered
-    // equity floor before it accepts the exposure.
-    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
-        liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
-    }
+    validate_liquidator_can_take_on_exposure(liquidator, maps, now)?;
 
     let market_oracle_price = {
         let market = maps.perp_market_map.get_ref_mut(&perp_market_index)?;
@@ -5054,6 +4991,35 @@ pub fn resolve_spot_bankruptcy(
     });
 
     if_payment.cast()
+}
+
+/// A liquidator takes on the liquidated exposure like a risk-increasing fill, so
+/// it must pass the same admission a fill does: its borrows valued through a fresh
+/// interest index (OtterSec #135), initial margin, and its own buffered equity floor.
+/// Only the liquidator's own stale borrows can block it, and their crank is
+/// permissionless.
+fn validate_liquidator_can_take_on_exposure(
+    liquidator: &User,
+    maps: &mut AccountMaps,
+    now: i64,
+) -> VelocityResult {
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        liquidator,
+        &maps.spot_market_map,
+        now,
+    )?;
+
+    validate!(
+        meets_initial_margin_requirement(liquidator, maps)?,
+        ErrorCode::InsufficientCollateral,
+        "Liquidator doesnt have enough collateral to take over the liquidated position"
+    )?;
+
+    if let Some(liquidator_net_equity) = calculate_net_equity_for_floor(liquidator, maps)? {
+        liquidator_net_equity.validate_clears_buffered_floor(liquidator)?;
+    }
+
+    Ok(())
 }
 
 pub fn calculate_margin_freed(

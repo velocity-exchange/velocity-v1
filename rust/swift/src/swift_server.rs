@@ -71,8 +71,8 @@ use {
         swift_order_subscriber::{SignedMessageInfo, SignedOrderType},
         types::{
             accounts::User, errors::ErrorCode, CommitmentConfig, MarketId, MarketStatus,
-            MarketType, MarketTypeExt, OrderParams, OrderParamsExt, OrderType, PositionDirection,
-            ProgramError, SdkError, SdkResult, SignedMsgTriggerOrderParams, VersionedMessage,
+            MarketType, MarketTypeExt, OrderParams, OrderParamsExt, OrderType, ProgramError,
+            SdkError, SdkResult, SignedMsgTriggerOrderParams, VersionedMessage,
             VersionedTransaction,
         },
         velocity_idl, Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
@@ -787,7 +787,7 @@ pub async fn health_check(
             | user_account_fetcher_healthy={user_account_fetcher_redis_health} |
             redis_healthy={redis_health}|rpc_healthy={rpc_healthy}|market_subs={market_subs_healthy}",
         );
-        log::error!(target: "server", "Failed health check {}", &msg);
+        log::error!(target: "server", "Failed health check {}", msg);
         (axum::http::StatusCode::PRECONDITION_FAILED, msg)
     }
 }
@@ -837,9 +837,21 @@ pub async fn start_server() {
         _ => panic!("Invalid velocity environment: {velocity_env}"),
     };
     let wallet = Wallet::new(Keypair::new());
-    let client = VelocityClient::new(context, RpcClient::new(rpc_endpoint.clone()), wallet)
-        .await
-        .expect("initialized client");
+    // Commitment must be set explicitly. `RpcClient::new` defaults to
+    // `CommitmentConfig::default()`, which is *finalized*, and the client's
+    // commitment is inherited by every account subscription it opens (markets,
+    // oracles, users). Finalized state runs ~32 slots (~13s) behind head, which
+    // is far past the 10-slot tolerance of the auction oracle-band guard below,
+    // so that guard would fail open on every order. Confirmed matches the TS
+    // SDK's `DEFAULT_CONFIRMATION_OPTS` and the commitment this server already
+    // passes explicitly to `simulateTransaction`.
+    let client = VelocityClient::new(
+        context,
+        RpcClient::new_with_commitment(rpc_endpoint.clone(), CommitmentConfig::confirmed()),
+        wallet,
+    )
+    .await
+    .expect("initialized client");
 
     let user_account_fetcher = UserAccountFetcher::from_env(client.clone()).await;
 
@@ -900,7 +912,7 @@ pub async fn start_server() {
             }
         }
 
-        log::info!("subscribing markets: {:?}", &all_markets);
+        log::info!("subscribing markets: {:?}", all_markets);
         if let Err(err) = state.velocity.subscribe_markets(&all_markets).await {
             log::error!("couldn't subscribe markets: {err:?}, RPC sim disabled!");
             state.disable_rpc_sim();
@@ -1982,11 +1994,10 @@ mod tests {
         solana_native_token::LAMPORTS_PER_SOL,
         std::collections::HashMap,
         velocity_rs::{
-            program::math::time::SlotDuration,
             swift_order_subscriber::expected_network_tag,
             types::{
-                accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
-                SignedMsgTriggerOrderParams,
+                accounts::User, PositionDirection, SignedMsgOrderParamsDelegateMessage,
+                SignedMsgOrderParamsMessage, SignedMsgTriggerOrderParams,
             },
         },
     };
@@ -2086,7 +2097,7 @@ mod tests {
 
     #[test]
     fn test_validate_market_type() {
-        let min_order_size = 1 * LAMPORTS_PER_SOL;
+        let min_order_size = LAMPORTS_PER_SOL;
 
         // Test valid market type
         let params = create_test_order_params(
@@ -2116,7 +2127,7 @@ mod tests {
 
     #[test]
     fn test_validate_worst_price_is_named() {
-        let min_order_size = 1 * LAMPORTS_PER_SOL;
+        let min_order_size = LAMPORTS_PER_SOL;
         let order = |order_type: OrderType, price: u64, offset: Option<i64>| {
             create_test_order_params(
                 order_type,
@@ -2145,7 +2156,7 @@ mod tests {
 
     #[test]
     fn test_validate_order_size() {
-        let min_order_size = 1 * LAMPORTS_PER_SOL;
+        let min_order_size = LAMPORTS_PER_SOL;
 
         // Test valid order size
         let params = create_test_order_params(
@@ -2176,7 +2187,7 @@ mod tests {
     #[test]
     fn test_request_context_from_incoming_message_valid_utf8() {
         let taker = Pubkey::new_unique();
-        let uuid_valid: [u8; 8] = [b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h'];
+        let uuid_valid: [u8; 8] = *b"abcdefgh";
         let authority_msg = SignedOrderType::authority(SignedMsgOrderParamsMessage {
             sub_account_id: 0,
             signed_msg_order_params: OrderParams {
@@ -2635,7 +2646,10 @@ mod tests {
         // Create mock server params
         let velocity = VelocityClient::new(
             velocity_rs::Context::DevNet,
-            RpcClient::new("https://api.devnet.solana.com".to_string()),
+            RpcClient::new_with_commitment(
+                "https://api.devnet.solana.com".to_string(),
+                CommitmentConfig::confirmed(),
+            ),
             Keypair::new().into(),
         )
         .await
@@ -2693,7 +2707,7 @@ mod tests {
             market_index: 0,
             market_type: MarketType::Perp,
             order_type: OrderType::Market,
-            base_asset_amount: 1 * LAMPORTS_PER_SOL,
+            base_asset_amount: LAMPORTS_PER_SOL,
             price: 1_000,
             direction: PositionDirection::Short,
             ..Default::default()

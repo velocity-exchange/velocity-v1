@@ -207,12 +207,9 @@ pub fn get_vault_len(mint: &InterfaceAccount<Mint>) -> anchor_lang::Result<usize
         };
         let mint_data = mint_info.try_borrow_data()?;
         let mint_state = StateWithExtensions::<Mint>::unpack(&mint_data)?;
-        let mint_extensions = match mint_state.get_extension_types() {
-            Ok(extensions) => extensions,
-            // If we cant deserialize the mint, try assuming no extensions
-            // Init token will fail if this size doesnt work, so worst case init account just fails
-            Err(_) => vec![],
-        };
+        // If we cant deserialize the mint, try assuming no extensions
+        // Init token will fail if this size doesnt work, so worst case init account just fails
+        let mint_extensions = mint_state.get_extension_types().unwrap_or_default();
         let mut required_extensions =
             ExtensionType::get_required_init_account_extensions(&mint_extensions);
         required_extensions.push(ExtensionType::ImmutableOwner);

@@ -33,3 +33,6 @@ hex = "0.4.3"
 serde_json = "1.0.143"
 humantime = "2.3.0"
 strum = { version = "0.27.2", features = ["derive"] }
+
+[lints]
+workspace = true

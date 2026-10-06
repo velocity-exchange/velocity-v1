@@ -1,4 +1,9 @@
 //! Token faucet — test/devnet utility for minting tokens. Not deployed on mainnet.
+
+// Anchor's `#[program]` emits a `let _: T = panic!()` type check per instruction argument at the
+// crate root, outside any item this crate can annotate.
+#![allow(clippy::diverging_sub_expression)]
+
 use {
     anchor_lang::prelude::*,
     anchor_spl::token::{self, Mint, Token, TokenAccount},

@@ -425,7 +425,7 @@ impl crate::state::user::User {
     pub fn clob_user_ref(&self) -> UserRefV0 {
         UserRefV0 {
             authority: self.authority,
-            sub_account_id: self.sub_account_id.into(),
+            sub_account_id: self.sub_account_id,
         }
     }
 

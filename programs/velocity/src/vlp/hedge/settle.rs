@@ -80,7 +80,7 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         None,
     )?;
 
-    for (_, perp_market_loader) in maps.perp_market_map.0.iter() {
+    for perp_market_loader in maps.perp_market_map.0.values() {
         let mut perp_market = perp_market_loader.load_mut()?;
         validate!(lp_pool.lp_pool_id == perp_market.hedge_config.pool_id, ErrorCode::InvalidLpPoolId, "Perp market {} does not have the same lp pool id as the lp pool being settled to: {} != {}",
                 perp_market.market_index,

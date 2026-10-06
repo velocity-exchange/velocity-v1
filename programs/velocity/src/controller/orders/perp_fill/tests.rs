@@ -138,7 +138,7 @@ impl ExternalQuoterExecutor<'static> for MockBook {
     ) -> VelocityResult<QuoterSubjects> {
         Ok(match self.quoter_type {
             QuoterType::Clob => QuoterSubjects::Book,
-            _ => QuoterSubjects::Account(self.maker),
+            QuoterType::Vamm | QuoterType::Custom => QuoterSubjects::Account(self.maker),
         })
     }
 

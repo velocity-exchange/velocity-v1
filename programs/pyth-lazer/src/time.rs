@@ -12,7 +12,6 @@ use {
 #[repr(transparent)]
 pub struct TimestampUs(u64);
 
-#[cfg_attr(feature = "mry", mry::mry)]
 impl TimestampUs {
     pub fn now() -> Self {
         SystemTime::now().try_into().expect("invalid system time")

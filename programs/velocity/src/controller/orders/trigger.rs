@@ -283,7 +283,9 @@ fn trigger_market_status(perp_market: &PerpMarket) -> VelocityResult<bool> {
     match perp_market.status {
         MarketStatus::Active => Ok(false),
         MarketStatus::ReduceOnly => Ok(true),
-        status => {
+        status @ MarketStatus::Initialized
+        | status @ MarketStatus::Settlement
+        | status @ MarketStatus::Delisted => {
             msg!("market takes no trigger (status {:?})", status);
             Err(ErrorCode::MarketPlaceOrderPaused)
         }
@@ -618,7 +620,7 @@ pub(super) fn update_trigger_order_params(
     order.trigger_condition = match order.trigger_condition {
         OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
         OrderTriggerCondition::Below => OrderTriggerCondition::TriggeredBelow,
-        _ => {
+        OrderTriggerCondition::TriggeredAbove | OrderTriggerCondition::TriggeredBelow => {
             return Err(print_error!(ErrorCode::InvalidTriggerOrderCondition)());
         }
     };

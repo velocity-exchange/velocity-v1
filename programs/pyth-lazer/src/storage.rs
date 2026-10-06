@@ -1,9 +1,8 @@
 pub use crate::signature::{ed25519_program_args, Ed25519SignatureOffsets};
 use {
     crate::{signature, signature::VerifiedMessage},
-    anchor_lang::{prelude::*, solana_program::pubkey::PUBKEY_BYTES},
+    anchor_lang::prelude::*,
     solana_program::pubkey,
-    std::mem::size_of,
 };
 
 pub const STORAGE_ID: Pubkey = pubkey!("3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL");
@@ -19,10 +18,6 @@ pub struct TrustedSignerInfo {
     pub expires_at: i64,
 }
 
-impl TrustedSignerInfo {
-    const SERIALIZED_LEN: usize = PUBKEY_BYTES + size_of::<i64>();
-}
-
 #[account]
 pub struct Storage {
     pub top_authority: Pubkey,
@@ -34,23 +29,12 @@ pub struct Storage {
 }
 
 impl Storage {
-    const SERIALIZED_LEN: usize = PUBKEY_BYTES
-        + PUBKEY_BYTES
-        + size_of::<u64>()
-        + size_of::<u8>()
-        + TrustedSignerInfo::SERIALIZED_LEN * SPACE_FOR_TRUSTED_SIGNERS
-        + EXTRA_SPACE;
-
     pub fn initialized_trusted_signers(&self) -> &[TrustedSignerInfo] {
         &self.trusted_signers[0..usize::from(self.num_trusted_signers)]
     }
 }
 
 pub const STORAGE_SEED: &[u8] = b"storage";
-
-#[cfg(not(feature = "program"))]
-#[allow(dead_code)]
-pub mod program {}
 
 pub fn verify_message_direct(
     pyth_storage_account: &Storage,

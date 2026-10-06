@@ -33,7 +33,7 @@ a perp fill.
 
 | Program | ID | Caller | Used for | Trust assumption | Failure mode |
 |---|---|---|---|---|---|
-| System | `11111111111111111111111111111111` | `velocity` | PDA create / allocate / assign / transfer (`controller/pda.rs`) | Part of the runtime; not independently trusted | None separable from the chain halting |
+| System | `11111111111111111111111111111111` | `velocity` | Account creation through Anchor `init` constraints, and rent top-ups in `instructions/account_extension/` | Part of the runtime; not independently trusted | None separable from the chain halting |
 | SPL Token | `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` | `velocity`, `vaults` | `transfer_checked`, `burn`, `mint_to`, `close_account`, `initialize_account3` (`controller/token.rs`) | Program is frozen and heavily audited | A defect would be systemic to Solana; Velocity has no independent mitigation |
 | SPL Token-2022 | `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | `velocity`, `vaults` | Same operations, through `anchor_spl::token_interface` | Upgradeable by the SPL authority; extension semantics behave as documented | See "Token-2022 extensions" below; this is the largest CPI-side risk |
 | Associated Token Account | `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` | `velocity` | Protocol-fee withdrawal accounts; also whitelisted inside swap flows | Standard derivation | Withdrawal instructions fail; no fund risk |
@@ -181,7 +181,7 @@ configuration.
 | Dependency | Used for |
 |---|---|
 | Clock sysvar | Timestamps and slots throughout; read by syscall, not as an account, in newer handlers |
-| Rent sysvar | PDA funding in `controller/pda.rs` |
+| Rent sysvar | Rent-exempt minimums for `init` accounts and account extension |
 | Instructions sysvar | Ed25519 signature verification for Pyth Lazer and signed-message (swift) orders; whitelist introspection for swaps |
 | Ed25519 native program | Signature verification instruction that must precede `update_pyth_lazer_oracle` and signed-message order placement |
 

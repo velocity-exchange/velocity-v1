@@ -3,7 +3,7 @@
 # pushing, without waiting for (or being able to trigger) the hosted runs.
 #
 # KEEP THIS FILE IN SYNC WITH .github/workflows/main.yml: when a gating job's
-# command changes there, mirror it here in the same change (see CLAUDE.md).
+# command changes there, mirror it here in the same change (see docs/agents/testing.md).
 #
 # Usage:
 #   bash test-scripts/ci-local.sh [tier] [output flags]
@@ -128,12 +128,15 @@ skip_check() {
 # + fuzz crates + velocity-rs examples, same nightly-rustfmt style CI enforces
 # across its fmt steps.
 run_check "rust fmt (all codebases)"  bun run fmt:rust:check
-run_check "cargo clippy -p velocity"  cargo clippy -p velocity
+run_check "cargo clippy (workspace)"  cargo clippy --workspace --all-targets -- -D warnings
+run_check "cargo clippy (anchor-test)" cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
+run_check "cargo clippy (devnet)"    cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,isolated-position,vlp-hedge -- -D warnings
 run_check "prettier"                  bun run prettify
 run_check "eslint"                    bun run lint
 
 # CI job: rust-workspace-check (static parts)
 run_check "rust workspace check"      cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+run_check "rust workspace clippy"    cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests -- -D warnings
 run_check "velocity_idl.rs in sync"   git diff --exit-code rust/velocity-rs/crates/src/velocity_idl.rs
 
 # Not a standalone CI job, but the anchor-tests build compiles this flavor;

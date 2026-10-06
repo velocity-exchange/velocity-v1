@@ -12,7 +12,6 @@ pub mod message;
 pub mod payload;
 pub mod price;
 pub mod rate;
-mod serde_price_as_i64;
 mod serde_str;
 pub mod signature;
 pub mod storage;

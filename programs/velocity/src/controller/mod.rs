@@ -14,7 +14,6 @@ pub mod liquidation;
 pub mod market_stats;
 pub mod matching;
 pub mod orders;
-pub mod pda;
 pub mod perp_pools;
 pub mod pnl;
 pub mod position;

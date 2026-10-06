@@ -11,10 +11,7 @@ use {
         subscription::{Response, SubscribeRequest, SubscriptionId},
     },
     solana_signature::Signature,
-    std::{
-        collections::HashSet,
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    },
+    std::{collections::HashSet, time::Duration},
     velocity_rs::{
         constants::{
             perp_market_index_to_pyth_lazer_feed_id, pyth_lazer_feed_id_to_perp_market_index,
@@ -38,73 +35,10 @@ pub fn client_slot_duration(velocity: &velocity_rs::VelocityClient, now_slot: u6
     velocity.slot_duration_at(now_slot)
 }
 
-pub struct OrderSlotLimiter<const N: usize> {
-    slots: [Vec<u32>; N],
-    generations: [u64; N],
-}
-
-impl<const N: usize> OrderSlotLimiter<N> {
-    pub fn new() -> Self {
-        let slots = std::array::from_fn(|_| Vec::new());
-        let generations = [0; N];
-        Self { slots, generations }
-    }
-
-    pub fn allow_event(&mut self, g: u64, id: u32) -> bool {
-        let idx = (g % N as u64) as usize;
-
-        // Replace old generation
-        if self.generations[idx] != g {
-            self.slots[idx].clear();
-            self.generations[idx] = g;
-        }
-
-        // Count occurrences of id in generations g - 1 to g - 4
-        let mut count = 0;
-        for i in 2..=4 {
-            let past_g = g.saturating_sub(i);
-            let past_idx = (past_g % N as u64) as usize;
-
-            if self.generations[past_idx] == past_g {
-                if self.slots[past_idx].binary_search(&id).is_ok() {
-                    count += 1;
-                    if count >= 1 {
-                        // Already appeared once, so this would be the second time
-                        return false;
-                    }
-                }
-            }
-        }
-
-        // Insert in sorted order
-        let slot = &mut self.slots[idx];
-        match slot.binary_search(&id) {
-            Ok(_) => false, // Already present — shouldn't happen
-            Err(pos) => {
-                slot.insert(pos, id);
-                true
-            }
-        }
-    }
-
-    pub fn check_event(&self, g: u64, id: u32) -> bool {
-        // Check generations g - 1 and g - 4
-        for i in 1..=4 {
-            let past_g = g.saturating_sub(i);
-            let past_idx = (past_g % N as u64) as usize;
-
-            if self.generations[past_idx] == past_g {
-                if self.slots[past_idx].binary_search(&id).is_ok() {
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
-}
-
+// Variant fields are log context, read through `Debug` (`{intent:?}`), which dead-code analysis
+// ignores.
 #[derive(Clone, Default, Debug)]
+#[allow(dead_code)]
 pub enum TxIntent {
     #[default]
     None,
@@ -239,10 +173,7 @@ impl TxIntent {
 
     /// true if tx was expected to trigger the taker order
     pub fn expected_trigger(&self) -> bool {
-        match self {
-            TxIntent::Trigger { .. } => true,
-            _ => false,
-        }
+        matches!(self, TxIntent::Trigger { .. })
     }
 
     /// The slot the intent was built against.
@@ -374,17 +305,12 @@ pub struct PendingTxMeta {
     pub signature: Signature,
     pub intent: TxIntent,
     pub cu_limit: u64,
-    pub ts: u64,
 }
 
 impl PendingTxMeta {
     pub fn new(sig: Signature, intent: TxIntent, cu_limit: u64) -> Self {
         Self {
             signature: sig,
-            ts: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
             intent,
             cu_limit,
         }
@@ -798,10 +724,9 @@ pub fn subscribe_price_feeds(
             };
 
             // sub per feed
-            let mut sub_id = 0;
-            for feed_id in feed_ids.iter() {
+            for (sub_id, feed_id) in feed_ids.iter().enumerate() {
                 let subscribe_request = SubscribeRequest {
-                    subscription_id: SubscriptionId(sub_id),
+                    subscription_id: SubscriptionId(sub_id as u64),
                     params: SubscriptionParams::new(SubscriptionParamsRepr {
                         price_feed_ids: vec![*feed_id],
                         // velocity program requires exponent + feed_update_timestamp to apply the update
@@ -819,7 +744,6 @@ pub fn subscribe_price_feeds(
                     })
                     .expect("invalid subscription params"),
                 };
-                sub_id += 1;
                 if let Err(err) = cli
                     .subscribe(pyth_lazer_protocol::subscription::Request::Subscribe(
                         subscribe_request,
@@ -852,105 +776,95 @@ pub fn subscribe_price_feeds(
                 match update {
                     Ok(AnyResponse::Binary(outer)) => {
                         for message in outer.messages {
-                            match message {
-                                Message::Solana(solana) => {
-                                    let mut buf = Vec::with_capacity(solana.payload.len() + 128);
-                                    solana.serialize(&mut buf).expect("serialized");
-                                    let data =
-                                        PayloadData::deserialize_slice_le(&solana.payload).unwrap();
+                            if let Message::Solana(solana) = message {
+                                let mut buf = Vec::with_capacity(solana.payload.len() + 128);
+                                solana.serialize(&mut buf).expect("serialized");
+                                let data =
+                                    PayloadData::deserialize_slice_le(&solana.payload).unwrap();
 
-                                    log::trace!(target: "pyth", "got update: {data:?}");
-                                    for f in data.feeds {
-                                        // The program gates staleness and monotonicity on
-                                        // the per-feed `FeedUpdateTimestamp`, not the payload
-                                        // one, which a fixed-rate channel keeps fresh while a
-                                        // feed stalls. See `instructions/pyth_lazer_oracle.rs`.
-                                        let feed_update_ts = f
-                                            .properties
-                                            .iter()
-                                            .find_map(|p| match p {
-                                                PayloadPropertyValue::FeedUpdateTimestamp(ts) => {
-                                                    *ts
-                                                }
-                                                _ => None,
-                                            })
-                                            .unwrap_or(data.timestamp_us);
-                                        for p in f.properties {
-                                            if let PayloadPropertyValue::Price(Some(new_price)) = p
+                                log::trace!(target: "pyth", "got update: {data:?}");
+                                for f in data.feeds {
+                                    // The program gates staleness and monotonicity on
+                                    // the per-feed `FeedUpdateTimestamp`, not the payload
+                                    // one, which a fixed-rate channel keeps fresh while a
+                                    // feed stalls. See `instructions/pyth_lazer_oracle.rs`.
+                                    let feed_update_ts = f
+                                        .properties
+                                        .iter()
+                                        .find_map(|p| match p {
+                                            PayloadPropertyValue::FeedUpdateTimestamp(ts) => *ts,
+                                            _ => None,
+                                        })
+                                        .unwrap_or(data.timestamp_us);
+                                    for p in f.properties {
+                                        if let PayloadPropertyValue::Price(Some(new_price)) = p {
+                                            // TODO: bulk msg to avoid bouncing around tokio, bucket in some way, one message updates multiple markets...
+                                            let feed_id = f.feed_id.0;
+                                            let price: u64 = new_price.0.unsigned_abs().into();
+
+                                            if let Some(market_id) =
+                                                pyth_lazer_feed_id_to_perp_market_index(feed_id)
                                             {
-                                                // TODO: bulk msg to avoid bouncing around tokio, bucket in some way, one message updates multiple markets...
-                                                let feed_id = f.feed_id.0;
-                                                let price: u64 = new_price.0.unsigned_abs().into();
+                                                let scaled_price = to_price_precision(
+                                                    price,
+                                                    feed_id,
+                                                    MarketType::Perp,
+                                                );
+                                                let _ = price_tx.try_send(PythPriceUpdate {
+                                                    market_type: MarketType::Perp,
+                                                    market_id,
+                                                    feed_id,
+                                                    price: scaled_price,
+                                                    message: buf.clone(),
+                                                    ts: feed_update_ts,
+                                                });
+                                            }
 
-                                                if let Some(market_id) =
-                                                    pyth_lazer_feed_id_to_perp_market_index(feed_id)
-                                                {
-                                                    let scaled_price = to_price_precision(
-                                                        price,
-                                                        feed_id,
-                                                        MarketType::Perp,
-                                                    );
-                                                    let _ = price_tx.try_send(PythPriceUpdate {
-                                                        market_type: MarketType::Perp,
-                                                        market_id,
-                                                        feed_id,
-                                                        price: scaled_price,
-                                                        message: buf.clone(),
-                                                        ts: feed_update_ts,
-                                                    });
-                                                }
+                                            if let Some(market_id) =
+                                                pyth_lazer_feed_id_to_spot_market_index(feed_id)
+                                            {
+                                                let scaled_price = to_price_precision(
+                                                    price,
+                                                    feed_id,
+                                                    MarketType::Spot,
+                                                );
+                                                let _ = price_tx.try_send(PythPriceUpdate {
+                                                    market_type: MarketType::Spot,
+                                                    market_id,
+                                                    feed_id,
+                                                    price: scaled_price,
+                                                    message: buf.clone(),
+                                                    ts: feed_update_ts,
+                                                });
+                                            }
 
-                                                if let Some(market_id) =
-                                                    pyth_lazer_feed_id_to_spot_market_index(feed_id)
-                                                {
-                                                    let scaled_price = to_price_precision(
-                                                        price,
-                                                        feed_id,
-                                                        MarketType::Spot,
-                                                    );
-                                                    let _ = price_tx.try_send(PythPriceUpdate {
-                                                        market_type: MarketType::Spot,
-                                                        market_id,
-                                                        feed_id,
-                                                        price: scaled_price,
-                                                        message: buf.clone(),
-                                                        ts: feed_update_ts,
-                                                    });
-                                                }
-
-                                                // Extra feeds (cluster-specific): emit a synthetic
-                                                // update so the relayer ships them. velocity-rs
-                                                // derives the oracle PDA from feed_id alone, so
-                                                // market_id is informational only.
-                                                if extra_feeds.contains(&feed_id)
-                                                    && pyth_lazer_feed_id_to_perp_market_index(
-                                                        feed_id,
-                                                    )
+                                            // Extra feeds (cluster-specific): emit a synthetic
+                                            // update so the relayer ships them. velocity-rs
+                                            // derives the oracle PDA from feed_id alone, so
+                                            // market_id is informational only.
+                                            if extra_feeds.contains(&feed_id)
+                                                && pyth_lazer_feed_id_to_perp_market_index(feed_id)
                                                     .is_none()
-                                                    && pyth_lazer_feed_id_to_spot_market_index(
-                                                        feed_id,
-                                                    )
+                                                && pyth_lazer_feed_id_to_spot_market_index(feed_id)
                                                     .is_none()
-                                                {
-                                                    let scaled_price = to_price_precision(
-                                                        price,
-                                                        feed_id,
-                                                        MarketType::Spot,
-                                                    );
-                                                    let _ = price_tx.try_send(PythPriceUpdate {
-                                                        market_type: MarketType::Spot,
-                                                        market_id: u16::MAX,
-                                                        feed_id,
-                                                        price: scaled_price,
-                                                        message: buf.clone(),
-                                                        ts: feed_update_ts,
-                                                    });
-                                                }
+                                            {
+                                                let scaled_price = to_price_precision(
+                                                    price,
+                                                    feed_id,
+                                                    MarketType::Spot,
+                                                );
+                                                let _ = price_tx.try_send(PythPriceUpdate {
+                                                    market_type: MarketType::Spot,
+                                                    market_id: u16::MAX,
+                                                    feed_id,
+                                                    price: scaled_price,
+                                                    message: buf.clone(),
+                                                    ts: feed_update_ts,
+                                                });
                                             }
                                         }
                                     }
                                 }
-                                _ => (),
                             }
                         }
                     }
@@ -1003,9 +917,8 @@ mod tests {
     use {
         super::{
             is_resting_swift_limit, preview_pyth_lazer_oracle, should_poll_swift,
-            swift_order_expired, swift_slot_wait, swift_slot_wait_if_known, OrderParams,
-            OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate,
-            SwiftSlotWait, TxIntent,
+            swift_order_expired, swift_slot_wait, swift_slot_wait_if_known, OrderParams, OrderType,
+            PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate, SwiftSlotWait, TxIntent,
         },
         pyth_lazer_protocol::{
             message::SolanaMessage,
@@ -1364,18 +1277,5 @@ mod tests {
         assert_eq!(intent.swift_uuid(), Some(*b"abcd1234"));
         // even the place-only path carries the taker so its lifecycle is filterable by user
         assert_eq!(intent.user(), Some(taker));
-    }
-
-    #[test]
-    fn order_slot_limiter_rejects_repeat_within_window() {
-        let mut limiter: OrderSlotLimiter<40> = OrderSlotLimiter::new();
-        // First trigger attempt for an order id at slot 100 is allowed.
-        assert!(limiter.allow_event(100, 7));
-        // Same slot again is rejected (already present).
-        assert!(!limiter.allow_event(100, 7));
-        // A couple slots later it is throttled (seen in generations slot-2..=slot-4).
-        assert!(!limiter.allow_event(102, 7));
-        // After the window passes it is allowed again.
-        assert!(limiter.allow_event(110, 7));
     }
 }

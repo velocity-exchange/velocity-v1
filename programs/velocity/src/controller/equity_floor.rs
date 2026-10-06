@@ -106,7 +106,7 @@ mod tests {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
+        let oracle_map = OracleMap::load_one(
             &oracle_account_info,
             oracle_map_slot,
             SlotClock::baseline(),

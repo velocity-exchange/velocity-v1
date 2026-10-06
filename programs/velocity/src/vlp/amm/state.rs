@@ -398,7 +398,10 @@ impl AMM {
                 net_revenue_since_last_funding
                     <= DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT * 400
             }
-            _ => {
+            ContractTier::C
+            | ContractTier::Speculative
+            | ContractTier::HighlySpeculative
+            | ContractTier::Isolated => {
                 net_revenue_since_last_funding
                     <= DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT * 200
             }
@@ -414,7 +417,9 @@ impl AMM {
                 ContractTier::A => percent_drawdown <= -PERCENTAGE_PRECISION_I128 / 50,
                 ContractTier::B => percent_drawdown <= -PERCENTAGE_PRECISION_I128 / 33,
                 ContractTier::C => percent_drawdown <= -PERCENTAGE_PRECISION_I128 / 25,
-                _ => percent_drawdown <= -PERCENTAGE_PRECISION_I128 / 20,
+                ContractTier::Speculative
+                | ContractTier::HighlySpeculative
+                | ContractTier::Isolated => percent_drawdown <= -PERCENTAGE_PRECISION_I128 / 20,
             };
 
             if percent_drawdown_limit_breached {

@@ -104,6 +104,8 @@ pub fn get_amm_is_available(
 macro_rules! no_router {
     ($name:ident) => {
         let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
+        // Some callers fill through the router and need it mutable, others never touch it.
+        #[allow(unused_mut, unused_variables)]
         let mut $name = crate::math::router::RouterLeg {
             books: &[],
             executor: &mut no_externals,
@@ -165,7 +167,7 @@ pub mod fulfill_order {
             test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
             PERCENTAGE_PRECISION_U64,
         },
-        std::{str::FromStr, u64},
+        std::str::FromStr,
     };
     #[test]
     fn validate_market_within_price_band_tests() {
@@ -319,7 +321,7 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
@@ -461,7 +463,6 @@ pub mod fulfill_order {
             },
         )
         .unwrap();
-        taker.orders[order_index] = order;
         // Fill happened against the projected curve near the oracle price,
         // impossible against the stale stored bid at 100 (101.9 > 100 never
         // crosses). Partial: the sell walks the curve from ~102 down to the
@@ -495,7 +496,7 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
@@ -635,7 +636,6 @@ pub mod fulfill_order {
             },
         )
         .unwrap();
-        taker.orders[order_index] = order;
         // No projection, no cross, no fill; pre-change behavior preserved.
         assert_eq!(base_asset_amount, 0);
         assert_eq!(quote_asset_amount, 0);
@@ -664,7 +664,7 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
@@ -804,7 +804,6 @@ pub mod fulfill_order {
             },
         )
         .unwrap();
-        taker.orders[order_index] = order;
         // No cross, so no fill.
         assert_eq!(base_asset_amount, 0);
         assert_eq!(quote_asset_amount, 0);
@@ -832,7 +831,7 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
@@ -1008,7 +1007,7 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
@@ -1194,7 +1193,7 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
@@ -1386,7 +1385,7 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
@@ -1700,7 +1699,7 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
@@ -1904,7 +1903,7 @@ pub mod fill_order {
             oracle_account_info
         );
 
-        let mut oracle_map = OracleMap::load_one(
+        let oracle_map = OracleMap::load_one(
             &oracle_account_info,
             clock.slot,
             SlotClock::baseline(),
@@ -2091,7 +2090,7 @@ pub mod force_cancel_orders {
             oracle_account_info
         );
 
-        let mut oracle_map = OracleMap::load_one(
+        let oracle_map = OracleMap::load_one(
             &oracle_account_info,
             clock.slot,
             SlotClock::baseline(),
@@ -2344,7 +2343,7 @@ pub mod cancel_reduce_only_trigger_orders {
             oracle_account_info
         );
 
-        let mut oracle_map = OracleMap::load_one(
+        let oracle_map = OracleMap::load_one(
             &oracle_account_info,
             clock.slot,
             SlotClock::baseline(),
@@ -3086,7 +3085,7 @@ pub mod builder_fee_margin_gate {
             sol_oracle_account_info,
             other_perp_oracle_account_info,
         ]);
-        let mut oracle_map = OracleMap::load(
+        let oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
             SlotClock::baseline(),
@@ -3298,7 +3297,6 @@ pub mod builder_fee_margin_gate {
             },
         )
         .unwrap();
-        taker.orders[order_index] = order;
         (base_filled, escrow.get_order(0).unwrap().fees_accrued)
     }
     #[test]
@@ -3310,7 +3308,8 @@ pub mod builder_fee_margin_gate {
         // About 1% of a fill worth about $100.
         assert!(
             fees_accrued > 900_000 && fees_accrued < 1_100_000,
-            "expected about 1% of notional, got {fees_accrued}"
+            "expected about 1% of notional, got {}",
+            fees_accrued
         );
     }
     #[test]
@@ -3323,7 +3322,8 @@ pub mod builder_fee_margin_gate {
         assert_eq!(base_filled, BASE_PRECISION_U64);
         assert!(
             fees_accrued > 900_000 && fees_accrued < 1_100_000,
-            "expected about 1% of notional, got {fees_accrued}"
+            "expected about 1% of notional, got {}",
+            fees_accrued
         );
     }
     #[test]
@@ -3430,7 +3430,7 @@ mod taker_floor_unverifiable_withholds_fill {
             other_perp_oracle_account_info
         );
         let oracle_account_infos = Vec::from([oracle_account_info, other_perp_oracle_account_info]);
-        let mut oracle_map = OracleMap::load(
+        let oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
             SlotClock::baseline(),
@@ -3608,7 +3608,6 @@ mod taker_floor_unverifiable_withholds_fill {
             },
         )
         .unwrap();
-        taker.orders[order_index] = order;
         base_filled
     }
     const FLOOR: u64 = QUOTE_PRECISION_I64 as u64;

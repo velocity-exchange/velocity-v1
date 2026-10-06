@@ -11,6 +11,11 @@ members = [
 	"quoter-health",
 ]
 
+# Shared by every member through `[lints] workspace = true`, same stance as the program workspace.
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 # This is a SEPARATE workspace from the program workspace at the repo root
 # (which is `exclude = ["rust"]`). Keeping it separate isolates the heavy
 # solana 4.x RPC/tx crate line used by velocity-rs/keep-rs/swift from the

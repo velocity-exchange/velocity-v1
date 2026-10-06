@@ -751,7 +751,9 @@ impl User {
             order.trigger_condition = match order.trigger_condition {
                 OrderTriggerCondition::TriggeredAbove => OrderTriggerCondition::Above,
                 OrderTriggerCondition::TriggeredBelow => OrderTriggerCondition::Below,
-                other => other,
+                other @ OrderTriggerCondition::Above | other @ OrderTriggerCondition::Below => {
+                    other
+                }
             };
 
             order.set_clob_order_ref(0, 0);

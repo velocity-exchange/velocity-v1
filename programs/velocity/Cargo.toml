@@ -92,3 +92,6 @@ base64 = "0.13.0"
 ed25519-dalek = "2"
 # Forges a signature under a small-order key, to prove the verifier refuses it.
 curve25519-dalek = "4"
+
+[lints]
+workspace = true

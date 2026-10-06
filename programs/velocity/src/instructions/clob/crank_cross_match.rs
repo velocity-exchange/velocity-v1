@@ -257,7 +257,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // and the runtime's allocator never gives one back.
     let mut cpi_scratch = QuoterCpiScratch::new();
     let cx = CrossMatchContext {
-        accounts: &ctx.accounts,
+        accounts: ctx.accounts,
         tail,
         state: &state,
         market_index,

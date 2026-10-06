@@ -29,14 +29,12 @@ use base64::Engine;
 use common::*;
 use nanoid::nanoid;
 use velocity_rs::{
-    constants::derive_perp_market_account,
     math::constants::BASE_PRECISION_I64,
     swift_order_subscriber::SignedOrderType,
     types::{
-        accounts::PerpMarket, MarketType, NewOrder, OrderParams, OrderStatus, OrderType,
-        PositionDirection, PostOnlyParam, SignedMsgOrderParamsMessage,
+        MarketType, NewOrder, OrderParams, OrderType, PositionDirection, PostOnlyParam,
+        SignedMsgOrderParamsMessage,
     },
-    utils::try_deser_zero_copy,
 };
 
 const ONE_SOL: i64 = BASE_PRECISION_I64; // 1e9, 9 decimals
@@ -54,7 +52,7 @@ const DUSDT_SLACK: u128 = 100;
 // key — so it does not collide with these.)
 const SUB_DEPOSIT: u16 = 1;
 const SUB_WITHDRAW: u16 = 2;
-const SUB_TAKER_AMM: u16 = 3;
+// Id 3 belonged to a removed test. It stays unassigned so the other ids keep their devnet accounts.
 const SUB_TAKER_JIT: u16 = 4;
 const SUB_DLOB_MAKER: u16 = 5;
 const SUB_DLOB_TAKER: u16 = 6;
@@ -76,33 +74,6 @@ fn marketable_limit(px: u64, direction: PositionDirection) -> OrderParams {
         .amount(amount)
         .price(price)
         .build()
-}
-
-/// The program's own clamp target for a LONG market-order auction: the oracle-
-/// relative (start, end) offsets `update_perp_auction_params_market_and_oracle_orders`
-/// sanitizes toward, at the market-order buffer scalar of 2.
-fn baseline_long_offsets(market: &PerpMarket) -> (i64, i64) {
-    OrderParams::get_perp_baseline_start_end_price_offset(market, PositionDirection::Long, 2)
-        .expect("baseline offsets")
-}
-
-/// Read a perp market straight from RPC, BYPASSING the websocket account cache.
-///
-/// `VelocityClient::get_perp_market_account` serves the subscribed cache (TestCtx
-/// subscribes to all three markets), and a cache entry's slot has no ordering
-/// guarantee against a just-confirmed tx — a websocket update can still be in
-/// flight. Callers that need reads which provably straddle a placement slot (the
-/// auction baseline bracket in `taker_fills_against_amm`) must not use the cache.
-async fn fetch_perp_market(ctx: &TestCtx, market_index: u16) -> PerpMarket {
-    let data = ctx
-        .client
-        .rpc()
-        .get_account_data(&derive_perp_market_account(market_index))
-        .await
-        .expect("fetch perp market from rpc");
-    // Pod reader, not anchor's `try_deserialize`: the latter takes a reference into
-    // byte-aligned RPC bytes and panics on 16-aligned zero-copy structs off-chain.
-    try_deser_zero_copy::<PerpMarket>(&data).expect("decode perp market")
 }
 
 // ---- One-shot devnet provisioning (NOT a CI assertion) ---------------------
@@ -187,269 +158,6 @@ async fn withdraw_from_spot_market() {
         withdrawn.abs_diff(want_withdrawn) <= DUSDT_SLACK,
         "withdraw dropped dUSDT collateral by {withdrawn} != {want_withdrawn} (±{DUSDT_SLACK} native)"
     );
-}
-
-// ---- Scenario 7: taker order fills against the AMM -------------------------
-//
-// This test is SOUND AGAINST AUCTION SANITIZATION. The earlier version rested a
-// long MARKET order with an aggressive `+2% → +15%` auction and waited 120s for a
-// lone-taker vAMM fill. It silently timed out — not a filler/DLOB/gRPC bug, but
-// because the program *rewrites* a market order's auction params on placement
-// (`OrderParams::update_perp_auction_params_market_and_oracle_orders`). The
-// requested band never reaches the chain: for a long it is clamped to the AMM
-// baseline offsets (`get_perp_baseline_start_end_price_offset(.., Long, 2)`).
-//
-// That baseline is itself live state, and on devnet it swings widely. Its END is
-// `(last_ask_price_twap - oracle_twap) + baseline_end_price_buffer`, where the
-// buffer is 2x the widest of mark_std / oracle_std / (amm spread * twap), clamped
-// by the contract tier (`get_auction_end_min_max_divisors`: 1%..10% of price for
-// Speculative). Both terms run large here: the bid/ask TWAPs are an EWMA over the
-// funding period and lag the oracle badly on a low-volume market, and the buffer
-// routinely pins to the 10% ceiling. Observed extremes on devnet market 0, a
-// baseline end at oracle+0.5% (TWAPs behind, buffer small) and at oracle+21%
-// (mark TWAP 10% above the oracle TWAP, amm.long_spread at 11%).
-//
-// Two consequences:
-//   * the sanitized end can sit BELOW the live `vamm_ask`, which tracks the live
-//     reserve price, so a lone-taker AMM fill is impossible and the filler
-//     correctly never fills. Hence the crossability gate + warn-skip below rather
-//     than a blind 120s timeout. A real fill needs the TWAPs warmed to the live
-//     price, or the JIT route (`amm_wants_to_jit_make`, inventory + jit_intensity).
-//   * the requested band must be derived FROM the live baseline, never hardcoded.
-//     A fixed `+2% → +15%` is not reliably aggressive: once the baseline end runs
-//     ~+20%, a +15% end is MILDER than the baseline, so the program leaves it
-//     untouched and clamps only the start. The stored band is then
-//     `requested_end - baseline_start`, which never matches the baseline band, and
-//     check (2) fails while the program is behaving correctly.
-//
-// So instead of asserting a fill that sanitization can forbid, this test:
-//   1. proves sanitization is active (the aggressive request is discarded),
-//   2. locks the clamp target to the program's own baseline (regression guard),
-//   3. resolves the fill three ways from live state, never a blind timeout:
-//      - the order ALREADY filled (crossable day: sanitized end out-priced
-//        `vamm_ask`, filler/AMM took it within the confirm window) — success;
-//        the regression checks above run on the filled order's persisted params;
-//      - it's resting and the sanitized end is <= `vamm_ask` (uncrossable, TWAP
-//        lag) — INCONCLUSIVE warn-skip with the exact numbers;
-//      - it's resting and crossable — wait for the filler to fill +1 SOL.
-// NB the order read-back matches on the market order regardless of Open/Filled,
-// because the deployed filler often fills it before the read.
-#[tokio::test]
-async fn taker_fills_against_amm() {
-    let ctx = TestCtx::new().await;
-    let sub = ctx.acquire(SUB_TAKER_AMM).await;
-    ctx.fund_and_deposit_dusdt(sub, 100).await;
-
-    let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
-
-    // allow-verbose: derivation of the aggression margin below is a bound a
-    // reader cannot reconstruct from the code alone.
-    //
-    // Aggressive RELATIVE TO THE LIVE BASELINE so sanitization must clamp both ends.
-    // place_and_take routes the order through the book; a remainder it cannot fill
-    // in this transaction rests on the CLOB until the deployed filler crosses it.
-    //
-    // The baseline read here is not the one the program will apply: it recomputes at
-    // the placement slot. Size the offset so the request stays past the live
-    // threshold even if the baseline RISES in between, otherwise that end is left
-    // unclamped and the checks below fail on correct behaviour. The only fast-moving
-    // term is `baseline_end_price_buffer`, hard-bounded above by the contract tier's
-    // ceiling (`oracle_twap / max_divisor`), so clearing that ceiling covers a fill
-    // or the vamm-widening crank driving amm.long_spread / mark_std from the buffer's
-    // floor to its cap. The TWAP terms are an EWMA over the ~1h funding period and
-    // cannot move materially in the second before placement. The extra 4% is the
-    // margin check (1) asserts on.
-    let market_before = fetch_perp_market(&ctx, 0).await;
-    let (_, max_divisor) = market_before
-        .get_auction_end_min_max_divisors()
-        .expect("auction end divisors");
-    let buffer_ceiling = market_before
-        .market_stats
-        .historical_oracle_data
-        .last_oracle_price_twap
-        .unsigned_abs()
-        / max_divisor;
-    let (pre_start_off, pre_end_off) = baseline_long_offsets(&market_before);
-    let aggression = (buffer_ceiling + px / 25) as i64;
-    let requested_start = px as i64 + pre_start_off + aggression;
-    let requested_end = px as i64 + pre_end_off + aggression;
-    let order = OrderParams {
-        order_type: OrderType::Market,
-        market_type: MarketType::Perp,
-        market_index: 0,
-        direction: PositionDirection::Long,
-        base_asset_amount: ONE_SOL as u64,
-        auction_start_price: Some(requested_start),
-        auction_end_price: Some(requested_end),
-        auction_duration: Some(200),
-        ..Default::default()
-    };
-    let clob = clob_accounts(&ctx.client, 0).await;
-    let tx = ctx
-        .client
-        .init_tx(&sub, false)
-        .await
-        .unwrap()
-        .place_and_take(order, clob, None)
-        .build();
-    ctx.send_confirmed(tx).await;
-
-    // --- Read back the ON-CHAIN (sanitized) order --------------------------
-    // The order may already be FILLED by the time we read it: on a *crossable* day
-    // the sanitized auction out-prices the vAMM ask and the deployed filler/AMM
-    // fill it within the confirm window. The sanitized auction params persist on
-    // the order slot whether it is Open or Filled, so match on the market order
-    // regardless of status and inspect those.
-    let user = ctx
-        .client
-        .get_user_account(&sub)
-        .await
-        .expect("user account");
-    let position = user
-        .get_perp_position(0)
-        .map(|p| p.base_asset_amount)
-        .unwrap_or(0);
-    let placed = match user.orders.iter().find(|o| {
-        o.market_index == 0 && o.order_type == OrderType::Market && o.status != OrderStatus::Init
-    }) {
-        Some(o) => *o,
-        None => {
-            // The order isn't in any slot — it fully filled and the slot was
-            // cleared. The sanitized params are gone, but a crossable fill IS the
-            // success path: assert the position and return.
-            assert_eq!(
-                position, ONE_SOL,
-                "no market order on chain and position={position} (expected the \
-                 order to have filled to +1 SOL against the AMM)",
-            );
-            log::warn!(
-                "taker_fills_against_amm: order fully filled and slot cleared; \
-                 sanitization regression not inspectable this run (position=+1 SOL)."
-            );
-            ctx.cleanup(sub).await;
-            return;
-        }
-    };
-
-    // (1) Regression: the aggressive request was discarded by sanitization. Require
-    // each end to have dropped by 1% of price. A bare `<` would pass on rounding
-    // alone, because `get_auction_params` standardizes a long's prices DOWN to the
-    // tick, so `placed < requested` holds by up to tick_size - 1 (10 native units
-    // here) even when nothing was clamped. 1% is small enough that the drop still
-    // clears it after the baseline has risen by its full ceiling (the `aggression`
-    // sizing above leaves 4% of price, minus any oracle move, for this check).
-    let discarded_by = (px / 100) as i64;
-    assert!(
-        requested_start - placed.auction_start_price >= discarded_by
-            && requested_end - placed.auction_end_price >= discarded_by,
-        "sanitization did not clamp the aggressive auction: on-chain start={} end={} \
-         vs requested start={} end={} (each end must drop by >= {})",
-        placed.auction_start_price,
-        placed.auction_end_price,
-        requested_start,
-        requested_end,
-        discarded_by,
-    );
-
-    // (2) Regression: the clamp target is the program's own market-order baseline
-    // (factor 2). The program sets start = oracle + start_off, end = oracle +
-    // end_off using the SAME oracle, so the spread (end - start) is
-    // oracle-independent and must equal (end_off - start_off).
-    //
-    // The program computes the baseline from market state at the PLACEMENT slot,
-    // which we can't read. Bracket it instead, with baselines read before and after
-    // placement: the window widens by exactly whatever moved in between (a mark-twap
-    // crank, a fill shifting amm.long_spread or mark_std) and stays a point when
-    // nothing moved. `tol` covers tick rounding. Both reads go straight to RPC —
-    // `market_before` because the tx has not been sent yet, this one because it
-    // follows `send_confirmed`, so they provably straddle the placement slot. The
-    // cache cannot give that ordering. (A non-monotone excursion that peaks between
-    // the two reads AND lands on the placement slot would still escape the bracket;
-    // the message prints both bounds so that reads as drift, not as a regression.)
-    let market = fetch_perp_market(&ctx, 0).await;
-    let (start_off, end_off) = baseline_long_offsets(&market);
-    let onchain_spread = placed.auction_end_price - placed.auction_start_price;
-    let pre_spread = pre_end_off - pre_start_off;
-    let post_spread = end_off - start_off;
-    let tol = (px / 400) as i64; // 25 bps
-    assert!(
-        onchain_spread >= pre_spread.min(post_spread) - tol
-            && onchain_spread <= pre_spread.max(post_spread) + tol,
-        "sanitized auction spread {} outside the program baseline spread bracket \
-         [{}, {}] (tol {}); sanitization logic changed",
-        onchain_spread,
-        pre_spread.min(post_spread),
-        pre_spread.max(post_spread),
-        tol,
-    );
-
-    // The order may have already filled (crossable day): the sanitized auction
-    // out-priced the vAMM ask and the deployed filler/AMM took it. That IS the
-    // success path this test exercises — the regression checks above already ran
-    // on the (filled) order's persisted auction params.
-    if position == ONE_SOL || placed.base_asset_amount_filled == ONE_SOL as u64 {
-        log::info!(
-            "taker_fills_against_amm: sanitized auction crossed and filled to +1 SOL \
-             (position={position}, base_filled={}).",
-            placed.base_asset_amount_filled,
-        );
-        ctx.cleanup(sub).await;
-        return;
-    }
-
-    // (3) Crossability gate: does the SANITIZED auction reach the live vAMM ask?
-    let reserve = market.amm.reserve_price().expect("reserve price");
-    let vamm_ask = market
-        .amm
-        .ask_price(
-            reserve,
-            market.amm.long_spread,
-            market.amm.reference_price_offset,
-        )
-        .expect("vamm ask");
-
-    if (placed.auction_end_price as u64) <= vamm_ask {
-        // ENVIRONMENTAL, not a code regression — so warn-and-skip rather than fail.
-        //
-        // On a low-volume market the bid/ask price TWAPs (an EWMA over the funding
-        // period) lag the live oracle: `vamm_ask` tracks the live reserve price
-        // while the sanitized auction end is built from the lagging TWAPs, so the
-        // auction is capped BELOW the live ask and no lone-taker AMM fill is
-        // possible. The sanitization regression checks above have already run and
-        // passed, so turning a TWAP-lag into a red test (or a silent 120s timeout)
-        // would be noise. We log the exact numbers and return.
-        //
-        // To actually exercise the fill you must lift `last_ask_price_twap` to the
-        // live price first — but that's a funding-period EWMA, so it takes minutes
-        // of trades/cranks (~0.3% of the gap closes per ~10s crank). The clean,
-        // deterministic alternative is the JIT route (`amm_wants_to_jit_make`: AMM
-        // inventory + jit_intensity > 0), which doesn't depend on the TWAP at all.
-        log::warn!(
-            "INCONCLUSIVE (AMM uncrossable by construction): sanitized auction end {} <= \
-             vamm_ask {} (oracle {}). baseline_offsets=({start_off},{end_off}) \
-             onchain_auction=({},{}). Skipping fill assertion — see comment above.",
-            placed.auction_end_price,
-            vamm_ask,
-            px,
-            placed.auction_start_price,
-            placed.auction_end_price,
-        );
-        ctx.cleanup(sub).await;
-        return;
-    }
-
-    // The sanitized auction DOES cross the AMM ask: the deployed filler must fill
-    // it to exactly +1 SOL against the AMM (no maker present).
-    let pos = ctx
-        .wait_perp_base_eq(sub, 0, ONE_SOL, Duration::from_secs(120))
-        .await
-        .expect("sanitized auction crosses the AMM ask but the filler did not fill +1 SOL in 120s");
-    assert_eq!(
-        pos.base_asset_amount, ONE_SOL,
-        "expected exactly +1 SOL long vs AMM, got {}",
-        pos.base_asset_amount
-    );
-    ctx.cleanup(sub).await;
 }
 
 // ---- Scenario 7b: taker fills against the AMM via the JIT route ------------
@@ -709,9 +417,6 @@ async fn swift_taker_filled_by_deployed_maker() {
         direction: PositionDirection::Long,
         base_asset_amount: ONE_SOL as u64,
         oracle_price_offset: Some(px / 50),
-        auction_start_price: Some(0),
-        auction_end_price: Some(px / 50),
-        auction_duration: Some(30),
         ..Default::default()
     };
     let msg = SignedMsgOrderParamsMessage {

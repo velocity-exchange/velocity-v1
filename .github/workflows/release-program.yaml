@@ -1,13 +1,15 @@
 name: Release Program to Mainnet
 
 # Mainnet program upgrades are gated by a `program-<name>-<version>` tag
-# (e.g. program-velocity-v1.2.3). The workflow only PROPOSES the Squads
-# transaction; multisig signers must approve + execute via the Squads UI.
+# (e.g. program-velocity-v1.2.3, program-protocol_revenue_router-v0.2.0). The workflow only
+# PROPOSES the Squads transaction; multisig signers must approve + execute via
+# the Squads UI.
 
 on:
   push:
     tags:
       - "program-velocity-*"
+      - "program-protocol_revenue_router-*"
 
 permissions:
   contents: read
@@ -19,6 +21,7 @@ env:
   NODE_VERSION: "24.x.x"
   VERIFIABLE_BUILD_IMAGE: solanafoundation/solana-verifiable-build:4.1.2
   VELOCITY_MAINNET_PROGRAM_ID: vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P
+  PROTOCOL_REVENUE_ROUTER_MAINNET_PROGRAM_ID: rout8Eh6aU911sDDyJaDWGY61mSfVhSNXqk1Bw9xeNn
 
 jobs:
   release:
@@ -44,6 +47,7 @@ jobs:
           fi
           case "$PROGRAM" in
             velocity)  PID="${{ env.VELOCITY_MAINNET_PROGRAM_ID }}" ;;
+            protocol_revenue_router) PID="${{ env.PROTOCOL_REVENUE_ROUTER_MAINNET_PROGRAM_ID }}" ;;
             *) echo "Unknown program '$PROGRAM'" >&2; exit 1 ;;
           esac
           echo "program=$PROGRAM" >> "$GITHUB_OUTPUT"

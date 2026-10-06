@@ -1,6 +1,10 @@
 //! Protocol revenue router: splits Velocity's withdrawn perp protocol fees
 //! between the DFX recovery pool and the treasury on a daily marginal ladder.
 
+// Anchor's `#[program]` emits a `let _: T = panic!()` type check per instruction argument at the
+// crate root, outside any item this crate can annotate.
+#![allow(clippy::diverging_sub_expression)]
+
 use {crate::state::Tier, anchor_lang::prelude::*};
 
 pub mod errors;

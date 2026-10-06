@@ -285,7 +285,10 @@ mod coverage_and_direction {
         .unwrap()
         {
             WakeView::OnValueCross { cmp, .. } => cmp,
-            other => panic!("expected OnValueCross, got {:?}", other),
+            other @ WakeView::AtTimestamp { .. }
+            | other @ WakeView::OnAccountChange { .. }
+            | other @ WakeView::EverySlots { .. }
+            | other @ WakeView::AtSlot { .. } => panic!("expected OnValueCross, got {:?}", other),
         };
 
         rewatch_trigger_slot(&mut conditions, &evicted, &market, &oracle_info).unwrap();
@@ -356,7 +359,10 @@ mod coverage_and_direction {
             WakeView::OnValueCross { cmp, .. } => {
                 assert_eq!(cmp, WatchDirection::AtOrBelow.cmp())
             }
-            other => panic!("expected OnValueCross, got {:?}", other),
+            other @ WakeView::AtTimestamp { .. }
+            | other @ WakeView::OnAccountChange { .. }
+            | other @ WakeView::EverySlots { .. }
+            | other @ WakeView::AtSlot { .. } => panic!("expected OnValueCross, got {:?}", other),
         }
 
         let mut evicted = stop_above();

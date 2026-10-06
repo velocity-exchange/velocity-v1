@@ -141,8 +141,8 @@ export function renderInstructions(
 		// allocates a fixed buffer to reconstruct the inner transaction, and a
 		// large multi-hop swap route overflows it. Routes with 83 and 85 accounts
 		// failed with an access violation where a 49-account route executed fine.
-		// That count is the only warning, and the instructions this decoder
-		// cannot read are the ones most likely to carry it.
+		// The count is the only warning, and the instructions this decoder cannot
+		// read are the ones most likely to carry it.
 		const count = `${ix.keys.length} account${ix.keys.length === 1 ? '' : 's'}`;
 		ui.line(
 			`   ${pc.dim(count)}${
@@ -163,26 +163,32 @@ export function renderInstructions(
 					pc.dim('--raw for all'),
 				]);
 			}
-			const idlIx = (
-				velocityIdl as {
-					instructions: Array<{ name: string; accounts: { name: string }[] }>;
-				}
-			).instructions.find((e) => e.name === decoded.name);
-			(idlIx?.accounts ?? []).forEach((acc, n) => {
-				const key = ix.keys[n];
-				if (!key) {
-					return;
-				}
-				const marks = [
-					key.isSigner ? pc.yellow('signer') : pc.dim('·'),
-					key.isWritable ? pc.yellow('writable') : pc.dim('read-only'),
-				].join(' ');
-				rows.push([
-					pc.dim(camel(acc.name)),
-					`${marks}  ${key.pubkey.toBase58()}`,
-				]);
-			});
 		}
+
+		// Every account, always, whether or not the instruction decoded and
+		// whether or not the IDL names it. Listing only the IDL's accounts drops
+		// the remaining accounts a decoded instruction carries, and listing none
+		// for an undecoded one means a bare SOL transfer renders identically no
+		// matter who it pays. An approver has to be able to see where value goes.
+		const idlIx = decoded
+			? (
+					velocityIdl as {
+						instructions: Array<{ name: string; accounts: { name: string }[] }>;
+					}
+			  ).instructions.find((e) => e.name === decoded.name)
+			: undefined;
+		const names = (idlIx?.accounts ?? []).map((a) => camel(a.name));
+		ix.keys.forEach((key, n) => {
+			const marks = [
+				key.isSigner ? pc.yellow('signer') : pc.dim('·'),
+				key.isWritable ? pc.yellow('writable') : pc.dim('read-only'),
+			].join(' ');
+			const label =
+				names[n] ??
+				(names.length > 0 ? `remaining ${n - names.length}` : `account ${n}`);
+			rows.push([pc.dim(label), `${marks}  ${key.pubkey.toBase58()}`]);
+		});
+
 		if (raw || !decoded) {
 			rows.push([
 				pc.dim(`raw data (${ix.data.length}B)`),

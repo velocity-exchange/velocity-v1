@@ -743,6 +743,8 @@ impl MarketTypeExt for MarketType {
 }
 
 /// Parse a market kind string (orphan rule blocks `impl FromStr for MarketType`).
+// Public API; callers already map the unit error to their own type.
+#[allow(clippy::result_unit_err)]
 pub fn market_type_from_str(s: &str) -> Result<MarketType, ()> {
     if s.eq_ignore_ascii_case("perp") {
         Ok(MarketType::Perp)
@@ -784,7 +786,6 @@ impl UserStatsExt for UserStats {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
 
     use crate::solana_sdk::{
         instruction::error::InstructionError, pubkey::Pubkey, transaction::TransactionError,

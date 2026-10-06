@@ -342,7 +342,7 @@ impl State {
         )?;
         let data = account.try_borrow_data()?;
         crate::validate!(
-            data.starts_with(&State::DISCRIMINATOR),
+            data.starts_with(State::DISCRIMINATOR),
             ErrorCode::DefaultError,
             "account is not a velocity State account"
         )?;

@@ -722,7 +722,7 @@ impl OrderParams {
                     self.order_type == OrderType::Market,
                     is_signed_msg,
                 )?,
-            _ => false,
+            OrderType::TriggerMarket | OrderType::TriggerLimit => false,
         };
 
         Ok(sanitized)

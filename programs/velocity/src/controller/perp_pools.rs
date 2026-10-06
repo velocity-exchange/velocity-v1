@@ -56,6 +56,7 @@ use {
 ///      holds the whole counter; otherwise a pct of OI notional stands
 ///   3. `pending_amm_provision`-> `amm.fee_pool` (tokenizing the provision the
 ///      AMM already booked at fill — NO ledger change here)
+///
 /// The protocol drain is EXEMPT from the `fee_pool_buffer_target` retention
 /// margin and runs first: it sweeps every settle, so each drain is small, and
 /// unlike the other two its value is not recoverable in bankruptcy anyway. It

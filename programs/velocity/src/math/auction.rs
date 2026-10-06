@@ -70,7 +70,7 @@ pub fn calculate_auction_prices(
 
                 (oracle_price, limit_price.max(oracle_derive_end_price))
             }
-            _ => unreachable!(),
+            PositionDirection::Long | PositionDirection::Short => unreachable!(),
         };
 
         return Ok((auction_start_price, auction_end_price));

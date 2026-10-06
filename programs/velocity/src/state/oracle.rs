@@ -259,7 +259,14 @@ impl OracleSource {
             | OracleSource::PythLazerStableCoin => 1,
             OracleSource::Pyth1K | OracleSource::PythLazer1K => 1000,
             OracleSource::Pyth1M | OracleSource::PythLazer1M => 1000000,
-            _ => {
+            OracleSource::DeprecatedSwitchboard
+            | OracleSource::QuoteAsset
+            | OracleSource::Prelaunch
+            | OracleSource::PythPull
+            | OracleSource::Pyth1KPull
+            | OracleSource::Pyth1MPull
+            | OracleSource::PythStableCoinPull
+            | OracleSource::DeprecatedSwitchboardOnDemand => {
                 panic!("Calling get_pyth_multiple on non-pyth oracle source");
             }
         }

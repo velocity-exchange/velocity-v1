@@ -1722,9 +1722,9 @@ impl ConstituentCorrelations {
         let new_n = n + 1;
         let mut buf = Vec::with_capacity(new_n * new_n);
 
-        for i in 0..n {
+        for (i, &c) in new_constituent_correlations.iter().enumerate() {
             buf.extend_from_slice(&self.correlations[i * n..i * n + n]);
-            buf.push(new_constituent_correlations[i]);
+            buf.push(c);
         }
 
         buf.extend_from_slice(new_constituent_correlations);

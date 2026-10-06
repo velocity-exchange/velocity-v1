@@ -281,7 +281,7 @@ pub fn place_perp_order(
                         .safe_add(10_i64)?,
                 ),
             )?,
-            _ => 0_i64,
+            OrderType::Limit | OrderType::TriggerMarket | OrderType::TriggerLimit => 0_i64,
         },
     };
 
@@ -4376,7 +4376,7 @@ fn update_trigger_order_params(
     order.trigger_condition = match order.trigger_condition {
         OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
         OrderTriggerCondition::Below => OrderTriggerCondition::TriggeredBelow,
-        _ => {
+        OrderTriggerCondition::TriggeredAbove | OrderTriggerCondition::TriggeredBelow => {
             return Err(print_error!(ErrorCode::InvalidTriggerOrderCondition)());
         }
     };

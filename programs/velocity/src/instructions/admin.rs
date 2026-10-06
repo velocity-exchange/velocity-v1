@@ -2890,8 +2890,8 @@ fn validated_slot_duration_archive_update(
         .copied();
 
     validate!(
-        previous_slot.map_or(true, |slot| effective_slot >= slot)
-            && next_slot.map_or(true, |slot| effective_slot <= slot),
+        previous_slot.is_none_or(|slot| effective_slot >= slot)
+            && next_slot.is_none_or(|slot| effective_slot <= slot),
         ErrorCode::DefaultError,
         "IBRL transition slots are not monotonic"
     )?;

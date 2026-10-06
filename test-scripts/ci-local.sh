@@ -128,7 +128,7 @@ skip_check() {
 # + fuzz crates + velocity-rs examples, same nightly-rustfmt style CI enforces
 # across its fmt steps.
 run_check "rust fmt (all codebases)"  bun run fmt:rust:check
-run_check "cargo clippy -p velocity"  cargo clippy -p velocity
+run_check "cargo clippy -p velocity"  cargo clippy -p velocity -- -D warnings
 run_check "prettier"                  bun run prettify
 run_check "eslint"                    bun run lint
 

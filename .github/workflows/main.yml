@@ -235,7 +235,7 @@ jobs:
       - name: Cargo fmt
         run: cargo +${{ env.RUST_NIGHTLY_TOOLCHAIN }} fmt -- --check
       - name: Cargo clippy
-        run: cargo clippy -p velocity
+        run: cargo clippy -p velocity -- -D warnings
   unit-tests:
     name: Unit tests
     needs: changes

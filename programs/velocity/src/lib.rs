@@ -6,6 +6,11 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::bool_assert_comparison)]
 #![allow(clippy::comparison_chain)]
+// Anchor's `#[program]` emits a `let _: T = panic!()` type check per instruction argument at the
+// crate root, outside any item this crate can annotate.
+#![allow(clippy::diverging_sub_expression)]
+// A new enum variant must be handled at every match, not absorbed by a `_` arm.
+#![deny(clippy::wildcard_enum_match_arm)]
 
 #[cfg(test)]
 use math::{bn, constants::*};

@@ -3,7 +3,7 @@ use {
     axum::{
         extract::State,
         http::{header::CONTENT_TYPE, Response, StatusCode},
-        response::{Html, IntoResponse, Json},
+        response::{IntoResponse, Json},
     },
     prometheus::{
         Encoder, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
@@ -11,7 +11,6 @@ use {
     },
     serde::{Deserialize, Serialize},
     std::sync::Arc,
-    tokio::sync::RwLock,
 };
 
 /// Margin status indicating liquidation risk level
@@ -45,14 +44,6 @@ impl UserMarginStatus {
     pub fn is_at_risk(&self) -> bool {
         self.cross != MarginStatus::Safe || !self.isolated.is_empty()
     }
-}
-
-/// Market type for positions and oracles
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum MarketType {
-    Perp,
-    Spot,
 }
 
 #[derive(Debug)]
@@ -339,57 +330,10 @@ pub async fn health_handler(State(state): State<AppState>) -> impl IntoResponse 
     )
 }
 
-/// Dashboard state shared between liquidator and HTTP server
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DashboardState {
-    pub high_risk_users: Vec<HighRiskUser>,
-    pub oracle_prices: Vec<OraclePriceInfo>,
-    pub current_slot: u64,
-    pub last_updated_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HighRiskUser {
-    pub pubkey: String,
-    pub authority: String,
-    pub total_collateral: i128,
-    pub margin_requirement: u128,
-    pub free_margin: i128,
-    pub free_margin_ratio: f64,
-    pub status: MarginStatus,
-    pub last_updated_slot: u64,
-    pub last_updated_ms: u64,
-    pub positions: Vec<PositionInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PositionInfo {
-    pub market_type: MarketType,
-    pub market_index: u16,
-    pub base_asset_amount: i64,
-    pub quote_asset_amount: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OraclePriceInfo {
-    pub market_type: MarketType,
-    pub market_index: u16,
-    pub price: i64,
-    pub last_updated_slot: u64,
-    pub last_updated_ms: u64,
-    pub age_slots: u64,
-    pub age_ms: u64,
-    pub is_stale: bool,
-}
-
-/// Shared dashboard state
-pub type DashboardStateRef = Arc<RwLock<Option<DashboardState>>>;
-
 /// Combined state for HTTP handlers
 #[derive(Clone)]
 pub struct AppState {
     pub metrics: Arc<Metrics>,
-    pub dashboard_state: DashboardStateRef,
     pub feed_health: Arc<FeedHealth>,
 }
 
@@ -463,22 +407,4 @@ impl FeedHealth {
             .load(std::sync::atomic::Ordering::Relaxed);
         last == 0 || Self::unix_now_ms().saturating_sub(last) < Self::PYTH_STALE_LIMIT_MS
     }
-}
-
-/// API endpoint to get dashboard data
-pub async fn dashboard_api_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let dashboard_state = state.dashboard_state.read().await;
-    match dashboard_state.as_ref() {
-        Some(data) => Json(data.clone()).into_response(),
-        None => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Dashboard data not available"})),
-        )
-            .into_response(),
-    }
-}
-
-/// Serve the dashboard HTML page
-pub async fn dashboard_handler() -> Html<&'static str> {
-    Html(include_str!("../static/dashboard.html"))
 }

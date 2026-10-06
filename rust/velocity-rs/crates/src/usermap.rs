@@ -182,7 +182,7 @@ impl GlobalUserMap {
     }
 }
 
-#[cfg(feature = "rpc_tests")]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod tests {
     use crate::utils::test_envs::mainnet_endpoint;
 

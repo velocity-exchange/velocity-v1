@@ -11773,7 +11773,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         assert_eq!(expected_user, user);
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = *market_map.get_ref(&0).unwrap();
         // no socialization: funding rates and social-loss counters untouched,
         // the AMM's clawback cap untouched
         assert_eq!(market_after.total_social_loss, 0);
@@ -11933,7 +11933,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         // tranche 1 fully absorbed the loss despite the sweep attempt
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = *market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.fee_ledger.pending_if_fee,
             50 * QUOTE_PRECISION_I64 as u128
@@ -12108,7 +12108,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         // tranche 1 absorbed the loss: no social loss, funding untouched
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = *market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.fee_ledger.pending_if_fee,
             50 * QUOTE_PRECISION_I64 as u128
@@ -12403,7 +12403,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         // with no tranche left, the whole loss socializes: counterparties pay
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = *market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.total_social_loss,
             100 * QUOTE_PRECISION_I64 as u128
@@ -12566,7 +12566,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         assert_eq!(expected_user, user);
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = *market_map.get_ref(&0).unwrap();
         // counter-only: no tokens moved anywhere
         assert_eq!(market_after.pnl_pool.scaled_balance, 0);
         assert_eq!(market_after.amm.fee_pool.scaled_balance, 0);
@@ -12687,7 +12687,7 @@ pub mod resolve_perp_bankruptcy {
         assert_eq!(user.total_social_loss, 60 * QUOTE_PRECISION_U64);
         // The setoff lands exactly where an insurance payment would have, backing the
         // counterparties this spares from socialization.
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = *market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.pnl_pool.scaled_balance,
             40 * SPOT_BALANCE_PRECISION
@@ -12762,7 +12762,7 @@ pub mod resolve_perp_bankruptcy {
             sol_oracle_price,
             &sol_oracle_price_key,
             PythLazerOracle,
-            sol_oracle_account_info
+            _sol_oracle_account_info
         );
         let mut sol_market = SpotMarket {
             market_index: 1,
@@ -13116,7 +13116,7 @@ pub mod resolve_perp_bankruptcy {
             sol_oracle_price,
             &sol_oracle_price_key,
             PythLazerOracle,
-            sol_oracle_account_info
+            _sol_oracle_account_info
         );
         let mut sol_market = SpotMarket {
             market_index: 1,
@@ -17357,7 +17357,7 @@ mod liquidation_mode {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(perp_market, PerpMarket, perp_market_ai);
-        let perp_market_map = PerpMarketMap::load_one(&perp_market_ai, true).unwrap();
+        let _perp_market_map = PerpMarketMap::load_one(&perp_market_ai, true).unwrap();
 
         // An isolated position with its own collateral spent, on an account that still holds a cross
         // quote deposit.

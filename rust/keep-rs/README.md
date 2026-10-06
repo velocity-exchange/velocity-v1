@@ -21,8 +21,7 @@ Required environment variables:
 Optional: `MARKET_IDS` (default `0,1,2`), `MAINNET` (default `true`), `DRY_RUN`,
 `SUBACCOUNTS` (default `0`), `METRICS_PORT` (default `9898`), and `SWIFT_WS_URL` to point
 the filler's swift order feed at a different swift ws server. `.env.example` lists the
-per-bot knobs. Every bot serves `/metrics`, `/health`, and a dashboard at `/` on
-`METRICS_PORT`.
+per-bot knobs. Every bot serves `/metrics` and `/health` on `METRICS_PORT`.
 
 `--mainnet` is a switch, so `--mainnet false` is rejected as an unexpected argument. Set
 `MAINNET=false` in the environment to run against devnet.

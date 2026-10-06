@@ -3502,7 +3502,7 @@ pub fn view_amm_liquidity<'c: 'info, 'info>(
 
     crate::vlp::amm::refresh::update_amms(market_map, oracle_map, &state, &clock)?;
 
-    for (_key, market_account_loader) in market_map.0.iter_mut() {
+    for market_account_loader in market_map.0.values_mut() {
         let market = &mut load_mut!(market_account_loader)?;
         let oracle_price_data = &oracle_map.get_price_data(&market.oracle_id())?;
 
@@ -3855,7 +3855,7 @@ pub fn handle_update_amm_cache<'c: 'info, 'info>(
     )?;
     let slot = Clock::get()?.slot;
 
-    for (_, perp_market_loader) in perp_market_map.0.iter() {
+    for perp_market_loader in perp_market_map.0.values() {
         let perp_market = perp_market_loader.load()?;
         if perp_market.hedge_config.status == 0 {
             continue;

@@ -706,8 +706,9 @@ impl OrderParams {
         oracle_price: i64,
         is_signed_msg: bool,
     ) -> VelocityResult<bool> {
-        #[cfg(feature = "anchor-test")]
-        return Ok(false);
+        if cfg!(feature = "anchor-test") {
+            return Ok(false);
+        }
 
         let sanitized: bool = match self.order_type {
             OrderType::Limit => self.update_perp_auction_params_limit_orders(
@@ -722,7 +723,7 @@ impl OrderParams {
                     self.order_type == OrderType::Market,
                     is_signed_msg,
                 )?,
-            _ => false,
+            OrderType::TriggerMarket | OrderType::TriggerLimit => false,
         };
 
         Ok(sanitized)

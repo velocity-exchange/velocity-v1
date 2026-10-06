@@ -37,6 +37,12 @@ rejects with `0x7d3`.
 offline Rust gate stays clean only because no member enables `rpc_tests`. Live tests are split out
 under that feature rather than hidden behind `#[ignore]`.
 
+CI compiles the live tests without running them, with
+`cargo check --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests`.
+That catches imports and helpers the default build sees as unused. Gate a test module that holds
+only live tests with `#[cfg(all(test, feature = "rpc_tests"))]`. Without `test` in the condition,
+the module also compiles into the library when the feature is on, and its imports warn as unused.
+
 ## App jest suites use swc, not ts-jest
 
 The `apps/*` suites share `jest.config.app.cjs` (@swc/jest plus `jest.setup.app.ts`). The app
@@ -110,8 +116,30 @@ cd packages/sdk/ && bun run test:ci      # CI subset
 ```bash
 bun run fmt:rust                 # all Rust in the repo (wraps nightly rustfmt, see below)
 bun run fmt:rust:check           # verify without writing (what CI enforces)
+cargo +1.91.1 clippy --workspace --all-targets -- -D warnings
+cargo +1.91.1 clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
+cargo +1.91.1 clippy -p velocity --all-targets --no-default-features --features no-entrypoint,isolated-position,vlp-hedge -- -D warnings
+cargo +1.91.1 clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests -- -D warnings
 cd packages/sdk/ && bun run prettify:fix  # SDK (TypeScript)
 ```
+
+These are the commands CI runs. Clippy runs with `-D warnings`, so a new warning fails the PR,
+including warnings in tests. The first three cover the program workspace in each velocity flavor
+`build-sbf.sh` builds: mainnet (the default features), the anchor-test flavor that
+`bun run program:build` compiles, and devnet. Code behind `#[cfg(feature = "mainnet-beta")]` and
+`#[cfg(feature = "anchor-test")]` differs between them. A variable used only inside a `mainnet-beta`
+block belongs inside that block, or another flavor warns that it is unused. The last command covers
+the `rust/` workspace with the live tests compiled in.
+
+Run clippy on the toolchain CI pins (`RUST_TOOLCHAIN` in `.github/workflows/main.yml`, currently
+1.91.1). Each Rust release adds lints, so a newer toolchain can report warnings that CI does not.
+
+Lint settings shared by every program crate live in `[workspace.lints]` in the root `Cargo.toml`,
+which each program inherits with `[lints] workspace = true`. The `rust/` workspace has its own
+block in `rust/Cargo.toml`. Each crate with an Anchor `#[program]` module allows
+`clippy::diverging_sub_expression` in its `lib.rs`, for the type check the macro generates.
+Velocity also denies `clippy::wildcard_enum_match_arm`. Fix a warning rather than allowing it.
+Where an allow is the right call, put it on the narrowest item and say why in a comment.
 
 Rust formatting requires nightly rustfmt. `rustfmt.toml` sets `imports_granularity = "One"` and
 `group_imports = "One"`, which merge all `use` items in a module into a single `use { ... }` block.

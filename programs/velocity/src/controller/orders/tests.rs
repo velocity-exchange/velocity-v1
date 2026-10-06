@@ -2988,7 +2988,7 @@ pub mod fulfill_order {
             test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
             PERCENTAGE_PRECISION_U64,
         },
-        std::{str::FromStr, u64},
+        std::str::FromStr,
     };
 
     #[test]
@@ -10689,7 +10689,8 @@ pub mod builder_fee_margin_gate {
         // About 1% of a fill worth about $100.
         assert!(
             fees_accrued > 900_000 && fees_accrued < 1_100_000,
-            "expected about 1% of notional, got {fees_accrued}"
+            "expected about 1% of notional, got {}",
+            fees_accrued
         );
     }
 
@@ -10704,7 +10705,8 @@ pub mod builder_fee_margin_gate {
         assert_eq!(base_filled, BASE_PRECISION_U64);
         assert!(
             fees_accrued > 900_000 && fees_accrued < 1_100_000,
-            "expected about 1% of notional, got {fees_accrued}"
+            "expected about 1% of notional, got {}",
+            fees_accrued
         );
     }
 

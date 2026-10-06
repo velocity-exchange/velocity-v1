@@ -785,7 +785,7 @@ pub async fn health_check(
             | user_account_fetcher_healthy={user_account_fetcher_redis_health} |
             redis_healthy={redis_health}|rpc_healthy={rpc_healthy}|market_subs={market_subs_healthy}",
         );
-        log::error!(target: "server", "Failed health check {}", &msg);
+        log::error!(target: "server", "Failed health check {}", msg);
         (axum::http::StatusCode::PRECONDITION_FAILED, msg)
     }
 }
@@ -905,7 +905,7 @@ pub async fn start_server() {
             }
         }
 
-        log::info!("subscribing markets: {:?}", &all_markets);
+        log::info!("subscribing markets: {:?}", all_markets);
         if let Err(err) = state.velocity.subscribe_markets(&all_markets).await {
             log::error!("couldn't subscribe markets: {err:?}, RPC sim disabled!");
             state.disable_rpc_sim();
@@ -1047,13 +1047,11 @@ fn validate_signed_order_params(
     }
 
     // has_valid_auction_params
-    if taker_order_params.auction_duration.is_some()
-        && taker_order_params.auction_start_price.is_some()
-        && taker_order_params.auction_end_price.is_some()
-    {
-        let start_price = taker_order_params.auction_start_price.unwrap();
-        let end_price = taker_order_params.auction_end_price.unwrap();
-
+    if let (Some(_), Some(start_price), Some(end_price)) = (
+        taker_order_params.auction_duration,
+        taker_order_params.auction_start_price,
+        taker_order_params.auction_end_price,
+    ) {
         if taker_order_params.direction == PositionDirection::Long && start_price <= end_price
             || taker_order_params.direction == PositionDirection::Short && start_price >= end_price
         {
@@ -1702,7 +1700,7 @@ impl ServerParams {
 
         // Mirrors the on-chain `place_perp_order` sanitize step: returns true
         // when the program would adjust the auction params at placement time.
-        let mut params = order_params.clone();
+        let mut params = *order_params;
         match params.update_perp_auction_params(&perp_market, oracle_data.data.price, true) {
             Ok(sanitized) => sanitized,
             Err(err) => {
@@ -2028,15 +2026,13 @@ mod tests {
         super::*,
         ed25519_dalek::Signature as Ed25519Signature,
         solana_native_token::LAMPORTS_PER_SOL,
-        std::collections::HashMap,
-        velocity_rs::{
-            program::math::time::SlotDuration,
-            types::{
-                accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
-                SignedMsgTriggerOrderParams,
-            },
+        velocity_rs::types::{
+            SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+            SignedMsgTriggerOrderParams,
         },
     };
+    #[cfg(feature = "rpc_tests")]
+    use {std::collections::HashMap, velocity_rs::types::accounts::User};
 
     fn is_isolated_deposit(signed_msg: &SignedOrderType) -> bool {
         match signed_msg {
@@ -2145,7 +2141,7 @@ mod tests {
 
     #[test]
     fn test_validate_market_type() {
-        let min_order_size = 1 * LAMPORTS_PER_SOL;
+        let min_order_size = LAMPORTS_PER_SOL;
 
         // Test valid market type
         let params = create_test_order_params(
@@ -2173,7 +2169,7 @@ mod tests {
 
     #[test]
     fn test_validate_order_size() {
-        let min_order_size = 1 * LAMPORTS_PER_SOL;
+        let min_order_size = LAMPORTS_PER_SOL;
 
         // Test valid order size
         let params = create_test_order_params(
@@ -2201,7 +2197,7 @@ mod tests {
 
     #[test]
     fn test_validate_auction_params() {
-        let min_order_size = 1 * LAMPORTS_PER_SOL;
+        let min_order_size = LAMPORTS_PER_SOL;
 
         // Test valid auction params for long position
         let params = create_test_order_params(
@@ -2275,7 +2271,7 @@ mod tests {
     #[test]
     fn test_request_context_from_incoming_message_valid_utf8() {
         let taker = Pubkey::new_unique();
-        let uuid_valid: [u8; 8] = [b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h'];
+        let uuid_valid: [u8; 8] = *b"abcdefgh";
         let authority_msg = SignedOrderType::authority(SignedMsgOrderParamsMessage {
             sub_account_id: 0,
             signed_msg_order_params: OrderParams {
@@ -2766,7 +2762,7 @@ mod tests {
             market_index: 0,
             market_type: MarketType::Perp,
             order_type: OrderType::Market,
-            base_asset_amount: 1 * LAMPORTS_PER_SOL,
+            base_asset_amount: LAMPORTS_PER_SOL,
             price: 1_000,
             direction: PositionDirection::Short,
             ..Default::default()

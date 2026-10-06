@@ -1108,6 +1108,8 @@ fn evaluate_swift_crosses(
 }
 
 /// Outcome of evaluating a swift order against current liquidity.
+// Returned by value once per swift order; boxing `MakerCrosses` would add an allocation per order.
+#[allow(clippy::large_enum_variant)]
 enum SwiftEval {
     /// Crosses resting liquidity / vAMM right now: fill it immediately.
     Fillable(MakerCrosses),
@@ -1475,10 +1477,8 @@ async fn try_auction_fill(
 
             let can_trigger = if trigger_above && trigger_price > actual_order.trigger_price {
                 true
-            } else if !trigger_above && trigger_price < actual_order.trigger_price {
-                true
             } else {
-                false
+                !trigger_above && trigger_price < actual_order.trigger_price
             };
             if !can_trigger {
                 continue;
@@ -1759,8 +1759,8 @@ async fn try_uncross(
     log::debug!(
         target: TARGET,
         "X asks: {:?}, X bids: {:?}",
-        &crosses.crossing_asks.iter().take(3),
-        &crosses.crossing_bids.iter().take(3),
+        crosses.crossing_asks.iter().take(3),
+        crosses.crossing_bids.iter().take(3),
     );
 
     // try valid combinations of taker/maker with all crossing asks/bids
@@ -2375,8 +2375,7 @@ async fn subscribe_grpc(
     let _res = velocity
         .grpc_subscribe(
             std::env::var("GRPC_ENDPOINT")
-                .unwrap_or_else(|_| "https://api.rpcpool.com".to_string())
-                .into(),
+                .unwrap_or_else(|_| "https://api.rpcpool.com".to_string()),
             std::env::var("GRPC_X_TOKEN").expect("GRPC_X_TOKEN set"),
             GrpcSubscribeOpts::default()
                 .commitment(solana_commitment_config::CommitmentLevel::Processed)
@@ -2403,18 +2402,18 @@ async fn subscribe_grpc(
         .await;
 }
 
+// Sent through the tx worker channel by value; boxing would add an allocation per transaction.
+#[allow(clippy::large_enum_variant)]
 pub enum TxWork {
     Send {
         tx: VersionedTransaction,
         simulation_tx: Option<VersionedMessage>,
         require_fill_event: bool,
-        ts: u64,
         intent: TxIntent,
         cu_limit: u64,
     },
     Confirm {
         tx: Signature,
-        ts: u64,
     },
 }
 
@@ -2462,7 +2461,6 @@ impl TxWorker {
                         tx,
                         simulation_tx,
                         require_fill_event,
-                        ts: _,
                         intent,
                         cu_limit,
                     } => {
@@ -2472,7 +2470,7 @@ impl TxWorker {
                         }
                         self.send_tx(&rt, tx, simulation_tx, require_fill_event, intent, cu_limit);
                     }
-                    TxWork::Confirm { tx, ts: _ } => {
+                    TxWork::Confirm { tx } => {
                         self.confirm_tx(&rt, tx);
                     }
                 }
@@ -2711,7 +2709,6 @@ impl TxWorker {
                 signature,
                 intent,
                 cu_limit: sent_cu_limit,
-                ts: _,
             } = pending_tx_meta.unwrap();
 
             let intent_label = intent.label();
@@ -3249,15 +3246,7 @@ pub struct TxSender {
 
 impl TxSender {
     pub fn confirm_tx(&self, tx: Signature) {
-        self.tx
-            .send(TxWork::Confirm {
-                tx,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-            })
-            .expect("sent");
+        self.tx.send(TxWork::Confirm { tx }).expect("sent");
     }
 
     pub async fn send_tx(
@@ -3303,10 +3292,6 @@ impl TxSender {
                 tx: signed_tx,
                 simulation_tx,
                 require_fill_event,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
                 intent,
                 cu_limit,
             })
@@ -3342,8 +3327,10 @@ mod tests {
     #[test]
     fn unset_mm_immediate_threshold_scales_per_gate() {
         use velocity_rs::program::math::time::SlotClock;
-        let mut market = PerpMarket::default();
-        market.oracle_slot_delay_override = -1; // unset -> source-aware fallback
+        let mut market = PerpMarket {
+            oracle_slot_delay_override: -1, // unset -> source-aware fallback
+            ..Default::default()
+        };
         market.market_stats.mm_oracle_slot = 1_000;
         // MM_ORACLE_MIN_WRITE_GAP = 800ms: 2 slots at 400ms, 4 at 200ms
         for (clock, threshold) in [

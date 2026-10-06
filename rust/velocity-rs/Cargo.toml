@@ -90,3 +90,6 @@ toml = "0.8"
 
 [build-dependencies]
 velocity-idl-gen = { version = "0.2", path = "crates/velocity-idl-gen" }
+
+[lints]
+workspace = true

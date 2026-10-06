@@ -1143,7 +1143,7 @@ impl VelocityClient {
         let oracle_data = self
             .try_get_oracle_price_data_and_slot(MarketId::perp(market_index))
             .ok_or(SdkError::InvalidOracle)?;
-        let mut perp_market = self.try_get_perp_market_account(market_index)?;
+        let perp_market = self.try_get_perp_market_account(market_index)?;
         // One `State` read serves both the guard rails and the slot duration.
         let state = self.state_account()?;
         let oracle_validity_guard_rails = state.oracle_guard_rails.validity;
@@ -1543,10 +1543,10 @@ impl VelocityClientBackend {
 
         if sync {
             // the VelocityClientBackend syncs marketmaps by default
-            if self.perp_market_map.len() == 0 {
+            if self.perp_market_map.is_empty() {
                 self.perp_market_map.sync(&self.rpc_client).await?;
             }
-            if self.spot_market_map.len() == 0 {
+            if self.spot_market_map.is_empty() {
                 self.spot_market_map.sync(&self.rpc_client).await?;
             }
             let spot_markets = self
@@ -4443,7 +4443,7 @@ mod tests {
     use std::str::FromStr;
 
     use crate::solana_sdk::keypair::Keypair;
-    use anchor_lang::prelude::system_instruction;
+
     use program::state::perp_market::PerpMarket;
     use serde_json::json;
     use solana_account_decoder_client_types::{UiAccount, UiAccountData, UiAccountEncoding};
@@ -4666,9 +4666,11 @@ mod tests {
 
         // Referred taker (BuilderReferral bit set): escrow MUST be attached even
         // though the order has no builder. This is the regressed case.
-        let mut referred_stats = UserStats::default();
-        referred_stats.referrer = Pubkey::new_unique();
-        referred_stats.referrer_status = 0b0000_0100;
+        let referred_stats = UserStats {
+            referrer: Pubkey::new_unique(),
+            referrer_status: 0b0000_0100,
+            ..Default::default()
+        };
         assert!(referred_stats.has_builder_referral());
         let tx = TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false)
             .fill_perp_order(

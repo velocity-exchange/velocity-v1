@@ -27,14 +27,13 @@ use {
     rand::Rng,
     serde::Deserialize,
     std::{
-        cell::LazyCell,
         collections::HashMap,
         env,
         net::SocketAddr,
         str::FromStr,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
-            Arc,
+            Arc, LazyLock,
         },
         time::Duration,
     },
@@ -91,12 +90,12 @@ fn should_log_heartbeat(last_log: &AtomicU64) -> bool {
     }
 }
 
-const ENDPOINT: LazyCell<String> = LazyCell::new(|| {
+static ENDPOINT: LazyLock<String> = LazyLock::new(|| {
     env::var("ENDPOINT").unwrap_or_else(|_| "https://api.devnet.solana.com".to_string())
 });
 
-const FAST_CHECK: LazyCell<bool> =
-    LazyCell::new(|| env::var("FAST_CHECK").unwrap_or("false".to_string()) == "true");
+static FAST_CHECK: LazyLock<bool> =
+    LazyLock::new(|| env::var("FAST_CHECK").unwrap_or("false".to_string()) == "true");
 
 #[derive(Clone, Debug)]
 pub struct OrderNotification {
@@ -1267,7 +1266,7 @@ mod test {
 
     #[tokio::test]
     async fn auth_challenge_ok() {
-        let wallet = Wallet::new(Keypair::new().into());
+        let wallet = Wallet::new(Keypair::new());
 
         let mut ws_conn = WsConnection::new(*wallet.authority());
         let signature = wallet

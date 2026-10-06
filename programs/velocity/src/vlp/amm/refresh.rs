@@ -115,7 +115,7 @@ pub fn update_amms(
     let now = clock.unix_timestamp;
 
     let updated = true; // todo
-    for (_key, market_account_loader) in perp_market_map.0.iter_mut() {
+    for market_account_loader in perp_market_map.0.values_mut() {
         let market = &mut load_mut!(market_account_loader)?;
         let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
         let mm_oracle_price_data = market.get_mm_oracle_price_data(
@@ -302,10 +302,10 @@ pub fn snap_to_oracle(
     // PerpMarket-stats field — the orchestrator updates it via
     // `refresh_perp_market_stats_from_oracle` alongside this call.
     if let Some(validity) = oracle_validity {
-        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))? {
-            if !projection.rejected_due_to_affordability {
-                market.amm.last_update_slot = slot;
-            }
+        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))?
+            && !projection.rejected_due_to_affordability
+        {
+            market.amm.last_update_slot = slot;
         }
     }
 

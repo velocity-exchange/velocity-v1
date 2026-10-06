@@ -137,8 +137,8 @@ fn dlob_floating_limit_order_sorting() {
     let bid_offsets: Vec<i64> = book
         .floating_limit_orders
         .bids
-        .iter()
-        .map(|(_, v)| v.offset_price)
+        .values()
+        .map(|v| v.offset_price)
         .collect();
     assert_eq!(bid_offsets, vec![30, 20, 10]);
 
@@ -146,8 +146,8 @@ fn dlob_floating_limit_order_sorting() {
     let ask_offsets: Vec<i64> = book
         .floating_limit_orders
         .asks
-        .iter()
-        .map(|(_, v)| v.offset_price)
+        .values()
+        .map(|v| v.offset_price)
         .collect();
     assert_eq!(ask_offsets, vec![-30, -20, -10]);
 }
@@ -178,8 +178,8 @@ fn dlob_same_order_different_users() {
     let bid_prices: Vec<u64> = book
         .resting_limit_orders
         .bids
-        .iter()
-        .map(|(_, v)| v.get_price())
+        .values()
+        .map(|v| v.get_price())
         .collect();
     assert_eq!(bid_prices, vec![100, 100]);
 
@@ -187,8 +187,8 @@ fn dlob_same_order_different_users() {
     let bid_ids: Vec<u64> = book
         .resting_limit_orders
         .bids
-        .iter()
-        .map(|(_, v)| v.id)
+        .values()
+        .map(|v| v.id)
         .collect();
     assert_ne!(bid_ids[0], bid_ids[1]);
 }
@@ -286,7 +286,6 @@ fn dlob_l2_snapshot() {
     assert_eq!(l2book.bids.len(), 3);
 
     // Modify an existing order
-    let old_order = create_test_order(1, OrderType::Limit, Direction::Long, 1100, 2, slot);
     let mut new_order = create_test_order(1, OrderType::Limit, Direction::Long, 1100, 4, slot); // Changed size from 2 to 4
     new_order.post_only = true;
     dlob.insert_order(&user, slot, new_order);
@@ -515,16 +514,16 @@ fn dlob_find_crosses_for_taker_order_vamm_cross() {
         contract_tier: crate::types::ContractTier::A,
         amm: AMM {
             max_fill_reserve_fraction: 1,
-            base_asset_reserve: base_reserves.into(),
-            quote_asset_reserve: quote_reserves.into(),
-            sqrt_k: (base_reserves * quote_reserves).into(),
-            peg_multiplier: PEG_PRECISION.into(),
-            terminal_quote_asset_reserve: quote_reserves.into(),
-            concentration_coef: 5u128.into(),
+            base_asset_reserve: base_reserves,
+            quote_asset_reserve: quote_reserves,
+            sqrt_k: (base_reserves * quote_reserves),
+            peg_multiplier: PEG_PRECISION,
+            terminal_quote_asset_reserve: quote_reserves,
+            concentration_coef: 5u128,
             long_spread: 100,  // 0.01% spread (100 / 1_000_000)
             short_spread: 100, // 0.01% spread
-            max_base_asset_reserve: (u64::MAX as u128).into(),
-            min_base_asset_reserve: 0u128.into(),
+            max_base_asset_reserve: (u64::MAX as u128),
+            min_base_asset_reserve: 0u128,
             max_spread: 1000,
             ..Default::default()
         },
@@ -879,7 +878,6 @@ fn dlob_auction_expiry_expired_orders_removed_not_resting() {
     let dlob = DLOB::default();
     let user = Pubkey::new_unique();
     let slot = 100;
-    let oracle_price = 1000;
 
     dlob.markets.entry(MarketId::perp(0)).or_insert(Orderbook {
         market: MarketId::perp(0),
@@ -1295,16 +1293,16 @@ fn dlob_find_crosses_for_auctions_vamm_reduce_only_min_size() {
         contract_tier: crate::types::ContractTier::A,
         amm: AMM {
             max_fill_reserve_fraction: 1,
-            base_asset_reserve: base_reserves.into(),
-            quote_asset_reserve: quote_reserves.into(),
-            sqrt_k: (base_reserves * quote_reserves).into(),
-            peg_multiplier: PEG_PRECISION.into(),
-            terminal_quote_asset_reserve: quote_reserves.into(),
-            concentration_coef: 5u128.into(),
+            base_asset_reserve: base_reserves,
+            quote_asset_reserve: quote_reserves,
+            sqrt_k: (base_reserves * quote_reserves),
+            peg_multiplier: PEG_PRECISION,
+            terminal_quote_asset_reserve: quote_reserves,
+            concentration_coef: 5u128,
             long_spread: 100,  // 0.01% spread (100 / 1_000_000)
             short_spread: 100, // 0.01% spread
-            max_base_asset_reserve: (u64::MAX as u128).into(),
-            min_base_asset_reserve: 0u128.into(),
+            max_base_asset_reserve: (u64::MAX as u128),
+            min_base_asset_reserve: 0u128,
             max_spread: 1000,
             ..Default::default()
         },
@@ -2066,7 +2064,7 @@ fn dlob_trigger_order_transition_update() {
         assert_eq!(metadata.kind, OrderKind::Market);
 
         // But the order might not actually be in market_orders if the update failed
-        if book.market_orders.bids.len() == 0 {
+        if book.market_orders.bids.is_empty() {
             panic!("BUG DEMONSTRATED: Metadata says MarketTriggered but order is not in market_orders - this could cause 'metadata missing' errors");
         }
     }
@@ -2080,21 +2078,11 @@ fn dlob_trigger_order_transition_update() {
 }
 
 // Test data structure for Snapshot testing
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 struct TestData {
     value: u64,
     counter: u32,
     data: Vec<u8>,
-}
-
-impl Default for TestData {
-    fn default() -> Self {
-        Self {
-            value: 0,
-            counter: 0,
-            data: Vec::new(),
-        }
-    }
 }
 
 impl TestData {
@@ -2938,7 +2926,6 @@ fn l3book_vamm_orders_sorted_correctly() {
     let user = Pubkey::new_unique();
     let slot = 100;
     let oracle_price = 1000;
-    let vamm_price = 1100; // VAMM price higher than oracle
 
     dlob.markets.entry(MarketId::perp(0)).or_insert(Orderbook {
         market: MarketId::perp(0),
@@ -2995,16 +2982,16 @@ fn l3book_vamm_orders_sorted_correctly() {
         contract_tier: crate::types::ContractTier::A,
         amm: AMM {
             max_fill_reserve_fraction: 1,
-            base_asset_reserve: default_reserves.into(),
-            quote_asset_reserve: default_reserves.into(),
-            sqrt_k: default_reserves.into(),
-            peg_multiplier: PEG_PRECISION.into(),
-            terminal_quote_asset_reserve: default_reserves.into(),
-            concentration_coef: 5u128.into(),
+            base_asset_reserve: default_reserves,
+            quote_asset_reserve: default_reserves,
+            sqrt_k: default_reserves,
+            peg_multiplier: PEG_PRECISION,
+            terminal_quote_asset_reserve: default_reserves,
+            concentration_coef: 5u128,
             long_spread: 100,  // 1% spread
             short_spread: 100, // 1% spread
-            max_base_asset_reserve: (u64::MAX as u128).into(),
-            min_base_asset_reserve: 0u128.into(),
+            max_base_asset_reserve: (u64::MAX as u128),
+            min_base_asset_reserve: 0u128,
             max_spread: 1000,
             ..Default::default()
         },
@@ -3104,8 +3091,6 @@ fn l3book_vamm_orders_sorted_correctly() {
     vamm_ask2.max_ts = 2_150_000_000; // Higher max_ts - should be sorted after order 8
     dlob.insert_order(&user, slot, vamm_ask2);
 
-    let vamm_ask_price = 850; // VAMM ask price lower than limit asks
-
     // Update slot again to expire the ask order
     if let Some(mut book) = dlob.markets.get_mut(&MarketId::new(0, MarketType::Perp)) {
         book.update_slot(query_slot);
@@ -3126,7 +3111,6 @@ fn l3book_vamm_orders_sorted_correctly() {
     assert_eq!(asks.len(), 4);
 
     // Collect order information
-    let ask_prices: Vec<u64> = asks.iter().map(|o| o.price).collect();
     let ask_order_ids: Vec<u32> = asks.iter().map(|o| o.order_id).collect();
     let ask_max_ts_values: Vec<u64> = asks.iter().map(|o| o.max_ts).collect();
 
@@ -3591,16 +3575,16 @@ fn dlob_l3_trigger_orders_by_price() {
         contract_tier: crate::types::ContractTier::A,
         amm: AMM {
             max_fill_reserve_fraction: 1,
-            base_asset_reserve: default_reserves.into(),
-            quote_asset_reserve: default_reserves.into(),
-            sqrt_k: default_reserves.into(),
-            peg_multiplier: PEG_PRECISION.into(),
-            terminal_quote_asset_reserve: default_reserves.into(),
-            concentration_coef: 5u128.into(),
+            base_asset_reserve: default_reserves,
+            quote_asset_reserve: default_reserves,
+            sqrt_k: default_reserves,
+            peg_multiplier: PEG_PRECISION,
+            terminal_quote_asset_reserve: default_reserves,
+            concentration_coef: 5u128,
             long_spread: 100,
             short_spread: 100,
-            max_base_asset_reserve: (u64::MAX as u128).into(),
-            min_base_asset_reserve: 0u128.into(),
+            max_base_asset_reserve: (u64::MAX as u128),
+            min_base_asset_reserve: 0u128,
             max_spread: 1000,
             ..Default::default()
         },
@@ -3863,7 +3847,7 @@ use crate::dlob::types::DynamicPrice;
 #[test]
 fn market_order_get_price_same_start_end_price() {
     // Test that when auction_start_price == auction_end_price, get_price always returns end_price
-    let auction_price = 123456_000_000i64;
+    let auction_price = 123_456_000_000i64;
     let duration = 10u8;
     let tick_size = 1u64;
     let start_slot = 100u64;
@@ -4123,16 +4107,16 @@ fn vamm_taker_test_market(order_step_size: u64) -> PerpMarket {
         contract_tier: crate::types::ContractTier::A,
         amm: AMM {
             max_fill_reserve_fraction: 1,
-            base_asset_reserve: base_reserves.into(),
-            quote_asset_reserve: quote_reserves.into(),
-            sqrt_k: (base_reserves * quote_reserves).into(),
-            peg_multiplier: PEG_PRECISION.into(),
-            terminal_quote_asset_reserve: quote_reserves.into(),
-            concentration_coef: 5u128.into(),
+            base_asset_reserve: base_reserves,
+            quote_asset_reserve: quote_reserves,
+            sqrt_k: (base_reserves * quote_reserves),
+            peg_multiplier: PEG_PRECISION,
+            terminal_quote_asset_reserve: quote_reserves,
+            concentration_coef: 5u128,
             long_spread: 100,
             short_spread: 100,
-            max_base_asset_reserve: (u64::MAX as u128).into(),
-            min_base_asset_reserve: 0u128.into(),
+            max_base_asset_reserve: (u64::MAX as u128),
+            min_base_asset_reserve: 0u128,
             max_spread: 1000,
             ..Default::default()
         },
@@ -4606,10 +4590,7 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
 fn post_trigger_price_mirrors_program_trigger_auction_params() {
     use crate::dlob::types::{L3Order, TriggerL3Order};
     use program::{
-        math::{
-            auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
-            time::{Millis, SlotDuration},
-        },
+        math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
         state::{
             oracle::OraclePriceData,
             user::{Order as VelocityOrder, OrderBitFlag},
@@ -4840,16 +4821,16 @@ fn dlob_min_size_oracle_close_crosses_vamm_incident_replay() {
         contract_tier: crate::types::ContractTier::A,
         amm: AMM {
             max_fill_reserve_fraction: 1,
-            base_asset_reserve: base_reserves.into(),
-            quote_asset_reserve: quote_reserves.into(),
-            sqrt_k: (base_reserves * quote_reserves).into(),
-            peg_multiplier: PEG_PRECISION.into(),
-            terminal_quote_asset_reserve: quote_reserves.into(),
-            concentration_coef: 5u128.into(),
+            base_asset_reserve: base_reserves,
+            quote_asset_reserve: quote_reserves,
+            sqrt_k: (base_reserves * quote_reserves),
+            peg_multiplier: PEG_PRECISION,
+            terminal_quote_asset_reserve: quote_reserves,
+            concentration_coef: 5u128,
             long_spread: 2022,
             short_spread: 87,
-            max_base_asset_reserve: (u64::MAX as u128).into(),
-            min_base_asset_reserve: 0u128.into(),
+            max_base_asset_reserve: (u64::MAX as u128),
+            min_base_asset_reserve: 0u128,
             max_spread: 10000,
             ..Default::default()
         },

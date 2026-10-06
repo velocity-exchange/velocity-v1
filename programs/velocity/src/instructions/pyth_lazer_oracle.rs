@@ -100,7 +100,14 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
                     Some(timestamp) => next_timestamp = Some(timestamp.as_micros()),
                     None => continue,
                 },
-                _ => {}
+                PayloadPropertyValue::Price(_)
+                | PayloadPropertyValue::PublisherCount(_)
+                | PayloadPropertyValue::FundingRate(_)
+                | PayloadPropertyValue::FundingTimestamp(_)
+                | PayloadPropertyValue::FundingRateInterval(_)
+                | PayloadPropertyValue::MarketSession(_)
+                | PayloadPropertyValue::EmaPrice(_)
+                | PayloadPropertyValue::EmaConfidence(_) => {}
             }
         }
 

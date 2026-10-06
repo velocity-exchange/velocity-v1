@@ -83,7 +83,7 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         None,
     )?;
 
-    for (_, perp_market_loader) in perp_market_map.0.iter() {
+    for perp_market_loader in perp_market_map.0.values() {
         let mut perp_market = perp_market_loader.load_mut()?;
         if lp_pool.lp_pool_id != perp_market.hedge_config.pool_id {
             msg!(

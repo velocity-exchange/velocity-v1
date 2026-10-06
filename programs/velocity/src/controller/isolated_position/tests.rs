@@ -1635,7 +1635,7 @@ pub mod withdraw_from_isolated_perp_position {
         // A failed run still writes before it rejects, because this test calls
         // the controller directly and no transaction reverts it. Restore the
         // pre-withdraw state between runs.
-        let mut restore = |user: &mut User| {
+        let restore = |user: &mut User| {
             user.perp_positions[0].isolated_position_scaled_balance = SPOT_BALANCE_PRECISION_U64;
             user.total_withdraws = 0;
             spot_market_map.get_ref_mut(&0).unwrap().deposit_balance = market_deposit_balance;

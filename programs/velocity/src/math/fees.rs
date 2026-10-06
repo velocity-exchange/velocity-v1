@@ -34,6 +34,7 @@ mod tests;
 ///     `PerpMarket.fee_ledger.amm_protocol_fees_received`
 ///   - `if_fee` (if_fee_numerator %): the insurance fund's cut
 ///   - `protocol_fee` (the residual): the protocol's withdrawable cut
+///
 /// Floor division on the explicit cuts means rounding dust accrues to the
 /// protocol residual; `amm + if <= FEE_PERCENTAGE_DENOMINATOR` is validated at
 /// fee-structure update so the residual can never underflow.
@@ -541,13 +542,10 @@ fn determine_perp_fee_tier(
         TWO_HUNDRED_MILLION_QUOTE,
     ];
 
-    let mut fee_tier_index = PERP_FEE_TIER_MAX_INDEX;
-    for i in 0..PERP_FEE_TIER_MAX_INDEX {
-        if total_30d_volume < VOLUME_THRESHOLDS[i] {
-            fee_tier_index = i;
-            break;
-        }
-    }
+    let mut fee_tier_index = VOLUME_THRESHOLDS
+        .iter()
+        .position(|threshold| total_30d_volume < *threshold)
+        .unwrap_or(PERP_FEE_TIER_MAX_INDEX);
 
     fee_tier_index = fee_tier_index.max((promo_fee_tier as usize).min(PERP_FEE_TIER_MAX_INDEX));
 

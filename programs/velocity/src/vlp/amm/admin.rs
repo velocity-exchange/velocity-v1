@@ -44,7 +44,7 @@ use {
     },
     anchor_lang::{prelude::*, Discriminator},
     anchor_spl::token_interface::{TokenAccount, TokenInterface},
-    std::{convert::TryInto, fmt::Display},
+    std::fmt::Display,
 };
 
 // Protocol wide limits for calls made only by the VammQuoteManagement hot role.
@@ -1431,6 +1431,7 @@ pub fn handle_update_amm_spread_adjustment_native(
 
     #[cfg(not(feature = "anchor-test"))]
     {
+        use std::convert::TryInto;
         let state = accounts[2].try_borrow_data()?;
         let signer_account = &accounts[1];
         let hot_key_bytes: [u8; 32] = state
@@ -1882,6 +1883,8 @@ mod native_auth_tests {
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
+    // The native hot-key signer check is compiled out under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn spread_native_rejects_unauthorized_signer() {
         let hot_key = Pubkey::new_unique();

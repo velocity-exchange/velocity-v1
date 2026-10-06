@@ -60,3 +60,6 @@ path = "src/tx_history.rs"
 # NOTE: [patch.crates-io] (pyth-lazer-protocol = vendor/pyth-lazer-protocol) is
 # hoisted to the rust/ workspace root Cargo.toml — Cargo only honors patches at
 # the workspace root.
+
+[lints]
+workspace = true

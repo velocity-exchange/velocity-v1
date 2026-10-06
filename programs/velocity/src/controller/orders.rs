@@ -281,7 +281,7 @@ pub fn place_perp_order(
                         .safe_add(10_i64)?,
                 ),
             )?,
-            _ => 0_i64,
+            OrderType::Limit | OrderType::TriggerMarket | OrderType::TriggerLimit => 0_i64,
         },
     };
 
@@ -1923,8 +1923,8 @@ fn admit_reducing_maker_orders(
     resting_base_asset_amount: i64,
 ) -> VelocityResult<Vec<(usize, u64)>> {
     match maker_direction {
-        PositionDirection::Long => candidates.sort_by(|a, b| b.1.cmp(&a.1)),
-        PositionDirection::Short => candidates.sort_by(|a, b| a.1.cmp(&b.1)),
+        PositionDirection::Long => candidates.sort_by_key(|a| std::cmp::Reverse(a.1)),
+        PositionDirection::Short => candidates.sort_by_key(|a| a.1),
     }
 
     let mut projected_base_asset_amount = resting_base_asset_amount;
@@ -2899,17 +2899,18 @@ fn settle_amm_house_fill(
     // ↔ limit gap as spread surplus). For JIT slices inside a
     // Match step, `AmmJitQuoter::try_fill_solo` already returns
     // the jit-price quote + curve↔jit surplus — pass through.
-    let (taker_quote, taker_surplus) =
-        if !is_jit_within_match && order_post_only && taker_limit_price.is_some() {
-            crate::controller::position::calculate_quote_asset_amount_surplus(
-                taker_direction,
-                fill.quote_filled,
-                fill.base_filled,
-                taker_limit_price.unwrap(),
-            )?
-        } else {
-            (fill.quote_filled, fill.quote_asset_amount_surplus)
-        };
+    let (taker_quote, taker_surplus) = if let Some(limit_price) =
+        taker_limit_price.filter(|_| !is_jit_within_match && order_post_only)
+    {
+        crate::controller::position::calculate_quote_asset_amount_surplus(
+            taker_direction,
+            fill.quote_filled,
+            fill.base_filled,
+            limit_price,
+        )?
+    } else {
+        (fill.quote_filled, fill.quote_asset_amount_surplus)
+    };
 
     let reward_referrer =
         can_reward_user_with_referral_reward(market.market_index, rev_share_escrow);
@@ -4376,7 +4377,7 @@ fn update_trigger_order_params(
     order.trigger_condition = match order.trigger_condition {
         OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
         OrderTriggerCondition::Below => OrderTriggerCondition::TriggeredBelow,
-        _ => {
+        OrderTriggerCondition::TriggeredAbove | OrderTriggerCondition::TriggeredBelow => {
             return Err(print_error!(ErrorCode::InvalidTriggerOrderCondition)());
         }
     };

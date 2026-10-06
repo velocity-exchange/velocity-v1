@@ -2890,8 +2890,8 @@ fn validated_slot_duration_archive_update(
         .copied();
 
     validate!(
-        previous_slot.map_or(true, |slot| effective_slot >= slot)
-            && next_slot.map_or(true, |slot| effective_slot <= slot),
+        previous_slot.is_none_or(|slot| effective_slot >= slot)
+            && next_slot.is_none_or(|slot| effective_slot <= slot),
         ErrorCode::DefaultError,
         "IBRL transition slots are not monotonic"
     )?;
@@ -5609,7 +5609,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
         let mint_ai = ctx
             .remaining_accounts
             .get(i + 1)
-            .ok_or_else(|| ErrorCode::DefaultError)?;
+            .ok_or(ErrorCode::DefaultError)?;
         require_keys_eq!(*mint_ai.owner, token_program_id, ErrorCode::DefaultError);
 
         // read current token amount (offset 64..72 in SPL token account layout)
@@ -5623,7 +5623,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
             let burn_accounts = token_interface::Burn {
                 mint: mint_ai.clone(),
                 from: target.clone(),
-                authority: ctx.accounts.velocity_signer.clone(),
+                authority: ctx.accounts.velocity_signer.to_account_info(),
             };
             let burn_ctx =
                 CpiContext::new_with_signer(token_program_id, burn_accounts, cpi_signers);
@@ -5634,7 +5634,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
         let close_accounts = token_interface::CloseAccount {
             account: target.clone(),
             destination: admin_ai.clone(),
-            authority: ctx.accounts.velocity_signer.clone(),
+            authority: ctx.accounts.velocity_signer.to_account_info(),
         };
         let close_ctx = CpiContext::new_with_signer(token_program_id, close_accounts, cpi_signers);
         token_interface::close_account(close_ctx)?;
@@ -5679,7 +5679,7 @@ pub struct ForceWipeAccountsDevnet<'info> {
     pub state: UncheckedAccount<'info>,
     /// CHECK: PDA seeded by [b"velocity_signer", nonce]. Verified by Token Program
     /// at CPI time when closing token vaults; ignored otherwise.
-    pub velocity_signer: AccountInfo<'info>,
+    pub velocity_signer: UncheckedAccount<'info>,
     pub token_program: Interface<'info, TokenInterface>,
     // Targets are passed via `remaining_accounts` so a single call can wipe
     // many accounts in one tx. Velocity-owned PDAs are drained; token-owned vaults
@@ -5791,6 +5791,8 @@ mod native_auth_tests {
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
+    // The native hot-key signer check is compiled out under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn mm_oracle_native_rejects_unauthorized_signer() {
         // Genuine state + market, but the signer is not the configured hot key.
@@ -5944,10 +5946,11 @@ mod native_auth_tests {
         assert_eq!(observed[0], 1_010_000, "first write must land at the cap");
         // Monotonic toward the target, and strictly moving until it arrives.
         for pair in observed.windows(2) {
-            assert!(pair[1] >= pair[0], "price moved backwards: {observed:?}");
+            assert!(pair[1] >= pair[0], "price moved backwards: {:?}", observed);
             assert!(
                 pair[0] == target || pair[1] > pair[0],
-                "price stalled before reaching the target: {observed:?}"
+                "price stalled before reaching the target: {:?}",
+                observed
             );
         }
         assert_eq!(
@@ -5957,7 +5960,8 @@ mod native_auth_tests {
         );
         assert!(
             observed.iter().all(|p| *p <= target),
-            "must never overshoot: {observed:?}"
+            "must never overshoot: {:?}",
+            observed
         );
     }
 
@@ -5971,10 +5975,11 @@ mod native_auth_tests {
 
         assert_eq!(observed[0], 990_000, "first write must land at the cap");
         for pair in observed.windows(2) {
-            assert!(pair[1] <= pair[0], "price moved backwards: {observed:?}");
+            assert!(pair[1] <= pair[0], "price moved backwards: {:?}", observed);
             assert!(
                 pair[0] == target || pair[1] < pair[0],
-                "price stalled before reaching the target: {observed:?}"
+                "price stalled before reaching the target: {:?}",
+                observed
             );
         }
         assert_eq!(*observed.last().unwrap(), target);
@@ -6493,6 +6498,8 @@ mod native_batch_tests {
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
+    // The native hot-key signer check is compiled out under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn batch_rejects_unauthorized_and_non_signing_hot_key() {
         // Two cases: the wrong key that signs, and the right key that does not.
@@ -6943,7 +6950,8 @@ mod native_batch_tests {
             let accounts = [market_info.clone(), signer, state_info];
             assert!(
                 update_mm_oracle(&accounts, &single_payload(price, 6), SLOT).is_err(),
-                "price {price} must be a hard error on opcode 0"
+                "price {} must be a hard error on opcode 0",
+                price
             );
             assert_eq!(read_stats(&market_info), initial);
         }
@@ -7264,7 +7272,7 @@ mod feature_gate_tests {
         // 8-byte discriminator + zeroed State, with the staging fields written at
         // their real offsets
         let mut data = vec![0u8; 8 + std::mem::size_of::<State>()];
-        data[..8].copy_from_slice(&State::DISCRIMINATOR);
+        data[..8].copy_from_slice(State::DISCRIMINATOR);
         let put_u16 = |d: &mut [u8], off: usize, v: u16| {
             d[8 + off..8 + off + 2].copy_from_slice(&v.to_le_bytes())
         };
@@ -7327,7 +7335,7 @@ mod feature_gate_tests {
         let owner = crate::id();
         let mut lamports = 1u64;
         let mut data = vec![0u8; 8 + std::mem::size_of::<State>()];
-        data[..8].copy_from_slice(&State::DISCRIMINATOR);
+        data[..8].copy_from_slice(State::DISCRIMINATOR);
         let put_u16 = |d: &mut [u8], off: usize, v: u16| {
             d[8 + off..8 + off + 2].copy_from_slice(&v.to_le_bytes())
         };
@@ -7369,7 +7377,7 @@ mod feature_gate_tests {
         let (key, _) = Pubkey::find_program_address(&[b"velocity_state"], &crate::id());
         let mut lamports = 1u64;
         let mut data = vec![0u8; 8 + std::mem::size_of::<State>()];
-        data[..8].copy_from_slice(&State::DISCRIMINATOR);
+        data[..8].copy_from_slice(State::DISCRIMINATOR);
         // stale legacy staging fields that must lose to the archive
         let base_off = 8 + std::mem::offset_of!(State, slot_duration_ms);
         data[base_off..base_off + 2].copy_from_slice(&300u16.to_le_bytes());

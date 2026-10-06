@@ -461,7 +461,7 @@ pub struct JitSignedMsg<'info> {
     pub taker_stats: AccountLoader<'info, UserStats>,
     /// CHECK: checked in SignedMsgUserOrdersZeroCopy checks
     #[account(mut)]
-    pub taker_signed_msg_user_orders: AccountInfo<'info>,
+    pub taker_signed_msg_user_orders: UncheckedAccount<'info>,
     pub authority: Signer<'info>,
     pub velocity_program: Program<'info, Velocity>,
 }

@@ -50,9 +50,11 @@ document requires you to find or introduce across the repo.
 - When an operation requires different accounts, check their keys in the shared validation path.
   Two typed accounts can refer to the same account. Sequential mutable borrows do not prove
   distinctness after the first borrow ends.
-- Match this program's enums exhaustively in domain logic. Group explicit variants when they
-  share behavior. A fallback that rejects unknown raw bytes at a parser boundary is appropriate.
-  Preserve persisted enum discriminants and error codes.
+- Match enums exhaustively. Group explicit variants when they share behavior. The crate denies
+  `clippy::wildcard_enum_match_arm`, so a `_` arm on an enum fails clippy and CI. `cargo build`,
+  `cargo test` and `bun run program:build` still accept one, so run clippy. A fallback that
+  rejects unknown raw bytes at a parser boundary matches on the integer, not the enum, and is
+  fine. Preserve persisted enum discriminants and error codes.
 - Use an enum for mutually exclusive lifecycle states or flags that permit invalid combinations.
   A boolean for an independent binary property is fine. Do not change persisted flags into enums
   without reviewing the layout and client compatibility.

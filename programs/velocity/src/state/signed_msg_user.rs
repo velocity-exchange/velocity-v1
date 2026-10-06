@@ -111,6 +111,10 @@ impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
         self.fixed.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn get(&self, index: u32) -> &SignedMsgOrderId {
         let size = std::mem::size_of::<SignedMsgOrderId>();
         let start = index as usize * size;
@@ -130,6 +134,10 @@ pub struct SignedMsgUserOrdersZeroCopyMut<'a> {
 impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     pub fn len(&self) -> u32 {
         self.fixed.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn get_mut(&mut self, index: u32) -> &mut SignedMsgOrderId {

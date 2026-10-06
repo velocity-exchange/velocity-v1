@@ -58,3 +58,6 @@ pyth = { path = "../pyth", features = ["no-entrypoint"], optional = true }
 bytes = "1.2.0"
 pyth = { path = "../pyth", features = ["no-entrypoint"]}
 base64 = "0.13.0"
+
+[lints]
+workspace = true

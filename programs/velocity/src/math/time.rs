@@ -94,7 +94,7 @@ where
 
     /// Encode an exact millisecond duration without changing storage width.
     pub fn try_from_millis(duration: Millis) -> Option<Self> {
-        if SLOT_MS == 0 || duration.as_ms() % SLOT_MS != 0 {
+        if SLOT_MS == 0 || !duration.as_ms().is_multiple_of(SLOT_MS) {
             return None;
         }
         T::try_from(duration.as_ms() / SLOT_MS).ok().map(Self)

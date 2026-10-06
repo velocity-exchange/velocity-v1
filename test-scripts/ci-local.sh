@@ -3,7 +3,7 @@
 # pushing, without waiting for (or being able to trigger) the hosted runs.
 #
 # KEEP THIS FILE IN SYNC WITH .github/workflows/main.yml: when a gating job's
-# command changes there, mirror it here in the same change (see CLAUDE.md).
+# command changes there, mirror it here in the same change (see docs/agents/testing.md).
 #
 # Usage:
 #   bash test-scripts/ci-local.sh [tier] [output flags]

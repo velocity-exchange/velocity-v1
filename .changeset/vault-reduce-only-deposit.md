@@ -8,3 +8,6 @@ happens when the market being deposited into is `ReduceOnly` and the amount is l
 vault's outstanding borrow there. For `deposit` and `manager_deposit` that is the denomination
 market; for `manager_repay` it is the repay market. Previously the excess stayed in the
 vault's transit token account with no claim on it.
+
+The same IDL regeneration also picks up `UserStats.acceleratedReferralStatus`, which the velocity
+program already had, and refreshes a few doc strings on shared velocity types.

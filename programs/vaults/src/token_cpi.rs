@@ -16,8 +16,8 @@ pub trait TokenTransferCPI {
     fn token_transfer(&self, amount: u64) -> Result<()>;
 }
 
-/// Velocity `deposit` can succeed while taking less than asked (ReduceOnly caps it at the
-/// borrow). Anything left in transit sits outside NAV, so revert.
+/// Velocity `deposit` can succeed while it takes less than the amount asked. A `ReduceOnly`
+/// market caps it at the borrow. Tokens left in transit are outside NAV, so the deposit reverts.
 pub fn validate_transit_settled(
     transit_token_account: &mut Account<TokenAccount>,
     balance_before: u64,

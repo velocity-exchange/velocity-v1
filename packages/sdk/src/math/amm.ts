@@ -473,6 +473,36 @@ export function calculateMarketOpenBidAsk(
 }
 
 /**
+ * The depth one fill may take from the vAMM, mirroring `calculate_amm_available_liquidity` in
+ * `programs/velocity/src/vlp/amm/math/amm.rs`. This is the per-fill reserve throttle, much
+ * tighter than the room to the hard reserve bound that {@link calculateMarketOpenBidAsk} reports.
+ * A client that predicts a router split must apply it, or it allocates vAMM depth the program
+ * refuses. `maxFillReserveFraction` is validated above zero on chain, so a zero here means a
+ * malformed account. The cap then falls back to the side's room instead of dividing by zero.
+ */
+export function calculateAmmAvailableLiquidity(
+	amm: AMM,
+	direction: PositionDirection,
+	orderStepSize: BN
+): BN {
+	const sideRoom = isVariant(direction, 'long')
+		? amm.baseAssetReserve.sub(amm.minBaseAssetReserve)
+		: amm.maxBaseAssetReserve.sub(amm.baseAssetReserve);
+	// One fill can only take up to half of the side's liquidity.
+	const maxBaseAssetAmountOnSide = BN.max(sideRoom, ZERO).div(TWO);
+
+	const maxFillSize =
+		amm.maxFillReserveFraction > 0
+			? amm.baseAssetReserve.div(new BN(amm.maxFillReserveFraction))
+			: maxBaseAssetAmountOnSide;
+
+	return standardizeBaseAssetAmount(
+		BN.min(maxFillSize, maxBaseAssetAmountOnSide),
+		orderStepSize
+	);
+}
+
+/**
  * Measures how skewed the AMM's net inventory is relative to the thinner of its two
  * remaining liquidity sides, as a fraction: `|baseAssetAmountWithAmm| / minSideLiquidity`,
  * capped at 100%. Feeds `calculateInventoryScale`'s spread widening — a fuller inventory
@@ -1389,14 +1419,12 @@ function capSpreadOrdered(
 }
 
 /**
- * Applies the market's manual `ammSpreadAdjustment` (%, grow if positive / shrink if
- * negative, floored at 1) to an already-computed spread pair. Mirrors the tail of
- * `update_spreads` in `vlp/amm/math/spread.rs`, which applies it to the frozen-curve
- * branch as well as the dynamic one, and rounds as integer math (ceil when growing,
- * floor when shrinking).
+ * Applies the market's manual `ammSpreadAdjustment` to an already-computed spread pair. The
+ * adjustment is a percentage: positive grows the spread, negative shrinks it, and the result is
+ * floored at 1. Mirrors the tail of `update_spreads` in `vlp/amm/math/spread.rs`, which applies
+ * the adjustment to the frozen-curve branch as well as the dynamic one. The rounding is integer:
+ * it rounds up when growing and down when shrinking.
  * @param amm AMM state holding `ammSpreadAdjustment`.
- * @param longSpread Long-side spread before adjustment.
- * @param shortSpread Short-side spread before adjustment.
  * @returns `[longSpread, shortSpread]` after adjustment.
  */
 function applyAmmSpreadAdjustment(
@@ -1424,10 +1452,11 @@ function applyAmmSpreadAdjustment(
  * Convenience wrapper around `calculateSpreadBN` that derives its lower-level inputs
  * (reserve price, oracle-vs-reserve spread, live oracle std, and confidence interval) from
  * `amm`/`marketStats`/`oraclePriceData` directly, then applies the market's manual
- * `ammSpreadAdjustment` (%, shrink if negative/grow if positive, floored at 1) on top.
- * Mirrors `update_spreads` in `vlp/amm/math/spread.rs`: the dynamic spread is computed
- * whenever `curveUpdateIntensity` is nonzero, and only a zero `curveUpdateIntensity`
- * falls back to `[baseSpread/2, baseSpread/2]` (truncated).
+ * `ammSpreadAdjustment` on top, as a percentage that shrinks the spread when negative, grows
+ * it when positive, and is floored at 1. This mirrors `update_spreads` in
+ * `vlp/amm/math/spread.rs`. The dynamic spread is computed whenever `curveUpdateIntensity` is
+ * nonzero. Only a zero `curveUpdateIntensity` falls back to the truncated
+ * `[baseSpread/2, baseSpread/2]`.
  * @param amm AMM state to price the spread for.
  * @param marketStats Market stats needed for volatility/funding-bias inputs.
  * @param oraclePriceData Current oracle price data; required unless `curveUpdateIntensity` is zero.
@@ -1443,11 +1472,10 @@ export function calculateSpread(
 	now?: BN,
 	reservePrice?: BN
 ): [number, number] {
-	// On chain the dynamic spread is computed whenever curveUpdateIntensity > 0; a
-	// baseSpread of 0 does NOT disable it, it only lowers the floor that the vol
-	// spread is maxed against. Short-circuiting on baseSpread == 0 made the SDK
-	// report a zero-width vAMM spread on markets configured with baseSpread 0,
-	// while the program was quoting an inventory-skewed spread of >10%.
+	// The dynamic spread runs whenever curveUpdateIntensity is above 0, even with
+	// baseSpread 0, which only lowers the volatility-spread floor. A short circuit
+	// on baseSpread == 0 would report a zero-width spread where the program quotes
+	// an inventory-skewed one.
 	if (!reservePrice) {
 		reservePrice = calculatePrice(
 			amm.baseAssetReserve,
@@ -1457,7 +1485,7 @@ export function calculateSpread(
 	}
 
 	if (amm.curveUpdateIntensity == 0) {
-		// integer division on chain: `base_spread.safe_div(2)`. A market with
+		// The program divides as integers: `base_spread.safe_div(2)`. A market with
 		// curveUpdateIntensity 0 never repegs and quotes off its curve alone, so
 		// neither the oracle retreat nor the oracle guard applies.
 		const halfBaseSpread = Math.floor(amm.baseSpread / 2);
@@ -1939,40 +1967,13 @@ export function calculateQuoteAssetAmountSwapped(
 }
 
 /**
- * Caps how much base asset the AMM is willing to fill in one instruction: the smaller of
- * `amm.maxFillReserveFraction`'s share of the current base reserve and the room remaining to
- * the AMM's min/max reserve bound on the taker's side, then rounded down to `orderStepSize`.
- * This is a per-fill risk limit distinct from `calculateMaxBaseAssetAmountToTrade` (which sizes
- * against a limit price) — it bounds how much of the AMM's own liquidity can move at once
- * regardless of price.
- * @param amm AMM state (`baseAssetReserve`, `minBaseAssetReserve`, `maxBaseAssetReserve`, `maxFillReserveFraction`).
- * @param orderStepSize Order step size to standardize the result to, BASE_PRECISION (1e9).
- * @param orderDirection Direction of the order being filled against the AMM.
- * @returns Max fillable base asset amount, BASE_PRECISION (1e9), standardized to `orderStepSize`.
+ * @deprecated Use {@link calculateAmmAvailableLiquidity}, which takes the same values in a
+ * different argument order. This name stays for compatibility and delegates to it.
  */
 export function calculateMaxBaseAssetAmountFillable(
 	amm: AMM,
 	orderStepSize: BN,
 	orderDirection: PositionDirection
 ): BN {
-	const maxFillSize = amm.baseAssetReserve.div(
-		new BN(amm.maxFillReserveFraction)
-	);
-	let maxBaseAssetAmountOnSide: BN;
-	if (isVariant(orderDirection, 'long')) {
-		maxBaseAssetAmountOnSide = BN.max(
-			ZERO,
-			amm.baseAssetReserve.sub(amm.minBaseAssetReserve)
-		);
-	} else {
-		maxBaseAssetAmountOnSide = BN.max(
-			ZERO,
-			amm.maxBaseAssetReserve.sub(amm.baseAssetReserve)
-		);
-	}
-
-	return standardizeBaseAssetAmount(
-		BN.min(maxFillSize, maxBaseAssetAmountOnSide),
-		orderStepSize
-	);
+	return calculateAmmAvailableLiquidity(amm, orderDirection, orderStepSize);
 }

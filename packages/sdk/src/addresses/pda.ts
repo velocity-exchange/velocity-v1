@@ -618,3 +618,146 @@ export async function getLpPoolTokenTokenAccountPublicKey(
 ): Promise<PublicKey> {
 	return await getAssociatedTokenAddress(lpPoolTokenMint, authority, true);
 }
+
+/**
+ * Per-user relay conditions, from seeds `["user_conditions", user]`. There is
+ * one account per user, and it covers both liquidation thresholds and trigger
+ * orders. No `liq_conditions` or `trigger_conditions` account exists, so a
+ * client that derives one of those addresses finds nothing there.
+ */
+export function getUserConditionsPublicKey(
+	programId: PublicKey,
+	user: PublicKey
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('user_conditions')),
+			user.toBuffer(),
+		],
+
+		programId
+	)[0];
+}
+
+/** The upgradeable BPF loader, which owns every program that can redeploy in place. */
+export const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
+	'BPFLoaderUpgradeab1e11111111111111111111111'
+);
+
+/**
+ * A program's program-data account, which records the slot it was last deployed
+ * at. Its absence means the program can never change.
+ */
+export function getProgramDataAddress(programId: PublicKey): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[programId.toBuffer()],
+		BPF_LOADER_UPGRADEABLE_ID
+	)[0];
+}
+
+/**
+ * The program-wide resolver staging account, from seed `["relay_scratch"]`.
+ * Every resolver names it at index 0. It holds no durable state and runs only under simulation.
+ */
+export function getRelayScratchPublicKey(programId: PublicKey): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[Buffer.from(anchor.utils.bytes.utf8.encode('relay_scratch'))],
+		programId
+	)[0];
+}
+
+/**
+ * The protocol's single relay crank treasury, from seed `["crank_treasury"]`.
+ * Every market's crank reservoir refills from here, so an operator funds it directly by plain SOL transfer.
+ */
+export function getCrankTreasuryPublicKey(programId: PublicKey): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[Buffer.from(anchor.utils.bytes.utf8.encode('crank_treasury'))],
+		programId
+	)[0];
+}
+
+/**
+ * A quoter registry entry, `QuoterV0`, one per `(perp market, quoter
+ * program, quoted user)`. `user` is the velocity `User` the entry's fills
+ * settle against, making the triple unique. One program can quote several
+ * accounts on one market, and one account can be quoted by several programs.
+ * A CLOB entry uses the default pubkey for `user`, since a book settles
+ * against whichever maker rests there rather than one margin account.
+ */
+export function getQuoterPublicKey(
+	programId: PublicKey,
+	marketIndex: number,
+	quoterProgram: PublicKey,
+	user: PublicKey
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('quoter')),
+			new anchor.BN(marketIndex).toArrayLike(Buffer, 'le', 2),
+			quoterProgram.toBuffer(),
+			user.toBuffer(),
+		],
+
+		programId
+	)[0];
+}
+
+/**
+ * The market's quoter slab, `QuoterSlabV0`, which holds every approved
+ * quoter config. Router fills carry it instead of per-quoter registry
+ * entries, and it is the identity velocity signs every quoter CPI as,
+ * distinct from {@link getVelocitySignerPublicKey}, which moves vault funds.
+ */
+export function getQuoterSlabPublicKey(
+	programId: PublicKey,
+	marketIndex: number
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('quoter_slab')),
+			new anchor.BN(marketIndex).toArrayLike(Buffer, 'le', 2),
+		],
+
+		programId
+	)[0];
+}
+
+/**
+ * A quoter entry's `QuoterCrossConditionsV0` PDA, from seeds
+ * `["quoter_cross_conditions", quoter]`. It holds the relay conditions block
+ * that wakes a cross crank for that one entry.
+ */
+export function getQuoterCrossConditionsPublicKey(
+	programId: PublicKey,
+	quoter: PublicKey
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('quoter_cross_conditions')),
+			quoter.toBuffer(),
+		],
+
+		programId
+	)[0];
+}
+
+/**
+ * Derives a perp market's `ClobCrankConditionsV0` PDA from seeds
+ * `["clob_crank_conditions", marketIndex as u16 LE]`. The account holds the
+ * relay crank conditions block and the keeper-payment reservoir, and
+ * `updatePerpMarketClobQuoter` creates it when a CLOB is attached.
+ */
+export function getClobCrankConditionsPublicKey(
+	programId: PublicKey,
+	marketIndex: number
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('clob_crank_conditions')),
+			new anchor.BN(marketIndex).toArrayLike(Buffer, 'le', 2),
+		],
+
+		programId
+	)[0];
+}

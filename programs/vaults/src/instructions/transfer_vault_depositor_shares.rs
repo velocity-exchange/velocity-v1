@@ -9,10 +9,7 @@ use {
         validate, AccountMapProvider, Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
-        state::user::User,
-    },
+    velocity::{math::safe_math::SafeMath, program::Velocity, state::user::User},
 };
 
 pub fn transfer_vault_depositor_shares<'info>(
@@ -20,10 +17,10 @@ pub fn transfer_vault_depositor_shares<'info>(
     amount: u64,
     withdraw_unit: WithdrawUnit,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -52,9 +49,9 @@ pub fn transfer_vault_depositor_shares<'info>(
     vault.validate_vault_protocol(&vp)?;
     let mut vp = vp.as_mut().map(|vp| vp.load_mut()).transpose()?;
 
-    // #101: apply a matured fee update on this share-movement path (mirrors deposit/withdraw), so
-    // a queued profit-share/management-fee increase can't be escaped by moving shares and resetting
-    // the recipient's cost basis under stale fee terms.
+    // A matured fee update applies on every path that moves shares. Otherwise a
+    // queued profit share or management fee increase escapes: the shares move and
+    // the recipient cost basis resets under the old fee terms (OtterSec #101).
     let has_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
     let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
@@ -62,11 +59,7 @@ pub fn transfer_vault_depositor_shares<'info>(
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(spot_market_index),
         vp.is_some(),
@@ -74,8 +67,7 @@ pub fn transfer_vault_depositor_shares<'info>(
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
     validate!(
         !vault_depositor.last_withdraw_request.pending(),
@@ -89,8 +81,8 @@ pub fn transfer_vault_depositor_shares<'info>(
         "Cannot transfer shares to a depositor with a pending withdraw request"
     )?;
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
-    let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
+    let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     let total_shares_before = vault_depositor
         .get_vault_shares()

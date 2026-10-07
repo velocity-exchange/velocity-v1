@@ -24,13 +24,8 @@ import {
 } from '../constants/numericConstants';
 
 /**
- * Mirror of the program's `MarketStats::max_mark_twap_sample_elapsed`: the ceiling on
- * the elapsed time a single bid/ask-crank mark-TWAP sample may be weighted by. The
- * crank folds caller-supplied DLOB depth into the TWAP, so one post-gap sample may
- * claim at most this many seconds of weight. Fills and the funding update's AMM
- * re-blend pass no cap on-chain, so `calculateLiveMarkTwap`, which predicts the
- * funding update, deliberately does not apply it. Use it when predicting the TWAP a
- * bid/ask crank write will produce.
+ * Ceiling on the elapsed time one bid/ask-crank mark-TWAP sample may be weighted
+ * by, mirroring `MarketStats::max_mark_twap_sample_elapsed`.
  */
 export function getMaxMarkTwapSampleElapsed(fundingPeriod: BN): BN {
 	return BN.max(fundingPeriod.div(new BN(60)), ONE_MINUTE);
@@ -50,10 +45,10 @@ function calculateLiveMarkTwap(
 
 	const timeSinceLastMarkChange = now.sub(lastMarkPriceTwapTs);
 
-	// Mirrors `MarketStats::update_mark_twap`: a mark TWAP left unwritten for several
-	// funding periods holds no usable history, so the program discards it and re-seeds
-	// from the oracle TWAP. Projecting a blend of the stored value here would predict a
-	// premium the next on-chain update will not charge.
+	// This mirrors `MarketStats::update_mark_twap`. A mark TWAP left unwritten for
+	// several funding periods holds no usable history, so the program discards it and
+	// re-seeds it from the oracle TWAP. A blend of the stored value here would predict a
+	// premium that the next on-chain update does not charge.
 	const maxStaleness = BN.max(
 		market.marketStats.fundingPeriod.mul(MARK_TWAP_RESEED_FUNDING_PERIODS),
 		ONE_HOUR
@@ -62,10 +57,10 @@ function calculateLiveMarkTwap(
 		return market.marketStats.historicalOracleData.lastOraclePriceTwap;
 	}
 
-	// The sample weight is deliberately NOT capped by `getMaxMarkTwapSampleElapsed`:
-	// this function predicts the funding update's own TWAP write, which goes through
-	// `update_mark_twap_with_amm_bid_ask` with no `max_sample_elapsed` on-chain. The
-	// cap applies only to the bid/ask crank's caller-supplied samples.
+	// `getMaxMarkTwapSampleElapsed` does not cap the sample weight here. This function
+	// predicts the funding update's own TWAP write, which runs through
+	// `update_mark_twap_with_amm_bid_ask` and takes no `max_sample_elapsed` on chain.
+	// The cap applies only to the samples that a bid/ask crank caller supplies.
 	const markTwapTimeSinceLastUpdate = BN.max(
 		period,
 		BN.max(ZERO, period.sub(timeSinceLastMarkChange))

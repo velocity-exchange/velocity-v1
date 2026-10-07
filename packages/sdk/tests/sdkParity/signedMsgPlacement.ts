@@ -9,8 +9,8 @@ import {
 } from '../../src/math/orders';
 
 // Pins the signed-msg placement predicate against the slot gates in the program's
-// `place_signed_msg_taker_order` (instructions/keeper.rs): an auction order waits for
-// its message slot; a resting limit may be placed ahead of it within the 30s lead bound.
+// `place_signed_msg_taker_order` (instructions/keeper.rs): a market or oracle order waits
+// for its message slot. A resting limit may be placed ahead of it within the 30s lead bound.
 
 // No transitions synchronized: every slot is the 400ms baseline.
 const BASELINE_STATE: SlotDurationState = {};
@@ -19,20 +19,16 @@ const CURRENT_SLOT = 443_673_929;
 const MAX_LEAD_SLOTS = SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS / 400;
 
 describe('signed-msg placement gate (program parity)', () => {
-	it('classifies a resting limit as a limit with no auction', () => {
-		assert.isTrue(isRestingSignedMsgLimitOrder(OrderType.LIMIT, null));
-		assert.isTrue(isRestingSignedMsgLimitOrder(OrderType.LIMIT, undefined));
-		assert.isTrue(isRestingSignedMsgLimitOrder(OrderType.LIMIT, 0));
-		assert.isFalse(isRestingSignedMsgLimitOrder(OrderType.LIMIT, 10));
-		assert.isFalse(isRestingSignedMsgLimitOrder(OrderType.MARKET, null));
-		assert.isFalse(isRestingSignedMsgLimitOrder(OrderType.ORACLE, 20));
+	it('classifies only a limit as a resting limit', () => {
+		assert.isTrue(isRestingSignedMsgLimitOrder(OrderType.LIMIT));
+		assert.isFalse(isRestingSignedMsgLimitOrder(OrderType.MARKET));
+		assert.isFalse(isRestingSignedMsgLimitOrder(OrderType.ORACLE));
 	});
 
-	it('an auction order waits for its message slot', () => {
+	it('a market order waits for its message slot', () => {
 		const stampedAhead = {
 			slot: new BN(CURRENT_SLOT + 7),
 			orderType: OrderType.MARKET,
-			auctionDuration: 20,
 		};
 		assert.isFalse(
 			signedMsgOrderPlaceable(BASELINE_STATE, stampedAhead, CURRENT_SLOT)
@@ -40,14 +36,14 @@ describe('signed-msg placement gate (program parity)', () => {
 		assert.isTrue(
 			signedMsgOrderPlaceable(BASELINE_STATE, stampedAhead, CURRENT_SLOT + 7)
 		);
-		// A limit that carries an auction is an auction order too.
 		assert.isFalse(
 			signedMsgOrderPlaceable(
 				BASELINE_STATE,
-				{ ...stampedAhead, orderType: OrderType.LIMIT, auctionDuration: 10 },
+				{ ...stampedAhead, orderType: OrderType.ORACLE },
 				CURRENT_SLOT
 			)
 		);
+
 		// Same answer as the slot-only predicate it wraps.
 		assert.isFalse(signedMsgOrderSlotReached(stampedAhead.slot, CURRENT_SLOT));
 	});
@@ -57,7 +53,6 @@ describe('signed-msg placement gate (program parity)', () => {
 		const restingLimit = {
 			slot: new BN(CURRENT_SLOT + 35),
 			orderType: OrderType.LIMIT,
-			auctionDuration: null,
 		};
 		assert.isTrue(
 			signedMsgOrderPlaceable(BASELINE_STATE, restingLimit, CURRENT_SLOT)
@@ -95,7 +90,6 @@ describe('signed-msg placement gate (program parity)', () => {
 		const restingLimit = {
 			slot: new BN(CURRENT_SLOT + 150),
 			orderType: OrderType.LIMIT,
-			auctionDuration: null,
 		};
 		assert.isTrue(signedMsgOrderPlaceable(state, restingLimit, CURRENT_SLOT));
 		assert.isFalse(

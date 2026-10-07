@@ -4,37 +4,25 @@ import * as path from 'path';
 import { VelocityEnv } from '@velocity-exchange/sdk';
 
 /**
- * Named connection profiles for the CLI, stored per-user (never in the repo):
- * `~/.config/velocity-admin/config.json`, overridable with
- * `VELOCITY_ADMIN_CONFIG`. A profile bundles what today is passed as
- * `-u/-k/-e/-m` on every invocation; explicit flags always win over the
- * profile, so nothing changes for flag-only users and no profile value can
- * silently redirect an explicit request.
- *
- * Multisig addresses deliberately live only in this local config, not as
- * constants in the codebase. `config init` verifies a pasted multisig against
- * the live State admins (see commands/config.ts), so the config is validated
- * at write time instead of trusted at use time.
+ * Named connection profiles, stored per user at `~/.config/velocity-admin/config.json`
+ * (override with `VELOCITY_ADMIN_CONFIG`). An explicit flag always wins over the profile.
  */
 
 export type Profile = {
-	/**
-	 * Solana RPC URL. Optional: when unset, the shared `rpcs[env]` entry is
-	 * used, so one URL per cluster serves every profile on it.
-	 */
+	/** Solana RPC URL. Falls back to the shared `rpcs[env]` entry when unset. */
 	url?: string;
-	/** Path to the signer keypair JSON (~ expands). */
+	/** Path to the signer keypair JSON. A leading `~` expands. */
 	keypair: string;
-	/** Velocity env, decides program addresses and the shared RPC. */
+	/** Velocity env. It decides the program addresses and the shared RPC. */
 	env: VelocityEnv;
-	/** Squads V4 multisig PDA; when set, actions dispatch as proposals. */
+	/** Squads V4 multisig PDA. When it is set, an action dispatches as a proposal. */
 	multisig?: string;
 };
 
 export type CliConfig = {
 	version: 1;
 	default?: string;
-	/** Shared per-cluster RPC URLs, the fallback for profiles without `url`. */
+	/** Shared per-cluster RPC URLs. A profile without `url` falls back to these. */
 	rpcs?: Partial<Record<VelocityEnv, string>>;
 	profiles: Record<string, Profile>;
 };
@@ -77,14 +65,14 @@ export function saveConfig(cfg: CliConfig): void {
 }
 
 /**
- * The profile an invocation should use: `--profile` beats
- * `VELOCITY_ADMIN_PROFILE` beats the config's `default`. Returns undefined
- * when nothing selects a profile; flag-only usage stays fully supported.
+ * The profile an invocation uses. `--profile` wins over
+ * `VELOCITY_ADMIN_PROFILE`, which wins over the config's `default`. Returns
+ * null when nothing selects a profile, so a flag-only invocation still works.
  */
 export function resolveProfile(flag: string | undefined): {
 	name: string;
 	profile: Profile;
-	/** The shared RPC for the profile's env, profile.url's fallback. */
+	/** The shared RPC for the profile's env. `profile.url` falls back to it. */
 	sharedRpc?: string;
 } | null {
 	const cfg = loadConfig();

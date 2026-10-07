@@ -16,7 +16,7 @@ import { BulkAccountLoader } from './bulkAccountLoader';
  * WebSocket subscription. Registers a callback for the user's `UserAccount` and relies on the
  * loader's periodic batched `getMultipleAccounts` polling to detect changes. Prefer this over
  * `WebSocketUserAccountSubscriber` when tracking many users concurrently (e.g. a keeper watching
- * the whole DLOB) to keep the RPC/WS connection count bounded.
+ * every user in a map) to keep the RPC/WS connection count bounded.
  */
 export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 	isSubscribed: boolean;

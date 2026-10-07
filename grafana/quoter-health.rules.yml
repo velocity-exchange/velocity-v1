@@ -1,0 +1,138 @@
+groups:
+  - name: quoter-health
+    rules:
+      - alert: QuoterExecuteFailureRate
+        expr: quoter_execute_failure_rate > 0.05
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Quoter {{ $labels.quoter }} is breaking fills"
+          description: >-
+            The execute leg of quoter {{ $labels.quoter }} on market
+            {{ $labels.market }} fails {{ $value | humanizePercentage }} of the
+            time. An execute failure reverts the taker's whole transaction
+            after the router committed to the quote.
+          runbook: >-
+            The router quarantines it on its own and the quarantine expires.
+            Check /quoters on the book publisher for the cause. If it keeps
+            coming back, pull the on-chain approval:
+            velocity-admin quoter set-approved {{ $labels.quoter }} false
+
+      - alert: QuoterSimFailureRate
+        expr: quoter_sim_failure_rate > 0.05
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: "Quoter {{ $labels.quoter }} is breaking simulations"
+          description: >-
+            Quoter {{ $labels.quoter }} breaks
+            {{ $value | humanizePercentage }} of the simulations it appears in
+            on market {{ $labels.market }}. Every one of those costs a book
+            refresh or a route request.
+
+      - alert: QuoterContractViolation
+        expr: increase(quoter_sim_failures_total{reason=~"off_quote|overfilled|subject_not_permitted|invalid_response"}[15m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Quoter {{ $labels.quoter }} broke the response contract"
+          description: >-
+            Quoter {{ $labels.quoter }} answered and the router refused the
+            answer ({{ $labels.reason }}). This is a broken promise rather
+            than bad luck, so one is worth investigating.
+
+      - alert: QuoterQuarantined
+        expr: quoter_health_state == 3
+        labels:
+          severity: notify
+        annotations:
+          summary: "Quoter {{ $labels.quoter }} is quarantined"
+          description: >-
+            The router stopped carrying quoter {{ $labels.quoter }} on market
+            {{ $labels.market }}. The quarantine expires into probation on its
+            own, and clean traffic promotes it back. No action is needed
+            unless it repeats.
+
+      - alert: QuoterBanCandidate
+        expr: sum(increase(quoter_state_transitions_total{to="quarantined",actor="auto"}[24h])) by (quoter) >= 3
+        labels:
+          severity: page
+        annotations:
+          summary: "Quoter {{ $labels.quoter }} keeps being quarantined"
+          description: >-
+            The router quarantined quoter {{ $labels.quoter }}
+            {{ $value }} times in a day. Automatic degradation reverses itself,
+            so a repeat offender is the case for the on-chain lever.
+          runbook: >-
+            velocity-admin quoter set-approved {{ $labels.quoter }} false
+            removes it from every router. To hold it off this router only,
+            without touching the chain:
+            curl -XPOST <publisher>/quoters/{{ $labels.quoter }}/pin
+            -d '{"admission":"denied","reason":"...","expiresInSeconds":86400}'
+
+      - alert: QuoterAttributionGap
+        expr: sum(rate(quoter_sim_failures_unattributed_total[30m])) > 0.05
+        for: 30m
+        labels:
+          severity: notify
+        annotations:
+          summary: "Simulation failures are going unattributed"
+          description: >-
+            {{ $value | humanize }} failures a second are not being pinned on
+            any quoter. This is the router's own blind spot, not a maker's
+            behaviour. Either the router is failing for its own reasons, or
+            the logs stopped naming the quoter and attribution needs fixing.
+
+      - alert: QuoterComputeHog
+        expr: histogram_quantile(0.99, sum(rate(quoter_sim_cu_consumed_bucket[30m])) by (le, quoter)) > 350000
+        for: 30m
+        labels:
+          severity: notify
+        annotations:
+          summary: "Quoter {{ $labels.quoter }} is expensive to quote"
+          description: >-
+            Simulations carrying quoter {{ $labels.quoter }} cost
+            {{ $value | humanize }} compute units at p99. Solana caps compute
+            per transaction, not per CPI, so a quoter that burns the budget
+            can only be routed around.
+
+      - alert: QuoterPhantomDepth
+        expr: quoter_depth_clamped_ratio > 0.5
+        for: 1h
+        labels:
+          severity: notify
+        annotations:
+          summary: "Quoter {{ $labels.quoter }} quotes depth it cannot carry"
+          description: >-
+            The router cut {{ $value | humanizePercentage }} of what quoter
+            {{ $labels.quoter }} quoted before quoting it, because the
+            account behind it cannot support the size.
+
+      - alert: QuoterAdverseSlip
+        expr: histogram_quantile(0.5, sum(rate(quoter_route_slip_bps_bucket[1h])) by (le, quoter)) > 10
+        for: 1h
+        labels:
+          severity: notify
+        annotations:
+          summary: "Routes through {{ $labels.quoter }} land worse than quoted"
+          description: >-
+            The median route naming quoter {{ $labels.quoter }} executes
+            {{ $value | humanize }} basis points against the taker. Quote and
+            execute share a transaction, so this is the quoter repricing
+            between route construction and landing.
+
+      - alert: QuoterPinStale
+        expr: quoter_pinned == 1
+        for: 7d
+        labels:
+          severity: notify
+        annotations:
+          summary: "Override on {{ $labels.quoter }} has stood for a week"
+          description: >-
+            An operator override stops the scorer moving this quoter. A pin
+            with no end is how a temporary decision becomes permanent. Clear
+            it to restore automatic handling, or set one that expires.
+          runbook: >-
+            curl -XDELETE <publisher>/quoters/{{ $labels.quoter }}/pin

@@ -230,7 +230,7 @@ fn user_with_isolated_position() {
     });
 }
 
-/// Scaffolding for the cross-market #145 cases: perp market 0 holds the claim, perp market 1 holds
+/// Scaffolding for the cross-market OtterSec #145 cases: perp market 0 holds the claim, perp market 1 holds
 /// the debt with an empty pool.
 ///
 /// The claim market owes `$claim_aggregate_dollars` to its users in total and holds

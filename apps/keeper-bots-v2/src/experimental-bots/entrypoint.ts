@@ -30,10 +30,8 @@ import {
 	TransactionVersion,
 } from '@solana/web3.js';
 import { BundleSender } from '../bundleSender';
-import { FillerMultithreaded } from './filler/fillerMultithreaded';
 import http from 'http';
 import { promiseTimeout } from '@velocity-exchange/sdk';
-import { SpotFillerMultithreaded } from './spotFiller/spotFillerMultithreaded';
 import { setGlobalDispatcher, Agent } from 'undici';
 import { SwiftMaker } from './swift/makerExample';
 import { SwiftTaker } from './swift/takerExample';
@@ -197,19 +195,15 @@ const runBot = async () => {
 			throwOnTimeoutError: false,
 		});
 	} else {
-		const skipConfirmation =
-			configHasBot(config, 'fillerMultithreaded') ||
-			configHasBot(config, 'spotFillerMultithreaded');
 		txSender = new FastSingleTxSender({
 			connection: sendTxConnection,
 			// Disable the background blockhash refresh loop: FastSingleTxSender's
 			// `recentBlockhash` cache is never consumed by `sendRawTransaction`, and
-			// the filler builds txs from its own BlockhashSubscriber. The loop was
+			// each bot builds txs from its own BlockhashSubscriber. The loop was
 			// pure redundant getLatestBlockhash traffic.
 			blockhashRefreshInterval: 0,
 			wallet,
 			opts,
-			skipConfirmation,
 			additionalConnections,
 			trackTxLandRate: config.global.trackTxLandRate,
 			confirmationStrategy,
@@ -232,10 +226,10 @@ const runBot = async () => {
 		opts,
 		accountSubscription,
 		env: config.global.velocityEnv,
-		// Leaving perpMarketIndexes/spotMarketIndexes/oracleInfos undefined makes
-		// VelocityClient discover all markets and oracles from on-chain state
-		// (findAllMarketAndOracles) instead of the SDK's static registry, so a
-		// newly listed market needs no bot release to be picked up.
+		// perpMarketIndexes, spotMarketIndexes and oracleInfos are left
+		// undefined, so VelocityClient finds every market and oracle from
+		// on-chain state through findAllMarketAndOracles rather than from the
+		// SDK's static registry. A newly listed market then needs no bot release.
 		txVersion: 0 as TransactionVersion,
 		txSender,
 		marketLookupTables,
@@ -287,79 +281,6 @@ const runBot = async () => {
 			config.global.jitoTipMultiplier
 		);
 		await bundleSender.subscribe();
-	}
-
-	if (configHasBot(config, 'fillerMultithreaded')) {
-		if (!config.botConfigs?.fillerMultithreaded) {
-			throw new Error('fillerMultithreaded bot config not found');
-		}
-		// Ensure that there are no duplicate market indexes in the Array<number[]> marketIndexes config
-		const marketIndexes = new Set<number>();
-		for (const marketIndexList of config.botConfigs.fillerMultithreaded
-			.marketIndexes) {
-			for (const marketIndex of marketIndexList) {
-				if (marketIndexes.has(marketIndex)) {
-					throw new Error(
-						`Market index ${marketIndex} is duplicated in the config`
-					);
-				}
-				marketIndexes.add(marketIndex);
-			}
-		}
-
-		const fillerMultithreaded = new FillerMultithreaded(
-			config.global,
-			config.botConfigs?.fillerMultithreaded,
-			velocityClient,
-			slotSubscriber,
-			{
-				rpcEndpoint: endpoint,
-				commit: '',
-				velocityEnv: config.global.velocityEnv!,
-				velocityPid: velocityPublicKey.toBase58(),
-				walletAuthority: wallet.publicKey.toBase58(),
-			},
-			bundleSender,
-			[]
-		);
-		bots.push(fillerMultithreaded);
-	}
-
-	if (configHasBot(config, 'spotFillerMultithreaded')) {
-		if (!config.botConfigs?.spotFillerMultithreaded) {
-			throw new Error('spotFillerMultithreaded bot config not found');
-		}
-
-		// Ensure that there are no duplicate market indexes in the Array<number[]> marketIndexes config
-		const marketIndexes = new Set<number>();
-		for (const marketIndexList of config.botConfigs.spotFillerMultithreaded
-			.marketIndexes) {
-			for (const marketIndex of marketIndexList) {
-				if (marketIndexes.has(marketIndex)) {
-					throw new Error(
-						`Market index ${marketIndex} is duplicated in the config`
-					);
-				}
-				marketIndexes.add(marketIndex);
-			}
-		}
-
-		const spotFillerMultithreaded = new SpotFillerMultithreaded(
-			velocityClient,
-			slotSubscriber,
-			{
-				rpcEndpoint: endpoint,
-				commit: '',
-				velocityEnv: config.global.velocityEnv!,
-				velocityPid: velocityPublicKey.toBase58(),
-				walletAuthority: wallet.publicKey.toBase58(),
-			},
-			config.global,
-			config.botConfigs?.spotFillerMultithreaded,
-			bundleSender,
-			[]
-		);
-		bots.push(spotFillerMultithreaded);
 	}
 
 	if (configHasBot(config, 'swiftMaker')) {

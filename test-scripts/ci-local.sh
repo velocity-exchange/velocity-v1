@@ -164,7 +164,6 @@ if [ "$MODE" != "fast" ]; then
     cd packages/sdk &&
     bun run test &&
     bun run test:parity &&
-    bun run test:dlob &&
     bun run test:bignum &&
     bun run test:events &&
     bun run test:velocitycore
@@ -183,6 +182,17 @@ if [ "$MODE" = "full" ]; then
   echo "==> cleaning SBF cache (flavor-poisoning guard)"
   rm -rf target/sbpf*-solana-solana target/deploy
 
+  # CI's integration-tests job: the quoter programs' own suites, then the
+  # litesvm suite that drives them alongside velocity. Both load the .so files,
+  # so the job builds velocity in the test flavor and the anchor-v2 fixtures
+  # first.
+  run_check "integration tests (litesvm)" bash -c "
+    bash deploy-scripts/build-sbf.sh test velocity &&
+    bun run program:build:clob &&
+    bun run program:build:midpoint &&
+    (cd anchor-v2 && cargo test --locked) &&
+    (cd integration-tests && cargo test --locked)
+  "
   run_check "router svm tests"         bash -c "
     bash deploy-scripts/build-sbf.sh test protocol-revenue-router &&
     cargo test --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml --locked
@@ -212,6 +222,7 @@ if [ "$MODE" = "full" ]; then
   run_check "restore canonical IDL (program:idl)" bun run program:idl
   run_check "velocity_idl.rs regen"    cargo check --manifest-path rust/Cargo.toml --locked
 else
+  skip_check "integration tests (litesvm)" "needs --full"
   skip_check "anchor integration suite" "needs --full"
   skip_check "vault tests" "needs --full"
   skip_check "router svm tests" "needs --full"

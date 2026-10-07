@@ -7,12 +7,12 @@ pub use {
     initialize_vault_with_protocol::*, liquidate::*, manager_borrow::*,
     manager_cancel_fee_update::*, manager_cancel_withdraw_request::*, manager_deposit::*,
     manager_repay::*, manager_request_withdraw::*, manager_update_borrow::*,
-    manager_update_fees::*, manager_withdraw::*, protocol_cancel_withdraw_request::*,
-    protocol_request_withdraw::*, protocol_withdraw::*, redeem_tokens::*,
-    remove_insurance_fund_stake::*, request_remove_insurance_fund_stake::*, request_withdraw::*,
-    reset_delegate::*, tokenize_shares::*, transfer_vault_depositor_shares::*, update_delegate::*,
-    update_margin_trading_enabled::*, update_pool_id::*, update_vault::*, update_vault_manager::*,
-    update_vault_protocol::*, withdraw::*,
+    manager_update_fees::*, manager_withdraw::*, mark_user_vault_owned::*,
+    protocol_cancel_withdraw_request::*, protocol_request_withdraw::*, protocol_withdraw::*,
+    redeem_tokens::*, remove_insurance_fund_stake::*, request_remove_insurance_fund_stake::*,
+    request_withdraw::*, reset_delegate::*, tokenize_shares::*, transfer_vault_depositor_shares::*,
+    update_delegate::*, update_margin_trading_enabled::*, update_pool_id::*, update_vault::*,
+    update_vault_manager::*, update_vault_protocol::*, withdraw::*,
 };
 
 mod add_insurance_fund_stake;
@@ -42,6 +42,7 @@ mod manager_request_withdraw;
 mod manager_update_borrow;
 mod manager_update_fees;
 mod manager_withdraw;
+mod mark_user_vault_owned;
 mod protocol_cancel_withdraw_request;
 mod protocol_request_withdraw;
 mod protocol_withdraw;

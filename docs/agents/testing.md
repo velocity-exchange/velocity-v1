@@ -104,22 +104,62 @@ stdout and stderr, and no spare file descriptor is available, since ts-mocha spa
 child and passes through only fds 0, 1 and 2. Colors follow the same gate as
 `deploy-scripts/_ui.sh`, so `--no-color` and `NO_COLOR` behave as they do in the deploy CLIs.
 
+## Rust integration tests
+
+`integration-tests/` is a standalone litesvm workspace that loads the real `.so` fixtures and drives real instructions. It needs three built programs first — velocity, and
+the CLOB + midpoint from `anchor-v2/`:
+
+```bash
+bash deploy-scripts/build-sbf.sh test velocity
+bun run program:build:clob && bun run program:build:midpoint
+cd integration-tests && cargo test --locked
+```
+
+Gated in CI by the `integration-tests` job in `.github/workflows/main.yml`.
+
 ## SDK unit tests
 
 ```bash
-cd packages/sdk/ && bun run test:dlob    # DLOB tests
 cd packages/sdk/ && bun run test:ci      # CI subset
 ```
+
+## Which suites to run while working
+
+The long suites are minutes-to-tens-of-minutes each and rebuild the SBF program. **Do not re-run them
+repeatedly inside a working session** — the loop is: unit tests while iterating, **one** integration
+run before you push, CI for everything else.
+
+| While iterating (seconds–a minute, run freely)                                                           | Once before pushing                                                              | CI only                                                  |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `cargo test -p velocity`, `cargo check -p velocity`, `cargo check -p vaults`, `cargo clippy -p velocity` | `bash test-scripts/run-anchor-tests.sh` (`--skip-build` if the `.so` is current) | `vault-tests`, `rust-workspace-check`, `docker-images-*` |
+| `cd packages/sdk && bun run test:ci`                                                                     | `cd integration-tests && cargo test --locked`                                    | the fuzz workflow                                        |
+
+When an integration suite fails, **read the failure and fix the cause** — do not re-run it hoping for a
+different result, and do not re-run the whole file set to check one test. Re-run the single failing
+test (`ts-mocha -t 300000 ./tests/<file>.ts`, or `cargo test --locked <test_name>` in
+`integration-tests/`), then do the one full run at the end.
+
+**`bun run test:e2e:localnet` is a manual, local-only gate — never part of an iteration loop, and
+deliberately not in CI.** It stands up a real `solana-test-validator`, a `redis-server`, the Rust
+book-publisher and swift-server, and a relay crank-turner, and it needs a **separate `relay`
+checkout** (`RELAY_REPO`, default `~/source/relay`) whose program and turner it builds from source.
+That last dependency is why it is not CI-feasible today: relay is a different private repo, so a CI
+job would need a deploy key plus a pinned relay revision, and the run would be a ~40-minute
+multi-service job whose failures are usually the harness rather than the change. Run it locally
+before a devnet upgrade and after touching the relay-facing surface (condition blocks, resolvers,
+executors). If it ever needs to gate, the prerequisite is pinning relay as a submodule (or vendoring
+`relay.so` + the turner binary) — recommend that before wiring the job, don't approximate it with a
+partial harness.
 
 ## Formatting and lint
 
 ```bash
 bun run fmt:rust                 # all Rust in the repo (wraps nightly rustfmt, see below)
 bun run fmt:rust:check           # verify without writing (what CI enforces)
-cargo +1.91.1 clippy --workspace --all-targets -- -D warnings
-cargo +1.91.1 clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
-cargo +1.91.1 clippy -p velocity --all-targets --no-default-features --features no-entrypoint,isolated-position,vlp-hedge -- -D warnings
-cargo +1.91.1 clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests -- -D warnings
+cargo +1.95.0 clippy --workspace --all-targets -- -D warnings
+cargo +1.95.0 clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
+cargo +1.95.0 clippy -p velocity --all-targets --no-default-features --features no-entrypoint,isolated-position,vlp-hedge -- -D warnings
+cargo +1.95.0 clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests -- -D warnings
 cd packages/sdk/ && bun run prettify:fix  # SDK (TypeScript)
 ```
 
@@ -132,7 +172,7 @@ block belongs inside that block, or another flavor warns that it is unused. The 
 the `rust/` workspace with the live tests compiled in.
 
 Run clippy on the toolchain CI pins (`RUST_TOOLCHAIN` in `.github/workflows/main.yml`, currently
-1.91.1). Each Rust release adds lints, so a newer toolchain can report warnings that CI does not.
+1.95.0). Each Rust release adds lints, so a newer toolchain can report warnings that CI does not.
 
 Lint settings shared by every program crate live in `[workspace.lints]` in the root `Cargo.toml`,
 which each program inherits with `[lints] workspace = true`. The `rust/` workspace has its own

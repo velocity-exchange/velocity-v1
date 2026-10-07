@@ -132,6 +132,7 @@ describe('surge pricing', () => {
 			0,
 			await getMaxWithdrawGuardThreshold(admin, 0)
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);
@@ -183,7 +184,7 @@ describe('surge pricing', () => {
 			const accountInfo = await svmContextWrapper.connection.getAccountInfo(
 				userAccount
 			);
-			const baseLamports = 32183040;
+			const baseLamports = 32628480;
 			console.log('expected fee', expectedFee.toNumber());
 			if (i === 4) {
 				// assert(expectedFee.toNumber() === LAMPORTS_PER_SOL / 100);

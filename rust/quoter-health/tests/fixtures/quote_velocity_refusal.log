@@ -1,0 +1,9 @@
+Program ComputeBudget111111111111111111111111111111 invoke [1]
+Program ComputeBudget111111111111111111111111111111 success
+Program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P invoke [1]
+Program log: Instruction: QuoteRouter
+Program log: prop amm account 11111111111111111111111111111111 missing from account map
+Program log: quoter GUbXazQwu6jx6kyp1M9KrSTqECjDkK5ACGiM4yTJheh9 quote failed: AnchorError { error_name: "DefaultError", error_code_number: 6129, error_msg: "DefaultError", error_origin: None, compared_values: None }
+Program log: AnchorError occurred. Error Code: DefaultError. Error Number: 6129. Error Message: DefaultError.
+Program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P consumed 15201 of 399850 compute units
+Program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P failed: custom program error: 0x17f1

@@ -124,9 +124,7 @@ mod tests {
                 trigger_price: None,
                 trigger_condition: OrderTriggerCondition::Above,
                 oracle_price_offset: None,
-                auction_duration: Some(50),
-                auction_start_price: Some(2102419643),
-                auction_end_price: Some(2081603607),
+                activation_delay_slots: None,
                 builder_idx: None,
                 builder_fee_tenth_bps: None,
             },
@@ -139,6 +137,8 @@ mod tests {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         };
         let hex_msg =
             faster_hex::hex_string(SignedOrderType::authority(order).to_borsh().as_slice());

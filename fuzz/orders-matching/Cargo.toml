@@ -34,6 +34,5 @@ path = "src/main.rs"
 # One entry per fuzz test; `crucible run orders-matching <name>` builds --features <name>.
 prop_standardize_base = []
 prop_standardize_price = []
-prop_auction_price = []
-prop_matched_fill = []
+prop_worst_price = []
 prop_fill_bounds_reduce_only = []

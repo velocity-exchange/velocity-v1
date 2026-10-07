@@ -4,7 +4,9 @@
  * a separate place-order transaction. Used for low-latency taker flows.
  * `swiftOrderSubscriber.ts` — subscribes to incoming Swift orders via gRPC or WebSocket.
  * `signedMsgUserAccountSubscriber.ts` — caches signed-message user account state.
+ * `signedMsgUserOrdersDecoder.ts` — decodes the signed-message user account in either entry layout.
  */
 export * from './swiftOrderSubscriber';
 export * from './signedMsgUserAccountSubscriber';
 export * from './grpcSignedMsgUserAccountSubscriber';
+export * from './signedMsgUserOrdersDecoder';

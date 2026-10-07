@@ -8,7 +8,7 @@ import {
 	PRICE_PRECISION,
 } from '../../src';
 import { MMOraclePriceData } from '../../src/oracles/types';
-import { mockPerpMarkets } from '../dlob/helpers';
+import { mockPerpMarkets } from '../fixtures/mockAccounts';
 
 /**
  * Mirror of `MarketStats::update_mark_twap`: a mark TWAP left unwritten for several

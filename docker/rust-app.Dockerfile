@@ -9,14 +9,15 @@
 # download here — unlike the pre-velocity keep-rs Dockerfile.
 
 ARG APP_BIN
+ARG RUST_IMAGE=rust:1.95.0
 
-FROM rust:1.91.1 AS builder
+FROM ${RUST_IMAGE} AS builder
 WORKDIR /repo
 RUN rustup component add rustfmt
 COPY . .
 ARG APP_BIN
-RUN --mount=type=cache,target=/repo/rust/target \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/repo/rust/target,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     # Bump every source mtime before building. cargo fingerprints path crates by
     # source mtime, but BuildKit `COPY . .` can stamp sources older-or-equal to the
     # compiled artifacts already in the `rust/target` cache mount. When that happens

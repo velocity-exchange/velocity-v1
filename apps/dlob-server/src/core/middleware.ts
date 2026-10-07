@@ -68,8 +68,10 @@ export const handleHealthCheck = (
 					{}
 				);
 			}
-			// Restart is the kill-switch latch and must survive this write, or the
-			// next probe re-derives a healthy verdict and the pod is never replaced.
+
+			// Restart is the kill-switch latch and must survive this write.
+			// Otherwise the next probe derives a healthy verdict again and the
+			// pod is never replaced.
 			if (getHealthStatus() !== HEALTH_STATUS.Restart) {
 				setHealthStatus(HEALTH_STATUS.UnhealthySlotSubscriber);
 			}

@@ -1,0 +1,319 @@
+# A local copy of devnet, upgraded to this checkout, with the services a client
+# trades against. See local-stack/README.md.
+name: velocity-local
+
+# @triton-one/yellowstone-grpc ships no linux-arm64 binding, and the SDK loads
+# it on import. The TypeScript services therefore run as amd64 everywhere.
+x-ts-platform: &ts-platform linux/amd64
+
+x-ts-tools: &ts-tools
+  image: velocity-local/ts-tools:dev
+  platform: *ts-platform
+  build:
+    context: ..
+    dockerfile: docker/ts-app.Dockerfile
+    target: builder
+    args:
+      APP_SCOPE: '@velocity-exchange/admin-cli'
+  working_dir: /app
+  volumes:
+    - ../deploy-scripts:/app/deploy-scripts:ro
+    - ../local-stack:/app/local-stack:ro
+    - ../tests/e2e/idl:/app/tests/e2e/idl:ro
+    - state:/state
+
+x-velocity-env: &velocity-env
+  ENV: devnet
+  ENDPOINT: http://rpc:8899
+  WS_ENDPOINT: ws://rpc:8899
+
+services:
+  snapshot:
+    <<: *ts-tools
+    entrypoint: ['sh', '-c']
+    command:
+      - >-
+        (test -e /state/snapshot/manifest.json || bun run deploy-scripts/snapshot-devnet.ts --out /state/snapshot)
+        && bun run local-stack/relayout-users.ts /state/snapshot/accounts
+    environment:
+      DEVNET_RPC_URL: ${DEVNET_RPC_URL:-https://api.devnet.solana.com}
+
+  validator:
+    image: velocity-local/validator:dev
+    build:
+      context: .
+      dockerfile: validator.Dockerfile
+    entrypoint: ['bash', '/local-stack/validator-entrypoint.sh']
+    depends_on:
+      snapshot:
+        condition: service_completed_successfully
+    ports:
+      - '8899:8899'
+      - '8900:8900'
+    volumes:
+      - ./validator-entrypoint.sh:/local-stack/validator-entrypoint.sh:ro
+      - ../target/deploy/velocity.so:/programs/velocity.so:ro
+      - ../anchor-v2/target/deploy/clob.so:/programs/clob.so:ro
+      - ../anchor-v2/target/deploy/midpoint.so:/programs/midpoint.so:ro
+      - ${RELAY_SRC:-${HOME}/.cache/velocity-e2e/relay}/programs/target/deploy/relay.so:/programs/relay.so:ro
+      - state:/state
+      - ledger:/ledger
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -sf "http://$$(hostname -i | awk '{print $$1}'):8899" -X POST -H 'Content-Type: application/json'
+          -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | grep -q ok && touch /ledger/.booted
+      interval: 2s
+      retries: 90
+
+  rpc:
+    image: nginx:1.27-alpine
+    depends_on:
+      validator:
+        condition: service_healthy
+    volumes:
+      - ./rpc.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  oracle:
+    <<: *ts-tools
+    command: ['bun', 'run', 'local-stack/oracle.ts']
+    restart: unless-stopped
+    depends_on:
+      rpc:
+        condition: service_started
+    ports:
+      - '7070:7070'
+    environment:
+      RPC_URL: http://rpc:8899
+
+  redis:
+    image: redis:7.4
+    # The TypeScript redis client only speaks cluster mode without TLS, so this
+    # is a one-node cluster that owns every slot. A cluster client connects to
+    # the address the node announces, so it announces the container's.
+    command:
+      - sh
+      - -c
+      - |
+        redis-server --cluster-enabled yes --cluster-announce-ip "$$(hostname -i | awk '{print $$1}')" --save '' --appendonly no &
+        until redis-cli ping >/dev/null 2>&1; do sleep 0.2; done
+        redis-cli cluster addslotsrange 0 16383 >/dev/null 2>&1 || true
+        wait
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli cluster info | grep -q cluster_state:ok']
+      interval: 1s
+      retries: 30
+
+  bootstrap:
+    <<: *ts-tools
+    command: ['bun', 'run', 'local-stack/bootstrap.ts']
+    environment:
+      RPC_URL: http://rpc:8899
+      UI_RPC_URL: http://localhost:8899
+      PYTH_LAZER_TOKEN: ${PYTH_LAZER_TOKEN:-}
+    depends_on:
+      rpc:
+        condition: service_started
+
+  book-publisher:
+    image: velocity-local/book-publisher:dev
+    build:
+      context: ..
+      dockerfile: docker/rust-app.Dockerfile
+      args:
+        APP_BIN: book-publisher
+    user: '0'
+    depends_on: &after-bootstrap
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - state:/state
+    environment:
+      RPC_URL: http://rpc:8899
+      TRANSPORT: rpc
+      VELOCITY_PROGRAM_ID: vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P
+      MARKETS: ${PERP_MARKETS:-0,1,2}
+      KEYPAIR_PATH: /state/keys/publisher.json
+      BUFFER_DIR: /state/quote-buffers
+      REDIS_URL: redis://redis:6379
+      REDIS_KEY_PREFIX: 'dlob:'
+      TICK_MS: '750'
+      LOCAL_SIM_POOL: '0'
+      CROSS_MATCH: 'true'
+      RUST_LOG: info
+
+  dlob-server:
+    image: velocity-local/dlob-server:dev
+    platform: *ts-platform
+    build: &dlob-build
+      context: ..
+      dockerfile: docker/ts-app.Dockerfile
+      args:
+        APP_PATH: apps/dlob-server
+        APP_SCOPE: '@velocity-exchange/dlob-server'
+        APP_OUT: lib
+        APP_START: lib/index.js
+    depends_on: *after-bootstrap
+    ports:
+      - '6969:6969'
+    environment: &dlob-env
+      <<: *velocity-env
+      PORT: '6969'
+      ELASTICACHE_HOST: redis
+      ELASTICACHE_PORT: '6379'
+      RUNNING_LOCAL: 'true'
+      LOCAL_CACHE: 'true'
+
+  dlob-ws:
+    image: velocity-local/dlob-server:dev
+    platform: *ts-platform
+    command: ['node', 'lib/wsConnectionManager.js']
+    depends_on: *after-bootstrap
+    ports:
+      - '3000:3000'
+    environment:
+      <<: *dlob-env
+      WS_PORT: '3000'
+      # The stack feeds one Redis source. With the default pair, the stream
+      # selector finds the second one silent and warns every second.
+      REDIS_CLIENT: DLOB
+
+  keepers:
+    image: velocity-local/keeper-bots-v2:dev
+    platform: *ts-platform
+    build:
+      context: ..
+      dockerfile: docker/ts-app.Dockerfile
+      args:
+        APP_PATH: apps/keeper-bots-v2
+        APP_SCOPE: '@velocity-exchange/keeper-bots-v2'
+        APP_OUT: lib
+        APP_START: lib/index.js
+    command: ['node', 'lib/index.js', '--config-file=/state/keeper.yaml']
+    user: '0'
+    depends_on: *after-bootstrap
+    volumes:
+      - state:/state
+    environment:
+      <<: *velocity-env
+      PYTH_LAZER_TOKEN: ${PYTH_LAZER_TOKEN:-}
+
+  relay-turner:
+    image: velocity-local/relay-turner:dev
+    build:
+      context: ${RELAY_SRC:-${HOME}/.cache/velocity-e2e/relay}
+      dockerfile_inline: |
+        FROM rust:1.95.0 AS builder
+        WORKDIR /relay
+        COPY . .
+        RUN --mount=type=cache,target=/relay/target,id=relay-target \
+            --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+            cargo build --release --locked -p relay-crank-turner \
+            && cp target/release/relay-crank-turner /usr/local/bin/
+        FROM debian:bookworm-slim
+        RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+        COPY --from=builder /usr/local/bin/relay-crank-turner /usr/local/bin/
+    user: '0'
+    depends_on: *after-bootstrap
+    volumes:
+      - state:/state
+    entrypoint: ['sh', '-c']
+    command:
+      - >-
+        exec relay-crank-turner --rpc-url http://rpc:8899
+        --keypair /state/keys/turner.json
+        --program-id 4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu
+        --target-program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P,BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU
+        --payout-address "$$(cat /state/keys/turner-payout.pubkey)"
+        --tick-ms 400 --refresh-ticks 5
+    environment:
+      RUST_LOG: relay_crank_turner=info
+
+  swift:
+    image: velocity-local/swift:dev
+    build: &swift-build
+      context: ..
+      dockerfile: docker/rust-app.Dockerfile
+      args:
+        APP_BIN: swift-server
+    user: '0'
+    depends_on: *after-bootstrap
+    ports:
+      - '3003:3003'
+    volumes:
+      - state:/state
+    entrypoint: ['sh', '-c']
+    command: ['FLOW_AUTHORITY_KEYPAIR="$$(cat /state/keys/swift-flow.json)" exec swift-server --server swift']
+    environment:
+      ENV: devnet
+      ENDPOINT: http://rpc:8899
+      WS_ENDPOINT_1: ws://rpc:8899
+      ELASTICACHE_HOST: redis
+      ELASTICACHE_PORT: '6379'
+      USE_SSL: 'false'
+      PORT: '3003'
+      DISABLE_RPC_SIM: 'true'
+      RUST_LOG: info
+
+  liquidator:
+    image: velocity-local/keep-rs:dev
+    build:
+      context: ..
+      dockerfile: docker/rust-app.Dockerfile
+      args:
+        APP_BIN: keeprs
+    user: '0'
+    depends_on: *after-bootstrap
+    volumes:
+      - state:/state
+    # The validator has no geyser plugin and no live Lazer feed, so the bot reads accounts over
+    # websockets and prices margin from the local oracle.
+    command:
+      - --liquidator
+      - --init-user
+      - --all-markets
+      - --account-source=websocket
+      - --no-pyth
+    environment:
+      BOT_PRIVATE_KEY: /state/keys/liquidator.json
+      RPC_URL: http://rpc:8899
+      MAINNET: 'false'
+      RUST_LOG: info
+
+  swift-ws:
+    image: velocity-local/swift:dev
+    build: *swift-build
+    user: '0'
+    depends_on: *after-bootstrap
+    command: ['--server', 'ws']
+    environment:
+      ENV: devnet
+      ENDPOINT: http://rpc:8899
+      ELASTICACHE_HOST: redis
+      ELASTICACHE_PORT: '6379'
+      USE_SSL: 'false'
+      WS_PORT: '3004'
+      RUST_LOG: info
+
+  swift-placer:
+    <<: *ts-tools
+    command: ['bun', 'run', 'local-stack/swift-placer.ts']
+    restart: unless-stopped
+    depends_on:
+      <<: *after-bootstrap
+      swift:
+        condition: service_started
+      swift-ws:
+        condition: service_started
+    environment:
+      RPC_URL: http://rpc:8899
+      DLOB_URL: http://dlob-server:6969
+      SWIFT_URL: http://swift:3003
+      SWIFT_WS_URL: ws://swift-ws:3004
+
+volumes:
+  state:
+  ledger:

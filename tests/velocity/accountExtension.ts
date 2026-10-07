@@ -28,13 +28,6 @@ import {
 import dotenv from 'dotenv';
 dotenv.config();
 
-// On-chain account extension: a program upgrade that appends fields to a
-// zero-copy struct leaves existing accounts at the old, smaller size.
-// extend_account_devnet simulates the post-upgrade grow (arbitrary target);
-// extend_account is the real migration crank (target derived from the
-// compiled-in struct, no-op at size). Clients and the program itself must
-// keep working against the grown account: decode reads only the known prefix
-// and the program's loaders slice exactly size_of bytes.
 describe('account extension', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 	let svmContextWrapper: LiteSVMContextWrapper;
@@ -147,8 +140,9 @@ describe('account extension', () => {
 		expect(
 			after.data.subarray(0, originalUserAccountSize).equals(before.data)
 		).to.equal(true);
-		// payer topped up rent for the added bytes (the runtime itself rejects
-		// the resize tx if the account is left below rent exemption)
+
+		// The payer covered rent for the added bytes. The runtime rejects the
+		// resize transaction if the account drops below rent exemption.
 		expect(after.lamports).to.be.gt(before.lamports);
 	});
 
@@ -242,7 +236,8 @@ describe('account extension', () => {
 		}
 		expect(failed).to.equal(true);
 
-		// warm admin assigns the hot key; same signer now passes (no-op at size)
+		// The warm admin assigns the hot key. The same signer then passes, and the
+		// instruction does nothing because the account is already at size.
 		await velocityClient.updateHotAdmin(
 			HotRole.AccountExtension,
 			hotKeyPair.publicKey

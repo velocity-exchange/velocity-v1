@@ -8,7 +8,7 @@ import {
 	User,
 	ZERO,
 } from '../../src';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import { makeMockUser, mockUserAccount } from './helpers';
 
 const quote = (n: number) => new BN(n).mul(QUOTE_PRECISION);

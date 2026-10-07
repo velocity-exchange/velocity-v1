@@ -155,6 +155,7 @@ describe('market orders', () => {
 			velocityClient.getUserAccount(),
 			marketIndex
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		console.log(
@@ -167,7 +168,8 @@ describe('market orders', () => {
 				.getUserAccount()
 				.perpPositions[0].quoteBreakEvenAmount.toString()
 		);
-		assert(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9980798)));
+
+		assert(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9980751)));
 		assert(
 			velocityClient
 				.getUserStats()
@@ -183,12 +185,12 @@ describe('market orders', () => {
 		assert.ok(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteEntryAmount.eq(new BN(-48000001))
+				.perpPositions[0].quoteEntryAmount.eq(new BN(-48000048))
 		);
 		assert.ok(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-48019202))
+				.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-48019249))
 		);
 		console.log(
 			velocityClient.getUserAccount().perpPositions[0].baseAssetAmount
@@ -214,7 +216,7 @@ describe('market orders', () => {
 		assert.ok(orderRecord.taker.equals(userAccountPublicKey));
 		assert.ok(orderRecord.fillRecordId.eq(new BN(1)));
 		assert.ok(orderRecord.baseAssetAmountFilled.eq(new BN(48000000000)));
-		assert.ok(orderRecord.quoteAssetAmountFilled.eq(new BN(48000001)));
+		assert.ok(orderRecord.quoteAssetAmountFilled.eq(new BN(48000048)));
 		assert.ok(orderRecord.marketIndex === marketIndex);
 	});
 
@@ -243,12 +245,12 @@ describe('market orders', () => {
 		assert.ok(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteEntryAmount.eq(new BN(-24000001))
+				.perpPositions[0].quoteEntryAmount.eq(new BN(-24000024))
 		);
 		assert.ok(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-24019201))
+				.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-24019225))
 		);
 		console.log(
 			velocityClient
@@ -262,7 +264,7 @@ describe('market orders', () => {
 		);
 
 		console.log(velocityClient.getQuoteAssetTokenAmount().toString());
-		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9971198)));
+		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9971151)));
 		assert(
 			velocityClient
 				.getUserStats()
@@ -309,7 +311,7 @@ describe('market orders', () => {
 
 		await velocityClient.fetchAccounts();
 		console.log(velocityClient.getQuoteAssetTokenAmount().toString());
-		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9951998)));
+		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9951951)));
 		assert(
 			velocityClient
 				.getUserStats()
@@ -397,7 +399,7 @@ describe('market orders', () => {
 		);
 
 		console.log(velocityClient.getQuoteAssetTokenAmount().toString());
-		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9942398)));
+		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9942351)));
 		assert(
 			velocityClient
 				.getUserStats()

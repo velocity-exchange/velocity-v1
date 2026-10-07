@@ -76,6 +76,7 @@ describe('pyth lazer oracles', () => {
 			opts: {
 				commitment: 'confirmed',
 			},
+
 			activeSubAccountId: 0,
 			perpMarketIndexes: [0],
 			spotMarketIndexes: [0],
@@ -86,6 +87,7 @@ describe('pyth lazer oracles', () => {
 					source: OracleSource.PYTH_LAZER,
 				},
 			],
+
 			accountSubscription: {
 				type: 'polling',
 				accountLoader: bulkAccountLoader,
@@ -172,6 +174,7 @@ describe('pyth lazer oracles', () => {
 		const after = (await velocityClient.program.account.pythLazerOracle.fetch(
 			oracleKey
 		)) as any;
+
 		assert(
 			after.publishTime.eq(before.publishTime),
 			'a far-future message must not advance publish_time'
@@ -190,6 +193,7 @@ describe('pyth lazer oracles', () => {
 		const before = (await velocityClient.program.account.pythLazerOracle.fetch(
 			oracleKey
 		)) as any;
+
 		// The lead keeps the stamp above the stored publish_time, so the first post lands. It
 		// stays under PYTH_LAZER_MAX_FUTURE_SECONDS, so the future bound does not reject it.
 		const hex = freshLazerSolHex(svmContextWrapper.connection.getTime(), 5);
@@ -198,6 +202,7 @@ describe('pyth lazer oracles', () => {
 		const first = (await velocityClient.program.account.pythLazerOracle.fetch(
 			oracleKey
 		)) as any;
+
 		assert(
 			first.publishTime.gt(before.publishTime),
 			'the first post must land, or the repeat proves nothing'
@@ -225,6 +230,7 @@ describe('pyth lazer oracles', () => {
 			[1, 2, 6],
 			PYTH_LAZER_HEX_STRING_MULTI
 		);
+
 		console.log(tx);
 	});
 });

@@ -25,11 +25,11 @@ use tokio_tungstenite::tungstenite;
 pub mod accounts {
     //! Velocity on-chain account types.
     //!
-    //! After Phase 4, TransactionBuilder uses anchor-derived context
-    //! structs from `program::accounts::*` directly, so we no longer glob
-    //! the IDL accounts module. `State` is the only IDL holdover — velocity
-    //! native's `State` is `#[account]` (Borsh) but velocity-rs's
-    //! `AccountMap::account_data::<T>` wants `T: Pod`, and velocity-idl-gen
+    //! `TransactionBuilder` uses the anchor-derived context structs from
+    //! `program::accounts::*` directly, so this module does not glob the IDL
+    //! accounts module. `State` is the only IDL holdover. Velocity native's
+    //! `State` is `#[account]`, which is Borsh, but velocity-rs's
+    //! `AccountMap::account_data::<T>` requires `T: Pod`. velocity-idl-gen
     //! emits `unsafe impl Pod for State`.
     pub use crate::velocity_idl::accounts::State;
     pub use program::vlp::amm_cache::AmmCache;
@@ -67,7 +67,6 @@ pub use program::{
     state::{
         events::OrderActionExplanation,
         fill_mode::FillMode,
-        fulfillment::PerpFulfillmentMethod,
         margin_calculation::{MarginCalculationMode, MarginContext, MarketIdentifier},
         market_status::MarketStatus,
         oracle::{
@@ -434,8 +433,6 @@ pub enum SdkError {
     Generic(String),
     #[error("max connection attempts reached")]
     MaxReconnectionAttemptsReached,
-    #[error("jit taker order not found")]
-    JitOrderNotFound,
     #[error("market data unavailable. subscribe market: {0:?}")]
     NoMarketData(MarketId),
     #[error("account data unavailable. subscribe account: {0:?}")]

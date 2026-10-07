@@ -14,7 +14,7 @@ import {
 } from '../../src/constants/numericConstants';
 import { BN } from '../../src';
 import { getTokenAmount } from '../../src/math/spotBalance';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import {
 	mockUserAccount as baseMockUserAccount,
 	makeMockUser,

@@ -152,14 +152,10 @@ pub struct MarginCalculation {
     pub num_perp_liabilities: u8,
     pub all_deposit_oracles_valid: bool,
     pub all_liability_oracles_valid: bool,
-    /// Spot-only counterpart of `all_liability_oracles_valid`.
-    ///
-    /// `all_liability_oracles_valid` is also cleared by an invalid **perp** oracle,
-    /// and the perp-fill path already handles that case deliberately via
-    /// `oracle_stale_for_margin` (100% margin override for the taker, reject unless
-    /// someone is reducing for the maker). A gate that needs to reason about stale
-    /// *spot borrow* pricing alone therefore cannot use that field without
-    /// overriding the perp design — hence this narrower flag (OtterSec #144).
+    /// Spot-only counterpart of `all_liability_oracles_valid`. An invalid
+    /// perp oracle also clears that field, handled by the perp-fill path's
+    /// `oracle_stale_for_margin`, which forces the taker's margin to 100%. A
+    /// gate that only reasons about spot-borrow pricing reads this flag instead (OtterSec #144).
     pub all_spot_liability_oracles_valid: bool,
     pub with_perp_isolated_liability: bool,
     pub with_spot_isolated_liability: bool,
@@ -358,9 +354,9 @@ impl MarginCalculation {
         self.all_liability_oracles_valid &= valid;
     }
 
-    /// Record spot-borrow oracle validity. Also folds into
-    /// `all_liability_oracles_valid`, so every existing consumer keeps its current
-    /// meaning and only the new spot-only reader is narrower.
+    /// Record spot-borrow oracle validity. It also folds into
+    /// `all_liability_oracles_valid`, so every other consumer keeps its
+    /// current meaning.
     pub fn update_all_spot_liability_oracles_valid(&mut self, valid: bool) {
         self.all_spot_liability_oracles_valid &= valid;
         self.all_liability_oracles_valid &= valid;
@@ -462,19 +458,21 @@ impl MarginCalculation {
     }
 
     pub fn can_exit_cross_margin_liquidation(&self) -> VelocityResult<bool> {
-        if !self.is_liquidation_mode() {
-            msg!("liquidation mode not enabled");
-            return Err(ErrorCode::InvalidMarginCalculation);
-        }
+        validate!(
+            self.is_liquidation_mode(),
+            ErrorCode::InvalidMarginCalculation,
+            "liquidation mode not enabled"
+        )?;
 
         Ok(self.meets_cross_margin_requirement_with_buffer())
     }
 
     pub fn can_exit_isolated_margin_liquidation(&self, market_index: u16) -> VelocityResult<bool> {
-        if !self.is_liquidation_mode() {
-            msg!("liquidation mode not enabled");
-            return Err(ErrorCode::InvalidMarginCalculation);
-        }
+        validate!(
+            self.is_liquidation_mode(),
+            ErrorCode::InvalidMarginCalculation,
+            "liquidation mode not enabled"
+        )?;
 
         Ok(self
             .isolated_margin_calculations
@@ -484,10 +482,11 @@ impl MarginCalculation {
     }
 
     pub fn cross_margin_margin_shortage(&self) -> VelocityResult<u128> {
-        if self.context.margin_buffer == 0 {
-            msg!("margin buffer mode not enabled");
-            return Err(ErrorCode::InvalidMarginCalculation);
-        }
+        validate!(
+            self.context.margin_buffer != 0,
+            ErrorCode::InvalidMarginCalculation,
+            "margin buffer mode not enabled"
+        )?;
 
         Ok(self
             .margin_requirement_plus_buffer
@@ -498,10 +497,11 @@ impl MarginCalculation {
     }
 
     pub fn isolated_margin_shortage(&self, market_index: u16) -> VelocityResult<u128> {
-        if self.context.margin_buffer == 0 {
-            msg!("margin buffer mode not enabled");
-            return Err(ErrorCode::InvalidMarginCalculation);
-        }
+        validate!(
+            self.context.margin_buffer != 0,
+            ErrorCode::InvalidMarginCalculation,
+            "margin buffer mode not enabled"
+        )?;
 
         self.isolated_margin_calculations
             .get(&market_index)

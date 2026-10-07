@@ -43,6 +43,7 @@ describe('Pyth stablecoin peg-snap boundary', () => {
 			const data = client.getOraclePriceDataFromBuffer(
 				pythPriceAccountBuffer()
 			);
+
 			assert(data.price.eq(QUOTE_PRECISION));
 		});
 
@@ -52,6 +53,7 @@ describe('Pyth stablecoin peg-snap boundary', () => {
 			const data = client.getOraclePriceDataFromBuffer(
 				pythPriceAccountBuffer()
 			);
+
 			assert(!data.price.eq(QUOTE_PRECISION));
 			assert(data.price.eq(QUOTE_PRECISION.add(new BN(501))));
 		});

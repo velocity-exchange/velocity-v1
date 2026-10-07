@@ -235,14 +235,19 @@ pub struct SpotMarket {
     pub protocol_liquidation_fee: u32,
     /// Protocol's carveout of lending deposit-interest gains, routed to
     /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to
-    /// reach a whole unit is carried on the carveout pools, not floored away. See
-    /// `split_deposit_interest`.
+    /// reach a whole unit is carried on the carveout pools rather than floored
+    /// away. See `split_deposit_interest`.
     pub protocol_fee_factor: u32,
+    /// allow-verbose: the donation-resistance logic and the exact outflow-path list are
+    /// load-bearing invariants for insurance-fund accounting. Cutting them below what an
+    /// auditor needs to verify the cap's donation-proofing would drop real information, not
+    /// restate the code.
+    ///
     /// Lowest insurance-fund vault balance since the end of the last revenue
     /// settle. `settle_revenue_to_insurance_fund` starts each period by writing
     /// the live vault balance plus the amount that settle transfers in, and
     /// `record_insurance_fund_outflow` lowers it on every path that moves tokens
-    /// out of the vault: `remove_insurance_fund_stake`,
+    /// out of the vault. Those paths are `remove_insurance_fund_stake`,
     /// `resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and
     /// `resolve_spot_bankruptcy`. A transfer into the vault never raises it, so
     /// it lags the live vault by up to one `revenue_settle_period`.
@@ -250,20 +255,21 @@ pub struct SpotMarket {
     /// The per-period revenue-settle APR cap is sized off
     /// `min(live_if_vault, this)`, so it counts only capital the fund held for
     /// the whole period. A donation spiked into the live vault right before a
-    /// settle is absent from this field and cannot lift the cap. Tracking the
-    /// running minimum is what closes the same trick after a dip: a loss draw
-    /// takes the vault to 100, a donation puts it back to 1000, and a plain
-    /// end-of-period snapshot would read 1000 again. A donation that does
-    /// survive a full period counts, and correctly so — by then it belongs to
-    /// the stakers pro rata, so the fund really is that large.
+    /// settle is absent from this field and cannot lift the cap. The running
+    /// minimum closes the same trick after a dip. A loss draw takes the vault
+    /// to 100 and a donation puts it back to 1000, where a plain end-of-period
+    /// snapshot would read 1000 again. A donation that survives a full period
+    /// does count. By then it belongs to the stakers pro rata, so the fund
+    /// really is that large.
     ///
     /// `0` means the market never settled revenue, or settled while the vault
-    /// was empty. Both give a cap base of `0` for one period and then self-heal,
+    /// was empty. Both give a cap base of `0` for one period and then recover,
     /// because the settle that reads `0` still writes the new period's balance.
     ///
-    /// (The unstake-cancel share forfeiture is donation-proofed differently — by
-    /// withdraw-and-restake at the active share price — and does *not* read this
-    /// field.) Repurposed from trailing padding — layout and size are unchanged.
+    /// The unstake-cancel share forfeiture does not read this field. It is
+    /// donation-proofed by withdraw-and-restake at the active share price. The
+    /// field was repurposed from trailing padding, so the layout and the size
+    /// are unchanged.
     pub if_last_settle_vault_amount: u64,
     /// Reserved for future fields. Existing accounts must be extended before
     /// the program loads them with this layout.
@@ -771,12 +777,10 @@ pub struct InsuranceFund {
     pub last_revenue_settle_ts: i64,
     /// How often `revenue_pool` may settle into the IF vault (seconds).
     pub revenue_settle_period: i64,
-    /// Fraction of spot deposit-interest gains carved out to the insurance fund
-    /// (staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the
-    /// protocol-vs-staker split was removed — the IF is now 100% staker-owned,
-    /// so this is purely the staker IF carveout.) A cut too small to reach a
-    /// whole unit is carried on `revenue_pool`, not floored away. See
-    /// `split_deposit_interest`.
+    /// Fraction of spot deposit-interest gains carved out to the insurance fund (staker-owned), in
+    /// `IF_FACTOR_PRECISION`. Was `total_factor` before the protocol/staker split was removed; the IF
+    /// is now 100% staker-owned, so this is the whole staker carveout. A cut too small to reach a
+    /// whole unit is carried on the carveout pools, not floored away. See `split_deposit_interest`.
     pub if_fee_factor: u32,
     /// Was `user_factor` (the old protocol/staker split knob). The IF is now
     /// 100% staker-owned, so the split is gone; slot kept as padding.

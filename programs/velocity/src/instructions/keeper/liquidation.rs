@@ -1,0 +1,1202 @@
+//! The direct liquidation entrypoints.
+//!
+//! Each one moves a failing account's risk onto a liquidator, or onto the
+//! book. The flash-loan pair lives in [`super::liquidation_swap`], and the
+//! insurance-fund resolvers in [`super::bankruptcy`].
+
+use {
+    super::*,
+    crate::{
+        error::VelocityResult,
+        state::prop_amm::{
+            find_account, CancelAllArgsV0, CancelAllOutcomeV0, CancelSidesV0, ClobMarket,
+            QuoterSlabExt, QuoterSlabV0, UserRefV0,
+        },
+    },
+};
+
+#[access_control(
+    liq_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_liquidate_perp<'c: 'info, 'info>(
+    ctx: Context<'info, LiquidatePerp<'info>>,
+    market_index: u16,
+    liquidator_max_base_asset_amount: u64,
+    limit_price: Option<u64>,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
+    let slot = clock.slot;
+    let state = ctx.accounts.state.load()?;
+
+    // The protocol must never warehouse the inventory a position-acquiring
+    // liquidation takes on. The unsigned program-keeper mode therefore exists
+    // for the with-fill flavor only, where the liquidator is only the filler.
+    validate!(
+        !ctx.accounts
+            .liquidator
+            .load()?
+            .is_protocol_user(&state.signer),
+        ErrorCode::InvalidLiquidation,
+        "the protocol user only liquidates via liquidate_perp_with_fill"
+    )?;
+
+    let user_key = ctx.accounts.user.key();
+    let liquidator_key = ctx.accounts.liquidator.key();
+
+    validate!(
+        user_key != liquidator_key,
+        ErrorCode::UserCantLiquidateThemself
+    )?;
+
+    let user = &mut load_mut!(ctx.accounts.user)?;
+    let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
+    let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    let liquidator_stats = &mut load_mut!(ctx.accounts.liquidator_stats)?;
+
+    require_liquidator_not_frozen(liquidator_stats)?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let mut maps = load_maps(
+        remaining_accounts_iter,
+        &get_writable_perp_market_set(market_index),
+        &MarketSet::new(),
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+
+    controller::liquidation::liquidate_perp(
+        market_index,
+        liquidator_max_base_asset_amount,
+        limit_price,
+        user,
+        &user_key,
+        user_stats,
+        liquidator,
+        &liquidator_key,
+        liquidator_stats,
+        &mut maps,
+        slot,
+        now,
+        &state,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
+    )?;
+
+    Ok(())
+}
+
+#[access_control(
+    liq_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
+    ctx: Context<'info, LiquidatePerp<'info>>,
+    market_index: u16,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let state = ctx.accounts.state.load()?;
+
+    let user_key = ctx.accounts.user.key();
+    let liquidator_key = ctx.accounts.liquidator.key();
+
+    validate!(
+        user_key != liquidator_key,
+        ErrorCode::UserCantLiquidateThemself
+    )?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let mut maps = load_maps(
+        remaining_accounts_iter,
+        &get_writable_perp_market_set(market_index),
+        &MarketSet::new(),
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+
+    let mut liquidation_books =
+        LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter);
+    skip_foreign_books(remaining_accounts_iter, market_index);
+    let (makers_and_referrer, makers_and_referrer_stats) =
+        load_user_maps(remaining_accounts_iter, true)?;
+    // Whatever the map and user sections did not take is the quoter section. It
+    // holds the market's slab and the consulted quoters' registered CPI
+    // accounts.
+    let tail =
+        &ctx.remaining_accounts[ctx.remaining_accounts.len() - remaining_accounts_iter.len()..];
+
+    let books = LiquidationBooks {
+        state: &state,
+        market_index,
+        user: &ctx.accounts.user,
+        user_stats: &ctx.accounts.user_stats,
+        liquidator: &ctx.accounts.liquidator,
+        liquidator_stats: &ctx.accounts.liquidator_stats,
+        makers_and_referrer: &makers_and_referrer,
+        makers_and_referrer_stats: &makers_and_referrer_stats,
+        tail,
+        instructions_sysvar: &ctx.accounts.instructions_sysvar,
+    };
+    let parties = || controller::liquidation::LiquidationParties {
+        user: &ctx.accounts.user,
+        user_key: &user_key,
+        liquidator: &ctx.accounts.liquidator,
+        liquidator_key: &liquidator_key,
+    };
+
+    // Three steps run in the order they must happen. The liquidation sizes its
+    // order and places it. This handler routes the fill against the accounts
+    // only it holds. The liquidation then books the result.
+    let progress = match controller::liquidation::place_liquidation_order(
+        market_index,
+        parties(),
+        &mut maps,
+        &clock,
+        &state,
+        &mut liquidation_books,
+    )? {
+        controller::liquidation::LiquidationStep::Settled {
+            book_orders_removed,
+        } => LiquidationProgress {
+            filled_quote: 0,
+            book_orders_removed,
+        },
+        controller::liquidation::LiquidationStep::Placed(mut placed) => {
+            let book_orders_removed = placed.book_orders_removed;
+            let fill = books.route_fill(&mut placed.order, &mut maps, &clock)?;
+            LiquidationProgress {
+                filled_quote: controller::liquidation::settle_liquidation_fill(
+                    placed,
+                    fill,
+                    parties(),
+                    &mut maps,
+                    &clock,
+                    &state,
+                )?,
+                book_orders_removed,
+            }
+        }
+    };
+
+    // In program-keeper mode the caller's payout account earns reservoir
+    // lamports for the crank; every other relay executor closes the same loop.
+    // A crank that neither filled nor swept is not paid, since paying a no-op
+    // success would let anyone drain the reservoir by looping on it.
+    if progress.made_any()
+        && ctx
+            .accounts
+            .liquidator
+            .load()?
+            .is_protocol_user(&state.signer)
+    {
+        pay_liquidation_crank(&ctx, &state, &mut maps, market_index, progress)?;
+    }
+
+    Ok(())
+}
+
+/// The liquidity a forced liquidation order fills against: the market's book
+/// and its quoters through the router, the vAMM, and any makers the caller
+/// loaded. A liquidation is the one taker order velocity writes for somebody
+/// else, so it is also the one route nobody signs for. Who built the
+/// transaction and how many locks it holds live here, not on the controller,
+/// which knows only the order.
+struct LiquidationBooks<'a, 'info> {
+    state: &'a State,
+    market_index: u16,
+    user: &'a AccountLoader<'info, User>,
+    user_stats: &'a AccountLoader<'info, UserStats>,
+    /// The liquidator. A with-fill liquidation uses it only as the filler. It
+    /// routes the position to the book and acquires no balance.
+    liquidator: &'a AccountLoader<'info, User>,
+    liquidator_stats: &'a AccountLoader<'info, UserStats>,
+    makers_and_referrer: &'a UserMap<'info>,
+    makers_and_referrer_stats: &'a UserStatsMap<'info>,
+    /// The quoter section of the account list. It holds the market's
+    /// `QuoterSlabV0` and the union of the consulted quoters' registered CPI
+    /// accounts.
+    tail: &'info [AccountInfo<'info>],
+    instructions_sysvar: &'a Option<UncheckedAccount<'info>>,
+}
+
+impl<'info> LiquidationBooks<'_, 'info> {
+    /// Fill the order the liquidation built, through the market's book, its
+    /// quoters and the vAMM.
+    ///
+    /// The order holds no slot, so it arrives by reference and the fill writes
+    /// its progress back through the same reference.
+    fn route_fill(
+        &self,
+        order: &mut Order,
+        maps: &mut AccountMaps<'info>,
+        clock: &Clock,
+    ) -> Result<controller::orders::FillAmounts> {
+        let routed = RoutedOrder::read(&*load!(self.user)?, order, maps, FillMode::Liquidation)?;
+
+        let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+        let taker_served_window = self.served_window(&routed, clock.slot, &mut cpi_scratch)?;
+        let filled = crate::instructions::RouteFill {
+            state: self.state,
+            clock,
+            tail: self.tail,
+            scratch: &mut cpi_scratch,
+        }
+        .run(
+            crate::instructions::RouteRequest {
+                order: routed,
+                taker_served_window,
+                include_taker_origin_reservations: false,
+                // A liquidation order is written by the program, not signed by
+                // its owner, so there is no route for a filler to substitute.
+                claim: None,
+                // The liquidated account never signs its own liquidation, so
+                // the caller answers for what its account list left out.
+                filler: crate::instructions::FillerTerms::keeper(
+                    self.instructions_sysvar
+                        .as_ref()
+                        .map(|sysvar| sysvar.as_ref()),
+                )?,
+            },
+            controller::orders::FillRequest {
+                // The forced order never reserved `open_bids`/`open_asks`, so
+                // the fill must not unwind a reservation for it.
+                order,
+                reserved: false,
+                mode: FillMode::Liquidation,
+                referrer_is_accelerated: false,
+            },
+            controller::orders::PerpFillAccounts {
+                user: self.user,
+                user_stats: self.user_stats,
+                filler: self.liquidator,
+                filler_stats: self.liquidator_stats,
+                rev_share_escrow: &mut None,
+            },
+            &mut controller::orders::FillParties {
+                maps,
+                makers_and_referrer: self.makers_and_referrer,
+                makers_and_referrer_stats: self.makers_and_referrer_stats,
+            },
+        )?;
+
+        Ok(filled.amounts)
+    }
+
+    /// Whether the depth this liquidation can reach has measurably rested.
+    ///
+    /// A liquidation carries no attestation. The program writes its order in the
+    /// same transaction that fills it, so nothing about the taker vouches for
+    /// protected flow. This function measures the other half of the same
+    /// promise, which is that the book's makers have had time to reprice. It
+    /// measures it the way the cross cranks do, over the side this fill sweeps.
+    /// Without the measure a book with a speed bump quotes a liquidation
+    /// nothing, and the position it must close reaches the vAMM alone.
+    fn served_window(
+        &self,
+        order: &RoutedOrder,
+        slot: u64,
+        cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+    ) -> Result<bool> {
+        let Some(slab) = crate::instructions::route_slab(self.tail, self.market_index)? else {
+            return Ok(false);
+        };
+
+        crate::instructions::clob::helpers::crank_common::book_side_rested(
+            &slab,
+            self.tail,
+            self.market_index,
+            order.direction,
+            order.unfilled,
+            slot,
+            cpi_scratch,
+        )
+    }
+}
+
+/// The CLOB books a liquidation's account list carries. Each book is its
+/// market's `QuoterSlabV0` and the book account it names, found by key.
+pub(crate) struct LiquidationBookAccounts<'info> {
+    accounts: &'info [AccountInfo<'info>],
+}
+
+impl<'info> LiquidationBookAccounts<'info> {
+    /// The accounts after the ones `consumed` already took.
+    pub(crate) fn after(
+        remaining_accounts: &'info [AccountInfo<'info>],
+        consumed: &std::iter::Peekable<std::slice::Iter<'info, AccountInfo<'info>>>,
+    ) -> Self {
+        Self {
+            accounts: &remaining_accounts[remaining_accounts.len() - consumed.len()..],
+        }
+    }
+
+    fn slab(&self, market_index: u16) -> Option<AccountLoader<'info, QuoterSlabV0>> {
+        self.accounts
+            .iter()
+            .filter_map(|info| AccountLoader::<QuoterSlabV0>::try_from(info).ok())
+            .find(|slab| slab.load().is_ok_and(|slab| slab.market == market_index))
+    }
+}
+
+impl controller::liquidation::BookOrderSweep for LiquidationBookAccounts<'_> {
+    fn cancel_all(
+        &mut self,
+        market_index: u16,
+        user: UserRefV0,
+    ) -> VelocityResult<Option<CancelAllOutcomeV0>> {
+        let Some(slab) = self.slab(market_index) else {
+            return Ok(None);
+        };
+
+        let book_key = slab
+            .clob_slot(market_index)
+            .map_err(|_| ErrorCode::InvalidQuoterConfig)?
+            .config
+            .response_account;
+        let (Some(book), Some(program)) = (
+            find_account(self.accounts, &book_key),
+            find_account(self.accounts, &crate::ids::clob_program::id()),
+        ) else {
+            msg!(
+                "the book or the clob program of market {} is absent",
+                market_index
+            );
+
+            return Ok(None);
+        };
+
+        let clob = ClobMarket::from_slab(&slab, market_index, book, program)
+            .map_err(|_| ErrorCode::InvalidQuoterConfig)?;
+        clob.cancel_all(CancelAllArgsV0 {
+            user,
+            sides: CancelSidesV0::Both,
+            // A bound taker-origin remainder holds margin like any other
+            // order, so the liquidation takes it too.
+            force: true,
+        })
+        .map(Some)
+        .map_err(|e| {
+            msg!("clob cancel_all failed: {}", e);
+            ErrorCode::FailedQuoterCpi
+        })
+    }
+}
+
+/// Step past the books of other markets, which ride between the margin map
+/// and the maker section. The route reads the section after the makers, and
+/// it refuses a slab of another market there.
+fn skip_foreign_books<'info>(
+    remaining_accounts: &mut std::iter::Peekable<std::slice::Iter<'info, AccountInfo<'info>>>,
+    market_index: u16,
+) {
+    while remaining_accounts.peek().is_some_and(|info| {
+        AccountLoader::<QuoterSlabV0>::try_from(info)
+            .is_ok_and(|slab| slab.load().is_ok_and(|slab| slab.market != market_index))
+    }) {
+        // The slab, then the book it names.
+        remaining_accounts.next();
+        remaining_accounts.next();
+    }
+}
+
+/// What one liquidation call did that a program keeper is paid for.
+#[derive(Clone, Copy)]
+struct LiquidationProgress {
+    filled_quote: u64,
+    book_orders_removed: u32,
+}
+
+impl LiquidationProgress {
+    fn made_any(&self) -> bool {
+        self.filled_quote > 0 || self.book_orders_removed > 0
+    }
+
+    /// A fill below the dust floor earns no flat payment, so a keeper cannot
+    /// farm it by slicing one liquidation. A call that only swept book orders
+    /// earns the force-cancel figure. The latched account rests no new orders,
+    /// so each paid sweep takes orders off a finite set.
+    ///
+    /// A sweep charges the user no fee, as a liquidation's slot cancel does not.
+    /// The fee rails price the force-cancel figure as the cost of the
+    /// transaction, so a second wallet of the user earns about what it spends.
+    fn flat_payment(&self, payments: &CrankPaymentsV0) -> u64 {
+        if self.filled_quote >= LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
+            u64::from(payments.liquidation)
+        } else if self.book_orders_removed > 0 {
+            u64::from(payments.force_cancel)
+        } else {
+            0
+        }
+    }
+}
+
+/// Pay the caller out of the market's reservoir for a liquidation crank.
+///
+/// The liquidated user's own wallet earns nothing. A user in liquidation
+/// could otherwise collect the sweep payment for its own book orders.
+fn pay_liquidation_crank<'info>(
+    ctx: &Context<'info, LiquidatePerp<'info>>,
+    state: &State,
+    maps: &mut AccountMaps,
+    market_index: u16,
+    progress: LiquidationProgress,
+) -> Result<()> {
+    if pays_the_liquidated_user(&*ctx.accounts.user.load()?, ctx.accounts.authority.key) {
+        msg!("the liquidated user's own wallet cranked; the reservoir pays nothing");
+        return Ok(());
+    }
+
+    let reservoir =
+        ctx.accounts
+            .crank_conditions
+            .as_ref()
+            .ok_or_else(|| -> anchor_lang::error::Error {
+                msg!("program-keeper liquidation requires the market's conditions account");
+                ErrorCode::CrankConditionsAccountRequired.into()
+            })?;
+
+    let payment = {
+        let conditions = reservoir.load()?;
+        validate!(
+            conditions.market_index == market_index,
+            ErrorCode::CrankConditionsMarketMismatch,
+            "conditions are for market {}, the liquidation is market {}",
+            conditions.market_index,
+            market_index
+        )?;
+
+        let flat = raise_to_poll_floor(
+            progress.flat_payment(&conditions.crank_payments),
+            crate::instructions::optional_accounts::liveness_poll_min_payment(
+                ctx.remaining_accounts,
+                &ctx.accounts.user.key(),
+            ),
+        );
+
+        // The liquidations batched into one transaction do not share the flat
+        // payment. A relay crank carries its own payment guard, which measures
+        // what this one instruction paid. A figure that fell with the size of
+        // the batch would fail that guard and revert a liquidation that already
+        // ran. The condition that arms the crank must also name the payment
+        // before the batch exists. The priority fee is a whole-transaction cost,
+        // so the reimbursement below does share it.
+        flat.saturating_add(liquidation_reimbursement(
+            &ctx.accounts.instructions_sysvar,
+            state,
+            &maps.spot_market_map,
+            &mut maps.oracle_map,
+            progress.filled_quote,
+        ))
+    };
+
+    ClobCrankConditionsV0::pay_keeper(
+        reservoir,
+        &ctx.accounts.authority.to_account_info(),
+        payment,
+    )?;
+
+    Ok(())
+}
+
+/// A paid flat figure, raised to what the user's liveness poll asks relay to
+/// assert. A call that earns nothing stays at nothing.
+fn raise_to_poll_floor(flat: u64, poll_floor: u64) -> u64 {
+    if flat == 0 {
+        0
+    } else {
+        flat.max(poll_floor)
+    }
+}
+
+/// Only the authority counts. The user sets its delegate to any key, so a
+/// delegate test lets the user name a turner's payout address and make every
+/// relay liquidation of the account pay zero.
+fn pays_the_liquidated_user(user: &User, payout: &Pubkey) -> bool {
+    *payout == user.authority
+}
+
+/// What the protocol adds to a liquidation crank's flat payment. It is the
+/// priority fee the transaction paid, bounded by a share of what the
+/// liquidation recovered.
+///
+/// Every reason to decline pays nothing extra instead of failing. A crank that
+/// lands is worth more than one that reverts over its own tip, and the flat
+/// payment still stands.
+fn liquidation_reimbursement<'info>(
+    instructions_sysvar: &Option<UncheckedAccount<'info>>,
+    state: &State,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    filled_quote: u64,
+) -> u64 {
+    let Some(sysvar) = instructions_sysvar else {
+        return 0;
+    };
+
+    // A fill under the floor earns no flat payment, so it earns no priority
+    // fee either. Otherwise slicing one liquidation pays a fee per slice.
+    if filled_quote < LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
+        return 0;
+    }
+
+    if state.liquidation_crank_reimbursement_bps == 0 || state.sol_spot_market_index == 0 {
+        return 0;
+    }
+
+    let Ok(priority_lamports) = reimbursed_priority_lamports(
+        sysvar,
+        u64::from(
+            state
+                .transaction_fee_rails
+                .max_priority_micro_lamports_per_cu,
+        ),
+    ) else {
+        return 0;
+    };
+
+    let Some(sol_price) =
+        crate::state::clob_crank::sol_oracle_price(state, spot_market_map, oracle_map)
+    else {
+        return 0;
+    };
+
+    CrankPaymentsV0::liquidation_reimbursement(
+        filled_quote,
+        sol_price,
+        priority_lamports,
+        state.liquidation_crank_reimbursement_bps,
+    )
+    .unwrap_or(0)
+}
+
+/// The priority fee one liquidation crank is reimbursed, before the cap on
+/// what the liquidation recovered.
+///
+/// A transaction that states its price is reimbursed that price on its unit
+/// limit. `crank_priority_lamports` bounds both, so a caller cannot bill room
+/// it does not use. A transaction that states no price is priced at
+/// `max_price_per_unit` on the reimbursed unit figure, because relay's turner
+/// sends v1 transactions, whose fee sits in the message header where no
+/// program can read it. Either figure is one fee per transaction, so the
+/// liquidations batched into it share it.
+fn reimbursed_priority_lamports(
+    instructions_sysvar: &AccountInfo,
+    max_price_per_unit: u64,
+) -> VelocityResult<u64> {
+    let budget = crate::instructions::optional_accounts::tx_compute_budget(instructions_sysvar)?;
+    let whole_transaction = match budget.price_per_unit {
+        Some(price_per_unit) => CrankPaymentsV0::crank_priority_lamports(
+            price_per_unit,
+            budget.unit_limit,
+            max_price_per_unit,
+        )?,
+        None => CrankPaymentsV0::crank_priority_lamports(
+            max_price_per_unit,
+            crate::state::clob_crank::LIQUIDATION_CRANK_REIMBURSED_UNITS,
+            max_price_per_unit,
+        )?,
+    };
+
+    let claimants = crate::instructions::optional_accounts::tx_reimbursement_claimants(
+        instructions_sysvar,
+        crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+    )?;
+    whole_transaction.safe_div(u64::from(claimants))
+}
+
+#[access_control(
+    liq_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_liquidate_spot<'c: 'info, 'info>(
+    ctx: Context<'info, LiquidateSpot<'info>>,
+    asset_market_index: u16,
+    liability_market_index: u16,
+    liquidator_max_liability_transfer: u128,
+    limit_price: Option<u64>,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
+    let state = ctx.accounts.state.load()?;
+
+    let user_key = ctx.accounts.user.key();
+    let liquidator_key = ctx.accounts.liquidator.key();
+
+    validate!(
+        user_key != liquidator_key,
+        ErrorCode::UserCantLiquidateThemself
+    )?;
+
+    let user = &mut load_mut!(ctx.accounts.user)?;
+    let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+    require_liquidator_not_frozen(&liquidator_stats)?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let mut maps = load_maps(
+        remaining_accounts_iter,
+        &MarketSet::new(),
+        &get_writable_spot_market_set_from_many(vec![asset_market_index, liability_market_index]),
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+
+    controller::liquidation::liquidate_spot(
+        asset_market_index,
+        liability_market_index,
+        liquidator_max_liability_transfer,
+        limit_price,
+        user,
+        &user_key,
+        liquidator,
+        &liquidator_key,
+        &mut maps,
+        now,
+        clock.slot,
+        &state,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
+    )?;
+
+    Ok(())
+}
+
+#[access_control(
+    liq_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
+    ctx: Context<'info, LiquidateBorrowForPerpPnl<'info>>,
+    perp_market_index: u16,
+    spot_market_index: u16,
+    liquidator_max_liability_transfer: u128,
+    limit_price: Option<u64>, // currently unimplemented
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
+    let state = ctx.accounts.state.load()?;
+
+    let user_key = ctx.accounts.user.key();
+    let liquidator_key = ctx.accounts.liquidator.key();
+
+    validate!(
+        user_key != liquidator_key,
+        ErrorCode::UserCantLiquidateThemself
+    )?;
+
+    let user = &mut load_mut!(ctx.accounts.user)?;
+    let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    // Taking over the user's borrow in exchange for positive pnl acquires
+    // balance-sheet risk and earns a liquidation fee.
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+    require_liquidator_not_frozen(&liquidator_stats)?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let mut maps = load_maps(
+        remaining_accounts_iter,
+        &MarketSet::new(),
+        &get_writable_spot_market_set(spot_market_index),
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+
+    controller::liquidation::liquidate_borrow_for_perp_pnl(
+        perp_market_index,
+        spot_market_index,
+        liquidator_max_liability_transfer,
+        limit_price,
+        user,
+        &user_key,
+        liquidator,
+        &liquidator_key,
+        &mut maps,
+        now,
+        clock.slot,
+        state.liquidation_margin_buffer_ratio,
+        state.initial_pct_to_liquidate as u128,
+        state.liquidation_duration_ms(),
+        state.funding_paused()?,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
+    )?;
+
+    Ok(())
+}
+
+#[access_control(
+    liq_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
+    ctx: Context<'info, LiquidatePerpPnlForDeposit<'info>>,
+    perp_market_index: u16,
+    spot_market_index: u16,
+    liquidator_max_pnl_transfer: u128,
+    limit_price: Option<u64>, // currently unimplemented
+) -> Result<()> {
+    let state = ctx.accounts.state.load()?;
+    let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
+
+    let user_key = ctx.accounts.user.key();
+    let liquidator_key = ctx.accounts.liquidator.key();
+
+    validate!(
+        user_key != liquidator_key,
+        ErrorCode::UserCantLiquidateThemself
+    )?;
+
+    let user = &mut load_mut!(ctx.accounts.user)?;
+    let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    // Taking over the user's deposit in exchange for negative pnl acquires
+    // balance-sheet risk and earns a liquidation fee.
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+    require_liquidator_not_frozen(&liquidator_stats)?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let mut maps = load_maps(
+        remaining_accounts_iter,
+        &MarketSet::new(),
+        &get_writable_spot_market_set(spot_market_index),
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+
+    controller::liquidation::liquidate_perp_pnl_for_deposit(
+        perp_market_index,
+        spot_market_index,
+        liquidator_max_pnl_transfer,
+        limit_price,
+        user,
+        &user_key,
+        liquidator,
+        &liquidator_key,
+        &mut maps,
+        now,
+        clock.slot,
+        state.liquidation_margin_buffer_ratio,
+        state.initial_pct_to_liquidate as u128,
+        state.liquidation_duration_ms(),
+        state.funding_paused()?,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
+    )?;
+
+    Ok(())
+}
+
+#[access_control(
+    liq_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_set_user_status_to_being_liquidated<'c: 'info, 'info>(
+    ctx: Context<'info, SetUserStatusToBeingLiquidated<'info>>,
+) -> Result<()> {
+    let state = ctx.accounts.state.load()?;
+    let clock = Clock::get()?;
+    let user = &mut load_mut!(ctx.accounts.user)?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let mut maps = load_maps(
+        remaining_accounts_iter,
+        &MarketSet::new(),
+        &MarketSet::new(),
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+
+    controller::liquidation::set_user_status_to_being_liquidated(
+        user,
+        &mut maps,
+        clock.slot,
+        &state,
+        &mut LiquidationBookAccounts::after(ctx.remaining_accounts, remaining_accounts_iter),
+    )?;
+
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct LiquidatePerp<'info> {
+    pub state: AccountLoader<'info, State>,
+    /// CHECK: in signed-keeper mode this account must sign for `liquidator`. In
+    /// program-keeper mode the liquidator is the protocol `User` and the caller
+    /// is a relay turner. This account is then only the lamport payout target,
+    /// and it needs no signature. Program-keeper mode reaches
+    /// `liquidate_perp_with_fill` alone, because the plain path rejects it.
+    #[account(mut)]
+    pub authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        constraint = can_crank_for_filler(&liquidator, &authority, &state)?
+    )]
+    pub liquidator: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
+    #[account(mut)]
+    pub user: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&user, &user_stats)?
+    )]
+    pub user_stats: AccountLoader<'info, UserStats>,
+    /// The fired market's crank conditions. Its reservoir pays the keeper in
+    /// program-keeper mode, and the handler checks it against `market_index`.
+    /// Program-keeper mode requires the account.
+    #[account(mut)]
+    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// CHECK: the instructions sysvar, locked by address. It is present only for
+    /// a crank that wants its priority fee reimbursed. The transaction's own
+    /// compute-budget instructions state the fee, and the handler reads it back
+    /// from here. Without this account the crank takes the flat payment.
+    #[account(address = solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
+}
+
+#[derive(Accounts)]
+pub struct LiquidateSpot<'info> {
+    pub state: AccountLoader<'info, State>,
+    /// A spot liquidation settles by handing the liquidator the borrow and the
+    /// collateral behind it, so whoever liquidates takes on that inventory and
+    /// its price risk. A protocol keeper (and so relay) has no way to unwind
+    /// it, so this path requires a signer: an executor names none.
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        constraint = can_sign_for_user(&liquidator, &authority)?
+    )]
+    pub liquidator: AccountLoader<'info, User>,
+    #[account(
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
+    #[account(mut)]
+    pub user: AccountLoader<'info, User>,
+}
+
+#[derive(Accounts)]
+pub struct LiquidateBorrowForPerpPnl<'info> {
+    pub state: AccountLoader<'info, State>,
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        constraint = can_sign_for_user(&liquidator, &authority)?
+    )]
+    pub liquidator: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
+    #[account(mut)]
+    pub user: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&user, &user_stats)?
+    )]
+    pub user_stats: AccountLoader<'info, UserStats>,
+}
+
+#[derive(Accounts)]
+pub struct LiquidatePerpPnlForDeposit<'info> {
+    pub state: AccountLoader<'info, State>,
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        constraint = can_sign_for_user(&liquidator, &authority)?
+    )]
+    pub liquidator: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
+    #[account(mut)]
+    pub user: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&user, &user_stats)?
+    )]
+    pub user_stats: AccountLoader<'info, UserStats>,
+}
+
+#[derive(Accounts)]
+pub struct SetUserStatusToBeingLiquidated<'info> {
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub user: AccountLoader<'info, User>,
+    pub authority: Signer<'info>,
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::{
+            liquidation_reimbursement, pays_the_liquidated_user, reimbursed_priority_lamports,
+            LiquidationProgress,
+        },
+        crate::state::{
+            oracle_map::OracleMap, spot_market_map::SpotMarketMap, state::State, user::User,
+        },
+        anchor_lang::prelude::{AccountInfo, Pubkey, UncheckedAccount},
+    };
+
+    /// A sweep that stops at the book's cap fills nothing. It still pays the
+    /// force-cancel figure, or relay's payment guard reverts it every time and
+    /// the account never liquidates.
+    #[test]
+    fn a_sweep_without_a_fill_pays_the_force_cancel_figure() {
+        let payments = crate::state::clob_crank::CrankPaymentsV0 {
+            liquidation: 9_000,
+            force_cancel: 4_000,
+            ..Default::default()
+        };
+        let progress = |filled_quote, book_orders_removed| LiquidationProgress {
+            filled_quote,
+            book_orders_removed,
+        };
+
+        assert_eq!(progress(0, 128).flat_payment(&payments), 4_000);
+        assert_eq!(progress(0, 0).flat_payment(&payments), 0);
+        assert!(!progress(0, 0).made_any());
+        assert_eq!(progress(20_000_000, 128).flat_payment(&payments), 9_000);
+        assert_eq!(progress(1, 0).flat_payment(&payments), 0);
+    }
+
+    #[test]
+    fn only_the_liquidated_users_authority_is_not_paid() {
+        let user = User {
+            authority: Pubkey::new_unique(),
+            delegate: Pubkey::new_unique(),
+            ..User::default()
+        };
+
+        assert!(pays_the_liquidated_user(&user, &user.authority));
+        assert!(!pays_the_liquidated_user(&user, &user.delegate));
+        assert!(!pays_the_liquidated_user(&user, &Pubkey::new_unique()));
+    }
+
+    /// The reimbursement is extra to the flat payment, so an instructions
+    /// sysvar that holds no readable instruction pays nothing extra rather than
+    /// failing the liquidation that already ran.
+    #[test]
+    fn an_unreadable_instructions_sysvar_pays_nothing_extra() {
+        let key = solana_program::sysvar::instructions::ID;
+        let owner = Pubkey::default();
+        let mut lamports = 0;
+        let mut data = vec![0xFFu8; 16];
+        let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, false);
+        let sysvar = Some(UncheckedAccount::try_from(&info));
+        let state = State {
+            liquidation_crank_reimbursement_bps: 5_000,
+            sol_spot_market_index: 1,
+            ..State::default()
+        };
+
+        let paid = liquidation_reimbursement(
+            &sysvar,
+            &state,
+            &SpotMarketMap::empty(),
+            &mut OracleMap::empty(),
+            1_000_000_000,
+        );
+
+        assert_eq!(paid, 0);
+    }
+
+    /// A sysvar over `instructions`, serialized the way the runtime does.
+    fn with_instructions_sysvar<T>(
+        instructions: &[solana_program::instruction::Instruction],
+        read: impl FnOnce(&AccountInfo) -> T,
+    ) -> T {
+        use solana_program::sysvar::instructions::{
+            construct_instructions_data, BorrowedInstruction,
+        };
+
+        let borrowed: Vec<BorrowedInstruction> = instructions
+            .iter()
+            .map(|ix| BorrowedInstruction {
+                program_id: &ix.program_id,
+                accounts: vec![],
+                data: &ix.data,
+            })
+            .collect();
+        let mut data = construct_instructions_data(&borrowed);
+        let key = solana_program::sysvar::instructions::ID;
+        let owner = Pubkey::default();
+        let mut lamports = 0;
+        let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, false);
+        read(&info)
+    }
+
+    /// Relay's turner sends a v1 transaction. Its compute budget sits in the
+    /// message header, so the sysvar holds only the guard and the crank. Such
+    /// a transaction is priced at the rails' ceiling on the reimbursed units,
+    /// and the liquidations batched into it share that one figure.
+    #[test]
+    fn a_v1_liquidation_is_reimbursed_at_the_priority_ceiling() {
+        use {
+            crate::state::clob_crank::LIQUIDATION_CRANK_REIMBURSED_UNITS,
+            anchor_lang::Discriminator, solana_program::instruction::Instruction,
+        };
+
+        let relay = Pubkey::new_unique();
+        let liquidation = Instruction::new_with_bytes(
+            crate::ID,
+            crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+            vec![],
+        );
+        let guard = Instruction::new_with_bytes(relay, &[1; 8], vec![]);
+        let assert_paid = Instruction::new_with_bytes(relay, &[2; 8], vec![]);
+        let ceiling = 50_000;
+
+        let paid = with_instructions_sysvar(
+            &[guard.clone(), liquidation.clone(), assert_paid.clone()],
+            |sysvar| reimbursed_priority_lamports(sysvar, ceiling).unwrap(),
+        );
+        assert_eq!(
+            paid,
+            ceiling * u64::from(LIQUIDATION_CRANK_REIMBURSED_UNITS) / 1_000_000
+        );
+
+        let batched = with_instructions_sysvar(
+            &[guard, liquidation.clone(), liquidation, assert_paid],
+            |sysvar| reimbursed_priority_lamports(sysvar, ceiling).unwrap(),
+        );
+        assert_eq!(batched, paid / 2);
+    }
+
+    /// A fill under the floor earns no flat payment, so it earns no priority
+    /// fee either. One liquidation sliced into such fills is paid nothing.
+    #[test]
+    fn a_fill_under_the_floor_is_not_reimbursed() {
+        use {
+            crate::{
+                create_anchor_account_info,
+                math::time::SlotClock,
+                state::{
+                    clob_crank::{
+                        LIQUIDATION_CRANK_REIMBURSED_UNITS,
+                        LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
+                    },
+                    oracle::{HistoricalOracleData, OracleSource},
+                    pyth_lazer_oracle::PythLazerOracle,
+                    spot_market::SpotMarket,
+                    state::TransactionFeeRails,
+                },
+                test_utils::get_pyth_price,
+            },
+            anchor_lang::Discriminator,
+            solana_program::instruction::Instruction,
+        };
+
+        let slot = 100;
+        let mut sol_price = get_pyth_price(150, 6);
+        sol_price.posted_slot = slot;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(sol_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut sol_market = SpotMarket {
+            market_index: 1,
+            oracle: oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            historical_oracle_data: HistoricalOracleData::default_price(sol_price.price),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_market, SpotMarket, sol_info);
+        let spot_market_map = SpotMarketMap::load_one(&sol_info, true).unwrap();
+        let state = State {
+            liquidation_crank_reimbursement_bps: 5_000,
+            sol_spot_market_index: 1,
+            transaction_fee_rails: TransactionFeeRails {
+                max_priority_micro_lamports_per_cu: 10_000,
+                ..TransactionFeeRails::FLAT_PER_SIGNATURE
+            },
+            ..State::default()
+        };
+
+        let liquidation = Instruction::new_with_bytes(
+            crate::ID,
+            crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+            vec![],
+        );
+        let mut sysvar_data = solana_program::sysvar::instructions::construct_instructions_data(&[
+            solana_program::sysvar::instructions::BorrowedInstruction {
+                program_id: &liquidation.program_id,
+                accounts: vec![],
+                data: &liquidation.data,
+            },
+        ]);
+        let (sysvar_key, sysvar_owner) =
+            (solana_program::sysvar::instructions::ID, Pubkey::default());
+        let mut sysvar_lamports = 0;
+        let sysvar_info = AccountInfo::new(
+            &sysvar_key,
+            false,
+            false,
+            &mut sysvar_lamports,
+            &mut sysvar_data,
+            &sysvar_owner,
+            false,
+        );
+        let sysvar = Some(UncheckedAccount::try_from(&sysvar_info));
+        let reimbursed = |filled_quote| {
+            let mut oracle_map =
+                OracleMap::load_one(&oracle_info, slot, SlotClock::baseline(), None).unwrap();
+            liquidation_reimbursement(
+                &sysvar,
+                &state,
+                &spot_market_map,
+                &mut oracle_map,
+                filled_quote,
+            )
+        };
+
+        let ceiling = 10_000 * u64::from(LIQUIDATION_CRANK_REIMBURSED_UNITS) / 1_000_000;
+        assert_eq!(
+            reimbursed(LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE),
+            ceiling
+        );
+        assert_eq!(reimbursed(LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE - 1), 0);
+    }
+
+    /// A slot synced before the admin lowered the payment still asks relay
+    /// for the old figure, so a paid crank pays that figure and lands.
+    #[test]
+    fn a_paid_liquidation_rises_to_the_poll_floor() {
+        use super::raise_to_poll_floor;
+        assert_eq!(raise_to_poll_floor(3_000, 5_000), 5_000);
+        assert_eq!(raise_to_poll_floor(7_000, 5_000), 7_000);
+        assert_eq!(raise_to_poll_floor(0, 5_000), 0);
+    }
+
+    /// A transaction that states its price is reimbursed that price, and the
+    /// liquidations batched into it share the fee.
+    #[test]
+    fn a_stated_price_is_reimbursed_and_shared() {
+        use {anchor_lang::Discriminator, solana_program::instruction::Instruction};
+
+        let compute_budget = solana_program::pubkey!("ComputeBudget111111111111111111111111111111");
+        let limit = Instruction::new_with_bytes(
+            compute_budget,
+            &[&[2u8][..], &200_000u32.to_le_bytes()].concat(),
+            vec![],
+        );
+        let price = Instruction::new_with_bytes(
+            compute_budget,
+            &[&[3u8][..], &1_000u64.to_le_bytes()].concat(),
+            vec![],
+        );
+        let liquidation = Instruction::new_with_bytes(
+            crate::ID,
+            crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+            vec![],
+        );
+
+        let paid = with_instructions_sysvar(
+            &[limit, price, liquidation.clone(), liquidation],
+            |sysvar| reimbursed_priority_lamports(sysvar, 50_000).unwrap(),
+        );
+        assert_eq!(paid, 1_000 * 200_000 / 1_000_000 / 2);
+    }
+}

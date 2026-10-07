@@ -87,18 +87,53 @@ export function isSetComputeUnitPriceIx(ix: TransactionInstruction): boolean {
 }
 
 /**
- * Checks a list of instructions for the presence of compute-budget limit/price instructions —
- * used by tx builders to avoid appending a duplicate `setComputeUnitLimit`/`setComputeUnitPrice`
- * instruction when the caller already supplied one.
- * @param ixs - Instructions to scan (typically an in-progress transaction's instruction list).
- * @returns Whether a `setComputeUnitLimit` and/or `setComputeUnitPrice` instruction is present.
+ * Checks whether `ix` is a `SetLoadedAccountsDataSizeLimit` instruction, by matching the program
+ * id and the instruction discriminator byte (`4`).
+ */
+export function isSetLoadedAccountsDataSizeIx(
+	ix: TransactionInstruction
+): boolean {
+	// Compute budget program discriminator is first byte
+	// 4: set loaded accounts data size limit
+	return (
+		ix.programId.equals(ComputeBudgetProgram.programId) &&
+		// @ts-ignore
+		ix.data.at(0) === 4
+	);
+}
+
+/**
+ * Builds a `SetLoadedAccountsDataSizeLimit` instruction, written by hand since `@solana/web3.js`
+ * v1 has no builder for it. Add it at the end of the instruction list, since an instruction added
+ * earlier shifts every index the Pyth Lazer oracle-update flow encodes (see
+ * `createMinimalEd25519VerifyIx`). Leave headroom, since asking for less than a transaction loads makes it fail to load at all.
+ */
+export function setLoadedAccountsDataSizeLimitIx(
+	bytes: number
+): TransactionInstruction {
+	const data = Buffer.alloc(5);
+	data.writeUInt8(4, 0);
+	data.writeUInt32LE(bytes, 1);
+	return new TransactionInstruction({
+		programId: ComputeBudgetProgram.programId,
+		keys: [],
+		data,
+	});
+}
+
+/**
+ * Checks a list of instructions for compute-budget instructions. A transaction builder uses it to
+ * avoid appending a duplicate when the caller already supplied one.
+ * @returns Which of the three compute-budget instructions are present.
  */
 export function containsComputeUnitIxs(ixs: TransactionInstruction[]): {
 	hasSetComputeUnitLimitIx: boolean;
 	hasSetComputeUnitPriceIx: boolean;
+	hasSetLoadedAccountsDataSizeIx: boolean;
 } {
 	return {
 		hasSetComputeUnitLimitIx: ixs.some(isSetComputeUnitsIx),
 		hasSetComputeUnitPriceIx: ixs.some(isSetComputeUnitPriceIx),
+		hasSetLoadedAccountsDataSizeIx: ixs.some(isSetLoadedAccountsDataSizeIx),
 	};
 }

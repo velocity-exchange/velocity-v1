@@ -7,13 +7,10 @@ export enum HEALTH_STATUS {
 }
 
 /**
- * These durations gate the restart safety mechanisms, so a bad override has to
- * fail closed onto the default rather than through. Plain `Number(x) || fb`
- * lets a negative or Infinite value past: a negative sample gap resets the
- * window on every sample and an infinite sustain never latches, either of which
- * silently disables the kill-switch.
+ * Gates a restart-safety duration override. A plain `Number(x) || fallback` lets a
+ * negative or infinite value past, which silently disables the kill-switch.
  */
-function positiveDurationMs(
+export function positiveDurationMs(
 	value: string | undefined,
 	fallback: number
 ): number {
@@ -32,21 +29,23 @@ const HEALTH_CHECK_CONFIG = {
 	// may be much lower than 2 per sec. 0.03 is 1 slot per 33s
 	MIN_SLOT_RATE: parseFloat(process.env.MIN_SLOT_RATE || '0.03'),
 	// How long the DLOB slot must stay behind the oracle before the kill-switch
-	// latches. The check samples several times a second, so without a window a
-	// single bad sample would restart the pod.
+	// latches. The check samples several times a second, so without a window one
+	// bad sample would restart the pod.
 	KILL_SWITCH_SUSTAIN_MS: positiveDurationMs(
 		process.env.KILL_SWITCH_SUSTAIN_MS,
 		60_000
 	),
-	// If sampling itself stops, elapsed time says nothing about whether the
-	// market was behind the whole while, so a gap this long restarts the window.
+
+	// If sampling stops, elapsed time says nothing about whether the market was
+	// behind for the whole period. A gap this long restarts the window.
 	KILL_SWITCH_SAMPLE_GAP_MS: positiveDurationMs(
 		process.env.KILL_SWITCH_SAMPLE_GAP_MS,
 		10_000
 	),
-	// How long a process may report no slot at all before it counts as wedged.
+
+	// How long a process may report no slot at all before it counts as stuck.
 	// Without a bound, a slot source that never delivers stays liveness-healthy
-	// forever, which is worse than the cold-start crash-loop this replaced.
+	// for good, which is worse than a cold-start crash loop.
 	STARTUP_GRACE_MS: positiveDurationMs(process.env.STARTUP_GRACE_MS, 180_000),
 };
 
@@ -74,11 +73,10 @@ function evaluateHealth(currentSlot: number): {
 } {
 	const now = Date.now();
 
-	// Restart is the deliberate kill-switch and stays latched until the pod is
-	// replaced, so it outranks every other branch here: a slot source that dips
-	// to 0 on reconnect must not hand back a healthy verdict and clear it.
-	// Every other status is re-derived from slot progression below, so a
-	// transient stall clears itself instead of pinning the pod unhealthy.
+	// Restart is the kill-switch and stays latched until the pod is replaced, so it
+	// outranks every other branch here. A slot source that dips to 0 on reconnect
+	// must not return a healthy verdict and clear it. Every other status recomputes
+	// from slot progression below, so a short stall does not stay unhealthy.
 	if (getHealthStatus() === HEALTH_STATUS.Restart) {
 		return {
 			isHealthy: false,
@@ -87,10 +85,10 @@ function evaluateHealth(currentSlot: number): {
 	}
 
 	// Slot 0 means no poll has returned yet. A publisher starting against an
-	// empty book sits here until its first poll lands, and calling that
-	// unhealthy is what crash-looped cold starts and forced the mainnet
-	// manifests onto TCP probes. Tolerate it only for the startup window: a slot
-	// source that never delivers one slot is wedged, not starting.
+	// empty book stays here until its first poll lands. Calling that unhealthy
+	// crash-loops a cold start, which is why the mainnet manifests moved to TCP
+	// probes. Tolerate slot 0 only for the startup window. A slot source that
+	// never delivers one slot is stuck rather than starting.
 	if (currentSlot === 0) {
 		const sinceStart = now - globalHealthState.processStartedAt;
 		if (sinceStart < HEALTH_CHECK_CONFIG.STARTUP_GRACE_MS) {
@@ -145,19 +143,8 @@ function evaluateHealth(currentSlot: number): {
 }
 
 /**
- * Tracks, per market, when the DLOB slot first fell behind the oracle and when
- * it was last sampled. The kill-switch latches only once a market has been
- * behind continuously for KILL_SWITCH_SUSTAIN_MS, so a brief oracle or RPC
- * hiccup cannot restart a pod that is otherwise serving fine.
- *
- * lastSeen is what makes "continuously" true. Elapsed time alone would also be
- * satisfied by one bad sample, a long gap in sampling, then a second bad
- * sample - and a stalled publisher is exactly the case that samples least
- * often, so that gap is not hypothetical.
- *
- * The window is process-wide: dlob-publisher runs a normal and an indicative
- * DLOBSubscriberIO over the same markets, and they share one window per market.
- * They read the same slot source and oracle data, so they agree in practice.
+ * Per-market window tracking how long the DLOB slot has stayed continuously
+ * behind the oracle, used to latch the kill-switch after KILL_SWITCH_SUSTAIN_MS.
  */
 type SlotDiffWindow = { since: number; lastSeen: number };
 const slotDiffWindows: Map<string, SlotDiffWindow> = new Map();

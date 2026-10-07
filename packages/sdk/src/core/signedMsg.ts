@@ -1,4 +1,5 @@
 import { sha256 } from '@noble/hashes/sha256';
+import type { PublicKey } from '@solana/web3.js';
 import type {
 	SignedMsgOrderParamsDelegateMessage,
 	SignedMsgOrderParamsMessage,
@@ -13,6 +14,34 @@ export type AnchorTypesCoder = {
 	encode: (typeName: string, value: any) => Buffer;
 	decode: (typeName: string, buffer: Buffer) => any;
 };
+
+/**
+ * The entries a new `SignedMsgUserOrders` record gets. A market or IOC message holds its entry for
+ * the fill window at the shortest slot duration, about 64 s at 400 ms slots. The record refuses a
+ * new message while every entry is held, so 32 entries allow one such order per 2 s.
+ */
+export const DEFAULT_SIGNED_MSG_USER_ORDERS_LEN = 32;
+
+/**
+ * The prefix a taker signs ahead of the hex message. It names the program, so the signature is
+ * valid for no other program. Its first byte is not a hex digit, so a verifier that hex-decodes
+ * the signed bytes, as Drift does, refuses a Velocity message.
+ */
+export function signedMsgDomainPrefix(programId: PublicKey): Buffer {
+	return Buffer.from(`velocity-signed-msg:${programId.toBase58()}:`);
+}
+
+/**
+ * The bytes a taker signs for `orderParams`, the hex message the instruction carries: the domain
+ * prefix, then the message. The instruction carries only the message. The program adds the
+ * prefix when it verifies.
+ */
+export function signedMsgSigningBytes(
+	programId: PublicKey,
+	orderParams: Uint8Array
+): Buffer {
+	return Buffer.concat([signedMsgDomainPrefix(programId), orderParams]);
+}
 
 /**
  * Borsh-encodes a Swift signed-order message envelope: an 8-byte Anchor type

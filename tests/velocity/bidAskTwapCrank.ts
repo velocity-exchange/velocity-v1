@@ -95,7 +95,7 @@ describe('update perp bid ask twap', () => {
 		await svm.moveTimeForward(120);
 		await setFeedPriceNoProgram(svm, 102, oracle);
 
-		await client.updatePerpBidAskTwap(0, []);
+		await client.updatePerpBidAskTwap(0);
 		await client.fetchAccounts();
 		const after = client.getPerpMarketAccount(0);
 

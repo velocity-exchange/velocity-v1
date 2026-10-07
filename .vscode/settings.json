@@ -1,3 +1,14 @@
 {
-	"rust-analyzer.rustfmt.extraArgs": ["+nightly"]
+	"rust-analyzer.rustfmt.extraArgs": ["+nightly"],
+	// Three separate Cargo workspaces live in this repo and rust-analyzer only
+	// discovers the root one on its own, so anchor-v2 (clob, midpoint) and
+	// rust/ (velocity-rs, keep-rs, swift) get no completions, no go-to-def,
+	// and no diagnostics until they are named here. fuzz/* are left out on
+	// purpose: each is its own workspace over a vendored IDL, and loading
+	// them multiplies analysis cost for generated code.
+	"rust-analyzer.linkedProjects": [
+		"Cargo.toml",
+		"anchor-v2/Cargo.toml",
+		"rust/Cargo.toml"
+	]
 }

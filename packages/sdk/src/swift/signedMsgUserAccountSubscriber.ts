@@ -1,6 +1,7 @@
 import { getSignedMsgUserOrdersFilter } from '../memcmp';
 import { WebSocketProgramAccountSubscriber } from '../accounts/webSocketProgramAccountSubscriber';
 import { SignedMsgOrderId, SignedMsgUserOrdersAccount } from '../types';
+import { decodeSignedMsgUserOrdersAccount } from './signedMsgUserOrdersDecoder';
 import { Commitment, Context, PublicKey } from '@solana/web3.js';
 import { ResubOpts } from '../accounts/types';
 import { VelocityClient } from '../velocityClient';
@@ -72,14 +73,11 @@ export class SignedMsgUserOrdersAccountSubscriber {
 		this.resubOpts = resubOpts;
 		// Type-system guarantees at least one of the two is supplied.
 		this.velocityClient = velocityClient!;
+		// The Anchor coder cannot read a legacy account, so the default decoder
+		// reads both layouts.
 		this.decodeFn =
 			decodeFn ??
-			(
-				this.velocityClient.program.account as any
-			).signedMsgUserOrders.coder.accounts.decodeUnchecked.bind(
-				(this.velocityClient.program.account as any).signedMsgUserOrders.coder
-					.accounts
-			);
+			((_name: string, data: Buffer) => decodeSignedMsgUserOrdersAccount(data));
 		this.resyncIntervalMs = resyncIntervalMs;
 		this.eventEmitter = new EventEmitter();
 		this.resubOpts = resubOpts;

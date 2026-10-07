@@ -181,6 +181,7 @@ describe('spot deposit and withdraw 22', () => {
 				TOKEN_2022_PROGRAM_ID
 			)
 		);
+
 		await svmContextWrapper.sendTransaction(mintTransaction, [
 			svmContextWrapper.provider.wallet.payer,
 			mintKeypair,

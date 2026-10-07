@@ -4,6 +4,7 @@ pub mod deposit_into_isolated_perp_position {
             controller::isolated_position::deposit_into_isolated_perp_position,
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, LIQUIDATION_FEE_PRECISION,
@@ -45,7 +46,7 @@ pub mod deposit_into_isolated_perp_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -94,6 +95,7 @@ pub mod deposit_into_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
 
@@ -103,9 +105,7 @@ pub mod deposit_into_isolated_perp_position {
         deposit_into_isolated_perp_position(
             user_key,
             &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -139,7 +139,7 @@ pub mod deposit_into_isolated_perp_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -188,6 +188,7 @@ pub mod deposit_into_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -202,9 +203,7 @@ pub mod deposit_into_isolated_perp_position {
         let result = deposit_into_isolated_perp_position(
             user_key,
             &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -233,7 +232,7 @@ pub mod deposit_into_isolated_perp_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -289,6 +288,7 @@ pub mod deposit_into_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         let user_key = Pubkey::default();
@@ -298,9 +298,7 @@ pub mod deposit_into_isolated_perp_position {
         let result = deposit_into_isolated_perp_position(
             user_key,
             &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -316,7 +314,7 @@ pub mod deposit_into_isolated_perp_position {
         user.perp_positions[0].isolated_position_scaled_balance = 0;
         user.total_deposits = 0;
         {
-            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
             spot_market.deposit_balance = market_deposit_balance;
             // A cap of 0 disables the daily deposit limit. The same deposit is
             // then allowed, which proves the cap is what rejected it.
@@ -326,9 +324,7 @@ pub mod deposit_into_isolated_perp_position {
         deposit_into_isolated_perp_position(
             user_key,
             &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -343,7 +339,7 @@ pub mod deposit_into_isolated_perp_position {
             SPOT_BALANCE_PRECISION_U64
         );
         assert_eq!(
-            spot_market_map.get_ref(&0).unwrap().deposit_balance,
+            maps.spot_market_map.get_ref(&0).unwrap().deposit_balance,
             market_deposit_balance + SPOT_BALANCE_PRECISION
         );
     }
@@ -355,6 +351,7 @@ pub mod transfer_isolated_perp_position_deposit {
             controller::isolated_position::transfer_isolated_perp_position_deposit,
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, LIQUIDATION_FEE_PRECISION,
@@ -396,7 +393,7 @@ pub mod transfer_isolated_perp_position_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -446,6 +443,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.spot_positions[0] = SpotPosition {
@@ -459,9 +457,7 @@ pub mod transfer_isolated_perp_position_deposit {
         transfer_isolated_perp_position_deposit(
             &mut user,
             Some(&mut user_stats),
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -499,7 +495,7 @@ pub mod transfer_isolated_perp_position_deposit {
                 PythLazerOracle,
                 oracle_account_info
             );
-            let mut oracle_map =
+            let oracle_map =
                 OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None)
                     .unwrap();
 
@@ -594,12 +590,15 @@ pub mod transfer_isolated_perp_position_deposit {
 
             let mut user_stats = UserStats::default();
 
+            let mut maps = crate::instructions::optional_accounts::AccountMaps::new(
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            );
             let result = transfer_isolated_perp_position_deposit(
                 &mut user,
                 Some(&mut user_stats),
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
+                &mut maps,
                 slot,
                 now,
                 0,
@@ -629,7 +628,7 @@ pub mod transfer_isolated_perp_position_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -679,6 +678,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.spot_positions[0] = SpotPosition {
@@ -697,9 +697,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let result = transfer_isolated_perp_position_deposit(
             &mut user,
             Some(&mut user_stats),
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -725,7 +723,7 @@ pub mod transfer_isolated_perp_position_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -776,6 +774,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.spot_positions[0] = SpotPosition {
@@ -789,9 +788,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let result = transfer_isolated_perp_position_deposit(
             &mut user,
             Some(&mut user_stats),
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -817,7 +814,7 @@ pub mod transfer_isolated_perp_position_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -868,6 +865,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -882,9 +880,7 @@ pub mod transfer_isolated_perp_position_deposit {
         transfer_isolated_perp_position_deposit(
             &mut user,
             Some(&mut user_stats),
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -920,7 +916,7 @@ pub mod transfer_isolated_perp_position_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -971,6 +967,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -984,9 +981,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let result = transfer_isolated_perp_position_deposit(
             &mut user,
             Some(&mut user_stats),
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1012,7 +1007,7 @@ pub mod transfer_isolated_perp_position_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -1063,6 +1058,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1078,9 +1074,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let result = transfer_isolated_perp_position_deposit(
             &mut user,
             Some(&mut user_stats),
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1099,6 +1093,7 @@ pub mod withdraw_from_isolated_perp_position {
             controller::isolated_position::withdraw_from_isolated_perp_position,
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, LIQUIDATION_FEE_PRECISION,
@@ -1140,7 +1135,7 @@ pub mod withdraw_from_isolated_perp_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -1190,6 +1185,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1207,9 +1203,7 @@ pub mod withdraw_from_isolated_perp_position {
             user_key,
             &mut user,
             &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1240,7 +1234,7 @@ pub mod withdraw_from_isolated_perp_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -1290,6 +1284,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1306,9 +1301,7 @@ pub mod withdraw_from_isolated_perp_position {
             user_key,
             &mut user,
             &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1334,7 +1327,7 @@ pub mod withdraw_from_isolated_perp_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -1384,6 +1377,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1402,9 +1396,7 @@ pub mod withdraw_from_isolated_perp_position {
             user_key,
             &mut user,
             &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1433,7 +1425,7 @@ pub mod withdraw_from_isolated_perp_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -1487,6 +1479,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1504,9 +1497,7 @@ pub mod withdraw_from_isolated_perp_position {
             user_key,
             &mut user,
             &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1522,7 +1513,7 @@ pub mod withdraw_from_isolated_perp_position {
         user.perp_positions[0].isolated_position_scaled_balance = SPOT_BALANCE_PRECISION_U64;
         user.total_withdraws = 0;
         {
-            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
             spot_market.deposit_balance = market_deposit_balance;
             // A 90 USDC TWAP floors deposits at 67.5 USDC. The same withdrawal
             // now leaves 74 USDC, which is above the floor.
@@ -1533,9 +1524,7 @@ pub mod withdraw_from_isolated_perp_position {
             user_key,
             &mut user,
             &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1547,7 +1536,7 @@ pub mod withdraw_from_isolated_perp_position {
 
         assert_eq!(user.perp_positions[0].isolated_position_scaled_balance, 0);
         assert_eq!(
-            spot_market_map.get_ref(&0).unwrap().deposit_balance,
+            maps.spot_market_map.get_ref(&0).unwrap().deposit_balance,
             market_deposit_balance - SPOT_BALANCE_PRECISION
         );
     }
@@ -1569,7 +1558,7 @@ pub mod withdraw_from_isolated_perp_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
+        let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
@@ -1620,6 +1609,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1635,20 +1625,23 @@ pub mod withdraw_from_isolated_perp_position {
         // A failed run still writes before it rejects, because this test calls
         // the controller directly and no transaction reverts it. Restore the
         // pre-withdraw state between runs.
-        let restore = |user: &mut User| {
-            user.perp_positions[0].isolated_position_scaled_balance = SPOT_BALANCE_PRECISION_U64;
-            user.total_withdraws = 0;
-            spot_market_map.get_ref_mut(&0).unwrap().deposit_balance = market_deposit_balance;
-        };
+        let restore =
+            |user: &mut User, maps: &mut crate::instructions::optional_accounts::AccountMaps| {
+                user.perp_positions[0].isolated_position_scaled_balance =
+                    SPOT_BALANCE_PRECISION_U64;
+                user.total_withdraws = 0;
+                maps.spot_market_map
+                    .get_ref_mut(&0)
+                    .unwrap()
+                    .deposit_balance = market_deposit_balance;
+            };
 
         // Delisted is outside the admitted status set.
         let result = withdraw_from_isolated_perp_position(
             user_key,
             &mut user,
             &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1657,11 +1650,11 @@ pub mod withdraw_from_isolated_perp_position {
             false,
         );
         assert_eq!(result, Err(ErrorCode::MarketWithdrawPaused));
-        restore(&mut user);
+        restore(&mut user, &mut maps);
 
         // An active market with the Withdraw operation paused also rejects.
         {
-            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
             spot_market.status = MarketStatus::Active;
             spot_market.paused_operations = SpotOperation::Withdraw as u8;
         }
@@ -1669,9 +1662,7 @@ pub mod withdraw_from_isolated_perp_position {
             user_key,
             &mut user,
             &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1680,13 +1671,13 @@ pub mod withdraw_from_isolated_perp_position {
             false,
         );
         assert_eq!(result, Err(ErrorCode::MarketWithdrawPaused));
-        restore(&mut user);
+        restore(&mut user, &mut maps);
 
         // Settlement is inside the admitted set, the same as on the cross-margin
         // path. A wound-down market stays exitable, so the status gate traps no
         // isolated collateral.
         {
-            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
             spot_market.status = MarketStatus::Settlement;
             spot_market.paused_operations = 0;
         }
@@ -1694,9 +1685,7 @@ pub mod withdraw_from_isolated_perp_position {
             user_key,
             &mut user,
             &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             0,
@@ -1708,7 +1697,7 @@ pub mod withdraw_from_isolated_perp_position {
 
         assert_eq!(user.perp_positions[0].isolated_position_scaled_balance, 0);
         assert_eq!(
-            spot_market_map.get_ref(&0).unwrap().deposit_balance,
+            maps.spot_market_map.get_ref(&0).unwrap().deposit_balance,
             market_deposit_balance - SPOT_BALANCE_PRECISION
         );
     }

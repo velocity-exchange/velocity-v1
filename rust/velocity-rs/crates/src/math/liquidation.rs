@@ -345,17 +345,19 @@ pub fn calculate_max_pct_to_liquidate(
     if slot < user.last_active_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    // ratio of elapsed wall clock time to the liquidation window, integrated
-    // per slot duration regime (mirrors the program's
-    // calculate_max_pct_to_liquidate); identity at 400ms. Taking `Millis`
-    // keeps the legacy storage encoding at the account boundary instead of
-    // making this arithmetic helper guess what a bare integer means.
+
+    // The ramp is the ratio of elapsed wall clock time to the liquidation
+    // window, integrated per slot duration regime. This mirrors the program's
+    // `calculate_max_pct_to_liquidate`. The result is unchanged while a slot
+    // lasts 400ms. The `Millis` parameter keeps the legacy storage encoding at
+    // the account boundary, so this helper never has to read the unit of a
+    // bare integer.
     let elapsed_ms = slot_clock.elapsed(user.last_active_slot, slot).as_ms();
     let duration_ms = liquidation_duration.as_ms();
 
     let ramp = (elapsed_ms as u128)
         .saturating_mul(LIQUIDATION_PCT_PRECISION)
-        .checked_div(duration_ms as u128) // ~1 minute at the onchain default
+        .checked_div(duration_ms as u128) // ~1 minute at the on-chain default
         .unwrap_or(LIQUIDATION_PCT_PRECISION); // if divide by zero, default to 100%
     let pct_freeable = ramp
         .saturating_add(initial_pct_to_liquidate)

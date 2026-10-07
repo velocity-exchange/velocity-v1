@@ -9,7 +9,6 @@ import {
 	decodeName,
 	PublicKey,
 	PriorityFeeSubscriberMap,
-	VelocityMarketInfo,
 } from '@velocity-exchange/sdk';
 import { Mutex } from 'async-mutex';
 
@@ -17,11 +16,12 @@ import { getErrorCode, getErrorCodeFromSimError } from '../error';
 import { logger } from '../logger';
 import { Bot } from '../types';
 import { webhookMessage } from '../webhook';
-import { BaseBotConfig } from '../config';
+import { BaseBotConfig, GlobalConfig } from '../config';
 import {
-	getVelocityPriorityFeeEndpoint,
+	priorityFeeMarkets,
 	simulateAndGetTxWithCUs,
 	sleepMs,
+	subscribePriorityFeeMap,
 } from '../utils';
 import {
 	AddressLookupTableAccount,
@@ -81,6 +81,7 @@ export class FundingRateUpdaterBot implements Bot {
 	public readonly defaultIntervalMs: number = 120000; // run every 2 min
 
 	private velocityClient: VelocityClient;
+	private globalConfig: GlobalConfig;
 	private intervalIds: Array<NodeJS.Timer> = [];
 	private priorityFeeSubscriberMap?: PriorityFeeSubscriberMap;
 	private lookupTableAccounts?: AddressLookupTableAccount[];
@@ -89,7 +90,12 @@ export class FundingRateUpdaterBot implements Bot {
 	private watchdogTimerLastPatTime = Date.now();
 	private inProgress: boolean = false;
 
-	constructor(velocityClient: VelocityClient, config: BaseBotConfig) {
+	constructor(
+		velocityClient: VelocityClient,
+		config: BaseBotConfig,
+		globalConfig: GlobalConfig
+	) {
+		this.globalConfig = globalConfig;
 		this.name = config.botId;
 		this.dryRun = config.dryRun;
 		this.velocityClient = velocityClient;
@@ -97,23 +103,10 @@ export class FundingRateUpdaterBot implements Bot {
 	}
 
 	public async init() {
-		const velocityMarkets: VelocityMarketInfo[] = [];
-		for (const perpMarket of this.velocityClient.getPerpMarketAccounts()) {
-			velocityMarkets.push({
-				marketType: 'perp',
-				marketIndex: perpMarket.marketIndex,
-			});
-		}
-		this.priorityFeeSubscriberMap = new PriorityFeeSubscriberMap({
-			// Prefer the configured endpoint (PRIORITY_FEE_ENDPOINT, e.g. the
-			// in-cluster dlob-server) over the hardcoded public dlob fallback.
-			velocityPriorityFeeEndpoint:
-				process.env.PRIORITY_FEE_ENDPOINT ??
-				getVelocityPriorityFeeEndpoint('mainnet-beta'),
-			velocityMarkets,
-			frequencyMs: 10_000,
-		});
-		await this.priorityFeeSubscriberMap!.subscribe();
+		this.priorityFeeSubscriberMap = await subscribePriorityFeeMap(
+			priorityFeeMarkets(this.velocityClient, { perp: true }),
+			this.globalConfig
+		);
 
 		this.lookupTableAccounts =
 			await this.velocityClient.fetchAllLookupTableAccounts();
@@ -330,12 +323,11 @@ export class FundingRateUpdaterBot implements Bot {
 			'perp',
 			marketIndex
 		);
-		// pfs can be present but level-less: /batchPriorityFees spreads
-		// JSON.parse(null) for markets with no published fees (devnet: Helius
-		// getPriorityFeeEstimate is unavailable, so the publisher never writes
-		// levels) — then pfs.medium is undefined, Math.floor gives NaN, and
-		// setComputeUnitPrice throws at BigInt conversion, failing every
-		// funding update. Only trust a finite level; else keep the default.
+
+		// pfs.medium can be undefined: Helius getPriorityFeeEstimate is
+		// unavailable on devnet, so no levels are ever published there. An
+		// undefined medium makes Math.floor return NaN, which throws at the
+		// BigInt conversion in setComputeUnitPrice.
 		let microLamports = 10_000;
 		if (pfs && Number.isFinite(pfs.medium)) {
 			microLamports = Math.floor(pfs.medium);

@@ -2,9 +2,10 @@ import { expect } from 'chai';
 import { getErrorCodeFromSimError } from './error';
 
 describe('getErrorCodeFromSimError', () => {
-	// A landed-Ok transaction has `meta.err === null`, and the confirm loop feeds
-	// that straight in. Dereferencing it threw a TypeError into the confirmation
-	// batch, which aborted the loop and stalled every pending signature behind it.
+	// A landed-Ok transaction has `meta.err === null`, and the confirm loop passes
+	// that value in unchanged. Dereferencing it threw a TypeError into the
+	// confirmation batch. The loop then aborted and stalled every pending
+	// signature behind it.
 	it('returns null for a landed-Ok transaction (meta.err === null)', () => {
 		expect(getErrorCodeFromSimError(null)).to.be.null;
 	});

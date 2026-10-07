@@ -26,13 +26,10 @@ export enum SwapMode {
 }
 
 /**
- * A u64 as msgpack decodes it under `useBigInt64`: `bigint` when the server
- * encoded a full 64-bit int, `number` for the narrower encodings it uses for
- * small values.
- *
- * Never route one through `Number()` or arithmetic to produce an amount — u64
- * token amounts above 2^53 don't survive the conversion, and the loss is silent.
- * `String()`/`.toString()` is exact for both halves of the union.
+ * A u64 as msgpack decodes it under `useBigInt64`: `bigint` for a full 64-bit
+ * int, `number` for the server's narrower small-value encodings. Never pass
+ * one through `Number()` or arithmetic; a token amount above 2^53 silently
+ * loses precision. `String()` and `.toString()` are exact for both halves.
  */
 type U64 = bigint | number;
 
@@ -97,7 +94,10 @@ interface SwapQuotes {
 
 const TITAN_API_URL = 'https://api.titan.exchange';
 
-/** Retries for a route's lookup tables, which must all resolve for the tx to fit. */
+/**
+ * Retries for a route's lookup tables. Every table must resolve for the
+ * transaction to fit.
+ */
 const LOOKUP_TABLE_FETCH_RETRIES = 2;
 const LOOKUP_TABLE_RETRY_BASE_DELAY_MS = 150;
 
@@ -109,8 +109,8 @@ const decodePubkey = (bytes?: Uint8Array): string | undefined =>
 
 /**
  * For the normalized quote's small metadata fields, which are typed `number`.
- * Only safe because slots, durations and bps are far below 2^53 — never use it
- * on a token amount.
+ * This is safe only because slots, durations and bps stay far below 2^53. Never
+ * use it on a token amount.
  */
 const toNumber = (value?: U64): number | undefined =>
 	value === undefined ? undefined : Number(value);
@@ -183,8 +183,8 @@ export class TitanClient implements SwapProvider {
 				accountsLimitTotal: maxAccounts.toString(),
 			}),
 			...(excludeDexes != null && { excludeDexes: excludeDexes.join(',') }),
-			// Only sent when explicitly true — Titan treats the field's presence,
-			// not its value, as the toggle.
+			// Sent only when the caller passes true. Titan reads the field's
+			// presence as the toggle and ignores its value.
 			...(onlyDirectRoutes === true && {
 				onlyDirectRoutes: onlyDirectRoutes.toString(),
 			}),
@@ -200,13 +200,12 @@ export class TitanClient implements SwapProvider {
 	/**
 	 * Get the best available route for a swap.
 	 *
-	 * The route is returned on the quote's `providerRoute`, so
-	 * {@link getRouteInstructions} builds exactly what was quoted here, at the
-	 * slippage quoted here.
-	 * @throws If `userPublicKey` is missing — Titan bakes the user's token
-	 * accounts into the route, so a route quoted for one wallet cannot be
-	 * executed by another. The wallet is recorded on the route and enforced
-	 * when the route is built.
+	 * The quote carries the route on its `providerRoute`, so
+	 * {@link getRouteInstructions} builds exactly what this call quoted, at the
+	 * slippage this call quoted.
+	 * @throws If `userPublicKey` is missing. Titan writes the user's token
+	 * accounts into the route, so one wallet cannot execute a route quoted for
+	 * another. The route records the wallet, and the build step enforces it.
 	 */
 	public async getQuote({
 		inputMint,
@@ -271,11 +270,11 @@ export class TitanClient implements SwapProvider {
 		}
 
 		const buffer = await response.arrayBuffer();
-		// `useBigInt64` or every u64 above 2^53 is silently rounded on the way in,
-		// including the `inAmount` callers size `beginSwap` off.
+		// Decode with `useBigInt64`. Without it every u64 above 2^53 rounds on the
+		// way in, including the `inAmount` that callers size `beginSwap` from.
 		const data = decode(buffer, { useBigInt64: true }) as SwapQuotes;
 
-		// We are only querying for the best avaiable route so use that
+		// The request asks for the best available route only, so take the first quote.
 		const route = data.quotes[Object.keys(data.quotes)[0]];
 
 		if (!route) {
@@ -286,10 +285,10 @@ export class TitanClient implements SwapProvider {
 			throw new Error('Titan route has no instructions');
 		}
 
-		// Titan echoes the pair it routed. Take the pair from the response rather
-		// than assuming the request was honoured — a route for another pair pays
-		// out into a token account `endSwap` isn't watching, and only fails
-		// on-chain once the funds have already moved.
+		// Titan echoes the pair it routed. Read the pair from the response rather
+		// than assume the request was honoured. A route for another pair pays out
+		// into a token account that `endSwap` does not watch. It then fails on
+		// chain only after the funds have already moved.
 		const routedInputMint =
 			decodePubkey(data.inputMint) ?? inputMint.toString();
 		const routedOutputMint =
@@ -308,8 +307,9 @@ export class TitanClient implements SwapProvider {
 			{
 				inputMint: routedInputMint,
 				outputMint: routedOutputMint,
-				// The route's own input, not the requested amount — under ExactOut the
-				// request is the output, and callers size `beginSwap` off `inAmount`.
+				// The route's own input, and not the requested amount. Under ExactOut
+				// the request is the output, and callers size `beginSwap` from
+				// `inAmount`.
 				inAmount: (route.inAmount ?? amount).toString(),
 				outAmount: route.outAmount.toString(),
 				swapMode: data.swapMode,
@@ -345,10 +345,10 @@ export class TitanClient implements SwapProvider {
 
 	/**
 	 * The route as Titan built it, compiled into a signable transaction. Titan
-	 * returns instructions rather than a transaction, so unlike Jupiter there is
-	 * nothing to strip — the route already includes its own setup and teardown.
+	 * returns instructions rather than a transaction, so this method strips
+	 * nothing. The route already includes its own setup and teardown.
 	 * @throws If the quote came from a different provider or a different wallet,
-	 * or if a lookup table the route depends on can't be loaded.
+	 * or if a lookup table the route depends on fails to load.
 	 */
 	public async getSwapTransaction({
 		quote,
@@ -378,11 +378,11 @@ export class TitanClient implements SwapProvider {
 	/**
 	 * Builds the route instructions for a quote returned by {@link getQuote}.
 	 *
-	 * The route travels on the quote, so this reads no client state and two
-	 * quotes in flight can never be confused for one another. Slippage was
-	 * fixed when Titan built the route, so there is nothing to apply here.
+	 * The quote carries the route, so this method reads no client state and cannot
+	 * confuse two quotes that are in flight together. Titan fixed the slippage
+	 * when it built the route, so this method applies none.
 	 * @throws If the quote came from a different provider or a different wallet,
-	 * or if a lookup table the route depends on can't be loaded.
+	 * or if a lookup table the route depends on fails to load.
 	 */
 	public async getRouteInstructions({
 		quote,
@@ -395,9 +395,9 @@ export class TitanClient implements SwapProvider {
 			throw new Error('No instructions provided in the route');
 		}
 
-		// Errors propagate as-is. Replacing them with generic copy here loses
-		// the reason the swap can't be built — an unresolvable lookup table,
-		// say — which the caller needs to decide whether re-quoting will help.
+		// Errors propagate unchanged. A generic message here would drop the reason
+		// the swap cannot be built, such as a lookup table that does not resolve.
+		// The caller needs that reason to decide whether a new quote helps.
 		const { instructions, lookupTables } =
 			await this.getInstructionsAndLookupTables(route);
 
@@ -412,10 +412,10 @@ export class TitanClient implements SwapProvider {
 	}
 
 	/**
-	 * Fetches a lookup table required by a route, retrying transient RPC
-	 * failures (rate limiting in particular) before giving up. Checks the
-	 * instance cache first and populates it on a fresh fetch.
-	 * @throws If the table still can't be loaded, or doesn't exist on-chain.
+	 * Fetches a lookup table that a route requires. It retries a transient RPC
+	 * failure, such as rate limiting, before it fails. It reads the instance cache
+	 * first and fills the cache on a fresh fetch.
+	 * @throws If the table still fails to load, or does not exist on chain.
 	 */
 	private async fetchLookupTable(
 		altPubkey: PublicKey
@@ -437,7 +437,7 @@ export class TitanClient implements SwapProvider {
 			try {
 				altAccount = await this.connection.getAddressLookupTable(altPubkey);
 			} catch (err) {
-				// Transient — rate limiting, connection reset. Worth another go.
+				// A transient failure, such as rate limiting or a connection reset.
 				lastError = err;
 				continue;
 			}
@@ -447,8 +447,8 @@ export class TitanClient implements SwapProvider {
 				return altAccount.value;
 			}
 
-			// A successful response with no value means the route references a
-			// table that isn't on-chain. Retrying won't conjure it up.
+			// A successful response with no value means the route names a table that
+			// is not on chain. A retry does not create it.
 			throw new Error(
 				`Address lookup table ${altPubkey.toString()} does not exist`
 			);
@@ -477,11 +477,10 @@ export class TitanClient implements SwapProvider {
 			})
 		);
 
-		// These all have to resolve. A table that fails to load isn't a slightly
-		// worse route — every account it would have compressed to a 1-byte index
-		// gets inlined as a 32-byte pubkey instead, which pushes the transaction
-		// past the size limit and only surfaces later as an opaque
-		// "encoding overruns Uint8Array". Failing here lets the caller re-quote.
+		// Every table must resolve. When one fails to load, each account it would
+		// have compressed to a 1-byte index goes inline as a 32-byte pubkey. That
+		// pushes the transaction past the size limit, and the failure then appears
+		// as "encoding overruns Uint8Array". Failing here lets the caller re-quote.
 		const lookupTables = await Promise.all(
 			(route.addressLookupTables ?? []).map((altPubkey) =>
 				this.fetchLookupTable(new PublicKey(altPubkey))

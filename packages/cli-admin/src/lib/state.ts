@@ -3,14 +3,14 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { AdminClient, VelocityEnv, initialize } from '@velocity-exchange/sdk';
 
 /**
- * Read-only State access that needs no signer and no subscription: an
- * ephemeral throwaway wallet satisfies the client constructor, the account is
- * fetched raw and decoded through the program coder. Used by `config init`
- * (verifying a pasted multisig against the live admins before a keypair is
- * even configured) and `whoami`.
+ * Read-only State access that needs no signer and no subscription. A throwaway
+ * wallet satisfies the client constructor. The account is fetched raw and
+ * decoded through the program coder. `config init` uses this to verify a pasted
+ * multisig against the live admins before a keypair is configured, and `whoami`
+ * uses it too.
  */
 
-/** The decoded fields consulted for authority checks. */
+/** The decoded fields that the authority checks read. */
 export type StateAdmins = {
 	coldAdmin: PublicKey;
 	warmAdmin: PublicKey;

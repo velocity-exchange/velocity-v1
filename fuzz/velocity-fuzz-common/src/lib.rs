@@ -12,6 +12,9 @@
 
 pub use velocity;
 
+#[cfg(feature = "clob")]
+pub mod clob;
+
 /// Reusable SVM-tier invariant assertions. These read on-chain state from a
 /// live `TestContext` and reconcile it against the protocol's core invariants.
 /// Stubbed here; the reconciliation logic lands in the foundation before fan-out.

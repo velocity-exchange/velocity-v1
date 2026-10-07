@@ -14,10 +14,7 @@ use {
     },
     anchor_lang::prelude::*,
     anchor_spl::token::{mint_to, Mint, MintTo, Token, TokenAccount},
-    velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
-        state::user::User,
-    },
+    velocity::{math::safe_math::SafeMath, program::Velocity, state::user::User},
 };
 
 pub fn tokenize_shares<'info>(
@@ -25,10 +22,10 @@ pub fn tokenize_shares<'info>(
     amount: u64,
     unit: WithdrawUnit,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -57,18 +54,15 @@ pub fn tokenize_shares<'info>(
         .get_vault_shares()
         .safe_add(tokenized_vault_depositor.get_vault_shares())?;
 
-    // #101: apply a matured fee update on this share-movement path (mirrors deposit/withdraw).
+    // A matured fee update applies on every path that moves shares
+    // (OtterSec #101).
     let has_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
     let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
 
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(spot_market_index),
         vp.is_some(),
@@ -76,8 +70,7 @@ pub fn tokenize_shares<'info>(
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
     validate!(
         !vault_depositor.last_withdraw_request.pending(),
@@ -87,12 +80,12 @@ pub fn tokenize_shares<'info>(
 
     let total_supply_before = ctx.accounts.mint.supply;
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
-    let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
+    let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
-    // transfer_shares is the first apply_fee on this path, so it applies the matured update.
-    // Keep the VaultProtocol provider alive (capture the returned provider) so the subsequent
-    // tokenize_shares accounting still sees protocol state.
+    // transfer_shares makes the first apply_fee call on this path, so it installs
+    // the matured update. The VaultProtocol provider stays alive so the
+    // tokenize_shares accounting below still sees protocol state.
     let (shares_transferred, mut vp) = vault_depositor.transfer_shares(
         &mut *tokenized_vault_depositor,
         &mut vault,

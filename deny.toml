@@ -50,6 +50,14 @@ allow-git = [
 	# fork we control rather than the pre-rename drift-labs one (#414); pinning it
 	# to a rev is still worth doing.
 	"https://github.com/velocity-exchange/tungstenite-rs",
+
+	# Velocity-owned, pinned by rev. The program uses relay-spec and relay-anchor,
+	# and rust/swift uses relay-chain-source.
+	"https://github.com/velocity-exchange/relay",
+
+	# Transitive: relay-chain-source pins yellowstone-grpc-client and -proto to an
+	# upstream rev.
+	"https://github.com/rpcpool/yellowstone-grpc",
 ]
 
 # ---------------------------------------------------------------------------
@@ -181,11 +189,6 @@ license-files = []
 
 [[licenses.clarify]]
 name = "vaults"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "jit-proxy"
 expression = "Apache-2.0"
 license-files = []
 

@@ -140,6 +140,7 @@ fn calculate_oracle_valid() {
 
     let mut oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -173,6 +174,7 @@ fn calculate_oracle_valid() {
     };
     oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -193,6 +195,7 @@ fn calculate_oracle_valid() {
         .last_oracle_price_twap = 21 * PRICE_PRECISION as i64;
     oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -209,6 +212,7 @@ fn calculate_oracle_valid() {
         .last_oracle_price_twap_5min = 29 * PRICE_PRECISION as i64;
     oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -222,6 +226,7 @@ fn calculate_oracle_valid() {
     oracle_price_data.confidence = PRICE_PRECISION_U64;
     oracle_status = get_oracle_status(
         &market,
+        market.market_stats.historical_oracle_data.twaps(),
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
@@ -354,11 +359,10 @@ fn immediate_staleness_threshold_by_override() {
 
 #[test]
 fn fill_order_match_admits_the_same_set_as_margin_calc() {
-    // A DLOB match must not execute at a price the program cannot do margin
-    // with. `FillOrderMatch` used to admit `StaleForMargin`, which let both
-    // sides exactly close (reducing, so the equity-floor gate is skipped)
-    // while the lazy breaker stayed blind for want of `MarginCalc` validity,
-    // crystallizing a temporary mark loss at an unusable price (OtterSec
+    // A maker match must not execute at a price the program cannot do margin with.
+    // `FillOrderMatch` used to admit `StaleForMargin`, which let both sides exactly close
+    // (reducing, so the equity-floor gate is skipped) while the lazy breaker stayed blind for want
+    // of `MarginCalc` validity, crystallizing a temporary mark loss at an unusable price (OtterSec
     // #142). The two actions therefore admit the same set.
     let states = [
         OracleValidity::NonPositive,
@@ -408,4 +412,51 @@ fn fill_order_match_admits_the_same_set_as_margin_calc() {
             action
         );
     }
+}
+
+#[test]
+fn trigger_order_admits_the_same_set_as_fill_order_match() {
+    let states = [
+        OracleValidity::NonPositive,
+        OracleValidity::TooVolatile,
+        OracleValidity::TooUncertain,
+        OracleValidity::StaleForMargin,
+        OracleValidity::InsufficientDataPoints,
+        OracleValidity::StaleForAMM {
+            immediate: true,
+            low_risk: true,
+        },
+        OracleValidity::StaleForAMM {
+            immediate: true,
+            low_risk: false,
+        },
+        OracleValidity::Valid,
+    ];
+
+    for validity in states {
+        assert_eq!(
+            is_oracle_valid_for_action(validity, Some(VelocityAction::TriggerOrder)).unwrap(),
+            is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderMatch)).unwrap(),
+            "TriggerOrder and FillOrderMatch disagree on {:?}",
+            validity
+        );
+    }
+}
+
+#[test]
+fn a_stale_for_margin_oracle_fires_no_trigger() {
+    assert!(!is_oracle_valid_for_action(
+        OracleValidity::StaleForMargin,
+        Some(VelocityAction::TriggerOrder)
+    )
+    .unwrap());
+}
+
+#[test]
+fn a_too_uncertain_oracle_fires_no_trigger() {
+    assert!(!is_oracle_valid_for_action(
+        OracleValidity::TooUncertain,
+        Some(VelocityAction::TriggerOrder)
+    )
+    .unwrap());
 }

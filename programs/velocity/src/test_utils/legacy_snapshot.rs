@@ -890,16 +890,19 @@ mod tests {
     /// New PerpMarket is the size the tests will write into.
     #[test]
     fn current_perp_market_size() {
-        // Cached spread state lives back on AMM: 4×u128 spread reserves,
+        // allow-verbose: derives the byte counts asserted below, so a future
+        // size change can be diffed against this breakdown instead of
+        // re-deriving it. Cached spread state lives on AMM: 4×u128 reserves,
         // i64 last_oracle_reserve_price_spread_pct, u64 last_spread_update_slot,
         // 2×u32 long/short_spread, i32 reference_price_offset. The 5 former
         // lp_* config bytes moved into the 16-byte `hedge_config` at the tail,
-        // growing the struct from 1200 to 1216 bytes; +8 for the Anchor
+        // growing the struct from 1200 to 1216 bytes, +8 for the Anchor
         // discriminator = 1224. The protocol-fee redesign then appended
         // `protocol_fee_pool` (32) + `pending_protocol_fee`/`pending_if_fee`
         // (2×16) + `protocol_liquidation_fee` (4) + pad (12) = 80 bytes at the
-        // tail → 1296 content, followed by 256 reserved bytes. The current
-        // account is 1552 bytes of content and 1560 with discriminator.
+        // tail, giving 1296 content bytes. `clob_market` (32), `quoter_slab`
+        // (32) and 192 reserved bytes follow, so the account holds 1552
+        // content bytes and 1560 with the discriminator.
         assert_eq!(std::mem::size_of::<PerpMarket>(), 1552);
         assert_eq!(PerpMarket::SIZE, 1560);
     }

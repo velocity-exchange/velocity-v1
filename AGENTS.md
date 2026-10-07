@@ -16,13 +16,14 @@ the one that matches your task before you start.
 | Changesets, npm publish, Docker images, release CLI        | [`docs/agents/release.md`](./docs/agents/release.md)                             |
 | Execution flows, account locations, SDK-to-instruction map | [`ARCHITECTURE.md`](./ARCHITECTURE.md)                                           |
 | Adding fields to zero-copy structs                         | [`docs/alignment-and-native-offsets.md`](./docs/alignment-and-native-offsets.md) |
+| Writing, splitting or restructuring Rust code              | [`docs/agents/code-shape.md`](./docs/agents/code-shape.md)                       |
 | Any prose you write into a file                            | [`.claude/skills/unslop/SKILL.md`](./.claude/skills/unslop/SKILL.md)             |
 
 ## Repo layout
 
 The repo is a Bun workspace and a Turborepo monorepo. Use `bun`, not yarn or npm. Run
 `bun install` once at the repo root and never inside a package. `packages/*` are the publishable
-libraries (`@velocity-exchange/sdk`, `admin-cli`, `vaults-sdk`, `jit-proxy`). `apps/*` are private
+libraries (`@velocity-exchange/sdk`, `admin-cli`, `vaults-sdk`). `apps/*` are private
 services that ship as Docker images.
 
 `rust/` is a separate Cargo workspace for velocity-rs, keep-rs and swift. The root `Cargo.toml`
@@ -39,7 +40,12 @@ Programs live in `programs/`:
   treasury. It is absent from `Anchor.toml [programs.localnet]`. Its tests are in the standalone
   workspace `programs/protocol-revenue-router/svm-tests/`. Its client is
   `packages/revenue-router-sdk`, regenerated with `bun run program:idl:revenue-router`.
-- `jit-proxy/`, `pyth-lazer/`, `pyth/` and `token_faucet/` are described in `ARCHITECTURE.md`.
+- `pyth-lazer/`, `pyth/` and `token_faucet/` are described in `ARCHITECTURE.md`.
+
+`anchor-v2/` is a separate workspace for the Anchor v2 programs: the CLOB, the Midpoint quoter and
+later quoters. `integration-tests/` is a standalone litesvm workspace that loads the real
+`velocity.so` and CLOB `.so` fixtures. `crates/` holds the wire and state crates both workspaces
+share. The root `Cargo.toml` excludes `anchor-v2/` and `integration-tests/`.
 
 Switchboard and the external spot-fulfillment venues (Serum, Phoenix, OpenBook) were removed.
 `OracleSource` keeps `DeprecatedSwitchboard` and `DeprecatedSwitchboardOnDemand` only to preserve
@@ -48,8 +54,10 @@ ABI discriminants, and both error out in `get_oracle_price`.
 ## Toolchain
 
 On Apple Silicon, build with an x86_64 toolchain (`rustup default stable-x86_64-apple-darwin`),
-never a native aarch64 one. Native ARM changes the zero-copy memory layout. Use Rust 1.89 or newer,
-and run clippy on the version CI pins (see [`docs/agents/testing.md`](./docs/agents/testing.md#formatting-and-lint)).
+never a native aarch64 one. Native ARM changes the zero-copy memory layout. Use Rust 1.93 or newer.
+The Anchor 1.0 MSRV is 1.89, but velocity uses `Box::new_zeroed` (1.92) and the `rust/` workspace
+locks `solana-syscalls` 4.2 (1.93). CI pins 1.95.0, so run clippy on that version (see
+[`docs/agents/testing.md`](./docs/agents/testing.md#formatting-and-lint)).
 
 Build the programs with the `program:*` scripts in the root `package.json`, never with a bare
 `anchor build`. The scripts carry the right feature flags for each program.
@@ -89,8 +97,8 @@ between `BN` and `number`. The IDL is the authority. Reconcile `types.ts` agains
 reverse.
 
 **Program logic changes.** The SDK reimplements program logic in TypeScript: pricing, margin and
-health, funding, fees, the AMM math in `packages/sdk/src/math/`, DLOB matching and auctions in
-`packages/sdk/src/dlob/`, and the account abstractions in `user.ts` and `velocityClient.ts`. When
+health, funding, fees, the AMM math in `packages/sdk/src/math/`, and the account abstractions in
+`user.ts` and `velocityClient.ts`. When
 you change a formula, rounding, a threshold or clamp, validity gating, enum semantics, or the order
 operations apply in, port the same change to the SDK. Port the same constants and edge cases. A
 divergence produces no error. The SDK just mispredicts fills, margin, liquidation prices, funding
@@ -128,9 +136,11 @@ features in sections 2 and 3, SDK in 4, ABI and layout in 5, and a row in the se
 log. Update the section 7 checklist if the migration steps change. Verify every stated size, pubkey
 and count against the code.
 
+**One §6 row per branch.** While a branch is unmerged, it gets exactly one §6 row; every later change on the branch folds into that row (and into the branch's §2–§5 prose) in place. An integrator migrates against the branch's final state and never saw its intermediate ones, so rewrite the row to the final surface rather than narrating intra-branch history — a rename or a check that only ever existed inside the branch does not belong in the log. The same rule applies to a design doc's sync/change log: one entry per branch, edited in place.
+
 **User-facing change in a publishable package.** Add a changeset with `bun run changeset`. Chores,
 CI and internal refactors don't need one. Details in
-[`docs/agents/release.md`](./docs/agents/release.md).
+[`docs/agents/release.md`](./docs/agents/release.md). Keep one changeset per feature branch and rewrite it in place as the branch changes.
 
 **Gating job added or changed in `.github/workflows/main.yml`.** Mirror it in
 `test-scripts/ci-local.sh`.
@@ -203,6 +213,18 @@ from another account's loaded field), `has_one` for top-level pubkey fields, and
 Keep a check in the handler only when it is multi-account or stateful logic, math on loaded data,
 or a data invariant rather than an identity check.
 
+### Events
+
+**Version new event structs.** An `#[event]`'s discriminator is derived from its struct name, so
+adding a field to an existing record silently changes the payload under a discriminator consumers
+already decode. New velocity events therefore end in `V0` (e.g. `ProtocolUserWithdrawRecordV0`), and
+a field addition ships as `…V1` with its own discriminator rather than mutating the `V0` shape. The
+records inherited from upstream Drift keep their unversioned names — don't rename those. Wire every
+new event into the SDK's subscriber surface in the same change: `EventMap`, the `eventTypes` default
+list, and the `VelocityEvent` union in `packages/sdk/src/events/types.ts`, plus the record's type
+mirror in `packages/sdk/src/types.ts`. A type mirror without the `EventMap` entry compiles fine and
+is simply never decoded.
+
 ### Constants
 
 Policy values (thresholds, defaults, caps) and precision constants go in
@@ -247,6 +269,35 @@ Repo conventions on top of unslop:
   Those go in the PR description or commit message.
 - Module `//!` doc comments are a title line and one prose paragraph, as in `vlp/amm/mod.rs`. Don't
   list submodules one by one.
+
+**No plan codenames in comments.** A comment must never point at a design doc, plan, spec section,
+work phase, or review round as its justification — not `S1`–`S7` / "the S5 rule", not "Phase 2",
+not "the plan settles this", "per the sync log", "as the spec warns", "deferred to a later phase". A
+reader has the code, not the plan; those labels expire the moment the doc is renamed, reorganized, or
+merged, and they encode nothing a reader can act on. Write the reason itself instead:
+
+```rust
+// BAD:  the S5 rule applied to the taker flow
+// GOOD: an unfilled place_and_take remainder rests on the book instead of
+//       cancelling, so the taker keeps queue position at its limit price
+```
+
+Referring to a _named, stable artifact_ is fine — a crate (`relay-spec`), a type
+(`relay_spec::ConditionV0`), a module path, a durable doc that explains a whole subsystem
+(`docs/alignment-and-native-offsets.md`) — because those are things the reader can go read and that
+change with the code. `docs/propamm-plan.md` is where S1–S7 are _defined_; that document may use
+them, code may not. Local step labels inside one function ("first pass … second pass") are fine too,
+as long as they describe that function rather than a project timeline.
+
+**`allow-verbose:` marks a comment that may exceed the length budget.** The budget is in
+`~/.claude/CLAUDE.md` and enforced by the `deslop-comments` skill: a comment is at most half
+the lines of the code it documents. A comment that must run longer carries a line starting
+`allow-verbose:` saying why, and the tooling then skips it. `grep -rn "allow-verbose:"` lists
+every place the rule was set aside, so an exception is a decision rather than a quiet drift.
+
+What earns it here: a wire format or ABI a client builds bytes from, a security bound whose
+derivation a reader cannot reconstruct, an operator runbook, an audit finding's full
+reasoning. What does not: wanting to keep a paragraph.
 
 ## Git
 

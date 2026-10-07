@@ -37,7 +37,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.91.1
+  RUST_TOOLCHAIN: 1.95.0
   ANCHOR_VERSION: 1.0.2
   # Matches main.yml. This job builds the .so through deploy-scripts/build-sbf.sh,
   # which needs a cargo-build-sbf that can emit SBPFv3.
@@ -212,6 +212,15 @@ jobs:
           rm -rf target/sbpf*-solana-solana target/deploy
           bash deploy-scripts/build-sbf.sh devnet velocity
           ls -la target/deploy/velocity.so
+
+      # Every perp fill routes through the market's CLOB book, so the SVM
+      # harnesses load clob.so beside velocity.so.
+      - name: Build CLOB program (.so)
+        env:
+          RUSTFLAGS: ''
+        run: |
+          bun run program:build:clob
+          ls -la anchor-v2/target/deploy/clob.so
 
       - name: Install crucible CLI (pinned)
         run: cargo install --git https://github.com/asymmetric-research/crucible --rev daeaa4d4a4e334175c4f171daacc7e177ad2fae0 crucible-fuzz-cli --locked || cargo install --git https://github.com/asymmetric-research/crucible --rev daeaa4d4a4e334175c4f171daacc7e177ad2fae0 crucible-fuzz-cli

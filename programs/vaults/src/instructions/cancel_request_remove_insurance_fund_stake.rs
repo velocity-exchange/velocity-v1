@@ -22,10 +22,10 @@ pub fn cancel_request_remove_insurance_fund_stake<'info>(
     Ok(())
 }
 
-// Own accounts struct (mirrors velocity's split of cancel off request-remove). Cancel now DOES
-// settle already-due revenue before pricing the forfeiture (OtterSec #141), so it carries the same
-// `velocity_state` / `velocity_spot_market_vault` / `velocity_signer` / `token_program` set as the
-// request-remove path.
+// Own accounts struct, which mirrors velocity's split of cancel off request-remove.
+// Cancel settles already-due revenue before it prices the forfeiture (OtterSec #141). It therefore
+// carries the same `velocity_state`, `velocity_spot_market_vault`, `velocity_signer`
+// and `token_program` set as the request-remove path.
 #[derive(Accounts)]
 #[instruction(market_index: u16)]
 pub struct CancelRequestRemoveInsuranceFundStake<'info> {

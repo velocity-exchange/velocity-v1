@@ -1,5 +1,11 @@
 # AMM decoupling and maker interface
 
+> This doc dates from when orders rested in `User.orders` and the vAMM could JIT inside a match.
+> Both are gone. Matching now runs on an on-chain CLOB, and the old order venue and the AMM JIT
+> path were removed with that change. The design this doc argues for is what shipped: one quoter
+> interface, one matcher, and the vAMM as one source among several. The "DLOB order" and "JIT
+> participant" examples describe the sources of that time, not sources the program still has.
+
 ## Why
 
 `PerpMarket.amm: AMM` began as one struct holding the vAMM's state. Over time it absorbed
@@ -36,7 +42,7 @@ The refactor, once it lands in full, gives the program four properties.
 
 The AMM now lives under `programs/velocity/src/vlp/amm/`, split into `state.rs` (the struct),
 `quoter.rs` (the `Quoter` impls), `controller.rs` (swap application), `refresh.rs` (the curve
-refresh), `admin.rs` and `math/` (`amm.rs`, `cp_curve.rs`, `jit.rs`, `repeg.rs`, `spread.rs`). The
+refresh), `admin.rs` and `math/` (`amm.rs`, `cp_curve.rs`, `repeg.rs`, `spread.rs`). The
 `Quoter` trait lives in `programs/velocity/src/state/quoter.rs` and the fill engine in
 `programs/velocity/src/controller/matching.rs`. `PerpMarket.market_stats: MarketStats` exists and
 carries the migrated stats. The AMM struct is down to 38 fields
@@ -320,7 +326,7 @@ pub trait Quoter {
 
     fn is_prio(&self) -> bool { false }
     fn is_fee_exempt(&self) -> bool { false }
-    fn fee_policy(&self) -> FillFeePolicy { FillFeePolicy::DlobMatch }
+    fn fee_policy(&self) -> FillFeePolicy { FillFeePolicy::MakerMatch }
 
     /// Closed-form fill of `target_size` base at this maker's price.
     fn try_fill_solo(
@@ -378,7 +384,7 @@ DLOB orders are not.
 
 `is_fee_exempt` marks makers that neither pay nor receive maker fees, because the vAMM earns from
 the spread rather than from rebates. `fee_policy` selects the fill controller's fee path, which is
-`AmmHouse` for AMM-side fills and `DlobMatch` for DLOB fills. Both flags are copied into each
+`AmmHouse` for AMM-side fills and `MakerMatch` for a maker order. Both flags are copied into each
 `QuoterFill`.
 
 `try_fill_solo` computes a maker's closed-form fill at its price. `fill_amm_only` calls it to fill
@@ -565,7 +571,7 @@ programs/velocity/src/
     controller.rs        swap application, AmmSwapOutput
     refresh.rs           curve refresh applied during Quoter::setup
     admin.rs             AMM admin instructions
-    math/                amm.rs, cp_curve.rs, jit.rs, repeg.rs, spread.rs
+    math/                amm.rs, cp_curve.rs, repeg.rs, spread.rs
   instructions/
     admin.rs             native handlers reading MarketStats and AMM by offset
 ```

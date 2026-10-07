@@ -9,11 +9,10 @@ import { detectCluster } from '../lib/context';
 import { fetchStateAdmins } from '../lib/state';
 
 /**
- * `whoami` answers the question every authority bug starts with: which keys
- * does my signer actually hold on this cluster? It decodes the live State,
- * matches the signer against the cold/warm/pause admins and every hot role,
- * and, when a multisig is configured, reports membership and whether that
- * squad's vault is itself a State admin.
+ * `whoami` reports which keys the configured signer holds on a cluster. It
+ * decodes the live State and matches the signer against the cold, warm and
+ * pause admins and every hot role. When a multisig is configured, it also
+ * reports membership and whether that squad's vault is itself a State admin.
  */
 export function registerWhoami(parent: Command): void {
 	withGlobalOptions(
@@ -27,8 +26,8 @@ export function registerWhoami(parent: Command): void {
 		const provider = buildProvider(opts);
 		const signer = loadKeypair(opts.keypair).publicKey;
 		const cluster = await detectCluster(provider.connection);
-		// Same env resolution as buildAdminClient: a declared env must match
-		// the chain; the fallback default adopts the detected cluster.
+		// The same env resolution as buildAdminClient. A declared env must match
+		// the chain. The fallback default adopts the detected cluster.
 		const env =
 			!opts.envExplicit && (cluster === 'mainnet-beta' || cluster === 'devnet')
 				? cluster

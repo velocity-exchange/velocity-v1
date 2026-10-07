@@ -1,8 +1,6 @@
 /**
- * Read-only quickstart: print the SOL-PERP vAMM bid/ask and oracle price on mainnet.
- *
- * Needs no funds and signs nothing. Run with:
- *   RPC_URL=<your rpc> bunx ts-node examples/read-market.ts
+ * A read-only quickstart. Prints the SOL-PERP vAMM bid, ask and oracle price.
+ * Run with: RPC_URL=<your rpc> bunx ts-node examples/read-market.ts
  */
 import { Connection, Keypair } from '@solana/web3.js';
 import {
@@ -24,8 +22,8 @@ async function main() {
 		'confirmed'
 	);
 
-	// VelocityClient always requires a wallet, even on a read-only path. This
-	// throwaway keypair is never used to sign.
+	// VelocityClient requires a wallet even on a read-only path. This keypair
+	// never signs anything.
 	const wallet = new Wallet(Keypair.generate());
 
 	const client = new VelocityClient({

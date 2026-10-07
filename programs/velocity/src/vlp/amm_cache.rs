@@ -260,10 +260,12 @@ impl<'a> AccountZeroCopy<'a, CacheInfo, AmmCacheFixed> {
             if cache_info.slot == 0 {
                 continue;
             }
-            if cache_info.last_settle_slot < slot.saturating_sub(threshold_slot_diff) {
-                msg!("AMM settle data is stale for perp market {}", i);
-                return Err(ErrorCode::AMMCacheStale);
-            }
+            crate::validate!(
+                cache_info.last_settle_slot >= slot.saturating_sub(threshold_slot_diff),
+                ErrorCode::AMMCacheStale,
+                "AMM settle data is stale for perp market {}",
+                i
+            )?;
         }
         Ok(())
     }
@@ -273,10 +275,12 @@ impl<'a> AccountZeroCopy<'a, CacheInfo, AmmCacheFixed> {
             if cache_info.slot == 0 {
                 continue;
             }
-            if cache_info.slot < slot.saturating_sub(threshold) {
-                msg!("Perp market cache info is stale for perp market {}", i);
-                return Err(ErrorCode::AMMCacheStale);
-            }
+            crate::validate!(
+                cache_info.slot >= slot.saturating_sub(threshold),
+                ErrorCode::AMMCacheStale,
+                "Perp market cache info is stale for perp market {}",
+                i
+            )?;
         }
         Ok(())
     }
@@ -286,15 +290,14 @@ impl<'a> AccountZeroCopy<'a, CacheInfo, AmmCacheFixed> {
             if cache_info.slot == 0 {
                 continue;
             }
-            if cache_info.oracle_slot < slot.saturating_sub(threshold) {
-                msg!(
-                    "Perp market cache info is stale for perp market {}. oracle slot: {}, slot: {}",
-                    i,
-                    cache_info.oracle_slot,
-                    slot
-                );
-                return Err(ErrorCode::AMMCacheStale);
-            }
+            crate::validate!(
+                cache_info.oracle_slot >= slot.saturating_sub(threshold),
+                ErrorCode::AMMCacheStale,
+                "Perp market cache info is stale for perp market {}. oracle slot: {}, slot: {}",
+                i,
+                cache_info.oracle_slot,
+                slot
+            )?;
         }
         Ok(())
     }

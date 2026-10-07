@@ -20,7 +20,7 @@ import {
 	MMOraclePriceData,
 } from '../../src';
 
-import { MockUserMap, mockPerpPosition } from '../dlob/helpers';
+import { MockUserMap, mockPerpPosition } from '../fixtures/mockAccounts';
 
 export const mockOrder: Order = {
 	status: OrderStatus.INIT,
@@ -42,12 +42,13 @@ export const mockOrder: Order = {
 	postOnly: false,
 	immediateOrCancel: false,
 	oraclePriceOffset: ZERO,
-	auctionDuration: 0,
-	auctionStartPrice: ZERO,
-	auctionEndPrice: ZERO,
+	unusedAuctionDuration: 0,
+	clobNodeIndex: ZERO,
+	clobOrderId: ZERO,
 	maxTs: ZERO,
 	bitFlags: 0,
 	postedSlotTail: 0,
+	padding: [0, 0, 0, 0],
 };
 
 export const mockSpotPosition: SpotPosition = {

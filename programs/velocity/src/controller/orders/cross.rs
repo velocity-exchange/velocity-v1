@@ -1,0 +1,429 @@
+//! Crossing two resting sources against each other.
+//!
+//! A crank matches a book order against a counterparty rather than filling a
+//! taker's own order, so it prices and gates the match itself. The oracle
+//! pre-flight holds such a crank to the rules an ordinary fill runs under.
+
+use super::*;
+
+/// The market and oracle state a crossed-book crank checks before it moves a
+/// position.
+pub(crate) struct CrankOraclePreflight {
+    pub oracle_price: i64,
+    /// Whether the oracle is too old to price margin.
+    pub stale_for_margin: bool,
+    /// Open interest before the crank. The post-fill rule measures against it.
+    pub open_interest: u128,
+}
+
+/// The market gates a crossed-book crank passes.
+///
+/// These are the gates `admit_perp_market` applies to a routed fill. A crank
+/// that settles a match itself never reaches that function, so it runs them
+/// here. `is_in_settlement` covers only `Settlement` and `Delisted`, so the
+/// status check is what refuses an `Initialized` market.
+pub(crate) fn crank_market_gates(market: &PerpMarket, now: i64) -> VelocityResult {
+    validate!(
+        matches!(
+            market.status,
+            MarketStatus::Active | MarketStatus::ReduceOnly
+        ),
+        ErrorCode::MarketFillOrderPaused,
+        "Market not active",
+    )?;
+    validate!(
+        !market.is_in_settlement(now),
+        ErrorCode::MarketFillOrderPaused,
+        "Market is in settlement mode",
+    )?;
+    validate!(
+        !market.is_operation_paused(PerpOperation::Fill),
+        ErrorCode::MarketFillOrderPaused,
+        "Market fills paused",
+    )?;
+
+    Ok(())
+}
+
+/// Hold a crossed-book crank to the oracle rules an ordinary fill runs under.
+///
+/// A crank matches two resting sources at a price the oracle bounds, so the
+/// gates are the same ones a fill passes.
+///
+/// `crank` names the caller in the error message, so a refusal says which
+/// crank refused. The market stays borrowed by the caller, which reads its
+/// own extra fields after this returns.
+pub(crate) fn crank_oracle_preflight(
+    market: &mut PerpMarket,
+    state: &State,
+    oracle_map: &mut OracleMap,
+    clock: &Clock,
+    crank: &str,
+) -> VelocityResult<CrankOraclePreflight> {
+    validation::perp_market::validate_perp_market(market)?;
+    crank_market_gates(market, clock.unix_timestamp)?;
+
+    let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
+    let (mm_oracle_price_data, safe_oracle_validity) =
+        safe_mm_oracle_state(market, state, &oracle_price_data, clock.slot)?;
+    validate!(
+        is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?,
+        ErrorCode::InvalidOracle,
+        "oracle not valid for {}",
+        crank
+    )?;
+
+    let oracle_price = mm_oracle_price_data.get_price();
+    validate_market_within_price_band(market, state, oracle_price)?;
+    Ok(CrankOraclePreflight {
+        oracle_price,
+        stale_for_margin: state
+            .slot_clock()
+            .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, clock.slot)
+            > state.oracle_guard_rails.validity.stale_for_margin_ms(),
+        open_interest: market.get_open_interest(),
+    })
+}
+
+/// What one taker-origin cross costs, and the market facts its post-fill
+/// checks measure against.
+pub struct TakerOriginCrossPricing {
+    pub fee: fees::TakerOriginCrossFee,
+    pub oracle_stale_for_margin: bool,
+    /// Open interest before the fill.
+    pub perp_market_oi_before: u128,
+}
+
+/// The oracle pre-flight and the pricing of one taker-origin cross, before any
+/// of it is committed.
+///
+/// The caller must run this before the CLOB calls that consume the pair. The
+/// cross is refused outright when crossing would leave the taker worse off
+/// than the price it was resting at, and a refusal has to leave the book
+/// untouched. The pre-flight applies the market gates and the oracle gates the
+/// fill path applies: `FillOrderMatch` validity, the price band, and
+/// staleness. The reward's size-vs-oracle multiplier is derived from the
+/// oracle price, so the reward is a value transfer an oracle read drives.
+///
+/// `rest_price` is the price the taker-origin order rests at.
+/// `counterparty_price` is the price the match will settle at. `order_slot` is
+/// the slot the taker-origin order was placed on the book.
+#[allow(clippy::too_many_arguments)]
+pub fn price_taker_origin_cross(
+    state: &State,
+    market_index: u16,
+    taker_direction: PositionDirection,
+    rest_price: u64,
+    counterparty_price: u64,
+    base_asset_amount: u64,
+    order_slot: u64,
+    taker_stats: &UserStats,
+    perp_market_map: &PerpMarketMap,
+    oracle_map: &mut OracleMap,
+    clock: &Clock,
+) -> VelocityResult<TakerOriginCrossPricing> {
+    let (preflight, fee_adjustment, taker_fee_addon) = {
+        let market = &mut perp_market_map.get_ref_mut(&market_index)?;
+        let preflight =
+            crank_oracle_preflight(market, state, oracle_map, clock, "taker-origin cross")?;
+        (
+            preflight,
+            market.fee_adjustment,
+            market.taker_fee_addon_tenth_bps,
+        )
+    };
+    let oracle_price = preflight.oracle_price;
+
+    // Both notionals at the CLOB's own rounding, so the improvement is
+    // measured in the same units the fill will settle in.
+    let notional = |price: u64| clob_notional(price, base_asset_amount);
+    let fee = fees::calculate_taker_origin_cross_fee(
+        taker_direction,
+        notional(rest_price)?,
+        notional(counterparty_price)?,
+        &fees::determine_user_fee_tier(
+            taker_stats,
+            &state.perp_fee_structure,
+            &MarketType::Perp,
+            clock.unix_timestamp,
+            state.promo_fee_tier,
+        )?,
+        fee_adjustment,
+        taker_fee_addon,
+        order_slot,
+        clock.slot,
+        state.slot_clock(),
+        calculate_filler_multiplier_for_matched_orders(
+            counterparty_price,
+            taker_direction.opposite(),
+            oracle_price,
+        )?,
+        &state.perp_fee_structure.filler_reward_structure,
+    )?;
+
+    Ok(TakerOriginCrossPricing {
+        fee,
+        oracle_stale_for_margin: preflight.stale_for_margin,
+        perp_market_oi_before: preflight.open_interest,
+    })
+}
+
+/// The vAMM's best price for a taker on `direction`, on a copy of the curve
+/// projected to `oracle_price_data` the way a fill projects it.
+///
+/// `None` when the vAMM cannot fill that side, or when the projection fails.
+/// The fill gates are the router's own, so a cascade that stops vAMM fills
+/// also stops this price. The order-timing gate is left out, because this
+/// price has no order. A caller uses this only to choose a path, and the
+/// fill it chooses applies every vAMM gate again.
+pub fn vamm_top_price(
+    market: &PerpMarket,
+    oracle_price_data: OraclePriceData,
+    state: &State,
+    slot: u64,
+    direction: PositionDirection,
+) -> Option<u64> {
+    if state.amm_paused().ok()? {
+        return None;
+    }
+
+    let (mm_oracle_price_data, safe_validity) =
+        super::safe_mm_oracle_state(market, state, &oracle_price_data, slot).ok()?;
+    if !market
+        .amm_fill_gates_ok(safe_validity, &mm_oracle_price_data)
+        .ok()?
+    {
+        return None;
+    }
+
+    let inputs = crate::state::quoter::MarketQuoteInputs::load(
+        market,
+        oracle_price_data,
+        slot,
+        &state.oracle_guard_rails.validity,
+        state.slot_clock(),
+    )
+    .ok()?;
+    let mut amm = market.amm;
+    let quoter_context = inputs.ctx(slot);
+    crate::vlp::amm::quoter::AmmQuoter::for_amm(&mut amm)
+        .refresh(&quoter_context)
+        .ok()?;
+
+    let available = crate::vlp::amm::math::amm::calculate_amm_available_liquidity(
+        &amm,
+        &direction,
+        market.order_step_size,
+    )
+    .ok()?;
+    if available == 0 {
+        return None;
+    }
+
+    let reserve_price = amm.reserve_price().ok()?;
+    match direction {
+        PositionDirection::Long => amm
+            .ask_price(reserve_price, amm.long_spread, amm.reference_price_offset)
+            .ok(),
+        PositionDirection::Short => amm
+            .bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)
+            .ok(),
+    }
+}
+
+/// Whether the vAMM fills a taker on `direction` at a better price than
+/// `price`. `vamm_top` is [`vamm_top_price`].
+pub fn vamm_improves_on(vamm_top: Option<u64>, direction: PositionDirection, price: u64) -> bool {
+    vamm_top.is_some_and(|top| match direction {
+        PositionDirection::Long => top < price,
+        PositionDirection::Short => top > price,
+    })
+}
+
+/// Notional of `base_asset_amount` at `price`, floored. This is the CLOB's
+/// own rounding, so a notional velocity computes for a remainder it prices
+/// itself lands in the same units as a book-filled leg.
+pub fn clob_notional(price: u64, base_asset_amount: u64) -> VelocityResult<u64> {
+    price
+        .cast::<u128>()?
+        .safe_mul(base_asset_amount.cast()?)?
+        .safe_div(BASE_PRECISION_U64.cast()?)?
+        .cast::<u64>()
+}
+
+/// The `Order` a taker-origin remainder is, so the router fills it like any
+/// other order. It is not stored: the fill path takes it directly, so it
+/// holds no order slot and never leaves the book. The caller reports the
+/// fill afterward, and the order shrinks in place against its reservation.
+///
+/// Its price is the taker's own resting limit, so a routed fill matches
+/// only at or better, reaching the taker with the price improvement.
+/// The CLOB's order id is wider than velocity's. Narrowing it keeps fill
+/// records pointing at the book's order, since ids are sequential per
+/// book. The crank's own record keeps the full-width id.
+pub fn taker_origin_order(
+    market_index: u16,
+    taker_direction: PositionDirection,
+    resting: &crate::math::crosses::RestingOrder,
+) -> Order {
+    Order {
+        slot: resting.placed_slot,
+        order_id: resting.order_ref.order_id as u32,
+        market_index,
+        status: OrderStatus::Open,
+        order_type: OrderType::Limit,
+        market_type: MarketType::Perp,
+        direction: taker_direction,
+        base_asset_amount: resting.base_asset_amount,
+        price: resting.price,
+        existing_position_direction: taker_direction,
+        reduce_only: resting.reduce_only,
+        ..Order::default()
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use {
+        super::crank_market_gates,
+        crate::{
+            error::ErrorCode,
+            state::{
+                market_status::MarketStatus, paused_operations::PerpOperation,
+                perp_market::PerpMarket,
+            },
+        },
+    };
+
+    fn market_with(status: MarketStatus) -> PerpMarket {
+        PerpMarket {
+            status,
+            ..PerpMarket::default_test()
+        }
+    }
+
+    #[test]
+    fn an_active_market_crosses() {
+        assert!(crank_market_gates(&market_with(MarketStatus::Active), 100).is_ok());
+    }
+
+    /// A wind-down market still crosses. The caller forces `reduce_only` onto
+    /// both legs, so the cross can only shrink positions.
+    #[test]
+    fn a_reduce_only_market_crosses() {
+        let market = market_with(MarketStatus::ReduceOnly);
+        assert!(crank_market_gates(&market, 100).is_ok());
+        assert!(market.is_reduce_only().unwrap());
+    }
+
+    /// Fills are paused during the warm-up period, and `is_in_settlement`
+    /// does not cover it, so the status check is the only refusal.
+    #[test]
+    fn an_initialized_market_is_refused() {
+        assert_eq!(
+            crank_market_gates(&market_with(MarketStatus::Initialized), 100)
+                .err()
+                .unwrap(),
+            ErrorCode::MarketFillOrderPaused
+        );
+    }
+
+    #[test]
+    fn a_settling_market_is_refused() {
+        assert_eq!(
+            crank_market_gates(&market_with(MarketStatus::Settlement), 100)
+                .err()
+                .unwrap(),
+            ErrorCode::MarketFillOrderPaused
+        );
+    }
+
+    #[test]
+    fn a_fill_paused_market_is_refused() {
+        let mut market = market_with(MarketStatus::Active);
+        market.paused_operations = PerpOperation::Fill as u8;
+        assert_eq!(
+            crank_market_gates(&market, 100).err().unwrap(),
+            ErrorCode::MarketFillOrderPaused
+        );
+    }
+
+    /// A pair settles at the counterparty's price only when the vAMM does not
+    /// beat it for the aggressor.
+    #[test]
+    fn the_vamm_improves_only_on_a_worse_price() {
+        use {super::vamm_improves_on, crate::controller::position::PositionDirection};
+
+        assert!(vamm_improves_on(Some(101), PositionDirection::Long, 102));
+        assert!(!vamm_improves_on(Some(102), PositionDirection::Long, 102));
+        assert!(vamm_improves_on(Some(99), PositionDirection::Short, 98));
+        assert!(!vamm_improves_on(Some(97), PositionDirection::Short, 98));
+        assert!(!vamm_improves_on(None, PositionDirection::Long, 102));
+    }
+
+    /// The controller fixture's $100 curve, priced at an oracle of 100.
+    fn quoted_market() -> (PerpMarket, crate::state::oracle::OraclePriceData) {
+        use crate::math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64};
+
+        let mut market = market_with(MarketStatus::Active);
+        market.amm.base_asset_reserve = 100 * AMM_RESERVE_PRECISION;
+        market.amm.quote_asset_reserve = 100 * AMM_RESERVE_PRECISION;
+        market.amm.sqrt_k = 100 * AMM_RESERVE_PRECISION;
+        market.amm.peg_multiplier = 100 * PEG_PRECISION;
+        market.amm.terminal_quote_asset_reserve = 100 * AMM_RESERVE_PRECISION;
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+        market.amm.base_spread = 20_000;
+        market.amm.max_spread = 50_000;
+        market.amm.max_fill_reserve_fraction = 100;
+        market.amm.max_slippage_ratio = 50;
+        market.order_step_size = 1000;
+        let historical = &mut market.market_stats.historical_oracle_data;
+        historical.last_oracle_price = 100 * PRICE_PRECISION_I64;
+        historical.last_oracle_price_twap = 100 * PRICE_PRECISION_I64;
+        historical.last_oracle_price_twap_5min = 100 * PRICE_PRECISION_I64;
+        let oracle = crate::state::oracle::OraclePriceData {
+            price: 100 * PRICE_PRECISION_I64,
+            confidence: 1,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+        (market, oracle)
+    }
+
+    /// The pair rule reads the vAMM through the router's fill gates. A vAMM
+    /// in drawdown or with `AmmFill` paused has no price for it.
+    #[test]
+    fn a_vamm_the_fill_gates_stop_has_no_top() {
+        use crate::controller::position::PositionDirection;
+
+        let state = crate::state::state::State::default();
+        let top = |market: &PerpMarket, oracle| {
+            super::vamm_top_price(market, oracle, &state, 0, PositionDirection::Long)
+        };
+        let (market, oracle) = quoted_market();
+        assert!(top(&market, oracle).is_some(), "a live vAMM quotes a top");
+
+        let mut drawn_down = market;
+        drawn_down.amm.net_revenue_since_last_funding = -1_000_000_000_000;
+        drawn_down.amm.total_fee_minus_distributions = 1_000_000;
+        assert!(drawn_down.has_too_much_drawdown().unwrap());
+        assert_eq!(top(&drawn_down, oracle), None);
+
+        let mut paused = market;
+        paused.paused_operations = PerpOperation::AmmFill as u8;
+        assert_eq!(top(&paused, oracle), None);
+    }
+
+    /// A pair of remainders settles without a router, and the referred taker
+    /// keeps its referrer's accelerated rate there too.
+    #[test]
+    fn a_settled_pair_keeps_the_referrer_rate() {
+        let state = crate::state::state::State::default();
+        let rules = super::super::PricingRules::for_settlement(&state, true);
+        assert!(rules.referrer_is_accelerated);
+        assert!(!rules.vamm_maker_rebate);
+        assert!(!super::super::PricingRules::for_settlement(&state, false).referrer_is_accelerated);
+    }
+}

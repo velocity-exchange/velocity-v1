@@ -157,6 +157,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			firstUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		// the deposit went through firstUserVelocityClient — refresh admin's cache

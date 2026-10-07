@@ -64,8 +64,8 @@ pub fn initialize_vault<'info>(
 
     ctx.velocity_initialize_user_stats(params.name, bump)?;
     ctx.velocity_initialize_user(params.name, bump)?;
-    // Flag the freshly-created velocity User as vault-owned so the revenue-share
-    // sweep never credits builder/referral rewards into it (OtterSec #91/#92/#93).
+    // Flag the new velocity User as vault-owned, so the revenue-share sweep
+    // never credits builder or referral rewards into it (OtterSec #91/#92/#93).
     ctx.velocity_set_user_vault_owned(params.name, bump)?;
 
     Ok(())
@@ -110,6 +110,11 @@ pub struct InitializeVault<'info> {
     /// CHECK: checked in velocity cpi
     #[account(mut)]
     pub velocity_user: AccountInfo<'info>,
+    /// CHECK: checked in velocity cpi, which creates it at the PDA it derives
+    /// from `velocity_user`. A vault's velocity user holds positions like any
+    /// other, so it carries the same relay liquidation coverage.
+    #[account(mut)]
+    pub velocity_user_conditions: AccountInfo<'info>,
     /// CHECK: checked in velocity cpi
     #[account(mut)]
     pub velocity_state: AccountInfo<'info>,
@@ -144,6 +149,7 @@ impl<'info> InitializeUserCPI for Context<'info, InitializeVault<'info>> {
             payer: self.accounts.payer.to_account_info().clone(),
             rent: self.accounts.rent.to_account_info().clone(),
             system_program: self.accounts.system_program.to_account_info().clone(),
+            user_conditions: self.accounts.velocity_user_conditions.clone(),
         };
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signers);
         let sub_account_id = 0_u16;

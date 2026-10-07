@@ -25,7 +25,7 @@ Nothing here ships on-chain. The only program-side hook is the off-by-default
 
 - The pinned toolchain, installed automatically from `fuzz/rust-toolchain.toml`.
   You need Rust ≥ 1.77 on an x86_64 host so zero-copy `u128` alignment matches
-  on-chain. On Apple Silicon, run `rustup override set 1.91.1-x86_64-apple-darwin`
+  on-chain. On Apple Silicon, run `rustup override set 1.95.0-x86_64-apple-darwin`
   inside `fuzz/`.
 - The Crucible CLI, at the pinned rev:
   ```bash
@@ -36,6 +36,11 @@ Nothing here ships on-chain. The only program-side hook is the off-by-default
   devnet feature flavor so its account layouts match the host fixtures:
   ```bash
   bun run program:build:devnet     # from the repo root
+  ```
+  `e2e-svm` and `e2e-svm-revshare` also load the CLOB book program, because
+  every perp fill routes through the market's book:
+  ```bash
+  bun run program:build:clob       # writes anchor-v2/target/deploy/clob.so
   ```
 
 ## Running

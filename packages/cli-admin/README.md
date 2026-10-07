@@ -69,14 +69,16 @@ velocity-admin auth set-cold-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
 velocity-admin auth set-pause-admin <pubkey>
 velocity-admin auth set-hot-admin <role> <pubkey>
+# The pause key may clear a hot role without the multisig. It cannot set one:
+velocity-admin --keypair <pause.json> auth set-hot-admin flowAuthority 11111111111111111111111111111111
 # Assign the vAMM active-management multisig (its Squads timelock is off-chain policy):
 velocity-admin auth set-hot-admin vammQuoteManagement <multisig-pda>
-velocity-admin auth init-config [--initial-warm <pk>]
 
 velocity-admin perp-market set-status <market> <status>
 velocity-admin perp-market set-fee-buffer <market> <amount>
 velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>  # PERCENTAGE_PRECISION (1e6); 0 selects the 10 bps default, "disabled" turns the floor off
 velocity-admin perp-market set-spread-adjustment <markets> <spreadAdjustment> <inventorySpreadAdjustment>  # VammQuoteManagement/warm/cold; both -100..100. <markets> is 0, 0,1,4 or all, one tx. Negative values need `--` first: set-spread-adjustment all -- -50 -25
+velocity-admin perp-market set-funding-bias-sensitivity <market> <sensitivity>  # u8 hundredths; the paying-side spread widens up to 1 + sensitivity/100 while the vAMM pays funding; 0 disables
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin perp-market deposit-fee-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); funds amm.fee_pool + total_fee_minus_distributions, raw quote base units
@@ -90,7 +92,7 @@ velocity-admin spot-market set-withdraw-breaker <market> <pct>
 velocity-admin spot-market set-max-token-deposits <market> <amount>  # warm/cold admin; hard deposit cap, raw token base units, 0 = uncapped
 velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
-velocity-admin exchange set-status <bitfield>
+velocity-admin exchange set-status <bitfield>  # a proposal records the live status; multisig execute refuses it once the status changes
 velocity-admin exchange sync-slot-duration <ms>        # permissionless; sync one IBRL transition (400->350->300->250->200) from its feature gate (previews the gate's activation/effective slots); effective slot derived onchain from the EpochSchedule
 velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
 
@@ -101,11 +103,19 @@ velocity-admin feature-flags vamm-maker-rebate <true|false>  # bit 8; enabling r
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-schedule <t0bp> <t1bp> <t2bp> <t3bp> [--maker-rebate-bp <bp>] [--referrer <pct>] [--referee <pct>] [--amm-split <pct>] [--if-split <pct>] [--dry-run]  # warm/cold admin; rewrite the perp fee schedule in one ix (tier fees in bps; tiers 4-9 mirror tier 3; volume thresholds are program constants)
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
+velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>  # warm/cold admin; what a transaction costs to land. Every relay crank payment is derived from it, so this re-prices them all; the last argument caps the compute-unit price a liquidation crank reimburses (0 disables); markets take the new figures on their next set-market-clob
+velocity-admin fees set-liquidation-crank-reimbursement <shareBps> <solSpotMarketIndex>  # cap on what the protocol repays a liquidation cranker (its priority fee, bounded by a share of the recovery), and the market pricing it in SOL; warm/cold admin
+velocity-admin fees set-default-user-sync-terms <syncCostUnits> <syncFallbackSlots>  # sync terms initialize_user arms on each new user's relay conditions (0 cost units arms nothing); warm/cold admin
+velocity-admin fees init-crank-treasury                                # warm/cold admin; create the one account every market's crank reservoir refills from. Run once, then fund it by sending SOL to the printed address
+velocity-admin fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks> --resync-floor <lamports>  # warm/cold admin; the two levels a market's crank reservoir is held between, counted in that market's dearest crank so one setting fits every market. The watermark is when a refill wakes and must cover the refill's own round trip; the target is how full it leaves the reservoir and must exceed it. A new watermark reaches a market on its next set-market-clob. The resync floor is the balance above rent that paid resyncs leave for refills
+velocity-admin fees withdraw-crank-treasury <lamports>                 # warm/cold admin; recover lamports from the crank treasury, never below rent
+velocity-admin fees sweep-crank-reservoir <marketIndex> <lamports>     # warm/cold admin; move lamports from a market's reservoir back to the treasury (retired or over-provisioned markets)
 velocity-admin fees set-taker-addon <market> <tenthBps>          # warm/cold admin; additive taker-fee add-on, -100..100 tenth-bps
 velocity-admin fees set-promo-tier <tier>                        # warm/cold admin; promo fee-tier floor for everyone, 0 = off
 velocity-admin fees set-referral-rate <percent>                  # warm/cold admin; Standard referrer reward on every active perp tier; Accelerated is a fixed constant
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
+velocity-admin fees withdraw-protocol-user <market> <amount>  # FeeWithdraw hot key; drains settled crank rewards from the protocol-owned User (settle-pnl first)
 velocity-admin fees sweep <market>                               # permissionless
 velocity-admin fees settle-revenue-share <market> [escrowAuthority] [--all] # permissionless; pays accrued builder/referrer fees out of the pnl pool. --all settles every escrow still owed on the market, which delisting now requires
 velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
@@ -120,12 +130,39 @@ velocity-admin user set-delegate <delegate> [--sub-accounts <n>] [--allow-transf
 velocity-admin user set-special-status <user> <flags>
 velocity-admin user set-equity-floor <user> <floor> <buffer>     # warm/cold admin; QUOTE_PRECISION raw units; floor 0 disables both checks
 velocity-admin user reset-equity-breaker <userStats>             # warm/cold admin; unfreezes an authority after the breaker tripped
+velocity-admin user init-protocol  # warm/cold admin pays; creates the protocol User (signer PDA, sub-account 0) that every relay crank names as filler or taker
 velocity-admin user set-accelerated-referral <authority> <accelerated>  # warm/cold admin; grant clears the auto-enrollment block, revoke sets it
 velocity-admin user equity-floor-status <authority>              # read-only; per-subaccount equity/floor/buffer/headroom + level + breaker flag
 velocity-admin user close-positions [--sub-accounts <csv>]       # signer = account authority; cancel all orders + close all perp positions reduce-only
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>
 velocity-admin user deposit <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
 velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
+
+velocity-admin quoter init <market> <quoterProgram> <user> <responseAccount> <quoteDisc> <executeDisc> [--type <vamm|clob|custom>] [--authority <pk>]  # born active but unapproved; custom entries must be created by the quoted user's authority; a clob entry designates the market's book, so run init-slab first; discs = 16 hex chars
+velocity-admin quoter init-slab <market>                                   # permissionless; creates the market's QuoterSlabV0 with one slot (slot 0 = the book); approval right-sizes it from then on
+velocity-admin quoter update-accounts <quoter> <metas...> --quote-indexes <csv> --execute-indexes <csv> [--authority <pk>]  # meta = "<pubkey>" or "<pubkey>:w"; replaces the whole list; the approved slab copy keeps serving until re-approved; a custom entry answers to its stored authority, a book's entry to the warm/cold admin
+velocity-admin quoter update-config <quoter> [--response-account <pk>] [--quote-disc <hex>] [--execute-disc <hex>] [--authority <pk>]  # staged; the approved slab copy keeps serving until re-approved; a custom entry answers to its stored authority, a book's entry to the warm/cold admin
+velocity-admin quoter set-active <quoter> <true|false> [--authority <pk>]  # maker kill switch; a custom entry's stored authority signs, a book's entry takes the warm/cold admin; written through to the slab slot
+velocity-admin quoter set-approved <quoter> <true|false> [--admin <pk>] [--config-hash <hex>]    # warm/cold admin vetting gate; copies the staging config into the market's slab slot (or revokes it); the approval carries the staged config hash and fails if the entry changes first; a book approval asks the book for its placement rules
+velocity-admin quoter set-priority <quoter> <0-255> [--admin <pk>]         # warm/cold admin; lower fills first, pro rata within a tier; written through to the slab slot
+velocity-admin quoter set-market-clob <market> <quoter> <clobMarket> [expireFallbackSlots] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--admin <pk>]  # warm/cold admin; names the mandatory-baseline CLOB and stands up (or re-prices) the market's relay crank conditions + reservoir. Each crank's keeper payment is derived from the cost units it requests and the fee rails
+velocity-admin quoter set-watch <quoter> --watch-account <pk> --offset <n> --len <n> [-a <pk>]  # custom entries only, their stored authority signs; declares the reprice region relay cross-discovery wakes on (len 0 clears); staged until re-approved
+velocity-admin quoter set-oracle-band <quoter> <bps> [-a <pk>]             # entry authority; caps how far from oracle a Custom quoter's fills may price (0 clears); only ever tightens the market band, so it is written through to the slab slot
+velocity-admin quoter attach-cross <quoter> [--fallback-slots <n>]           # permissionless; stands up (or re-prices) the entry's relay cross-discovery conditions, and registers their relay watch
+
+velocity-admin clob-market init <market> --clob-program <pk> [--capacity <n>] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init with the market's quoter slab as place and config authority, quoter slab when missing, quoter register+approve into the slab, canonical attach (creates crank conditions), relay watches (both blocks); warm/cold admin, direct-send only
+velocity-admin clob-market register-watch <market> [--relay-program <pk>]  # register a relay WatchV0 over BOTH of an existing market's condition blocks (velocity's conditions account and the book's own); permissionless, direct-send only
+velocity-admin clob-market update-config <market> [--tick-size <n>] [--step-size <n>] [--min-order-size <n>] [--blocking-min-size <n>] [--default-activation-delay <slots>] [--max-activation-delay <slots>] [--unknown-user-grace-slots <n>] [--evict-threshold <n>] [--max-quote-levels <n>] [--max-execute-fills <n>] [--max-execute-users <n>] [--reservation-grace-slots <n>]  # warm/cold admin; retune a live book through velocity's update_perp_market_clob_book_config, which CPIs the CLOB's update_market_v0 as the book's config authority (the market's quoter slab) and rewrites velocity's copy of the book's rules in the same instruction; only the flags passed are written. --tick-size and --step-size also move the perp market grid, which is the only way to re-grid a market with an attached book. --reservation-grace-slots is how long a taker remainder's claim on the depth it crosses is honoured, so it is what bounds a cross crank that never lands (0..150)
+velocity-admin clob-market resize <market> <newCapacity>  # warm/cold admin; grow a live book's order arena through velocity's resize_perp_market_clob_book; the admin pays the rent; one call grows it by at most about 116 orders; the CLOB refuses a capacity over 1024 (512 orders a side)
+
+> **Turner scoping.** A market's conditions live on two accounts: velocity's
+> crank-conditions PDA (the cross fallback poll) and the CLOB market itself
+> (expiry, activation, a side at its eviction threshold, and a crossed book).
+> Those are all facts about the book's own account, and the book keeps them
+> current. Both accounts get a relay watch, and a turner must allow both
+> programs:
+> `--target-program <velocity-id>,<clob-id>`. Allowing only velocity filters
+> the book's watches out at the registry query, and none of its cranks fire.
 
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 
@@ -143,7 +180,7 @@ velocity-admin lut extend [address] [--dry-run]                  # add every mis
 
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
 velocity-admin multisig proposals [--limit <n>]                  # recent proposals: status, approvals, timelock ETA
-velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs)
+velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs); refuses an exchange-status write that would clear a pause added after it was proposed
 velocity-admin multisig inspect <index> [--raw]                  # review a pending proposal: decoded instructions + args + named accounts, the account fields it would change (before -> after), program logs, and whether it can execute yet
 velocity-admin multisig inspect-batch-tx <batchIndex> <n>  # decode inner transaction <n> (1-based) of a batch proposal: instructions, args, named accounts. A batch keeps its transactions in separate accounts, so `inspect` reports only the batch itself and `inspect <batchIndex>` says how many inner transactions it holds
 velocity-admin multisig set-rent-collector <pubkey>              # propose a config tx setting the rent collector (required by close-accounts); executing any config tx marks still-Active vault proposals stale

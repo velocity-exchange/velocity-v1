@@ -1,11 +1,7 @@
 import {
-	DLOB,
 	VelocityClient,
 	UserMap,
 	SlotSubscriber,
-	MarketType,
-	PositionDirection,
-	getUserStatsAccountPublicKey,
 	promiseTimeout,
 	isVariant,
 	PriorityFeeSubscriberMap,
@@ -29,7 +25,6 @@ import {
 	TransactionSignature,
 	VersionedTransaction,
 	AddressLookupTableAccount,
-	PublicKey,
 	ComputeBudgetProgram,
 	TransactionInstruction,
 	TransactionExpiredBlockheightExceededError,
@@ -39,10 +34,10 @@ import { ConfirmOptions, Signer } from '@solana/web3.js';
 import {
 	chunks,
 	getAllPythOracleUpdateIxs,
-	getVelocityPriorityFeeEndpoint,
 	handleSimResultError,
 	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
+	subscribePriorityFeeMap,
 } from '../utils';
 import { PythLazerSubscriber } from '../pythLazerSubscriber';
 import { BundleSender } from '../bundleSender';
@@ -60,7 +55,6 @@ const CACHED_BLOCKHASH_OFFSET = 5;
 const TX_LAND_RATE_THRESHOLD = process.env.TX_LAND_RATE_THRESHOLD
 	? parseFloat(process.env.TX_LAND_RATE_THRESHOLD) || 0.5
 	: 0.5;
-const NUM_MAKERS_TO_LOOK_AT_FOR_TWAP_CRANK = 2;
 const TX_PER_JITO_BUNDLE = 3;
 
 const CONCURRENCY_LIMIT = 3;
@@ -74,7 +68,6 @@ const DEFAULT_IF_STAKE_TARGET_QUOTE = 1500;
 const SIM_TIMEOUT_MS = 10_000;
 const TX_SEND_TIMEOUT_MS = 20_000;
 const BUNDLE_SEND_TIMEOUT_MS = 15_000;
-const RPC_TIMEOUT_MS = 10_000;
 const STUCK_INTERVAL_MULTIPLIER = 4; // consider stuck if run time > 4x interval
 
 function getStuckThresholdMs(intervalGroup: number): number {
@@ -233,8 +226,6 @@ export class MakerBidAskTwapCrank implements Bot {
 	private intervalIds: Array<NodeJS.Timer> = [];
 	private userMap?: UserMap;
 
-	private dlob?: DLOB;
-	private latestDlobSlot?: number;
 	private priorityFeeSubscriberMap?: PriorityFeeSubscriberMap;
 
 	private watchdogTimerMutex = new Mutex();
@@ -463,18 +454,10 @@ export class MakerBidAskTwapCrank implements Bot {
 			this.crankIntervalStartTime[DEFAULT_INTERVAL_GROUP] = 0;
 		}
 
-		this.priorityFeeSubscriberMap = new PriorityFeeSubscriberMap({
-			// Prefer an explicitly-configured endpoint (PRIORITY_FEE_ENDPOINT, e.g.
-			// the in-cluster dlob-server), falling back to the per-env default.
-			// A hardcoded 'mainnet-beta' here would point every env at the prod
-			// dlob, so resolve the endpoint from the actual configured env.
-			velocityPriorityFeeEndpoint:
-				this.globalConfig.priorityFeeEndpoint ??
-				getVelocityPriorityFeeEndpoint(this.globalConfig.velocityEnv!),
+		this.priorityFeeSubscriberMap = await subscribePriorityFeeMap(
 			velocityMarkets,
-			frequencyMs: 10_000,
-		});
-		await this.priorityFeeSubscriberMap.subscribe();
+			this.globalConfig
+		);
 	}
 
 	public async reset() {
@@ -515,51 +498,6 @@ export class MakerBidAskTwapCrank implements Bot {
 				this.watchdogTimerLastPatTime > Date.now() - 5 * this.maxIntervalGroup!;
 		});
 		return healthy && this.pythHealthy && this.txSendHealthy;
-	}
-
-	private async initDlob() {
-		try {
-			this.latestDlobSlot = this.slotSubscriber.currentSlot;
-			const dlob = await promiseTimeout(
-				this.userMap!.getDLOB(this.slotSubscriber.currentSlot),
-				RPC_TIMEOUT_MS
-			);
-			if (dlob) {
-				this.dlob = dlob;
-			} else {
-				this.dlob = undefined;
-				logger.warn(
-					`[${this.name}] getDLOB timed out after ${RPC_TIMEOUT_MS}ms`
-				);
-			}
-		} catch (e) {
-			logger.error(`[${this.name}] Error loading dlob: ${e}`);
-		}
-	}
-
-	private getCombinedList(makersArray: PublicKey[]) {
-		const combinedList = [];
-
-		for (const maker of makersArray) {
-			const uA = this.userMap!.getUserAuthority(maker.toString());
-			if (uA !== undefined) {
-				const uStats = getUserStatsAccountPublicKey(
-					this.velocityClient.program.programId,
-					uA
-				);
-
-				// Combine maker and uStats into a list and add it to the combinedList
-				const combinedItem = [maker, uStats];
-				combinedList.push(combinedItem);
-			} else {
-				logger.warn(
-					'[${this.name}] skipping maker... cannot find authority for userAccount=',
-					maker.toString()
-				);
-			}
-		}
-
-		return combinedList;
 	}
 
 	private async sendSingleTx(
@@ -771,7 +709,6 @@ export class MakerBidAskTwapCrank implements Bot {
 		try {
 			this.crankIntervalInProgress![intervalGroup] = true;
 			this.crankIntervalStartTime![intervalGroup] = Date.now();
-			await this.initDlob();
 
 			logger.info(
 				`[${this.name}] Cranking interval group ${intervalGroup}: ${crankMarkets}`
@@ -786,30 +723,6 @@ export class MakerBidAskTwapCrank implements Bot {
 				forceUseJito: boolean,
 				addTipIx: boolean
 			): Promise<{ jitoTx?: VersionedTransaction; restartSignal: boolean }> => {
-				const mmOraclePriceData =
-					this.velocityClient.getMMOracleDataForPerpMarket(mi);
-
-				const bidMakers = this.dlob!.getBestMakers({
-					marketIndex: mi,
-					marketType: MarketType.PERP,
-					direction: PositionDirection.LONG,
-					slot: this.latestDlobSlot!,
-					oraclePriceData: mmOraclePriceData,
-					numMakers: NUM_MAKERS_TO_LOOK_AT_FOR_TWAP_CRANK,
-				});
-
-				const askMakers = this.dlob!.getBestMakers({
-					marketIndex: mi,
-					marketType: MarketType.PERP,
-					direction: PositionDirection.SHORT,
-					slot: this.latestDlobSlot!,
-					oraclePriceData: mmOraclePriceData,
-					numMakers: NUM_MAKERS_TO_LOOK_AT_FOR_TWAP_CRANK,
-				});
-				logger.info(
-					`[${this.name}] loaded makers for market ${mi}: ${bidMakers.length} bids, ${askMakers.length} asks`
-				);
-
 				const ixs = [];
 				ixs.push(
 					ComputeBudgetProgram.setComputeUnitLimit({
@@ -855,17 +768,11 @@ export class MakerBidAskTwapCrank implements Bot {
 					ixs.push(...pythIxs);
 				}
 
-				const concatenatedList = [
-					...this.getCombinedList(bidMakers),
-					...this.getCombinedList(askMakers),
-				];
-
-				ixs.push(
-					await this.velocityClient.getUpdatePerpBidAskTwapIx(
-						mi,
-						concatenatedList as [PublicKey, PublicKey][]
-					)
-				);
+				// The program reads the market's book on chain through its own
+				// `quoteL3V0` leg, so the crank carries the book accounts rather
+				// than the book's depth, and names no counterparties. The SDK
+				// resolves those accounts from the market.
+				ixs.push(await this.velocityClient.getUpdatePerpBidAskTwapIx(mi));
 
 				if (
 					isVariant(

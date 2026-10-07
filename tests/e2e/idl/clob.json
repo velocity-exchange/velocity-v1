@@ -1,0 +1,3833 @@
+{
+  "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU",
+  "metadata": {
+    "name": "clob",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Velocity CLOB quoter program"
+  },
+  "instructions": [
+    {
+      "name": "accept_market_authority_v0",
+      "discriminator": [
+        69,
+        180,
+        147,
+        52,
+        126,
+        212,
+        85,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "pending_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_all_v0",
+      "discriminator": [
+        212,
+        11,
+        203,
+        11,
+        184,
+        40,
+        88,
+        95
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "place_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "CancelAllArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "CancelAllOutcomeV0"
+        }
+      }
+    },
+    {
+      "name": "cancel_order_v0",
+      "discriminator": [
+        70,
+        91,
+        225,
+        16,
+        228,
+        203,
+        124,
+        174
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "place_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "CancelOrderArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "RemovedOrderV0"
+        }
+      }
+    },
+    {
+      "name": "close_market_v0",
+      "docs": [
+        "Close an empty market and return its rent to `rent_recipient`."
+      ],
+      "discriminator": [
+        201,
+        122,
+        60,
+        249,
+        205,
+        162,
+        134,
+        110
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        },
+        {
+          "name": "rent_recipient",
+          "docs": [
+            "Receives the market's rent."
+          ],
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "evict_worst_v0",
+      "discriminator": [
+        106,
+        60,
+        27,
+        129,
+        80,
+        27,
+        37,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "place_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "EvictWorstArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "RemovedOrderV0"
+        }
+      }
+    },
+    {
+      "name": "execute_v0",
+      "discriminator": [
+        5,
+        160,
+        11,
+        102,
+        140,
+        248,
+        144,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "place_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ExecuteArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "ResponsePointerV0"
+        }
+      }
+    },
+    {
+      "name": "fill_v0",
+      "discriminator": [
+        66,
+        113,
+        11,
+        94,
+        94,
+        23,
+        154,
+        137
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "place_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "FillArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "FillOutcomeV0"
+        }
+      }
+    },
+    {
+      "name": "initialize_market_v0",
+      "discriminator": [
+        208,
+        215,
+        85,
+        141,
+        187,
+        88,
+        202,
+        40
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "Registered as the market's config authority. It need not sign, because",
+            "the market's own signature below already binds initialization to the",
+            "account's creator. A program PDA can therefore hold the role from the",
+            "start."
+          ]
+        },
+        {
+          "name": "place_authority",
+          "docs": [
+            "Registered as the market's place authority. It is an account rather",
+            "than an argument, because a duplicated account costs one index byte in",
+            "the transaction."
+          ]
+        },
+        {
+          "name": "market",
+          "docs": [
+            "Pre-created zeroed account, sized by [`ClobMarketV0::space_for`] for the",
+            "wanted capacity. That is about 98KB, which is above the CPI allocation",
+            "limit, so the client creates the account.",
+            "[`crate::instructions::resize_market_v0`] grows it later.",
+            "",
+            "It signs, which binds initialization to the account's creator. The",
+            "client creates the account with a keypair, and the System program",
+            "already requires that keypair to sign the allocation, so the signature",
+            "costs an honest caller nothing. Without it, creation and initialization",
+            "may land in different transactions. Anyone may then initialize the",
+            "account first and name themselves `authority`. The operator's own call",
+            "then fails and the rent is stranded."
+          ],
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "config",
+          "type": {
+            "defined": {
+              "name": "MarketConfigV0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "next_cross_v0",
+      "docs": [
+        "Read-only. Reports the best matchable order on each side. Any cross",
+        "settles between those two orders. A caller simulates it, like",
+        "`next_removal_v0`."
+      ],
+      "discriminator": [
+        234,
+        191,
+        102,
+        36,
+        183,
+        233,
+        127,
+        48
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        }
+      ],
+      "args": [],
+      "returns": {
+        "defined": {
+          "name": "NextCrossV0"
+        }
+      }
+    },
+    {
+      "name": "next_removal_v0",
+      "docs": [
+        "Read-only. Names the order the book lets a caller remove next. A caller",
+        "simulates it to find work, then sends the removal it names."
+      ],
+      "discriminator": [
+        132,
+        65,
+        9,
+        126,
+        135,
+        115,
+        177,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "NextRemovalArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "OrderViewV0"
+        }
+      }
+    },
+    {
+      "name": "order_rules_v0",
+      "docs": [
+        "Read-only. Reports what the book requires of an order before it holds",
+        "one. A caller builds against these rules instead of learning them from",
+        "a rejection."
+      ],
+      "discriminator": [
+        201,
+        129,
+        212,
+        105,
+        18,
+        69,
+        149,
+        252
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        }
+      ],
+      "args": [],
+      "returns": {
+        "defined": {
+          "name": "OrderRulesV0"
+        }
+      }
+    },
+    {
+      "name": "orders_v0",
+      "docs": [
+        "Read-only. Reports what the book holds for a set of refs, one answer",
+        "per ref. A ref that no longer names a live order comes back as",
+        "`OrderViewV0::NONE`."
+      ],
+      "discriminator": [
+        124,
+        117,
+        208,
+        33,
+        202,
+        209,
+        58,
+        199
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "OrdersArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "OrdersV0"
+        }
+      }
+    },
+    {
+      "name": "place_order_v0",
+      "discriminator": [
+        100,
+        204,
+        57,
+        226,
+        245,
+        228,
+        61,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "place_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "PlaceOrderArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "ClobOrderRefV0"
+        }
+      }
+    },
+    {
+      "name": "propose_market_authority_v0",
+      "docs": [
+        "Name the key that may take over this market's config. It takes over",
+        "only when it signs `accept_market_authority_v0`."
+      ],
+      "discriminator": [
+        16,
+        227,
+        252,
+        138,
+        3,
+        116,
+        145,
+        224
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeMarketAuthorityArgsV0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "quote_l3_v0",
+      "discriminator": [
+        144,
+        3,
+        174,
+        58,
+        132,
+        92,
+        241,
+        246
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "L3ArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "ResponsePointerV0"
+        }
+      }
+    },
+    {
+      "name": "quote_v0",
+      "discriminator": [
+        235,
+        142,
+        54,
+        188,
+        148,
+        254,
+        155,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "QuoteArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "ResponsePointerV0"
+        }
+      }
+    },
+    {
+      "name": "remove_expired_v0",
+      "discriminator": [
+        241,
+        135,
+        215,
+        18,
+        254,
+        107,
+        179,
+        119
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "place_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "RemoveExpiredArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "RemovedOrderV0"
+        }
+      }
+    },
+    {
+      "name": "resize_market_v0",
+      "discriminator": [
+        33,
+        41,
+        148,
+        240,
+        254,
+        155,
+        147,
+        193
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ResizeMarketArgsV0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_crank_conditions_v0",
+      "docs": [
+        "Register the resolvers for this book's own crank conditions. The book",
+        "states when a turner must wake. The program that owns the flow states",
+        "what to do. Returns the account offset the condition block sits at, for",
+        "the watch registration."
+      ],
+      "discriminator": [
+        34,
+        160,
+        120,
+        93,
+        84,
+        133,
+        8,
+        95
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "place_authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "CrankConditionsArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "CrankBlockV0"
+        }
+      }
+    },
+    {
+      "name": "update_market_v0",
+      "discriminator": [
+        180,
+        2,
+        86,
+        43,
+        47,
+        149,
+        218,
+        246
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ClobUpdateMarketArgsV0"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "ClobHeaderV0",
+      "discriminator": [
+        30,
+        254,
+        225,
+        216,
+        46,
+        125,
+        37,
+        109
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "CrankConditionsRecordV0",
+      "discriminator": [
+        24,
+        221,
+        14,
+        238,
+        150,
+        85,
+        201,
+        132
+      ]
+    },
+    {
+      "name": "ExecuteRecordV0",
+      "discriminator": [
+        201,
+        55,
+        217,
+        157,
+        137,
+        68,
+        106,
+        34
+      ]
+    },
+    {
+      "name": "FillRecordV0",
+      "discriminator": [
+        184,
+        105,
+        57,
+        12,
+        14,
+        100,
+        126,
+        145
+      ]
+    },
+    {
+      "name": "MarketAuthorityAcceptedRecordV0",
+      "discriminator": [
+        175,
+        197,
+        222,
+        29,
+        28,
+        103,
+        21,
+        166
+      ]
+    },
+    {
+      "name": "MarketAuthorityProposedRecordV0",
+      "discriminator": [
+        46,
+        90,
+        190,
+        99,
+        167,
+        165,
+        187,
+        104
+      ]
+    },
+    {
+      "name": "MarketCloseRecordV0",
+      "discriminator": [
+        221,
+        155,
+        24,
+        168,
+        17,
+        7,
+        103,
+        159
+      ]
+    },
+    {
+      "name": "MarketInitializeRecordV0",
+      "discriminator": [
+        221,
+        17,
+        1,
+        170,
+        226,
+        15,
+        103,
+        159
+      ]
+    },
+    {
+      "name": "MarketResizeRecordV0",
+      "discriminator": [
+        75,
+        26,
+        196,
+        49,
+        141,
+        75,
+        125,
+        135
+      ]
+    },
+    {
+      "name": "MarketUpdateRecordV0",
+      "discriminator": [
+        148,
+        2,
+        48,
+        201,
+        77,
+        38,
+        162,
+        58
+      ]
+    },
+    {
+      "name": "OrderCancelRecordV0",
+      "discriminator": [
+        61,
+        102,
+        128,
+        214,
+        4,
+        186,
+        240,
+        253
+      ]
+    },
+    {
+      "name": "OrderEvictRecordV0",
+      "discriminator": [
+        5,
+        34,
+        85,
+        158,
+        127,
+        36,
+        227,
+        70
+      ]
+    },
+    {
+      "name": "OrderExpireRecordV0",
+      "discriminator": [
+        140,
+        225,
+        178,
+        209,
+        208,
+        6,
+        16,
+        235
+      ]
+    },
+    {
+      "name": "OrderPlaceRecordV0",
+      "discriminator": [
+        148,
+        131,
+        16,
+        3,
+        16,
+        59,
+        194,
+        232
+      ]
+    },
+    {
+      "name": "OrdersCancelRecordV0",
+      "discriminator": [
+        67,
+        136,
+        15,
+        66,
+        161,
+        130,
+        110,
+        110
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidOrderParams",
+      "msg": "Order price/size is zero or user is default"
+    },
+    {
+      "code": 6001,
+      "name": "PriceNotTickAligned",
+      "msg": "Order price is not a multiple of order_tick_size"
+    },
+    {
+      "code": 6002,
+      "name": "SizeNotStepAligned",
+      "msg": "Order size is not a multiple of order_step_size"
+    },
+    {
+      "code": 6003,
+      "name": "OrderTooSmall",
+      "msg": "Order size is below min_order_size"
+    },
+    {
+      "code": 6004,
+      "name": "SideAtCapacity",
+      "msg": "Book side is at capacity, so every placement onto it is refused"
+    },
+    {
+      "code": 6005,
+      "name": "StaleOrderRef",
+      "msg": "Order ref is stale: node is free or holds a different order"
+    },
+    {
+      "code": 6006,
+      "name": "OrderUserMismatch",
+      "msg": "Order ref does not belong to the given user"
+    },
+    {
+      "code": 6007,
+      "name": "MathError",
+      "msg": "Math overflow"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidActivationDelay",
+      "msg": "Activation delay above max_activation_delay_slots"
+    },
+    {
+      "code": 6009,
+      "name": "MaxTsInPast",
+      "msg": "max_ts is in the past"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidAuthority",
+      "msg": "Signer does not match the market authority for this operation"
+    },
+    {
+      "code": 6011,
+      "name": "ResponseTooLarge",
+      "msg": "Response exceeds the response buffer"
+    },
+    {
+      "code": 6012,
+      "name": "InvalidCapacity",
+      "msg": "Resize must grow the arena"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidConfig",
+      "msg": "Market config out of bounds"
+    },
+    {
+      "code": 6014,
+      "name": "StaleUserSet",
+      "msg": "Deprecated: an unreachable maker ends the walk and is reported, it no longer fails"
+    },
+    {
+      "code": 6015,
+      "name": "BelowEvictThreshold",
+      "msg": "Side is below evict_threshold_per_side; nothing to evict"
+    },
+    {
+      "code": 6016,
+      "name": "OrderNotExpired",
+      "msg": "Order is not expired"
+    },
+    {
+      "code": 6017,
+      "name": "NodeIndexOutOfRange",
+      "msg": "Node index is outside the order arena"
+    },
+    {
+      "code": 6018,
+      "name": "ArenaExhausted",
+      "msg": "Order arena has no free node"
+    },
+    {
+      "code": 6019,
+      "name": "BookInvariantViolated",
+      "msg": "Book invariant check failed after the operation"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidResponseLevel",
+      "msg": "Response level has a zero price or size, or is not strictly best-first"
+    },
+    {
+      "code": 6021,
+      "name": "EventTooLarge",
+      "msg": "Event payload exceeds its buffer"
+    },
+    {
+      "code": 6022,
+      "name": "TakerOriginCrossPending",
+      "msg": "Deprecated: a crossed taker-origin order is skipped, not rejected"
+    },
+    {
+      "code": 6023,
+      "name": "OversizedUserSet",
+      "msg": "User set holds more entries than USER_SET_CAPACITY"
+    },
+    {
+      "code": 6024,
+      "name": "OrderWouldCross",
+      "msg": "Order would rest crossed with the opposite side and asked not to"
+    },
+    {
+      "code": 6025,
+      "name": "TakerOriginBound",
+      "msg": "Taker-origin remainder is bound until its claim lapses"
+    },
+    {
+      "code": 6026,
+      "name": "OrderNotTakerOrigin",
+      "msg": "Only a taker-origin order can be filled from outside the book"
+    },
+    {
+      "code": 6027,
+      "name": "FillExceedsOrder",
+      "msg": "Fill is larger than the order has left"
+    },
+    {
+      "code": 6028,
+      "name": "MaxTsBeforeActivation",
+      "msg": "max_ts falls inside the order's own activation delay"
+    },
+    {
+      "code": 6029,
+      "name": "MarketNotEmpty",
+      "msg": "Market still holds orders and cannot be closed"
+    },
+    {
+      "code": 6030,
+      "name": "OrderNotLive",
+      "msg": "Order is expired or has not reached its activation slot"
+    },
+    {
+      "code": 6031,
+      "name": "MissingReferencePrice",
+      "msg": "A quote budget needs a reference price"
+    },
+    {
+      "code": 6032,
+      "name": "WakeWriteFailed",
+      "msg": "A crank condition's wake could not be written"
+    },
+    {
+      "code": 6033,
+      "name": "CapacityOverCeiling",
+      "msg": "Arena capacity is over the per-side order ceiling"
+    }
+  ],
+  "types": [
+    {
+      "name": "CancelAllArgsV0",
+      "docs": [
+        "`cancel_all_v0` arguments."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "docs": [
+              "Whose orders to withdraw, verified against each node."
+            ],
+            "type": {
+              "defined": {
+                "name": "UserRefV0"
+              }
+            }
+          },
+          {
+            "name": "sides",
+            "type": {
+              "defined": {
+                "name": "CancelSidesV0"
+              }
+            }
+          },
+          {
+            "name": "force",
+            "docs": [
+              "Sweep taker-origin remainders that have not reached their activation",
+              "slot as well. Liquidation sets this flag. Every other caller leaves it",
+              "clear, and the sweep then skips such an order and reports the call as",
+              "not exhaustive."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CancelAllOutcomeV0",
+      "docs": [
+        "Return data of `cancel_all_v0`. Per-side totals rather than a list of",
+        "removals, because that is the shape open-order aggregates consume. The",
+        "caller does one unwind per side and one count, however many orders the",
+        "sweep took."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": {
+              "defined": {
+                "name": "UserRefV0"
+              }
+            }
+          },
+          {
+            "name": "bid_base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "ask_base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "bid_orders",
+            "type": "u32"
+          },
+          {
+            "name": "ask_orders",
+            "type": "u32"
+          },
+          {
+            "name": "bid_reduce_only_orders",
+            "docs": [
+              "How many of the swept orders on each side were reduce-only. The caller",
+              "tracks reduce-only resting orders per user. It disarms exactly this",
+              "many when the sweep removes them, without a per-order report."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "ask_reduce_only_orders",
+            "type": "u32"
+          },
+          {
+            "name": "exhaustive",
+            "docs": [
+              "The sweep took every order it was asked for. False means the book stopped at its",
+              "per-call cap, which repeating the call clears, or passed over a taker-origin",
+              "remainder whose claim the book still honours, which clears itself."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CancelOrderArgsV0",
+      "docs": [
+        "`cancel_order_v0` arguments."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_ref",
+            "type": {
+              "defined": {
+                "name": "ClobOrderRefV0"
+              }
+            }
+          },
+          {
+            "name": "user",
+            "docs": [
+              "Owner of the order, verified against the node."
+            ],
+            "type": {
+              "defined": {
+                "name": "UserRefV0"
+              }
+            }
+          },
+          {
+            "name": "force",
+            "docs": [
+              "Remove the order even when it is a taker-origin remainder that has not",
+              "reached its activation slot. Liquidation sets this flag. Every other",
+              "caller leaves it clear, which holds a taker to the auction window its",
+              "own order asked for."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CancelSidesV0",
+      "docs": [
+        "Which sides a `cancel_all_v0` withdraws. The wire cannot express \"neither\",",
+        "which would leave a maker believing its quotes are gone. A book reads a side",
+        "as a book side and a caller as a position direction. Only the tags must agree."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Bids"
+          },
+          {
+            "name": "Asks"
+          },
+          {
+            "name": "Both"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClobHeaderV0",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "docs": [
+              "Admin able to configure the market."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "place_authority",
+            "docs": [
+              "The only signer allowed to place, cancel or execute. It is velocity's",
+              "quoter CPI signer PDA. Velocity verifies the `User` authority and the",
+              "flow-attestation policy, including zero-delay activation, before it",
+              "CPIs here."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "order_tick_size",
+            "docs": [
+              "Prices must be a multiple of this, in PRICE_PRECISION. The check runs",
+              "at placement and the stored price does not encode it. It can therefore",
+              "change without repricing the resting book."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "order_step_size",
+            "docs": [
+              "Sizes must be a multiple of this (base precision)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "min_order_size",
+            "docs": [
+              "Floor on order size so every resting order has real capital at risk."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "blocking_min_size",
+            "docs": [
+              "Floor on the size of an order that may end a walk. The walk steps over a",
+              "smaller order. The config requires it to exceed `min_order_size`, for",
+              "the reason `crate::config` gives. Zero, which only a market made before",
+              "that rule can hold, lets any order end a walk."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "base_precision",
+            "docs": [
+              "Base units per whole unit. Velocity perps use 1e9 and spot varies.",
+              "Immutable after init, because resting order sizes are denominated in",
+              "it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "next_order_id",
+            "docs": [
+              "Starts at 1 so a zeroed (freed) node can never match a live order id."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "best_bid",
+            "type": "u32"
+          },
+          {
+            "name": "best_ask",
+            "type": "u32"
+          },
+          {
+            "name": "worst_bid",
+            "docs": [
+              "List tails, so eviction of the worst order is O(1)."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "worst_ask",
+            "type": "u32"
+          },
+          {
+            "name": "free_head",
+            "type": "u32"
+          },
+          {
+            "name": "free_count",
+            "type": "u32"
+          },
+          {
+            "name": "bid_count",
+            "type": "u32"
+          },
+          {
+            "name": "ask_count",
+            "type": "u32"
+          },
+          {
+            "name": "default_activation_delay_slots",
+            "docs": [
+              "Default taker speed bump. These slots are added to the placement slot",
+              "to get `activation_slot` when the caller does not choose a delay."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "max_activation_delay_slots",
+            "docs": [
+              "Upper bound on a caller-chosen activation delay (auction flow)."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "unknown_user_grace_slots",
+            "docs": [
+              "How far the caller's account set is allowed to lag the book.",
+              "",
+              "The walk skips an order whose owner is absent while its age, measured",
+              "from `activation_slot`, is at most this. Past that the order ends the walk."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "evict_threshold_per_side",
+            "docs": [
+              "Soft cap. `evict_worst` is allowed once a side holds at least this",
+              "many orders. Eviction runs through a velocity crank, which keeps the",
+              "evicted maker's margin aggregates exact. The buffer up to the per-side",
+              "hard cap is what the crank has to work with."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "market_index",
+            "docs": [
+              "Velocity perp market index this book serves."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "max_quote_levels",
+            "docs": [
+              "Per-market response/batch tuning, each bounded by its `*_CEILING`."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "max_execute_fills",
+            "type": "u16"
+          },
+          {
+            "name": "max_execute_users",
+            "type": "u16"
+          },
+          {
+            "name": "next_expiry_ts",
+            "docs": [
+              "The earliest `max_ts` any live order carries, or [`i64::MAX`] when no",
+              "live order expires. A removal recomputes it only when it took the order",
+              "that held the minimum, so the field may be earlier than the truth. It is",
+              "never later, because that would leave work nobody is woken for."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "next_activation_slot",
+            "docs": [
+              "The earliest `activation_slot` any live order carries that has not yet",
+              "arrived, or [`u64::MAX`] when none is pending. A passing slot makes the",
+              "field stale without any write, so every mutation recomputes it when the",
+              "stored slot is no longer in the future."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "crank",
+            "docs": [
+              "The relay conditions that wake a turner for this book's own work.",
+              "",
+              "The book maintains them as it places and removes orders, so no caller",
+              "passes a second account. `set_crank_conditions_v0` names the resolvers."
+            ],
+            "type": {
+              "defined": {
+                "name": "RelayBlockV0"
+              }
+            }
+          },
+          {
+            "name": "pending_authority",
+            "docs": [
+              "The authority `propose_market_authority_v0` named, which",
+              "`accept_market_authority_v0` installs once it signs. Zero when no",
+              "rotation is open."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Reserved bytes. A later field, such as a fee destination or a",
+              "paused-operations bitmap, can claim them without moving `response`,",
+              "changing the account size, or migrating every live market. The bytes",
+              "must stay zero until a field claims them."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                72
+              ]
+            }
+          },
+          {
+            "name": "taker_origin_head",
+            "docs": [
+              "Oldest taker-origin order on each side, indexed by [`SideV0`] (bid 0, ask",
+              "1). [`NIL`] when the side holds none. The list is in rest order. A",
+              "taker-origin order is a migrated taker remainder that claims depth on",
+              "the other side, so a read of a side enumerates it. See [`crate::book`]."
+            ],
+            "type": {
+              "array": [
+                "u32",
+                2
+              ]
+            }
+          },
+          {
+            "name": "taker_origin_tail",
+            "docs": [
+              "Newest taker-origin order on each side, so an append is O(1)."
+            ],
+            "type": {
+              "array": [
+                "u32",
+                2
+              ]
+            }
+          },
+          {
+            "name": "taker_origin_count",
+            "docs": [
+              "Taker-origin orders on each side. Bounds the claimant hops one read of",
+              "a side may take, so a corrupt list cannot spin."
+            ],
+            "type": {
+              "array": [
+                "u16",
+                2
+              ]
+            }
+          },
+          {
+            "name": "reservation_grace_slots",
+            "docs": [
+              "Slots past its activation slot for which a taker remainder's claim on",
+              "the depth it crosses is still honoured. Past the window the depth is",
+              "ordinary again, so a crank that never lands cannot hold the top of book",
+              "for ever. Zero ends the claim at activation."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "padding1",
+            "docs": [
+              "Keeps `response` on the 8-byte step its records are cast at."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
+            "name": "response",
+            "docs": [
+              "Scratch region that `quote_v0` and `execute_v0` stream their response",
+              "into. Return data carries a [`ResponsePointerV0`] that locates it. It is",
+              "the last field, so [`RESPONSE_OFFSET`] is the header size minus its",
+              "length. Its size holds the region's 8-byte start, so records cast in place."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8256
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClobOrderRefV0",
+      "docs": [
+        "Order handle. The node index is an O(1) hint the book verifies against the",
+        "order id, so a stale hint fails closed. `Clob` marks the one type here that",
+        "lands in velocity's IDL, beside `Order` and `OrderParams`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "node_index",
+            "type": "u32"
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClobRemovalKindV0",
+      "docs": [
+        "Which of the book's own removal cranks a caller is asking about. Both belong to the",
+        "book rather than the quoter interface, and a source with no resting orders has",
+        "neither. The caller asks rather than the book acting alone, because the caller owns",
+        "the consequence: a maker's margin, a reward, and a trigger slot."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Expired"
+          },
+          {
+            "name": "Evictable"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClobUpdateMarketArgsV0",
+      "docs": [
+        "`update_market_v0` arguments. `None` leaves a setting unchanged. The book",
+        "checks the whole config after it applies every field, so one call can move",
+        "the step and the minimum together. The `Clob` prefix is there because this",
+        "type lands in velocity's IDL, as [`ClobOrderRefV0`] does."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_tick_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "order_step_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_order_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "blocking_min_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "default_activation_delay_slots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "max_activation_delay_slots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "unknown_user_grace_slots",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "evict_threshold_per_side",
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "max_quote_levels",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "max_execute_fills",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "max_execute_users",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "reservation_grace_slots",
+            "type": {
+              "option": "u16"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CrankAccountV0",
+      "docs": [
+        "One account a registered resolver takes, in the order its instruction",
+        "expects them. Restates `relay_spec::AccountRefV0` for the same reason",
+        "[`CrankResolverV0`] restates `CrankSpecV0`, and keeps `[u8; 32]` for the",
+        "same IDL-build reason."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "address",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "writable",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CrankBlockV0",
+      "docs": [
+        "Return data of `set_crank_conditions_v0`: the two regions of the market account a",
+        "registrant has to point relay at. A watch names an account, an offset and a length,",
+        "so reporting them lets a registrant watch without knowing this account's layout."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "block_offset",
+            "docs": [
+              "Where the condition block starts."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "top_of_book_offset",
+            "docs": [
+              "The region that changes whenever either side's best moves. A crossing order is",
+              "always a new best, so a watch here catches every cross. A caller that crosses",
+              "another source against this book needs a second watch, because repricing that",
+              "source writes nothing here."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "top_of_book_len",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CrankConditionsArgsV0",
+      "docs": [
+        "`set_crank_conditions_v0` arguments: who resolves each of the book's own",
+        "conditions, and the accounts they all take. The book owns the wakes but",
+        "none of the answers, so the program that owns the flow registers what",
+        "runs. A zero `program` deactivates a condition."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "expiry",
+            "type": {
+              "defined": {
+                "name": "CrankResolverV0"
+              }
+            }
+          },
+          {
+            "name": "activation",
+            "type": {
+              "defined": {
+                "name": "CrankResolverV0"
+              }
+            }
+          },
+          {
+            "name": "capacity",
+            "type": {
+              "defined": {
+                "name": "CrankResolverV0"
+              }
+            }
+          },
+          {
+            "name": "cross",
+            "type": {
+              "defined": {
+                "name": "CrankResolverV0"
+              }
+            }
+          },
+          {
+            "name": "accounts",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "CrankAccountV0"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CrankConditionsRecordV0",
+      "docs": [
+        "`set_crank_conditions_v0` registered the resolver program for each of the",
+        "book's four conditions. A zero program deactivated that condition."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "place_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "expiry_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "activation_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "capacity_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "cross_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "account_count",
+            "docs": [
+              "Accounts the registered resolvers take."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CrankResolverV0",
+      "docs": [
+        "One resolver registration: which program answers a condition, with which",
+        "instruction, and what it must pay the keeper that lands the answer.",
+        "",
+        "allow-verbose: explains why this restates `relay_spec::CrankSpecV0` instead of",
+        "reusing it. Relay's own type carries the same three fields, and the CLOB already",
+        "depends on `relay-spec`. But `relay-spec` deliberately depends on nothing but",
+        "`bytemuck`, so its `CrankSpecV0` derives neither `wincode`'s schema pair nor",
+        "anchor's borsh pair. Adding either there would put a wincode or anchor version",
+        "bound on every consumer of `relay-spec`, including ones with no CLOB in their tree.",
+        "",
+        "`program` stays `[u8; 32]` rather than `Address`: anchor's IDL build derives",
+        "`IdlBuild` for its own `Pubkey` re-export, not for a bare `solana_address::Address`,",
+        "and `bun run program:idl` fails on this struct the moment the field is one."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "program",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "disc",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "min_payment",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DirectionV0",
+      "docs": [
+        "Taker direction, from the taker's perspective. Encoded as its discriminant,",
+        "`Long = 0`. A direction inverted across the boundary fills the wrong side."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Long"
+          },
+          {
+            "name": "Short"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EvictWorstArgsV0",
+      "docs": [
+        "`evict_worst_v0` arguments."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "SideV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ExecuteArgsV0",
+      "docs": [
+        "Arguments to `execute_v0`: commit a fill. [`QuoteArgsV0`] without the price",
+        "bound, because `size` is depth the caller chose off the ladder. A quoter may",
+        "fill less than `size`, and what it filled is the sum of its balance changes.",
+        "Every field must carry the value its quote carried."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "users",
+            "docs": [
+              "Same contract as [`QuoteArgsV0::users`], and it leads for the same",
+              "reason."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "UserRefV0"
+                }
+              }
+            }
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "DirectionV0"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "name": "caps",
+            "type": {
+              "defined": {
+                "name": "UserCapsV0"
+              }
+            }
+          },
+          {
+            "name": "reference_price",
+            "docs": [
+              "The mark the quote was taken against. A different price makes a quoter",
+              "that spends budgets pass over a different set of orders than it quoted.",
+              "A fill always has a mark, so a quoter may refuse `None` here."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "taker",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "UserRefV0"
+                }
+              }
+            }
+          },
+          {
+            "name": "taker_served_window",
+            "type": "bool"
+          },
+          {
+            "name": "include_taker_origin_reservations",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ExecuteRecordV0",
+      "docs": [
+        "One per execute. The record names orders by id only, which keeps the hot",
+        "path cheap. A reader resolves user and price against the indexer's order",
+        "table, which it builds from place records. Quote amounts come from price",
+        "times base."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "direction",
+            "type": "u8"
+          },
+          {
+            "name": "fills",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "FillSlimV0"
+                }
+              }
+            }
+          },
+          {
+            "name": "cancelled_client_order_ids",
+            "docs": [
+              "Orders culled because the post-fill remainder fell below",
+              "`min_order_size`, by the placing caller's ids. See",
+              "[`OrdersCancelRecordV0::client_order_ids`]."
+            ],
+            "type": {
+              "vec": "u32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "FillArgsV0",
+      "docs": [
+        "`fill_v0` arguments. A taker remainder resting here can aggress against sources",
+        "this program cannot see, such as a quoter or the vAMM, so velocity does that",
+        "matching and reports back. A list rather than a single fill, so a transaction that",
+        "resolves several remainders pays for one call."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fills",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "FillRequestV0"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "FillEntryV0",
+      "docs": [
+        "One taker remainder filled in a `fill_v0` batch. `price` is the remainder's",
+        "own resting price, the only price this program stores for it."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_size",
+            "type": "u64"
+          },
+          {
+            "name": "client_order_id",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FillOutcomeV0",
+      "docs": [
+        "Return data of `fill_v0`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "filled",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "FilledOrderV0"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "FillRecordV0",
+      "docs": [
+        "One per `fill_v0`. `execute_v0` fills a taker against makers already on",
+        "this book, so [`ExecuteRecordV0`] can name the maker by id and leave price",
+        "and owner to the reader's order table. `fill_v0` instead reports a resting",
+        "taker remainder that aggressed against a venue this program never saw, so",
+        "the record carries the remainder's own price and owner rather than sending",
+        "a reader to a fill it cannot resolve any other way."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "fills",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "FillEntryV0"
+                }
+              }
+            }
+          },
+          {
+            "name": "cancelled_client_order_ids",
+            "docs": [
+              "See [`ExecuteRecordV0::cancelled_client_order_ids`]."
+            ],
+            "type": {
+              "vec": "u32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "FillRequestV0",
+      "docs": [
+        "One order the caller filled elsewhere, and by how much."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_ref",
+            "type": {
+              "defined": {
+                "name": "ClobOrderRefV0"
+              }
+            }
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FillSlimV0",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "base_size",
+            "type": "u64"
+          },
+          {
+            "name": "client_order_id",
+            "docs": [
+              "The placing caller's own id for this order. Every reader downstream of",
+              "velocity files orders under the caller's ids. The field lets such a",
+              "reader join a fill to an order without a map between the two id spaces."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FilledOrderV0",
+      "docs": [
+        "What one order in a [`FillArgsV0`] came to."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "client_order_id",
+            "docs": [
+              "The placing caller's own id, so a caller joins this to its own order",
+              "without holding a map between the two id spaces."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "culled_base_asset_amount",
+            "docs": [
+              "Size dropped because the remainder fell under `min_order_size`. The",
+              "book will not hold it, so the caller unwinds it from the owner's",
+              "reservation."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "removed",
+            "docs": [
+              "The order left the book, either filled out or culled."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "L3ArgsV0",
+      "docs": [
+        "Arguments to `quote_l3_v0`: how much of a side to describe. No user set and",
+        "no caps, because the question is what rests on the book, not what this",
+        "caller may settle."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "DirectionV0"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "docs": [
+              "Stop once this much base is described. Zero describes the side up to",
+              "`max_rows`."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "max_rows",
+            "docs": [
+              "Stop after this many rows, whatever `size` is left."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "include_taker_origin_reservations",
+            "docs": [
+              "Same contract as [`QuoteArgsV0::include_taker_origin_reservations`]."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketAuthorityAcceptedRecordV0",
+      "docs": [
+        "`accept_market_authority_v0` installed the proposed authority."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "previous_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketAuthorityProposedRecordV0",
+      "docs": [
+        "`propose_market_authority_v0` named a successor. A zero `proposed_authority`",
+        "withdraws the open proposal."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketCloseRecordV0",
+      "docs": [
+        "`close_market_v0` closed an empty market and paid its rent to",
+        "`rent_recipient`."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "rent_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketConfigV0",
+      "docs": [
+        "Per-market configuration, set at init. It is also the init wire args.",
+        "`base_precision` and `market_index` are immutable afterwards.",
+        "`update_market_v0` updates the rest."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "base_precision",
+            "type": "u64"
+          },
+          {
+            "name": "order_tick_size",
+            "type": "u64"
+          },
+          {
+            "name": "order_step_size",
+            "type": "u64"
+          },
+          {
+            "name": "min_order_size",
+            "type": "u64"
+          },
+          {
+            "name": "blocking_min_size",
+            "docs": [
+              "See [`ClobHeaderV0::blocking_min_size`]. Must exceed `min_order_size`."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "default_activation_delay_slots",
+            "type": "u32"
+          },
+          {
+            "name": "max_activation_delay_slots",
+            "type": "u32"
+          },
+          {
+            "name": "unknown_user_grace_slots",
+            "type": "u32"
+          },
+          {
+            "name": "evict_threshold_per_side",
+            "type": "u32"
+          },
+          {
+            "name": "max_quote_levels",
+            "type": "u16"
+          },
+          {
+            "name": "max_execute_fills",
+            "type": "u16"
+          },
+          {
+            "name": "max_execute_users",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketInitializeRecordV0",
+      "docs": [
+        "`initialize_market_v0` created a market."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "place_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "base_precision",
+            "type": "u64"
+          },
+          {
+            "name": "capacity",
+            "type": "u32"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "settings",
+            "type": {
+              "defined": {
+                "name": "MarketSettingsV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketResizeRecordV0",
+      "docs": [
+        "`resize_market_v0` grew a market's arena."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "previous_capacity",
+            "type": "u32"
+          },
+          {
+            "name": "capacity",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketSettingsV0",
+      "docs": [
+        "Every mutable setting of a market, as `update_market_v0` can change it."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_tick_size",
+            "type": "u64"
+          },
+          {
+            "name": "order_step_size",
+            "type": "u64"
+          },
+          {
+            "name": "min_order_size",
+            "type": "u64"
+          },
+          {
+            "name": "blocking_min_size",
+            "type": "u64"
+          },
+          {
+            "name": "default_activation_delay_slots",
+            "type": "u32"
+          },
+          {
+            "name": "max_activation_delay_slots",
+            "type": "u32"
+          },
+          {
+            "name": "unknown_user_grace_slots",
+            "type": "u32"
+          },
+          {
+            "name": "evict_threshold_per_side",
+            "type": "u32"
+          },
+          {
+            "name": "max_quote_levels",
+            "type": "u16"
+          },
+          {
+            "name": "max_execute_fills",
+            "type": "u16"
+          },
+          {
+            "name": "max_execute_users",
+            "type": "u16"
+          },
+          {
+            "name": "reservation_grace_slots",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketUpdateRecordV0",
+      "docs": [
+        "`update_market_v0` changed a market's settings."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "before",
+            "type": {
+              "defined": {
+                "name": "MarketSettingsV0"
+              }
+            }
+          },
+          {
+            "name": "after",
+            "type": {
+              "defined": {
+                "name": "MarketSettingsV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "NextCrossV0",
+      "docs": [
+        "Return data of `next_cross_v0`: the best matchable order on each side. Matchable is",
+        "the book's own predicate, meaning open, activated and unexpired, so a caller never",
+        "re-derives it. Any cross settles between these two heads. A caller compares their",
+        "prices and reads [`OrderViewV0::taker_origin`] to see which side came to trade."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bid",
+            "type": {
+              "defined": {
+                "name": "OrderViewV0"
+              }
+            }
+          },
+          {
+            "name": "ask",
+            "type": {
+              "defined": {
+                "name": "OrderViewV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "NextRemovalArgsV0",
+      "docs": [
+        "`next_removal_v0` arguments."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "ClobRemovalKindV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderCancelRecordV0",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "sub_account_id",
+            "type": "u16"
+          },
+          {
+            "name": "client_order_id",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderEvictRecordV0",
+      "docs": [
+        "Crank eviction at the soft cap. It is a separate record from a cancel,",
+        "because the UI shows an order as evicted or re-armed, and velocity re-arms",
+        "triggers in the same transaction."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "sub_account_id",
+            "type": "u16"
+          },
+          {
+            "name": "client_order_id",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderExpireRecordV0",
+      "docs": [
+        "Crank reclamation of an expired order. An execute only skips an expired",
+        "order."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "sub_account_id",
+            "type": "u16"
+          },
+          {
+            "name": "client_order_id",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderPlaceRecordV0",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          },
+          {
+            "name": "max_ts",
+            "type": "i64"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "node_index",
+            "type": "u32"
+          },
+          {
+            "name": "client_order_id",
+            "docs": [
+              "The placing caller's own id for this order. Every later record names",
+              "the order by this, so a reader files it under the id its own records",
+              "use and never holds a map between the two id spaces."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "sub_account_id",
+            "type": "u16"
+          },
+          {
+            "name": "side",
+            "type": "u8"
+          },
+          {
+            "name": "flags",
+            "docs": [
+              "[`crate::state::OrderBitFlag::TakerOrigin`] and",
+              "[`crate::state::OrderBitFlag::ReduceOnly`], at the same bit values."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderRulesV0",
+      "docs": [
+        "Return data of `order_rules_v0`: what the book requires of an order before",
+        "it will hold one.",
+        "",
+        "A caller that builds orders has to satisfy these, and finding out by",
+        "rejection costs it the transaction. Asking replaces reading them out of",
+        "the market account's header."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "min_order_size",
+            "docs": [
+              "Floor on a resting order's size. A remainder below it cannot rest, and",
+              "the book culls one on its own fills. A caller re-placing a partially",
+              "filled remainder drops it instead of offering a placement the book",
+              "rejects."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "blocking_min_size",
+            "docs": [
+              "Floor on the size of an order that may end a fill walk when its owner is not in",
+              "the caller's user set. The book skips a smaller order at any age. A maker needs",
+              "it to keep price priority against a caller that leaves the maker out. It exceeds",
+              "`min_order_size`, except on an older market, where zero lets any order end a walk."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "default_activation_delay_slots",
+            "docs": [
+              "Slots added to the placement slot to get `activation_slot` when the",
+              "caller chooses no delay. A caller that compares its own delay against",
+              "the book's own reads this value."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "max_activation_delay_slots",
+            "docs": [
+              "Upper bound on a caller-chosen activation delay."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "place_authority",
+            "docs": [
+              "The key the book requires to sign a placement, cancel, evict, expire or execute,",
+              "and the book's whole trust root. A caller pins it to its own signing PDA, so the",
+              "book only ever acts under a key the caller controls. `[u8; 32]` rather than",
+              "`Address`, for the IDL-build reason on [`CrankResolverV0::program`]."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "tick_size",
+            "docs": [
+              "The book's price and size grid. A caller that migrates an order pins these to",
+              "its market's grid at attach, so an aligned remainder always rests. An off-tick",
+              "rejection would revert the whole fill that carried it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "step_size",
+            "type": "u64"
+          },
+          {
+            "name": "side_order_counts",
+            "docs": [
+              "Resting orders on each side right now, bids first. A side is full at",
+              "`arena_capacity / 2` and the book refuses a placement onto a full side, so a",
+              "caller predicts the refusal and fills without resting. The counts are a fact",
+              "about the slot this call ran in, not a rule."
+            ],
+            "type": {
+              "array": [
+                "u32",
+                2
+              ]
+            }
+          },
+          {
+            "name": "arena_capacity",
+            "docs": [
+              "Order slots the whole arena holds. Half of it is the per-side cap."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "evict_threshold_per_side",
+            "docs": [
+              "Count at which the eviction crank may take a side's tail. A side",
+              "between this and its cap still accepts placements, and the crank works",
+              "it back down."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "The key that may change these rules. A caller that mirrors them pins",
+              "it to its own signing PDA, so no rule changes without the caller."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderViewV0",
+      "docs": [
+        "One order, as the book describes it to a caller. `next_removal_v0`,",
+        "`next_cross_v0` and `orders_v0` all answer with this shape, so the three",
+        "cannot drift apart. `order_ref.order_id == 0` means there is no such",
+        "order: ids start at one, and return data is a fixed width."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_ref",
+            "type": {
+              "defined": {
+                "name": "ClobOrderRefV0"
+              }
+            }
+          },
+          {
+            "name": "client_order_id",
+            "docs": [
+              "The caller's own id for this order, as supplied at placement."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "user",
+            "type": {
+              "defined": {
+                "name": "UserRefV0"
+              }
+            }
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "SideV0"
+              }
+            }
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "placed_slot",
+            "docs": [
+              "Slot the order was placed in. A caller that prices a match against an",
+              "auction window needs it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "max_ts",
+            "docs": [
+              "The expiry the order carries, zero for good until cancelled."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "taker_origin",
+            "docs": [
+              "The order is an unfilled taker remainder the caller migrated onto the",
+              "book. It demands liquidity rather than offering it, so a cross that",
+              "touches one settles at the other side's price."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "reduce_only",
+            "docs": [
+              "The order may only reduce its owner's position. A caller that judges",
+              "whether the order reduces risk clamps its size to the position first."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrdersArgsV0",
+      "docs": [
+        "`orders_v0` arguments: which orders to describe. A caller holds refs from its own",
+        "records or from a client that read the book off chain, and cannot tell which still",
+        "name a live order. Asking replaces reading the arena."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "refs",
+            "docs": [
+              "At most [`ORDER_VIEW_CEILING`] refs."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "ClobOrderRefV0"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrdersCancelRecordV0",
+      "docs": [
+        "One per `cancel_all_v0`. A maker withdraws a whole side, or both sides, in",
+        "one instruction, rather than one [`OrderCancelRecordV0`] per order.",
+        "",
+        "The record names orders by id only, under the same contract",
+        "[`ExecuteRecordV0`] uses. An indexer resolves price and size against the",
+        "order table it built from place records. The sweep's log therefore stays",
+        "four bytes per order instead of restating what the reader already holds.",
+        "Ids come in book order, bids before asks.",
+        "",
+        "`exhaustive` false means the call stopped at",
+        "[`crate::state::CANCEL_ALL_ORDERS_CEILING`] and this user still has resting",
+        "orders. A reader must not treat the side as empty."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "bid_base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "ask_base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "sub_account_id",
+            "type": "u16"
+          },
+          {
+            "name": "sides",
+            "docs": [
+              "Which sides the sweep covered, as the wire enum's tag",
+              "(0 = bids, 1 = asks, 2 = both)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "exhaustive",
+            "type": "bool"
+          },
+          {
+            "name": "client_order_ids",
+            "docs": [
+              "The swept orders, named by the placing caller's ids rather than the",
+              "book's. A bulk list is read by whoever files orders under those ids,",
+              "and carrying both would double the log for an id nothing downstream",
+              "asks for."
+            ],
+            "type": {
+              "vec": "u32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrdersV0",
+      "docs": [
+        "Return data of `orders_v0`: one [`OrderViewV0`] per requested ref, in the order they",
+        "were asked for. A ref that no longer names a live order comes back as",
+        "[`OrderViewV0::NONE`] rather than being dropped, so a caller reads the answers by",
+        "position. A race with a fill or a crank produces this, and it is not an error."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "orders",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "OrderViewV0"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlaceOrderArgsV0",
+      "docs": [
+        "`place_order_v0` arguments."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "SideV0"
+              }
+            }
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "activation_delay_slots",
+            "docs": [
+              "`None` takes the market's default activation delay. A value must be at",
+              "or under the market's maximum. Zero is allowed. The caller owns",
+              "attestation policy, and the book only clamps."
+            ],
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "max_ts",
+            "docs": [
+              "Zero means good until cancelled."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "user",
+            "docs": [
+              "The user the order settles against, in derivable form. The book trusts",
+              "its `place_authority` for identity. The caller verified control before",
+              "the CPI."
+            ],
+            "type": {
+              "defined": {
+                "name": "UserRefV0"
+              }
+            }
+          },
+          {
+            "name": "taker_origin",
+            "docs": [
+              "The order is an unfilled taker remainder the caller migrated onto the book,",
+              "which only the caller can know. The order cannot be taken while a live",
+              "counterparty crosses it, and a cross settles at the counterparty's price."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "client_order_id",
+            "docs": [
+              "The caller's own id for this order. The book stores it and reports it",
+              "back on every answer that names the order, so the caller never holds a",
+              "map from the book's ids to its own. The book neither sorts nor",
+              "identifies orders by it. Zero means the caller keeps no id."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "reject_if_crossed",
+            "docs": [
+              "Refuse the placement when the order would cross the opposite best price, rather",
+              "than resting it crossed. A crossed order still fills at its own price, so this",
+              "is about whether the order rests at all. A maker that quotes through the other",
+              "side has mispriced and would rather place nothing."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "reduce_only",
+            "docs": [
+              "The order only reduces its owner's position. The book does not see",
+              "positions, so the caller declares this. At match time the book clamps a",
+              "fill against a reduce-only order to the owner's `base_cover` cap from",
+              "the execute call's user set."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProposeMarketAuthorityArgsV0",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "proposed_authority",
+            "docs": [
+              "The zero address withdraws an open proposal."
+            ],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuoteArgsV0",
+      "docs": [
+        "Arguments to `quote_v0`: what a taker wants, and who the caller can settle",
+        "against. `users` is a slice into the caller's instruction data, so a quoter",
+        "walks it without a copy in a 4 KB frame. It leads the struct to keep its",
+        "offset even, and a field added ahead of it must preserve that."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "users",
+            "docs": [
+              "The loaded-user set, at most [`USER_SET_CAPACITY`] entries. A reader",
+              "checks that with [`user_set_within_capacity`], because the count comes",
+              "off the wire."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "UserRefV0"
+                }
+              }
+            }
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "DirectionV0"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "docs": [
+              "Base the taker wants filled."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "caps",
+            "type": {
+              "defined": {
+                "name": "UserCapsV0"
+              }
+            }
+          },
+          {
+            "name": "reference_price",
+            "docs": [
+              "The price the caller marks a filled position at, in PRICE_PRECISION.",
+              "Budgets are spent and bands are checked against it. It does not bound",
+              "what a quoter may fill at. `None` is a read that settles nothing."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "taker",
+            "docs": [
+              "The taker's own user, whose resting liquidity is skipped",
+              "unconditionally (self-trade prevention)."
+            ],
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "UserRefV0"
+                }
+              }
+            }
+          },
+          {
+            "name": "limit_price",
+            "docs": [
+              "The worst price the caller will fill at, in PRICE_PRECISION. Zero means",
+              "no bound. Not a trust boundary: a quoter that ignores it returns levels",
+              "the caller drops, and never widens what it may fill."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "taker_served_window",
+            "docs": [
+              "Whether the taker's flow served a protection window before this call:",
+              "the swift hold, or the book's activation delay. The caller asserts it. A",
+              "quoter that serves only protected flow refuses when this is false."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "include_taker_origin_reservations",
+            "docs": [
+              "Fill the depth that a taker-origin order reserves. Only the crank that",
+              "settles the cross sets it. A quoter that reserves no depth ignores it."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RelayBlockV0",
+      "type": {
+        "kind": "struct",
+        "fields": []
+      }
+    },
+    {
+      "name": "RemoveExpiredArgsV0",
+      "docs": [
+        "`remove_expired_v0` arguments."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_ref",
+            "type": {
+              "defined": {
+                "name": "ClobOrderRefV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RemovedOrderV0",
+      "docs": [
+        "Return data of `cancel_order_v0`, `evict_worst_v0` and",
+        "`remove_expired_v0`: the order that left the book.",
+        "",
+        "`side` tells the caller whether the remaining size unwinds its bid-side or",
+        "ask-side reservation."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": {
+              "defined": {
+                "name": "UserRefV0"
+              }
+            }
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          },
+          {
+            "name": "client_order_id",
+            "docs": [
+              "The caller's own id for this order, as supplied at placement."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "SideV0"
+              }
+            }
+          },
+          {
+            "name": "taker_origin",
+            "docs": [
+              "The order was taker-origin. The flag tells a caller which side of the",
+              "cross it is resolving demanded liquidity, and therefore which side's",
+              "price the match settles at."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "reduce_only",
+            "docs": [
+              "The order was reduce-only. A modify removes the order and rests an",
+              "equivalent one, and must carry the flag across. Otherwise the",
+              "replacement rests uncapped."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "max_ts",
+            "docs": [
+              "The expiry the order carried, zero for good until cancelled. A modify removes an",
+              "order and rests an equivalent one, and this lets the caller carry the expiry",
+              "across without reading the book. Removal is the last moment it is knowable."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResizeMarketArgsV0",
+      "docs": [
+        "`resize_market_v0` arguments."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "new_capacity",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResponsePointerV0",
+      "docs": [
+        "Where in its response account a quoter wrote the response: the return data of",
+        "`quote_v0` and `execute_v0`. Declared once, so no two quoters can disagree",
+        "about which `u32` comes first."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "offset",
+            "type": "u32"
+          },
+          {
+            "name": "len",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SideV0",
+      "docs": [
+        "Which side an order rests on: a bid makes its owner long, an ask short."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Bid"
+          },
+          {
+            "name": "Ask"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UserCapV0",
+      "docs": [
+        "What one named user may still lose on the swept side, in quote. The quoter",
+        "has each fill price and the caller does not, so the cap is not in base. The",
+        "quoter charges `base * |price - reference_price| / BASE_PRECISION` where the",
+        "fill moves against the owner. Zero belongs in the exclusion bitmap."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "quote_cap",
+            "docs": [
+              "`u64::MAX` is unbounded. It bounds depth that was margin-reserved at",
+              "placement. Base cannot express that bound, because a fill at a price in",
+              "the owner's favour costs nothing per base."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "base_cap",
+            "docs": [
+              "The most base this user may give up on the swept side. `u64::MAX` is unbounded.",
+              "A book binds reduce-only orders to it and draws it down by every fill of the user.",
+              "A book fills no reduce-only order whose owner has no cap here, so for a book this",
+              "field is a trust boundary. Every other quoter reads it as advisory."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "index",
+            "docs": [
+              "Index into the accompanying user set."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UserCapsV0",
+      "docs": [
+        "Per-user room, parallel to the caller's user set. A user absent from all of",
+        "this is unconstrained. The quoter skips an excluded user's orders, and an",
+        "exclusion never fails the call. Not a trust boundary: the caller's own",
+        "post-fill checks still refuse the fill."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "excluded",
+            "docs": [
+              "One bit per index in the set: set means no room on the swept side, so",
+              "pass that user's orders over."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                6
+              ]
+            }
+          },
+          {
+            "name": "len",
+            "docs": [
+              "Live entries at the head of `caps`. This crate fills the tail with the",
+              "entries of [`Self::EMPTY`], but a reader must not rely on the tail."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "caps",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "UserCapV0"
+                  }
+                },
+                8
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "UserRefV0",
+      "docs": [
+        "A velocity user in derivable form: the wallet and sub-account index that both",
+        "the `User` and `UserStats` PDAs derive from. An off-chain reader can reach every",
+        "user-derived account from a quoter's state alone. A stored `User` key cannot,",
+        "because its authority lives in account data the reader cannot load."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "sub_account_id",
+            "type": "u16"
+          }
+        ]
+      }
+    }
+  ]
+}

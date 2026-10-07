@@ -37,18 +37,12 @@ import {
 	BlockhashSubscriber,
 	WhileValidTxSender,
 	configs,
-	AuctionSubscriber,
-	SwiftOrderSubscriber,
 } from '@velocity-exchange/sdk';
 import { promiseTimeout } from '@velocity-exchange/sdk';
 
 import { logger, setLogLevel } from './logger';
 import { constants } from './types';
-import { FillerBot } from './bots/filler';
-import { SpotFillerBot } from './bots/spotFiller';
-import { TriggerBot } from './bots/trigger';
 import { LiquidatorBot } from './bots/liquidator';
-import { FloatingPerpMakerBot } from './bots/floatingMaker';
 import { Bot } from './types';
 import { IFRevenueSettlerBot } from './bots/ifRevenueSettler';
 import { ProtocolFeeCollectorBot } from './bots/protocolFeeCollector';
@@ -70,14 +64,11 @@ import {
 	loadConfigFromOpts,
 } from './config';
 import { FundingRateUpdaterBot } from './bots/fundingRateUpdater';
-import { FillerLiteBot } from './bots/fillerLite';
 import { MakerBidAskTwapCrank } from './bots/makerBidAskTwapCrank';
 import { BundleSender } from './bundleSender';
 import { VelocityStateWatcher, StateChecks } from './velocityStateWatcher';
 import { webhookMessage } from './webhook';
 import { PythLazerCrankerBot } from './bots/pythLazerCranker';
-import { JitMaker } from './bots/jitMaker';
-import { JitProxyClient, JitterSniper } from '@velocity-exchange/jit-proxy';
 import { JetProxyTxSender } from './bots/common/jetTxSender';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { timedCacheableLookup } from './bots/common/timedLookup';
@@ -95,14 +86,7 @@ program
 		'--init-user',
 		'calls velocityClient.initializeUserAccount if no user account exists'
 	)
-	.option('--filler', 'Enable filler bot')
-	.option('--filler-lite', 'Enable filler lite bot')
-	.option('--spot-filler', 'Enable spot filler bot')
-	.option('--trigger', 'Enable trigger bot')
-	.option('--jit-maker', 'Enable JIT auction maker bot')
-	.option('--floating-maker', 'Enable floating maker bot')
 	.option('--liquidator', 'Enable liquidator bot')
-	.option('--uncross-arb', 'Arb bot')
 	.option(
 		'--if-revenue-settler',
 		'Enable Insurance Fund revenue pool settler bot'
@@ -193,11 +177,6 @@ program
 		'--tx-retry-timeout-ms <string>',
 		'Timeout in ms for retry tx sender',
 		'30000'
-	)
-	.option(
-		'--market-type <type>',
-		'Set the market type for the JIT Maker bot',
-		'PERP'
 	)
 	.option(
 		'--priority-fee-multiplier <number>',
@@ -402,16 +381,13 @@ const runBot = async () => {
 		});
 	} else {
 		const skipConfirmation =
-			configHasBot(config, 'fillerLite') ||
-			configHasBot(config, 'filler') ||
-			configHasBot(config, 'spotFiller') ||
 			configHasBot(config, 'liquidator') ||
 			configHasBot(config, 'pythLazerCranker');
 		txSender = new FastSingleTxSender({
 			connection: sendTxConnection,
 			// Disable the background blockhash refresh loop: FastSingleTxSender's
 			// `recentBlockhash` cache is never consumed by `sendRawTransaction`, and
-			// the fillers build txs from their own BlockhashSubscriber. The loop was
+			// each bot builds txs from its own BlockhashSubscriber. The loop was
 			// pure redundant getLatestBlockhash traffic.
 			blockhashRefreshInterval: 0,
 			wallet,
@@ -480,9 +456,9 @@ const runBot = async () => {
 		);
 	}
 
-	// Self-heal a websocket that stops delivering slots. Every signed-msg fill is
-	// gated on this slot being current, so a silently frozen subscription would
-	// stall those fills indefinitely rather than degrade.
+	// Resubscribe when the websocket stops delivering slots. Every signed-message
+	// fill is gated on this slot being current, so a frozen subscription stalls
+	// those fills for as long as it stays frozen.
 	const slotSubscriber = new SlotSubscriber(connection, {
 		resubTimeoutMs: 10_000,
 	});
@@ -612,174 +588,6 @@ const runBot = async () => {
 			)
 		);
 	}
-	if (configHasBot(config, 'jitMaker')) {
-		needPriorityFeeSubscriber = true;
-		needVelocityStateWatcher = true;
-		needUserMapSubscribe = true;
-
-		const auctionSubscriber = new AuctionSubscriber({
-			velocityClient,
-			resubTimeoutMs: 30_000,
-		});
-		let swiftOrderSubscriber: SwiftOrderSubscriber | undefined = undefined;
-		if (config.global.velocityEnv === 'devnet') {
-			if (!config.botConfigs?.jitMaker?.marketIndexes) {
-				throw new Error('Market indexes must be specified for JIT Maker bot');
-			}
-			swiftOrderSubscriber = new SwiftOrderSubscriber({
-				velocityEnv: 'devnet',
-				// Point at the deployment's own swift ws-server when set (velocity runs
-				// swift-ws-server-app in-cluster); else the SDK default (public host).
-				endpoint: process.env.SWIFT_WS_ENDPOINT,
-				marketIndexes: config.botConfigs?.jitMaker?.marketIndexes,
-				keypair: new Keypair(),
-				velocityClient,
-				userAccountGetter: userMap,
-			});
-		}
-
-		const jitProxyClient = new JitProxyClient({
-			// @ts-ignore
-			velocityClient: velocityClient,
-			programId: new PublicKey(sdkConfig.JIT_PROXY_PROGRAM_ID!),
-		});
-
-		// Cast to any to work around SDK version mismatch between jit-proxy and main SDK
-		const jitter = new JitterSniper({
-			auctionSubscriber: auctionSubscriber as any,
-			velocityClient: velocityClient as any,
-			jitProxyClient,
-			swiftOrderSubscriber: swiftOrderSubscriber as any,
-			slotSubscriber: slotSubscriber as any,
-			auctionSubscriberIgnoresSwiftOrders: !!swiftOrderSubscriber,
-		});
-		await jitter.subscribe();
-
-		bots.push(
-			new JitMaker(
-				velocityClient,
-				jitter,
-				config.botConfigs!.jitMaker!,
-				config.global.velocityEnv,
-				priorityFeeSubscriber
-			)
-		);
-	}
-
-	if (configHasBot(config, 'filler')) {
-		needPythPriceSubscriber = true;
-		needCheckVelocityUser = true;
-		needUserMapSubscribe = true;
-		needPriorityFeeSubscriber = true;
-		needBlockhashSubscriber = true;
-		needVelocityStateWatcher = true;
-
-		bots.push(
-			new FillerBot(
-				slotSubscriber,
-				bulkAccountLoader,
-				velocityClient,
-				userMap,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.global,
-				config.botConfigs!.filler!,
-				priorityFeeSubscriber,
-				blockhashSubscriber,
-				bundleSender,
-				[]
-			)
-		);
-	}
-
-	if (configHasBot(config, 'fillerLite')) {
-		needPythPriceSubscriber = true;
-		needCheckVelocityUser = true;
-		needPriorityFeeSubscriber = true;
-		needBlockhashSubscriber = true;
-		needVelocityStateWatcher = true;
-
-		logger.info(`Starting filler lite bot`);
-		bots.push(
-			new FillerLiteBot(
-				slotSubscriber,
-				velocityClient,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.global,
-				config.botConfigs!.fillerLite!,
-				priorityFeeSubscriber,
-				blockhashSubscriber,
-				bundleSender,
-				[]
-			)
-		);
-	}
-
-	if (configHasBot(config, 'spotFiller')) {
-		needCheckVelocityUser = true;
-		// to avoid long startup, spotFiller will fetch userAccounts as needed and build the map over time
-		needUserMapSubscribe = false;
-		needPriorityFeeSubscriber = true;
-		needBlockhashSubscriber = true;
-		needVelocityStateWatcher = true;
-
-		bots.push(
-			new SpotFillerBot(
-				velocityClient,
-				userMap,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.global,
-				config.botConfigs!.spotFiller!,
-				priorityFeeSubscriber,
-				blockhashSubscriber,
-				bundleSender,
-				[]
-			)
-		);
-	}
-
-	if (configHasBot(config, 'trigger')) {
-		needUserMapSubscribe = true;
-		needVelocityStateWatcher = true;
-		needBlockhashSubscriber = true;
-
-		bots.push(
-			new TriggerBot(
-				velocityClient,
-				slotSubscriber,
-				blockhashSubscriber,
-				userMap,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.botConfigs!.trigger!,
-				config.global,
-				priorityFeeSubscriber
-			)
-		);
-	}
-
 	if (configHasBot(config, 'liquidator')) {
 		needCheckVelocityUser = true;
 		needUserMapSubscribe = true;
@@ -804,24 +612,6 @@ const runBot = async () => {
 				sdkConfig.MARKET_LOOKUP_TABLE
 					? new PublicKey(sdkConfig.MARKET_LOOKUP_TABLE as string)
 					: undefined
-			)
-		);
-	}
-
-	if (configHasBot(config, 'floatingMaker')) {
-		needCheckVelocityUser = true;
-		bots.push(
-			new FloatingPerpMakerBot(
-				velocityClient,
-				slotSubscriber,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.botConfigs!.floatingMaker!
 			)
 		);
 	}
@@ -878,7 +668,8 @@ const runBot = async () => {
 		bots.push(
 			new IFRevenueSettlerBot(
 				velocityClient,
-				config.botConfigs!.ifRevenueSettler!
+				config.botConfigs!.ifRevenueSettler!,
+				config.global
 			)
 		);
 	}
@@ -891,7 +682,8 @@ const runBot = async () => {
 		bots.push(
 			new ProtocolFeeCollectorBot(
 				new AdminClient(velocityClientConfig),
-				config.botConfigs!.protocolFeeCollector!
+				config.botConfigs!.protocolFeeCollector!,
+				config.global
 			)
 		);
 	}
@@ -903,7 +695,8 @@ const runBot = async () => {
 		bots.push(
 			new FundingRateUpdaterBot(
 				velocityClient,
-				config.botConfigs!.fundingRateUpdater!
+				config.botConfigs!.fundingRateUpdater!,
+				config.global
 			)
 		);
 	}

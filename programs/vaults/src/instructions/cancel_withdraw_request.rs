@@ -8,7 +8,6 @@ use {
     },
     anchor_lang::prelude::*,
     velocity::{
-        instructions::optional_accounts::AccountMaps,
         math::casting::Cast,
         program::Velocity,
         state::user::{User, UserStats},
@@ -18,10 +17,10 @@ use {
 pub fn cancel_withdraw_request<'info>(
     ctx: Context<'info, CancelWithdrawRequest<'info>>,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -39,11 +38,7 @@ pub fn cancel_withdraw_request<'info>(
     let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         None,
         vp.is_some(),
@@ -51,11 +46,10 @@ pub fn cancel_withdraw_request<'info>(
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
-    let spot_market = spot_market_map.get_ref(&vault.spot_market_index)?;
-    let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let spot_market = maps.spot_market_map.get_ref(&vault.spot_market_index)?;
+    let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     vault_depositor.cancel_withdraw_request(
         vault_equity.cast()?,

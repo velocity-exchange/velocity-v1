@@ -1525,6 +1525,7 @@ export async function overwriteConstituentAccount(
 	for (const [key, value] of overwriteFields) {
 		acc[key] = value;
 	}
+
 	svmContextWrapper.context.setAccount(constituentPublicKey, {
 		executable: false,
 		owner: program.programId,

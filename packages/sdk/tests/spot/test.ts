@@ -22,7 +22,7 @@ import {
 	ONE_YEAR,
 	maxSpotInterestStalenessForMargin,
 } from '../../src';
-import { mockSpotMarkets } from '../dlob/helpers';
+import { mockSpotMarkets } from '../fixtures/mockAccounts';
 import * as _ from 'lodash';
 
 import { assert } from '../../src/assert/assert';

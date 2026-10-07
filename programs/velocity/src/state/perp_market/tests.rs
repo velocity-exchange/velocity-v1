@@ -697,7 +697,7 @@ mod expired_awaiting_settlement {
         let m = market(MarketStatus::Active, expiry);
         assert!(!expired_awaiting_settlement(&m, expiry - 1));
 
-        // Expired, status not yet flipped: THIS is the window #149 describes. No expiry
+        // Expired, status not yet flipped: THIS is the window OtterSec #149 describes. No expiry
         // price exists, so a live-oracle liquidation must be refused.
         assert!(expired_awaiting_settlement(&m, expiry));
         assert!(expired_awaiting_settlement(&m, expiry + 10_000));
@@ -932,7 +932,7 @@ mod mark_twap_reseed {
     }
 }
 
-/// The bid/ask crank folds caller-supplied DLOB depth into the mark TWAP that
+/// The bid/ask crank folds the book's depth into the mark TWAP that
 /// funding later reads. A TWAP update weights the new sample by
 /// `elapsed / funding_period`, so after a long gap one caller-chosen sample can
 /// claim a near-full-period weight and set the funding input in a single crank.

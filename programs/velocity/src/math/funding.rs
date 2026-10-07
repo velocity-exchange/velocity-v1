@@ -156,13 +156,12 @@ pub fn validate_funding_pnl_profitability(
     }
     let projected_total_fee_minus_distributions =
         inputs.total_fee_minus_distributions.safe_add(funding_pnl)?;
-    if projected_total_fee_minus_distributions < 0 {
-        msg!(
-            "new_total_fee_minus_distributions={} < 0",
-            projected_total_fee_minus_distributions,
-        );
-        return Err(ErrorCode::InvalidFundingProfitability);
-    }
+    crate::validate!(
+        projected_total_fee_minus_distributions >= 0,
+        ErrorCode::InvalidFundingProfitability,
+        "new_total_fee_minus_distributions={} < 0",
+        projected_total_fee_minus_distributions,
+    )?;
     Ok(())
 }
 

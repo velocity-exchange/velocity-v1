@@ -19,13 +19,11 @@ export type GlobalOpts = {
 	/** `--dry-run`: build and price the instructions, send nothing. */
 	dryRun?: boolean;
 	/**
-	 * Whether env came from a flag or profile (true) or is the legacy
-	 * fallback default (false). A declared env that contradicts the RPC's
-	 * genesis hash is a fatal mismatch; the fallback is silently replaced by
-	 * the detected cluster instead.
+	 * True when `env` came from a flag or profile. A declared env contradicting the RPC
+	 * genesis hash is fatal. An undeclared one is replaced by the detected cluster.
 	 */
 	envExplicit?: boolean;
-	/** Name of the config profile these opts were resolved from, if any. */
+	/** Name of the config profile these options came from, if there was one. */
 	profile?: string;
 	/** Skip the interactive mainnet direct-send confirmation. */
 	yes?: boolean;

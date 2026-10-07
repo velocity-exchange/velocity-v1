@@ -3,6 +3,7 @@ use {
         controller::pnl::settle_pnl,
         create_anchor_account_info,
         error::ErrorCode,
+        instructions::optional_accounts::AccountMaps,
         math::{
             casting::Cast,
             constants::{
@@ -70,7 +71,7 @@ pub fn user_no_position() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -129,6 +130,7 @@ pub fn user_no_position() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: [PerpPosition::default(); 8],
@@ -149,9 +151,7 @@ pub fn user_no_position() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -193,7 +193,7 @@ pub fn user_does_not_meet_maintenance_requirement() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -255,6 +255,7 @@ pub fn user_does_not_meet_maintenance_requirement() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -279,9 +280,7 @@ pub fn user_does_not_meet_maintenance_requirement() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -323,7 +322,7 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -388,6 +387,7 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -412,9 +412,7 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -423,19 +421,12 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
 
     assert_eq!(result, Err(ErrorCode::InsufficientCollateralForSettlingPNL));
 
-    let meets_maintenance =
-        meets_maintenance_margin_requirement(&user, &market_map, &spot_market_map, &mut oracle_map)
-            .unwrap();
+    let meets_maintenance = meets_maintenance_margin_requirement(&user, &mut maps).unwrap();
 
     assert_eq!(meets_maintenance, true);
 
-    let meets_settle_pnl_maintenance = meets_settle_pnl_maintenance_margin_requirement(
-        &user,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
-    )
-    .unwrap();
+    let meets_settle_pnl_maintenance =
+        meets_settle_pnl_maintenance_margin_requirement(&user, &mut maps).unwrap();
 
     assert_eq!(meets_settle_pnl_maintenance, false);
 }
@@ -470,7 +461,7 @@ pub fn user_unsettled_negative_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -533,6 +524,7 @@ pub fn user_unsettled_negative_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -568,9 +560,7 @@ pub fn user_unsettled_negative_pnl() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -579,7 +569,7 @@ pub fn user_unsettled_negative_pnl() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -612,7 +602,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -674,6 +664,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -708,9 +699,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -719,7 +708,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -752,7 +741,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -815,6 +804,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -850,9 +840,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -861,7 +849,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -895,7 +883,7 @@ pub fn market_fee_pool_receives_portion() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map =
+    let oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let mut market = PerpMarket {
@@ -954,6 +942,7 @@ pub fn market_fee_pool_receives_portion() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -990,9 +979,7 @@ pub fn market_fee_pool_receives_portion() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -1001,7 +988,7 @@ pub fn market_fee_pool_receives_portion() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -1034,7 +1021,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1103,6 +1090,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1139,9 +1127,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -1150,7 +1136,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -1183,7 +1169,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1245,6 +1231,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1282,9 +1269,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -1293,7 +1278,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -1326,7 +1311,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1388,6 +1373,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1415,9 +1401,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -1456,7 +1440,7 @@ pub fn user_long_negative_unrealized_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1518,6 +1502,7 @@ pub fn user_long_negative_unrealized_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1555,9 +1540,7 @@ pub fn user_long_negative_unrealized_pnl() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -1566,7 +1549,7 @@ pub fn user_long_negative_unrealized_pnl() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -1599,7 +1582,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1661,6 +1644,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1698,9 +1682,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -1709,7 +1691,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -1742,7 +1724,7 @@ pub fn user_short_negative_unrealized_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1804,6 +1786,7 @@ pub fn user_short_negative_unrealized_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1841,9 +1824,7 @@ pub fn user_short_negative_unrealized_pnl() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -1852,7 +1833,7 @@ pub fn user_short_negative_unrealized_pnl() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -1886,7 +1867,7 @@ pub fn user_invalid_oracle_position() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -1978,6 +1959,7 @@ pub fn user_invalid_oracle_position() {
         / 33;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
     let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
     assert!(!market
         .is_price_divergence_ok_for_settle_pnl(oracle_price.price)
         .unwrap());
@@ -1987,9 +1969,7 @@ pub fn user_invalid_oracle_position() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -2003,7 +1983,8 @@ pub fn user_invalid_oracle_position() {
         .last_oracle_price_twap_5min /= 2;
     market.amm.last_update_slot = clock.slot;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
-    let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    maps.perp_market_map = perp_market_map;
     assert!(!market
         .is_price_divergence_ok_for_settle_pnl(oracle_price.price)
         .unwrap());
@@ -2013,9 +1994,7 @@ pub fn user_invalid_oracle_position() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -2029,7 +2008,8 @@ pub fn user_invalid_oracle_position() {
         .last_oracle_price_twap_5min *= 4;
     market.amm.last_update_slot = clock.slot;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
-    let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    maps.perp_market_map = perp_market_map;
     assert!(!market
         .is_price_divergence_ok_for_settle_pnl(oracle_price.price)
         .unwrap());
@@ -2039,9 +2019,7 @@ pub fn user_invalid_oracle_position() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -2054,7 +2032,8 @@ pub fn user_invalid_oracle_position() {
         .historical_oracle_data
         .last_oracle_price_twap_5min = oracle_price.price * 95 / 100;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
-    let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    maps.perp_market_map = perp_market_map;
     assert!(!market
         .is_price_divergence_ok_for_settle_pnl(oracle_price.price)
         .unwrap());
@@ -2064,9 +2043,7 @@ pub fn user_invalid_oracle_position() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -2079,7 +2056,8 @@ pub fn user_invalid_oracle_position() {
         .historical_oracle_data
         .last_oracle_price_twap_5min = oracle_price.price - 789789;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
-    let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    maps.perp_market_map = perp_market_map;
 
     assert!(market
         .is_price_divergence_ok_for_settle_pnl(oracle_price.price)
@@ -2089,9 +2067,7 @@ pub fn user_invalid_oracle_position() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -2208,7 +2184,7 @@ pub fn isolated_perp_position_negative_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -2271,6 +2247,7 @@ pub fn isolated_perp_position_negative_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -2303,9 +2280,7 @@ pub fn isolated_perp_position_negative_pnl() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -2314,7 +2289,7 @@ pub fn isolated_perp_position_negative_pnl() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }
 
 #[test]
@@ -2347,7 +2322,7 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(
+    let oracle_map = OracleMap::load_one(
         &oracle_account_info,
         clock.slot,
         SlotClock::baseline(),
@@ -2410,6 +2385,7 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -2442,9 +2418,7 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
         &mut user,
         &authority,
         &user_key,
-        &market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         &state,
         None,
@@ -2453,5 +2427,5 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
     .unwrap();
 
     assert_eq!(expected_user, user);
-    assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
+    assert_eq!(expected_market, *maps.perp_market_map.get_ref(&0).unwrap());
 }

@@ -74,6 +74,47 @@ export function registerUser(parent: Command): void {
 
 	withGlobalOptions(
 		user
+			.command('init-protocol')
+			.description(
+				'Create the protocol User, sub-account 0 of the velocity signer PDA, and its UserStats. Every relay crank names this account as its filler or taker, so relay cranks fail until it exists. Its authority cannot sign, so the program accepts only a warm or cold payer. With --multisig the vault pays the rent through a proposal. Skips an account that already exists.'
+			)
+	).action(async (_flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts, false);
+		try {
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const programId = client.program.programId;
+			const signer = client.getSignerPublicKey();
+			const protocolUser = getUserAccountPublicKeySync(programId, signer, 0);
+			if (await provider.connection.getAccountInfo(protocolUser)) {
+				console.log(`protocol user ${protocolUser.toBase58()} already exists`);
+				return;
+			}
+
+			const ixs = await client.getInitializeProtocolUserIxs(
+				'Protocol',
+				resolveAdminAuthority(provider, multisigPda)
+			);
+			const statsExist = await provider.connection.getAccountInfo(
+				getUserStatsAccountPublicKey(programId, signer)
+			);
+			const result = await sendOrPropose(
+				provider,
+				statsExist ? ixs.slice(1) : ixs,
+				multisigPda,
+				'velocity-admin user init-protocol'
+			);
+			reportDispatch(`protocol user = ${protocolUser.toBase58()}`, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		user
 			.command('init <name>')
 			.description(
 				'Initialize velocity user accounts for an authority: UserStats (if missing) plus ' +
@@ -605,9 +646,10 @@ export function registerUser(parent: Command): void {
 			.command('reset-equity-breaker <userStats>')
 			.description(
 				'Clear the authority-wide equity floor breaker on a UserStats account (warm admin). ' +
-					'Unfreezes all subaccounts of the authority after a breach has been reviewed. ' +
-					'Self-verifying onchain: reverts unless every subaccount clears its floor + buffer ' +
-					'at execution time; lower floors first (set-equity-floor) to resume regardless.'
+					'Unfreeze every subaccount of the authority after a review of the breach. ' +
+					'The program verifies the reset itself. It reverts unless every subaccount ' +
+					'clears its floor plus buffer at execution time. To resume in any other case, ' +
+					'lower the floors first with set-equity-floor.'
 			)
 	).action(async (userStatsPk: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -671,13 +713,9 @@ export function registerUser(parent: Command): void {
 				}
 				const u = client.getUser(subId, authority);
 				const account = u.getUserAccountOrThrow();
-				// `getEquityFloorLevel` takes NET equity, which is what every onchain
-				// floor gate compares. `getTotalCollateral` is the margin numerator: it
-				// never subtracts spot borrows and it applies asset weights, so it
-				// reported a different quantity than the gate it was describing.
-				//
-				// The gates fail closed on oracle validity, so an invalid oracle
-				// means the account is gate-blocked regardless of the value shown.
+				// Net equity differs from `getTotalCollateral`, which subtracts no
+				// spot borrow and applies asset weights. A gate fails closed on an
+				// invalid oracle regardless of the value shown here.
 				const { value: equity, allOraclesValid } = u.getFloorNetEquity(slot);
 				const floor = account.equityFloor;
 				const buffer = account.equityFloorBuffer;

@@ -358,6 +358,7 @@ describe('feeUpdate', () => {
 			vaultProgram.programId,
 			commonVaultKey
 		);
+
 		expect(await svmContextWrapper.connection.getAccountInfo(feeUpdate)).to.be
 			.null;
 

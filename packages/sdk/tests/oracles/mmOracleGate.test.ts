@@ -12,7 +12,7 @@ import {
 	StateAccount,
 	VelocityClient,
 } from '../../src';
-import { mockPerpMarkets } from '../dlob/helpers';
+import { mockPerpMarkets } from '../fixtures/mockAccounts';
 import { mockOrder } from '../user/helpers';
 import { assert } from '../../src/assert/assert';
 

@@ -1,0 +1,61 @@
+/// Declared by `clob-wire`, because velocity sends it by CPI when velocity is
+/// the market's authority.
+pub use clob_wire::ResizeMarketArgsV0;
+use {
+    crate::{
+        book::ClobBook, emit::emit_pod, error::ClobError, events::MarketResizeRecordV0,
+        state::ClobMarketV0,
+    },
+    anchor_lang::prelude::*,
+};
+
+#[derive(Accounts)]
+pub struct ResizeMarketV0 {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(mut)]
+    pub market: ClobMarketV0,
+    #[account(address = market.authority @ ClobError::InvalidAuthority)]
+    pub authority: Signer,
+    pub system_program: Program<System>,
+}
+
+/// Grow the order arena. Realloc is capped at 10KB per instruction, which is
+/// about 116 nodes, so a large target takes repeated calls. Each call tops up
+/// rent from `payer` and threads the new slots into the free list. The arena
+/// does not shrink, because live orders and free-list links may sit above any
+/// lower bound.
+pub fn handle_resize_market_v0(
+    ctx: &mut Context<ResizeMarketV0>,
+    args: ResizeMarketArgsV0,
+) -> Result<()> {
+    let market_address = *ctx.accounts.market.address();
+    let authority = *ctx.accounts.authority.address();
+    let market = &mut ctx.accounts.market;
+    let previous_capacity = market.capacity() as u32;
+    require!(
+        args.new_capacity > previous_capacity,
+        ClobError::InvalidCapacity
+    );
+
+    crate::config::validate_capacity(args.new_capacity)?;
+    market.resize_to_capacity(args.new_capacity)?;
+    market.top_up(ctx.accounts.payer.as_ref())?;
+    market.grow_free_list()?;
+    // The eviction threshold is bounded by the per-side capacity, and this is
+    // the other instruction that moves that bound.
+    crate::book::validate_evict_threshold(
+        market.evict_threshold_per_side,
+        market.capacity() as u32,
+    )?;
+
+    emit_pod!(MarketResizeRecordV0 {
+        market: market_address,
+        authority,
+        ts: Clock::get()?.unix_timestamp,
+        previous_capacity,
+        capacity: market.capacity() as u32,
+    });
+
+    Ok(())
+}

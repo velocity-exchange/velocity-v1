@@ -383,6 +383,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 				0,
 				new BN(0)
 			);
+
 			svmContextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.log('failed velocityClientLoserc.openPosition');
@@ -697,6 +698,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			QUOTE_PRECISION,
 			QUOTE_PRECISION
 		);
+
 		svmContextWrapper.connection.printTxLogs(tx1);
 		// } catch (e) {
 		// 	console.error(e);
@@ -872,6 +874,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			amount: QUOTE_PRECISION.add(QUOTE_PRECISION.div(new BN(100))), // $1.01
 			collateralAccountPublicKey: userUSDCAccount.publicKey,
 		});
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const market0 = velocityClient.getPerpMarketAccount(marketIndex);
@@ -882,6 +885,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 				bankIndex,
 				marketIndex
 			);
+
 			svmContextWrapper.connection.printTxLogs(txSig2);
 		} catch (e) {
 			console.error(e);
@@ -905,6 +909,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			bankIndex,
 			marketIndex
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig2);
 
 		const ifRecord: InsuranceFundRecord = eventSubscriber.getEventsArray(

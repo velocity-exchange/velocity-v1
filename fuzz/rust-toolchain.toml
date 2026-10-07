@@ -7,7 +7,7 @@
 # APPLE SILICON developers: the native aarch64 target would build too. The repo's
 # zero-copy structs are padded so `sizeof` is identical across targets, so host
 # fixtures still match the on-chain (SBF) layout — but to match the x86_64
-# development target, run `rustup override set 1.91.1-x86_64-apple-darwin`
+# development target, run `rustup override set 1.95.0-x86_64-apple-darwin`
 # inside fuzz/ before building the harnesses.
 [toolchain]
-channel = "1.91.1"
+channel = "1.95.0"

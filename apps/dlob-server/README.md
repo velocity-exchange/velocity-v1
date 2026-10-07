@@ -10,18 +10,18 @@
   </p>
 </div>
 
-This service reads the Velocity [DLOB](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers)
-from a Solana RPC node and serves it to clients. It runs in two modes that share the same codebase.
+This service serves the Velocity [order book](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers)
+to clients. It holds no order state of its own. The rust `book-publisher` (`rust/book-publisher`)
+quotes every source through the velocity router view and writes each perp market's book to Redis.
+This service reads those keys. It runs in two modes that share the same codebase.
 
-In HTTP mode, `src/index.ts` keeps a `VelocityClient` subscribed to perp and spot markets, builds
-L2 and L3 order books from a DLOB source (websocket account subscriptions, gRPC, or the SDK's
-`OrderSubscriber`), and answers REST requests. Most responses are read from Redis when a warm entry
-exists and are rebuilt from the in-memory DLOB when it does not.
+In HTTP mode, `src/index.ts` keeps a `VelocityClient` and a slot subscriber for market metadata,
+oracle data, and book freshness, and answers REST requests from the Redis keys the publisher
+writes.
 
-In websocket mode, `src/publishers/dlobPublisher.ts` snapshots the DLOB on an interval and writes
-each snapshot to Redis, and `src/wsConnectionManager.ts` accepts client connections and relays the
-latest snapshot for the channels a client subscribed to. The two processes talk only through Redis
-pub/sub, so you can scale them independently.
+In websocket mode, `src/wsConnectionManager.ts` accepts client connections and relays the latest
+book for the channels a client subscribed to. The publisher and the connection manager talk only
+through Redis pub/sub, so you can scale them independently.
 
 # Run the server
 
@@ -50,15 +50,9 @@ cp .env.example .env
 | `ENV`                                 | Network to connect to, `devnet` or `mainnet-beta`.                               | `devnet`           |
 | `PORT`                                | Port the HTTP server listens on.                                                 | `6969`             |
 | `METRICS_PORT`                        | Port the Prometheus exporter listens on.                                         | `9464`             |
-| `USE_WEBSOCKET`                       | Set `true` to source the DLOB from websocket account subscriptions.              | `false`            |
-| `USE_GRPC`                            | Set `true` to source the DLOB from a Yellowstone gRPC stream.                    | `false`            |
-| `GRPC_ENDPOINT`                       | gRPC endpoint, used when `USE_GRPC` is set.                                      | `ENDPOINT/$TOKEN`  |
-| `TOKEN`                               | gRPC auth token appended to `ENDPOINT` when `GRPC_ENDPOINT` is unset.            | none               |
-| `USE_ORDER_SUBSCRIBER`                | Set `true` to source the DLOB from the SDK `OrderSubscriber`.                    | `false`            |
-| `DISABLE_GPA_REFRESH`                 | Set `true` to stop periodically refreshing user accounts via `getProgramAccounts`. | `false`          |
-| `ORDERBOOK_UPDATE_INTERVAL`           | Milliseconds between DLOB snapshots in the publisher.                            | `400`              |
-| `PERP_MARKETS_TO_LOAD`                | Comma separated perp market indexes to load. Omit to load all.                   | all                |
-| `SPOT_MARKETS_TO_LOAD`                | Comma separated spot market indexes to load. Omit to load all.                   | all                |
+| `MAX_BOOK_SLOT_LAG`                   | Slots a published book may trail the chain before it counts as behind.           | `150`              |
+| `BOOK_FRESHNESS_INTERVAL_MS`          | Milliseconds between samples of the published books for staleness.               | `5000`             |
+| `ENABLE_FILL_QUALITY_ANALYTICS`       | Set `true` to poll Athena for taker fill quality. Needs Athena credentials.      | `false`            |
 | `ELASTICACHE_HOST`                    | Redis host. In cluster mode this is the seed node and the rest are discovered.   | `localhost`        |
 | `ELASTICACHE_PORT`                    | Redis port.                                                                      | `6379`             |
 | `REDIS_CLIENT`                        | Comma separated key prefixes to use, from `DLOB` and `DLOB_HELIUS`.              | see below          |
@@ -67,7 +61,7 @@ cp .env.example .env
 | `WS_PORT`                             | Port the websocket connection manager listens on.                                | `3000`             |
 
 When `REDIS_CLIENT` is unset the HTTP server and the connection manager open clients for both
-`DLOB` and `DLOB_HELIUS`, while the publisher falls back to `DLOB` alone.
+`DLOB` and `DLOB_HELIUS`.
 
 ## HTTP mode
 
@@ -95,11 +89,16 @@ bash redisCluster.sh start
 bash redisCluster.sh create
 ```
 
-In the second terminal, run the publisher:
+In the second terminal, run the publisher. `rust/` is its own cargo workspace, which the root one
+excludes, so it is reached by manifest path from the repo root:
 
 ```bash
-bun run dlob-publish
+cargo run --manifest-path rust/Cargo.toml -p book-publisher
 ```
+
+The publisher's `REDIS_KEY_PREFIX` must equal the prefix of the server's Redis client, which is
+`dlob:` for `REDIS_CLIENT=DLOB`. The publisher defaults to no prefix, so every read misses until
+it is set.
 
 In a third terminal, run the connection manager:
 
@@ -129,12 +128,11 @@ whether the initial subscription finished:
 curl 'http://127.0.0.1:6969/health'
 ```
 
-Fetch an aggregated L2 book. `depth` is clamped to 100 and defaults to 100. Set
-`includeIndicative=true` to include indicative orders:
+Fetch an aggregated L2 book. `depth` is clamped to 100 and defaults to 100:
 
 ```bash
 curl 'http://127.0.0.1:6969/l2?marketName=SOL-PERP&depth=10'
-curl 'http://127.0.0.1:6969/l2?marketType=perp&marketIndex=0&depth=10&includeIndicative=true'
+curl 'http://127.0.0.1:6969/l2?marketType=perp&marketIndex=0&depth=10'
 ```
 
 Fetch several L2 books in one request. Each query parameter is a comma separated list, and all
@@ -157,19 +155,48 @@ Find the makers sitting at the top of one side of the book. `side` must be `bid`
 curl 'http://127.0.0.1:6969/topMakers?marketName=SOL-PERP&side=bid&limit=5'
 ```
 
+Fetch a user's resting CLOB orders. `marketIndexes` is an optional comma separated list. When it
+is omitted, every perp market is read:
+
+```bash
+curl 'http://127.0.0.1:6969/userOrders?userPubkey=<PUBKEY>&marketIndexes=0,1'
+```
+
 Other routes are `/priorityFees` and `/batchPriorityFees` (both keyed by `marketType` and
-`marketIndex`, served from the `DLOB_HELIUS` Redis prefix), `/unsettledPnlUsers`, `/pythLazer`,
-and `/auctionParams`, which requires `marketIndex`, `marketType`, `direction`, `amount` and
-`assetType`.
+`marketIndex`, served from the `DLOB_HELIUS` Redis prefix), `/unsettledPnlUsers`, and `/pythLazer`.
+
+### `GET /marketOrderParams`
+
+This route quotes the `OrderParams` a client signs for a perp market order. The required query
+parameters are `marketIndex`, `direction` (`long` or `short`), `amount` and `assetType` (`base` or
+`quote`). The optional ones are `slippageTolerance` (percent, dynamic when omitted),
+`priceReference` (`best`, `mark`, `oracle` or `entry`, default `best`), `isOracleOrder`,
+`activationDelaySlots`, `reduceOnly`, `userOrderId`, `maxLeverageSelected` and
+`maxLeverageOrderSize`.
+
+`data.params.price` is the worst price of the order. It is the reference price moved by the
+tolerance, away from the taker. An oracle order carries it as `oraclePriceOffset` instead. The
+response also carries the book-walk estimate (`entryPrice`, `bestPrice`, `worstPrice`,
+`oraclePrice`, `markPrice`, `priceImpact`) and the tolerance it used.
+[Trading the CLOB from a client](../../docs/clob-client-integration.md#market-orders) describes the
+fields.
+
+The dynamic tolerance reads `DYNAMIC_BASE_SLIPPAGE_*`, `DYNAMIC_SLIPPAGE_MULTIPLIER_*`,
+`DYNAMIC_SLIPPAGE_MIN`, `DYNAMIC_SLIPPAGE_MAX`, `DYNAMIC_CROSS_SPREAD_CAP`,
+`DYNAMIC_SLIPPAGE_WORST_PRICE_MARGIN` and `DYNAMIC_VAMM_QUOTE_MARGIN`. On a crossed book it also
+reads the taker fill quality that `ENABLE_FILL_QUALITY_ANALYTICS` publishes.
 
 ## Websocket
 
-Subscribe by sending a JSON message per channel after the socket opens. `channel` is `orderbook`
-or `trades`, and `market` is the market name:
+Subscribe by sending a JSON message per channel after the socket opens. `channel` is `orderbook`,
+`trades`, or `user_orders`. A market channel names the market in `market`. The `user_orders`
+channel names a user pubkey in `user` instead, and streams that user's resting CLOB orders across
+every market:
 
 ```json
 { "type": "subscribe", "marketType": "perp", "channel": "orderbook", "market": "SOL-PERP" }
 { "type": "subscribe", "marketType": "spot", "channel": "trades", "market": "SOL" }
+{ "type": "subscribe", "channel": "user_orders", "user": "<PUBKEY>" }
 ```
 
 Send the same object with `"type": "unsubscribe"` to stop a stream. `example/wsClient.ts` is a
@@ -178,41 +205,6 @@ working client you can run directly with `ts-node`.
 `example/client.ts` and `example/clientWithSlot.ts` (the `example` and `exampleWithSlot` scripts)
 fetch `/orders/idl`, an endpoint this server no longer exposes, so they do not run against the
 current build.
-
-# TOB monitoring
-
-The publisher watches the top of book for a set of perp markets and forces the `OrderSubscriber` to
-resubscribe when the book goes stale. Ghost orders that linger at the top of book are usually a
-symptom of dropped account updates, which gRPC streams are prone to.
-
-Monitoring is active only when all three of these hold: `ENABLE_TOB_MONITORING` is on,
-`USE_ORDER_SUBSCRIBER` is on, and at least one monitored market index is loaded by this node.
-
-## Configuration
-
-- `ENABLE_TOB_MONITORING=false` turns monitoring off. It is on by default, including when the
-  variable is unset.
-- `TOB_CHECK_INTERVAL=60000` sets how often the check runs, in milliseconds. Default 60 seconds.
-- `TOB_STUCK_THRESHOLD=60000` sets how long the top of book may sit unchanged before the publisher
-  resubscribes, in milliseconds. Default 60 seconds.
-- `TOB_MONITORING_ENABLED_PERP_MARKETS=0,1,2` lists the perp market indexes to watch. Default
-  `0,1,2`.
-
-## How it works
-
-On each interval the publisher reads the L3 book for every monitored market that this node loaded,
-standardized to the market's `orderTickSize`. It identifies the best bid and best ask by maker
-pubkey and order id, tracking each side independently so an empty side still counts as a state. If
-either identifier changes, it records the time and moves on. If neither has changed for longer than
-`TOB_STUCK_THRESHOLD`, it logs a warning, records the stall duration, and runs unsubscribe,
-subscribe, then fetch on the `OrderSubscriber` to clear the stale state.
-
-## Metrics
-
-- `tob_resubscribe` counts resubscribe attempts, labeled by market index and by whether the
-  attempt succeeded.
-- `tob_stuck_duration` records how many seconds the top of book had been unchanged when a
-  resubscribe fired.
 
 # Scripts
 

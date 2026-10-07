@@ -144,6 +144,7 @@ describe('spot deposit and withdraw', () => {
 			0,
 			await getMaxWithdrawGuardThreshold(admin, 0)
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 	});
@@ -186,6 +187,7 @@ describe('spot deposit and withdraw', () => {
 			1,
 			await getMaxWithdrawGuardThreshold(admin, 1)
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 	});
@@ -215,6 +217,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			firstUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 	});
 
@@ -238,6 +241,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientWSOLAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 	});
 
@@ -249,6 +253,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			firstUserVelocityClientWSOLAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 	});
 

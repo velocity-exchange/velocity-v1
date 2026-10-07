@@ -143,15 +143,17 @@ pub fn update_spot_balances_and_cumulative_deposits_with_limits(
         user.authority
     )?;
 
-    // Enforce the daily deposit cap on the shared credit path so every deposit-crediting caller
-    // (transfer_pools, transfers) is bound, not just the direct `deposit` instruction. No-op when
-    // the market has no cap configured (`max_deposit_bps_per_day == 0`).
+    // The daily deposit cap is enforced on the shared credit path, so it binds
+    // every caller that credits a deposit and not only the direct `deposit`
+    // instruction. `transfer_pools` and the transfers are the other callers. A
+    // market with no cap configured (`max_deposit_bps_per_day == 0`) passes.
     //
-    // Gated on the market's deposit level having actually risen. This predicate is a market-wide
-    // level check, and validating it unconditionally here made an over-cap market reject every
-    // caller of this path — withdrawals and repayments included, though those lower the level and
-    // are what brings a market back under its cap. Liquidation bypasses this path, so the block
-    // was one-sided (finding #118).
+    // The check runs only when the market's deposit level rose. The cap is a
+    // market-wide level check, so an unconditional check here would make an
+    // over-cap market reject every caller of this path. That includes
+    // withdrawals and repayments, which lower the level and are what brings a
+    // market back under its cap. Liquidation does not use this path, so the
+    // rejection would be one-sided (OtterSec #118).
     validate_deposit_cap_after_increase(spot_market, deposit_token_amount_before)?;
 
     validate!(

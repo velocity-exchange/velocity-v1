@@ -1,0 +1,4 @@
+# Build this workspace into anchor-v2/target so it never clobbers the program
+# workspace's ./target (and its SBF cache). Relative to this file's directory.
+[build]
+target-dir = "target"

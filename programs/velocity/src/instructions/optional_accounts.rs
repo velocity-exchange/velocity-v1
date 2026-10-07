@@ -43,6 +43,25 @@ pub struct AccountMaps<'a> {
     pub oracle_map: OracleMap<'a>,
 }
 
+impl<'a> AccountMaps<'a> {
+    /// Builds the bundle from maps the caller already loaded.
+    ///
+    /// [`load_maps`] reads all three from one account list, which is what an
+    /// instruction handler has. A caller that loads them separately, or that
+    /// names the perp market as its own account, builds the bundle here.
+    pub fn new(
+        perp_market_map: PerpMarketMap<'a>,
+        spot_market_map: SpotMarketMap<'a>,
+        oracle_map: OracleMap<'a>,
+    ) -> Self {
+        Self {
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+        }
+    }
+}
+
 pub fn load_maps<'a, 'b>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
     writable_perp_markets: &'b MarketSet,
@@ -87,35 +106,6 @@ pub fn update_prelaunch_oracle(
     oracle.update(perp_market, slot)?;
 
     Ok(())
-}
-
-pub fn get_maker_and_maker_stats<'a>(
-    account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
-) -> VelocityResult<(AccountLoader<'a, User>, AccountLoader<'a, UserStats>)> {
-    let maker_account_info =
-        next_account_info(account_info_iter).or(Err(ErrorCode::MakerNotFound))?;
-
-    validate!(
-        maker_account_info.is_writable,
-        ErrorCode::MakerMustBeWritable
-    )?;
-
-    let maker: AccountLoader<User> =
-        AccountLoader::try_from(maker_account_info).or(Err(ErrorCode::CouldNotDeserializeMaker))?;
-
-    let maker_stats_account_info =
-        next_account_info(account_info_iter).or(Err(ErrorCode::MakerStatsNotFound))?;
-
-    validate!(
-        maker_stats_account_info.is_writable,
-        ErrorCode::MakerStatsMustBeWritable
-    )?;
-
-    let maker_stats: AccountLoader<UserStats> =
-        AccountLoader::try_from(maker_stats_account_info)
-            .or(Err(ErrorCode::CouldNotDeserializeMakerStats))?;
-
-    Ok((maker, maker_stats))
 }
 
 #[allow(clippy::type_complexity)]
@@ -196,10 +186,11 @@ pub fn get_whitelist_token<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
 ) -> VelocityResult<Account<'a, TokenAccount>> {
     let token_account_info = account_info_iter.peek();
-    if token_account_info.is_none() {
-        msg!("Could not find whitelist token");
-        return Err(ErrorCode::InvalidWhitelistToken);
-    }
+    validate!(
+        token_account_info.is_some(),
+        ErrorCode::InvalidWhitelistToken,
+        "Could not find whitelist token"
+    )?;
 
     let token_account_info = token_account_info.safe_unwrap()?;
     let whitelist_token: Account<TokenAccount> =
@@ -284,15 +275,15 @@ pub fn get_revenue_share_escrow_account<'a>(
     Ok(Some(escrow))
 }
 
-/// Reads the referrer's `UserStats` immediately after a referred taker's
-/// `RevenueShareEscrow` in remaining accounts and returns its persistent Accelerated
-/// status. The account is intentionally readonly: popular referrers must not
-/// become writable lock hotspots on every referee fill.
+/// Reads the referrer's `UserStats`, which follows a referred taker's
+/// `RevenueShareEscrow` in remaining accounts, and returns its stored
+/// Accelerated status. The account stays read-only so a popular referrer does
+/// not take a writable lock on every referee fill.
 ///
-/// The account is optional. It is consumed only when it is present, is a `UserStats`, and
-/// belongs to the escrow's referrer. Anything else leaves the iterator untouched and returns
-/// the standard rate, so a caller that omits it still fills. The account selects a reward
-/// rate and nothing else, so a missing one does not fail the fill.
+/// The account is optional. It is consumed only when it is present, is a
+/// `UserStats`, and belongs to the escrow's referrer. Anything else leaves the
+/// iterator untouched and returns the standard rate. The account selects a
+/// reward rate and nothing else, so a missing one does not fail the fill.
 pub fn get_referrer_accelerated_status<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
     escrow: Option<&RevenueShareEscrowZeroCopyMut<'a>>,
@@ -305,8 +296,9 @@ pub fn get_referrer_accelerated_status<'a>(
         return Ok(false);
     };
 
-    // Check owner, discriminator and authority before consuming, so a non-matching account stays
-    // in the iterator for whichever group actually owns it.
+    // Check the owner, the discriminator and the authority before consuming, so
+    // an account that does not match stays in the iterator for the group that
+    // owns it.
     if account_info.owner != &crate::ID || account_info.data_len() < 8 + 32 {
         return Ok(false);
     }
@@ -341,10 +333,11 @@ pub fn get_referrer_accelerated_status<'a>(
 /// would complete a live row that holds fees and clear it too early (OtterSec #82). The caller
 /// must therefore supply each sub-account.
 ///
-/// These accounts must be read-only. This also marks the end of the group.
-/// `load_revenue_share_map` reads the next group and requires writable `User` accounts, because it
-/// credits them. A wrong `count` therefore fails: a value that is too high rejects a writable
-/// beneficiary here, and a value that is too low fails the map loader with `UserWrongMutability`.
+/// These accounts must be read-only. That also marks the end of the group.
+/// `load_revenue_share_map` reads the next group and requires writable `User`
+/// accounts, because it credits them. A wrong `count` therefore fails. A value
+/// that is too high rejects a writable beneficiary here. A value that is too low
+/// fails the map loader with `UserWrongMutability`.
 pub fn load_escrow_owner_sub_accounts<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
     escrow_authority: &Pubkey,
@@ -408,11 +401,10 @@ pub fn validate_builder_fee(
         _ => return Ok(None),
     };
 
-    // Global ceiling on the builder fee, independent of the builder's own
-    // configured `max_fee_tenth_bps` (accepted at approval with no ceiling).
-    // Bounds how much value a fill can route to a builder so the fee rail can't
-    // move collateral-significant amounts a taker couldn't withdraw under
-    // initial margin (OtterSec #83).
+    // A global ceiling on the builder fee, separate from the builder's own
+    // `max_fee_tenth_bps`, which approval accepts with no ceiling. It bounds the
+    // value one fill can route to a builder, so the builder fee cannot move an
+    // amount the taker could not withdraw under initial margin (OtterSec #83).
     validate!(
         builder_fee <= crate::math::constants::MAX_BUILDER_FEE_TENTH_BPS,
         ErrorCode::InvalidBuilderFee,
@@ -477,7 +469,7 @@ pub fn validate_and_load_builder<'a>(
 }
 
 /// Adds a [`RevenueShareOrder`] to the escrow for the order about to be placed and returns a
-/// mutable reference to it, suitable to pass to `controller::orders::place_perp_order` as the
+/// mutable reference to it, suitable to pass to `controller::orders::place_perp_trigger_order` as the
 /// `rev_share_order` argument. Returns `Ok(None)` when the order carries no builder code
 /// (`builder_idx`/`builder_fee_bps` is `None`), when there is no escrow, or when the escrow's
 /// order list is full.
@@ -496,16 +488,13 @@ pub fn add_builder_order<'a, 'b>(
 ) -> VelocityResult<Option<&'b mut RevenueShareOrder>> {
     let (builder_idx, builder_fee_bps) = match (builder_idx, builder_fee_bps) {
         (Some(idx), Some(fee)) => (idx, fee),
-        // No builder requested — nothing to attach.
         _ => return Ok(None),
     };
-    // A builder fee WAS requested, so a row MUST be reserved. Previously an
-    // absent or full escrow returned `Ok(None)`, dropping the `HasBuilder` bit
-    // so the fill silently charged no builder fee — a taker could dodge the fee
-    // by zero-sizing or filling their escrow's order list. Reject the placement
-    // instead of silently downgrading it (OtterSec #82). `validate_builder_fee`
-    // already errors on an absent escrow when a fee is requested, so the `None`
-    // case here is defensive.
+
+    // A requested builder fee must reserve a row. An absent or full escrow that
+    // silently returned `Ok(None)` would drop the `HasBuilder` bit and let a
+    // taker dodge the fee by zero-sizing or filling the order list, so placement
+    // is rejected instead (OtterSec #82); `validate_builder_fee` is the first guard.
     let escrow = escrow
         .as_mut()
         .ok_or(ErrorCode::UnableToLoadRevenueShareAccount)?;
@@ -517,7 +506,7 @@ pub fn add_builder_order<'a, 'b>(
         .ok_or(ErrorCode::MaxNumberOfOrders)?;
 
     // `add_order` returns `RevenueShareEscrowOrdersAccountFull` when no slot is
-    // free; propagate it rather than swallowing it into a no-builder placement.
+    // free. The error propagates instead of turning into a no-builder placement.
     let order_idx = escrow.add_order(RevenueShareOrder::new(
         builder_idx,
         user.sub_account_id,
@@ -529,4 +518,162 @@ pub fn add_builder_order<'a, 'b>(
         new_order_index as u8,
     ))?;
     Ok(escrow.get_order_mut(order_idx).ok())
+}
+
+/// The compute budget a transaction states in compute-budget instructions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxComputeBudget {
+    /// The price per compute unit, in micro-lamports. `None` when no
+    /// instruction sets it.
+    pub price_per_unit: Option<u64>,
+    /// The unit limit. Zero when no instruction sets it, although the runtime
+    /// then applies a default.
+    pub unit_limit: u32,
+}
+
+/// Read the compute budget off the instructions sysvar. A legacy or v0
+/// transaction states it in instructions to the compute-budget program.
+///
+/// A v1 transaction states it in its message header, which the instructions
+/// sysvar does not hold, so a v1 transaction reads as no price. No program can
+/// tell that apart from a transaction that sets no price.
+pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<TxComputeBudget> {
+    use {
+        solana_program::sysvar::instructions::load_instruction_at_checked, std::convert::TryInto,
+    };
+
+    /// `ComputeBudget111111111111111111111111111111`.
+    const COMPUTE_BUDGET_ID: Pubkey =
+        solana_program::pubkey!("ComputeBudget111111111111111111111111111111");
+    /// `SetComputeUnitLimit(u32)`.
+    const SET_UNIT_LIMIT: u8 = 2;
+    /// `SetComputeUnitPrice(u64)`, in micro-lamports per compute unit.
+    const SET_UNIT_PRICE: u8 = 3;
+
+    let mut budget = TxComputeBudget {
+        price_per_unit: None,
+        unit_limit: 0,
+    };
+    let mut index = 0usize;
+    while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
+        index += 1;
+        if instruction.program_id != COMPUTE_BUDGET_ID {
+            continue;
+        }
+
+        match instruction.data.split_first() {
+            Some((&SET_UNIT_PRICE, rest)) if rest.len() >= 8 => {
+                budget.price_per_unit = Some(u64::from_le_bytes(rest[..8].try_into().unwrap()));
+            }
+            Some((&SET_UNIT_LIMIT, rest)) if rest.len() >= 4 => {
+                budget.unit_limit = u32::from_le_bytes(rest[..4].try_into().unwrap());
+            }
+            _ => {}
+        }
+    }
+
+    Ok(budget)
+}
+
+/// How many instructions in this transaction claim the same whole-transaction
+/// reimbursement as the one running now.
+///
+/// The transaction pays the priority fee once, and [`tx_compute_budget`] reports
+/// that one figure. A crank that reimburses against it divides by the number of
+/// peers doing the same, else a transaction batching N of them collects N times
+/// one fee. The count matches on the discriminator, so an unrelated velocity
+/// instruction does not dilute the share. The result is never zero: the asking
+/// instruction is itself a claimant, and an unreadable sysvar answers one.
+pub fn tx_reimbursement_claimants(
+    instructions_sysvar: &AccountInfo,
+    discriminator: &[u8],
+) -> VelocityResult<u32> {
+    use solana_program::sysvar::instructions::load_instruction_at_checked;
+    let mut claimants = 0u32;
+    let mut index = 0usize;
+    while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
+        index += 1;
+        if instruction.program_id == crate::ID
+            && instruction.data.len() >= discriminator.len()
+            && &instruction.data[..discriminator.len()] == discriminator
+        {
+            claimants = claimants.saturating_add(1);
+        }
+    }
+
+    Ok(claimants.max(1))
+}
+
+/// The payment the liveness poll of `user`'s conditions block asserts, when
+/// that block rides in `accounts`. Zero when it does not.
+///
+/// The sync stores the payment of its time, so after the admin lowers it, a
+/// poll that was not synced again asks relay for the old figure. A crank pays
+/// at least this figure, which is bounded by a payment the admin once set.
+pub fn liveness_poll_min_payment<'info>(
+    accounts: &'info [AccountInfo<'info>],
+    user: &Pubkey,
+) -> u64 {
+    use crate::{instructions::loader_of, state::user_conditions::UserConditionsV0};
+
+    accounts
+        .iter()
+        .filter_map(loader_of::<UserConditionsV0>)
+        .find_map(|loader| {
+            let conditions = loader.load().ok()?;
+            (conditions.user == *user).then(|| conditions.liveness_min_payment())
+        })
+        .unwrap_or(0)
+}
+
+/// False for a call that another program makes through CPI. Such a program
+/// counts as one claimant in [`tx_reimbursement_claimants`] however many calls it makes.
+pub fn is_top_level_call(instructions_sysvar: &AccountInfo, discriminator: &[u8]) -> bool {
+    solana_program::sysvar::instructions::get_instruction_relative(0, instructions_sysvar)
+        .is_ok_and(|instruction| {
+            instruction.program_id == crate::ID && instruction.data.starts_with(discriminator)
+        })
+}
+
+/// Distinct accounts this transaction locks.
+///
+/// The runtime caps a transaction at 64 account locks, the scarce resource on
+/// a router fill (a CLOB maker costs two, a custom quoter costs five), so this
+/// is one of two counts telling a caller whether it had room for an omitted
+/// maker. The count is an upper bound: a writable meta can name any pubkey,
+/// even one with no account, so a caller can inflate it for 32 bytes per key.
+/// The other count, of locks velocity verified itself, cannot be inflated;
+/// `withheld_obligation` takes the smaller of the two. The count covers the
+/// whole transaction, since a force-cancel ahead of a fill locks accounts
+/// too, and the scan is capped at 64.
+pub fn tx_writable_lock_count(instructions_sysvar: &AccountInfo) -> VelocityResult<usize> {
+    use solana_program::sysvar::instructions::load_instruction_at_checked;
+    const CAP: usize = 64;
+    let mut seen = [Pubkey::default(); CAP];
+    let mut count = 0usize;
+    let mut index = 0usize;
+    // Count only writable and signer accounts. A read-only lock is shared, so
+    // read-only keys are free to append. A writable lock is contended, but
+    // only against other users of the same account, so a key nobody else
+    // touches is nearly free as well. Program ids are read-only, so they do
+    // not count either.
+    while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
+        index += 1;
+        for meta in instruction.accounts.iter() {
+            if !(meta.is_writable || meta.is_signer) {
+                continue;
+            }
+            if seen[..count].contains(&meta.pubkey) {
+                continue;
+            }
+            if count == CAP {
+                return Ok(CAP);
+            }
+
+            seen[count] = meta.pubkey;
+            count += 1;
+        }
+    }
+
+    Ok(count)
 }

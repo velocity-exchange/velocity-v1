@@ -4,7 +4,7 @@ import {
 	getTriggerPrice,
 	TRIGGER_PRICE_LAST_FILL_MAX_AGE,
 } from '../../src';
-import { mockPerpMarkets } from '../dlob/helpers';
+import { mockPerpMarkets } from '../fixtures/mockAccounts';
 import { assert } from '../../src/assert/assert';
 
 // Mirrors PerpMarket::get_trigger_price (perp_market.rs), including the

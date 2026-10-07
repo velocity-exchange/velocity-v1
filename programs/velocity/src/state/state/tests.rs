@@ -89,3 +89,68 @@ mod escrow_period_before_transfer {
         assert_eq!(state.escrow_period_before_transfer().unwrap(), 1);
     }
 }
+
+mod conditions_sync_role {
+    use {
+        crate::state::state::{HotRole, State},
+        anchor_lang::prelude::Pubkey,
+    };
+
+    #[test]
+    fn the_role_key_and_the_admins_may_sync_and_no_one_else() {
+        let cold = Pubkey::new_unique();
+        let warm = Pubkey::new_unique();
+        let keeper = Pubkey::new_unique();
+        let mut state = State {
+            cold_admin: cold,
+            warm_admin: warm,
+            ..State::default()
+        };
+
+        assert!(!state.is_hot(&keeper, HotRole::ConditionsSync));
+        assert!(!state.is_hot(&Pubkey::default(), HotRole::ConditionsSync));
+
+        state.set_hot_key(HotRole::ConditionsSync, keeper);
+
+        assert!(state.is_hot(&keeper, HotRole::ConditionsSync));
+        assert!(state.is_hot(&warm, HotRole::ConditionsSync));
+        assert!(state.is_hot(&cold, HotRole::ConditionsSync));
+        assert!(!state.is_hot(&keeper, HotRole::AccountExtension));
+        assert!(!state.is_hot(&Pubkey::new_unique(), HotRole::ConditionsSync));
+    }
+}
+
+mod hot_key_revocation {
+    use {crate::state::state::State, anchor_lang::prelude::Pubkey};
+
+    #[test]
+    fn the_pause_admin_clears_a_hot_role_and_cannot_set_one() {
+        let warm = Pubkey::new_unique();
+        let pause = Pubkey::new_unique();
+        let stranger = Pubkey::new_unique();
+        let state = State {
+            cold_admin: Pubkey::new_unique(),
+            warm_admin: warm,
+            pause_admin: pause,
+            ..State::default()
+        };
+
+        assert!(state.may_set_hot_key(&pause, &Pubkey::default()));
+        assert!(!state.may_set_hot_key(&pause, &stranger));
+
+        assert!(state.may_set_hot_key(&warm, &stranger));
+        assert!(state.may_set_hot_key(&warm, &Pubkey::default()));
+
+        assert!(!state.may_set_hot_key(&stranger, &Pubkey::default()));
+    }
+
+    #[test]
+    fn an_unset_pause_admin_clears_nothing() {
+        let state = State {
+            cold_admin: Pubkey::new_unique(),
+            ..State::default()
+        };
+
+        assert!(!state.may_set_hot_key(&Pubkey::default(), &Pubkey::default()));
+    }
+}

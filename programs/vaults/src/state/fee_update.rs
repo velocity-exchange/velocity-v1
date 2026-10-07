@@ -42,10 +42,10 @@ impl FeeUpdate {
 
     /// Install a matured update.
     ///
-    /// #98: the management fee accrues over an interval, so the rate must change only at an
-    /// instant where the vault is settled. Otherwise the new rate prices the interval that was
-    /// earned under the old one. [`Vault::apply_fee`] is the only caller: it settles the interval
-    /// first and stamps `last_fee_update_ts`, which the validate below requires.
+    /// The management fee accrues over an interval, so the rate must change only at an instant
+    /// where the vault is settled. Otherwise the new rate prices the interval that was earned
+    /// under the old rate (OtterSec #98). [`Vault::apply_fee`] is the only caller. It settles
+    /// the interval first and stamps `last_fee_update_ts`, which the check below requires.
     pub fn try_update_vault_fees(&mut self, now: i64, vault: &mut Vault) -> Result<()> {
         if !self.is_pending() {
             return Ok(());
@@ -58,11 +58,11 @@ impl FeeUpdate {
                 "vault fees must be settled to the current time before a fee update installs"
             )?;
 
-            // #97: defense-in-depth — never install an out-of-bounds policy, even if a bad update
-            // was somehow queued. The combined protocol-sum check needs protocol state (only
-            // available via apply_fee), so here we enforce the manager-facing bounds and, for
-            // protocol vaults, the hurdle==0 restriction. apply_fee validates the combined sums
-            // against live protocol state before this runs.
+            // Never install an out-of-bounds policy, even if a bad update reached the queue
+            // (OtterSec #97). The combined protocol-sum check needs protocol state, which only
+            // apply_fee holds. This call therefore checks the manager-facing bounds, and for a
+            // protocol vault it also checks that the hurdle rate is zero. apply_fee validates
+            // the combined sums against live protocol state before this runs.
             validate_fee_policy(
                 self.incoming_management_fee,
                 self.incoming_profit_share,

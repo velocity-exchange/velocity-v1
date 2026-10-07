@@ -8,7 +8,7 @@ import {
 	SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION,
 	SpotBalanceType,
 } from '../../src';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import { assert } from '../../src/assert/assert';
 import {
 	mockUserAccount as baseMockUserAccount,

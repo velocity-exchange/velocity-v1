@@ -21,8 +21,9 @@ makes `sizeof` identical on all targets regardless of Rust version.
 
 Develop and test with Rust 1.77 or newer anyway. That way x86_64 exercises real 16-byte u128
 alignment, and a future struct change that breaks the invariant fails the `const_assert_eq!` guards
-locally instead of diverging onchain. Anchor 1.0 branches require Rust 1.89 or newer, which is the
-Anchor 1.0 MSRV. [`../alignment-and-native-offsets.md`](../alignment-and-native-offsets.md) has
+locally instead of diverging onchain. Anchor 1.0 branches require Rust 1.93 or newer. The Anchor
+1.0 MSRV is 1.89, but velocity uses `Box::new_zeroed` (1.92) and the `rust/` workspace locks
+`solana-syscalls` 4.2 (1.93). CI pins 1.95.0. [`../alignment-and-native-offsets.md`](../alignment-and-native-offsets.md) has
 the full invariant rules and covers adding fields to zero-copy structs.
 
 ## Program build scripts
@@ -31,14 +32,14 @@ Use the `program:*` scripts in the root `package.json` for the Solana programs. 
 correct feature flags so you do not have to remember them.
 
 ```bash
-bun run program:build           # all five test programs + IDL/types synced into packages/sdk/src/idl/
+bun run program:build           # all four test programs + IDL/types synced into packages/sdk/src/idl/
 bun run program:idl             # IDL/types only, no SBF build. Fast path for layout/name changes
 bun run program:build:devnet    # deployable devnet .so (wraps deploy-scripts/build-devnet.sh)
 bun run program:build:mainnet   # mainnet .so (default features: production gates on, devnet ixs compiled out)
 ```
 
 `program:build` and `program:idl` use `--no-default-features --features no-entrypoint,anchor-test`
-for velocity. `program:build` gives the other four programs their own flags (see `build-sbf.sh`).
+for velocity. `program:build` gives the other three programs their own flags (see `build-sbf.sh`).
 That is required even though `declare_id!` is now unconditional, because default features include
 `mainnet-beta`. `mainnet-beta` compiles out the devnet-only instructions, including
 `force_wipe_accounts_devnet`, which `wipe-devnet.ts` calls through the SDK IDL, and it switches
@@ -98,7 +99,7 @@ Two things to keep:
   cache-wipe commands use `target/sbpf*-solana-solana` so they cover both.
 
 `deploy-scripts/assert-sbpf-version.sh` fails unless a `.so` carries the expected version. It runs
-at the end of every build and again in the devnet buffer and jit-proxy deploy scripts, because a v0
+at the end of every build and again in the devnet buffer deploy scripts, because a v0
 artifact builds and deploys fine today and becomes un-upgradable the day SIMD-0500 activates.
 
 The verifiable build emits v3 as well. The image tag does not decide the bytecode version.
@@ -207,3 +208,13 @@ branches with different lockfiles), run:
 rm -rf target/sbpf*-solana-solana target/deploy
 bash deploy-scripts/build-sbf.sh test
 ```
+
+### `Access violation in stack frame 3 at address 0x2000...`
+
+This is a **platform-tools v1.52 miscompile**, not a stale cache: v1.52 (the default bundled with `cargo-build-sbf` 3.1.14, which plain `anchor build` uses) emits velocity code that overflows a 4KB stack frame at runtime; v1.54 and later compile the same code correctly. Any velocity `.so` that will actually be _executed_ (validator deploys, the e2e localnet harness, devnet buffers) must pin the toolchain explicitly rather than rely on a default. `deploy-scripts/build-sbf.sh` pins v1.57 and every build path routes through it:
+
+```bash
+bash deploy-scripts/build-sbf.sh test velocity
+```
+
+The litesvm/bankrun suites can mask this: they exercise only the instructions each test calls, and older runtimes were lenient. `integration-tests/tests/init_probe.rs` pins the real `initialize_user_stats` path so a miscompiled `.so` fails fast.

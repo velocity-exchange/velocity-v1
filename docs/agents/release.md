@@ -16,7 +16,6 @@ trusted publishing. `<pkg>` is the directory name under `packages/`.
 | `@velocity-exchange/sdk`        | `npm-sdk-v0.2.3`        |
 | `@velocity-exchange/admin-cli`  | `npm-cli-admin-v0.2.3`  |
 | `@velocity-exchange/vaults-sdk` | `npm-vaults-sdk-v0.2.3` |
-| `@velocity-exchange/jit-proxy`  | `npm-jit-proxy-v0.2.3`  |
 
 The tag version must match the `package.json` version set by the "Version Packages" PR. The
 workflow skips the publish if that version is already on the registry. Publishing uses `npm`, not
@@ -30,6 +29,8 @@ not affect consumers. Run `bun run changeset` at the repo root, select the affec
 choose the bump type, write a short description, and commit the generated `.changeset/*.md` file.
 Never edit `package.json` versions by hand. Changesets and the "Version Packages" bot own those
 fields.
+
+**One changeset per feature branch.** While a branch is unmerged, it carries exactly one `.changeset/*.md` file; every later change on the branch folds into that file in place. The changeset becomes the published release notes, and a consumer only ever sees the branch's final surface — so rewrite it to describe that final surface, and delete anything an intra-branch change superseded ("X was renamed to Y" is noise when X never shipped). Never add a second changeset for the same branch.
 
 ## Release CLI
 

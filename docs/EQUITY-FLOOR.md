@@ -72,7 +72,7 @@ must not fail its host instruction it silently skips where the trip rejects. Dur
 outage a subaccount whose breach is unprovable (any asset or long with an invalid oracle)
 stays untripped until the feed recovers, at which point the next touch (or the permissionless
 trip) arms the breaker. The exposure in that window is limited. The fail-closed gates reject
-everything risk-increasing while any oracle is invalid, and DLOB match fills carry their own
+everything risk-increasing while any oracle is invalid, and maker match fills carry their own
 oracle-validity rule (`FillOrderMatch`), so an oracle the program cannot do margin with blocks
 match execution the same way the AMM's fill gates block AMM execution. Sibling subaccounts are not
 temporarily authority-frozen during that window; this is accepted operational risk for the

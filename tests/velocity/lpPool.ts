@@ -1703,6 +1703,7 @@ describe('LP Pool', () => {
 			svmContextWrapper.provider.wallet.publicKey,
 			1
 		);
+
 		await svmContextWrapper.sendTransaction(
 			new Transaction().add(ix, mintToIx)
 		);

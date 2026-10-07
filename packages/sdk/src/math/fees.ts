@@ -17,10 +17,8 @@ import {
 import { getUser30dRollingVolumeEstimate } from './trade';
 
 /**
- * Trailing-30d volume breakpoints that separate the perp fee tiers, in
- * QUOTE_PRECISION and index order. Mirrors `VOLUME_THRESHOLDS` in the
- * program's `determine_perp_fee_tier`; the values are hardcoded on-chain, so
- * unlike the fee rates they cannot be read from the state account.
+ * Trailing-30d volume breakpoints separating the perp fee tiers, in QUOTE_PRECISION and index
+ * order. Mirror `VOLUME_THRESHOLDS` in `determine_perp_fee_tier`. The program hardcodes these values, unlike the fee rates, so they cannot be read from state.
  */
 export const PERP_FEE_TIER_VOLUME_THRESHOLDS = [
 	VIP_FEE_TIER_ONE_VOLUME_QUOTE,
@@ -29,34 +27,21 @@ export const PERP_FEE_TIER_VOLUME_THRESHOLDS = [
 ];
 
 /**
- * Highest perp fee-tier index the program can select. Tiers `0..=this` are
- * live; the remaining `feeTiers` slots are spares the program never picks.
+ * Highest perp fee-tier index the program can select. Tiers 0 through this index are live.
+ * The remaining `feeTiers` slots are spares the program never picks.
  */
 export const PERP_FEE_TIER_MAX_INDEX = PERP_FEE_TIER_VOLUME_THRESHOLDS.length;
 
 /**
- * Selects the perp fee-tier index for an account, mirroring the program's
- * `determine_perp_fee_tier`.
- *
- * The tier comes from the account's trailing 30-day volume projected to `now`
- * (`getUser30dRollingVolumeEstimate`, which applies virtually the same decay
- * the on-chain rolling sum applies lazily), taking the lowest-index tier whose
- * breakpoint the volume is still under. Tiers 0/1/2/3 are named Regular /
- * VIP 1 / VIP 2 / VIP 3; the names are presentation only, selection is
- * index-based.
- *
- * `state.promoFeeTier` then floors the result for everyone while it is set, so
- * an account already above the promo keeps its own tier and nobody is
- * downgraded. 0 is a no-op floor (promo disabled), which is also what accounts
- * written before the field existed read out of former padding.
- *
- * @param userStatsAccount The account's stats, holding the volume the tier is
- *   derived from. Omit it for the generic schedule (no account in hand): the
- *   volume tier is then the entry tier, and an active promo still applies.
- * @param state Global state, for the promo floor.
- * @param now Optional unix timestamp (seconds) to evaluate the rolling volume
- *   window as of; defaults to the current time.
- * @returns The index into `state.perpFeeStructure.feeTiers`.
+ * The perp fee-tier index for an account, mirroring the program's `determine_perp_fee_tier`.
+ * The tier comes from the account's trailing 30-day volume projected to `now`.
+ * `getUser30dRollingVolumeEstimate` applies nearly the same decay the on-chain rolling sum
+ * applies lazily. The tier is the lowest index whose breakpoint the volume is still under.
+ * `state.promoFeeTier` then floors the result while it is set, without downgrading an account
+ * already above the promo.
+ * @param userStatsAccount Omit for the generic schedule: the volume tier is then the entry
+ *   tier, and an active promo still applies.
+ * @param now Unix seconds the rolling volume window is evaluated at. Defaults to now.
  */
 export function getPerpFeeTierIndex(
 	userStatsAccount: UserStatsAccount | undefined,
@@ -80,10 +65,10 @@ export function getPerpFeeTierIndex(
 		}
 	}
 
-	// A promo floor is clamped to the live tiers, matching the program's own
-	// clamp, so a misconfigured floor can never select a spare slot. A state
-	// account missing the field entirely reads as the disabled floor rather
-	// than propagating NaN into the tier lookup.
+	// The promo floor is clamped to the live tiers, as the program clamps it,
+	// so a misconfigured floor can never select a spare slot. A state account
+	// that lacks the field reads as the disabled floor rather than putting NaN
+	// into the tier lookup.
 	return Math.max(
 		feeTierIndex,
 		Math.min(state.promoFeeTier ?? 0, PERP_FEE_TIER_MAX_INDEX)
@@ -91,31 +76,18 @@ export function getPerpFeeTierIndex(
 }
 
 /**
- * Applies every per-market and per-account modifier the program applies on top
- * of a fee tier's own rates, in the program's order (`calculate_taker_fee` and
- * `calculate_referee_fee_and_referrer_reward`, `math/fees.rs`):
- *
- * 1. the market's `takerFeeAddonTenthBps` surcharge, taker leg only (perp only)
- * 2. the market's `feeAdjustment` percentage, scaling both legs
- * 3. the referee discount, taker leg only
- * 4. the builder fee, taker leg only
- *
- * `VelocityClient.getMarketFees` is this function with the tier and the
- * account-derived inputs resolved for you. Call this directly to price a tier
- * the account is not on, e.g. to show what a fee promotion is saving someone
- * against their own volume tier; both figures then come out of the same
- * pipeline and differ only by the tier.
- *
- * @param feeTier The tier to price.
- * @param marketType `MarketType.PERP` or `MarketType.SPOT`.
- * @param marketAccount The market whose surcharge and `feeAdjustment` apply.
- *   Omit for the market-independent schedule.
- * @param opts.isReferee Whether the taker is a referee, which discounts the
- *   taker fee by the tier's referee fraction.
- * @param opts.builderFeeTenthBps A builder fee to add to the taker leg, in
- *   tenth-bps. Omit when no builder fee is charged; the caller decides that,
- *   since the program waives it for a taker below initial margin.
- * @returns Taker fee and maker rebate as fractions of notional (0.0001 = 1bp).
+ * Applies every per-market and per-account modifier on top of a fee tier's own rates. The order
+ * matches `calculate_taker_fee` and `calculate_referee_fee_and_referrer_reward` in `math/fees.rs`.
+ * 1. `takerFeeAddonTenthBps` surcharge, taker leg of a perp market only
+ * 2. `feeAdjustment` percentage, both legs
+ * 3. referee discount, taker leg only
+ * 4. builder fee, taker leg only
+ * `VelocityClient.getMarketFees` calls this with the account's own tier resolved. Call it
+ * directly to price a tier the account is not on, such as a promotion's savings against it.
+ * @param marketAccount The market whose surcharge and `feeAdjustment` apply, omitted for the market-independent schedule.
+ * @param opts.builderFeeTenthBps Tenth-bps added to the taker leg. The caller decides whether to
+ *   pass it, since the program waives the fee for a taker below initial margin.
+ * @returns Taker fee and maker rebate as fractions of notional. 0.0001 is one basis point.
  */
 export function getMarketFeesForFeeTier(
 	feeTier: FeeTier,
@@ -130,9 +102,9 @@ export function getMarketFeesForFeeTier(
 	let makerFee = feeTier.makerRebateNumerator / feeTier.makerRebateDenominator;
 
 	if (marketAccount) {
-		// The surcharge is unsigned tenth-bps and lands on the tier fee BEFORE
-		// feeAdjustment scales the sum. Taker only; the maker rebate sees
-		// feeAdjustment alone.
+		// The surcharge is unsigned tenth-bps. It lands on the tier fee before
+		// feeAdjustment scales the sum, and it applies to the taker leg only.
+		// The maker rebate sees feeAdjustment alone.
 		if (isVariant(marketType, 'perp')) {
 			takerFee +=
 				(marketAccount as PerpMarketAccount).takerFeeAddonTenthBps / 100_000;
@@ -141,7 +113,8 @@ export function getMarketFeesForFeeTier(
 		makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
 	}
 
-	// After feeAdjustment and taker-only, matching the program's ordering.
+	// The program applies the referee discount after feeAdjustment, and to the
+	// taker leg only.
 	if (opts?.isReferee && feeTier.refereeFeeDenominator > 0) {
 		takerFee -=
 			(takerFee * feeTier.refereeFeeNumerator) / feeTier.refereeFeeDenominator;

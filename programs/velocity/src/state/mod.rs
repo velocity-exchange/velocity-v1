@@ -6,9 +6,10 @@
 //! `events.rs` = all emitted program events (OrderRecord, FillRecord, LiquidationRecord, etc.).
 //! `margin_calculation.rs` = margin calculation context and result types.
 
+pub mod clob_crank;
+pub mod crank_treasury;
 pub mod events;
 pub mod fill_mode;
-pub mod fulfillment;
 pub mod fulfillment_params;
 pub mod insurance_fund_stake;
 pub mod liquidation_mode;
@@ -17,15 +18,20 @@ pub mod margin_calculation;
 pub mod market_status;
 pub mod oracle;
 pub mod oracle_map;
+pub mod oracle_watch;
 pub mod order_params;
 pub mod paused_operations;
+pub mod pdas;
 pub mod perp_market;
 pub mod perp_market_map;
+pub mod prop_amm;
 pub mod pyth_lazer_oracle;
 pub mod quoter;
+pub mod quoter_cross;
+pub mod relay_scratch;
 pub mod revenue_share;
 pub mod revenue_share_map;
-pub mod scale_order_params;
+pub mod router_quote;
 pub mod settle_pnl_mode;
 pub mod signed_msg_user;
 pub mod spot_fulfillment_params;
@@ -35,5 +41,6 @@ pub mod spot_market_map;
 pub mod state;
 pub mod traits;
 pub mod user;
+pub mod user_conditions;
 pub mod user_map;
 pub mod zero_copy;

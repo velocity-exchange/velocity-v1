@@ -1,0 +1,2005 @@
+//! Shared plumbing for the CLOB crank instructions and their resolvers.
+//!
+//! Each crank endpoint lives in its own file next to its resolver
+//! (`crank_clob_evict.rs`, `crank_clob_remove_expired.rs`,
+//! `crank_cross_match.rs`). What they share lives here: the removal executor's
+//! account struct and body, the resolvers' common account struct, and the
+//! staging helpers. The evict and expire cranks differ only in which CLOB
+//! removal they CPI and in what happens to a placed trigger's shadow slot.
+//!
+//! The cranks have two modes. The `filler` the caller passes selects one.
+//!
+//! - Signed keeper. The caller signs for its own filler `User` and earns the
+//!   flat removal reward from the maker.
+//!   No lamports move.
+//! - Program keeper, used by relay. The filler is the protocol-owned `User`,
+//!   whose authority is the velocity signer PDA that nobody can sign for. No
+//!   signature is required, because relay turners submit executors unsigned.
+//!   The maker's reward accrues to the protocol `User`. The caller's
+//!   `authority` account is paid `keeper_payment_lamports` from the market's
+//!   conditions-account reservoir instead, which gives relay's `assert_paid_v0`
+//!   a real fee to measure. [`earns_crank_lamports`] states when the reservoir
+//!   pays.
+//!
+//! Resolvers are advisory. The executor verifies everything again, because the
+//! CLOB fails removals that are not due and velocity fails the crank when the
+//! removal hit a different maker. A stale or lying simulation therefore filters
+//! itself out. Deriving PDAs costs real compute, and resolvers run only under
+//! simulation.
+
+use {
+    crate::{
+        controller::{orders::pay_keeper_flat_reward_for_perps, position::PositionDirection},
+        error::ErrorCode,
+        instructions::{constraints::*, relay_harness::StagedCall},
+        load_mut, msg,
+        state::{
+            clob_crank::{ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
+            events::OrderActionExplanation,
+            pdas,
+            perp_market::PerpMarket,
+            prop_amm::{
+                CancelOrderArgsV0, ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0,
+                L3RowV0, OrderRulesV0, OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
+                QuoterSlotV0, QuoterType, RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
+            },
+            signed_msg_user::release_removed_remainders,
+            spot_market::SpotMarket,
+            state::State,
+            user::{OrderReservation, ReleaseCheck, User, UserStats},
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
+
+/// Makers one profitable cross touches. The bound keeps the staged executor
+/// inside the conditions account's scratch region. The walk stops before it
+/// admits a maker past the cap, so the staged size covers staged makers only
+/// and the executor's loaded-user set is always enough.
+pub const MAX_CROSS_MAKERS: usize = 8;
+
+#[derive(Accounts)]
+pub struct CrankClobOrderRemoval<'info> {
+    pub state: AccountLoader<'info, State>,
+    /// CHECK: in signed-keeper mode this must sign for `filler`, which the
+    /// constraint below enforces. In program-keeper mode it is only the lamport
+    /// payout target, relay's `KEEPER_PLACEHOLDER` slot, and no signature is
+    /// required.
+    #[account(mut)]
+    pub authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        constraint = can_crank_for_filler(&filler, &authority, &state)?
+    )]
+    pub filler: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&filler, &filler_stats)?
+    )]
+    pub filler_stats: AccountLoader<'info, UserStats>,
+    /// The owner of the order the crank removes. Eviction removes the book's
+    /// tail and expiry removes the hinted order. The CLOB's return data is
+    /// checked against this account, so a race that removed someone else's
+    /// order fails the whole crank.
+    #[account(mut)]
+    pub user: AccountLoader<'info, User>,
+    #[account(mut, has_one = quoter_slab, has_one = clob_market)]
+    pub perp_market: AccountLoader<'info, PerpMarket>,
+    /// Not gated on active or approved, because a dead book still needs its
+    /// resting orders reclaimed.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: the perp market's `has_one` binds it to the book the market
+    /// designated.
+    #[account(mut)]
+    pub clob_market: UncheckedAccount<'info>,
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration. The handler checks it again through the slot.
+    #[account(address = crate::ids::clob_program::id())]
+    pub clob_program: UncheckedAccount<'info>,
+    /// The market's relay conditions account: the expiry-hint host and the
+    /// lamport reservoir. It is optional so that a signed keeper can crank a
+    /// market whose conditions were never initialized. Program-keeper mode
+    /// requires it.
+    #[account(
+        mut,
+        // Derived from the slab's market rather than from instruction args.
+        // This struct serves both removal cranks, whose args differ.
+        seeds = [
+            CLOB_CRANK_CONDITIONS_PDA_SEED,
+            quoter_slab.load()?.market.to_le_bytes().as_ref(),
+        ],
+
+        bump
+    )]
+    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// CHECK: the maker's relay trigger conditions. An eviction of a placed
+    /// stop-limit wakes its parked slot here. It is required, so a caller
+    /// cannot re-arm the order without its watch. See
+    /// [`user_conditions_loader`] for a user that has none.
+    #[account(
+        mut,
+        seeds = [
+            crate::state::user_conditions::USER_CONDITIONS_PDA_SEED,
+            user.key().as_ref(),
+        ],
+
+        bump
+    )]
+    pub trigger_conditions: UncheckedAccount<'info>,
+    /// The SOL spot market, whose TWAP values the reservoir payment in quote.
+    /// Program-keeper mode requires it when `State` names a SOL market. See
+    /// [`payment_sol_price`].
+    #[account(
+        seeds = [
+            b"spot_market",
+            state.load()?.sol_spot_market_index.to_le_bytes().as_ref(),
+        ],
+
+        bump
+    )]
+    pub sol_spot_market: Option<AccountLoader<'info, SpotMarket>>,
+}
+
+/// The user's relay conditions block at its pinned address, or `None` for a
+/// user created before `initialize_user` made one. The caller pins the address
+/// with `seeds`.
+pub fn user_conditions_loader<'info>(
+    info: &'info AccountInfo<'info>,
+) -> Result<Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>> {
+    if info.data_is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(AccountLoader::try_from(info)?))
+}
+
+/// The accounts one removal crank reads. Each removal instruction names them
+/// in its own accounts struct.
+pub struct RemovalAccounts<'a, 'info> {
+    pub state: &'a AccountLoader<'info, State>,
+    pub authority: &'a UncheckedAccount<'info>,
+    pub filler: &'a AccountLoader<'info, User>,
+    pub user: &'a AccountLoader<'info, User>,
+    pub perp_market: &'a AccountLoader<'info, PerpMarket>,
+    pub quoter_slab: &'a AccountLoader<'info, QuoterSlabV0>,
+    pub clob_market: &'a UncheckedAccount<'info>,
+    pub clob_program: &'a UncheckedAccount<'info>,
+    pub crank_conditions: &'a Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// The owner's signed-message record, which a taker-origin removal
+    /// releases its entry in.
+    pub signed_msg_record: Option<&'a AccountInfo<'info>>,
+    /// The owner's relay trigger conditions, which an eviction wakes a parked
+    /// slot in. `None` for a removal that re-arms nothing.
+    pub trigger_conditions: Option<&'info AccountInfo<'info>>,
+}
+
+impl<'info> CrankClobOrderRemoval<'info> {
+    /// The removal accounts, with the owner's signed-message record as the
+    /// first remaining account.
+    pub fn removal_accounts(
+        &'info self,
+        remaining_accounts: &'info [AccountInfo<'info>],
+    ) -> RemovalAccounts<'info, 'info> {
+        RemovalAccounts {
+            trigger_conditions: Some(&self.trigger_conditions),
+            state: &self.state,
+            authority: &self.authority,
+            filler: &self.filler,
+            user: &self.user,
+            perp_market: &self.perp_market,
+            quoter_slab: &self.quoter_slab,
+            clob_market: &self.clob_market,
+            clob_program: &self.clob_program,
+            crank_conditions: &self.crank_conditions,
+            signed_msg_record: remaining_accounts.first(),
+        }
+    }
+
+    /// The SOL price this crank values its reservoir payment at.
+    pub fn payment_sol_price(&self) -> Result<Option<i64>> {
+        let program_keeper_mode =
+            program_keeper_mode(&self.filler, &self.state, self.crank_conditions.is_some())?;
+        payment_sol_price(
+            &*self.state.load()?,
+            program_keeper_mode,
+            self.sol_spot_market.as_ref(),
+        )
+    }
+}
+
+/// The SOL price a program-keeper crank values its reservoir payment at: the
+/// SOL spot market's five-minute TWAP. The caller pins the account with
+/// `seeds`. It is required when `State` names a SOL market, or a caller could
+/// leave it out to pay only the flat fee. `None` leaves the fee flat.
+pub(crate) fn payment_sol_price(
+    state: &State,
+    program_keeper_mode: bool,
+    sol_spot_market: Option<&AccountLoader<SpotMarket>>,
+) -> Result<Option<i64>> {
+    if !program_keeper_mode || state.sol_spot_market_index == 0 {
+        return Ok(None);
+    }
+
+    let Some(sol_spot_market) = sol_spot_market else {
+        msg!("program-keeper crank requires the SOL spot market");
+        return Err(ErrorCode::SpotMarketNotFound.into());
+    };
+
+    let twap = sol_spot_market
+        .load()?
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+    Ok((twap > 0).then_some(twap))
+}
+
+/// What a program-keeper crank charges the owner in quote: the flat fee,
+/// raised to the reservoir payment's value at `sol_price`. The reservoir then
+/// never pays more than the crank collected.
+pub(crate) fn keeper_crank_fee(
+    flat_filler_fee: u64,
+    payment_lamports: u64,
+    sol_price: Option<i64>,
+) -> u64 {
+    sol_price
+        .and_then(|sol_price| CrankPaymentsV0::lamports_to_quote(payment_lamports, sol_price))
+        .map_or(flat_filler_fee, |payment_quote| {
+            payment_quote.max(flat_filler_fee)
+        })
+}
+
+/// Which removal a crank runs. They differ in the CLOB call they make, the
+/// explanation they record, and what happens to a placed trigger's shadow
+/// slot. Eviction re-arms the slot in the same transaction. Expiry and a band
+/// cancel free it.
+pub enum ClobRemoval {
+    Evict(EvictWorstArgsV0),
+    Expire(RemoveExpiredArgsV0),
+    /// An order resting outside the maker oracle band. The caller judged the
+    /// band before the crank runs.
+    OutsideBand(CancelOrderArgsV0),
+}
+
+impl ClobRemoval {
+    fn invoke(self, clob: &ClobMarket) -> Result<RemovedOrderV0> {
+        match self {
+            ClobRemoval::Evict(args) => clob.evict(args),
+            ClobRemoval::Expire(args) => clob.remove_expired(args),
+            ClobRemoval::OutsideBand(args) => clob.cancel(args),
+        }
+    }
+
+    fn is_evict(&self) -> bool {
+        matches!(self, ClobRemoval::Evict(_))
+    }
+
+    fn explanation(&self) -> OrderActionExplanation {
+        match self {
+            ClobRemoval::Evict(_) => OrderActionExplanation::ClobOrderEvicted,
+            ClobRemoval::Expire(_) => OrderActionExplanation::OrderExpired,
+            ClobRemoval::OutsideBand(_) => OrderActionExplanation::OraclePriceBreachedLimitPrice,
+        }
+    }
+}
+
+/// The shared crank body. It CPIs the removal, checks that the removal hit the
+/// passed maker, unwinds the aggregates, and pays the keeper. Both modes pay
+/// quote from the maker. Program-keeper mode raises the fee to the reservoir
+/// payment's value at `sol_price` (see [`keeper_crank_fee`]), and adds
+/// reservoir lamports for a removal that collected the fee.
+///
+/// The removal is ungated, because a halted market still needs its orders
+/// reclaimed. The fee follows `force_cancel_clob_orders`: a full exchange halt
+/// stops the fee and not the removal.
+pub fn crank_clob_removal(
+    accounts: &RemovalAccounts,
+    market_index: u16,
+    removal: ClobRemoval,
+    sol_price: Option<i64>,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let state = accounts.state.load()?;
+    let program_keeper_mode = program_keeper_mode(
+        accounts.filler,
+        accounts.state,
+        accounts.crank_conditions.is_some(),
+    )?;
+
+    let clob = ClobMarket::from_slab(
+        accounts.quoter_slab,
+        market_index,
+        accounts.clob_market,
+        accounts.clob_program,
+    )?;
+
+    // CPI while no user borrows are held.
+    let is_evict = removal.is_evict();
+    let explanation = removal.explanation();
+    let removed = removal.invoke(&clob)?;
+    require_removed_for(accounts.user, &removed.user)?;
+    release_removed_remainders(accounts.signed_msg_record, market_index, &[removed]);
+
+    let payment_lamports = match (program_keeper_mode, accounts.crank_conditions) {
+        (true, Some(conditions)) => Some(removal_payment(
+            &conditions.load()?.crank_payments,
+            is_evict,
+            removed.max_ts,
+            clock.unix_timestamp,
+        )),
+        _ => None,
+    };
+    let fee = payment_lamports.map_or(state.perp_fee_structure.flat_filler_fee, |payment| {
+        keeper_crank_fee(state.perp_fee_structure.flat_filler_fee, payment, sol_price)
+    });
+
+    // Each removal charges the maker the flat removal reward before it
+    // unwinds, because unwinding an otherwise-empty position frees the slot
+    // the reward resolves in.
+    //
+    // An eviction charges the same fee as an expiry, because a caller can
+    // manufacture a free eviction. A caller that fills a side with its own
+    // dust and evicts its own tail draws program-keeper lamports, and the fee
+    // prices that loop. A free eviction also left an honest signed keeper no
+    // reason to clear a full side.
+    //
+    // The book evicts the worst-priced order that is not a bound taker
+    // remainder, so the fee falls on a quote that no longer competes. Pushing
+    // an honest maker to that tail costs an attacker a full side of
+    // better-priced, takeable quotes, each holding real margin.
+    let (removal_fee, maker_authority) = {
+        let mut user = load_mut!(accounts.user)?;
+        let mut market = load_mut!(accounts.perp_market)?;
+        validate!(
+            market.market_index == market_index,
+            ErrorCode::PerpMarketAccountMismatch,
+            "perp market {} passed for market {}",
+            market.market_index,
+            market_index
+        )?;
+
+        // A keeper that removes its own order is already loaded as the maker,
+        // so it is not loaded again and pays itself nothing.
+        let mut filler = (accounts.filler.key() != accounts.user.key())
+            .then(|| load_mut!(accounts.filler))
+            .transpose()?;
+        let removal_fee = charge_removal_fee(
+            &state,
+            &mut user,
+            filler.as_deref_mut(),
+            &mut market,
+            RemovalFee {
+                amount: fee,
+                slot: clock.slot,
+            },
+        )?;
+
+        drop(filler);
+
+        let re_armed_order_id = is_evict
+            .then(|| user.find_placed_trigger_slot(market_index, removed.order_id))
+            .flatten()
+            .map(|slot_index| user.orders[slot_index].order_id);
+        let position_index =
+            unwind_removed_order(&mut user, &removed, market_index, is_evict, clock.slot)?;
+
+        if let Some(order_id) = re_armed_order_id {
+            wake_parked_trigger(accounts, market_index, order_id)?;
+        }
+
+        // An eviction reads differently from a cancel. The order left the book
+        // because the book ran out of room, and a placed trigger re-arms rather
+        // than ends. It therefore carries its own explanation.
+        super::emit_clob_cancel_record(
+            clock.unix_timestamp,
+            market.market_stats.historical_oracle_data.last_oracle_price,
+            &accounts.user.key(),
+            super::ClobOrderFacts::from_removed(&removed, market_index, clock.slot),
+            explanation,
+            Some(accounts.filler.key()),
+            Some(removal_fee),
+            user.perp_positions[position_index].is_isolated(),
+        )?;
+
+        (removal_fee, user.authority)
+    };
+
+    let paid_lamports = program_keeper_mode
+        && sol_price.is_some()
+        && earns_crank_lamports(removal_fee, &accounts.authority.key(), &maker_authority);
+    if let (true, Some(conditions), Some(payment)) =
+        (paid_lamports, accounts.crank_conditions, payment_lamports)
+    {
+        ClobCrankConditionsV0::pay_keeper(
+            conditions,
+            &accounts.authority.to_account_info(),
+            payment,
+        )?;
+    }
+
+    msg!(
+        "cranked clob removal of order {} for user {}",
+        removed.order_id,
+        accounts.user.key()
+    );
+
+    Ok(())
+}
+
+/// The lamports a removal crank pays its keeper. An expiry that went
+/// unclaimed pays escalation, priced off the order's own `max_ts` so a caller
+/// cannot name its own figure. Eviction is a capacity limit, not a deadline,
+/// so it does not escalate.
+fn removal_payment(payments: &CrankPaymentsV0, is_evict: bool, max_ts: i64, now: i64) -> u64 {
+    let escalation = if is_evict {
+        0
+    } else {
+        CrankPaymentsV0::expiry_escalation(max_ts, now)
+    };
+
+    u64::from(payments.removal).saturating_add(u64::from(escalation))
+}
+
+/// Wake the parked relay slot of a stop-limit that an eviction re-armed.
+///
+/// The slot already points at the recross side, where the re-armed order is
+/// due. A slot that a sync never parked stays as it is, and the owner's next
+/// sync arms the order.
+fn wake_parked_trigger(accounts: &RemovalAccounts, market_index: u16, order_id: u32) -> Result<()> {
+    let Some(loader) = accounts
+        .trigger_conditions
+        .map(user_conditions_loader)
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+
+    let mut conditions = load_mut!(loader)?;
+    validate!(
+        conditions.user == accounts.user.key(),
+        ErrorCode::InvalidUserAccount,
+        "trigger conditions are for user {}, crank is for {}",
+        conditions.user,
+        accounts.user.key()
+    )?;
+
+    match conditions.trigger_slot_index(market_index, order_id) {
+        Some(index) => conditions.set_trigger_slot_active(index, true),
+        None => Ok(()),
+    }
+}
+
+/// The fee a removal charges the maker, and the slot it is charged at.
+struct RemovalFee {
+    amount: u64,
+    slot: u64,
+}
+
+/// Charge the maker the removal fee, and return what the keeper got.
+///
+/// No filler earns nothing. A full exchange halt charges nothing. A filler
+/// outside pool 0 cannot hold the perp quote the fee pays in.
+fn charge_removal_fee(
+    state: &State,
+    user: &mut User,
+    filler: Option<&mut User>,
+    market: &mut PerpMarket,
+    fee: RemovalFee,
+) -> Result<u64> {
+    let Some(filler) = filler else {
+        return Ok(0);
+    };
+
+    if state.get_exchange_status()?.is_all() {
+        msg!("exchange halted; removing without the keeper fee");
+        return Ok(0);
+    }
+
+    validate!(
+        filler.pool_id == 0,
+        ErrorCode::InvalidPoolId,
+        "filler pool id ({}) != 0",
+        filler.pool_id
+    )?;
+
+    Ok(pay_keeper_flat_reward_for_perps(
+        user,
+        Some(filler),
+        market,
+        fee.amount,
+        fee.slot,
+    )?)
+}
+
+/// Unwind what the book removed, and return the position it left.
+///
+/// The book's report is released the way an owner or forced cancel releases
+/// it. A strict release would let one under-reserved order fail every
+/// eviction on its side, because eviction always picks the same order. An
+/// evicted placed trigger re-arms with the unfilled remainder, behind an edge
+/// gate on a price recross. Its armed reservation is taken first, so the
+/// position keeps its index.
+fn unwind_removed_order(
+    user: &mut User,
+    removed: &RemovedOrderV0,
+    market_index: u16,
+    is_evict: bool,
+    slot: u64,
+) -> Result<usize> {
+    let removed_order = OrderReservation::book_order(
+        market_index,
+        PositionDirection::from(removed.side),
+        removed.base_asset_amount,
+        removed.reduce_only,
+    );
+    let re_armed_slot = if is_evict {
+        user.find_placed_trigger_slot(market_index, removed.order_id)
+    } else {
+        None
+    };
+    let Some(slot_index) = re_armed_slot else {
+        return Ok(user.close_book_order(
+            &removed_order,
+            ReleaseCheck::ClampedForExit,
+            removed.order_id,
+            crate::state::user::OrderStatus::Canceled,
+        )?);
+    };
+
+    user.re_arm_placed_trigger_slot(
+        market_index,
+        removed.order_id,
+        removed.base_asset_amount,
+        slot,
+    )?;
+
+    let armed = OrderReservation::of_order(&user.orders[slot_index])?;
+    user.reserve_orders(&armed)?;
+    Ok(user.release_orders(&removed_order, ReleaseCheck::ClampedForExit)?)
+}
+
+/// Whether a program-keeper crank earns its reservoir lamports.
+///
+/// The reservoir pays only for a crank that collected a fee for the protocol,
+/// so a crank that moved no value draws nothing. A full exchange halt waives
+/// the fee. A protocol `User` with no free perp position books none. The payout
+/// account must not be the order owner's authority, because an owner that
+/// cranks its own order is not doing a keeper's work.
+pub(crate) fn earns_crank_lamports(
+    collected_fee: u64,
+    payout: &Pubkey,
+    owner_authority: &Pubkey,
+) -> bool {
+    if collected_fee == 0 {
+        msg!("crank collected no fee; the reservoir pays nothing");
+        return false;
+    }
+
+    if payout == owner_authority {
+        msg!("the order owner cranked its own order; the reservoir pays nothing");
+        return false;
+    }
+
+    true
+}
+
+/// Whether the protocol `User` cranks. That mode pays the keeper out of the
+/// market's conditions account, so it requires the account.
+pub fn program_keeper_mode(
+    filler: &AccountLoader<User>,
+    state: &AccountLoader<State>,
+    has_crank_conditions: bool,
+) -> Result<bool> {
+    let program_keeper_mode = is_protocol_user(filler, state)?;
+    validate!(
+        !program_keeper_mode || has_crank_conditions,
+        ErrorCode::CrankConditionsAccountRequired,
+        "program-keeper crank requires the market's conditions account"
+    )?;
+
+    Ok(program_keeper_mode)
+}
+
+/// Fail unless the book removed an order of `user`. A race that removed
+/// someone else's order fails the whole crank.
+pub fn require_removed_for(user: &AccountLoader<User>, removed: &UserRefV0) -> Result<()> {
+    let user_ref = crate::load!(user)?.clob_user_ref();
+    validate!(
+        user_ref == *removed,
+        ErrorCode::InvalidUserAccount,
+        "clob removed an order for {}/{} but the crank loaded {}",
+        removed.authority,
+        removed.sub_account_id,
+        user.key()
+    )?;
+
+    Ok(())
+}
+
+/// The account order is the contract with `write_clob_crank_conditions`'s
+/// registered `resolver_accounts`. The conditions account comes first, because
+/// the response pointer says the payload lives at index 0.
+#[derive(Accounts)]
+pub struct ResolveClobCrank<'info> {
+    /// The shared staging account, at index 0 by convention. A resolver's
+    /// response pointer is read against it.
+    #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
+    pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
+    /// Read-only, because resolvers stage into the shared scratch account
+    /// rather than into the block they read.
+    pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
+    /// CHECK: the slab's `has_one` binds it to the book the admin approved.
+    /// It is writable for the book's response tail, scratch the book rewrites
+    /// every quote as the cross resolver streams resting orders into it
+    /// through `quote_l3_v0`. Nothing a resolver sends lands there.
+    #[account(mut)]
+    pub clob_market: UncheckedAccount<'info>,
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == crank_conditions.load()?.market_index,
+    )]
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    pub state: AccountLoader<'info, State>,
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration. The linkage check verifies it again through the slot.
+    #[account(address = crate::ids::clob_program::id())]
+    pub clob_program: UncheckedAccount<'info>,
+    /// Read-only. The refill resolver reads the levels a reservoir is held
+    /// between, which the treasury sets rather than the market.
+    #[account(
+        seeds = [crate::state::crank_treasury::CRANK_TREASURY_PDA_SEED],
+        bump
+    )]
+    pub treasury: AccountLoader<'info, crate::state::crank_treasury::CrankTreasuryV0>,
+}
+
+pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
+    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
+    let slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
+    slot.config
+        .validate_clob_book(market_index, &ctx.accounts.clob_market.key())?;
+    validate!(
+        slot.config.program_id == ctx.accounts.clob_program.key(),
+        ErrorCode::InvalidQuoterConfig,
+        "clob program does not match the book slot"
+    )?;
+
+    Ok(())
+}
+
+/// The book, bound for the read-only questions a resolver asks it.
+pub fn clob_reader<'a, 'info>(
+    ctx: &'a Context<'_, ResolveClobCrank<'info>>,
+) -> ClobReader<'a, 'info> {
+    ClobReader {
+        market: &ctx.accounts.clob_market,
+        program: &ctx.accounts.clob_program,
+    }
+}
+
+/// The removal executor's call for the order `found` names.
+/// `CrankClobOrderRemoval`'s `#[derive(Accounts)]` struct is the typed account
+/// list. A taker-origin order adds its owner's signed-message record as the one
+/// remaining account, so the removal releases the entry.
+///
+/// `I` names which executor the caller stages. `crank_clob_evict` and
+/// `crank_clob_remove_expired` share this account list but are different
+/// instructions. The executor identity comes back from the resolver rather than
+/// out of the condition, so the resolver has to name it.
+pub fn removal_call<I: anchor_lang::Discriminator>(
+    ctx: &Context<ResolveClobCrank>,
+    found: &OrderViewV0,
+) -> Result<StagedCall> {
+    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
+    let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    let user = pdas::user(&found.user.authority, found.user.sub_account_id);
+    let call = StagedCall::new::<I>(crate::accounts::CrankClobOrderRemoval {
+        state: ctx.accounts.state.key(),
+        authority: pdas::keeper_placeholder(),
+        filler: protocol_user,
+        filler_stats: protocol_user_stats,
+        user,
+        trigger_conditions: pdas::user_conditions(&user),
+        perp_market: pdas::perp_market(market_index),
+        quoter_slab: ctx.accounts.quoter_slab.key(),
+        clob_market: ctx.accounts.clob_market.key(),
+        clob_program: crate::ids::clob_program::id(),
+        crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+        sol_spot_market: sol_spot_market_ref(&*ctx.accounts.state.load()?),
+    });
+
+    if !found.taker_origin {
+        return Ok(call);
+    }
+
+    Ok(call.account(pdas::signed_msg_user_orders(&found.user.authority), true))
+}
+
+/// The SOL spot market a staged program-keeper crank passes, when `State`
+/// names one.
+pub fn sol_spot_market_ref(state: &State) -> Option<Pubkey> {
+    (state.sol_spot_market_index != 0).then(|| pdas::spot_market(state.sol_spot_market_index))
+}
+
+/// The trigger a crank acted on, and the reward it collected from the owner.
+pub struct CrankedTrigger {
+    pub market_index: u16,
+    pub order_id: u32,
+    pub keeper_reward: u64,
+    /// Whether a valid SOL TWAP priced the reservoir payment. Without one the
+    /// owner paid only the flat quote fee, so the reservoir pays no lamports.
+    pub pay_lamports: bool,
+    /// False when the crank already re-pointed or parked the slot, so the
+    /// slot must stay.
+    pub release_slot: bool,
+}
+
+/// The shared tail of the trigger cranks `trigger_market_order_v1` and
+/// `trigger_limit_order_v1`. It releases the fired slot on the user's relay
+/// trigger conditions so that its level-triggered wake goes quiet. In
+/// program-keeper mode it also pays the caller from the fired market's
+/// reservoir, for a crank that collected its reward.
+///
+/// The payment is at least what the slot asks relay to assert. The sync
+/// stores the payment of its time, so after the admin lowers it, a slot that
+/// was not synced again would fail every fire. The raise is bounded by a
+/// payment the admin once set.
+pub fn finish_trigger_crank<'info>(
+    state: &AccountLoader<'info, State>,
+    filler: &AccountLoader<'info, User>,
+    authority: &UncheckedAccount<'info>,
+    user: &AccountLoader<'info, User>,
+    trigger_conditions: &Option<
+        AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
+    >,
+    crank_conditions: &Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    cranked: &CrankedTrigger,
+) -> Result<()> {
+    let CrankedTrigger {
+        market_index,
+        order_id,
+        keeper_reward,
+        release_slot,
+        ..
+    } = *cranked;
+
+    let mut slot_min_payment = None;
+    if let Some(conditions) = trigger_conditions {
+        let mut conditions = load_mut!(conditions)?;
+        validate!(
+            conditions.user == user.key(),
+            ErrorCode::InvalidUserAccount,
+            "trigger conditions are for user {}, crank is for {}",
+            conditions.user,
+            user.key()
+        )?;
+
+        slot_min_payment = conditions.trigger_min_payment(market_index, order_id);
+        if release_slot {
+            conditions.release_slot(market_index, order_id);
+        }
+    }
+
+    let program_keeper_mode = program_keeper_mode(filler, state, crank_conditions.is_some())?;
+    let paid_lamports = program_keeper_mode
+        && cranked.pay_lamports
+        && earns_crank_lamports(
+            keeper_reward,
+            &authority.key(),
+            &crate::load!(user)?.authority,
+        );
+    if let (true, Some(reservoir)) = (paid_lamports, crank_conditions) {
+        let reservoir_market_index = reservoir.load()?.market_index;
+        validate!(
+            reservoir_market_index == market_index,
+            ErrorCode::CrankConditionsMarketMismatch,
+            "conditions are for market {}, the fired order is market {}",
+            reservoir_market_index,
+            market_index
+        )?;
+
+        ClobCrankConditionsV0::pay_crank(reservoir, &authority.to_account_info(), |payments| {
+            trigger_payment(u64::from(payments.trigger), slot_min_payment)
+        })?;
+    }
+
+    Ok(())
+}
+
+/// The accounts a trigger crank prices its keeper fee from.
+pub struct TriggerFeeAccounts<'a, 'info> {
+    pub state: &'a AccountLoader<'info, State>,
+    pub filler: &'a AccountLoader<'info, User>,
+    pub crank_conditions: &'a Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    pub trigger_conditions:
+        &'a Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
+    pub sol_spot_market: &'a Option<AccountLoader<'info, SpotMarket>>,
+}
+
+/// The quote fee charged for a trigger crank and whether it covers a reservoir
+/// payment valued from a live SOL TWAP.
+#[derive(Clone, Copy)]
+pub struct TriggerKeeperFee {
+    pub quote: u64,
+    pub pay_lamports: bool,
+}
+
+impl TriggerFeeAccounts<'_, '_> {
+    /// What the crank of `(market_index, order_id)` charges the owner. A
+    /// program-keeper crank charges at least the value of the payment
+    /// [`finish_trigger_crank`] makes. Any other crank charges the flat fee.
+    pub fn keeper_fee(&self, market_index: u16, order_id: u32) -> Result<TriggerKeeperFee> {
+        let state = self.state.load()?;
+        let flat_filler_fee = state.perp_fee_structure.flat_filler_fee;
+        let program_keeper_mode =
+            program_keeper_mode(self.filler, self.state, self.crank_conditions.is_some())?;
+        let Some(crank_conditions) = self
+            .crank_conditions
+            .as_ref()
+            .filter(|_| program_keeper_mode)
+        else {
+            return Ok(TriggerKeeperFee {
+                quote: flat_filler_fee,
+                pay_lamports: false,
+            });
+        };
+
+        let sol_price =
+            payment_sol_price(&state, program_keeper_mode, self.sol_spot_market.as_ref())?;
+        let slot_min_payment = match self.trigger_conditions {
+            Some(conditions) => conditions
+                .load()?
+                .trigger_min_payment(market_index, order_id),
+            None => None,
+        };
+        let payment = trigger_payment(
+            u64::from(crank_conditions.load()?.crank_payments.trigger),
+            slot_min_payment,
+        );
+
+        Ok(TriggerKeeperFee {
+            quote: keeper_crank_fee(flat_filler_fee, payment, sol_price),
+            pay_lamports: sol_price.is_some(),
+        })
+    }
+}
+
+/// The market's current trigger payment, raised to what the slot asserts.
+fn trigger_payment(market_payment: u64, slot_min_payment: Option<u64>) -> u64 {
+    market_payment.max(slot_min_payment.unwrap_or(0))
+}
+
+/// Which resolver a fired trigger slot belongs to.
+///
+/// The order type decides it: a trigger-limit rests whole on the book,
+/// every other trigger fires and fills against it. Staging the wrong kind fails.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TriggerResolverKind {
+    /// `trigger_limit_order_v1` rests the whole trigger-limit on the book.
+    ClobRest,
+    /// `trigger_market_order_v1` fires the trigger and fills it against the
+    /// book.
+    ClobFill,
+}
+
+/// Whether a trigger crank on `order` can land at this oracle price.
+///
+/// A re-armed order (flagged `AwaitingTriggerRecross`) is due while unsatisfied. An
+/// ordinary order is due while satisfied. The wrong half fails with `OrderAwaitingTriggerRecross`.
+pub fn trigger_crank_is_due(order: &crate::state::user::Order, oracle_price: u64) -> Result<bool> {
+    let satisfied = crate::math::orders::order_satisfies_trigger_condition(order, oracle_price)?;
+    let awaiting_recross =
+        order.is_bit_flag_set(crate::state::user::OrderBitFlag::AwaitingTriggerRecross);
+    Ok(satisfied != awaiting_recross)
+}
+
+/// The trigger slot a fired condition names.
+///
+/// Relay tells each resolver which condition fired, so every slot stages only
+/// its own order. An order that its executor refuses then holds up no other
+/// slot. A condition outside this account's trigger range names no slot.
+pub fn fired_trigger_slot(
+    conditions: &crate::state::user_conditions::UserConditionsV0,
+    conditions_key: &Pubkey,
+    fired: &super::super::FiredConditionArgV0,
+) -> Result<crate::state::user_conditions::TriggerSlotMetaV0> {
+    use crate::state::user_conditions::{TRIGGER_CONDITION_SLOTS, TRIGGER_SLOT_BASE};
+    let meta = usize::from(fired.index)
+        .checked_sub(TRIGGER_SLOT_BASE)
+        .filter(|index| *index < TRIGGER_CONDITION_SLOTS && fired.target == *conditions_key)
+        .map(|index| conditions.trigger_slots[index]);
+
+    let Some(meta) = meta else {
+        msg!(
+            "fired condition {} on {} is not a trigger slot of {}",
+            fired.index,
+            fired.target,
+            conditions_key
+        );
+
+        return Err(ErrorCode::UnrecognizedCrankCondition.into());
+    };
+
+    Ok(meta)
+}
+
+/// Whether a market's status admits a fire of `order`. A `ReduceOnly` market
+/// stamps a fired stop-market reduce-only, and it refuses a stop-limit that is
+/// not reduce-only.
+pub(crate) fn market_status_admits_trigger(
+    status: crate::state::market_status::MarketStatus,
+    order: &crate::state::user::Order,
+) -> bool {
+    use crate::state::{market_status::MarketStatus, user::OrderType};
+    match status {
+        MarketStatus::Active => true,
+        MarketStatus::ReduceOnly => {
+            order.reduce_only || order.order_type == OrderType::TriggerMarket
+        }
+        MarketStatus::Initialized | MarketStatus::Settlement | MarketStatus::Delisted => false,
+    }
+}
+
+/// What a trigger resolver reads to judge its slot the way the executor
+/// judges it.
+pub struct TriggerResolverView<'a, 'info> {
+    pub state: &'a State,
+    pub user: &'a User,
+    pub market: &'a PerpMarket,
+    pub oracle_info: &'a AccountInfo<'info>,
+    pub clock: &'a Clock,
+}
+
+/// A trigger slot whose crank can land now.
+#[derive(Clone, Copy, Debug)]
+pub struct DueTrigger {
+    pub meta: crate::state::user_conditions::TriggerSlotMetaV0,
+    /// The side the crank rests the order on. `None` for a crank that only
+    /// observes a recross after an eviction, which rests nothing.
+    pub rests_on: Option<PositionDirection>,
+}
+
+/// The slot's armed trigger order, when its crank can land now through the
+/// resolver's executor path `want`.
+///
+/// An ordinary order is due when the trigger price satisfies its condition. An
+/// order re-armed after an eviction is due when the trigger price does not
+/// satisfy it, because the crank that clears its edge gate is the one that
+/// observes the recross.
+///
+/// Every gate the executor applies and the resolver can read returns `None`.
+/// Relay backs off a failed simulation exponentially and a `None` at its flat
+/// no-work interval, so a gate that fails the executor would delay the stop
+/// long after the gate clears. The executor checks everything again.
+pub fn find_fired_trigger(
+    meta: crate::state::user_conditions::TriggerSlotMetaV0,
+    view: &TriggerResolverView,
+    want: TriggerResolverKind,
+) -> Result<Option<DueTrigger>> {
+    let TriggerResolverView {
+        state,
+        user,
+        market,
+        oracle_info,
+        clock,
+    } = *view;
+    validate!(
+        oracle_info.key() == market.oracle,
+        ErrorCode::InvalidOracle,
+        "oracle {} is not market {}'s oracle",
+        oracle_info.key(),
+        market.market_index
+    )?;
+
+    // A synced slot always names a book: `sync_trigger_conditions` refuses
+    // to stage a trigger on a market with no CLOB.
+    if meta.quoter_slab == Pubkey::default() || meta.market_index != market.market_index {
+        return Ok(None);
+    }
+
+    let Some(order) = user.orders.iter().find(|order| {
+        order.order_id == meta.order_id && order.status == crate::state::user::OrderStatus::Open
+    }) else {
+        return Ok(None);
+    };
+
+    // A trigger slot already placed on the CLOB reads as untriggered, so
+    // `triggered()` does not exclude it. An order past its own `max_ts` is
+    // exempt from `should_expire_order`, and stays armed the same way.
+    let expired = order.max_ts != 0 && clock.unix_timestamp > order.max_ts;
+    let kind = if order.order_type == crate::state::user::OrderType::TriggerLimit {
+        TriggerResolverKind::ClobRest
+    } else {
+        TriggerResolverKind::ClobFill
+    };
+
+    if order.market_index != market.market_index
+        || order.is_placed_on_clob()
+        || !order.must_be_triggered()
+        || order.triggered()
+        || expired
+        || kind != want
+        || !market_status_admits_trigger(market.status, order)
+        || !account_admits_trigger(state, user)?
+    {
+        return Ok(None);
+    }
+
+    let Some(trigger_price) = gated_trigger_price(state, market, oracle_info, clock)? else {
+        return Ok(None);
+    };
+
+    if !trigger_crank_is_due(order, trigger_price)? {
+        return Ok(None);
+    }
+
+    let awaiting_recross =
+        order.is_bit_flag_set(crate::state::user::OrderBitFlag::AwaitingTriggerRecross);
+    if !awaiting_recross && !fire_moves_position(user, order, market)? {
+        return Ok(None);
+    }
+
+    Ok(Some(DueTrigger {
+        meta,
+        rests_on: (!awaiting_recross).then_some(order.direction),
+    }))
+}
+
+/// Whether the exchange and the account admit a trigger crank. A
+/// being-liquidated flag admits it. The resolver has no margin maps to judge
+/// the flag, and the executor clears a stale flag and refuses a live one.
+/// Nothing else clears a stale flag.
+fn account_admits_trigger(state: &State, user: &User) -> Result<bool> {
+    let fill_paused = state
+        .get_exchange_status()?
+        .contains(crate::state::state::ExchangeStatus::FillPaused);
+    Ok(!fill_paused && !user.is_bankrupt())
+}
+
+/// The price the executor judges the trigger condition at, or `None` when the
+/// market or the oracle refuses a trigger now.
+fn gated_trigger_price(
+    state: &State,
+    market: &PerpMarket,
+    oracle_info: &AccountInfo,
+    clock: &Clock,
+) -> Result<Option<u64>> {
+    let mut oracle_map = crate::state::oracle_map::OracleMap::load_one(
+        oracle_info,
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+
+    match crate::controller::orders::trigger_prices(
+        state,
+        market,
+        &mut oracle_map,
+        clock.unix_timestamp,
+    ) {
+        Ok(prices) => Ok(Some(prices.trigger_price)),
+        Err(error) => {
+            msg!("trigger gate refuses the crank: {:?}", error);
+            Ok(None)
+        }
+    }
+}
+
+/// Whether firing `order` can move the position. A reduce-only fire with
+/// nothing to reduce is cancelled unpaid, and relay cannot land an unpaid
+/// crank. A `ReduceOnly` market stamps a fired stop-market reduce-only.
+fn fire_moves_position(
+    user: &User,
+    order: &crate::state::user::Order,
+    market: &PerpMarket,
+) -> Result<bool> {
+    let mut fired = *order;
+    fired.reduce_only |= market.status == crate::state::market_status::MarketStatus::ReduceOnly
+        && order.order_type == crate::state::user::OrderType::TriggerMarket;
+    if !fired.reduce_only {
+        return Ok(true);
+    }
+
+    let position_base = user
+        .get_perp_position(order.market_index)
+        .map(|position| position.base_asset_amount)
+        .unwrap_or(0);
+    Ok(fired.get_base_asset_amount_unfilled(Some(position_base))? != 0)
+}
+
+/// Whether the side `direction` rests on holds fewer orders than the book
+/// allows. The arena is shared, so each side holds at most half of it.
+pub(crate) fn side_has_room(rules: &OrderRulesV0, direction: PositionDirection) -> bool {
+    let side = match direction {
+        PositionDirection::Long => 0,
+        PositionDirection::Short => 1,
+    };
+
+    rules.side_order_counts[side] < rules.arena_capacity / 2
+}
+
+/// The accounts a trigger resolver reads. The order is the contract with
+/// `sync_trigger_conditions`, which writes each slot's resolver list.
+pub struct TriggerResolverAccounts<'a, 'info> {
+    pub trigger_conditions:
+        &'a AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
+    pub user: &'a AccountLoader<'info, User>,
+    pub oracle: &'a AccountInfo<'info>,
+    pub perp_market: &'a AccountLoader<'info, PerpMarket>,
+    pub state: &'a AccountLoader<'info, State>,
+    pub quoter_slab: &'a AccountLoader<'info, QuoterSlabV0>,
+    pub clob_market: &'a AccountInfo<'info>,
+    pub clob_program: &'a AccountInfo<'info>,
+}
+
+/// The fired slot's trigger, when its executor can land now.
+///
+/// The book must quote, and a crank that rests the order needs room on its
+/// side. A full side is a state of the book that an eviction clears, so the
+/// resolver reports no work until then.
+pub fn resolve_due_trigger(
+    accounts: &TriggerResolverAccounts,
+    fired: &super::super::FiredConditionArgV0,
+    want: TriggerResolverKind,
+) -> Result<Option<crate::state::user_conditions::TriggerSlotMetaV0>> {
+    let clock = Clock::get()?;
+    let due = {
+        let conditions = accounts.trigger_conditions.load()?;
+        let state = accounts.state.load()?;
+        let user = crate::load!(accounts.user)?;
+        let market = accounts.perp_market.load()?;
+        find_fired_trigger(
+            fired_trigger_slot(&conditions, &accounts.trigger_conditions.key(), fired)?,
+            &TriggerResolverView {
+                state: &state,
+                user: &user,
+                market: &market,
+                oracle_info: accounts.oracle,
+                clock: &clock,
+            },
+            want,
+        )?
+    };
+
+    let Some(due) = due else {
+        return Ok(None);
+    };
+
+    let market_index = due.meta.market_index;
+    if !accounts.quoter_slab.clob_slot(market_index)?.quotes() {
+        msg!("market {}'s book takes no new orders", market_index);
+        return Ok(None);
+    }
+
+    let Some(direction) = due.rests_on else {
+        return Ok(Some(due.meta));
+    };
+
+    let rules = ClobMarket::from_slab(
+        accounts.quoter_slab,
+        market_index,
+        accounts.clob_market,
+        accounts.clob_program,
+    )?
+    .reader()
+    .order_rules()?;
+    if !side_has_room(&rules, direction) {
+        msg!("market {}'s book side is full", market_index);
+        return Ok(None);
+    }
+
+    Ok(Some(due.meta))
+}
+
+/// Rows read from one side when measuring whether its depth has rested. The
+/// window covers the size any one crank takes off a side. A crossing size that
+/// needs more rows than this reports unrested, because the rows past the window
+/// were never measured.
+pub(crate) const RESTED_ROWS_PER_SIDE: u16 = 32;
+
+/// Whether every book order a fill could consume has measurably rested.
+///
+/// This is how a crank vouches for protected flow (`taker_served_window`)
+///
+/// This measures book slots and nothing else. A `Custom` quoter prices during
+/// the call and keeps no resting order, so it will always be false.
+pub(crate) fn book_side_rested<'info>(
+    quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
+    tail: &'info [AccountInfo<'info>],
+    market_index: u16,
+    direction: DirectionV0,
+    size: u64,
+    slot: u64,
+    cpi_scratch: &mut QuoterCpiScratch<'info>,
+) -> Result<bool> {
+    let consulted = quoter_slab.consulted_slots(tail)?;
+    consulted
+        .iter()
+        .try_fold(true, |served, &slot_index| -> Result<bool> {
+            // Copy the slot out so that no slab borrow lives across the book
+            // CPI.
+            let quoter_slot = quoter_slab.slots()?[slot_index];
+            match quoter_slot.config.quoter_type {
+                QuoterType::Vamm => Ok(served),
+                QuoterType::Custom => Ok(false),
+                QuoterType::Clob => {
+                    let rows = book_l3_side(
+                        &quoter_slot,
+                        quoter_slab,
+                        market_index,
+                        direction,
+                        RESTED_ROWS_PER_SIDE,
+                        tail,
+                        cpi_scratch,
+                        false,
+                        |row| (row.size, row.placed_slot),
+                    )?
+                    .unwrap_or_default();
+                    Ok(served && rows_rested(&rows, size, slot))
+                }
+            }
+        })
+}
+
+/// Whether the first `size` base of one side has measurably rested, over the
+/// `(size, placed_slot)` rows the read returned.
+///
+/// Unmeasured depth counts as unrested. The read stops at
+/// [`RESTED_ROWS_PER_SIDE`], so a side that filled the window without reaching
+/// `size` hides rows the fill can still sweep, and those rows may be fresh.
+/// A read short of the window is the whole side. Depth below `size` there does not exist.
+pub(crate) fn rows_rested(rows: &[(u64, u64)], size: u64, slot: u64) -> bool {
+    let (depth, rested) =
+        rows.iter()
+            .fold((0u64, true), |(depth, rested), (row_size, placed_slot)| {
+                if depth >= size {
+                    return (depth, rested);
+                }
+
+                (
+                    depth.saturating_add(*row_size),
+                    rested && crate::math::crosses::served_window(*placed_slot, slot),
+                )
+            });
+    rested && (depth >= size || rows.len() < RESTED_ROWS_PER_SIDE as usize)
+}
+
+/// One side of a book, best price first, through the same `quote_l3_v0` every
+/// source answers on. Each row is mapped in place, because `map` copies what it
+/// keeps and the response then needs no owned intermediate on a heap that never
+/// reclaims.
+///
+/// A `size` of 0 describes the side up to `max_rows`. A cross is found by
+/// comparing the two sides, so neither has a size to stop at until the other has
+/// been read. Reading short costs throughput and nothing else, because rows come
+/// best price first and the edge truncates worse prices rather than a better
+/// counterparty. Returns `None` when the entry declares no L3 leg.
+pub(crate) fn book_l3_side<'info, T>(
+    quoter: &QuoterSlotV0,
+    slab: &AccountLoader<'info, QuoterSlabV0>,
+    market_index: u16,
+    direction: DirectionV0,
+    max_rows: u16,
+    accounts: &[AccountInfo<'info>],
+    scratch: &mut QuoterCpiScratch<'info>,
+    include_taker_origin_reservations: bool,
+    map: impl Fn(&L3RowV0) -> T,
+) -> Result<Option<Vec<T>>> {
+    let located = quoter.quote_l3(
+        market_index,
+        L3ArgsV0 {
+            direction,
+            size: 0,
+            max_rows,
+            include_taker_origin_reservations,
+        },
+        slab,
+        accounts,
+        scratch,
+    )?;
+    let Some(located) = located else {
+        return Ok(None);
+    };
+    let data = located.borrow()?;
+    Ok(Some(
+        located.l3_response(&data)?.rows.iter().map(map).collect(),
+    ))
+}
+
+/// Both sides of a book, best price first.
+pub(crate) struct BookSides<T> {
+    pub bids: Vec<T>,
+    pub asks: Vec<T>,
+}
+
+/// Both sides of a book, in the form a cross resolution works from.
+///
+/// It takes two calls, one per side, because both responses land in the same
+/// region of the book's response tail. The first is copied out before the second
+/// CPI overwrites it. A cross needs both sides, because what crosses an order is
+/// on the other side, and a reader that saw one side could not tell a resolvable
+/// cross from a stuck one. A taker of `Long` sweeps asks, so that read names the
+/// ask side. Returns `None` when the entry declares no L3 leg.
+// The two reads share one slab, one scratch and one row mapper. A context
+// struct would hold the scratch borrow across both CPIs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn book_l3_sides<'info, T>(
+    quoter: &QuoterSlotV0,
+    slab: &AccountLoader<'info, QuoterSlabV0>,
+    market_index: u16,
+    max_rows: u16,
+    accounts: &[AccountInfo<'info>],
+    scratch: &mut QuoterCpiScratch<'info>,
+    include_taker_origin_reservations: bool,
+    map: impl Fn(&L3RowV0) -> T + Copy,
+) -> Result<Option<BookSides<T>>> {
+    let mut read_side = |direction: DirectionV0| {
+        book_l3_side(
+            quoter,
+            slab,
+            market_index,
+            direction,
+            max_rows,
+            accounts,
+            scratch,
+            include_taker_origin_reservations,
+            map,
+        )
+    };
+
+    let Some(asks) = read_side(DirectionV0::Long)? else {
+        return Ok(None);
+    };
+
+    let Some(bids) = read_side(DirectionV0::Short)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(BookSides { bids, asks }))
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use {
+        super::{charge_removal_fee, earns_crank_lamports, unwind_removed_order},
+        crate::{
+            error::ErrorCode,
+            math::constants::BASE_PRECISION_U64,
+            state::{
+                perp_market::PerpMarket,
+                prop_amm::{RemovedOrderV0, SideV0, UserRefV0},
+                state::State,
+                user::{PerpPosition, User},
+            },
+            test_utils::get_positions,
+        },
+    };
+
+    const FEE: u64 = 10_000;
+
+    fn state(exchange_status: u8) -> State {
+        let mut state = State {
+            exchange_status,
+            ..State::default()
+        };
+
+        state.perp_fee_structure.flat_filler_fee = FEE;
+        state
+    }
+
+    /// A maker with one resting bid and an open quote position to pay from.
+    fn maker(open_bids: u64) -> User {
+        User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_bids: open_bids as i64,
+                open_orders: 1,
+                ..PerpPosition::default()
+            }),
+            open_orders: 1,
+            ..User::default()
+        }
+    }
+
+    fn charge(state: &State, filler: Option<&mut User>) -> Result<u64, anchor_lang::error::Error> {
+        charge_removal_fee(
+            state,
+            &mut maker(BASE_PRECISION_U64),
+            filler,
+            &mut PerpMarket::default_test(),
+            super::RemovalFee {
+                amount: state.perp_fee_structure.flat_filler_fee,
+                slot: 0,
+            },
+        )
+    }
+
+    #[test]
+    fn a_keeper_is_paid_the_flat_fee() {
+        assert_eq!(charge(&state(0), Some(&mut User::default())).unwrap(), FEE);
+    }
+
+    /// A full halt stops the fee and not the removal, as a forced cancel does.
+    #[test]
+    fn a_full_exchange_halt_charges_nothing() {
+        assert_eq!(
+            charge(&state(u8::MAX), Some(&mut User::default())).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_filler_outside_pool_zero_is_refused() {
+        let mut filler = User {
+            pool_id: 1,
+            ..User::default()
+        };
+
+        assert_eq!(
+            charge(&state(0), Some(&mut filler)).unwrap_err(),
+            ErrorCode::InvalidPoolId.into()
+        );
+    }
+
+    #[test]
+    fn a_maker_removing_its_own_order_pays_nothing() {
+        assert_eq!(charge(&state(0), None).unwrap(), 0);
+    }
+
+    /// A protocol `User` with a position in every slot books no reward, so the
+    /// crank collected nothing to pay lamports out of.
+    #[test]
+    fn a_filler_with_no_free_position_collects_nothing() {
+        let mut filler = User::default();
+        for (index, position) in filler.perp_positions.iter_mut().enumerate() {
+            position.market_index = index as u16 + 1;
+            position.quote_asset_amount = 1;
+        }
+
+        assert_eq!(charge(&state(0), Some(&mut filler)).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_crank_that_collected_its_fee_earns_lamports() {
+        let keeper = anchor_lang::prelude::Pubkey::new_unique();
+        let owner = anchor_lang::prelude::Pubkey::new_unique();
+        assert!(earns_crank_lamports(FEE, &keeper, &owner));
+    }
+
+    /// A waived fee, as under a full exchange halt, pays no lamports.
+    #[test]
+    fn a_crank_that_collected_nothing_earns_no_lamports() {
+        let keeper = anchor_lang::prelude::Pubkey::new_unique();
+        let owner = anchor_lang::prelude::Pubkey::new_unique();
+        assert!(!earns_crank_lamports(0, &keeper, &owner));
+    }
+
+    /// A slot synced before the admin lowered the payment still asks relay
+    /// for the old figure, so the crank pays that figure and lands.
+    #[test]
+    fn a_trigger_crank_pays_at_least_what_its_slot_asserts() {
+        use super::trigger_payment;
+        assert_eq!(trigger_payment(3_000, Some(5_000)), 5_000);
+        assert_eq!(trigger_payment(7_000, Some(5_000)), 7_000);
+        assert_eq!(trigger_payment(3_000, None), 3_000);
+    }
+
+    #[test]
+    fn an_owner_cranking_its_own_order_earns_no_lamports() {
+        let owner = anchor_lang::prelude::Pubkey::new_unique();
+        assert!(!earns_crank_lamports(FEE, &owner, &owner));
+    }
+
+    /// A report above what the maker reserved releases the whole reservation
+    /// instead of failing, so the order still leaves the book.
+    #[test]
+    fn an_under_reserved_order_is_still_removed() {
+        let mut user = maker(BASE_PRECISION_U64 / 2);
+        let removed = RemovedOrderV0 {
+            user: UserRefV0 {
+                authority: user.authority,
+                sub_account_id: 0,
+            },
+            order_id: 7,
+            client_order_id: 0,
+            price: 0,
+            base_asset_amount: BASE_PRECISION_U64,
+            side: SideV0::Bid,
+            taker_origin: false,
+            reduce_only: false,
+            max_ts: 0,
+        };
+        let position_index = unwind_removed_order(&mut user, &removed, 0, true, 0).unwrap();
+        let position = &user.perp_positions[position_index];
+        assert_eq!(position.open_bids, 0);
+        assert_eq!(position.open_orders, 0);
+        assert_eq!(user.open_orders, 0);
+    }
+}
+
+#[cfg(test)]
+mod keeper_fee_tests {
+    use {
+        super::{keeper_crank_fee, payment_sol_price, removal_payment},
+        crate::{
+            error::ErrorCode,
+            math::constants::PRICE_PRECISION_I64,
+            state::{clob_crank::CrankPaymentsV0, state::State},
+        },
+    };
+
+    const FLAT: u64 = 10_000;
+
+    /// At $2,000 a SOL, 15,000 lamports are worth $0.03. The fee rises to
+    /// that value, so the reservoir never pays more than the crank collected.
+    #[test]
+    fn the_fee_covers_the_reservoir_payment() {
+        let sol_price = Some(2_000 * PRICE_PRECISION_I64);
+        assert_eq!(keeper_crank_fee(FLAT, 15_000, sol_price), 30_000);
+        assert_eq!(keeper_crank_fee(FLAT, 1_000, sol_price), FLAT);
+        assert_eq!(keeper_crank_fee(FLAT, 15_000, None), FLAT);
+    }
+
+    /// Only an unclaimed expiry escalates. An eviction pays the removal
+    /// payment alone.
+    #[test]
+    fn only_an_expiry_escalates_its_payment() {
+        let payments = CrankPaymentsV0 {
+            removal: 5_000,
+            ..CrankPaymentsV0::default()
+        };
+
+        let expiry = removal_payment(&payments, false, 100, 100_000);
+        assert!(expiry > 5_000);
+        assert_eq!(removal_payment(&payments, true, 100, 100_000), 5_000);
+    }
+
+    /// A program-keeper crank on a state with a SOL market must pass it, or
+    /// it could leave the account out to pay only the flat fee.
+    #[test]
+    fn a_program_keeper_crank_needs_the_sol_market() {
+        let state = State {
+            sol_spot_market_index: 1,
+            ..State::default()
+        };
+
+        assert_eq!(
+            payment_sol_price(&state, true, None).unwrap_err(),
+            ErrorCode::SpotMarketNotFound.into()
+        );
+        assert_eq!(payment_sol_price(&state, false, None).unwrap(), None);
+        assert_eq!(
+            payment_sol_price(&State::default(), true, None).unwrap(),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod rows_rested_tests {
+    use super::{rows_rested, RESTED_ROWS_PER_SIDE};
+
+    /// A row rests once `SERVED_WINDOW_MIN_SLOTS` have passed since it was
+    /// placed. Slot 100 against slot 0 is rested. Against slot 100 it is not.
+    const NOW: u64 = 100;
+
+    #[test]
+    fn measured_depth_that_covers_the_size_and_rested_reports_rested() {
+        let rows = vec![(50u64, 0u64), (50, 0)];
+        assert!(rows_rested(&rows, 100, NOW));
+    }
+
+    #[test]
+    fn a_fresh_row_inside_the_size_reports_unrested() {
+        let rows = vec![(50u64, 0u64), (50, NOW)];
+        assert!(!rows_rested(&rows, 100, NOW));
+    }
+
+    #[test]
+    fn a_fresh_row_past_the_size_is_not_measured() {
+        // The fill stops at 50 base, so the fresh row behind it is depth the
+        // fill does not reach.
+        let rows = vec![(50u64, 0u64), (50, NOW)];
+        assert!(rows_rested(&rows, 50, NOW));
+    }
+
+    #[test]
+    fn a_full_read_window_short_of_the_size_reports_unrested() {
+        // The read filled its window without reaching the size, so rows past it
+        // were never measured.
+        let rows = vec![(1u64, 0u64); RESTED_ROWS_PER_SIDE as usize];
+        assert!(!rows_rested(&rows, 1_000, NOW));
+    }
+
+    #[test]
+    fn a_short_read_short_of_the_size_is_the_whole_side() {
+        // The read came back under its window, so the side holds nothing more.
+        let rows = vec![(1u64, 0u64); RESTED_ROWS_PER_SIDE as usize - 1];
+        assert!(rows_rested(&rows, 1_000, NOW));
+    }
+
+    #[test]
+    fn an_empty_side_rests() {
+        assert!(rows_rested(&[], 1_000, NOW));
+    }
+}
+
+#[cfg(test)]
+mod trigger_crank_is_due_tests {
+    use {
+        super::trigger_crank_is_due,
+        crate::state::user::{Order, OrderBitFlag, OrderTriggerCondition},
+    };
+
+    fn stop_below(trigger_price: u64, awaiting_recross: bool) -> Order {
+        Order {
+            trigger_condition: OrderTriggerCondition::Below,
+            trigger_price,
+            bit_flags: if awaiting_recross {
+                OrderBitFlag::AwaitingTriggerRecross as u8
+            } else {
+                0
+            },
+            ..Order::default()
+        }
+    }
+
+    #[test]
+    fn an_ordinary_trigger_is_due_when_the_price_satisfies_it() {
+        let order = stop_below(100, false);
+        assert!(trigger_crank_is_due(&order, 99).unwrap());
+        assert!(!trigger_crank_is_due(&order, 101).unwrap());
+    }
+
+    #[test]
+    fn a_re_armed_trigger_is_due_only_when_the_price_crossed_back() {
+        // The crank that clears the edge gate is the one that observes the
+        // price off the trigger side. While the price stays through the trigger
+        // the crank cannot land, so there is no work to stage.
+        let order = stop_below(100, true);
+        assert!(!trigger_crank_is_due(&order, 99).unwrap());
+        assert!(trigger_crank_is_due(&order, 101).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod fired_trigger_tests {
+    use {
+        super::{
+            find_fired_trigger, fired_trigger_slot, DueTrigger, TriggerResolverKind,
+            TriggerResolverView,
+        },
+        crate::{
+            controller::position::PositionDirection,
+            create_anchor_account_info,
+            error::ErrorCode,
+            instructions::FiredConditionArgV0,
+            math::constants::{BASE_PRECISION_I64, PRICE_PRECISION_I64},
+            state::{
+                market_status::MarketStatus,
+                oracle::OracleSource,
+                paused_operations::PerpOperation,
+                perp_market::{ContractTier, PerpMarket},
+                pyth_lazer_oracle::PythLazerOracle,
+                state::{ExchangeStatus, FeatureBitFlags, State},
+                user::{
+                    MarketType, Order, OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType,
+                    PerpPosition, User, UserStatus,
+                },
+                user_conditions::{TriggerSlotMetaV0, UserConditionsV0, TRIGGER_SLOT_BASE},
+            },
+            test_utils::{get_positions, get_pyth_price},
+        },
+        anchor_lang::prelude::{AccountInfo, Clock, Pubkey},
+    };
+
+    const SLOT: u64 = 1_000;
+
+    fn stop(order_id: u32, reduce_only: bool) -> Order {
+        Order {
+            order_id,
+            status: OrderStatus::Open,
+            order_type: OrderType::TriggerLimit,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_I64 as u64,
+            price: 90_000_000,
+            trigger_price: 105_000_000,
+            trigger_condition: OrderTriggerCondition::Below,
+            reduce_only,
+            ..Order::default()
+        }
+    }
+
+    fn meta(order_id: u32) -> TriggerSlotMetaV0 {
+        TriggerSlotMetaV0 {
+            quoter_slab: Pubkey::new_unique(),
+            order_id,
+            ..TriggerSlotMetaV0::default()
+        }
+    }
+
+    fn fired(target: Pubkey, slot_index: usize) -> FiredConditionArgV0 {
+        FiredConditionArgV0 {
+            target,
+            block_offset: 0,
+            index: (TRIGGER_SLOT_BASE + slot_index) as u8,
+        }
+    }
+
+    /// An active tier A market on `oracle` whose TWAPs sit at $100, so a
+    /// fresh $100 feed is valid for a trigger.
+    fn market(oracle: Pubkey) -> PerpMarket {
+        let mut market = PerpMarket {
+            status: MarketStatus::Active,
+            oracle,
+            oracle_source: OracleSource::PythLazer,
+            contract_tier: ContractTier::A,
+            ..PerpMarket::default_test()
+        };
+
+        let oracle_data = &mut market.market_stats.historical_oracle_data;
+        oracle_data.last_oracle_price_twap = 100 * PRICE_PRECISION_I64;
+        oracle_data.last_oracle_price_twap_5min = 100 * PRICE_PRECISION_I64;
+        market
+    }
+
+    /// A user long one base unit, so a reduce-only short stop has a position
+    /// to reduce.
+    fn long_user(order: Order) -> User {
+        let mut user = User::default();
+        user.orders[0] = order;
+        user.perp_positions = get_positions(PerpPosition {
+            base_asset_amount: BASE_PRECISION_I64,
+            ..PerpPosition::default()
+        });
+        user
+    }
+
+    fn resolve(
+        state: &State,
+        user: &User,
+        market: &PerpMarket,
+        oracle_info: &AccountInfo,
+        want: TriggerResolverKind,
+    ) -> Option<DueTrigger> {
+        find_fired_trigger(
+            meta(user.orders[0].order_id),
+            &TriggerResolverView {
+                state,
+                user,
+                market,
+                oracle_info,
+                clock: &Clock {
+                    slot: SLOT,
+                    ..Clock::default()
+                },
+            },
+            want,
+        )
+        .unwrap()
+    }
+
+    /// A market in `ReduceOnly` refuses the first stop, which is not
+    /// reduce-only. The stop-loss in the next slot still resolves, because
+    /// each slot stages only its own order.
+    #[test]
+    fn an_order_the_executor_refuses_holds_up_no_other_slot() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        oracle_price.posted_slot = SLOT;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let market = PerpMarket {
+            status: MarketStatus::ReduceOnly,
+            ..market(oracle_key)
+        };
+
+        let mut user = long_user(stop(1, false));
+        user.orders[1] = stop(2, true);
+        let conditions_key = Pubkey::new_unique();
+        let mut conditions = Box::<UserConditionsV0>::default();
+        conditions.trigger_slots[0] = meta(1);
+        conditions.trigger_slots[1] = meta(2);
+
+        let state = State::default();
+        let resolve = |slot_index: usize| {
+            let fired = fired(conditions_key, slot_index);
+            let meta = fired_trigger_slot(&conditions, &conditions_key, &fired).unwrap();
+            find_fired_trigger(
+                meta,
+                &TriggerResolverView {
+                    state: &state,
+                    user: &user,
+                    market: &market,
+                    oracle_info: &oracle_info,
+                    clock: &Clock {
+                        slot: SLOT,
+                        ..Clock::default()
+                    },
+                },
+                TriggerResolverKind::ClobRest,
+            )
+            .unwrap()
+            .map(|due| due.meta.order_id)
+        };
+
+        assert_eq!(resolve(0), None);
+        assert_eq!(resolve(1), Some(2));
+    }
+
+    /// Each gate the executor fails on returns no work, so relay retries at
+    /// its no-work interval rather than backing the stop off.
+    #[test]
+    fn every_readable_executor_gate_reports_no_work() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        oracle_price.posted_slot = SLOT;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let state = State::default();
+        let user = long_user(stop(1, true));
+        let rest = TriggerResolverKind::ClobRest;
+
+        let due = resolve(&state, &user, &market(oracle_key), &oracle_info, rest).unwrap();
+        assert_eq!(due.rests_on, Some(PositionDirection::Short));
+
+        let fill_paused = PerpMarket {
+            paused_operations: PerpOperation::Fill as u8,
+            ..market(oracle_key)
+        };
+        assert!(resolve(&state, &user, &fill_paused, &oracle_info, rest).is_none());
+
+        let in_settlement = PerpMarket {
+            expiry_ts: -1,
+            ..market(oracle_key)
+        };
+        assert!(resolve(&state, &user, &in_settlement, &oracle_info, rest).is_none());
+
+        let mut divergent = market(oracle_key);
+        divergent
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap_5min = 50 * PRICE_PRECISION_I64;
+        assert!(resolve(&state, &user, &divergent, &oracle_info, rest).is_none());
+
+        let exchange_paused = State {
+            exchange_status: ExchangeStatus::FillPaused as u8,
+            ..State::default()
+        };
+        assert!(resolve(
+            &exchange_paused,
+            &user,
+            &market(oracle_key),
+            &oracle_info,
+            rest
+        )
+        .is_none());
+
+        let mut bankrupt = user;
+        bankrupt.status = UserStatus::Bankrupt as u8;
+        assert!(resolve(&state, &bankrupt, &market(oracle_key), &oracle_info, rest).is_none());
+
+        let mut flat = user;
+        flat.perp_positions = get_positions(PerpPosition::default());
+        assert!(resolve(&state, &flat, &market(oracle_key), &oracle_info, rest).is_none());
+    }
+
+    /// The resolver cannot tell a stale being-liquidated flag from a live one,
+    /// so it stages the fire and the executor judges the flag.
+    #[test]
+    fn a_being_liquidated_flag_still_stages_the_fire() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        oracle_price.posted_slot = SLOT;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut user = long_user(stop(1, true));
+        user.status = UserStatus::BeingLiquidated as u8;
+
+        let due = resolve(
+            &State::default(),
+            &user,
+            &market(oracle_key),
+            &oracle_info,
+            TriggerResolverKind::ClobRest,
+        );
+        assert_eq!(due.map(|due| due.meta.order_id), Some(1));
+    }
+
+    /// A feed too old for margin fails the executor's validity check, so the
+    /// resolver reports no work.
+    #[test]
+    fn a_stale_oracle_reports_no_work() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        oracle_price.posted_slot = 0;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let user = long_user(stop(1, true));
+        assert!(resolve(
+            &State::default(),
+            &user,
+            &market(oracle_key),
+            &oracle_info,
+            TriggerResolverKind::ClobRest,
+        )
+        .is_none());
+    }
+
+    /// The raw oracle is through a Below stop at 100.10 and the median at
+    /// 100.20 is not. The resolver judges the price the `State` flag names.
+    #[test]
+    fn the_resolver_judges_the_median_when_state_says_so() {
+        let mut oracle_price = get_pyth_price(100, 6);
+        oracle_price.posted_slot = SLOT;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut market = market(oracle_key);
+        market.last_fill_price = 100_300_000;
+        market.market_stats.last_mark_price_twap_5min = 100_200_000;
+
+        let user = long_user(Order {
+            order_type: OrderType::TriggerMarket,
+            trigger_price: 100_100_000,
+            ..stop(1, true)
+        });
+        let fill = TriggerResolverKind::ClobFill;
+        let raw = State::default();
+        assert!(resolve(&raw, &user, &market, &oracle_info, fill).is_some());
+
+        let median = State {
+            feature_bit_flags: FeatureBitFlags::MedianTriggerPrice as u8,
+            ..State::default()
+        };
+        assert!(resolve(&median, &user, &market, &oracle_info, fill).is_none());
+    }
+
+    /// A crank that observes an evicted order's recross rests nothing, so it
+    /// needs no room on the book.
+    #[test]
+    fn a_recross_observation_rests_nothing() {
+        let mut oracle_price = get_pyth_price(110, 6);
+        oracle_price.posted_slot = SLOT;
+        let oracle_key = Pubkey::new_unique();
+        create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
+        let mut market = market(oracle_key);
+        let oracle_data = &mut market.market_stats.historical_oracle_data;
+        oracle_data.last_oracle_price_twap = 110 * PRICE_PRECISION_I64;
+        oracle_data.last_oracle_price_twap_5min = 110 * PRICE_PRECISION_I64;
+
+        let mut order = stop(1, true);
+        order.add_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
+        let due = resolve(
+            &State::default(),
+            &long_user(order),
+            &market,
+            &oracle_info,
+            TriggerResolverKind::ClobRest,
+        )
+        .unwrap();
+        assert_eq!(due.rests_on, None);
+    }
+
+    /// A condition on another account, or outside the trigger range, names
+    /// no trigger slot.
+    #[test]
+    fn a_condition_outside_the_trigger_slots_is_refused() {
+        let conditions_key = Pubkey::new_unique();
+        let conditions = Box::<UserConditionsV0>::default();
+        let refused = |fired: FiredConditionArgV0| {
+            fired_trigger_slot(&conditions, &conditions_key, &fired).unwrap_err()
+        };
+
+        let wrong_account = fired(Pubkey::new_unique(), 0);
+        let liquidation_slot = FiredConditionArgV0 {
+            target: conditions_key,
+            block_offset: 0,
+            index: 0,
+        };
+
+        let past_the_last_slot = fired(conditions_key, 8);
+        for condition in [wrong_account, liquidation_slot, past_the_last_slot] {
+            assert_eq!(
+                refused(condition),
+                ErrorCode::UnrecognizedCrankCondition.into()
+            );
+        }
+    }
+}

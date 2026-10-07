@@ -25,6 +25,7 @@ use {
     crucible_fuzzer::*,
     velocity::{
         create_anchor_account_info,
+        instructions::optional_accounts::AccountMaps,
         math::{
             constants::{
                 AMM_RESERVE_PRECISION, BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION,
@@ -44,6 +45,7 @@ use {
                 calculate_size_premium_liability_weight, meets_initial_margin_requirement,
                 meets_maintenance_margin_requirement, MarginRequirementType,
             },
+            time::SlotClock,
         },
         state::{
             margin_calculation::MarginContext,
@@ -89,15 +91,16 @@ impl MarginFixture {
 // ---------------------------------------------------------------------------
 
 /// A single perp market backed by a PythLazer oracle + a USDC (QuoteAsset)
-/// spot market. Constructs `perp_map`, `spot_map`, and a mutable `oracle_map`
-/// in the caller's scope. `$price` is in *dollars* (fed to get_pyth_price with
+/// spot market. Constructs the `AccountMaps` bundle the margin engine takes in
+/// the caller's scope. `$price` is in *dollars* (fed to get_pyth_price with
 /// expo 6), `$mr_init`/`$mr_maint` are MARGIN_PRECISION-based margin ratios.
 macro_rules! build_maps {
-    ($price:expr, $mr_init:expr, $mr_maint:expr, $perp_map:ident, $spot_map:ident, $oracle_map:ident) => {
+    ($price:expr, $mr_init:expr, $mr_maint:expr, $maps:ident) => {
         let oracle_key = Pubkey::new_from_array([7u8; 32]);
         let mut oracle_acct = get_pyth_price($price, 6);
         create_anchor_account_info!(oracle_acct, &oracle_key, PythLazerOracle, oracle_ai);
-        let mut $oracle_map = OracleMap::load_one(&oracle_ai, 0u64, None).unwrap();
+        // The 400ms baseline clock: these fixtures set no IBRL transition.
+        let oracle_map = OracleMap::load_one(&oracle_ai, 0u64, SlotClock::default(), None).unwrap();
 
         let mut perp_market = PerpMarket {
             amm: AMM {
@@ -120,7 +123,7 @@ macro_rules! build_maps {
         let perp_ais = [perp_ai];
         let mut perp_iter = perp_ais.iter().peekable();
         let perp_writable = velocity::state::perp_market_map::get_market_set_from_list(vec![]);
-        let $perp_map = PerpMarketMap::load(&perp_writable, &mut perp_iter).unwrap();
+        let perp_map = PerpMarketMap::load(&perp_writable, &mut perp_iter).unwrap();
 
         let mut usdc_market = SpotMarket {
             market_index: 0,
@@ -140,7 +143,8 @@ macro_rules! build_maps {
         let mut spot_iter = spot_ais.iter().peekable();
         let spot_writable =
             velocity::state::spot_market_map::get_writable_spot_market_set_from_many(vec![]);
-        let $spot_map = SpotMarketMap::load(&spot_writable, &mut spot_iter).unwrap();
+        let spot_map = SpotMarketMap::load(&spot_writable, &mut spot_iter).unwrap();
+        let mut $maps = AccountMaps::new(perp_map, spot_map, oracle_map);
     };
 }
 
@@ -304,12 +308,11 @@ fn prop_meets_initial_implies_maintenance(
 ) {
     let _ = &fixture.ctx;
     let mr_init = mr_maint.saturating_mul(2).min(MARGIN_PRECISION);
-    build_maps!(price, mr_init, mr_maint, perp_map, spot_map, oracle_map);
+    build_maps!(price, mr_init, mr_maint, maps);
     let user = make_user(deposit, base);
 
-    let meets_init = meets_initial_margin_requirement(&user, &perp_map, &spot_map, &mut oracle_map);
-    let meets_maint =
-        meets_maintenance_margin_requirement(&user, &perp_map, &spot_map, &mut oracle_map);
+    let meets_init = meets_initial_margin_requirement(&user, &mut maps);
+    let meets_maint = meets_maintenance_margin_requirement(&user, &mut maps);
 
     if let (Ok(mi), Ok(mm)) = (meets_init, meets_maint) {
         if mi {
@@ -398,7 +401,7 @@ fn prop_liquidation_fee_bounded(
 
     // get_liquidation_fee in [base, max] (max normalized to be >= base).
     let max = base_fee.max(max_fee);
-    if let Ok(f) = get_liquidation_fee(base_fee, max, 0, cur_slot) {
+    if let Ok(f) = get_liquidation_fee(base_fee, max, 0, cur_slot, SlotClock::default()) {
         fuzz_assert_ge!(f, base_fee);
         fuzz_assert_le!(f, max);
     }
@@ -484,22 +487,18 @@ fn prop_asset_never_lowers_collateral(
     // (c) collateral monotone in deposit: same maps, two users differing only
     // by a strictly larger deposit.
     let mr_init = mr_maint.saturating_mul(2).min(MARGIN_PRECISION);
-    build_maps!(price, mr_init, mr_maint, perp_map, spot_map, oracle_map);
+    build_maps!(price, mr_init, mr_maint, maps);
     let user_small = make_user(deposit, base);
     let user_large = make_user(deposit.saturating_add(delta), base);
 
     let c_small = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user_small,
-        &perp_map,
-        &spot_map,
-        &mut oracle_map,
+        &mut maps,
         MarginContext::standard(MarginRequirementType::Maintenance),
     );
     let c_large = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user_large,
-        &perp_map,
-        &spot_map,
-        &mut oracle_map,
+        &mut maps,
         MarginContext::standard(MarginRequirementType::Maintenance),
     );
 

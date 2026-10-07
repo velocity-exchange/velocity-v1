@@ -4,9 +4,10 @@ use base64::Engine;
 use nanoid::nanoid;
 use reqwest::header;
 use velocity_rs::{
+    constants::derive_quoter_slab,
     swift_order_subscriber::{SignedOrderInfo, SignedOrderType},
     types::{MarketType, OrderParams, OrderType, PositionDirection, SignedMsgOrderParamsMessage},
-    Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
+    ClobFillAccounts, Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
 };
 
 /// Swift taker client example
@@ -51,9 +52,9 @@ async fn main() {
         order_type: OrderType::Oracle,
         base_asset_amount: 100_000_000,
         direction: PositionDirection::Long,
-        auction_start_price: Some(1_00),
-        auction_end_price: Some(1_000),
-        auction_duration: Some(20),
+        // The worst price, as an offset from the oracle. The program refuses an
+        // oracle entry without one.
+        oracle_price_offset: Some(10_000),
         ..Default::default()
     };
     let signed_order_params = SignedMsgOrderParamsMessage {
@@ -67,10 +68,17 @@ async fn main() {
         builder_idx: None,
         builder_fee_tenth_bps: None,
         isolated_position_deposit: args.isolated_position,
+        network: Some(velocity_rs::swift_order_subscriber::expected_network_tag()),
+        route: None,
     };
     let swift_order_type = SignedOrderType::authority(signed_order_params);
     let signed_msg = hex::encode(swift_order_type.to_borsh());
-    let signature = velocity.wallet.sign_message(signed_msg.as_bytes()).unwrap();
+    let signature = velocity
+        .wallet
+        .sign_message(
+            &velocity_rs::swift_order_subscriber::signed_msg_signing_bytes(signed_msg.as_bytes()),
+        )
+        .unwrap();
 
     let swift_order_request = serde_json::json!({
         "message": signed_msg,
@@ -146,6 +154,24 @@ async fn swift_deposit_trade(
             &spot_market_config.token_program(),
         );
 
+    // The placement routes the order and rests what it cannot fill on the
+    // market's book, so it carries the book's accounts. The book is slot 0 of
+    // the market's quoter slab.
+    let perp_market_index = signed_order_info.order_params().market_index;
+    let slab_slots = velocity
+        .get_quoter_slab_slots(perp_market_index)
+        .await
+        .expect("quoter slab for the market");
+    let book = velocity_rs::utils::clob_slot_config(&slab_slots)
+        .expect("approved clob on the quoter slab");
+    let clob = ClobFillAccounts {
+        market_index: perp_market_index,
+        quoter_slab: derive_quoter_slab(perp_market_index),
+        clob_market: book.response_account,
+        clob_program: book.program_id,
+        crank_conditions: None,
+    };
+
     let unsigned_tx = TransactionBuilder::new(
         velocity.program_data(),
         taker_subaccount,
@@ -155,7 +181,7 @@ async fn swift_deposit_trade(
     // .add_ix(additional_setup_ixs)
     .add_ix(create_ata_ix)
     .deposit(deposit_amount, deposit_market_index, None, None)
-    .place_swift_order(&signed_order_info, &taker_account_data)
+    .place_swift_order(&signed_order_info, &taker_account_data, &[], clob, None)
     // .add_ix(additional_clean_up_ixs)
     .build();
     let signed_tx = velocity

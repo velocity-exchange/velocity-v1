@@ -27,14 +27,8 @@ import { loadKeypair } from '../lib/provider';
 import { fetchStateAdmins } from '../lib/state';
 
 /**
- * Profile management: `config init` builds a profile interactively and
- * verifies every ingredient against the live cluster before writing anything
- * (the RPC by genesis hash, the keypair by loading it, the multisig by
- * deriving its vault and matching it against the onchain State admins). A
- * profile that saves is a profile that works.
- *
- * Multisig addresses are kept in this per-user config only, on purpose;
- * they are derivable on-chain but are not written into the repo.
+ * Profile management. `config init` verifies the RPC (genesis hash), keypair, and multisig
+ * (vault vs onchain State admins) before writing. Multisig addresses live only in this per-user config.
  */
 
 function die(message: string): never {
@@ -46,8 +40,9 @@ function unwrap<T>(value: T | symbol): T {
 	if (isCancel(value)) {
 		die('aborted, nothing saved');
 	}
-	// Pasted prompt input routinely carries stray whitespace; a trailing
-	// space in an RPC URL makes the connection fail with an opaque error.
+
+	// Pasted prompt input often carries stray whitespace. A trailing space in an
+	// RPC URL makes the connection fail with an unclear error.
 	return (typeof value === 'string' ? value.trim() : value) as T;
 }
 
@@ -96,8 +91,8 @@ export function registerConfig(parent: Command): void {
 				})
 			);
 
-			// One RPC per cluster serves every profile on it; a profile only
-			// carries its own url when it deliberately deviates.
+			// One RPC per cluster serves every profile on that cluster. A profile
+			// carries its own url only when it must differ.
 			const s = spinner();
 			const shared = cfg.rpcs?.[env];
 			let url: string;
@@ -135,7 +130,8 @@ export function registerConfig(parent: Command): void {
 			s.start('checking RPC genesis hash');
 			const cluster = await detectCluster(new Connection(url, 'confirmed'));
 			if (cluster === 'unknown') {
-				// Re-fetch without the silent catch so the actual failure is shown.
+				// Re-fetch without the silent catch, so the command can report the
+				// failure.
 				let reason = 'unrecognized genesis hash';
 				try {
 					reason = `unrecognized genesis hash ${await new Connection(

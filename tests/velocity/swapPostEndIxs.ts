@@ -34,10 +34,10 @@ import {
 	startLiteSVM,
 } from '../../packages/sdk/src/litesvm/litesvmConnection';
 
-// `begin_swap` introspects every instruction that follows it. Instructions after
-// `end_swap` must be inert (no writable accounts), with a carve-out for closing
-// the swap's own token accounts. These tests cover that tail of the loop; the
-// swap route itself is simulated with plain token transfers so no DEX is needed.
+// `begin_swap` introspects every instruction that follows it. An instruction
+// after `end_swap` must hold no writable account, and the one exception closes
+// the swap's own token accounts. These tests cover that tail of the loop. Plain
+// token transfers simulate the swap route, so the tests need no DEX.
 describe('swap post-end instructions', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -219,7 +219,8 @@ describe('swap post-end instructions', () => {
 		const { beginSwapIx, endSwapIx, transferIn, transferOut } =
 			await buildSwapIxs(amountIn);
 
-		// takerUSDC is drained by transferIn, so it can be closed after end_swap
+		// transferIn empties takerUSDC, so the transaction can close it after
+		// end_swap.
 		const closeIx = createCloseAccountInstruction(
 			takerUSDC,
 			takerVelocityClient.wallet.publicKey,

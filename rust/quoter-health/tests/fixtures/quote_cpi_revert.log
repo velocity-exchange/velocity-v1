@@ -1,0 +1,9 @@
+Program ComputeBudget111111111111111111111111111111 invoke [1]
+Program ComputeBudget111111111111111111111111111111 success
+Program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P invoke [1]
+Program log: Instruction: QuoteRouter
+Program BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU invoke [2]
+Program BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU consumed 63 of 390017 compute units
+Program BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU failed: invalid instruction data
+Program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P consumed 9896 of 399850 compute units
+Program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P failed: invalid instruction data

@@ -50,14 +50,17 @@ const DEFAULT_PROGRAMS: { name: string; programId: PublicKey }[] = [
 		name: 'velocity',
 		programId: new PublicKey('vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P'),
 	},
+
 	{
 		name: 'vaults',
 		programId: new PublicKey('vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR'),
 	},
+
 	{
 		name: 'pyth',
 		programId: new PublicKey('FsJ3A3u2vn5cTVofAjvy6y5kwABJAqYWpe4975bi2epH'),
 	},
+
 	{
 		name: 'token_faucet',
 		programId: new PublicKey('V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB'),
@@ -65,9 +68,8 @@ const DEFAULT_PROGRAMS: { name: string; programId: PublicKey }[] = [
 ];
 
 /**
- * Where `<name>.so` is looked up. target/deploy holds the workspace programs;
- * tests/fixtures holds the prebuilt third-party ones (serum_dex, metaplex and
- * friends), which is where solana-program-test found them.
+ * `<name>.so` lookup dirs: target/deploy for workspace programs, tests/fixtures
+ * for prebuilt third-party ones, matching where solana-program-test found them.
  */
 const DEFAULT_PROGRAM_DIRS = [
 	process.env.SVM_DEPLOY_DIR ?? 'target/deploy',
@@ -75,17 +77,14 @@ const DEFAULT_PROGRAM_DIRS = [
 ];
 
 /**
- * Starting balance of the context payer. Tests fund individual keypairs with
- * 10,000 to 20,000 SOL at a time (liquidatePerpPnlForDeposit needs 20,000 in one
- * transfer), so this has to be generously above that or the System transfer
- * fails with `insufficient lamports`.
+ * Tests transfer up to 20,000 SOL at once, so this must stay generously
+ * above that, or the System transfer fails with `insufficient lamports`.
  */
 const PAYER_LAMPORTS = 1_000_000 * LAMPORTS_PER_SOL;
 
 /**
- * Balance of LiteSVM's internal airdrop account. It must exceed PAYER_LAMPORTS,
- * or the airdrop above silently fails and every later transaction reports
- * AccountNotFound for the payer.
+ * Must exceed PAYER_LAMPORTS, or the airdrop above silently fails and every
+ * later transaction reports AccountNotFound for the payer.
  */
 const AIRDROP_SOURCE_LAMPORTS = BigInt('1000000000000000000');
 
@@ -177,6 +176,7 @@ export function startLiteSVM(
 		payer.publicKey.toBytes(),
 		BigInt(PAYER_LAMPORTS)
 	);
+
 	if (airdrop === null || isFailed(airdrop)) {
 		throw new Error(
 			`startLiteSVM: failed to fund payer: ${formatTxError(airdrop)}`
@@ -205,6 +205,7 @@ export function startLiteSVM(
 	for (const account of accounts) {
 		context.setAccount(account.address, account.info);
 	}
+
 	return context;
 }
 
@@ -243,6 +244,7 @@ export class LiteSVMProvider {
 			await this.svmConnection.sendTransaction(versioned);
 			return bs58.encode(versioned.signatures[0]);
 		}
+
 		const legacy = tx as Transaction;
 		legacy.feePayer = legacy.feePayer ?? this.wallet.publicKey;
 		legacy.recentBlockhash = (
@@ -253,6 +255,7 @@ export class LiteSVMProvider {
 		if (!legacy.signature) {
 			throw new Error('LiteSVMProvider: missing fee payer signature');
 		}
+
 		await this.svmConnection.sendTransaction(legacy);
 		return bs58.encode(legacy.signature);
 	}
@@ -296,6 +299,7 @@ export class LiteSVMContextWrapper {
 			tx.feePayer = this.context.payer.publicKey;
 			tx.sign(this.context.payer, ...additionalSigners);
 		}
+
 		return await this.connection.sendTransaction(tx);
 	}
 
@@ -388,11 +392,8 @@ export class LiteSVMConnection {
 	>();
 	private verifySignatures: boolean;
 	/**
-	 * Mirror of the SlotHashes sysvar. LiteSVM's warpToSlot does not add entries,
-	 * where bankrun's bank did, and the address-lookup-table program rejects a
-	 * `recent_slot` that is absent from it ("<slot> is not a recent slot"). We
-	 * keep the list here rather than re-reading it each time, because it is
-	 * rewritten on every transaction.
+	 * Mirror of the SlotHashes sysvar. LiteSVM's warpToSlot does not populate it,
+	 * so the address-lookup-table program would reject a `recent_slot` absent from it.
 	 */
 	private slotHashes: { slot: bigint; hash: string }[] | null = null;
 
@@ -418,6 +419,7 @@ export class LiteSVMConnection {
 		if (info === null) {
 			throw new Error(`Account not found: ${publicKey.toBase58()}`);
 		}
+
 		return unpackAccount(publicKey, info, info.owner);
 	}
 
@@ -443,6 +445,7 @@ export class LiteSVMConnection {
 		for (const publicKey of publicKeys) {
 			accountInfos.push(await this.getAccountInfo(publicKey));
 		}
+
 		return accountInfos;
 	}
 
@@ -473,6 +476,7 @@ export class LiteSVMConnection {
 		} catch (e) {
 			tx = VersionedTransaction.deserialize(rawTransaction as Uint8Array);
 		}
+
 		return await this.sendTransaction(tx);
 	}
 
@@ -500,6 +504,7 @@ export class LiteSVMConnection {
 					'LiteSVMConnection: transaction is missing its first signature'
 				);
 			}
+
 			signature = bs58.encode(legacySignature);
 		}
 
@@ -545,6 +550,7 @@ export class LiteSVMConnection {
 				err: sendResult.err,
 				signature,
 			};
+
 			for (const logCallback of this.onLogCallbacks.values()) {
 				logCallback(logs, context);
 			}
@@ -558,6 +564,7 @@ export class LiteSVMConnection {
 			if (accountInfo.value === null) {
 				continue;
 			}
+
 			callback(accountInfo.value, accountInfo.context);
 		}
 
@@ -583,6 +590,7 @@ export class LiteSVMConnection {
 				currentClock.unixTimestamp + BigInt(1)
 			)
 		);
+
 		this.recordSlotHash(nextSlot);
 	}
 
@@ -593,10 +601,12 @@ export class LiteSVMConnection {
 				.getSlotHashes()
 				.map((h) => ({ slot: h.slot, hash: h.hash }));
 		}
+
 		this.slotHashes.unshift({ slot, hash: this.svm.latestBlockhash() });
 		if (this.slotHashes.length > 512) {
 			this.slotHashes.length = 512;
 		}
+
 		this.svm.setSlotHashes(this.slotHashes);
 	}
 
@@ -617,6 +627,7 @@ export class LiteSVMConnection {
 		if (account === null) {
 			return { context: { slot }, value: null };
 		}
+
 		return {
 			context: { slot },
 			value: {
@@ -647,6 +658,7 @@ export class LiteSVMConnection {
 		const { context, value: accountInfo } = await this.getParsedAccountInfo(
 			accountKey
 		);
+
 		let value = null;
 		if (accountInfo !== null) {
 			value = new AddressLookupTableAccount({
@@ -654,6 +666,7 @@ export class LiteSVMConnection {
 				state: AddressLookupTableAccount.deserialize(accountInfo.data),
 			});
 		}
+
 		return { context, value };
 	}
 
@@ -666,6 +679,7 @@ export class LiteSVMConnection {
 		if (meta === undefined) {
 			return { context: { slot }, value: null };
 		}
+
 		// LiteSVM applies a transaction synchronously, so anything we have a
 		// record of is already final.
 		return {
@@ -687,6 +701,7 @@ export class LiteSVMConnection {
 		if (meta === undefined) {
 			return null;
 		}
+
 		return {
 			slot: meta.slot,
 			meta: { logMessages: meta.logMessages, err: meta.err },
@@ -698,6 +713,7 @@ export class LiteSVMConnection {
 		if (meta === undefined) {
 			throw new Error('Transaction not found');
 		}
+
 		return meta;
 	}
 
@@ -733,6 +749,7 @@ export class LiteSVMConnection {
 				data: [Buffer.from(raw.data()).toString('base64'), 'base64'],
 			};
 		}
+
 		return {
 			context: { slot: Number(this.svm.getClock().slot) },
 			value: {
@@ -754,6 +771,7 @@ export class LiteSVMConnection {
 		if (meta) {
 			callback({ err: meta.err }, { slot: meta.slot });
 		}
+
 		return 0;
 	}
 
@@ -801,32 +819,23 @@ export class LiteSVMConnection {
 }
 
 /**
- * A distinct blockhash per fetch. `withBlockhashCheck` is off because LiteSVM
- * would reject one it never issued.
- *
- * Two constraints have to hold at once. The SDK's retry sender resends identical
- * signed bytes while awaiting confirmation, and those must deduplicate or the
- * transaction executes twice. Separately-built transactions must differ, or the
- * runtime answers AlreadyProcessed and a test expecting a program error never
- * reaches the program. A unique value per fetch satisfies both: resent bytes stay
- * identical and the runtime's transaction history catches them, while two builds
- * never collide. LiteSVM's `expireBlockhash` cannot be used here, as it
- * invalidates the previous blockhash rather than queueing it.
+ * A distinct blockhash per fetch: resent bytes must dedupe, and two builds must
+ * never collide, or LiteSVM answers AlreadyProcessed and hides a real program error.
  */
 function freshBlockhash(): Blockhash {
 	const bytes = Buffer.alloc(32);
 	for (let i = 0; i < 32; i += 1) {
 		bytes[i] = Math.floor(Math.random() * 256);
 	}
+
 	return bs58.encode(bytes);
 }
 
 const U64_MAX = BigInt('18446744073709551615');
 
 /**
- * web3.js represents a rent-exempt account's `rentEpoch` as a JS number, and
- * `u64::MAX` does not fit a double: it rounds up to 2^64, which napi then
- * rejects with "Bigint too large for u64". Clamp instead.
+ * `u64::MAX` does not fit the JS number web3.js uses for `rentEpoch`; it rounds
+ * to 2^64, which napi then rejects as "Bigint too large for u64". Clamp instead.
  */
 function toU64(value: number | bigint): bigint {
 	const asBigInt =
@@ -834,6 +843,7 @@ function toU64(value: number | bigint): bigint {
 	if (asBigInt < BigInt(0)) {
 		return BigInt(0);
 	}
+
 	return asBigInt > U64_MAX ? U64_MAX : asBigInt;
 }
 
@@ -846,6 +856,7 @@ function resolveProgramPath(name: string, dirs: string[]): string {
 			return candidate;
 		}
 	}
+
 	throw new Error(
 		`startLiteSVM: no ${name}.so in any of: ${dirs.join(', ')}. ` +
 			'Build the programs first, or add the fixture.'
@@ -925,6 +936,7 @@ function napiField(obj: unknown, key: string): unknown {
 	if (!obj || typeof obj !== 'object') {
 		return undefined;
 	}
+
 	try {
 		const raw = (obj as Record<string, unknown>)[key];
 		return typeof raw === 'function' ? (raw as () => unknown).call(obj) : raw;
@@ -966,10 +978,12 @@ function describeInstructionError(inner: unknown): string {
 	if (typeof inner === 'number') {
 		return INSTRUCTION_ERROR_NAMES[inner] ?? `instruction error ${inner}`;
 	}
+
 	const code = napiField(inner, 'code');
 	if (typeof code === 'number') {
 		return `custom program error: 0x${code.toString(16)}`;
 	}
+
 	const name = (inner as { constructor?: { name?: string } })?.constructor
 		?.name;
 	return name ?? String(inner);
@@ -984,6 +998,7 @@ function describeTransactionError(err: unknown): string {
 	if (typeof err === 'number') {
 		return TRANSACTION_ERROR_NAMES[err] ?? `TransactionError(${err})`;
 	}
+
 	const index = napiField(err, 'index');
 	const inner = napiField(err, 'err') ?? napiField(err, 'error');
 	if (typeof index === 'number' && inner !== undefined) {
@@ -995,6 +1010,7 @@ function describeTransactionError(err: unknown): string {
 		const name = (err as { constructor?: { name?: string } }).constructor?.name;
 		return name ?? String(err);
 	}
+
 	return String(err);
 }
 
@@ -1005,6 +1021,7 @@ function formatTxError(result: any): string {
 	if (!isFailed(result)) {
 		return 'succeeded';
 	}
+
 	const logs = result.meta?.().logs?.() ?? [];
 	return `${describeTransactionError(result.err())}${
 		logs.length ? `\n${logs.join('\n')}` : ''

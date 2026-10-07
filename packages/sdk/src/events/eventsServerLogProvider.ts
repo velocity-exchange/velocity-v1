@@ -1,14 +1,6 @@
-// import WebSocket from 'ws';
 import { logProviderCallback, EventType, LogProvider } from './types';
 import { EventEmitter } from 'events';
-
-// browser support
-let WebSocketImpl: typeof WebSocket;
-if (typeof window !== 'undefined' && window.WebSocket) {
-	WebSocketImpl = window.WebSocket;
-} else {
-	WebSocketImpl = require('ws');
-}
+import { WebSocketImpl } from '../isomorphic/webSocket';
 
 const EVENT_SERVER_HEARTBEAT_INTERVAL_MS = 5000;
 const ALLOWED_MISSED_HEARTBEATS = 3;

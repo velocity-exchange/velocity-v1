@@ -12,20 +12,17 @@ use {
         validate, AccountMapProvider, Vault, VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
-        state::user::User,
-    },
+    velocity::{math::safe_math::SafeMath, program::Velocity, state::user::User},
 };
 
 pub fn manager_update_fees<'info>(
     ctx: Context<'info, ManagerUpdateFees<'info>>,
     params: ManagerUpdateFeesParams,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = Clock::get()?;
@@ -55,15 +52,12 @@ pub fn manager_update_fees<'info>(
             "Vault has pending fee status but FeeUpdate is not in a pending state"
         )?;
 
-        // #98: installing the update requires the vault to be settled at this instant, so this
-        // path settles the fee through apply_fee rather than writing the new policy directly.
-        // apply_fee is the only installer: it accrues the closing interval at the old policy,
-        // validates the queued policy against live protocol state, then installs.
-        let AccountMaps {
-            perp_market_map,
-            spot_market_map,
-            mut oracle_map,
-        } = ctx.load_maps(
+        // The install needs the vault settled at this instant, so this path calls
+        // apply_fee instead of writing the new policy directly (OtterSec #98).
+        // apply_fee is the only installer. It accrues the closing interval at the
+        // old policy, then validates the queued policy against live protocol
+        // state, then installs.
+        let mut maps = ctx.load_maps(
             clock.slot,
             Some(vault.spot_market_index),
             vp.is_some(),
@@ -73,7 +67,7 @@ pub fn manager_update_fees<'info>(
 
         let vault_equity = {
             let user = ctx.accounts.velocity_user.load()?;
-            vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?
+            vault.calculate_equity(&user, &mut maps)?
         };
 
         vault.apply_fee(
@@ -107,11 +101,12 @@ pub fn manager_update_fees<'info>(
         let new_profit_share = params.new_profit_share.unwrap_or(old_profit_share);
         let new_hurdle_rate = params.new_hurdle_rate.unwrap_or(old_hurdle_rate);
 
-        // #97: enforce the same bounds as vault initialization on the queued values, so the
-        // timelocked update path cannot install a policy no init instruction could create.
-        // The combined protocol-fee/profit-share sums can only be validated where the
-        // VaultProtocol account is loaded (apply_fee, at maturity); here we enforce the
-        // manager-facing bounds and, for protocol vaults, hurdle == 0.
+        // The queued values take the same bounds as vault initialization, so the
+        // timelocked path cannot install a policy that no init instruction could
+        // create (OtterSec #97). The combined protocol fee and protocol profit
+        // share sums need the VaultProtocol account, which apply_fee loads at
+        // maturity. This call checks the manager bounds, and a zero hurdle rate
+        // for a protocol vault.
         validate_fee_policy(
             new_management_fee,
             new_profit_share,
@@ -167,7 +162,7 @@ pub struct ManagerUpdateFees<'info> {
         bump,
     )]
     pub fee_update: AccountLoader<'info, FeeUpdate>,
-    /// Installing a matured update settles the vault's fee first, which needs vault equity.
+    /// A matured update settles the vault fee before it installs, and that needs vault equity.
     #[account(
         constraint = is_user_for_vault(&vault, &velocity_user.key())?
     )]

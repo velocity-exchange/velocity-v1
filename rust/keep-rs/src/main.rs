@@ -1,6 +1,7 @@
 //! Rust Keeper Bot
 use std::sync::Arc;
 
+mod attest;
 mod filler;
 mod http;
 mod liquidator;
@@ -8,6 +9,7 @@ mod quoter;
 mod relayer;
 mod taker;
 mod util;
+mod ws_source;
 
 use {
     crate::{
@@ -37,6 +39,12 @@ pub struct Config {
     /// Use spot liquidation in liquidator
     #[clap(long, env = "USE_SPOT_LIQUIDATION", default_value = "true")]
     pub use_spot_liquidation: bool,
+
+    /// Base URL of the dlob-server. Nothing reads it now, because a liquidation
+    /// cancels the liquidatee's CLOB orders itself. It stays so that existing
+    /// launch commands still parse.
+    #[clap(long, env = "DLOB_SERVER_URL", default_value = "http://localhost:6969")]
+    pub dlob_url: String,
     /// Run perp filler bot
     #[clap(long, default_value = "true")]
     pub filler: bool,
@@ -145,6 +153,16 @@ pub struct Config {
     /// Disable Pyth price feed subscription
     #[clap(long, default_value = "false")]
     pub no_pyth: bool,
+    /// Where the liquidator reads account updates. `websocket` runs against an RPC node with
+    /// no geyser plugin, such as a local validator.
+    #[clap(long, env = "ACCOUNT_SOURCE", value_enum, default_value = "grpc")]
+    pub account_source: AccountSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum AccountSource {
+    Grpc,
+    Websocket,
 }
 
 enum UseMarkets {

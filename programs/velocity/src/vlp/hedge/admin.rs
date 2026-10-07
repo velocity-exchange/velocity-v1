@@ -47,11 +47,10 @@ use {
 /// Pinned to the generated value by `end_lp_swap_discriminator_matches` below.
 const END_LP_SWAP_DISCRIMINATOR: &[u8] = &[99, 125, 214, 165, 129, 175, 253, 135];
 
-/// Defensive ceiling for the constituent oracle-staleness window, in its
-/// historical 400ms storage units. This matches the margin-oracle ceiling:
-/// 1,000,000 units is roughly 4.6 days, already far beyond any operational
-/// setting, while preventing a fat-fingered value from making the AUM oracle
-/// freshness gate effectively unbounded.
+/// Ceiling on the constituent oracle staleness window, in 400ms storage units.
+/// 1,000,000 units is about 4.6 days. No real setting reaches that, so the
+/// limit only stops a mistyped value from leaving the AUM oracle freshness
+/// gate unbounded. The margin oracle window uses the same ceiling.
 const MAX_CONSTITUENT_ORACLE_STALENESS_STORED_UNITS: u64 = 1_000_000;
 
 fn validate_oracle_staleness_threshold(oracle_staleness_threshold: u64) -> Result<()> {
@@ -554,14 +553,13 @@ pub fn handle_update_amm_constituent_mapping_data(
                 && existing_datum.constituent_index == datum.constituent_index
         });
 
-        if existing_datum.is_none() {
-            msg!(
-                "AmmConstituentDatum not found for perp_market_index {} and constituent_index {}",
-                datum.perp_market_index,
-                datum.constituent_index
-            );
-            return Err(ErrorCode::InvalidAmmConstituentMappingArgument.into());
-        }
+        validate!(
+            existing_datum.is_some(),
+            ErrorCode::InvalidAmmConstituentMappingArgument,
+            "AmmConstituentDatum not found for perp_market_index {} and constituent_index {}",
+            datum.perp_market_index,
+            datum.constituent_index
+        )?;
 
         amm_mapping.weights[existing_datum.unwrap()] = AmmConstituentDatum {
             perp_market_index: datum.perp_market_index,
@@ -596,14 +594,13 @@ pub fn handle_remove_amm_constituent_mapping_data(
             && existing_datum.constituent_index == constituent_index
     });
 
-    if position.is_none() {
-        msg!(
-            "Not found for perp_market_index {} and constituent_index {}",
-            perp_market_index,
-            constituent_index
-        );
-        return Err(ErrorCode::InvalidAmmConstituentMappingArgument.into());
-    }
+    validate!(
+        position.is_some(),
+        ErrorCode::InvalidAmmConstituentMappingArgument,
+        "Not found for perp_market_index {} and constituent_index {}",
+        perp_market_index,
+        constituent_index
+    )?;
 
     amm_mapping.weights.remove(position.unwrap());
     amm_mapping.weights.shrink_to_fit();

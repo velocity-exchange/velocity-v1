@@ -4,7 +4,7 @@ import {
 	ExchangeStatus,
 	SpotOperation,
 } from '../../src';
-import { mockStateAccount, mockSpotMarkets } from '../dlob/helpers';
+import { mockStateAccount, mockSpotMarkets } from '../fixtures/mockAccounts';
 import * as _ from 'lodash';
 
 import { assert } from '../../src/assert/assert';

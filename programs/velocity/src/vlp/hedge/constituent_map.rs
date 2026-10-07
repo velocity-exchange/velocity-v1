@@ -138,13 +138,12 @@ impl<'a> ConstituentMap<'a> {
 
             // constituent index 308 bytes from front of account
             let constituent_index = u16::from_le_bytes(*array_ref![data, 308, 2]);
-            if constituent_map.0.contains_key(&constituent_index) {
-                msg!(
-                    "Can not include same constituent index twice {}",
-                    constituent_index
-                );
-                return Err(ErrorCode::InvalidConstituent);
-            }
+            validate!(
+                !(constituent_map.0.contains_key(&constituent_index)),
+                ErrorCode::InvalidConstituent,
+                "Can not include same constituent index twice {}",
+                constituent_index
+            )?;
 
             let account_info = account_info_iter.next().safe_unwrap()?;
 
@@ -227,13 +226,12 @@ impl<'a> ConstituentMap<'a> {
 
             let constituent_index = u16::from_le_bytes(*array_ref![data, 308, 2]);
 
-            if constituent_map.0.contains_key(&constituent_index) {
-                msg!(
-                    "Can not include same constituent index twice {}",
-                    constituent_index
-                );
-                return Err(ErrorCode::InvalidConstituent);
-            }
+            validate!(
+                !(constituent_map.0.contains_key(&constituent_index)),
+                ErrorCode::InvalidConstituent,
+                "Can not include same constituent index twice {}",
+                constituent_index
+            )?;
 
             let is_writable = account_info.is_writable;
             let account_loader: AccountLoader<Constituent> = AccountLoader::try_from(account_info)

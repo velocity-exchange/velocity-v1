@@ -1,19 +1,47 @@
+//! The per-authority record of signed messages, `SignedMsgUserOrders`.
+//!
+//! The record is authority-scoped, so every subaccount shares it. Each entry
+//! is replay protection for one message and the routing state of the order
+//! that message became. An entry refuses its uuid only to the subaccount that
+//! placed it, so one subaccount cannot spend the uuid of another. See
+//! [`SignedMsgOrderId`].
+//!
+//! The header's `version` names the entry layout. Version 1 stores 40-byte
+//! entries. An account created before the version field stores 24-byte
+//! entries with no routing state. It has version 0 and exactly
+//! [`SignedMsgUserOrders::legacy_space`] bytes, and [`is_legacy_layout`] is
+//! the only test for it. An account created at 40 bytes before the version
+//! field has version 0 at another size, so it reads as current. Both sizes
+//! have 28 bytes after the entries that no layout reads.
+//!
+//! A legacy account migrates in place on its first mutable load. The size and
+//! the lamports stay the same, so the account then holds fewer entries: the
+//! capacity becomes the entry bytes over 40. The migration keeps every entry
+//! that is not expired, or fails when they do not fit. Dropping a live entry
+//! could re-admit a message that is still placeable. A resize migrates as well and
+//! restores the capacity the owner asks for.
+//!
+//! The owner pays rent for every entry, and the clients create 32 by default,
+//! about 0.0103 SOL. A market or IOC message holds its entry for the fill
+//! window at the shortest slot duration plus the eviction buffer, about 64 s
+//! at 400 ms slots. So 32 entries allow about one such message per 2 s, and a
+//! faster sender gets `SignedMsgUserOrdersAccountFull` until it grows the
+//! record, to at most [`MAX_SIGNED_MSG_USER_ORDERS`] entries.
+
 use {
     crate::{
         error::{ErrorCode, VelocityResult},
         math::{
             safe_unwrap::SafeUnwrap,
-            time::{Millis, SlotClock},
+            time::{Millis, SlotClock, SLOT_DURATION_TRANSITION_MS},
         },
-        msg,
-        state::traits::Size,
-        validate, ID,
+        msg, validate, ID,
     },
     anchor_lang::{
         account,
         prelude::{
             borsh::{BorshDeserialize, BorshSerialize},
-            Pubkey,
+            Clock, Pubkey, SolanaSysvar,
         },
         zero_copy, *,
     },
@@ -23,38 +51,135 @@ use {
 
 pub const SIGNED_MSG_PDA_SEED: &str = "SIGNED_MSG";
 pub const SIGNED_MSG_WS_PDA_SEED: &str = "SIGNED_MSG_WS";
-/// Grace past `max_slot` before a signed-msg order id is prunable (~4s),
-/// expressed in actual slots at the read site.
+/// Grace past `max_slot` before a signed-message order id can be pruned. The
+/// read site converts it to actual slots.
 pub const SIGNED_MSG_EVICTION_BUFFER: Millis = Millis::from_ms(4_000);
+/// How long a keeper may take to land a signed message. The signer chose the
+/// entry's worst price, or its oracle offset, against the market at signing,
+/// so a message that lands later no longer describes the market it priced.
+pub const SIGNED_MSG_FILL_WINDOW: Millis = Millis::from_ms(30_000);
+
+/// The last slot a keeper may place a signed message at. A resting limit's
+/// message slot is itself the deadline, because the client stamps it ahead by
+/// its signing budget. Any other order gets `SIGNED_MSG_FILL_WINDOW` past it.
+pub fn signed_msg_max_slot(slot_clock: SlotClock, order_slot: u64, is_resting_limit: bool) -> u64 {
+    if is_resting_limit {
+        return order_slot;
+    }
+
+    slot_clock.slot_at_or_after_duration(order_slot, SIGNED_MSG_FILL_WINDOW)
+}
+
+/// `SIGNED_MSG_FILL_WINDOW` in slots of the shortest slot duration. No slot
+/// clock puts a placement deadline further past the message slot than this.
+pub const SIGNED_MSG_FILL_WINDOW_MAX_SLOTS: u64 = SIGNED_MSG_FILL_WINDOW
+    .as_ms()
+    .div_ceil(SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64);
+
+/// The `max_slot` a placed message's entry stores. It is at or after the
+/// [`signed_msg_max_slot`] of every slot clock. A permissionless sync of the
+/// slot duration can move the placement deadline later, and the replay check
+/// must keep the uuid until then.
+pub fn signed_msg_retention_slot(order_slot: u64, is_resting_limit: bool) -> u64 {
+    if is_resting_limit {
+        return order_slot;
+    }
+
+    order_slot.saturating_add(SIGNED_MSG_FILL_WINDOW_MAX_SLOTS)
+}
 
 mod tests;
 
+/// One signed message this user sent, and what is still live from it.
+///
+/// The entry does two jobs. The `uuid` is replay protection, which is what
+/// this account was built for. The rest is the routing state of the order the
+/// message became. A signed-message order routes at placement and rests any
+/// remainder on the market's CLOB. Somebody else builds the later transaction
+/// that fills that remainder. `route_digest` holds that filler to the quoters
+/// the taker chose, so it has to outlive the message.
+///
+/// The field order leaves no padding hole under `#[repr(C)]`. The two `u64`
+/// fields sit on eight-byte boundaries, and the two byte arrays need no
+/// alignment of their own. The stride is 40 bytes.
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug, BorshDeserialize, BorshSerialize)]
 #[repr(C)]
 pub struct SignedMsgOrderId {
     pub uuid: [u8; 8],
+    /// The last slot at which the message can be placed, at any slot
+    /// duration. See [`signed_msg_retention_slot`].
     pub max_slot: u64,
+    /// The CLOB order this message's remainder rests as, or zero when nothing
+    /// of it rests. An entry naming a live order survives the stale sweep,
+    /// because the fill that resolves it still needs the route below.
+    pub clob_order_id: u64,
     pub order_id: u32,
-    pub padding: u32,
+    /// The market whose book `clob_order_id` names. Each book numbers its own
+    /// orders, so the id alone can name an order on another market.
+    pub market_index: u16,
+    /// The subaccount that placed the message. [`ANY_SUB_ACCOUNT`] marks an
+    /// entry migrated from the legacy layout, which did not record it.
+    pub sub_account_id: u16,
+    /// [`crate::state::order_params::route_digest`] of the quoter entries the
+    /// taker's signed route named. Zero when the message named no route.
+    pub route_digest: [u8; crate::state::order_params::ROUTE_DIGEST_LEN],
 }
+
+/// The subaccount of an entry that refuses its uuid to every subaccount.
+pub const ANY_SUB_ACCOUNT: u16 = u16::MAX;
 
 unsafe impl bytemuck::Pod for SignedMsgOrderId {}
 unsafe impl bytemuck::Zeroable for SignedMsgOrderId {}
+
+// The stride of the entry array, and therefore of every account this type is
+// stored in. `SignedMsgUserOrders::space` derives the account size from it, so
+// a change here changes what a client must allocate.
+static_assertions::const_assert_eq!(std::mem::size_of::<SignedMsgOrderId>(), 40);
 
 impl SignedMsgOrderId {
     pub fn new(uuid: [u8; 8], max_slot: u64, order_id: u32) -> Self {
         Self {
             uuid,
             max_slot,
+            clob_order_id: 0,
             order_id,
-            padding: 0,
+            market_index: 0,
+            sub_account_id: 0,
+            route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
         }
     }
-}
 
-impl Size for SignedMsgUserOrders {
-    const SIZE: usize = 816;
+    /// Whether this entry still describes an order resting on a book.
+    pub fn rests_on_clob(&self) -> bool {
+        self.clob_order_id != 0
+    }
+
+    /// Whether dropping this entry can re-admit its message.
+    /// [`EVICTION_BUFFER_MAX_SLOTS`] holds at every slot duration, so no slot
+    /// clock is needed.
+    ///
+    /// A resting entry past the buffer is not live. Its order can leave the
+    /// book by a path that does not carry this record, so such a hold could
+    /// last forever. Dropping the entry costs the order its route, as the
+    /// reclaim in `add_signed_msg_order_id` does.
+    pub fn is_live(&self, current_slot: u64) -> bool {
+        self.max_slot != 0
+            && current_slot.saturating_sub(self.max_slot) <= EVICTION_BUFFER_MAX_SLOTS
+    }
+
+    /// Whether this entry refuses `message` as a replay.
+    fn claims_uuid_of(&self, message: &SignedMsgOrderId) -> bool {
+        self.uuid == message.uuid
+            && (self.sub_account_id == message.sub_account_id
+                || self.sub_account_id == ANY_SUB_ACCOUNT)
+    }
+
+    fn rests_as(&self, market_index: u16, clob_order_id: u64) -> bool {
+        clob_order_id != 0
+            && self.clob_order_id == clob_order_id
+            && self.market_index == market_index
+    }
 }
 
 /**
@@ -66,27 +191,47 @@ impl Size for SignedMsgUserOrders {
 #[derive(Default, Eq, PartialEq, Debug)]
 pub struct SignedMsgUserOrders {
     pub authority_pubkey: Pubkey,
-    pub padding: u32,
+    /// The entry layout. Version 1 stores 40-byte entries. Version 0 at the
+    /// `legacy_space` size stores 24-byte entries.
+    pub version: u32,
     pub signed_msg_order_data: Vec<SignedMsgOrderId>,
 }
 
+/// The entry layout of an account that this program writes.
+pub const SIGNED_MSG_USER_ORDERS_VERSION: u32 = 1;
+
+pub const MAX_SIGNED_MSG_USER_ORDERS: usize = 128;
+
+/// The discriminator and [`SignedMsgUserOrdersFixed`]. The entries start here.
+const HEADER_LEN: usize = 8 + std::mem::size_of::<SignedMsgUserOrdersFixed>();
+
+const ENTRY_LEN: usize = std::mem::size_of::<SignedMsgOrderId>();
+
 impl SignedMsgUserOrders {
-    /// 8 orders - 268 bytes - 0.00275616 SOL for rent
-    /// 16 orders - 460 bytes - 0.00409248 SOL for rent
-    /// 32 orders - 844 bytes - 0.00676512 SOL for rent
-    /// 64 orders - 1612 bytes - 0.012110400 SOL for rent
+    /// 8 orders - 396 bytes - 0.00364704 SOL for rent
+    /// 16 orders - 716 bytes - 0.00587424 SOL for rent
+    /// 32 orders - 1356 bytes - 0.01032864 SOL for rent
+    /// 64 orders - 2636 bytes - 0.01923744 SOL for rent
     pub fn space(num_orders: usize) -> usize {
-        8 + 32 + 4 + 32 + num_orders * 24
+        8 + 32 + 4 + 32 + num_orders * ENTRY_LEN
+    }
+
+    /// The size of a legacy account with `num_orders` entries.
+    pub fn legacy_space(num_orders: usize) -> usize {
+        8 + 32 + 4 + 32 + num_orders * LEGACY_ENTRY_LEN
     }
 
     pub fn validate(&self) -> VelocityResult<()> {
-        validate!(
-            !self.signed_msg_order_data.is_empty() && self.signed_msg_order_data.len() <= 128,
-            ErrorCode::DefaultError,
-            "SignedMsgUserOrders len must be between 1 and 128"
-        )?;
-        Ok(())
+        validate_len(self.signed_msg_order_data.len())
     }
+}
+
+fn validate_len(len: usize) -> VelocityResult {
+    validate!(
+        (1..=MAX_SIGNED_MSG_USER_ORDERS).contains(&len),
+        ErrorCode::DefaultError,
+        "SignedMsgUserOrders len must be between 1 and 128"
+    )
 }
 
 #[zero_copy(unsafe)]
@@ -94,12 +239,157 @@ impl SignedMsgUserOrders {
 #[repr(C)]
 pub struct SignedMsgUserOrdersFixed {
     pub user_pubkey: Pubkey,
-    pub padding: u32,
+    pub version: u32,
     pub len: u32,
 }
 
 unsafe impl bytemuck::Pod for SignedMsgUserOrdersFixed {}
 unsafe impl bytemuck::Zeroable for SignedMsgUserOrdersFixed {}
+
+/// The entry of an account created before layout version 1.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct LegacySignedMsgOrderId {
+    uuid: [u8; 8],
+    max_slot: u64,
+    order_id: u32,
+    padding: u32,
+}
+
+unsafe impl bytemuck::Pod for LegacySignedMsgOrderId {}
+unsafe impl bytemuck::Zeroable for LegacySignedMsgOrderId {}
+
+const LEGACY_ENTRY_LEN: usize = std::mem::size_of::<LegacySignedMsgOrderId>();
+
+static_assertions::const_assert_eq!(LEGACY_ENTRY_LEN, 24);
+
+/// Slots past `max_slot` after which an entry is expired at any slot
+/// duration. The shortest slot sets the bound, because a longer slot only
+/// makes the elapsed time greater.
+const EVICTION_BUFFER_MAX_SLOTS: u64 = SIGNED_MSG_EVICTION_BUFFER.as_ms()
+    / SLOT_DURATION_TRANSITION_MS[SLOT_DURATION_TRANSITION_MS.len() - 1] as u64;
+
+impl LegacySignedMsgOrderId {
+    /// A legacy auction order had its deadline at the end of its auction. This
+    /// program places the same message until `SIGNED_MSG_FILL_WINDOW` past its
+    /// slot, so the migrated deadline moves out by that window.
+    fn migrated(self) -> SignedMsgOrderId {
+        let max_slot = self
+            .max_slot
+            .saturating_add(SIGNED_MSG_FILL_WINDOW_MAX_SLOTS);
+
+        SignedMsgOrderId {
+            sub_account_id: ANY_SUB_ACCOUNT,
+            ..SignedMsgOrderId::new(self.uuid, max_slot, self.order_id)
+        }
+    }
+}
+
+/// Whether an account of `data_len` bytes stores legacy 24-byte entries. A
+/// migrated account can keep the legacy size, so version 1 is always current.
+pub fn is_legacy_layout(fixed: &SignedMsgUserOrdersFixed, data_len: usize) -> bool {
+    fixed.version == 0 && data_len == SignedMsgUserOrders::legacy_space(fixed.len as usize)
+}
+
+/// The entries of a legacy account that are not empty, newest first.
+///
+/// An entry past its migrated `max_slot` by more than [`EVICTION_BUFFER_MAX_SLOTS`]
+/// at `current_slot` is dropped. The replay check would clear it on the next
+/// placement, and a legacy account clears expired entries only then, so a busy
+/// account can hold stale entries that do not fit the new stride. Without a
+/// current slot every entry that is not empty is kept.
+fn legacy_live_entries(
+    entries: &[u8],
+    legacy_len: u32,
+    current_slot: Option<u64>,
+) -> Vec<SignedMsgOrderId> {
+    let mut live: Vec<SignedMsgOrderId> = entries[..legacy_len as usize * LEGACY_ENTRY_LEN]
+        .chunks_exact(LEGACY_ENTRY_LEN)
+        .map(bytemuck::pod_read_unaligned::<LegacySignedMsgOrderId>)
+        .filter(|entry| entry.max_slot != 0)
+        .map(LegacySignedMsgOrderId::migrated)
+        .filter(|entry| {
+            current_slot
+                .is_none_or(|slot| slot.saturating_sub(entry.max_slot) <= EVICTION_BUFFER_MAX_SLOTS)
+        })
+        .collect();
+    live.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.max_slot));
+
+    live
+}
+
+/// Write `entries` at the current stride and zero every byte after them.
+fn write_entries(data: &mut [u8], entries: &[SignedMsgOrderId]) {
+    data.fill(0);
+    data.chunks_exact_mut(ENTRY_LEN)
+        .zip(entries)
+        .for_each(|(slot, entry)| slot.copy_from_slice(bytemuck::bytes_of(entry)));
+}
+
+/// Rewrite a legacy account at the current stride, with no change of size.
+///
+/// Every entry that is not expired must fit, because a dropped entry can hold
+/// the uuid of a message that is still placeable. When they do not fit, the
+/// load fails and placement fails with it until the entries expire or the
+/// owner resizes.
+fn migrate_legacy_in_place(
+    fixed: &mut SignedMsgUserOrdersFixed,
+    data: &mut [u8],
+    current_slot: Option<u64>,
+) -> VelocityResult {
+    let live = legacy_live_entries(data, fixed.len, current_slot);
+    let capacity = data.len() / ENTRY_LEN;
+    validate!(
+        live.len() <= capacity,
+        ErrorCode::SignedMsgUserOrdersAccountFull,
+        "legacy signed msg user orders hold {} entries but migrate to {} slots; resize the account",
+        live.len(),
+        capacity
+    )?;
+
+    write_entries(data, &live);
+    msg!(
+        "signed msg user orders migrated to version {}: {} of {} entries kept, {} slots",
+        SIGNED_MSG_USER_ORDERS_VERSION,
+        live.len(),
+        fixed.len,
+        capacity
+    );
+
+    fixed.len = capacity as u32;
+    fixed.version = SIGNED_MSG_USER_ORDERS_VERSION;
+
+    Ok(())
+}
+
+/// The bytes that `len` current entries take. A header that names more
+/// entries than `available` bytes hold is an error, not a read past the data.
+fn current_entries_len(
+    fixed: &SignedMsgUserOrdersFixed,
+    available: usize,
+) -> VelocityResult<usize> {
+    let entries_len = fixed.len as usize * ENTRY_LEN;
+    validate!(
+        entries_len <= available,
+        ErrorCode::DefaultError,
+        "signed msg user orders len {} exceeds the account data",
+        fixed.len
+    )?;
+
+    Ok(entries_len)
+}
+
+fn entry_at(data: &[u8], index: u32) -> &SignedMsgOrderId {
+    let size = std::mem::size_of::<SignedMsgOrderId>();
+    let start = index as usize * size;
+    bytemuck::from_bytes(&data[start..start + size])
+}
+
+fn entry_at_mut(data: &mut [u8], index: u32) -> &mut SignedMsgOrderId {
+    let size = std::mem::size_of::<SignedMsgOrderId>();
+    let start = index as usize * size;
+    bytemuck::from_bytes_mut(&mut data[start..start + size])
+}
 
 pub struct SignedMsgUserOrdersZeroCopy<'a> {
     pub fixed: Ref<'a, SignedMsgUserOrdersFixed>,
@@ -107,8 +397,10 @@ pub struct SignedMsgUserOrdersZeroCopy<'a> {
 }
 
 impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
+    /// The entries this view holds. The view of a legacy account holds none,
+    /// whatever its header says.
     pub fn len(&self) -> u32 {
-        self.fixed.len
+        (self.data.len() / ENTRY_LEN) as u32
     }
 
     pub fn is_empty(&self) -> bool {
@@ -116,13 +408,24 @@ impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
     }
 
     pub fn get(&self, index: u32) -> &SignedMsgOrderId {
-        let size = std::mem::size_of::<SignedMsgOrderId>();
-        let start = index as usize * size;
-        bytemuck::from_bytes(&self.data[start..start + size])
+        entry_at(&self.data, index)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &SignedMsgOrderId> + '_ {
         (0..self.len()).map(move |i| self.get(i))
+    }
+
+    /// The route the signer chose for the order resting as `clob_order_id` on
+    /// the book of `market_index`. `None` means the order carries no signed
+    /// route: it was placed directly, or its entry was reclaimed.
+    pub fn route_for_clob_order(
+        &self,
+        market_index: u16,
+        clob_order_id: u64,
+    ) -> Option<crate::state::order_params::RouteDigest> {
+        self.iter()
+            .find(|entry| entry.rests_as(market_index, clob_order_id))
+            .map(|entry| entry.route_digest)
     }
 }
 
@@ -140,12 +443,24 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
         self.len() == 0
     }
 
-    pub fn get_mut(&mut self, index: u32) -> &mut SignedMsgOrderId {
-        let size = std::mem::size_of::<SignedMsgOrderId>();
-        let start = index as usize * size;
-        bytemuck::from_bytes_mut(&mut self.data[start..start + size])
+    pub fn get(&self, index: u32) -> &SignedMsgOrderId {
+        entry_at(&self.data, index)
     }
 
+    pub fn get_mut(&mut self, index: u32) -> &mut SignedMsgOrderId {
+        entry_at_mut(&mut self.data, index)
+    }
+
+    /// Replay check and stale sweep in one pass.
+    ///
+    /// An entry that names a live CLOB order is kept even once its `max_slot`
+    /// is old. The remainder still rests, and the fill that resolves it reads
+    /// the route from here. Only the pressure `add_signed_msg_order_id`
+    /// describes reclaims such an entry, and only once it is past the buffer.
+    ///
+    /// This is the replay guard. It matches on the uuid and the subaccount, so
+    /// an entry must outlive every slot at which its own message can still be
+    /// placed.
     pub fn check_exists_and_prune_stale_signed_msg_order_ids(
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
@@ -157,21 +472,37 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
             let existing_signed_msg_order_id = self.get_mut(i);
             let expired = slot_clock.elapsed(existing_signed_msg_order_id.max_slot, current_slot)
                 > SIGNED_MSG_EVICTION_BUFFER;
-            if existing_signed_msg_order_id.uuid == signed_msg_order_id.uuid && !expired {
+            if existing_signed_msg_order_id.claims_uuid_of(&signed_msg_order_id) && !expired {
                 uuid_exists = true;
-            } else if expired {
-                existing_signed_msg_order_id.uuid = [0; 8];
-                existing_signed_msg_order_id.max_slot = 0;
-                existing_signed_msg_order_id.order_id = 0;
+            } else if expired && !existing_signed_msg_order_id.rests_on_clob() {
+                *existing_signed_msg_order_id = SignedMsgOrderId::default();
             }
         }
         uuid_exists
     }
 
+    /// Take the free slot, or reclaim an expired retained one.
+    ///
+    /// A signed limit order carries no expiry, so without a second pass the
+    /// retained entries fill the account and the user can no longer trade. A
+    /// full account therefore reclaims the entry whose `max_slot` is oldest,
+    /// among the entries already past the eviction buffer.
+    ///
+    /// An entry carries the uuid `check_exists_and_prune_stale_signed_msg_order_ids` matches
+    /// on, so reclaiming a live entry would re-admit its message and fill the same signed order
+    /// a second time. An entry past `max_slot` plus the buffer cannot be re-admitted anyway,
+    /// because placement refuses a message whose deadline is behind the current slot.
+    /// Releasing such an entry costs its resting order the route, and the fill then treats the
+    /// order as unrouted. The taker's own limit price still bounds that fill.
+    ///
+    /// Returns the index of the entry written. A retained entry can hold the
+    /// same uuid, so a later write must use this index and not the uuid.
     pub fn add_signed_msg_order_id(
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
-    ) -> VelocityResult {
+        current_slot: u64,
+        slot_clock: SlotClock,
+    ) -> VelocityResult<u32> {
         if signed_msg_order_id.max_slot == 0
             || signed_msg_order_id.order_id == 0
             || signed_msg_order_id.uuid == [0; 8]
@@ -179,80 +510,313 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
             return Err(ErrorCode::InvalidSignedMsgOrderId);
         }
 
-        for i in 0..self.len() {
-            if self.get_mut(i).max_slot == 0 {
-                *self.get_mut(i) = signed_msg_order_id;
-                return Ok(());
-            }
+        if let Some(free) = (0..self.len()).find(|&i| self.get(i).max_slot == 0) {
+            *self.get_mut(free) = signed_msg_order_id;
+            return Ok(free);
         }
 
-        Err(ErrorCode::SignedMsgUserOrdersAccountFull)
+        let stalest = (0..self.len())
+            .filter(|i| {
+                let entry = self.get(*i);
+                entry.rests_on_clob()
+                    && slot_clock.elapsed(entry.max_slot, current_slot) > SIGNED_MSG_EVICTION_BUFFER
+            })
+            .min_by_key(|i| self.get(*i).max_slot);
+        match stalest {
+            Some(index) => {
+                msg!(
+                    "signed msg order account full; reclaiming slot {} from clob order {}",
+                    index,
+                    self.get(index).clob_order_id
+                );
+
+                *self.get_mut(index) = signed_msg_order_id;
+                Ok(index)
+            }
+            None => Err(ErrorCode::SignedMsgUserOrdersAccountFull),
+        }
+    }
+
+    /// Record that the message at `index` now rests on the book, with the
+    /// route the fill that resolves it must carry. `index` is the one
+    /// `add_signed_msg_order_id` returned for the message.
+    pub fn set_resting_route(
+        &mut self,
+        index: u32,
+        market_index: u16,
+        clob_order_id: u64,
+        route_digest: crate::state::order_params::RouteDigest,
+    ) {
+        let entry = self.get_mut(index);
+        entry.market_index = market_index;
+        entry.clob_order_id = clob_order_id;
+        entry.route_digest = route_digest;
+    }
+
+    /// Point the entry of a replaced order at its replacement, so the route
+    /// follows the order through a modify. The book gives the replacement a
+    /// new id.
+    pub fn move_resting_route(
+        &mut self,
+        market_index: u16,
+        clob_order_id: u64,
+        new_clob_order_id: u64,
+    ) {
+        if let Some(entry) =
+            self.find_entry_mut(|entry| entry.rests_as(market_index, clob_order_id))
+        {
+            entry.clob_order_id = new_clob_order_id;
+        }
+    }
+
+    fn find_entry_mut(
+        &mut self,
+        matches: impl Fn(&SignedMsgOrderId) -> bool,
+    ) -> Option<&mut SignedMsgOrderId> {
+        let index = (0..self.len()).find(|&i| matches(self.get(i)))?;
+
+        Some(self.get_mut(index))
+    }
+
+    /// Release the entry's hold once its order leaves the book, so the stale
+    /// sweep can reclaim the slot the ordinary way. Reclaim safety in
+    /// `add_signed_msg_order_id` rests on the eviction buffer, not on this.
+    pub fn clear_resting_route(&mut self, market_index: u16, clob_order_id: u64) {
+        if let Some(entry) =
+            self.find_entry_mut(|entry| entry.rests_as(market_index, clob_order_id))
+        {
+            entry.clob_order_id = 0;
+            entry.route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
+        }
     }
 }
 
 pub trait SignedMsgUserOrdersLoader<'a> {
+    /// A legacy account loads with no entries, because it holds no route.
     fn load(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopy<'_>>;
+    /// A legacy account migrates first. See `migrate_legacy_in_place`.
     fn load_mut(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopyMut<'_>>;
+}
+
+fn validate_record_owner_and_len(account: &AccountInfo) -> VelocityResult {
+    validate!(
+        account.owner == &ID,
+        ErrorCode::DefaultError,
+        "invalid signed_msg user orders owner",
+    )?;
+
+    validate!(
+        account.data_len() >= HEADER_LEN,
+        ErrorCode::DefaultError,
+        "signed_msg user orders account too small",
+    )
+}
+
+fn validate_discriminator(discriminator: &[u8]) -> VelocityResult {
+    validate!(
+        discriminator == SignedMsgUserOrders::DISCRIMINATOR,
+        ErrorCode::DefaultError,
+        "invalid signed_msg user orders discriminator",
+    )
+}
+
+/// The header and every byte after it, in either layout.
+fn load_untrimmed<'b>(account: &'b AccountInfo) -> VelocityResult<SignedMsgUserOrdersZeroCopy<'b>> {
+    validate_record_owner_and_len(account)?;
+
+    let data = account.try_borrow_data().safe_unwrap()?;
+    let (discriminator, data) = Ref::map_split(data, |d| d.split_at(8));
+    validate_discriminator(&discriminator)?;
+
+    let (fixed, data) = Ref::map_split(data, |d| d.split_at(40));
+    Ok(SignedMsgUserOrdersZeroCopy {
+        fixed: Ref::map(fixed, |b| bytemuck::from_bytes(b)),
+        data,
+    })
+}
+
+fn load_mut_untrimmed<'b>(
+    account: &'b AccountInfo,
+) -> VelocityResult<SignedMsgUserOrdersZeroCopyMut<'b>> {
+    validate_record_owner_and_len(account)?;
+
+    let data = account.try_borrow_mut_data().safe_unwrap()?;
+    let (discriminator, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
+    validate_discriminator(&discriminator)?;
+
+    let (fixed, data) = RefMut::map_split(data, |d| d.split_at_mut(40));
+    Ok(SignedMsgUserOrdersZeroCopyMut {
+        fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
+        data,
+    })
+}
+
+/// Check that `account` is a record in either layout.
+pub fn validate_signed_msg_user_orders_account(account: &AccountInfo) -> VelocityResult {
+    load_untrimmed(account).map(drop)
 }
 
 impl<'a> SignedMsgUserOrdersLoader<'a> for AccountInfo<'a> {
     fn load(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopy<'_>> {
-        let owner = self.owner;
+        let record = load_untrimmed(self)?;
+        let entries_len = if is_legacy_layout(&record.fixed, HEADER_LEN + record.data.len()) {
+            0
+        } else {
+            current_entries_len(&record.fixed, record.data.len())?
+        };
 
-        validate!(
-            owner == &ID,
-            ErrorCode::DefaultError,
-            "invalid signed_msg user orders owner",
-        )?;
-
-        let data = self.try_borrow_data().safe_unwrap()?;
-
-        let (discriminator, data) = Ref::map_split(data, |d| d.split_at(8));
-        validate!(
-            discriminator.as_ref() == SignedMsgUserOrders::DISCRIMINATOR,
-            ErrorCode::DefaultError,
-            "invalid signed_msg user orders discriminator",
-        )?;
-
-        let (fixed, data) = Ref::map_split(data, |d| d.split_at(40));
         Ok(SignedMsgUserOrdersZeroCopy {
-            fixed: Ref::map(fixed, |b| bytemuck::from_bytes(b)),
-            data,
+            fixed: record.fixed,
+            data: Ref::map(record.data, |d| &d[..entries_len]),
         })
     }
 
     fn load_mut(&self) -> VelocityResult<SignedMsgUserOrdersZeroCopyMut<'_>> {
-        let owner = self.owner;
+        let mut record = load_mut_untrimmed(self)?;
+        if is_legacy_layout(&record.fixed, HEADER_LEN + record.data.len()) {
+            migrate_legacy_in_place(&mut record.fixed, &mut record.data, current_slot())?;
+        }
 
-        validate!(
-            owner == &ID,
-            ErrorCode::DefaultError,
-            "invalid signed_msg user orders owner",
-        )?;
-
-        let data = self.try_borrow_mut_data().safe_unwrap()?;
-
-        let (discriminator, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
-        validate!(
-            discriminator.as_ref() == SignedMsgUserOrders::DISCRIMINATOR,
-            ErrorCode::DefaultError,
-            "invalid signed_msg user orders discriminator",
-        )?;
-
-        let (fixed, data) = RefMut::map_split(data, |d| d.split_at_mut(40));
+        let entries_len = current_entries_len(&record.fixed, record.data.len())?;
         Ok(SignedMsgUserOrdersZeroCopyMut {
-            fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
-            data,
+            fixed: record.fixed,
+            data: RefMut::map(record.data, |d| &mut d[..entries_len]),
         })
     }
 }
 
-pub fn derive_signed_msg_user_pda(user_account_pubkey: &Pubkey) -> VelocityResult<Pubkey> {
-    let (signed_msg_pubkey, _) = Pubkey::find_program_address(
-        &[SIGNED_MSG_PDA_SEED.as_bytes(), user_account_pubkey.as_ref()],
-        &ID,
-    );
-    Ok(signed_msg_pubkey)
+/// The cluster slot, or `None` where the clock sysvar cannot be read.
+fn current_slot() -> Option<u64> {
+    Clock::get().ok().map(|clock| clock.slot)
+}
+
+/// Every entry of a record, read out so a resize can write the account again
+/// at a new size. A legacy record reads as its entries that are not empty,
+/// newest first, so a shrink drops its oldest entries.
+pub struct SignedMsgUserOrdersSnapshot {
+    pub user_pubkey: Pubkey,
+    /// In a legacy record this can exceed `entries.len()`.
+    pub header_len: u32,
+    pub entries: Vec<SignedMsgOrderId>,
+}
+
+impl SignedMsgUserOrdersSnapshot {
+    pub fn read(account: &AccountInfo) -> VelocityResult<Self> {
+        let record = load_untrimmed(account)?;
+        let entries = if is_legacy_layout(&record.fixed, HEADER_LEN + record.data.len()) {
+            legacy_live_entries(&record.data, record.fixed.len, current_slot())
+        } else {
+            let entries_len = current_entries_len(&record.fixed, record.data.len())?;
+            record.data[..entries_len]
+                .chunks_exact(ENTRY_LEN)
+                .map(bytemuck::pod_read_unaligned)
+                .collect()
+        };
+
+        Ok(Self {
+            user_pubkey: record.fixed.user_pubkey,
+            header_len: record.fixed.len,
+            entries,
+        })
+    }
+
+    /// The entries that a delete or a shrink must not drop. See
+    /// [`SignedMsgOrderId::is_live`].
+    pub fn live_entries(&self, current_slot: u64) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_live(current_slot))
+            .count()
+    }
+
+    /// Keep the first `num_orders` entries, and add empty ones to reach it. A
+    /// shrink first moves the live entries to the front, and it refuses to
+    /// drop a live entry.
+    pub fn resize(&mut self, num_orders: usize, current_slot: u64) -> VelocityResult {
+        validate_len(num_orders)?;
+        if num_orders < self.entries.len() {
+            let live = self.live_entries(current_slot);
+            validate!(
+                live <= num_orders,
+                ErrorCode::InvalidSignedMsgUserOrdersResize,
+                "signed msg user orders hold {} live entries; cannot shrink to {}",
+                live,
+                num_orders
+            )?;
+
+            self.entries
+                .sort_by_key(|entry| !entry.is_live(current_slot));
+        }
+
+        self.entries
+            .resize_with(num_orders, SignedMsgOrderId::default);
+
+        Ok(())
+    }
+
+    /// Write the record at the current layout. The account must already have
+    /// `SignedMsgUserOrders::space` bytes for the entries.
+    pub fn write(&self, account: &AccountInfo) -> VelocityResult {
+        let mut record = load_mut_untrimmed(account)?;
+        validate!(
+            HEADER_LEN + record.data.len() == SignedMsgUserOrders::space(self.entries.len()),
+            ErrorCode::DefaultError,
+            "signed msg user orders account size does not match {} entries",
+            self.entries.len()
+        )?;
+
+        *record.fixed = SignedMsgUserOrdersFixed {
+            user_pubkey: self.user_pubkey,
+            version: SIGNED_MSG_USER_ORDERS_VERSION,
+            len: self.entries.len() as u32,
+        };
+
+        write_entries(&mut record.data, &self.entries);
+
+        Ok(())
+    }
+}
+
+/// The record of `authority`, when a removal path carries it as an optional
+/// account. Any other account reads as absent, so a crank cannot fail on the
+/// record of the user whose order it removes. A read-only record reads as
+/// absent too, because a write to it fails the transaction.
+pub fn carried_signed_msg_record<'a>(
+    account: Option<&'a AccountInfo<'_>>,
+    authority: &Pubkey,
+) -> Option<SignedMsgUserOrdersZeroCopyMut<'a>> {
+    let account = account.filter(|account| {
+        account.owner == &ID
+            && account.is_writable
+            && account
+                .try_borrow_data()
+                .is_ok_and(|data| data.starts_with(SignedMsgUserOrders::DISCRIMINATOR))
+    })?;
+    let record = account.load_mut().ok()?;
+
+    (record.fixed.user_pubkey == *authority).then_some(record)
+}
+
+/// Release the entries of the taker-origin remainders a removal took off the
+/// book of `market_index`. The removals belong to one user, and `account` may
+/// be that user's record.
+pub fn release_removed_remainders(
+    account: Option<&AccountInfo<'_>>,
+    market_index: u16,
+    removed: &[crate::state::prop_amm::RemovedOrderV0],
+) {
+    let mut remainders = removed.iter().filter(|order| order.taker_origin).peekable();
+    let Some(owner) = remainders.peek().map(|order| order.user.authority) else {
+        return;
+    };
+
+    let Some(mut record) = carried_signed_msg_record(account, &owner) else {
+        return;
+    };
+
+    remainders.for_each(|order| {
+        record.clear_resting_route(market_index, order.order_id);
+    });
 }
 
 /**

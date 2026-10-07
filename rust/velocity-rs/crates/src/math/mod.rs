@@ -18,12 +18,10 @@ use crate::{
 
 pub mod account_list_builder;
 pub mod amm_quote;
-pub mod auction;
 pub mod constants;
 pub mod equity_floor;
 pub mod leverage;
 pub mod liquidation;
-pub mod order;
 pub mod tiers;
 
 #[derive(Clone, Copy, Debug)]
@@ -192,11 +190,11 @@ pub fn get_liquidation_fee(
     if current_slot < last_active_user_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    // grace period and per-period rate are in 400ms baseline units; count whole
-    // 400ms periods of elapsed wall clock, integrated per slot duration regime
-    // (mirrors the program's get_liquidation_fee). Takes the full `SlotClock`
-    // so an interval spanning an IBRL transition is priced exactly; resolve it
-    // with `slot_clock_from_state`.
+
+    // The grace period and rate are 400ms-baseline units. `SlotClock` counts
+    // whole periods of elapsed wall clock across an IBRL transition, like the
+    // program's `get_liquidation_fee`. `slot_clock_from_state` builds one
+    // from `State`.
     let periods_elapsed = slot_clock
         .elapsed(last_active_user_slot, current_slot)
         .div_periods(Millis::UNIT);

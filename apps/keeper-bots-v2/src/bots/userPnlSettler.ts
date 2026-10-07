@@ -17,7 +17,6 @@ import {
 	QUOTE_SPOT_MARKET_INDEX,
 	isOperationPaused,
 	PerpOperation,
-	VelocityMarketInfo,
 	User,
 	PerpPosition,
 	MarketStatus,
@@ -180,14 +179,6 @@ export class UserPnlSettlerBot implements Bot {
 
 	public async init() {
 		logger.info(`${this.name} initing`);
-
-		const velocityMarkets: VelocityMarketInfo[] = [];
-		for (const perpMarket of this.velocityClient.getPerpMarketAccounts()) {
-			velocityMarkets.push({
-				marketType: 'perp',
-				marketIndex: perpMarket.marketIndex,
-			});
-		}
 
 		await this.priorityFeeSubscriber!.subscribe();
 		await this.velocityClient.subscribe();
@@ -1132,10 +1123,11 @@ export class UserPnlSettlerBot implements Bot {
 	}
 
 	/**
-	 * Reads what a market's pnl pool can pay out right now, mirroring settle_pnl: `pool`
-	 * is the pool's token balance, `excess` is what is left of it once the pnl users are
-	 * collectively owed (`netUserPnl`) is reserved. Settling someone else's positive pnl
-	 * against a non-positive `excess` fails the ix with PnlPoolCantSettleUser.
+	 * Reads what a market's pnl pool can pay out right now, the way settle_pnl does.
+	 * `pool` is the pool's token balance. `excess` is what is left of that balance once
+	 * `netUserPnl`, which is what the pnl users are collectively owed, is reserved.
+	 * Settling someone else's positive pnl against a `excess` of zero or less fails the
+	 * instruction with PnlPoolCantSettleUser.
 	 */
 	private pnlPoolCapacity(
 		perpMarket: PerpMarketAccount,
@@ -1283,11 +1275,12 @@ export class UserPnlSettlerBot implements Bot {
 					oraclePriceData
 				);
 
-				// Positive pnl is paid out of the market's pnl pool, and a keeper is never
-				// the user's authority or delegate, so it may only be taken while the pool
-				// holds more than the pnl users are collectively owed. Queueing past that
-				// fails the ix with PnlPoolCantSettleUser, and since this pass runs hourly
-				// off the same account state it retries the same users every hour.
+				// Positive pnl is paid out of the market's pnl pool, and a keeper is
+				// never the user's authority or delegate, so a keeper may take it
+				// only while the pool holds more than the pnl users are collectively
+				// owed. Queueing past that fails the instruction with
+				// PnlPoolCantSettleUser. This pass runs hourly off the same account
+				// state, so it would retry the same users every hour.
 				if (claimablePnl.gt(ZERO)) {
 					const { pool, excess } = this.pnlPoolCapacity(
 						perpMarket,

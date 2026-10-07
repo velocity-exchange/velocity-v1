@@ -1,6 +1,6 @@
 import { Commitment, PublicKey, TransactionSignature } from '@solana/web3.js';
 import {
-	AcceleratedReferralStatusChangedRecord,
+	AcceleratedReferralStatusChangedRecordV0,
 	DepositRecord,
 	FundingPaymentRecord,
 	FundingRateRecord,
@@ -23,7 +23,10 @@ import {
 	LPBorrowLendDepositRecord,
 	PerpMarketFeeSweepRecord,
 	ProtocolFeeWithdrawRecord,
+	ProtocolUserWithdrawRecordV0,
 	RevenueShareSettleRecord,
+	TakerOriginCrossRecordV0,
+	TakerOriginCrossRecordV1,
 	TransferFeeAndPnlPoolRecord,
 } from '../types';
 import { EventEmitter } from 'events';
@@ -83,9 +86,12 @@ export const DefaultEventSubscriptionOptions: EventSubscriptionOptions = {
 		'LPBorrowLendDepositRecord',
 		'PerpMarketFeeSweepRecord',
 		'ProtocolFeeWithdrawRecord',
+		'ProtocolUserWithdrawRecordV0',
 		'RevenueShareSettleRecord',
+		'TakerOriginCrossRecordV0',
+		'TakerOriginCrossRecordV1',
 		'TransferFeeAndPnlPoolRecord',
-		'AcceleratedReferralStatusChangedRecord',
+		'AcceleratedReferralStatusChangedRecordV0',
 	],
 	maxEventsPerType: 4096,
 	orderBy: 'blockchain',
@@ -132,17 +138,12 @@ export type WrappedEvents = WrappedEvent<EventType>[];
 /**
  * Maps each on-chain event name (as declared in `state/events.rs` and emitted
  * via Anchor's `emit!`) to its decoded, transaction-augmented shape. See
- * `../types.ts` for each record's field-level precisions. Five entries were
- * newly wired in this parity pass: `LPBorrowLendDepositRecord` (LP pool
- * borrow/lend deposit or withdraw against a constituent, token-amount
- * precision per the constituent's spot market), `PerpMarketFeeSweepRecord`
- * (streaming fee-sweep drains from a perp market's pnl pool — insurance,
- * protocol, and AMM-provision cuts — quote-token amounts, `QUOTE_PRECISION`),
- * `ProtocolFeeWithdrawRecord` (admin withdrawal from a perp or spot market's
- * protocol fee pool, token-amount precision of the source spot market),
- * `RevenueShareSettleRecord` (builder/referrer revenue-share settlement, fee
- * amounts in `QUOTE_PRECISION`), and `TransferFeeAndPnlPoolRecord` (internal
- * transfer between a market's fee pool and pnl pool, `QUOTE_PRECISION`).
+ * `../types.ts` for each record's field-level precisions.
+ *
+ * Each key is the on-chain struct name exactly, because an `#[event]`
+ * discriminator is derived from that name. A velocity event carries a version
+ * suffix such as `RecordV0`. A field addition ships as a new `RecordV1` key
+ * rather than change the shape decoded under an existing key.
  */
 export type EventMap = {
 	DepositRecord: Event<DepositRecord>;
@@ -170,12 +171,17 @@ export type EventMap = {
 	PerpMarketFeeSweepRecord: Event<PerpMarketFeeSweepRecord>;
 	/** Admin withdrawal from a perp or spot market's protocol fee pool to a recipient token account. */
 	ProtocolFeeWithdrawRecord: Event<ProtocolFeeWithdrawRecord>;
+	/** Hot fee-withdraw role draining the protocol-owned `User`'s settled crank rewards to a recipient token account. */
+	ProtocolUserWithdrawRecordV0: Event<ProtocolUserWithdrawRecordV0>;
 	/** Builder/referrer fee revenue-share settlement for a market. Fee amounts are quote-token, `QUOTE_PRECISION` (1e6). */
 	RevenueShareSettleRecord: Event<RevenueShareSettleRecord>;
+	/** A taker-origin cross resolved on a CLOB book. The migrated taker remainder settled at the crossing counterparty's price, and the cranker was paid out of the improvement. */
+	TakerOriginCrossRecordV0: Event<TakerOriginCrossRecordV0>;
+	TakerOriginCrossRecordV1: Event<TakerOriginCrossRecordV1>;
 	/** Internal transfer of quote token between a perp market's fee pool and pnl pool. */
 	TransferFeeAndPnlPoolRecord: Event<TransferFeeAndPnlPoolRecord>;
-	/** An authority's Accelerated referral status changed, by automatic enrollment or an admin grant/revoke. */
-	AcceleratedReferralStatusChangedRecord: Event<AcceleratedReferralStatusChangedRecord>;
+	/** An authority's Accelerated referral status changed, through automatic enrollment or an admin grant or revoke. */
+	AcceleratedReferralStatusChangedRecordV0: Event<AcceleratedReferralStatusChangedRecordV0>;
 };
 
 /** Union of all decodable event names — the keys of `EventMap`. */
@@ -209,9 +215,12 @@ export type VelocityEvent =
 	| Event<LPBorrowLendDepositRecord>
 	| Event<PerpMarketFeeSweepRecord>
 	| Event<ProtocolFeeWithdrawRecord>
+	| Event<ProtocolUserWithdrawRecordV0>
 	| Event<RevenueShareSettleRecord>
+	| Event<TakerOriginCrossRecordV0>
+	| Event<TakerOriginCrossRecordV1>
 	| Event<TransferFeeAndPnlPoolRecord>
-	| Event<AcceleratedReferralStatusChangedRecord>
+	| Event<AcceleratedReferralStatusChangedRecordV0>
 	| Event<CuUsage>;
 
 /** Events emitted on `EventSubscriber.eventEmitter`. */

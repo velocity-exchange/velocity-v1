@@ -7,8 +7,8 @@ use {
         math::{
             casting::Cast,
             constants::{
-                BASE_PRECISION_U64, BPS_PRECISION, FUNDING_RATE_BUFFER,
-                FUNDING_RATE_OFFSET_DENOMINATOR, ONE_HOUR_I128, TWENTY_FOUR_HOUR,
+                BPS_PRECISION, FUNDING_RATE_BUFFER, FUNDING_RATE_OFFSET_DENOMINATOR, ONE_HOUR_I128,
+                TWENTY_FOUR_HOUR,
             },
             funding::{
                 calculate_funding_payment, calculate_funding_premium_with_offset,
@@ -23,10 +23,11 @@ use {
         state::{
             events::{FundingPaymentRecord, FundingRateRecord},
             market_status::MarketStatus,
+            oracle::OracleTwaps,
             oracle_map::OracleMap,
             perp_market::{MarketConfigFlag, PerpMarket},
             perp_market_map::PerpMarketMap,
-            quoter::{MarketEvent, QuoteContext, Quoter, QuoterCommit},
+            quoter::{MarketEvent, QuoteContext},
             state::OracleGuardRails,
             user::User,
         },
@@ -166,14 +167,16 @@ pub fn settle_funding_payments(
     Ok(())
 }
 
-/// Project the AMM's curve + cached spread state to `slot` *before* the
-/// `block_operation` funding gate runs. The gate rejects funding when the AMM
-/// hasn't been projected this slot (`slots_since_amm_update >
-/// market_stats.funding_period`); with a tiny `funding_period` (e.g. the
-/// bankrun `pyth.ts` tests use 0) a stale `last_update_slot` would lock funding
-/// out for the rest of the slot. Mirrors the legacy `_update_amm` the keeper
-/// ran before funding. The in-branch `AmmQuoter::setup` reuses this projection
-/// via slot-idempotency, so the curve math only runs once per slot.
+/// Project the AMM's curve and cached spread state to `slot` before the
+/// `block_operation` funding gate runs.
+///
+/// The gate rejects funding when the AMM was not projected this slot
+/// (`slots_since_amm_update > market_stats.funding_period`). With a tiny
+/// `funding_period`, such as the 0 the bankrun `pyth.ts` tests use, a stale
+/// `last_update_slot` would block funding for the rest of the slot. This
+/// mirrors the legacy `_update_amm` the keeper ran before funding.
+/// `AmmQuoter::refresh` is idempotent within a slot and reuses this
+/// projection, so the curve math runs once per slot.
 fn refresh_amm_for_funding_gate(
     market: &mut PerpMarket,
     oracle_map: &mut OracleMap,
@@ -196,28 +199,30 @@ fn refresh_amm_for_funding_gate(
         slot_clock,
     )?;
     let market_stats_snap = market.market_stats;
-    let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
     let ctx = QuoteContext {
         stats: &market_stats_snap,
-        oracle: &safe_oracle,
         mm_oracle: Some(&mm_oracle_price_data),
         oracle_validity,
         fee_budget: 0,
-        tick: market.order_tick_size,
         step_size: market.order_step_size,
         slot,
         slot_clock,
-        base_precision: BASE_PRECISION_U64,
         market_status: market.status,
         market_config: market.market_config,
     };
-    AmmQuoter::for_amm(&mut market.amm).setup(&ctx)
+
+    AmmQuoter::for_amm(&mut market.amm).refresh(&ctx)
 }
 
 #[allow(clippy::comparison_chain)]
+/// Update the funding rate when the gate allows it and the period is due.
+///
+/// `gate_twaps` are the oracle TWAPs the gate judges. A caller that advanced
+/// the TWAPs earlier in the instruction passes the values from before that.
 pub fn update_funding_rate(
     market_index: u16,
     market: &mut PerpMarket,
+    gate_twaps: OracleTwaps,
     oracle_map: &mut OracleMap,
     now: UnixTimestamp,
     slot: u64,
@@ -236,6 +241,7 @@ pub fn update_funding_rate(
     let slot_clock = oracle_map.slot_clock;
     let block_funding_rate_update = oracle::block_operation(
         market,
+        gate_twaps,
         oracle_map.get_price_data(&market.oracle_id())?,
         guard_rails,
         reserve_price,
@@ -301,18 +307,14 @@ pub fn update_funding_rate(
     // funding event + mark-twap update need. The quoter's `&mut amm` borrow is
     // confined to this block; everything after it touches PerpMarket fields
     // directly, and the AMM is settled below via a fresh quoter. ----
-    let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
     let setup_ctx = QuoteContext {
         stats: &market_stats_snap,
-        oracle: &safe_oracle,
         mm_oracle: Some(&mm_oracle_price_data),
         oracle_validity: amm_refresh_validity,
         fee_budget: 0,
-        tick: order_tick_size,
         step_size: order_step_size,
         slot,
         slot_clock,
-        base_precision: BASE_PRECISION_U64,
         market_status,
         market_config: market.market_config,
     };
@@ -326,7 +328,7 @@ pub fn update_funding_rate(
         execution_premium_direction,
     ) = {
         let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
-        amm_quoter.setup(&setup_ctx)?;
+        amm_quoter.refresh(&setup_ctx)?;
         let amm = &amm_quoter.amm;
         let reserve_price = amm.reserve_price()?;
         let long_spread = amm.long_spread;
@@ -446,15 +448,12 @@ pub fn update_funding_rate(
     };
     let event_ctx = QuoteContext {
         stats: &market_stats_snap,
-        oracle: oracle_price_data,
         mm_oracle: None,
         oracle_validity: None,
         fee_budget: 0,
-        tick: order_tick_size,
         step_size: order_step_size,
         slot,
         slot_clock,
-        base_precision: BASE_PRECISION_U64,
         market_status: MarketStatus::default(),
         market_config: 0,
     };

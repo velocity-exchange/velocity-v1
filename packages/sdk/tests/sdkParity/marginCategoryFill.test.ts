@@ -8,7 +8,7 @@ import {
 	calculateAssetWeight,
 	calculateLiabilityWeight,
 } from '../../src';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import { assert } from '../../src/assert/assert';
 
 // The MarginCategory type declares 'Fill', but calculateMarketMarginRatio used to

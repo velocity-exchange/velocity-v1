@@ -67,7 +67,7 @@ export class PythClient implements OracleClient {
 	 * @returns `price`, `confidence`, `twap`, `twapConfidence` (all PRICE_PRECISION 1e6), `slot`
 	 * (the price account's last update slot), and `hasSufficientNumberOfDataPoints`.
 	 * @throws Error if the buffer does not carry a Pyth v2 price account header. The program
-	 * rejects such an account, so a decoded price here would not be a price anyone can trade at.
+	 * rejects such an account, so a price decoded here is not a price anyone can trade at.
 	 */
 	public getOraclePriceDataFromBuffer(buffer: Buffer): OraclePriceData {
 		validatePythPushHeader(buffer);
@@ -111,14 +111,8 @@ export class PythClient implements OracleClient {
 }
 
 /**
- * Pyth writes the same four `u32` words at the start of every account it owns:
- * `magic`, `ver`, `atype`, `size`. `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the
- * `AccountType::Price` discriminant, and `PYTH_PUSH_ACCOUNT_LEN` is
- * `size_of::<pyth_client::Price>()`.
- *
- * These are literals because they cannot be read across languages. The
- * program test `the_pyth_header_values_the_sdk_repeats` pins them, so the two
- * sides cannot disagree about which accounts are price accounts.
+ * Pyth's four `u32` account header words (`magic`, `ver`, `atype`, `size`).
+ * The program test `the_pyth_header_values_the_sdk_repeats` pins these literals.
  */
 const PYTH_PUSH_MAGIC = 0xa1b2c3d4;
 const PYTH_PUSH_VERSION = 2;
@@ -130,9 +124,9 @@ const PYTH_PUSH_ACCOUNT_LEN = 3312;
  * `load_pyth_push_price`.
  *
  * Ownership by the Pyth program does not make an account a price feed. That
- * program also owns mapping accounts and product accounts. Decoding one of
- * those as a price account produces a number that the program refuses to use,
- * which is worse than an error: the caller cannot tell it apart from a price.
+ * program also owns mapping accounts and product accounts. Decoding one of those
+ * as a price account produces a number that the program refuses to use, and the
+ * caller cannot tell that number apart from a price.
  */
 function validatePythPushHeader(buffer: Buffer): void {
 	if (buffer.length < PYTH_PUSH_ACCOUNT_LEN) {

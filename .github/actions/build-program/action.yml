@@ -6,7 +6,7 @@ description: >
   resolves to the devnet pubkey.
 inputs:
   program:
-    description: "Program lib name (velocity | token_faucet | jit_proxy)"
+    description: "Program lib name (velocity | token_faucet)"
     required: true
   devnet:
     description: "If 'true', strip mainnet-beta feature (velocity only)"

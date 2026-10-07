@@ -10,14 +10,11 @@ import { buildAdminClient, buildProvider } from '../lib/provider';
 import { confirmMainnetDirect } from '../lib/context';
 
 /**
- * CLI type flag → IDL account name for every zero-copy account the program's
- * `extend_account` instruction supports. Borsh accounts are excluded on
- * purpose (their migrations are per-type deserialization changes, not
- * trailing-bytes growth).
+ * CLI type flag to IDL account name, for every zero-copy account the program's `extend_account`
+ * instruction supports. Borsh accounts are omitted, since they migrate through a per-type
+ * deserialization change, not trailing-byte growth. Each value is camelCase, matching Anchor's
+ * `program.coder.accounts` keys rather than the Rust struct name.
  */
-// Values are the account names as the program coder knows them: anchor's
-// Program converts the IDL to camelCase at construction, so lookups against
-// `program.coder.accounts` must use camelCase, not the Rust struct names.
 const EXTENDABLE_ACCOUNT_TYPES: Record<string, string> = {
 	user: 'user',
 	'user-stats': 'userStats',
@@ -38,14 +35,16 @@ export function registerAccountExtension(parent: Command): void {
 		parent
 			.command('extend-account [account]')
 			.description(
-				'Grow zero-copy accounts to the size the deployed program expects, as the migration ' +
-					'crank after a program upgrade that appended fields to an account struct ' +
-					'(see docs/ACCOUNT-EXTENSION.md). Pass a single account pubkey, or --type to scan ' +
-					'and extend every account of that type. The signer must hold the AccountExtension ' +
-					'hot role (or be the warm/cold admin) and pays the rent-exempt shortfalls; assign ' +
-					'the role with `auth set-hot-admin accountExtension <pubkey>`. --multisig is not ' +
-					'supported (assign the role to a hot keypair instead — a crank is many transactions). ' +
-					'Idempotent; accounts already at size are skipped (and are a no-op on-chain even when raced).'
+				'Grow zero-copy accounts to the size the deployed program expects. This is the ' +
+					'migration crank to run after a program upgrade that appended fields to an ' +
+					'account struct. See docs/ACCOUNT-EXTENSION.md. Pass a single account pubkey, ' +
+					'or --type to scan and extend every account of that type. The signer must hold ' +
+					'the AccountExtension hot role, or be the warm or cold admin, and pays the ' +
+					'rent-exempt shortfalls. Assign the role with ' +
+					'`auth set-hot-admin accountExtension <pubkey>`. --multisig is not supported, ' +
+					'because a crank is many transactions. Assign the role to a hot keypair instead. ' +
+					'The command is idempotent. It skips an account already at size, and the ' +
+					'on-chain instruction is a no-op on such an account even under a race.'
 			)
 			.option(
 				'--type <type>',

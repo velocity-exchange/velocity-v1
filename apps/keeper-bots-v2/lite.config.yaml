@@ -54,9 +54,6 @@ enabledBots:
   # Liquidator bot, liquidates unhealthy positions by taking over the risk (caution, you should manage risk here)
   # - liquidator
 
-  # Example maker bot that participates in JIT auction (caution: you will probably lose money)
-  # - jitMaker
-
   # Example maker bot that posts floating oracle orders
   # - floatingMaker
 

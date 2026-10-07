@@ -21,7 +21,7 @@ velocity = { path = "../../programs/velocity", default-features = false, feature
   "vlp-hedge",
   "fuzz-fixtures",
 ] }
-velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+velocity-fuzz-common = { path = "../velocity-fuzz-common", features = ["clob"] }
 
 anchor-lang = "1.0"
 arbitrary = { version = "1", features = ["derive"] }

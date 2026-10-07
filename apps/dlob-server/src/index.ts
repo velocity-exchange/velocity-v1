@@ -8,8 +8,6 @@ import morgan from 'morgan';
 import { Commitment, Connection, Keypair, PublicKey } from '@solana/web3.js';
 
 import {
-	DLOBNode,
-	DLOBSubscriber,
 	VelocityClient,
 	VelocityEnv,
 	SlotSubscriber,
@@ -17,13 +15,11 @@ import {
 	getVariant,
 	initialize,
 	isVariant,
-	OrderSubscriber,
 	DelistedMarketSetting,
 	BigNum,
 	PRICE_PRECISION_EXP,
-	MarketTypeStr,
 	AssetType,
-	MarketType,
+	PerpMarkets,
 } from '@velocity-exchange/sdk';
 import {
 	RedisClient,
@@ -35,26 +31,21 @@ import { logger, setLogLevel } from './utils/logger';
 import * as http from 'http';
 import { Metrics } from './core/metricsV2';
 import { handleHealthCheck } from './core/middleware';
+import { startBookFreshnessWatch } from './core/bookFreshness';
+import { startFillQualityPublisher } from './publishers/fillQualityPublisher';
 import {
 	errorHandler,
 	normalizeBatchQueryParams,
 	sleep,
 	validateDlobQuery,
-	getAccountFromId,
 	getRawAccountFromId,
 	selectMostRecentBySlot,
-	createMarketBasedAuctionParams,
 	parseBoolean,
 	parseNumber,
-	mapToMarketOrderParams,
-	formatAuctionParamsForResponse,
 	fetchL2FromRedis,
 } from './utils/utils';
-import FEATURE_FLAGS from './utils/featureFlags';
-import { getDLOBProviderFromOrderSubscriber } from './dlobProvider';
+import { PriceReference, quoteMarketOrder } from './utils/marketOrderParams';
 import { setGlobalDispatcher, Agent } from 'undici';
-import { deriveMarketOrderParams, ENUM_UTILS } from '@velocity-exchange/common';
-import { AuctionParamArgs } from './utils/types';
 import { TakerFillVsOracleBpsRedisResult } from './athena/repositories/fillQualityAnalytics';
 
 setGlobalDispatcher(
@@ -86,8 +77,6 @@ const stateCommitment: Commitment = 'confirmed';
 const serverPort = process.env.PORT || 6969;
 export const ORDERBOOK_UPDATE_INTERVAL =
 	parseInt(process.env.ORDERBOOK_UPDATE_INTERVAL) || 400;
-const WS_FALLBACK_FETCH_INTERVAL = ORDERBOOK_UPDATE_INTERVAL * 60;
-const useWebsocket = process.env.USE_WEBSOCKET?.toLowerCase() === 'true';
 const pythLazerVelocityToken = process.env.PYTH_LAZER_DRIFT_TOKEN;
 const pythLazerEndpoint = process.env.PYTH_LAZER_ENDPOINT;
 
@@ -121,17 +110,9 @@ const healthStatusGauge = metricsV2.addGauge(
 	'health_status',
 	'Health check status'
 );
-const accountUpdatesCounter = metricsV2.addCounter(
-	'account_updates_count',
-	'Total accounts update'
-);
 const cacheHitCounter = metricsV2.addCounter(
 	'cache_hit_count',
 	'Total cache hit'
-);
-const lastWsReceivedTsGauge = metricsV2.addGauge(
-	'last_ws_message_received_ts',
-	'Timestamp of last received websocket message'
 );
 const incomingRequestsCounter = metricsV2.addCounter(
 	'incoming_requests_count',
@@ -176,7 +157,6 @@ const endpoint = process.env.ENDPOINT;
 const wsEndpoint = process.env.WS_ENDPOINT;
 logger.info(`RPC endpoint:       ${endpoint}`);
 logger.info(`WS endpoint:        ${wsEndpoint}`);
-logger.info(`useWebsocket:       ${useWebsocket}`);
 logger.info(`VelocityEnv:           ${velocityEnv}`);
 logger.info(`Commit:             ${commitHash}`);
 
@@ -189,6 +169,9 @@ const main = async (): Promise<void> => {
 		commitment: stateCommitment,
 	});
 
+	// Every book this server serves is published into redis by the rust
+	// book-publisher, which reads the CLOB. The server holds no order state of
+	// its own, so a slot is all it needs to say how fresh a cached book is.
 	const slotSubscriber = new SlotSubscriber(connection, {
 		resubTimeoutMs: 5000,
 	});
@@ -207,55 +190,11 @@ const main = async (): Promise<void> => {
 		delistedMarketSetting: DelistedMarketSetting.Discard,
 	});
 
-	const orderSubscriber = new OrderSubscriber({
-		velocityClient,
-		subscriptionConfig: {
-			type: 'websocket',
-			commitment: stateCommitment,
-			resubTimeoutMs: 10_000,
-			resyncIntervalMs: WS_FALLBACK_FETCH_INTERVAL,
-		},
-	});
-	orderSubscriber.eventEmitter.on(
-		'updateReceived',
-		(_pubkey: PublicKey, _slot: number, _dataType: 'raw' | 'decoded') => {
-			lastWsReceivedTsGauge.setLatestValue(Date.now(), {});
-			accountUpdatesCounter.add(1, {});
-		}
-	);
-
-	const dlobProvider = getDLOBProviderFromOrderSubscriber(orderSubscriber);
-
 	await velocityClient.subscribe();
 	velocityClient.eventEmitter.on('error', (e) => {
 		logger.info('clearing house error');
 		logger.error(e);
 	});
-
-	logger.info(`Initializing DLOB Provider...`);
-	const initDLOBProviderStart = Date.now();
-	await dlobProvider.subscribe();
-	logger.info(
-		`dlob provider initialized in ${Date.now() - initDLOBProviderStart} ms`
-	);
-	logger.info(`dlob provider size ${dlobProvider.size()}`);
-
-	logger.info(
-		`GPA refresh?: ${useWebsocket && !FEATURE_FLAGS.DISABLE_GPA_REFRESH}`
-	);
-
-	logger.info(`Initializing DLOBSubscriber...`);
-	const initDlobSubscriberStart = Date.now();
-	const dlobSubscriber = new DLOBSubscriber({
-		velocityClient,
-		dlobSource: dlobProvider,
-		slotSource: dlobProvider,
-		updateFrequency: ORDERBOOK_UPDATE_INTERVAL,
-	});
-	await dlobSubscriber.subscribe();
-	logger.info(
-		`DLOBSubscriber initialized in ${Date.now() - initDlobSubscriberStart} ms`
-	);
 
 	// Handle redis client initialization and rotation maps
 	const redisClients: Array<RedisClient> = [];
@@ -281,7 +220,7 @@ const main = async (): Promise<void> => {
 	});
 
 	const handleStartup = async (_req, res, _next) => {
-		if (velocityClient.isSubscribed && dlobProvider.size() > 0) {
+		if (velocityClient.isSubscribed && slotSubscriber.currentSlot) {
 			res.writeHead(200);
 			res.end('OK');
 		} else {
@@ -290,9 +229,27 @@ const main = async (): Promise<void> => {
 		}
 	};
 
-	app.get('/health', handleHealthCheck(dlobProvider, healthStatusGauge));
+	app.get('/health', handleHealthCheck(slotSubscriber, healthStatusGauge));
 	app.get('/startup', handleStartup);
-	app.get('/', handleHealthCheck(dlobProvider, healthStatusGauge));
+	app.get('/', handleHealthCheck(slotSubscriber, healthStatusGauge));
+
+	// The server holds no order state, so its own liveness says nothing about
+	// whether the books it serves are still being written. This watches them and
+	// latches the restart the health check already honours.
+	startBookFreshnessWatch(
+		PerpMarkets[velocityEnv].map((market) => ({
+			marketIndex: market.marketIndex,
+			marketName: market.symbol,
+		})),
+
+		slotSubscriber,
+		fetchFromRedis,
+		selectMostRecentBySlot
+	);
+
+	// `/marketOrderParams` reads these. Nothing else writes them, and a missing
+	// answer is invisible at the endpoint, which prices off the book alone.
+	startFillQualityPublisher(redisClients);
 
 	app.get('/priorityFees', async (req, res, next) => {
 		try {
@@ -401,9 +358,6 @@ const main = async (): Promise<void> => {
 				res.status(400).send('Bad Request: side must be either bid or ask');
 				return;
 			}
-			const normedSide = (side as string).toLowerCase();
-			const oracle =
-				velocityClient.getMMOracleDataForPerpMarket(normedMarketIndex);
 
 			let normedLimit = undefined;
 			if (limit) {
@@ -428,15 +382,14 @@ const main = async (): Promise<void> => {
 			const redisResponse = await fetchFromRedis(
 				`last_update_orderbook_best_makers_${getVariant(
 					normedMarketType
-				)}_${marketIndex}`,
+				)}_${normedMarketIndex}`,
+
 				selectMostRecentBySlot
 			);
 			if (redisResponse) {
-				if (side === 'bid') {
-					topMakers = redisResponse['bids'];
-				} else {
-					topMakers = redisResponse['asks'];
-				}
+				const makers =
+					side === 'bid' ? redisResponse['bids'] : redisResponse['asks'];
+				topMakers = makers?.slice(0, normedLimit);
 			}
 
 			if (topMakers) {
@@ -460,68 +413,15 @@ const main = async (): Promise<void> => {
 				return;
 			}
 
-			const topMakersSet = new Set<string>();
-			let foundMakers = 0;
-			const findMakers = async (sideGenerator: Generator<DLOBNode>) => {
-				for (const side of sideGenerator) {
-					if (limit && foundMakers >= normedLimit) {
-						break;
-					}
-					if (side.userAccount) {
-						const maker = side.userAccount;
-						if (topMakersSet.has(maker)) {
-							continue;
-						} else {
-							topMakersSet.add(side.userAccount);
-							foundMakers++;
-						}
-					} else {
-						continue;
-					}
-				}
-			};
-
-			if (normedSide === 'bid') {
-				await findMakers(
-					dlobSubscriber
-						.getDLOB()
-						.getRestingLimitBids(
-							normedMarketIndex,
-							dlobProvider.getSlot(),
-							isVariant(normedMarketType, 'perp')
-								? MarketType.PERP
-								: MarketType.SPOT,
-							oracle
-						)
-				);
-			} else {
-				await findMakers(
-					dlobSubscriber
-						.getDLOB()
-						.getRestingLimitAsks(
-							normedMarketIndex,
-							dlobProvider.getSlot(),
-							isVariant(normedMarketType, 'perp')
-								? MarketType.PERP
-								: MarketType.SPOT,
-							oracle
-						)
-				);
-			}
-			topMakers = [...topMakersSet];
+			// The book publisher is the only source of the best-makers document.
+			// An empty answer means the publisher has not written one for this
+			// market yet, not that the book holds no orders.
 			cacheHitCounter.add(1, {
 				miss: true,
 				path: req.baseUrl + req.path,
 			});
 			res.writeHead(200);
-
-			if (accountFlag) {
-				const topAccounts = await getAccountFromId(userMapClient, topMakers);
-				res.end(JSON.stringify(topAccounts));
-				return;
-			}
-
-			res.end(JSON.stringify(topMakers));
+			res.end(JSON.stringify([]));
 		} catch (err) {
 			next(err);
 		}
@@ -564,8 +464,7 @@ const main = async (): Promise<void> => {
 
 	app.get('/l2', async (req, res, next) => {
 		try {
-			const { marketName, marketIndex, marketType, depth, includeIndicative } =
-				req.query;
+			const { marketName, marketIndex, marketType, depth } = req.query;
 
 			const { normedMarketType, normedMarketIndex, error } = validateDlobQuery(
 				velocityClient,
@@ -580,8 +479,6 @@ const main = async (): Promise<void> => {
 			}
 
 			const isSpot = isVariant(normedMarketType, 'spot');
-			const includeIndicativeStr =
-				(includeIndicative as string)?.toLowerCase() === 'true';
 			const adjustedDepth = depth ?? '100';
 
 			let l2Formatted: any;
@@ -589,8 +486,7 @@ const main = async (): Promise<void> => {
 				fetchFromRedis,
 				selectMostRecentBySlot,
 				normedMarketType,
-				normedMarketIndex,
-				includeIndicativeStr
+				normedMarketIndex
 			);
 			const depthToUse = Math.min(parseInt(adjustedDepth as string) ?? 1, 100);
 			let cacheMiss = true;
@@ -615,7 +511,7 @@ const main = async (): Promise<void> => {
 					marketType: normedMarketType,
 					marketIndex: normedMarketIndex,
 					marketName: undefined,
-					slot: dlobProvider.getSlot(),
+					slot: slotSubscriber.getSlot(),
 					oracle: oracleData.price.toNumber(),
 					oracleData: {
 						price: oracleData.price.toNumber(),
@@ -626,7 +522,7 @@ const main = async (): Promise<void> => {
 						twapConfidence: oracleData.twapConfidence?.toNumber(),
 					},
 					ts: Date.now(),
-					marketSlot: dlobProvider.getSlot(),
+					marketSlot: slotSubscriber.getSlot(),
 				};
 			}
 			cacheHitCounter.add(1, {
@@ -652,7 +548,6 @@ const main = async (): Promise<void> => {
 				includePhoenix,
 				includeOpenbook,
 				includeOracle,
-				includeIndicative,
 			} = req.query;
 
 			const normedParams = normalizeBatchQueryParams({
@@ -664,7 +559,6 @@ const main = async (): Promise<void> => {
 				includePhoenix: includePhoenix as string | undefined,
 				includeOpenbook: includeOpenbook as string | undefined,
 				includeOracle: includeOracle as string | undefined,
-				includeIndicative: includeIndicative as string | undefined,
 			});
 
 			if (normedParams === undefined) {
@@ -695,8 +589,6 @@ const main = async (): Promise<void> => {
 					}
 
 					const isSpot = isVariant(normedMarketType, 'spot');
-					const normedIncludeIndicative =
-						normedParam['includeIndicative'] == 'true';
 
 					const adjustedDepth = normedParam['depth'] ?? '100';
 					let l2Formatted: any;
@@ -704,8 +596,7 @@ const main = async (): Promise<void> => {
 						fetchFromRedis,
 						selectMostRecentBySlot,
 						normedMarketType,
-						normedMarketIndex,
-						normedIncludeIndicative
+						normedMarketIndex
 					);
 					const depth = Math.min(parseInt(adjustedDepth as string) ?? 1, 100);
 					let cacheMiss = true;
@@ -729,7 +620,7 @@ const main = async (): Promise<void> => {
 							marketType: normedMarketType,
 							marketIndex: normedMarketIndex,
 							marketName: undefined,
-							slot: dlobProvider.getSlot(),
+							slot: slotSubscriber.getSlot(),
 							oracle: oracleData.price.toNumber(),
 							oracleData: {
 								price: oracleData.price.toNumber(),
@@ -740,7 +631,7 @@ const main = async (): Promise<void> => {
 								twapConfidence: oracleData.twapConfidence?.toNumber(),
 							},
 							ts: Date.now(),
-							marketSlot: dlobProvider.getSlot(),
+							marketSlot: slotSubscriber.getSlot(),
 						};
 					}
 
@@ -774,8 +665,7 @@ const main = async (): Promise<void> => {
 
 	app.get('/l3', async (req, res, next) => {
 		try {
-			const { marketName, marketIndex, marketType, includeIndicative } =
-				req.query;
+			const { marketName, marketIndex, marketType } = req.query;
 
 			const { normedMarketType, normedMarketIndex, error } = validateDlobQuery(
 				velocityClient,
@@ -790,13 +680,9 @@ const main = async (): Promise<void> => {
 			}
 
 			const marketTypeStr = getVariant(normedMarketType);
-			const normedIncludeIndicative =
-				(includeIndicative as string)?.toLowerCase() === 'true';
 
 			const redisL3 = await fetchFromRedis(
-				`last_update_orderbook_l3_${marketTypeStr}_${normedMarketIndex}${
-					normedIncludeIndicative ? '_indicative' : ''
-				}`,
+				`last_update_orderbook_l3_${marketTypeStr}_${normedMarketIndex}`,
 				selectMostRecentBySlot
 			);
 			if (redisL3) {
@@ -816,6 +702,80 @@ const main = async (): Promise<void> => {
 				res.end('No L3 found');
 				return;
 			}
+		} catch (err) {
+			next(err);
+		}
+	});
+
+	/**
+	 * A user's resting CLOB orders, per market.
+	 *
+	 * A book order lives on the book and has no `User.orders` slot to read it
+	 * out of, so this route reports what a user is resting. The book publisher
+	 * writes one key per user per market and republishes only when that user's
+	 * set changes. The cached document therefore stays current without a rewrite
+	 * on every tick.
+	 *
+	 * `marketIndexes` is optional. When it is omitted, every perp market is
+	 * read. A market the user rests nothing in has no key and is absent from the
+	 * result.
+	 */
+	app.get('/userOrders', async (req, res, next) => {
+		try {
+			const { userPubkey, marketIndexes } = req.query;
+			if (!userPubkey || typeof userPubkey !== 'string') {
+				res.status(400).send('userPubkey is required');
+				return;
+			}
+
+			try {
+				new PublicKey(userPubkey);
+			} catch {
+				res.status(400).send('userPubkey is not a public key');
+				return;
+			}
+
+			const requested = ((marketIndexes as string) ?? '')
+				.split(',')
+				.map((index) => index.trim())
+				.filter((index) => index.length > 0);
+			const indexes = requested.length
+				? requested.map((index) => Number(index))
+				: PerpMarkets[velocityEnv].map((market) => market.marketIndex);
+			if (indexes.some((index) => !Number.isInteger(index) || index < 0)) {
+				res.status(400).send('marketIndexes must be non-negative integers');
+				return;
+			}
+
+			const documents = await Promise.all(
+				indexes.map((marketIndex) =>
+					fetchFromRedis(
+						`last_update_user_orders_${userPubkey}_${marketIndex}`,
+						selectMostRecentBySlot
+					)
+				)
+			);
+			const orders = documents
+				.filter((document) => !!document)
+				.flatMap((document) => document.orders ?? []);
+			cacheHitCounter.add(1, {
+				miss: orders.length === 0,
+				path: req.baseUrl + req.path,
+			});
+
+			res.writeHead(200);
+			res.end(
+				JSON.stringify({
+					user: userPubkey,
+					orders,
+					slot: Math.max(
+						0,
+						...documents
+							.filter((document) => !!document)
+							.map((document) => document.slot ?? 0)
+					),
+				})
+			);
 		} catch (err) {
 			next(err);
 		}
@@ -871,200 +831,127 @@ const main = async (): Promise<void> => {
 		}
 	});
 
-	app.get('/auctionParams', async (req, res, next) => {
+	app.get('/marketOrderParams', async (req, res, next) => {
 		try {
 			const {
 				marketIndex,
-				marketType,
 				direction,
 				amount,
 				assetType,
 				reduceOnly,
-				allowInfSlippage,
 				slippageTolerance,
+				priceReference,
 				isOracleOrder,
-				auctionDuration,
-				auctionStartPriceOffset,
-				auctionEndPriceOffset,
-				auctionStartPriceOffsetFrom,
-				auctionEndPriceOffsetFrom,
-				additionalEndPriceBuffer,
+				activationDelaySlots,
 				userOrderId,
-				forceUpToSlippage,
 				maxLeverageSelected,
 				maxLeverageOrderSize,
-				version,
 			} = req.query;
 
-			// Validate required parameters
-			if (!marketIndex || !marketType || !direction || !amount || !assetType) {
+			const parsedMarketIndex = parseInt(marketIndex as string);
+			if (!amount || isNaN(parsedMarketIndex)) {
 				res
 					.status(400)
-					.send(
-						'Bad Request: marketIndex, marketType, direction, amount, and assetType are required'
-					);
-				return;
-			}
-
-			const apiVersion = version ? parseInt(version as string) : 1;
-
-			let redisFillQualityInfo: TakerFillVsOracleBpsRedisResult | undefined;
-			if (apiVersion >= 2) {
-				const redisKey = `taker_fill_vs_oracle_bps:market:${marketIndex}`;
-				try {
-					const redisValue = await fetchFromRedis(
-						redisKey,
-						(responses) => responses[0] as any
-					);
-					if (redisValue) {
-						const parsed = JSON.parse(redisValue);
-						redisFillQualityInfo =
-							typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
-					}
-					// Fall through to existing logic below
-				} catch (err) {
-					logger.error(
-						`Version 2: Error fetching redis stats for market ${marketIndex}:`,
-						err
-					);
-					// Fall through to existing logic below
-				}
-			}
-
-			// Parse and validate values
-			const parsedMarketIndex = parseInt(marketIndex as string);
-			if (isNaN(parsedMarketIndex)) {
-				res.status(400).send('Bad Request: marketIndex must be a valid number');
+					.send('Bad Request: marketIndex and amount are required');
 				return;
 			}
 
 			if (direction !== 'long' && direction !== 'short') {
 				res
 					.status(400)
-					.send('Bad Request: direction must be either "long" or "short"');
+					.send('Bad Request: direction must be "long" or "short"');
 				return;
 			}
 
 			if (assetType !== 'base' && assetType !== 'quote') {
 				res
 					.status(400)
-					.send('Bad Request: assetType must be either "base" or "quote"');
+					.send('Bad Request: assetType must be "base" or "quote"');
 				return;
 			}
 
-			// Build auction params object
-			const auctionParamsInput: AuctionParamArgs = {
-				marketIndex: parsedMarketIndex,
-				marketType: marketType as MarketTypeStr,
-				direction: direction as 'long' | 'short',
-				amount: amount as string,
-				assetType: assetType as AssetType,
-			};
-
-			// Add optional parameters if provided
-			const optionalParams = {
-				reduceOnly: parseBoolean(reduceOnly as string),
-				allowInfSlippage: parseBoolean(allowInfSlippage as string),
-				slippageTolerance:
-					slippageTolerance === 'dynamic'
-						? undefined
-						: parseNumber(slippageTolerance as string), // Convert "dynamic" to undefined for dynamic calculation
-				isOracleOrder: parseBoolean(isOracleOrder as string),
-				auctionDuration: parseNumber(auctionDuration as string),
-				auctionStartPriceOffset:
-					auctionStartPriceOffset === 'marketBased'
-						? 'marketBased'
-						: parseNumber(auctionStartPriceOffset as string),
-				auctionEndPriceOffset: parseNumber(auctionEndPriceOffset as string),
-				auctionStartPriceOffsetFrom:
-					auctionStartPriceOffsetFrom === 'marketBased'
-						? 'marketBased'
-						: (auctionStartPriceOffsetFrom as any),
-				auctionEndPriceOffsetFrom: auctionEndPriceOffsetFrom as any,
-				additionalEndPriceBuffer: additionalEndPriceBuffer as string,
-				userOrderId: parseNumber(userOrderId as string),
-				forceUpToSlippage: parseBoolean(forceUpToSlippage as string),
-				maxLeverageSelected: parseBoolean(maxLeverageSelected as string),
-				maxLeverageOrderSize: maxLeverageOrderSize as string,
-			};
-
-			// Only add non-undefined values
-			Object.entries(optionalParams).forEach(([key, value]) => {
-				if (value !== undefined) {
-					auctionParamsInput[key] = value;
-				}
-			});
-
-			const inputParams = createMarketBasedAuctionParams(
-				auctionParamsInput,
-				undefined,
-				apiVersion
-			);
-
-			const result = await mapToMarketOrderParams(
-				inputParams,
-				velocityClient,
-				fetchFromRedis,
-				selectMostRecentBySlot,
-				redisFillQualityInfo,
-				apiVersion,
-				dlobProvider.getSlot()
-			);
-
-			if (!result.success) {
-				res.status(400).json({
-					error: result.error,
-				});
+			if (
+				priceReference !== undefined &&
+				!['best', 'mark', 'oracle', 'entry'].includes(priceReference as string)
+			) {
+				res
+					.status(400)
+					.send(
+						'Bad Request: priceReference must be "best", "mark", "oracle" or "entry"'
+					);
 				return;
 			}
 
-			const auctionParams = deriveMarketOrderParams(
-				result.data.marketOrderParams
-			);
-
-			// Log final auction prices for debugging
-			logger.info(
-				JSON.stringify({
-					event: 'auction_params_derived',
+			const quote = await quoteMarketOrder(
+				{
 					marketIndex: parsedMarketIndex,
-					direction: direction,
-					apiVersion,
-					finalAuctionParams: {
-						auctionStartPrice: auctionParams.auctionStartPrice?.toString(),
-						auctionEndPrice: auctionParams.auctionEndPrice?.toString(),
-						price: auctionParams.price?.toString(),
-						oraclePriceOffset: auctionParams.oraclePriceOffset?.toString(),
-						auctionDuration: auctionParams.auctionDuration?.toString(),
-						orderType: ENUM_UTILS.toStr(auctionParams.orderType),
-					},
-				})
+					direction,
+					amount: amount as string,
+					assetType: assetType as AssetType,
+					reduceOnly: parseBoolean(reduceOnly as string),
+					slippageTolerance: parseNumber(slippageTolerance as string),
+					priceReference: priceReference as PriceReference | undefined,
+					isOracleOrder: parseBoolean(isOracleOrder as string),
+					activationDelaySlots: parseNumber(activationDelaySlots as string),
+					userOrderId: parseNumber(userOrderId as string),
+					maxLeverageSelected: parseBoolean(maxLeverageSelected as string),
+					maxLeverageOrderSize: maxLeverageOrderSize as string | undefined,
+				},
+				{
+					velocityClient,
+					fetchFromRedis,
+					selectMostRecentBySlot,
+					fillQualityInfo: await fetchFillQualityInfo(parsedMarketIndex),
+					currentSlot: slotSubscriber.getSlot(),
+				}
 			);
 
-			const response = {
+			const prices = quote.estimatedPrices;
+			res.status(200).json({
 				data: {
-					params: formatAuctionParamsForResponse(auctionParams),
-					entryPrice: result.data.estimatedPrices.entryPrice.toString(),
-					bestPrice: result.data.estimatedPrices.bestPrice.toString(),
-					worstPrice: result.data.estimatedPrices.worstPrice.toString(),
-					oraclePrice: result.data.estimatedPrices.oraclePrice.toString(),
-					markPrice: result.data.estimatedPrices.markPrice.toString(),
+					params: quote.params,
+					entryPrice: prices.entryPrice.toString(),
+					bestPrice: prices.bestPrice.toString(),
+					worstPrice: prices.worstPrice.toString(),
+					oraclePrice: prices.oraclePrice.toString(),
+					markPrice: prices.markPrice.toString(),
 					priceImpact: BigNum.from(
-						result.data.estimatedPrices.priceImpact,
+						prices.priceImpact,
 						PRICE_PRECISION_EXP
 					).toNum(),
-					slippageTolerance: (
-						result.data.marketOrderParams.slippageTolerance / 100
-					).toString(),
-					// Quote timestamp so clients can re-fetch stale params before signing
+					slippageTolerance: quote.slippageTolerance,
+					// Clients re-fetch a stale quote before signing.
 					generatedAt: Date.now(),
 				},
-			};
-
-			res.status(200).json(response);
+			});
 		} catch (err) {
 			next(err);
 		}
 	});
+
+	/** The published taker fill quality for a market, when the publisher runs. */
+	const fetchFillQualityInfo = async (
+		marketIndex: number
+	): Promise<TakerFillVsOracleBpsRedisResult | undefined> => {
+		try {
+			const value = await fetchFromRedis(
+				`taker_fill_vs_oracle_bps:market:${marketIndex}`,
+				(responses) => responses[0] as any
+			);
+			if (!value) {
+				return undefined;
+			}
+
+			const parsed = JSON.parse(value);
+			return typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+		} catch (err) {
+			logger.error(
+				`Error fetching fill quality for market ${marketIndex}:`,
+				err
+			);
+			return undefined;
+		}
+	};
 
 	server.listen(serverPort, () => {
 		logger.info(`DLOB server listening on port http://localhost:${serverPort}`);

@@ -128,9 +128,9 @@ pub fn handle_add_insurance_fund_stake<'c: 'info, 'info>(
         )?;
     }
 
-    // Only the portion of `amount` that prices to whole insurance-fund shares is staked;
-    // the remainder is never transferred, so it stays with the depositor instead of
-    // accruing to existing shareholders as rounding.
+    // Only the part of `amount` that prices to whole insurance fund shares is
+    // staked. The remainder is never transferred, so it stays with the depositor
+    // instead of accruing to the existing shareholders as rounding.
     let amount_deposited = controller::insurance::add_insurance_fund_stake(
         amount,
         ctx.accounts.insurance_fund_vault.amount,
@@ -317,22 +317,22 @@ pub fn handle_cancel_request_remove_insurance_fund_stake<'c: 'info, 'info>(
         "No withdraw request in progress"
     )?;
 
-    // Settle any already-due revenue into the IF vault BEFORE the cancel prices the
-    // forfeiture, mirroring the add and request-remove paths (OtterSec #141).
+    // Settle any due revenue into the insurance fund vault before the cancel
+    // prices the forfeiture. The add and request-remove paths settle the same
+    // way (OtterSec #141).
     //
-    // `cancel_request_remove_insurance_fund_stake` implements the anti-free-option rule:
-    // it withdraws at the frozen `last_withdraw_request_value` and restakes at the live
-    // vault price, so any appreciation during the escrow window is forfeited to the
-    // stakers who stayed. Pricing that restake against a *pre-settle* vault understates
-    // the live value, so the cancel burns no shares (or too few) and the canceller keeps
-    // revenue the rule assigns to the remaining stakers. A staker could simply order
-    // their signed cancel ahead of an already-due signerless settle to take it.
+    // The cancel withdraws at the frozen `last_withdraw_request_value` and
+    // restakes at the live vault price. Appreciation during the escrow
+    // window is forfeited to the stakers who stayed, so an unsettled vault
+    // understates that price. The cancel then burns too few shares, or
+    // none, and the canceller keeps revenue owed to those stakers. A staker
+    // could order a signed cancel ahead of an already due signerless settle
+    // and take it.
     //
-    // Settling here rather than gating the cancel is deliberate: #34 exists precisely so
-    // a pending request can always be cancelled, and refusing the cancel until someone
-    // else cranks the settle would reintroduce a cancel-blocking condition. Revenue
-    // accruing *after* this point is still forfeited by the freeze — that is the intended
-    // escrow tradeoff, not this bug.
+    // The settle runs here instead of gating the cancel. A pending request
+    // must stay cancellable, so a settle requirement would add a new
+    // cancel-blocking condition (OtterSec #34). Revenue accrued after this
+    // point is still forfeited by the freeze. That is the intended tradeoff.
     {
         if spot_market.has_transfer_hook() {
             controller::insurance::attempt_settle_revenue_to_insurance_fund(
@@ -593,8 +593,8 @@ pub struct CancelRequestRemoveInsuranceFundStake<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    // OtterSec #141: cancel must price against a settled IF vault, so it needs the
-    // same settle plumbing `request_remove` gained in #31.
+    // The cancel must price against a settled insurance fund vault, so it takes
+    // the same settle accounts as `request_remove` (OtterSec #31, #141).
     #[account(
         mut,
         seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],

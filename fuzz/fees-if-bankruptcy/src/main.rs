@@ -362,19 +362,29 @@ fn inv_fee_tier_monotone(
 
     let fs = FeeStructure::default();
 
+    // Both accounts traded at `now`, so the tier selection projects no decay
+    // and compares the two stored volumes as written. Promo floor off: it
+    // raises both accounts to the same tier and would hide the ordering.
+    let now = 1_700_000_000i64;
+    let promo_fee_tier = 0u8;
+
     let mut stats_lo = UserStats::default();
     stats_lo.taker_volume_30d = lo;
+    stats_lo.last_taker_volume_30d_ts = now;
     let mut stats_hi = UserStats::default();
     stats_hi.taker_volume_30d = hi;
+    stats_hi.last_taker_volume_30d_ts = now;
 
-    let tier_lo = match determine_user_fee_tier(&stats_lo, &fs, &MarketType::Perp) {
-        Ok(t) => t,
-        Err(_) => return,
-    };
-    let tier_hi = match determine_user_fee_tier(&stats_hi, &fs, &MarketType::Perp) {
-        Ok(t) => t,
-        Err(_) => return,
-    };
+    let tier_lo =
+        match determine_user_fee_tier(&stats_lo, &fs, &MarketType::Perp, now, promo_fee_tier) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+    let tier_hi =
+        match determine_user_fee_tier(&stats_hi, &fs, &MarketType::Perp, now, promo_fee_tier) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
 
     // Higher volume => fee rate is non-increasing. Compare rates by
     // cross-multiplying to be denominator-agnostic:

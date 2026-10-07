@@ -7,9 +7,9 @@
 //! ## Where it fired
 //!
 //! The off-chain pre-trade simulation: `simulate_taker_order_local` ->
-//! `simulate_place_perp_order` (`swift/src/util/local_sim.rs`) builds the
+//! `simulate_detached_perp_order` (`swift/src/util/local_sim.rs`) builds the
 //! program's `PerpMarketMap`/`SpotMarketMap` from owned account bytes and runs
-//! the real `place_perp_order`. Those maps wrap anchor's `AccountLoader`, which
+//! the real `create_detached_perp_order`. Those maps wrap anchor's `AccountLoader`, which
 //! casts the zero-copy struct **by reference**: `bytemuck::from_bytes(&data[8..])`.
 //!
 //! ## Root cause
@@ -162,7 +162,7 @@ fn state_deserializes_through_aligned_buffer() {
     // The gap that survived the first fix: `State` is also `#[account(zero_copy)]`
     // (embeds `FeeStructure`/`OracleGuardRails`, which hold `u128`/`i128`), so
     // off-chain it is 16-aligned and its `try_deserialize` casts by reference.
-    // `simulate_place_perp_order` deserializes it from raw cached bytes; without
+    // `simulate_detached_perp_order` deserializes it from raw cached bytes; without
     // an `AlignedAccountData` buffer the cast panics, exactly the production
     // failure that the market-only fix missed.
     assert_eq!(align_of::<State>(), 16);

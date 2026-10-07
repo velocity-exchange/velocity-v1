@@ -41,10 +41,10 @@ macro_rules! declare_vault_seeds {
 /// (OtterSec #136/#137).
 ///
 /// The market list is read from the vault and its velocity user here rather than taken from the
-/// caller, so a caller cannot leave a market out and price its position off a stale index. Both
-/// reads are scoped to a block so they drop before the handler's own `load_mut` of the vault,
-/// which would otherwise panic on the second borrow. The CPI itself does not care: it is passed
-/// `state` and the remaining accounts, and neither the vault nor the velocity user is among them.
+/// caller. A caller therefore cannot leave a market out and price its position off a stale index.
+/// Both reads are scoped to a block so they drop before the handler's own `load_mut` of the vault,
+/// which would otherwise panic on the second borrow. The CPI takes `state` and the remaining
+/// accounts, and neither the vault nor the velocity user is among them.
 #[macro_export]
 macro_rules! refresh_velocity_spot_market {
     ( $ctx:expr ) => {

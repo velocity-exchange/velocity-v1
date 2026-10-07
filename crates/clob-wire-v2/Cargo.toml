@@ -1,0 +1,21 @@
+[package]
+name = "clob-wire-v2"
+description = "clob-wire compiled against anchor v2 (fork) for the CLOB IDL. Shared source with clob-wire via include!; one anchor per crate."
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+[dependencies]
+quoter-spec = { package = "quoter-spec-v2", path = "../quoter-spec-v2" }
+solana-address.workspace = true
+wincode.workspace = true
+bytemuck.workspace = true
+anchor-lang-v2 = { package = "anchor-lang", git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28", optional = true }
+[features]
+default = []
+idl-build = []
+idl-build-v2 = ["dep:anchor-lang-v2", "idl-build", "quoter-spec/idl-build-v2"]
+
+# The shared source gates the anchor v1 derives on the v1 crate's
+# `anchor-derive` feature, which this crate does not declare.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("anchor-derive"))'] }

@@ -26,7 +26,7 @@ import { TxParams } from './types';
 /** One subaccount's standing relative to its floor. All BN values QUOTE_PRECISION. */
 export type SubaccountFloorStatus = {
 	subAccountId: number;
-	/** Net equity (`User.getFloorNetEquity().value`, unweighted gate-parity pricing), what the onchain checks see. */
+	/** Net equity from `User.getFloorNetEquity()`, the unweighted value the onchain floor checks read. */
 	equity: BN;
 	equityFloor: BN;
 	equityFloorBuffer: BN;
@@ -182,13 +182,12 @@ export function planFloorMoves(
 }
 
 /**
- * Plans the fund-only transfers (zero floor delta) that top subaccounts
- * below their buffered floor back above it out of the other subaccounts'
- * spare equity. Deficit sides are targeted to land `haircut` above their
- * buffered floor; donor sides are drawn down no further than `haircut`
- * above their own, so a cure cannot create a new breach. Best-effort: when
- * spare equity cannot cover every deficit, the deepest breaches are topped
- * up first and the rest must come from fresh deposits.
+ * Plans the fund-only transfers (zero floor delta) that lift subaccounts below
+ * their buffered floor back above it. The equity comes from the spare equity of
+ * the other subaccounts. Each deficit side lands `haircut` above its buffered
+ * floor. Each donor side keeps `haircut` above its own, so a cure cannot open a
+ * new breach. When spare equity cannot cover every deficit, the deepest
+ * breaches are filled first and the rest needs a fresh deposit.
  */
 export function planCureMoves(
 	subaccounts: Pick<
@@ -197,13 +196,13 @@ export function planCureMoves(
 	>[],
 	haircut: BN
 ): QuoteTransferPlan[] {
-	// worst first, so scarce donor equity goes to the deepest breach
+	// Worst first, so scarce donor equity reaches the deepest breach.
 	const deficits = subaccounts
 		.filter((u) => u.equityFloor.gt(ZERO) && u.bufferedHeadroom.isNeg())
 		.sort((a, b) => a.bufferedHeadroom.cmp(b.bufferedHeadroom))
 		.map((u) => ({
 			subAccountId: u.subAccountId,
-			// land just above the gate, mirroring the transfer haircut
+			// Land above the gate by the same haircut the transfer applies.
 			amount: u.bufferedHeadroom.neg().add(haircut),
 		}));
 	const donors = subaccounts
@@ -253,9 +252,8 @@ export type EquityFloorManagerConfig = {
 	 */
 	subAccountIds?: number[];
 	/**
-	 * Client-side equity haircut (QUOTE_PRECISION) applied when sizing floor
-	 * deltas, absorbing the dust by which onchain oracle pricing can differ
-	 * from the client's. Defaults to 1 quote unit ($1).
+	 * Client-side equity haircut (QUOTE_PRECISION) absorbing dust from onchain/client oracle
+	 * price differences when sizing floor deltas. Defaults to 1 quote unit ($1).
 	 */
 	collateralHaircut?: BN;
 };
@@ -299,7 +297,8 @@ export class EquityFloorManager {
 
 	private getSubaccountStatus(user: User): SubaccountFloorStatus {
 		const userAccount = user.getUserAccountOrThrow();
-		// gate-parity pricing (no validity verdict without a slot)
+		// Price the account the way the onchain floor gate does. With no slot
+		// every oracle counts as valid.
 		const equity = user.getFloorNetEquity().value;
 		const bufferedFloor = userAccount.equityFloor.add(
 			userAccount.equityFloorBuffer
@@ -435,8 +434,8 @@ export class EquityFloorManager {
 		const fromAccount = fromUser.getUserAccountOrThrow();
 		const equityFloorDelta = calculateEquityFloorAutoDelta(
 			amount,
-			// gate-parity pricing; the haircut still pads for price movement
-			// between planning and execution
+			// The haircut still pads for price movement between planning and
+			// execution.
 			fromUser.getFloorNetEquity().value.sub(this.collateralHaircut),
 			fromAccount.equityFloor,
 			fromAccount.equityFloorBuffer
@@ -482,9 +481,9 @@ export class EquityFloorManager {
 	 * no split works and equity must be deposited (or the admin must lower
 	 * the floor). Each onchain move also carries a proportional share of the
 	 * debited side's buffer, so buffers drift toward the same split as the
-	 * floors; the plan sizes against current buffers and the haircut absorbs
-	 * the drift dust, but a move can still revert if a credited side cannot
-	 * back the buffer share it receives.
+	 * floors. The plan sizes against current buffers and the haircut absorbs
+	 * the drift dust. A move can still revert when a credited side cannot back
+	 * the buffer share it receives.
 	 */
 	public planFloorRebalance(): FloorMove[] {
 		const subaccounts = this.getManagedUsers().map((user) =>
@@ -523,13 +522,8 @@ export class EquityFloorManager {
 	}
 
 	/**
-	 * Plans the fund-only transfers (zero floor delta) that top subaccounts
-	 * below their buffered floor back above it out of the other subaccounts'
-	 * spare equity. Such a transfer is the one delegate transfer the program
-	 * allows while the equity breaker is tripped, so this is the self-serve
-	 * path out of a stale-split trip: cure every breach from internal
-	 * surplus, then ask the admin to reset the breaker (the transfers never
-	 * clear the flag). See `planCureMoves` for the sizing rules.
+	 * Plans fund-only transfers, the one delegate transfer allowed while the equity breaker
+	 * is tripped. Does not clear the flag itself; see `planCureMoves` for sizing rules.
 	 */
 	public planCureTransfers(): QuoteTransferPlan[] {
 		return planCureMoves(
@@ -539,8 +533,8 @@ export class EquityFloorManager {
 	}
 
 	/**
-	 * Executes `planCureTransfers` serially. Works while the breaker is
-	 * tripped; a no-op when no subaccount is below its buffered floor.
+	 * Executes `planCureTransfers` serially. It works while the breaker is
+	 * tripped. It does nothing when no subaccount is below its buffered floor.
 	 */
 	public async cureBreaches(
 		txParams?: TxParams

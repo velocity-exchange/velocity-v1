@@ -45,9 +45,13 @@ That is required even though `declare_id!` is now unconditional, because default
 `ids.rs` to the mainnet constants. `program:idl` runs `anchor idl build` under `cargo test` with the
 host toolchain, which avoids the bundled-cargo problems described below.
 
-A full `anchor build` already emits both `target/idl/velocity.json` and
-`target/types/velocity.ts`, and the scripts only copy them into `packages/sdk/src/idl/`, so no
-separate `anchor idl build` or `anchor idl type` step is needed after a full build.
+`program:build` already ends with `program:idl`, so no separate IDL step is needed after a full
+build.
+
+The other programs' IDLs are separate and `program:build` does not touch them: run
+`bun run program:idl:vaults`, `program:idl:jit-proxy` or `program:idl:revenue-router`. Use the
+scripts rather than calling `anchor` directly; `build-idl.sh` checks that the `anchor` on PATH
+matches `Anchor.toml`.
 
 To build the TypeScript workspace, run `bun run build` (which is `turbo run build`), or
 `bunx turbo run build --filter=@velocity-exchange/sdk` for the SDK and its dependencies.

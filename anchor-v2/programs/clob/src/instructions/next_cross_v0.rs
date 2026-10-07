@@ -43,10 +43,11 @@ pub fn handle_next_cross_v0(ctx: &mut Context<MarketViewV0>) -> Result<NextCross
 /// still returns the crossing order. A corrupt list fails the call, because an
 /// empty answer reads as a book with no cross.
 fn head(market: &ClobMarketV0, side: SideV0, slot: u64, now: i64) -> Result<OrderViewV0> {
-    let mut reservation = CrossReservation::new(market, side, slot, now, false);
+    let mut reservation = CrossReservation::new(market, side, slot, false);
     let mut found = OrderViewV0::NONE;
     walk_side_ref(market, side, |index, node| {
-        if !is_live(node, slot, now) || reservation.claimed(market, node)? >= node.base_asset_amount
+        if !is_live(node, slot, now, market.reservation_grace_slots)
+            || reservation.claimed(market, node)? >= node.base_asset_amount
         {
             return Ok(Walk::Continue);
         }

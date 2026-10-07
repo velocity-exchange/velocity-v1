@@ -49,8 +49,8 @@
 //! Two consequences follow. The owner pays taker fees when a counterparty
 //! crosses the order, which is the price of demanding liquidity. The order also
 //! cannot be cancelled until `reservation_grace_slots` after its activation
-//! slot, so a trigger commits its owner for that window. A liquidation force-cancel stays exempt, and `max_ts`
-//! still bounds the order's life.
+//! slot, so a trigger commits its owner for that window. A liquidation force-cancel stays exempt.
+//! `max_ts` ends the order's life, but not before the window ends.
 //!
 //! Stop-markets never come here. `trigger_market_order_v1` fires them, fills
 //! them through the router, and rests only the remainder. A fired market order

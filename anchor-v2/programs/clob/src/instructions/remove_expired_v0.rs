@@ -21,7 +21,7 @@ pub fn handle_remove_expired_v0(
 ) -> Result<RemovedOrderV0> {
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
-    let removed = market.remove_expired(args.order_ref, clock.unix_timestamp)?;
+    let removed = market.remove_expired(args.order_ref, clock.slot, clock.unix_timestamp)?;
     market.expire_activation_hint(clock.slot)?;
 
     emit_removal!(OrderExpireRecordV0, removed, clock, market.market_index);

@@ -3459,7 +3459,9 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     let (node_index, clob_order_id) = maker.orders[0].clob_order_ref();
     assert_eq!(clob_ask_count(&fixture), 1);
 
-    // Expire the CLOB order: the expiry crank frees the shadow for good.
+    // Expire the CLOB order: the expiry crank frees the shadow for good. The
+    // fired order rests taker-origin, so it cannot expire until its claim lapses.
+    fixture.svm.warp_to_slot(19 + RESERVATION_GRACE_SLOTS);
     let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
     clock.unix_timestamp += 2_000;
     fixture.svm.set_sysvar(&clock);

@@ -102,7 +102,7 @@ use {
 };
 pub(crate) use {
     arena::{validate_evict_threshold, BookHeader},
-    reservation::{evictable_order, CrossReservation},
+    reservation::{evictable_order, is_past_expiry, CrossReservation},
     walk::{is_live, walk_side_ref, Walk},
 };
 
@@ -138,8 +138,13 @@ pub trait ClobBook {
         force: bool,
         removed_ids: &mut dyn FnMut(u32) -> Result<()>,
     ) -> Result<CancelAllOutcomeV0>;
-    fn evict_worst(&mut self, side: SideV0, slot: u64) -> Result<RemovedOrderV0>;
-    fn remove_expired(&mut self, order_ref: ClobOrderRefV0, now: i64) -> Result<RemovedOrderV0>;
+    fn evict_worst(&mut self, side: SideV0, slot: u64, now: i64) -> Result<RemovedOrderV0>;
+    fn remove_expired(
+        &mut self,
+        order_ref: ClobOrderRefV0,
+        slot: u64,
+        now: i64,
+    ) -> Result<RemovedOrderV0>;
     fn fill(
         &mut self,
         order_ref: ClobOrderRefV0,
@@ -222,12 +227,17 @@ impl ClobBook for ClobMarketV0 {
         placement::cancel_all(self, user, sides, force, removed_ids)
     }
 
-    fn evict_worst(&mut self, side: SideV0, slot: u64) -> Result<RemovedOrderV0> {
-        placement::evict_worst(self, side, slot)
+    fn evict_worst(&mut self, side: SideV0, slot: u64, now: i64) -> Result<RemovedOrderV0> {
+        placement::evict_worst(self, side, slot, now)
     }
 
-    fn remove_expired(&mut self, order_ref: ClobOrderRefV0, now: i64) -> Result<RemovedOrderV0> {
-        placement::remove_expired(self, order_ref, now)
+    fn remove_expired(
+        &mut self,
+        order_ref: ClobOrderRefV0,
+        slot: u64,
+        now: i64,
+    ) -> Result<RemovedOrderV0> {
+        placement::remove_expired(self, order_ref, slot, now)
     }
 
     fn fill(

@@ -80,7 +80,7 @@ pub enum ClobError {
     /// `reservation_grace_slots` after that. A taker that could withdraw while
     /// the claim holds would have a free option on that depth, at the cost of
     /// the makers who priced against it. The bind ends when the claim lapses.
-    /// `max_ts` still expires the order, and liquidation passes `force`.
+    /// `max_ts` cannot end it early. Liquidation passes `force`.
     #[msg("Taker-origin remainder is bound until its claim lapses")]
     TakerOriginBound,
     /// Only a taker remainder aggresses, so only a taker remainder can be
@@ -90,6 +90,9 @@ pub enum ClobError {
     OrderNotTakerOrigin,
     #[msg("Fill is larger than the order has left")]
     FillExceedsOrder,
+    /// @deprecated Nothing raises this any more. The numeric code stays so
+    /// nothing else claims it. A bound remainder outlives its `max_ts` until
+    /// its claim lapses, so the book needs no wall-clock guess at slot length.
     #[msg("max_ts falls inside the order's own activation delay")]
     MaxTsBeforeActivation,
     #[msg("Market still holds orders and cannot be closed")]

@@ -189,9 +189,6 @@ pub enum RestRefusal {
     ExpiryPassed,
     /// The requested activation delay is above the book's maximum.
     DelayAboveMaximum,
-    /// The expiry falls inside the activation delay, so nothing could match
-    /// the order.
-    ExpiresBeforeActivation,
     /// The side the remainder would rest on holds every order it can.
     SideAtCapacity,
     /// The owner is bankrupt.
@@ -210,9 +207,7 @@ impl RestRefusal {
             RestRefusal::SizeBelowMinimum => ErrorCode::InvalidOrderMinOrderSize,
             RestRefusal::SizeOffStep => ErrorCode::InvalidOrderNotStepSizeMultiple,
             RestRefusal::PriceOffTick => ErrorCode::InvalidOrderLimitPrice,
-            RestRefusal::ExpiryPassed | RestRefusal::ExpiresBeforeActivation => {
-                ErrorCode::InvalidOrderMaxTs
-            }
+            RestRefusal::ExpiryPassed => ErrorCode::InvalidOrderMaxTs,
             RestRefusal::DelayAboveMaximum => ErrorCode::InvalidOrder,
             RestRefusal::SideAtCapacity | RestRefusal::PositionAtOrderLimit => {
                 ErrorCode::MaxNumberOfOrders
@@ -233,7 +228,6 @@ impl RestRefusal {
             | RestRefusal::PriceOffTick
             | RestRefusal::ExpiryPassed
             | RestRefusal::DelayAboveMaximum
-            | RestRefusal::ExpiresBeforeActivation
             | RestRefusal::SideAtCapacity
             | RestRefusal::OwnerBankrupt
             | RestRefusal::PositionAtOrderLimit => OrderActionExplanation::None,
@@ -309,10 +303,6 @@ pub fn rest_admission(
     let delay = activation_delay_slots.unwrap_or(rules.default_activation_delay_slots);
     if delay > rules.max_activation_delay_slots {
         return RestAdmission::Refused(RestRefusal::DelayAboveMaximum);
-    }
-
-    if clob_wire::expires_before_activation(max_ts, now, delay) {
-        return RestAdmission::Refused(RestRefusal::ExpiresBeforeActivation);
     }
 
     // The arena is shared, so each side holds at most half of it.
@@ -930,7 +920,9 @@ mod rest_admission_tests {
     }
 
     #[test]
-    fn an_expiry_inside_the_default_delay_is_refused() {
+    /// The book keeps a taker remainder past its `max_ts` until its claim
+    /// lapses, so an expiry inside the delay still leaves it time to fill.
+    fn an_expiry_inside_the_default_delay_rests() {
         let mut rules = rules();
         rules.default_activation_delay_slots = 10;
         let admission = rest_admission(
@@ -943,10 +935,7 @@ mod rest_admission_tests {
             100,
         );
 
-        assert_eq!(
-            refusal(admission),
-            Some(RestRefusal::ExpiresBeforeActivation)
-        );
+        assert_eq!(refusal(admission), None);
     }
 
     #[test]

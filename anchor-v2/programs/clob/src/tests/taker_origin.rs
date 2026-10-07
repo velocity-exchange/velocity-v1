@@ -20,6 +20,7 @@ use {
     crate::{
         book::{BookHeader, ClobBook, NodeArena},
         error::ClobError,
+        instructions::next_removal_v0::{expired, OrderViewV0},
         state::{
             CancelSidesV0, ClobMarketV0, ClobOrderRefV0, DirectionV0, L3ResponseV0, MarketConfigV0,
             OrderBitFlag, PlaceOrderParams, PriceLevelV0, QuoteResponseV0, SideV0, UserRefV0,
@@ -119,7 +120,7 @@ fn the_flag_rides_the_node_and_every_removal_reports_it() {
     // order in every other respect, so it can be the worst on its side or run
     // past its `max_ts` like any other.
     let evictable = place_taker_origin(&mut book, SideV0::Ask, 100, 5, maker);
-    let evicted = book.evict_worst(SideV0::Ask, ACTIVE_SLOT).unwrap();
+    let evicted = book.evict_worst(SideV0::Ask, ACTIVE_SLOT, 0).unwrap();
     assert_eq!(evicted.order_id, evictable.order_id);
     assert!(evicted.taker_origin);
 
@@ -130,7 +131,11 @@ fn the_flag_rides_the_node_and_every_removal_reports_it() {
             ..params(SideV0::Ask, 100, 5, maker)
         })
         .unwrap();
-    assert!(book.remove_expired(expiring, 1_001).unwrap().taker_origin);
+    assert!(
+        book.remove_expired(expiring, ACTIVE_SLOT, 1_001)
+            .unwrap()
+            .taker_origin
+    );
 }
 
 /// The whole point of the marker: a taker remainder resting at 101 with a maker
@@ -566,10 +571,10 @@ fn a_bound_remainder_cannot_be_cancelled_until_its_claim_lapses() {
 }
 
 /// Eviction is a permissionless crank, so it must not be a way for the owner
-/// to pull a bound remainder. It also cannot pass that remainder and charge a
-/// better-priced maker for the eviction.
+/// to pull a bound remainder that another owner's order crosses. It also cannot
+/// pass that remainder and charge a better-priced maker for the eviction.
 #[test]
-fn eviction_refuses_when_the_worst_order_is_a_bound_remainder() {
+fn eviction_refuses_when_the_worst_order_is_a_crossed_bound_remainder() {
     let market = TestMarket::new_with(
         16,
         MarketConfigV0 {
@@ -578,16 +583,17 @@ fn eviction_refuses_when_the_worst_order_is_a_bound_remainder() {
         },
     );
     let mut book = market.book();
-    let (taker, maker) = (user(0xA), user(0xB));
+    let (taker, maker, counterparty) = (user(0xA), user(0xB), user(0xC));
 
     let remainder = place_at(&mut book, SideV0::Bid, 100, 5, taker, 10, true);
     place(&mut book, SideV0::Bid, 103, 5, maker);
     place(&mut book, SideV0::Bid, 102, 5, maker);
     let next_worst = place(&mut book, SideV0::Bid, 101, 5, maker);
+    place(&mut book, SideV0::Ask, 100, 5, counterparty);
     assert_eq!(book.worst(SideV0::Bid), remainder.node_index);
 
     assert_err(
-        book.evict_worst(SideV0::Bid, 5),
+        book.evict_worst(SideV0::Bid, 5, 0),
         ClobError::TakerOriginBound,
     );
     assert_eq!(book.worst(SideV0::Bid), remainder.node_index);
@@ -596,14 +602,15 @@ fn eviction_refuses_when_the_worst_order_is_a_bound_remainder() {
 
     // Once the claim lapses the remainder is an ordinary tail again.
     place(&mut book, SideV0::Bid, 101, 5, maker);
-    let evicted = book.evict_worst(SideV0::Bid, 42).unwrap();
+    let evicted = book.evict_worst(SideV0::Bid, 42, 0).unwrap();
     assert_eq!(evicted.order_id, remainder.order_id);
     assert_consistent(&book);
 }
 
-/// A bound remainder at the tail blocks eviction until its claim lapses.
+/// A crossed bound remainder at the tail blocks eviction until its claim
+/// lapses, even when the whole side is remainders.
 #[test]
-fn eviction_refuses_a_side_of_bound_remainders() {
+fn eviction_refuses_a_side_of_crossed_bound_remainders() {
     let market = TestMarket::new_with(
         16,
         MarketConfigV0 {
@@ -616,13 +623,138 @@ fn eviction_refuses_a_side_of_bound_remainders() {
 
     place_at(&mut book, SideV0::Bid, 100, 5, taker, 10, true);
     place_at(&mut book, SideV0::Bid, 101, 5, taker, 10, true);
+    place(&mut book, SideV0::Ask, 100, 5, user(0xC));
 
     assert_err(
-        book.evict_worst(SideV0::Bid, 41),
+        book.evict_worst(SideV0::Bid, 41, 0),
         ClobError::TakerOriginBound,
     );
     assert_eq!(book.node_count(SideV0::Bid), 2);
-    assert!(book.evict_worst(SideV0::Bid, 42).unwrap().taker_origin);
+    assert!(book.evict_worst(SideV0::Bid, 42, 0).unwrap().taker_origin);
+    assert_consistent(&book);
+}
+
+/// A full side of cheap orders behind one far-priced bound remainder must
+/// still evict. The remainder crosses nothing, so it claims nothing, and its
+/// owner cannot keep the side full by placing a fresh one each claim window.
+#[test]
+fn eviction_takes_a_bound_remainder_that_crosses_nothing() {
+    let market = TestMarket::new_with(
+        16,
+        MarketConfigV0 {
+            evict_threshold_per_side: 3,
+            ..test_market_config()
+        },
+    );
+    let mut book = market.book();
+    let attacker = user(0xA);
+
+    place(&mut book, SideV0::Ask, 200, 5, attacker);
+    place(&mut book, SideV0::Ask, 201, 5, attacker);
+    let first = place_at(&mut book, SideV0::Ask, 500, 5, attacker, 10, true);
+    place(&mut book, SideV0::Bid, 100, 5, user(0xB));
+
+    let evicted = book.evict_worst(SideV0::Ask, 5, 0).unwrap();
+    assert_eq!(evicted.order_id, first.order_id);
+    assert_consistent(&book);
+
+    // A refresh lands bound again and is just as evictable.
+    let refreshed = place_at(&mut book, SideV0::Ask, 500, 5, attacker, 30, true);
+    let evicted = book.evict_worst(SideV0::Ask, 25, 0).unwrap();
+    assert_eq!(evicted.order_id, refreshed.order_id);
+    assert_consistent(&book);
+}
+
+/// A remainder crossed only by an order of its own authority has no
+/// counterparty the cross cranks fill it against, so that cross shields
+/// nothing. Another sub-account of the same authority is no counterparty
+/// either.
+#[test]
+fn eviction_takes_a_bound_remainder_its_own_authority_crosses() {
+    let market = TestMarket::new_with(
+        16,
+        MarketConfigV0 {
+            evict_threshold_per_side: 2,
+            ..test_market_config()
+        },
+    );
+    let mut book = market.book();
+    let attacker = user(0xA);
+
+    let other_sub_account = UserRefV0 {
+        sub_account_id: 1,
+        ..attacker
+    };
+
+    place(&mut book, SideV0::Ask, 200, 5, attacker);
+    let tail = place_at(&mut book, SideV0::Ask, 500, 5, attacker, 10, true);
+    place(&mut book, SideV0::Bid, 600, 5, other_sub_account);
+
+    assert_eq!(
+        book.evict_worst(SideV0::Ask, 5, 0).unwrap().order_id,
+        tail.order_id
+    );
+    assert_consistent(&book);
+}
+
+/// A best order still inside its delay cannot fill the tail yet, so it shields
+/// nothing either.
+#[test]
+fn eviction_takes_a_bound_remainder_crossed_only_by_a_pending_order() {
+    let market = TestMarket::new_with(
+        16,
+        MarketConfigV0 {
+            evict_threshold_per_side: 2,
+            ..test_market_config()
+        },
+    );
+    let mut book = market.book();
+    let attacker = user(0xA);
+
+    place(&mut book, SideV0::Ask, 200, 5, attacker);
+    let tail = place_at(&mut book, SideV0::Ask, 500, 5, attacker, 10, true);
+    place_at(&mut book, SideV0::Bid, 600, 5, user(0xB), 20, false);
+
+    assert_eq!(
+        book.evict_worst(SideV0::Ask, 5, 0).unwrap().order_id,
+        tail.order_id
+    );
+    assert_consistent(&book);
+}
+
+/// Expiry must not release a remainder from its claim early. The owner could
+/// otherwise set `max_ts` just past activation, let it lapse, and replace the
+/// order before the cross crank had the grace window to fill it.
+#[test]
+fn a_bound_remainder_outlives_its_max_ts_until_its_claim_lapses() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (taker, counterparty) = (user(0xA), user(0xB));
+
+    let remainder = book
+        .place(PlaceOrderParams {
+            activation_slot: 10,
+            max_ts: 1_000,
+            taker_origin: true,
+            ..params(SideV0::Bid, 100, 5, taker)
+        })
+        .unwrap();
+    place(&mut book, SideV0::Ask, 100, 5, counterparty);
+
+    assert_err(
+        book.remove_expired(remainder, 41, 1_001),
+        ClobError::OrderNotExpired,
+    );
+    assert_eq!(expired(&book, 41, 1_001).unwrap(), OrderViewV0::NONE);
+    assert!(!book.fill(remainder, 1, 41, 1_001).unwrap().removed);
+    assert_consistent(&book);
+
+    assert_eq!(expired(&book, 42, 1_001).unwrap().order_ref, remainder);
+    assert!(
+        book.remove_expired(remainder, 42, 1_001)
+            .unwrap()
+            .taker_origin
+    );
     assert_consistent(&book);
 }
 
@@ -1041,7 +1173,9 @@ fn every_removal_path_maintains_the_claimant_list() {
 
     // Eviction takes the tail, which is now also the head.
     assert_eq!(
-        book.evict_worst(SideV0::Bid, ACTIVE_SLOT).unwrap().order_id,
+        book.evict_worst(SideV0::Bid, ACTIVE_SLOT, 0)
+            .unwrap()
+            .order_id,
         evicted.order_id
     );
 
@@ -1049,7 +1183,7 @@ fn every_removal_path_maintains_the_claimant_list() {
     assert_eq!(book.claimant_count(SideV0::Bid), 0);
 
     // Expiry reclamation.
-    book.remove_expired(expiring, 1_001).unwrap();
+    book.remove_expired(expiring, ACTIVE_SLOT, 1_001).unwrap();
     assert_consistent(&book);
     assert_eq!(book.claimant_count(SideV0::Ask), 0);
 

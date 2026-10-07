@@ -4,7 +4,7 @@
 //! lapses.
 
 use {
-    super::{BookHeader, ClobBook, NodeArena},
+    super::{is_live, BookHeader, ClobBook, NodeArena},
     crate::{
         error::ClobError,
         state::{ClobMarketV0, OrderNodeV0, SideV0, NIL},
@@ -20,27 +20,68 @@ fn is_claim_lapsed(claimant: &OrderNodeV0, slot: u64, grace_slots: u64) -> bool 
 }
 
 /// A taker remainder whose claim the book still honours. Its owner cannot
-/// cancel it without `force`. The bind ends exactly when the claim lapses.
+/// cancel it without `force`, and its `max_ts` cannot expire it. The bind ends
+/// exactly when the claim lapses.
 pub(super) fn is_bound(node: &OrderNodeV0, slot: u64, grace_slots: u16) -> bool {
     node.is_taker_origin() && !is_claim_lapsed(node, slot, grace_slots as u64)
 }
 
+/// Past its `max_ts` and no longer bound. A remainder that could expire inside
+/// its claim window would escape its claim the way a cancel would.
+pub(crate) fn is_past_expiry(node: &OrderNodeV0, slot: u64, now: i64, grace_slots: u16) -> bool {
+    node.is_expired(now) && !is_bound(node, slot, grace_slots)
+}
+
 /// The worst-priced order on `side` that eviction may take, or [`NIL`] while
-/// that tail order is a bound remainder. Eviction never moves toward a better
-/// price: doing so would let a bound remainder protect a worse quote while an
-/// honest maker pays to lose a more competitive one.
-pub(crate) fn evictable_order(book: &ClobMarketV0, side: SideV0, slot: u64) -> Result<u32> {
+/// that tail order is shielded. Eviction never moves toward a better price:
+/// doing so would let a bound remainder protect a worse quote while an honest
+/// maker pays to lose a more competitive one.
+pub(crate) fn evictable_order(
+    book: &ClobMarketV0,
+    side: SideV0,
+    slot: u64,
+    now: i64,
+) -> Result<u32> {
     let worst = book.worst(side);
     if worst == NIL {
         return Ok(NIL);
     }
 
-    let node = book.read_node(worst)?;
-    Ok(if is_bound(&node, slot, book.reservation_grace_slots) {
+    let tail = book.read_node(worst)?;
+    Ok(if is_shielded_from_eviction(book, &tail, slot, now)? {
         NIL
     } else {
         worst
     })
+}
+
+/// A bound remainder keeps its place only while a live order of another
+/// authority crosses it. A remainder that crosses nothing claims nothing.
+/// Binding it would let one order at the tail block eviction on a full side.
+///
+/// Only the opposite best is read. A best that is inside its delay, or that
+/// the tail's authority holds on any sub-account, leaves the tail evictable.
+/// Velocity's cross cranks never fill one authority against itself.
+fn is_shielded_from_eviction(
+    book: &ClobMarketV0,
+    tail: &OrderNodeV0,
+    slot: u64,
+    now: i64,
+) -> Result<bool> {
+    let grace_slots = book.reservation_grace_slots;
+    if !is_bound(tail, slot, grace_slots) {
+        return Ok(false);
+    }
+
+    let best = book.best(tail.side().opposite());
+    if best == NIL {
+        return Ok(false);
+    }
+
+    let counterparty = book.read_node(best)?;
+    Ok(is_live(&counterparty, slot, now, grace_slots)
+        && counterparty.authority != tail.authority
+        && tail.side().is_crossed_by(tail.price, counterparty.price))
 }
 
 /// What a crossing taker remainder has claimed on the side being read, and what
@@ -55,7 +96,6 @@ pub(crate) struct CrossReservation {
     /// side as its cover.
     cover: SideV0,
     slot: u64,
-    now: i64,
     /// See [`crate::state::ClobHeaderV0::reservation_grace_slots`].
     grace_slots: u64,
     /// Floor on the units one claim withholds. See [`Self::claimed`].
@@ -88,14 +128,12 @@ impl CrossReservation {
         book: &ClobMarketV0,
         cover: SideV0,
         slot: u64,
-        now: i64,
         include_reserved: bool,
     ) -> Self {
         let claiming = cover.opposite();
         Self {
             cover,
             slot,
-            now,
             grace_slots: book.reservation_grace_slots as u64,
             min_order_size: book.min_order_size,
             include_reserved,
@@ -238,11 +276,10 @@ impl CrossReservation {
     }
 
     /// Whether this claimant still holds a claim on cover priced at
-    /// `cover_price`.
+    /// `cover_price`. A claimant whose claim has not lapsed is bound, so its
+    /// `max_ts` cannot end the claim early.
     fn honours(&self, claimant: &OrderNodeV0, cover_price: u64) -> bool {
-        !self.lapsed(claimant)
-            && !claimant.is_expired(self.now)
-            && self.cover.is_crossed_by(cover_price, claimant.price)
+        !self.lapsed(claimant) && self.cover.is_crossed_by(cover_price, claimant.price)
     }
 
     /// A claimant inside its delay is the ordinary case, and the claim is what

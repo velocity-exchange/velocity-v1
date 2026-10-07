@@ -22,7 +22,7 @@ pub fn handle_evict_worst_v0(
 ) -> Result<RemovedOrderV0> {
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
-    let removed = market.evict_worst(args.side, clock.slot)?;
+    let removed = market.evict_worst(args.side, clock.slot, clock.unix_timestamp)?;
     market.expire_activation_hint(clock.slot)?;
 
     emit_removal!(OrderEvictRecordV0, removed, clock, market.market_index);

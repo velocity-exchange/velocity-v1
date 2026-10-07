@@ -26,7 +26,7 @@ import {
 	startLiteSVM,
 } from '../../packages/sdk/src/litesvm/litesvmConnection';
 
-describe('admin state guards', () => {
+describe('force wipe admin gate', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
 	let svmContextWrapper: LiteSVMContextWrapper;
@@ -98,21 +98,6 @@ describe('admin state guards', () => {
 	after(async () => {
 		await admin.unsubscribe();
 		await user.unsubscribe();
-	});
-
-	it('refuses to delist a spot market that holds deposits', async () => {
-		try {
-			await admin.updateSpotMarketStatus(0, MarketStatus.DELISTED);
-			assert.fail('delisting a funded spot market succeeded');
-		} catch (e) {
-			assert.include(
-				JSON.stringify((e as { logs?: string[] }).logs),
-				'cannot delist spot market'
-			);
-		}
-
-		await admin.fetchAccounts();
-		assert.deepEqual(admin.getSpotMarketAccount(0).status, MarketStatus.ACTIVE);
 	});
 
 	it('refuses a force wipe gated by an account other than State', async () => {

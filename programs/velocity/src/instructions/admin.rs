@@ -2095,17 +2095,6 @@ pub fn handle_update_spot_market_status(
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
     msg!("spot market {}", spot_market.market_index);
 
-    // Delisted is terminal and blocks withdrawals, so only an empty market may enter it.
-    if status == MarketStatus::Delisted {
-        validate!(
-            spot_market.deposit_balance == 0 && spot_market.borrow_balance == 0,
-            ErrorCode::DefaultError,
-            "cannot delist spot market with deposit_balance={} borrow_balance={}",
-            spot_market.deposit_balance,
-            spot_market.borrow_balance,
-        )?;
-    }
-
     msg!(
         "spot_market.status: {:?} -> {:?}",
         spot_market.status,

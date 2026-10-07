@@ -11639,9 +11639,24 @@ fn a_part_filled_stop_market_arms_its_unfilled_part_again() {
         OrderTriggerCondition::Below,
         "the stop is armed again"
     );
-    assert_eq!(taker.orders[0].base_asset_amount, UNIT - UNIT / 10);
+    assert_eq!(
+        taker.orders[0].base_asset_amount, UNIT,
+        "the stop keeps its size"
+    );
+    assert_eq!(taker.orders[0].base_asset_amount_filled, UNIT / 10);
     assert_eq!(taker.perp_positions[0].open_orders, 1);
     assert_eq!(taker.open_orders, 1);
+
+    // The fire filled a tenth of the stop, so it earns a tenth of the reward.
+    let state: State = read_zero_copy(&fixture.svm, &state_pda());
+    let trigger = events::<velocity::state::events::OrderActionRecord>(&meta)
+        .into_iter()
+        .find(|record| record.action == velocity::state::events::OrderAction::Trigger)
+        .expect("the fire records the trigger");
+    assert_eq!(
+        trigger.filler_reward,
+        Some(state.perp_fee_structure.flat_filler_fee / 10)
+    );
 }
 
 /// Rest minimum-size asks far above the oracle until the book refuses one.

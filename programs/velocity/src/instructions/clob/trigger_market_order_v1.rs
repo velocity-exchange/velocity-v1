@@ -15,12 +15,15 @@
 //! or against the vAMM. The relay-staged cross crank carries no quoter, so a
 //! quoter's price does not reach the order on that path.
 //!
-//! A full book side refuses a fire that filled nothing, so the trigger stays
-//! armed until an eviction frees room. Every other refusal that can clear does
-//! the same. A refusal that comes from the order itself cancels the fire, and
-//! the keeper keeps the flat reward. A fire that filled part of the order
-//! keeps the fill and cancels the remainder the book refuses. The crank logs
-//! the cancelled size, and the rest path emits a cancel record for it.
+//! A refusal that can clear, such as a full book side, never cancels a fired
+//! stop. A fire that filled nothing fails, so the trigger stays armed. A fire
+//! that filled part keeps the fill and arms the unfilled part again. A refusal
+//! that comes from the order itself cancels the rest.
+//!
+//! The keeper earns the flat reward in shares. A fire earns the share of the
+//! stop's size that it used: what it filled when the stop is armed again, and
+//! all that was left when the stop is spent. A fire that fills dust earns
+//! dust, and only a fire that spends the stop draws reservoir lamports.
 //!
 //! The account set is the trigger keeper set plus the market's CLOB accounts
 //! the rest needs. `trigger_limit_order_v1` carries the same superset. CLOB
@@ -30,6 +33,7 @@
 use {
     crate::{
         controller,
+        controller::orders::FireOutcome,
         error::ErrorCode,
         instructions::{constraints::*, DetachedRemainder},
         load, load_mut,
@@ -206,26 +210,22 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     .keeper_fee(market_index, order_id)?;
 
     // Fire the trigger. This validates it, turns a copy of the slot order into
-    // a live market order, frees the slot, and pays the flat reward. `None`
-    // means there was no payable work. The order was past its `max_ts`, or it
-    // was cancelled unpaid because it had nothing to reduce or the account
-    // could not carry it. Either way, skip the fill and the reservoir payout.
-    let Some(controller::orders::FiredTrigger {
-        order: mut fired,
-        filler_reward,
-        armed,
-    }) = controller::orders::trigger_and_route_order(
+    // a live market order, and frees the slot. `None` means there was no
+    // payable work. The order was past its `max_ts`, or it was cancelled unpaid
+    // because it had nothing to reduce or the account could not carry it.
+    // Either way, skip the fill and the reservoir payout.
+    let trigger_accounts = controller::orders::TriggerAccounts {
+        user: &accounts.user,
+        user_stats: &accounts.user_stats,
+        filler: &accounts.filler,
+    };
+    let Some(fire) = controller::orders::trigger_and_route_order(
         controller::orders::OrderToFire {
             market_index,
             order_id,
         },
-        keeper_fee.quote,
         &state,
-        &controller::orders::TriggerAccounts {
-            user: &accounts.user,
-            user_stats: &accounts.user_stats,
-            filler: &accounts.filler,
-        },
+        &trigger_accounts,
         &mut maps,
         clock,
     )?
@@ -233,6 +233,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         return Ok(());
     };
 
+    let mut fired = fire.order;
     route_fill_fired_order(
         accounts,
         &mut maps,
@@ -242,11 +243,20 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         clock,
     )?;
 
-    let outcome = rest_fired_remainder(accounts, &mut maps, &fired, &armed, clock)?;
+    let outcome = rest_fired_remainder(accounts, &mut maps, &fired, &fire.armed, clock)?;
+    let filler_reward = controller::orders::pay_fired_trigger(
+        &fire,
+        &fired,
+        outcome,
+        keeper_fee.quote,
+        &trigger_accounts,
+        &mut maps,
+        clock,
+    )?;
 
-    // Pay the reservoir, and release the trigger wake slot unless the stop is
-    // armed again. Drop the state borrow first, because the reservoir payout
-    // loads state itself.
+    // A fire that arms the stop again earns only a share of the quote reward,
+    // so it draws no reservoir lamports and keeps the trigger wake slot. Drop
+    // the state borrow first, because the reservoir payout loads state itself.
     drop(state);
     super::helpers::crank_common::finish_trigger_crank(
         &accounts.state,
@@ -259,7 +269,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
             keeper_reward: filler_reward,
-            pay_lamports: keeper_fee.pay_lamports,
+            pay_lamports: keeper_fee.pay_lamports && outcome == FireOutcome::Spent,
             release_slot: outcome == FireOutcome::Spent,
         },
     )?;
@@ -368,9 +378,8 @@ fn route_fill_fired_order<'info>(
 /// trigger-market's worst price is stored relative to the oracle, so the rest
 /// price is read against the live oracle.
 ///
-/// A refusal that comes from the order itself cancels the remainder, and the
-/// keeper keeps the flat reward. Any other refusal can clear, so the stop must
-/// not lose the remainder to it. A fire that filled nothing fails the crank,
+/// A refusal that comes from the order itself cancels the remainder. Any other
+/// refusal can clear, so the stop must not lose the remainder to it. A fire that filled nothing fails the crank,
 /// so the trigger stays armed and nothing is paid. A fire that filled part
 /// cannot be undone, so the unfilled part is armed again in its slot.
 fn rest_fired_remainder<'info>(
@@ -421,17 +430,8 @@ fn rest_fired_remainder<'info>(
         reason,
         unfilled
     );
-    controller::orders::re_arm_fired_trigger(&mut *load_mut!(accounts.user)?, armed, unfilled)?;
+    controller::orders::re_arm_fired_trigger(&mut *load_mut!(accounts.user)?, armed, fired)?;
     Ok(FireOutcome::ReArmed)
-}
-
-/// What a fired stop-market leaves in its slot.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FireOutcome {
-    /// The order filled, rests on the book, or was cancelled.
-    Spent,
-    /// The unfilled part is armed again, and its relay watch stays.
-    ReArmed,
 }
 
 /// The relay resolver for `trigger_market_order_v1`. It is simulation-only and

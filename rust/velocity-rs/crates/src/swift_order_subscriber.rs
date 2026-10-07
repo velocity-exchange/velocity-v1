@@ -37,6 +37,51 @@ pub const SWIFT_MAINNET_WS_URL: &str = "wss://swift.velocity.exchange";
 
 const LOG_TARGET: &str = "swift";
 
+/// The ws-server nonce is 30 alphanumeric characters. An order signature covers
+/// the hex of a borsh order message, which is far longer than this bound.
+const MAX_CHALLENGE_NONCE_LEN: usize = 64;
+
+/// Prefix for the signed auth challenge when the server advertises it in `auth_domain`.
+/// An order message never starts with it, so an auth signature cannot be an order signature.
+pub const SWIFT_AUTH_DOMAIN: &str = "velocity-swift-auth:v1:";
+
+/// The bytes a client signs for an auth challenge when the server advertises the domain.
+pub fn domain_separated_challenge(nonce: &str) -> Vec<u8> {
+    [SWIFT_AUTH_DOMAIN.as_bytes(), nonce.as_bytes()].concat()
+}
+
+/// The signed reply to the server's auth challenge, as the JSON text to send.
+fn auth_challenge_response(wallet: &Wallet, auth_message: &Value) -> SdkResult<String> {
+    let nonce = auth_message["nonce"].as_str().unwrap_or_default();
+    if !is_valid_challenge_nonce(nonce) {
+        log::error!(
+            target: LOG_TARGET,
+            "swift server sent a malformed auth nonce of length {}; not signing it",
+            nonce.len()
+        );
+        return Err(SdkError::WebsocketError);
+    }
+
+    let challenge = if auth_message["auth_domain"] == SWIFT_AUTH_DOMAIN {
+        domain_separated_challenge(nonce)
+    } else {
+        nonce.as_bytes().to_vec()
+    };
+    let signature = wallet.sign_message(&challenge).expect("infallible");
+
+    Ok(json!({
+        "pubkey": wallet.authority().to_string(),
+        "signature": base64::engine::general_purpose::STANDARD.encode(signature.as_ref()),
+    })
+    .to_string())
+}
+
+fn is_valid_challenge_nonce(nonce: &str) -> bool {
+    !nonce.is_empty()
+        && nonce.len() <= MAX_CHALLENGE_NONCE_LEN
+        && nonce.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 /// Common fields of signed message types
 pub struct SignedMessageInfo {
     pub taker_pubkey: Pubkey,
@@ -449,19 +494,7 @@ pub async fn subscribe_swift_orders(
 
             // authenticate with Ws server
             if message["channel"] == "auth" && message.get("nonce").is_some() {
-                let nonce = message["nonce"].as_str().expect("got nonce");
-                let signature = client
-                    .wallet()
-                    .sign_message(nonce.as_bytes())
-                    .expect("infallible");
-                let signature_b64 =
-                    base64::engine::general_purpose::STANDARD.encode(signature.as_ref());
-
-                let auth_message = json!({
-                    "pubkey": maker_pubkey,
-                    "signature": signature_b64,
-                })
-                .to_string();
+                let auth_message = auth_challenge_response(client.wallet(), &message)?;
                 outgoing.send(Message::Text(auth_message.into())).await?;
                 continue;
             }
@@ -944,5 +977,23 @@ mod tests {
         } else {
             panic!("unexpected variant");
         }
+    }
+
+    #[test]
+    fn challenge_nonce_refuses_order_message_hex() {
+        assert!(is_valid_challenge_nonce("aZ09aZ09aZ09aZ09aZ09aZ09aZ09xy"));
+
+        let order_message_hex = "ab".repeat(33);
+        assert!(!is_valid_challenge_nonce(&order_message_hex));
+        assert!(!is_valid_challenge_nonce(""));
+        assert!(!is_valid_challenge_nonce("abc def"));
+    }
+
+    #[test]
+    fn domain_separated_challenge_prefixes_auth_domain() {
+        assert_eq!(
+            domain_separated_challenge("abc"),
+            b"velocity-swift-auth:v1:abc".to_vec()
+        );
     }
 }

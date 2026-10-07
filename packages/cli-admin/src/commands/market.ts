@@ -67,6 +67,36 @@ const snake = (name: string): string =>
  * field list makes a missing value a loud error. `overrides` carries what
  * cannot come from the params file as written, keyed by snake_case name.
  */
+/**
+ * The `oracle_source` of a params entry as an Anchor enum value. The oracle
+ * account is a Lazer PDA, so only a `PythLazer*` variant of the IDL can price it.
+ */
+function lazerOracleSource(
+	idl: any,
+	params: any,
+	kind: string
+): Record<string, Record<string, never>> {
+	const lowerFirst = (name: string) =>
+		name.charAt(0).toLowerCase() + name.slice(1);
+	const oracleSourceType = idl.types?.find(
+		(t: any) => lowerFirst(t.name) === 'oracleSource'
+	);
+	const lazerVariants: string[] = (oracleSourceType?.type?.variants ?? [])
+		.map((v: any) => lowerFirst(v.name))
+		.filter((name: string) => name.startsWith('pythLazer'));
+
+	const source = lowerFirst(String(params.oracle_source ?? 'PythLazer'));
+	if (!lazerVariants.includes(source)) {
+		throw new Error(
+			`${kind} params for "${params.name}" have oracle_source ` +
+				`${params.oracle_source}; this command lists markets on one of: ` +
+				lazerVariants.join(', ')
+		);
+	}
+
+	return { [source]: {} };
+}
+
 function structFromParams(
 	idl: any,
 	typeName: string,
@@ -473,6 +503,9 @@ export function registerMarket(parent: Command): void {
 				}
 				return m.lazer_feed_id as number;
 			};
+			const lazerSourceOf = (m: any, kind: string) =>
+				lazerOracleSource(client.program.idl, m, kind);
+
 			const spotFeed = spot ? feedOf(spot, 'spot') : undefined;
 			const perpFeed = perp ? feedOf(perp, 'perp') : undefined;
 			const spotOracle =
@@ -562,7 +595,7 @@ export function registerMarket(parent: Command): void {
 										'InitializeSpotMarketArgs',
 										spot,
 										{
-											oracle_source: { pythLazer: {} },
+											oracle_source: lazerSourceOf(spot, 'spot'),
 											asset_tier: {
 												[String(spot.asset_tier).toLowerCase()]: {},
 											},
@@ -609,7 +642,7 @@ export function registerMarket(parent: Command): void {
 										'InitializePerpMarketArgs',
 										perp,
 										{
-											oracle_source: { pythLazer: {} },
+											oracle_source: lazerSourceOf(perp, 'perp'),
 											contract_tier: {
 												[String(perp.contract_tier).toLowerCase()]: {},
 											},

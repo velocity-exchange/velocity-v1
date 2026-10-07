@@ -34,7 +34,7 @@ export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-z -C link-arg=defs"
 case "$FLAVOR" in
   test)    VELOCITY_ARGS=(--no-default-features --features no-entrypoint,anchor-test); ROUTER_ARGS=(--features anchor-test) ;;
   devnet)  VELOCITY_ARGS=(--no-default-features --features no-entrypoint,isolated-position,vlp-hedge); ROUTER_ARGS=(--no-default-features) ;;
-  mainnet) VELOCITY_ARGS=(); ROUTER_ARGS=() ;;
+  mainnet) VELOCITY_ARGS=(--features mainnet-beta); ROUTER_ARGS=() ;;
   *) echo "unknown flavor: $FLAVOR (want test|devnet|mainnet)" >&2; exit 1 ;;
 esac
 
@@ -83,3 +83,7 @@ ls -la "$OUT_DIR"/*.so
 
 # Anza migration step 4: verify the emitted bytecode is the version we asked for.
 SBPF_ARCH="$SBPF_ARCH" bash "$(dirname "$0")/assert-sbpf-version.sh" "$OUT_DIR"/*.so
+
+if [ "$FLAVOR" = mainnet ] && [ -f "$OUT_DIR/velocity.so" ]; then
+  bash "$(dirname "$0")/assert-mainnet-flavor.sh" "$OUT_DIR/velocity.so"
+fi

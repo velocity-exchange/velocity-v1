@@ -78,13 +78,10 @@ jobs:
           rpc-url: ${{ secrets.MAINNET_RPC_ENDPOINT }}
           keypair: ${{ secrets.MAINNET_DEPLOYER_KEYPAIR }}
           buffer-authority: ${{ vars.MAINNET_MULTISIG_VAULT }}
-          # Record an on-chain solana-verify PDA (source proof) in the proposal.
-          # DISABLED until this repo is public: `solana-verify export-pda-tx` does an
-          # anonymous `git clone` of repo-url on the runner, which fails for a private
-          # repo ("Failed to clone repository"). The verify PDA is only meaningful once
-          # third parties can clone the source to reproduce the build, so flip this back
-          # to "true" when the repo is open-sourced.
-          export-verify-pda: "false"
+          # Record an on-chain solana-verify PDA in the proposal, so anyone can
+          # rebuild this commit and check it against the deployed program.
+          export-verify-pda: "true"
+          verify-base-image: ${{ env.VERIFIABLE_BUILD_IMAGE }}
           repo-url: ${{ github.server_url }}/${{ github.repository }}
           commit-hash: ${{ github.sha }}
 

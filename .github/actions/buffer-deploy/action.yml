@@ -3,9 +3,9 @@ description: >
   Stages a Squads-controlled program upgrade using the Solana Foundation
   `prepare-squads-release` action: it writes `target/deploy/<program>.so` to a
   BPF Upgradeable Loader buffer (resumable — re-writes only missing chunks on
-  retry), `target/idl/<program>.json` to a program-metadata buffer, optionally
-  exports a solana-verify PDA transaction, and transfers both buffer authorities
-  to the multisig vault. With `uploader: paced` the program buffer is written by
+  retry), `target/idl/<program>.json` to a program-metadata buffer, and transfers
+  both buffer authorities to the multisig vault. It optionally exports a
+  solana-verify PDA transaction itself, with the verifiable build's arguments. With `uploader: paced` the program buffer is written by
   deploy-scripts/upload-program-buffer.cjs instead, which paces its RPC requests
   and backs off on HTTP 429; the IDL buffer still goes through the Solana
   Foundation `write-metadata-buffer` action. It then re-emits the verify-before-approving summary
@@ -52,6 +52,10 @@ inputs:
     description: "Git commit to verify against (required when export-verify-pda is true)"
     required: false
     default: ""
+  verify-base-image:
+    description: "Docker image the verifiable build ran in (required when export-verify-pda is true)"
+    required: false
+    default: ""
 
 outputs:
   buffer:
@@ -62,7 +66,7 @@ outputs:
     value: ${{ steps.paced-metadata.outputs.buffer || steps.prepare.outputs.metadata-buffer }}
   pda-tx:
     description: "Base64-encoded solana-verify PDA transaction (empty unless export-verify-pda)"
-    value: ${{ steps.prepare.outputs.pda-tx }}
+    value: ${{ steps.export-verify-pda.outputs.pda-tx }}
 
 runs:
   using: "composite"
@@ -107,9 +111,49 @@ runs:
         program-buffer-use-rpc: "true"
         program-buffer-retry-attempts: "5"
         program-buffer-max-sign-attempts: "50"
-        export-verify-pda: ${{ inputs.export-verify-pda }}
-        repo-url: ${{ inputs.repo-url }}
-        commit-hash: ${{ inputs.commit-hash }}
+        # The step below exports the verify PDA. This action records no --arch or
+        # platform-tools version, so its PDA would rebuild to a different hash.
+        export-verify-pda: "false"
+
+    # The PDA stores the build arguments that verifiers rebuild with. They must
+    # match the "Verifiable build" step in .github/actions/build-program.
+    - name: Export verify PDA transaction
+      id: export-verify-pda
+      if: inputs.export-verify-pda == 'true'
+      shell: bash
+      env:
+        REPO_URL: ${{ inputs.repo-url }}
+        COMMIT_HASH: ${{ inputs.commit-hash }}
+        BASE_IMAGE: ${{ inputs.verify-base-image }}
+        PROGRAM: ${{ inputs.program }}
+        PROGRAM_ID: ${{ inputs.program-id }}
+        UPLOADER: ${{ inputs.buffer-authority }}
+        RPC_URL: ${{ inputs.rpc-url }}
+      run: |
+        set -euo pipefail
+        for name in REPO_URL COMMIT_HASH BASE_IMAGE; do
+          if [ -z "${!name}" ]; then
+            echo "::error::$name is required when export-verify-pda is true"
+            exit 1
+          fi
+        done
+
+        TX="$(solana-verify export-pda-tx "$REPO_URL" \
+          --program-id "$PROGRAM_ID" \
+          --uploader "$UPLOADER" \
+          --commit-hash "$COMMIT_HASH" \
+          --url "$RPC_URL" \
+          --library-name "$PROGRAM" \
+          --base-image "$BASE_IMAGE" \
+          --arch v3 \
+          --cargo-build-sbf-args=--tools-version=v1.57 \
+          --encoding base64 | tail -n 1)"
+        if [[ ! "$TX" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+          echo "::error::solana-verify export-pda-tx did not print a base64 transaction"
+          exit 1
+        fi
+
+        echo "pda-tx=$TX" >> "$GITHUB_OUTPUT"
 
     - name: Install paced uploader dependency
       if: inputs.uploader == 'paced'

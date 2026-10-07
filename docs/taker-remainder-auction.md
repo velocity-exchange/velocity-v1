@@ -214,8 +214,10 @@ takes the tail of a side at its threshold and never passes it for a better price
 tail blocked it, one owner could fill a side with cheap orders, rest a far-priced remainder at the
 tail, and place a fresh one each claim window. The side would stay full for good. A remainder that
 crosses nothing claims nothing, so `evict_worst_v0` takes it. The book reads only the opposite
-best. That order must be live, held by another authority, and crossing the tail. The cross
-cranks never fill one authority against itself, so a second sub-account does not count. A tail that crosses
+best. That order must be a live maker order of another authority, and it must cross the tail.
+The cross cranks never fill one authority against itself, so a second sub-account does not
+count. A pair of remainders waits while the vAMM quotes nothing, so a remainder does not count
+either. A tail that crosses
 the best is a side that crosses as a whole, and the cross cranks can fill it from its activation
 until the claim lapses.
 

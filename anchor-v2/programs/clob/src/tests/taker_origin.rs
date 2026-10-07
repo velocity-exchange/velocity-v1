@@ -722,6 +722,31 @@ fn eviction_takes_a_bound_remainder_crossed_only_by_a_pending_order() {
     assert_consistent(&book);
 }
 
+/// A crossed pair of remainders waits while the vAMM quotes nothing, so a
+/// remainder on the other side shields nothing.
+#[test]
+fn eviction_takes_a_bound_remainder_crossed_only_by_another_remainder() {
+    let market = TestMarket::new_with(
+        16,
+        MarketConfigV0 {
+            evict_threshold_per_side: 2,
+            ..test_market_config()
+        },
+    );
+    let mut book = market.book();
+    let attacker = user(0xA);
+
+    place(&mut book, SideV0::Ask, 200, 5, attacker);
+    let tail = place_at(&mut book, SideV0::Ask, 500, 5, attacker, 10, true);
+    place_at(&mut book, SideV0::Bid, 600, 5, user(0xB), 0, true);
+
+    assert_eq!(
+        book.evict_worst(SideV0::Ask, 5, 0).unwrap().order_id,
+        tail.order_id
+    );
+    assert_consistent(&book);
+}
+
 /// Expiry must not release a remainder from its claim early. The owner could
 /// otherwise set `max_ts` just past activation, let it lapse, and replace the
 /// order before the cross crank had the grace window to fill it.

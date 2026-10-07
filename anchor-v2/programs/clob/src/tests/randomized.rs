@@ -618,7 +618,7 @@ fn is_matchable(book: &ClobMarketV0, node: &OrderNodeV0, slot: u64, now: i64) ->
 }
 
 /// A tail eviction must leave, recomputed from the rule: a bound remainder that
-/// a matchable best order of another authority crosses.
+/// a matchable best maker order of another authority crosses.
 fn is_shielded_tail(book: &ClobMarketV0, side: SideV0, slot: u64, now: i64) -> bool {
     let tail = book.read_node(book.worst(side)).unwrap();
     let Some(&(_, best)) = best_first(book, side.opposite()).first() else {
@@ -627,6 +627,7 @@ fn is_shielded_tail(book: &ClobMarketV0, side: SideV0, slot: u64, now: i64) -> b
 
     is_bound(book, &tail, slot)
         && is_matchable(book, &best, slot, now)
+        && !best.is_taker_origin()
         && best.authority != tail.authority
         && side.is_crossed_by(tail.price, best.price)
 }

@@ -25,7 +25,7 @@
 //! cancelled rather than placed, and the keeper earns the flat reward. Those
 //! refusals come from the order, so every later crank would meet them again.
 //! A full side is a state of the book that an eviction clears. The crank then
-//! fails and the trigger stays armed.
+//! fails and the trigger stays armed, as for every refusal that can clear.
 //!
 //! Re-triggering after an eviction runs behind an edge gate, which is
 //! [`OrderBitFlag::AwaitingTriggerRecross`]. While the flag is set, a crank
@@ -486,9 +486,10 @@ impl TriggerLimitCrank<'_, '_> {
 
         let price = match admission {
             RestAdmission::Admitted { price } => price,
-            // A full side is not the order's fault, so the trigger stays armed.
-            RestAdmission::Refused(RestRefusal::SideAtCapacity) => {
-                return Err(RestRefusal::SideAtCapacity.error_code().into());
+            // A refusal that can clear is not the order's fault, so the
+            // trigger stays armed.
+            RestAdmission::Refused(reason) if !reason.is_permanent() => {
+                return Err(reason.error_code().into());
             }
             RestAdmission::Refused(reason) => {
                 cancel_refused_trigger(

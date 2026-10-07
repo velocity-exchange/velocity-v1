@@ -200,6 +200,24 @@ pub enum RestRefusal {
 }
 
 impl RestRefusal {
+    /// The refusal comes from the order's own terms, so every later attempt
+    /// meets it again. Any other refusal is a state of the book or the account
+    /// that can clear.
+    pub fn is_permanent(self) -> bool {
+        match self {
+            RestRefusal::SizeBelowMinimum
+            | RestRefusal::SizeOffStep
+            | RestRefusal::PriceOffTick
+            | RestRefusal::ExpiryPassed
+            | RestRefusal::DelayAboveMaximum => true,
+            RestRefusal::BookClosed
+            | RestRefusal::SideAtCapacity
+            | RestRefusal::OwnerBankrupt
+            | RestRefusal::PositionAtOrderLimit
+            | RestRefusal::FailsMarginGate => false,
+        }
+    }
+
     /// The error of a placement that must rest, such as a maker quote.
     pub fn error_code(self) -> ErrorCode {
         match self {
@@ -481,7 +499,7 @@ pub fn rest_remainder_on_clob<'info>(
             placed.is_isolated_position,
         )?,
         RestOutcome::Refused(reason) => {
-            msg!("book refuses the remainder ({:?}); stays cancelled", reason);
+            msg!("book refuses the remainder ({:?})", reason);
         }
     }
 
@@ -493,6 +511,9 @@ pub struct DetachedRemainderTerms {
     /// The oracle an `OracleTriggerMarket` offset is relative to.
     pub rest_oracle_price: Option<i64>,
     pub activation_delay_slots: Option<u32>,
+    /// Fail the call on a refusal that can clear, rather than cancel the part.
+    /// A fired trigger that filled nothing sets this, so it stays armed.
+    pub fail_on_temporary_refusal: bool,
 }
 
 /// Rest the unfilled part of a detached taker order, or record its cancel.
@@ -515,6 +536,13 @@ pub fn rest_or_cancel_detached_remainder<'info>(
     let explanation = match detached_remainder_rest(accounts, maps, order, terms, clock)? {
         RemainderRest::Rested(clob_order_id) => return Ok(Some(clob_order_id)),
         RemainderRest::Cancelled(explanation) => explanation,
+        RemainderRest::Refused(reason) => {
+            if terms.fail_on_temporary_refusal && !reason.is_permanent() {
+                return Err(reason.error_code().into());
+            }
+
+            reason.cancel_explanation()
+        }
     };
 
     controller::orders::emit_detached_cancel_record(
@@ -533,6 +561,7 @@ pub fn rest_or_cancel_detached_remainder<'info>(
 enum RemainderRest {
     Rested(u64),
     Cancelled(OrderActionExplanation),
+    Refused(RestRefusal),
 }
 
 fn detached_remainder_rest<'info>(
@@ -589,7 +618,7 @@ fn detached_remainder_rest<'info>(
 
     Ok(match outcome {
         RestOutcome::Placed(placed) => RemainderRest::Rested(placed.clob_order_id),
-        RestOutcome::Refused(reason) => RemainderRest::Cancelled(reason.cancel_explanation()),
+        RestOutcome::Refused(reason) => RemainderRest::Refused(reason),
     })
 }
 
@@ -1145,6 +1174,7 @@ mod detached_remainder_tests {
         let terms = DetachedRemainderTerms {
             rest_oracle_price: None,
             activation_delay_slots: None,
+            fail_on_temporary_refusal: false,
         };
 
         let Ok(rest) =
@@ -1159,6 +1189,7 @@ mod detached_remainder_tests {
     fn cancelled_with(rest: RemainderRest) -> Option<OrderActionExplanation> {
         match rest {
             RemainderRest::Cancelled(explanation) => Some(explanation),
+            RemainderRest::Refused(reason) => Some(reason.cancel_explanation()),
             RemainderRest::Rested(_) => None,
         }
     }

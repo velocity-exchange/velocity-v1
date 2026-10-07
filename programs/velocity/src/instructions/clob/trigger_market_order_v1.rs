@@ -16,8 +16,10 @@
 //! quoter's price does not reach the order on that path.
 //!
 //! A full book side refuses a fire that filled nothing, so the trigger stays
-//! armed until an eviction frees room. A fire that filled part of the order
-//! keeps the fill and cancels the remainder the side refuses. The crank logs
+//! armed until an eviction frees room. Every other refusal that can clear does
+//! the same. A refusal that comes from the order itself cancels the fire, and
+//! the keeper keeps the flat reward. A fire that filled part of the order
+//! keeps the fill and cancels the remainder the book refuses. The crank logs
 //! the cancelled size, and the rest path emits a cancel record for it.
 //!
 //! The account set is the trigger keeper set plus the market's CLOB accounts
@@ -419,10 +421,11 @@ fn route_fill_fired_order<'info>(
 /// trigger-market's worst price is stored relative to the oracle, so the rest
 /// price is read against the live oracle.
 ///
-/// A remainder that cannot rest is lost. The trigger slot was freed and the
-/// flat reward charged before the fill ran, and the fill already moved the
-/// position, so nothing can be restored. The lost remainder emits a cancel
-/// record instead.
+/// A fire that filled part of the order cannot be undone, so a remainder that
+/// cannot rest is lost and emits a cancel record. A fire that filled nothing
+/// cancels only on a refusal that comes from the order itself, and the keeper
+/// keeps the flat reward for it. Any other refusal fails the crank, so the
+/// trigger stays armed and nothing is paid.
 fn rest_fired_remainder<'info>(
     accounts: &TriggerMarketOrderV1<'info>,
     maps: &mut crate::instructions::optional_accounts::AccountMaps<'info>,
@@ -450,6 +453,7 @@ fn rest_fired_remainder<'info>(
         &crate::instructions::DetachedRemainderTerms {
             rest_oracle_price: Some(rest_oracle_price),
             activation_delay_slots: None,
+            fail_on_temporary_refusal: fired.base_asset_amount_filled == 0,
         },
         clock,
     )?;

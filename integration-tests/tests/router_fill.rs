@@ -11442,6 +11442,126 @@ fn trigger_market_order_v1_fires_a_stop_market_straight_to_the_book() {
     );
 }
 
+/// A fired stop-market that fills nothing and meets a refusal that can clear
+/// fails the crank. The trigger stays armed and the keeper is not paid.
+///
+/// A reduce-only stop passes the fire's margin gate, which only gates risk
+/// that grows. The rest still needs maintenance margin, so an account under
+/// maintenance but not yet in liquidation fails it. That refusal must not
+/// cancel the stop-loss the account needs most.
+#[test]
+fn a_fired_stop_market_stays_armed_when_its_rest_meets_a_refusal_that_can_clear() {
+    use velocity::state::user::OrderTriggerCondition;
+
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    // A sell-stop that closes a long of one unit bought at 100.
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Short;
+    order.base_asset_amount = UNIT;
+    order.reduce_only = true;
+    order.trigger_price = 101 * PRICE;
+    order.trigger_condition = OrderTriggerCondition::Below;
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    order.max_ts = clock.unix_timestamp + 1_000;
+
+    // One unit of collateral against a 5% maintenance requirement on 100 of
+    // notional.
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_state =
+        armed_trigger_user(&taker_authority.pubkey(), SPOT_BALANCE_PRECISION_U64, order);
+
+    let position = &mut taker_state.perp_positions[0];
+    position.base_asset_amount = UNIT as i64;
+    position.quote_asset_amount = -((100 * PRICE) as i64);
+    position.quote_entry_amount = -((100 * PRICE) as i64);
+    position.quote_break_even_amount = -((100 * PRICE) as i64);
+    position.open_asks = -(UNIT as i64);
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let mut accounts = velocity::accounts::TriggerMarketOrderV1 {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        crank_conditions: None,
+        trigger_conditions: user_conditions_pda(&taker_user),
+        ix_sysvar: Some(instructions_sysvar()),
+        sol_spot_market: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::TriggerMarketOrderV1 {
+            args: TriggerMarketOrderV1Args {
+                market_index: 0,
+                order_id: 1,
+                signed_route: vec![],
+            },
+        }
+        .data(),
+    };
+
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&err, ErrorCode::InsufficientCollateral);
+
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(taker.orders[0].status, OrderStatus::Open);
+    assert_eq!(
+        taker.orders[0].trigger_condition,
+        OrderTriggerCondition::Below,
+        "the stop is still armed"
+    );
+    assert_eq!(clob_ask_count(&fixture), 0);
+    let filler: User = read_zero_copy(&fixture.svm, &filler_user);
+    assert_eq!(
+        filler.spot_positions[0].scaled_balance, 0,
+        "the keeper is not paid"
+    );
+}
+
 /// The arbitrage crank cannot reach a crossed taker remainder's cover.
 ///
 /// The remainder claims the depth it crosses, and claimed depth leaves the

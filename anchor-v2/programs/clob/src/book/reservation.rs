@@ -55,13 +55,13 @@ pub(crate) fn evictable_order(
     })
 }
 
-/// A bound remainder keeps its place only while a live order of another
+/// A bound remainder keeps its place only while a live maker order of another
 /// authority crosses it. A remainder that crosses nothing claims nothing.
 /// Binding it would let one order at the tail block eviction on a full side.
 ///
-/// Only the opposite best is read. A best that is inside its delay, or that
-/// the tail's authority holds on any sub-account, leaves the tail evictable.
-/// Velocity's cross cranks never fill one authority against itself.
+/// Only the opposite best is read, and it must be an order the cross cranks
+/// fill the tail against. They never fill one authority against itself, and a
+/// pair of remainders waits while the vAMM quotes nothing.
 fn is_shielded_from_eviction(
     book: &ClobMarketV0,
     tail: &OrderNodeV0,
@@ -80,6 +80,7 @@ fn is_shielded_from_eviction(
 
     let counterparty = book.read_node(best)?;
     Ok(is_live(&counterparty, slot, now, grace_slots)
+        && !counterparty.is_taker_origin()
         && counterparty.authority != tail.authority
         && tail.side().is_crossed_by(tail.price, counterparty.price))
 }

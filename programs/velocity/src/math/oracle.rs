@@ -10,7 +10,7 @@ use {
             time::{legacy_slot_duration_i64_raw, DelayOverride, Millis, SlotClock},
         },
         state::{
-            oracle::{OraclePriceData, OracleSource},
+            oracle::{HistoricalOracleData, OraclePriceData, OracleSource},
             paused_operations::PerpOperation,
             perp_market::PerpMarket,
             state::{OracleGuardRails, PriceDivergenceGuardRails, ValidityGuardRails},
@@ -265,11 +265,32 @@ pub fn is_oracle_valid_for_action(
     Ok(is_ok)
 }
 
+/// The oracle reading a gate judges, and the TWAPs and mark it judges the reading against.
+#[derive(Clone, Copy)]
+pub struct OracleGateInputs<'a> {
+    pub price_data: &'a OraclePriceData,
+    pub oracle_twaps: &'a HistoricalOracleData,
+    pub reserve_price: u64,
+}
+
+impl<'a> OracleGateInputs<'a> {
+    pub fn with_current_twaps(
+        market: &'a PerpMarket,
+        price_data: &'a OraclePriceData,
+        reserve_price: u64,
+    ) -> Self {
+        Self {
+            price_data,
+            oracle_twaps: &market.market_stats.historical_oracle_data,
+            reserve_price,
+        }
+    }
+}
+
 pub fn block_operation(
     market: &PerpMarket,
-    oracle_price_data: &OraclePriceData,
+    inputs: OracleGateInputs,
     guard_rails: &OracleGuardRails,
-    reserve_price: u64,
     slot: u64,
     slot_clock: SlotClock,
 ) -> VelocityResult<bool> {
@@ -277,14 +298,7 @@ pub fn block_operation(
         oracle_validity,
         mark_too_divergent: is_oracle_mark_too_divergent,
         ..
-    } = get_oracle_status(
-        market,
-        oracle_price_data,
-        guard_rails,
-        reserve_price,
-        slot,
-        slot_clock,
-    )?;
+    } = get_oracle_status(market, inputs, guard_rails, slot, slot_clock)?;
     let is_oracle_valid =
         is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::UpdateFunding))?;
 
@@ -322,9 +336,8 @@ pub struct OracleStatus {
 
 pub fn get_oracle_status(
     market: &PerpMarket,
-    oracle_price_data: &OraclePriceData,
+    inputs: OracleGateInputs,
     guard_rails: &OracleGuardRails,
-    reserve_price: u64,
     slot: u64,
     slot_clock: SlotClock,
 ) -> VelocityResult<OracleStatus> {
@@ -333,11 +346,8 @@ pub fn get_oracle_status(
     let oracle_validity = oracle_validity(
         MarketType::Perp,
         market.market_index,
-        market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap,
-        oracle_price_data,
+        inputs.oracle_twaps.last_oracle_price_twap,
+        inputs.price_data,
         &guard_rails.validity,
         market.get_max_confidence_interval_multiplier()?,
         &market.oracle_source,
@@ -348,17 +358,16 @@ pub fn get_oracle_status(
         slot,
         slot_clock,
     )?;
-    let oracle_reserve_price_spread_pct = market
-        .market_stats
-        .historical_oracle_data
-        .twap_5min_spread_pct(reserve_price)?;
+    let oracle_reserve_price_spread_pct = inputs
+        .oracle_twaps
+        .twap_5min_spread_pct(inputs.reserve_price)?;
     let is_oracle_mark_too_divergent = is_mark_oracle_too_divergent(
         oracle_reserve_price_spread_pct,
         &guard_rails.price_divergence,
     )?;
 
     Ok(OracleStatus {
-        price_data: *oracle_price_data,
+        price_data: *inputs.price_data,
         oracle_reserve_price_spread_pct,
         mark_too_divergent: is_oracle_mark_too_divergent,
         oracle_validity,

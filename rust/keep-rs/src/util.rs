@@ -716,7 +716,7 @@ pub fn project_perp_oracle(
 /// Classifies `exchange_oracle` (already aged to `slot`) and the safe price
 /// the program selects from it, as `update_amm_and_check_validity` and
 /// `fill_perp_order` do. `uses_pyth_update` is always false here.
-pub fn classify_perp_oracle(
+fn classify_perp_oracle(
     market: &PerpMarket,
     exchange_oracle: OraclePriceData,
     slot: u64,

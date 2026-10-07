@@ -1438,12 +1438,12 @@ async fn try_auction_fill(
 
         tx_builder = tx_builder.with_priority_fee(priority_fee, Some(cu_limit));
 
+        // A cross skipped below drops its tx, so the post moves to the next cross that sends.
         let mut includes_oracle_update = false;
         if let Some(ref update_msg) = oracle_update {
             if !sent_oracle_update {
                 tx_builder = tx_builder
                     .post_pyth_lazer_oracle_update(&[update_msg.feed_id], &update_msg.message);
-                sent_oracle_update = true;
                 includes_oracle_update = true;
             }
         }
@@ -1698,6 +1698,8 @@ async fn try_auction_fill(
                 effective_cu_limit as u64,
             )
             .await;
+
+        sent_oracle_update |= includes_oracle_update;
     }
 }
 

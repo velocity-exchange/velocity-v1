@@ -3,7 +3,7 @@ use {
         constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault},
         declare_vault_seeds, refresh_velocity_spot_market,
         state::{Vault, VaultProtocolProvider},
-        token_cpi::TokenTransferCPI,
+        token_cpi::{validate_transit_settled, TokenTransferCPI},
         velocity_cpi::DepositCPI,
         AccountMapProvider,
     },
@@ -69,9 +69,14 @@ pub fn manager_deposit<'info>(
     drop(user);
     drop(vp);
 
+    let transit_balance_before = ctx.accounts.vault_token_account.amount;
     ctx.token_transfer(amount)?;
 
     ctx.velocity_deposit(amount)?;
+    validate_transit_settled(
+        &mut ctx.accounts.vault_token_account,
+        transit_balance_before,
+    )?;
 
     Ok(())
 }

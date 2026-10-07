@@ -63,6 +63,8 @@ pub enum ErrorCode {
     InvalidBorrowAmount,
     #[msg("InvalidRepayAmount")]
     InvalidRepayAmount,
+    #[msg("DepositNotFullySettled")]
+    DepositNotFullySettled,
 }
 
 impl From<VelocityErrorCode> for ErrorCode {

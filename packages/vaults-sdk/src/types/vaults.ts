@@ -3413,6 +3413,11 @@ export type Vaults = {
 			name: 'invalidRepayAmount';
 			msg: 'invalidRepayAmount';
 		},
+		{
+			code: 6029;
+			name: 'depositNotFullySettled';
+			msg: 'depositNotFullySettled';
+		},
 	];
 	types: [
 		{

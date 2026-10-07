@@ -7,7 +7,7 @@ use {
             events::{ManagerRepayRecord, ManagerUpdateBorrowRecord},
             FeeUpdateProvider, FeeUpdateStatus, VaultProtocolProvider,
         },
-        token_cpi::TokenTransferCPI,
+        token_cpi::{validate_transit_settled, TokenTransferCPI},
         validate,
         velocity_cpi::ManagerRepayCPI,
         AccountMapProvider, Vault,
@@ -103,8 +103,13 @@ pub fn manager_repay<'info>(
     drop(user);
     drop(vp);
 
+    let transit_balance_before = ctx.accounts.vault_token_account.amount;
     ctx.token_transfer(repay_amount)?;
     ctx.velocity_deposit(repay_spot_market_index, repay_amount)?;
+    validate_transit_settled(
+        &mut ctx.accounts.vault_token_account,
+        transit_balance_before,
+    )?;
 
     let vault = ctx.accounts.vault.load_mut()?;
     let user = ctx.accounts.velocity_user.load()?;

@@ -4045,6 +4045,11 @@
       "code": 6028,
       "name": "InvalidRepayAmount",
       "msg": "InvalidRepayAmount"
+    },
+    {
+      "code": 6029,
+      "name": "DepositNotFullySettled",
+      "msg": "DepositNotFullySettled"
     }
   ],
   "types": [

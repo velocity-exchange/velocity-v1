@@ -996,4 +996,32 @@ mod tests {
             b"velocity-swift-auth:v1:abc".to_vec()
         );
     }
+
+    /// The server accepts both forms, so only this test fails if the client stops
+    /// reading `auth_domain` from the server's auth message.
+    #[test]
+    fn auth_response_signs_the_advertised_domain() {
+        let wallet = Wallet::new(Keypair::new());
+        let pubkey = wallet.authority().to_bytes();
+        let nonce = "aZ09aZ09aZ09aZ09aZ09aZ09aZ09xy";
+        let signature_for = |auth_message: Value| {
+            let response: Value =
+                serde_json::from_str(&auth_challenge_response(&wallet, &auth_message).unwrap())
+                    .unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(response["signature"].as_str().unwrap())
+                .unwrap();
+            Signature::try_from(bytes.as_slice()).unwrap()
+        };
+
+        let advertised = signature_for(json!({ "nonce": nonce, "auth_domain": SWIFT_AUTH_DOMAIN }));
+        assert!(advertised.verify(&pubkey, &domain_separated_challenge(nonce)));
+        assert!(!advertised.verify(&pubkey, nonce.as_bytes()));
+
+        let not_advertised = signature_for(json!({ "nonce": nonce }));
+        assert!(not_advertised.verify(&pubkey, nonce.as_bytes()));
+
+        let unknown_domain = signature_for(json!({ "nonce": nonce, "auth_domain": "other:" }));
+        assert!(unknown_domain.verify(&pubkey, nonce.as_bytes()));
+    }
 }

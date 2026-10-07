@@ -694,6 +694,7 @@ pub fn project_perp_oracle(
             (None, _) => false,
         }
     });
+
     if uses_pyth_update {
         exchange_oracle = previewed_oracle?;
     }
@@ -703,22 +704,20 @@ pub fn project_perp_oracle(
     classify_perp_oracle(
         market,
         exchange_oracle,
+        uses_pyth_update,
         slot,
         &validity_guard_rails,
         slot_clock_from_state(&state),
     )
-    .map(|projected| ProjectedPerpOracle {
-        uses_pyth_update,
-        ..projected
-    })
 }
 
 /// Classifies `exchange_oracle` (already aged to `slot`) and the safe price
 /// the program selects from it, as `update_amm_and_check_validity` and
-/// `fill_perp_order` do. `uses_pyth_update` is always false here.
+/// `fill_perp_order` do.
 fn classify_perp_oracle(
     market: &PerpMarket,
     exchange_oracle: OraclePriceData,
+    uses_pyth_update: bool,
     slot: u64,
     validity_guard_rails: &ValidityGuardRails,
     slot_clock: SlotClock,
@@ -760,7 +759,7 @@ fn classify_perp_oracle(
         exchange_validity,
         safe,
         safe_validity,
-        uses_pyth_update: false,
+        uses_pyth_update,
     })
 }
 
@@ -1215,6 +1214,7 @@ mod tests {
             },
             types::{accounts::PerpMarket, OraclePriceData},
         };
+
         let guard_rails = ValidityGuardRails {
             slots_before_stale_for_amm: legacy_slot_duration_i64(10),
             slots_before_stale_for_margin: legacy_slot_duration_i64(120),
@@ -1235,6 +1235,7 @@ mod tests {
             let projected = classify_perp_oracle(
                 market,
                 exchange(delay),
+                delay == 0,
                 slot,
                 &guard_rails,
                 SlotClock::baseline(),

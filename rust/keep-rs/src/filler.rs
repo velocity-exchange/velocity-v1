@@ -501,7 +501,9 @@ impl FillerBot {
                                 .pyth_price_age_ms
                                 .with_label_values(&[&market_index.to_string()])
                                 .set((age_us / 1_000) as i64);
-                            if !is_stale && oracle_price != p.price {
+                            // A same-price post still refreshes the oracle slot, which the
+                            // immediate vAMM leg needs.
+                            if !is_stale {
                                 oracle_price = p.price;
                                 pyth_update = Some(p.clone());
                             }

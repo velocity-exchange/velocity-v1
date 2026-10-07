@@ -103,12 +103,6 @@ function flatten(
 			}))
 		);
 	}
-
-	// An argument must never vanish from a preview, even when it has no fields.
-	if (out.length === 0) {
-		return [{ path: prefix || 'value', value: formatValue(value) }];
-	}
-
 	return out;
 }
 

@@ -1,6 +1,12 @@
 import { program, Option } from 'commander';
 import { logger, setLogLevel } from '../logger';
 import {
+	resolveDryRun,
+	applyDryRunFlag,
+	refuseBundleSends,
+	refuseSends,
+} from '../dryRun';
+import {
 	Config,
 	configHasBot,
 	loadConfigFromFile,
@@ -105,6 +111,9 @@ if (opts.configFile) {
 	logger.info(`Loading config from command line options`);
 	config = loadConfigFromOpts(opts);
 }
+
+applyDryRunFlag(config, opts.dryRun ?? false);
+const sendsDisabled = resolveDryRun(config);
 logger.info(
 	`Bot config:\n${JSON.stringify(
 		config,
@@ -225,6 +234,15 @@ const runBot = async () => {
 	const marketLookupTables = configs[
 		config.global.velocityEnv || 'mainnet-beta'
 	].MARKET_LOOKUP_TABLES.map((lut) => new PublicKey(lut));
+	if (sendsDisabled) {
+		logger.warn(
+			'Every enabled bot is in dry run: transaction sends are disabled'
+		);
+		[connection, sendTxConnection, ...additionalConnections].forEach(
+			refuseSends
+		);
+	}
+
 	const velocityClientConfig: VelocityClientConfig = {
 		connection,
 		wallet,
@@ -286,6 +304,9 @@ const runBot = async () => {
 			config.global.jitoMaxBundleFailCount,
 			config.global.jitoTipMultiplier
 		);
+		if (sendsDisabled) {
+			refuseBundleSends(bundleSender);
+		}
 		await bundleSender.subscribe();
 	}
 

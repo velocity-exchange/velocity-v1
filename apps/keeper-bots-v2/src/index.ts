@@ -69,6 +69,12 @@ import {
 	loadConfigFromFile,
 	loadConfigFromOpts,
 } from './config';
+import {
+	resolveDryRun,
+	applyDryRunFlag,
+	refuseBundleSends,
+	refuseSends,
+} from './dryRun';
 import { FundingRateUpdaterBot } from './bots/fundingRateUpdater';
 import { FillerLiteBot } from './bots/fillerLite';
 import { MakerBidAskTwapCrank } from './bots/makerBidAskTwapCrank';
@@ -227,6 +233,9 @@ if (opts.configFile) {
 	logger.info(`Loading config from command line options`);
 	config = loadConfigFromOpts(opts);
 }
+
+applyDryRunFlag(config, opts.dryRun ?? false);
+const sendsDisabled = resolveDryRun(config);
 logger.info(
 	`Bot config:\n${JSON.stringify(
 		config,
@@ -389,6 +398,10 @@ const runBot = async () => {
 				})
 		);
 
+		if (sendsDisabled) {
+			submitConnections.forEach(refuseSends);
+		}
+
 		txSender = new JetProxyTxSender({
 			connection: sendTxConnection,
 			submitConnections,
@@ -438,6 +451,15 @@ const runBot = async () => {
 		config.global.spotMarketsToLoad
 	);
 	const oracleInfos = marketsAndOracleInfos.oracleInfos;
+	if (sendsDisabled) {
+		logger.warn(
+			'Every enabled bot is in dry run: transaction sends are disabled'
+		);
+		[connection, sendTxConnection, ...additionalConnections].forEach(
+			refuseSends
+		);
+	}
+
 	const velocityClientConfig = {
 		connection,
 		wallet,
@@ -541,6 +563,9 @@ const runBot = async () => {
 			config.global.jitoMaxBundleFailCount,
 			config.global.jitoTipMultiplier
 		);
+		if (sendsDisabled) {
+			refuseBundleSends(bundleSender);
+		}
 		await bundleSender.subscribe();
 	}
 

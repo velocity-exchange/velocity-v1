@@ -1014,6 +1014,17 @@ export async function swapFillerHardEarnedUSDCForSOL(
 				userPublicKey: velocityClient.provider.wallet.publicKey,
 			});
 
+		// A route never needs Velocity. A Velocity withdraw in it can move the bot's collateral.
+		if (
+			jupiterInstructions.some((ix) =>
+				ix.programId.equals(velocityClient.program.programId)
+			)
+		) {
+			throw new Error(
+				'swap route contains a Velocity instruction; not signing it'
+			);
+		}
+
 		const preInstructions = [];
 
 		const withdrawerWrappedSolAta = getAssociatedTokenAddressSync(

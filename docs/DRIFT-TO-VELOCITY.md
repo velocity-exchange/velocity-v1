@@ -1345,6 +1345,7 @@ long carry a one-line summary here and a link into §6.2.
 | stale-curve-fill-routing | See the `#317 stale-curve-fill-routing` row above |
 | swap-twap-write-after-check | Restore the oracle-TWAP refresh that the #110 and #111 fix dropped from the two split begin and end swap lanes, on the far side of their own gates. `begin_swap` and `liquidate_spot_with_swap_begin` pass `None` so neither can refresh the anchor its band check reads, which closed the finding but left both lanes contributing nothing to the oracle EMA, so a swap-heavy market depended on other paths and on the permissionless crank to keep its TWAP fresh. `end_swap` now advances both markets' oracle TWAPs through `update_spot_market_twap_stats` after `validate_price_bands_for_swap`, and `liquidate_spot_with_swap_end` does the same after every check in its lane. The check still reads the pre-swap value, and `begin_swap`'s instruction introspection forbids any Velocity instruction after the end instruction, so nothing else in the transaction can read the new value. `begin_swap` leaves `last_oracle_price_twap_ts` alone, so the deferred update still weights the full elapsed interval, and the deposit, borrow and utilization TWAPs were already advanced in the begin instruction and are a no-op in the end instruction. This grants no capability a caller did not already have, since `update_spot_market_cumulative_interest` is permissionless and advances the same TWAPs. Program-internal ordering only, with no account-layout, IDL, error-code or SDK change |
 | swift-resting-limit-placement | `place_signed_msg_taker_order` accepts a resting limit, meaning a limit order with no auction, ahead of its message slot. For such an order the message slot is the placement deadline rather than an auction start, so `max_slot = order_slot + 0`, and with the #470 gate rejecting `order_slot > clock.slot` the order was placeable in exactly one slot and never landed. Clients stamp a no-auction limit its whole signing budget, about 14s, ahead (`@velocity-exchange/common` `MINIMUM_SWIFT_NON_AUCTION_ORDER_SIGNING_BUDGET_MS`), which under Drift was placed before the stamp arrived. The future-slot rejection now applies only to orders with an auction. A resting limit stamped ahead is accepted while the lead is within 30s (`max_resting_limit_lead`, and the UI stamps about 14s), and still rejected with `InvalidSignedMsgOrderParam` (6288) beyond it. The stored order slot is unchanged at `min(clock.slot, message slot)`, and the `max_slot < clock.slot` no-op still applies after the stamp. keep-rs places a resting limit on arrival instead of deferring it, since its 10s deferral bound dropped the roughly 14s stamp outright. The TS filler mirrors the gate via the new SDK `signedMsgOrderPlaceable` (§4.6) but still ignores no-auction signed-msg orders in `dlobBuilder`, so keep-rs remains the placer of resting swift limits. Rollout: deploy the program upgrade before the keep-rs release, because keep-rs against the old program sends a place tx per resting swift limit that fails with 6288, which is the same net outcome as dropping it plus the fee. Side effect: a resting limit's `SignedMsgOrderId.max_slot` is now its future stamp, so the entry occupies the per-user id ring for the lead plus the eviction buffer, about 18s for the UI's stamp and up to about 34s at the bound, instead of about 4s. A burst of resting swift limits can therefore reach `SignedMsgUserOrdersAccountFull` sooner. No account-layout, IDL or error-code change |
+| tokenized-issued-supply | Fix a bug in the `vaults` program, where an incumbent could burn wrapper tokens directly through the SPL Token program to shrink the mint supply that `tokenize_shares` priced from, and capture a later tokenizer's deposit. [Details](#tokenized-issued-supply) |
 | tokenized-pooled-basis-gate | Fix a High audit finding (OtterSec #140) in the `vaults` program, where a newcomer tokenizing into an under-water tokenized depositor captured part of the existing holders' loss shelter. [Details](#tokenized-pooled-basis-gate) |
 | tokenized-rebase-backing | Fix a Medium audit finding (OtterSec #122) in the `vaults` program, where the signerless `apply_rebase_tokenized_depositor` could floor a tokenized depositor's backing shares to zero while the mint supply was live. [Details](#tokenized-rebase-backing) |
 | transfer-perp-position-stale-interest | Close the remaining #135 gaps: paths that checked margin without the borrow-interest freshness gate, so a stale `cumulative_borrow_interest` understated the account's debt. Now gated: `transfer_perp_position` (both accounts, as on the perp fill), `special_transfer_perp_position_to_vamm`, the cross-to-isolated direction of `transfer_isolated_perp_position_deposit`, and the liquidator side of `liquidate_perp`, `liquidate_spot`, `liquidate_borrow_for_perp_pnl` and `liquidate_perp_pnl_for_deposit`. Each can now revert with `SpotMarketInterestStaleForMargin` (6371). Prepend the permissionless `update_spot_market_cumulative_interest` crank (`getStaleSpotInterestCrankIxs`) to avoid it. The keeper-bots-v2 and keep-rs liquidators now do this for their own account, and the SDK does it on every cross-to-isolated deposit transfer it builds (`transferIsolatedPerpPositionDeposit` with a positive amount, and the `isolatedPositionDepositAmount` option on order placement). [Details](#fill-stale-margin-bad-debt) |
@@ -2561,6 +2562,35 @@ provider-generic `getProviderSwapIx`.
 
 This is a breaking SDK surface change only, with no program, account-layout, IDL or error-code
 change. See §4.3 and §4.6.
+
+#### tokenized-issued-supply
+
+Fixes a bug in the `vaults` program. `tokenize_shares` and `redeem_tokens`
+converted between shares and wrapper tokens using the live `mint.supply`. Any holder can shrink
+that supply by burning tokens directly through the SPL Token program, which the vaults program
+never sees, so the tokenized depositor's `vault_shares` stayed put. After burning the supply down
+to one base unit, an incumbent made the next tokenizer's mint round down to one token while that
+tokenizer's full shares joined the pool, and then redeemed half the combined backing. Burning the
+supply to zero instead made every later tokenization mint zero tokens and fail.
+
+`TokenizedVaultDepositor` now carries `issued_supply`: tokens the program minted minus tokens it
+burned. The state-level `tokenize_shares` and `redeem_tokens` price from it and update it, and
+take no supply argument. A direct burn leaves the counter unchanged, so the price per token cannot
+be moved from outside. The shares behind burned tokens stay in the pool and nobody can redeem
+them, which is the burner's own loss.
+
+When a `redeem_tokens` call burns the whole live supply, the shares that remain back only tokens
+burned outside the program. The program removes them from `vault.total_shares` and
+`vault.user_shares`, so every vault depositor gains pro rata. It then zeroes `issued_supply` and
+clears the orphaned cost basis. Without this step, one burned base unit kept the pool from ever
+emptying, and an under-water pool then refused every later tokenization. The shares stay if they
+are the whole vault, because a vault with zero shares gives its equity to the next depositor.
+
+Account layout: `issued_supply: u64` takes the first word of the trailing padding, which is now
+`[u64; 9]`, and `SIZE` is unchanged. The IDL gains the field. No instruction signature, account
+list or error-code change. No `TokenizedVaultDepositor` account existed on mainnet or devnet when
+this shipped, so there is no migration. An account created before the change would read
+`issued_supply == 0` with a live supply, and both conversions fail closed on it.
 
 #### tokenized-pooled-basis-gate
 

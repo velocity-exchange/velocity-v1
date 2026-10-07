@@ -61,7 +61,10 @@ pub struct TokenizedVaultDepositor {
     /// The bump for the vault pda
     pub bump: u8,
     pub padding1: [u8; 3],
-    pub padding: [u64; 10],
+    /// tokens this program has minted minus tokens it has burned. Prices tokenize and redeem
+    /// instead of `mint.supply`, which any holder can shrink with a direct SPL burn.
+    issued_supply: u64,
+    pub padding: [u64; 9],
 }
 
 impl Size for TokenizedVaultDepositor {
@@ -157,7 +160,8 @@ impl TokenizedVaultDepositor {
             hurdle_rate_at_basis: vault.hurdle_rate,
             bump,
             padding1: [0; 3],
-            padding: [0; 10],
+            issued_supply: 0,
+            padding: [0; 9],
         }
     }
 
@@ -228,7 +232,6 @@ impl TokenizedVaultDepositor {
         vault: &mut Vault,
         vault_protocol: &mut Option<RefMut<VaultProtocol>>,
         fee_update: &mut Option<AccountLoader<FeeUpdate>>,
-        mint_supply: u64,
         vault_equity: u64,
         shares_transferred: u128,
         now: i64,
@@ -306,17 +309,19 @@ impl TokenizedVaultDepositor {
 
         let tokens_to_mint = vault_amount_to_depositor_shares(
             shares_transferred.cast()?,
-            mint_supply.cast()?,
+            self.issued_supply.cast()?,
             self.last_vault_shares.cast()?,
         )?;
 
         msg!(
-            "shares_transferred: {}, tokenized_vd.last_vault_shares: {}, token_supply_before: {}, tokens_to_mint: {}",
+            "shares_transferred: {}, tokenized_vd.last_vault_shares: {}, issued_supply_before: {}, tokens_to_mint: {}",
             shares_transferred,
             self.last_vault_shares,
-            mint_supply,
+            self.issued_supply,
             tokens_to_mint
         );
+
+        self.issued_supply = self.issued_supply.safe_add(tokens_to_mint.cast()?)?;
 
         self.last_vault_shares = self.checked_vault_shares(vault)?;
 
@@ -381,7 +386,6 @@ impl TokenizedVaultDepositor {
         vault: &mut Vault,
         vault_protocol: &mut Option<RefMut<'a, VaultProtocol>>,
         fee_update: &mut Option<AccountLoader<FeeUpdate>>,
-        mint_supply: u64,
         vault_equity: u64,
         tokens_to_burn: u64,
         now: i64,
@@ -410,17 +414,19 @@ impl TokenizedVaultDepositor {
 
         let shares_to_redeem = depositor_shares_to_vault_amount(
             tokens_to_burn.cast()?,
-            mint_supply.cast()?,
+            self.issued_supply.cast()?,
             self.last_vault_shares.cast()?,
         )?;
 
         msg!(
-            "tokens_to_burn: {}, tokenized_vd.vault_shares: {}, token_supply_before: {}, shares_to_redeem: {}",
+            "tokens_to_burn: {}, tokenized_vd.vault_shares: {}, issued_supply_before: {}, shares_to_redeem: {}",
             tokens_to_burn,
             self.last_vault_shares,
-            mint_supply,
+            self.issued_supply,
             shares_to_redeem
         );
+
+        self.issued_supply = self.issued_supply.safe_sub(tokens_to_burn)?;
 
         match vault_protocol {
             None => {
@@ -477,6 +483,10 @@ impl TokenizedVaultDepositor {
         Ok((shares_to_redeem, vault_protocol.take()))
     }
 
+    pub fn get_issued_supply(&self) -> u64 {
+        self.issued_supply
+    }
+
     /// #105: re-checkpoint `last_vault_shares` to the current `vault_shares`. The redeem
     /// instruction moves shares out of this tokenized depositor via `transfer_shares` *after*
     /// [`TokenizedVaultDepositor::redeem_tokens`] returns; without lowering the checkpoint to the
@@ -485,6 +495,28 @@ impl TokenizedVaultDepositor {
     /// can no longer hold). Callers must invoke this after the redeem share transfer completes.
     pub fn checkpoint_vault_shares(&mut self) {
         self.last_vault_shares = self.vault_shares;
+    }
+
+    /// Close out the pool once the live token supply reaches zero, and return the shares released.
+    ///
+    /// The shares that remain back tokens burned outside this program, so nobody can redeem them.
+    /// Releasing them gives every vault depositor a pro rata gain and lets the orphaned basis clear.
+    /// They stay if they are the whole vault, which would then give its equity to the next depositor.
+    pub fn release_unredeemable_shares(&mut self, vault: &mut Vault) -> Result<u128> {
+        let unredeemable_shares = self.get_vault_shares();
+        if unredeemable_shares > 0 && unredeemable_shares == vault.total_shares {
+            return Ok(0);
+        }
+
+        self.decrease_vault_shares(unredeemable_shares, vault)?;
+        vault.total_shares = vault.total_shares.safe_sub(unredeemable_shares)?;
+        vault.user_shares = vault.user_shares.safe_sub(unredeemable_shares)?;
+
+        self.last_vault_shares = 0;
+        self.issued_supply = 0;
+        self.reset_orphaned_cost_basis();
+
+        Ok(unredeemable_shares)
     }
 
     /// Clear the pooled cost basis once the pool holds no shares and no tokens (#140).
@@ -531,14 +563,12 @@ mod tests {
 
         assert_eq!(tvd.last_vault_shares, 0);
 
-        let mut total_supply = 0;
         let vault_equity = 1_000_000;
         let tokens_issued_1 = tvd
             .tokenize_shares(
                 vault,
                 &mut None,
                 &mut None,
-                total_supply,
                 vault_equity,
                 shares_transferred,
                 now,
@@ -550,8 +580,7 @@ mod tests {
         assert_eq!(tokens_issued_1, shares_transferred as u64);
         assert_eq!(tvd.last_vault_shares, tvd.vault_shares);
 
-        // emulate minting tokens
-        total_supply += tokens_issued_1;
+        assert_eq!(tvd.issued_supply, tokens_issued_1);
 
         // second tokenization is double the shares of first issuance``
         shares_transferred *= 2;
@@ -562,7 +591,6 @@ mod tests {
                 vault,
                 &mut None,
                 &mut None,
-                total_supply,
                 vault_equity,
                 shares_transferred,
                 now,
@@ -591,7 +619,8 @@ mod tests {
 
         assert_eq!(tvd.last_vault_shares, shares_transferred);
 
-        let total_supply = shares_transferred;
+        let total_supply = shares_transferred as u64;
+        tvd.issued_supply = total_supply;
         let vault_equity = 1_000_000;
 
         // redeem 50% of tokens
@@ -601,14 +630,14 @@ mod tests {
                 vault,
                 &mut None,
                 &mut None,
-                total_supply as u64,
                 vault_equity,
-                tokens_to_burn as u64,
+                tokens_to_burn,
                 now,
                 0,
             )
             .expect("redeem_tokens");
-        assert_eq!(shares_to_transfer.0, tokens_to_burn as u64);
+        assert_eq!(shares_to_transfer.0, tokens_to_burn);
+        assert_eq!(tvd.issued_supply, total_supply - tokens_to_burn);
         assert_eq!(tvd.last_vault_shares, tvd.vault_shares);
     }
 
@@ -623,14 +652,12 @@ mod tests {
 
         assert_eq!(tvd.last_vault_shares, 0);
 
-        let mut total_supply = 0;
         let mut vault_equity = 1_000_000;
         let tokens_issued_1 = tvd
             .tokenize_shares(
                 vault,
                 &mut None,
                 &mut None,
-                total_supply,
                 vault_equity,
                 shares_transferred,
                 now,
@@ -642,8 +669,7 @@ mod tests {
         assert_eq!(tokens_issued_1, shares_transferred as u64);
         assert_eq!(tvd.last_vault_shares, tvd.vault_shares);
 
-        // emulate minting tokens
-        total_supply += tokens_issued_1;
+        assert_eq!(tvd.issued_supply, tokens_issued_1);
 
         // second tokenization happens after vault down 99.9%
         vault_equity /= 1000;
@@ -656,7 +682,6 @@ mod tests {
             vault,
             &mut None,
             &mut None,
-            total_supply,
             vault_equity,
             shares_transferred,
             now,
@@ -680,7 +705,6 @@ mod tests {
         let mut tvd =
             TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
 
-        let total_supply = 0;
         let vault_equity = 1_000_000u64;
         let shares_transferred = 100_000;
 
@@ -696,7 +720,6 @@ mod tests {
                 vault,
                 &mut None,
                 &mut None,
-                total_supply,
                 vault_equity,
                 shares_transferred,
                 now,
@@ -746,6 +769,7 @@ mod tests {
         tvd.last_vault_shares = shares_transferred;
 
         let total_supply = shares_transferred as u64;
+        tvd.issued_supply = total_supply;
         // Share price of exactly 1, so basis and value move by the same figures below.
         let vault_equity = 500_000;
         vault.total_shares = shares_transferred;
@@ -764,7 +788,6 @@ mod tests {
                 vault,
                 &mut None,
                 &mut None,
-                total_supply,
                 vault_equity,
                 tokens_to_burn,
                 now,
@@ -786,7 +809,6 @@ mod tests {
             vault,
             &mut None,
             &mut None,
-            total_supply - tokens_to_burn,
             vault_equity,
             new_shares,
             now,
@@ -817,13 +839,13 @@ mod tests {
         tvd.last_vault_shares = shares;
         vault.total_shares = shares;
         vault.user_shares = shares;
+        tvd.issued_supply = shares as u64;
 
         let (_, returned_vp) = tvd
             .redeem_tokens(
                 vault,
                 &mut Some(vp.borrow_mut()),
                 &mut None,
-                shares as u64,
                 1_000_000,
                 (shares / 2) as u64,
                 now,
@@ -856,6 +878,7 @@ mod tests {
         let existing_shares = 1_000u128;
         tvd.vault_shares = existing_shares;
         tvd.last_vault_shares = existing_shares;
+        tvd.issued_supply = existing_shares as u64;
         tvd.net_deposits = 1_000;
         vault.total_shares = existing_shares;
 
@@ -873,7 +896,6 @@ mod tests {
             vault,
             &mut None,
             &mut None,
-            existing_shares as u64,
             vault_equity_after_drawdown * 2,
             new_shares,
             now,
@@ -902,6 +924,7 @@ mod tests {
         let existing_shares = 1_000u128;
         tvd.vault_shares = existing_shares;
         tvd.last_vault_shares = existing_shares;
+        tvd.issued_supply = existing_shares as u64;
         tvd.net_deposits = 1_000;
         vault.total_shares = existing_shares;
 
@@ -911,22 +934,113 @@ mod tests {
         tvd.net_deposits += 1_000;
         vault.total_shares += new_shares;
 
-        let res = tvd.tokenize_shares(
-            vault,
-            &mut None,
-            &mut None,
-            existing_shares as u64,
-            2_000,
-            new_shares,
-            now,
-            0,
-        );
+        let res = tvd.tokenize_shares(vault, &mut None, &mut None, 2_000, new_shares, now, 0);
 
         assert!(
             res.is_ok(),
             "a pool at its cost basis must still accept tokenization: {:?}",
             res.err()
         );
+    }
+
+    /// An incumbent burns its wrapper tokens straight through the SPL Token program, shrinking
+    /// `mint.supply` to 1 without touching this account. Pricing must not follow: the next
+    /// tokenizer still gets tokens at the real rate, and the incumbent cannot redeem their shares.
+    #[test]
+    fn external_spl_burn_does_not_reprice_tokens() {
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
+
+        // Attacker tokenizes 100 shares at a share price of 1.
+        tvd.vault_shares = 100;
+        tvd.net_deposits = 100;
+        vault.total_shares = 100;
+        let attacker_tokens = tvd
+            .tokenize_shares(vault, &mut None, &mut None, 100, 100, now, 0)
+            .unwrap();
+        assert_eq!(attacker_tokens, 100);
+
+        // Attacker burns 99 tokens directly. The program never sees it, so nothing changes here.
+
+        // Victim tokenizes 199 shares. Priced off a supply of 1 this floored to 1 token.
+        tvd.vault_shares += 199;
+        tvd.net_deposits += 199;
+        vault.total_shares += 199;
+        let victim_tokens = tvd
+            .tokenize_shares(vault, &mut None, &mut None, 299, 199, now, 0)
+            .unwrap();
+        assert_eq!(victim_tokens, 199);
+        assert_eq!(tvd.get_issued_supply(), 299);
+
+        // Attacker redeems the 1 token it kept: 1 share, not half the pool.
+        let (attacker_shares, _) = tvd
+            .redeem_tokens(vault, &mut None, &mut None, 299, 1, now, 0)
+            .unwrap();
+        assert_eq!(attacker_shares, 1);
+        assert_eq!(tvd.get_issued_supply(), 298);
+    }
+
+    /// One token burned outside the program must not stop a drained pool from clearing its basis.
+    #[test]
+    fn drained_pool_releases_shares_behind_externally_burned_tokens() {
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
+
+        tvd.vault_shares = 100;
+        tvd.net_deposits = 100;
+        vault.total_shares = 300;
+        vault.user_shares = 300;
+        tvd.tokenize_shares(vault, &mut None, &mut None, 300, 100, now, 0)
+            .unwrap();
+
+        // One token is burned directly, so the live supply is 99 and `issued_supply` stays 100.
+        let (redeemed_shares, _) = tvd
+            .redeem_tokens(vault, &mut None, &mut None, 300, 99, now, 0)
+            .unwrap();
+        assert_eq!(redeemed_shares, 99);
+
+        tvd.vault_shares -= redeemed_shares as u128;
+        tvd.checkpoint_vault_shares();
+        assert_eq!(tvd.get_issued_supply(), 1);
+
+        let released_shares = tvd.release_unredeemable_shares(vault).unwrap();
+
+        assert_eq!(released_shares, 1);
+        assert_eq!(tvd.get_vault_shares(), 0);
+        assert_eq!(tvd.get_issued_supply(), 0);
+        assert_eq!(vault.total_shares, 299);
+        assert_eq!(vault.user_shares, 299);
+        assert_eq!(tvd.get_net_deposits(), 0);
+        assert_eq!(tvd.get_cumulative_profit_share_amount(), 0);
+
+        tvd.vault_shares = 50;
+        let tokens = tvd
+            .tokenize_shares(vault, &mut None, &mut None, 299, 50, now, 0)
+            .unwrap();
+        assert_eq!(tokens, 50);
+    }
+
+    #[test]
+    fn unredeemable_shares_that_are_the_whole_vault_stay() {
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
+        tvd.vault_shares = 1;
+        tvd.last_vault_shares = 1;
+        tvd.issued_supply = 1;
+        vault.total_shares = 1;
+        vault.user_shares = 1;
+
+        let released_shares = tvd.release_unredeemable_shares(vault).unwrap();
+
+        assert_eq!(released_shares, 0);
+        assert_eq!(tvd.get_vault_shares(), 1);
+        assert_eq!(vault.total_shares, 1);
     }
 
     /// #140: draining a pool must not leave its cost basis behind for the next tokenizer.

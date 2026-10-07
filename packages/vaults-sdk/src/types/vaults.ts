@@ -5344,9 +5344,17 @@ export type Vaults = {
 						};
 					},
 					{
+						name: 'issuedSupply';
+						docs: [
+							'tokens this program has minted minus tokens it has burned. Prices tokenize and redeem',
+							'instead of `mint.supply`, which any holder can shrink with a direct SPL burn.',
+						];
+						type: 'u64';
+					},
+					{
 						name: 'padding';
 						type: {
-							array: ['u64', 10];
+							array: ['u64', 9];
 						};
 					},
 				];

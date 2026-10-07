@@ -281,7 +281,6 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         &crate::instructions::DetachedRemainderTerms {
             rest_oracle_price: None,
             activation_delay_slots: placed.activation_delay_slots,
-            fail_on_temporary_refusal: false,
         },
         clock,
     )?;

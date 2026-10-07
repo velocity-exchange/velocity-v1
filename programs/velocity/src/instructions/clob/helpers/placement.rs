@@ -511,17 +511,50 @@ pub struct DetachedRemainderTerms {
     /// The oracle an `OracleTriggerMarket` offset is relative to.
     pub rest_oracle_price: Option<i64>,
     pub activation_delay_slots: Option<u32>,
-    /// Fail the call on a refusal that can clear, rather than cancel the part.
-    /// A fired trigger that filled nothing sets this, so it stays armed.
-    pub fail_on_temporary_refusal: bool,
 }
 
-/// Rest the unfilled part of a detached taker order, or record its cancel.
-/// Returns the CLOB order id when the part rests.
-///
-/// The fill already landed, so no refusal here is an error. Every part that
-/// does not rest emits an `OrderActionRecord(Cancel)`, so the order does not
-/// leave the order history without a record.
+/// What became of the unfilled part of a detached taker order.
+pub enum DetachedRemainder {
+    /// The part rests on the book under this CLOB order id.
+    Rested(u64),
+    /// Nothing was left, or the part was cancelled and its record emitted.
+    Ended,
+    /// The book or the account refused the part for a reason that can clear.
+    /// Nothing was recorded, so the caller decides what becomes of it.
+    Refused(RestRefusal),
+}
+
+/// Rest the unfilled part of a detached taker order. A part that cannot rest
+/// for a reason of its own emits an `OrderActionRecord(Cancel)`, so the order
+/// does not leave the order history without a record.
+pub fn rest_detached_remainder<'info>(
+    accounts: &ClobRestAccounts<'_, 'info>,
+    maps: &mut AccountMaps,
+    order: &Order,
+    terms: &DetachedRemainderTerms,
+    clock: &Clock,
+) -> Result<DetachedRemainder> {
+    if order.get_base_asset_amount_unfilled(None)? == 0 {
+        return Ok(DetachedRemainder::Ended);
+    }
+
+    let explanation = match detached_remainder_rest(accounts, maps, order, terms, clock)? {
+        RemainderRest::Rested(clob_order_id) => {
+            return Ok(DetachedRemainder::Rested(clob_order_id))
+        }
+        RemainderRest::Cancelled(explanation) => explanation,
+        RemainderRest::Refused(reason) if !reason.is_permanent() => {
+            return Ok(DetachedRemainder::Refused(reason))
+        }
+        RemainderRest::Refused(reason) => reason.cancel_explanation(),
+    };
+
+    emit_remainder_cancel(accounts, maps, order, clock, explanation)?;
+    Ok(DetachedRemainder::Ended)
+}
+
+/// [`rest_detached_remainder`], cancelling the part on any refusal. Returns the
+/// CLOB order id when the part rests.
 pub fn rest_or_cancel_detached_remainder<'info>(
     accounts: &ClobRestAccounts<'_, 'info>,
     maps: &mut AccountMaps,
@@ -529,22 +562,25 @@ pub fn rest_or_cancel_detached_remainder<'info>(
     terms: &DetachedRemainderTerms,
     clock: &Clock,
 ) -> Result<Option<u64>> {
-    if order.get_base_asset_amount_unfilled(None)? == 0 {
-        return Ok(None);
-    }
-
-    let explanation = match detached_remainder_rest(accounts, maps, order, terms, clock)? {
-        RemainderRest::Rested(clob_order_id) => return Ok(Some(clob_order_id)),
-        RemainderRest::Cancelled(explanation) => explanation,
-        RemainderRest::Refused(reason) => {
-            if terms.fail_on_temporary_refusal && !reason.is_permanent() {
-                return Err(reason.error_code().into());
+    Ok(
+        match rest_detached_remainder(accounts, maps, order, terms, clock)? {
+            DetachedRemainder::Rested(clob_order_id) => Some(clob_order_id),
+            DetachedRemainder::Ended => None,
+            DetachedRemainder::Refused(reason) => {
+                emit_remainder_cancel(accounts, maps, order, clock, reason.cancel_explanation())?;
+                None
             }
+        },
+    )
+}
 
-            reason.cancel_explanation()
-        }
-    };
-
+fn emit_remainder_cancel(
+    accounts: &ClobRestAccounts<'_, '_>,
+    maps: &mut AccountMaps,
+    order: &Order,
+    clock: &Clock,
+    explanation: OrderActionExplanation,
+) -> Result<()> {
     controller::orders::emit_detached_cancel_record(
         &*load!(accounts.user)?,
         &accounts.user.key(),
@@ -554,7 +590,7 @@ pub fn rest_or_cancel_detached_remainder<'info>(
         explanation,
     )?;
 
-    Ok(None)
+    Ok(())
 }
 
 /// What became of an unfilled part that the caller tried to rest.
@@ -1174,7 +1210,6 @@ mod detached_remainder_tests {
         let terms = DetachedRemainderTerms {
             rest_oracle_price: None,
             activation_delay_slots: None,
-            fail_on_temporary_refusal: false,
         };
 
         let Ok(rest) =

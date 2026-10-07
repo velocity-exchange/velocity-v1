@@ -136,14 +136,50 @@ pub fn trigger_and_route_order(
     Ok(Some(FiredTrigger {
         order: fired,
         filler_reward,
+        armed: ArmedSlot {
+            index: order_index,
+            order: armed,
+        },
     }))
 }
 
-/// The live order a trigger fired as, and the flat reward the keeper
-/// collected for firing it.
+/// The live order a trigger fired as, the flat reward the keeper collected
+/// for firing it, and the armed order the fire freed.
 pub struct FiredTrigger {
     pub order: Order,
     pub filler_reward: u64,
+    pub armed: ArmedSlot,
+}
+
+/// An armed trigger and the `User.orders` slot it occupied.
+#[derive(Clone, Copy)]
+pub struct ArmedSlot {
+    pub index: usize,
+    pub order: Order,
+}
+
+/// Put `unfilled` base of a fired trigger back in the slot the fire freed,
+/// armed as before. A stop that the book cannot hold keeps protecting the
+/// position, and the next crank fires it again.
+pub fn re_arm_fired_trigger(user: &mut User, armed: &ArmedSlot, unfilled: u64) -> VelocityResult {
+    validate!(
+        user.orders[armed.index].status != OrderStatus::Open
+            && unfilled > 0
+            && unfilled <= armed.order.base_asset_amount,
+        ErrorCode::DefaultError,
+        "cannot re-arm {} base of trigger order {} in slot {}",
+        unfilled,
+        armed.order.order_id,
+        armed.index
+    )?;
+
+    let order = Order {
+        base_asset_amount: unfilled,
+        ..armed.order
+    };
+    user.orders[armed.index] = order;
+    user.reserve_orders(&OrderReservation::of_order(&order)?)?;
+    Ok(())
 }
 
 /// The armed order a trigger crank names, and the market the crank runs on.

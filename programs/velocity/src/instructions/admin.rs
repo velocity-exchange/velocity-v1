@@ -2095,6 +2095,17 @@ pub fn handle_update_spot_market_status(
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
     msg!("spot market {}", spot_market.market_index);
 
+    // Delisted is terminal and blocks withdrawals, so only an empty market may enter it.
+    if status == MarketStatus::Delisted {
+        validate!(
+            spot_market.deposit_balance == 0 && spot_market.borrow_balance == 0,
+            ErrorCode::DefaultError,
+            "cannot delist spot market with deposit_balance={} borrow_balance={}",
+            spot_market.deposit_balance,
+            spot_market.borrow_balance,
+        )?;
+    }
+
     msg!(
         "spot_market.status: {:?} -> {:?}",
         spot_market.status,
@@ -5675,7 +5686,10 @@ pub struct ForceWipeAccountsDevnet<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
     /// CHECK: read raw bytes manually; both old and new State layouts have the
-    /// (cold-)admin pubkey at offset 8..40.
+    /// (cold-)admin pubkey at offset 8..40. The seeds lock the account to the
+    /// State PDA. Without them, any account with the signer at 8..40, such as
+    /// the signer's own `UserStats`, passes the admin gate.
+    #[account(seeds = [b"velocity_state".as_ref()], bump)]
     pub state: UncheckedAccount<'info>,
     /// CHECK: PDA seeded by [b"velocity_signer", nonce]. Verified by Token Program
     /// at CPI time when closing token vaults; ignored otherwise.

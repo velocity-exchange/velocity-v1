@@ -153,6 +153,7 @@ test_files=(
   initMarket.ts
   scaleOrders.ts
   admin.ts
+  adminStateGuards.ts
   bidAskTwapCrank.ts
   accountExtension.ts
   assetTier.ts

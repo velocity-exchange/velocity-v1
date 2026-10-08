@@ -4,7 +4,7 @@
 //! lapses.
 
 use {
-    super::{is_live, BookHeader, ClobBook, NodeArena},
+    super::{is_live, walk_side_ref, BookHeader, ClobBook, NodeArena, Walk},
     crate::{
         error::ClobError,
         state::{ClobMarketV0, OrderNodeV0, SideV0, NIL},
@@ -59,9 +59,12 @@ pub(crate) fn evictable_order(
 /// authority crosses it. A remainder that crosses nothing claims nothing.
 /// Binding it would let one order at the tail block eviction on a full side.
 ///
-/// Only the opposite best is read, and it must be an order the cross cranks
-/// fill the tail against. They never fill one authority against itself, and a
-/// pair of remainders waits while the vAMM quotes nothing.
+/// The walk reads the opposite side best-first and stops at the first price
+/// that no longer crosses. It steps over the orders the cross cranks cannot
+/// fill the tail against: pending, taker-origin, or of the tail's authority.
+/// An order placed in front of the counterparty therefore cannot drop the
+/// shield. A side holds at most `ORDERS_PER_SIDE_CEILING` orders, which bounds
+/// the walk.
 fn is_shielded_from_eviction(
     book: &ClobMarketV0,
     tail: &OrderNodeV0,
@@ -73,16 +76,19 @@ fn is_shielded_from_eviction(
         return Ok(false);
     }
 
-    let best = book.best(tail.side().opposite());
-    if best == NIL {
-        return Ok(false);
-    }
+    let mut shielded = false;
+    walk_side_ref(book, tail.side().opposite(), |_, node| {
+        if !tail.side().is_crossed_by(tail.price, node.price) {
+            return Ok(Walk::Stop);
+        }
 
-    let counterparty = book.read_node(best)?;
-    Ok(is_live(&counterparty, slot, now, grace_slots)
-        && !counterparty.is_taker_origin()
-        && counterparty.authority != tail.authority
-        && tail.side().is_crossed_by(tail.price, counterparty.price))
+        shielded = is_live(node, slot, now, grace_slots)
+            && !node.is_taker_origin()
+            && node.authority != tail.authority;
+        Ok(if shielded { Walk::Stop } else { Walk::Continue })
+    })?;
+
+    Ok(shielded)
 }
 
 /// What a crossing taker remainder has claimed on the side being read, and what

@@ -722,6 +722,61 @@ fn eviction_takes_a_bound_remainder_crossed_only_by_a_pending_order() {
     assert_consistent(&book);
 }
 
+/// Orders that cannot fill the tail do not hide a live maker behind them. A
+/// better-priced pending order or remainder must not let anyone evict a
+/// remainder that a maker still crosses.
+#[test]
+fn eviction_refuses_when_a_live_maker_crosses_behind_better_orders() {
+    let market = TestMarket::new_with(
+        16,
+        MarketConfigV0 {
+            evict_threshold_per_side: 2,
+            ..test_market_config()
+        },
+    );
+    let mut book = market.book();
+    let taker = user(0xA);
+
+    place(&mut book, SideV0::Ask, 200, 5, user(0xB));
+    place_at(&mut book, SideV0::Ask, 500, 5, taker, 10, true);
+    place(&mut book, SideV0::Bid, 550, 5, user(0xC));
+    place_at(&mut book, SideV0::Bid, 600, 5, user(0xD), 20, false);
+    place_at(&mut book, SideV0::Bid, 590, 5, user(0xE), 0, true);
+    place(&mut book, SideV0::Bid, 580, 5, taker);
+
+    assert_err(
+        book.evict_worst(SideV0::Ask, 5, 0),
+        ClobError::TakerOriginBound,
+    );
+    assert_consistent(&book);
+}
+
+/// The walk ends at the first price that does not cross the tail, so a live
+/// maker below that price shields nothing.
+#[test]
+fn eviction_takes_a_bound_remainder_whose_live_makers_do_not_cross_it() {
+    let market = TestMarket::new_with(
+        16,
+        MarketConfigV0 {
+            evict_threshold_per_side: 2,
+            ..test_market_config()
+        },
+    );
+    let mut book = market.book();
+    let taker = user(0xA);
+
+    place(&mut book, SideV0::Ask, 200, 5, user(0xB));
+    let tail = place_at(&mut book, SideV0::Ask, 500, 5, taker, 10, true);
+    place_at(&mut book, SideV0::Bid, 600, 5, user(0xD), 20, false);
+    place(&mut book, SideV0::Bid, 499, 5, user(0xC));
+
+    assert_eq!(
+        book.evict_worst(SideV0::Ask, 5, 0).unwrap().order_id,
+        tail.order_id
+    );
+    assert_consistent(&book);
+}
+
 /// A crossed pair of remainders waits while the vAMM quotes nothing, so a
 /// remainder on the other side shields nothing.
 #[test]

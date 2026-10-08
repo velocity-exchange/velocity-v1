@@ -1038,6 +1038,42 @@ fn a_bound_tail_that_crosses_nothing_is_evicted() {
     assert!(parse_removed(&meta.return_data.data).6);
 }
 
+/// The eviction shield walks every crossing order it cannot fill the tail
+/// against. A full opposite side of pending orders is the longest such walk.
+#[test]
+fn cu_benchmark_evict_past_a_full_side_of_pending_crossing_orders() {
+    let mut ctx = setup();
+    let attacker = addr(Pubkey::new_unique());
+
+    for i in 0..5u64 {
+        place(&mut ctx, place_args(SideV0::Ask, 200 + i, 1), attacker);
+    }
+
+    let tail = place(
+        &mut ctx,
+        PlaceOrderArgsV0 {
+            activation_delay_slots: Some(20),
+            ..taker_origin_args(SideV0::Ask, 1_000, 1)
+        },
+        attacker,
+    );
+    let litter = addr(Pubkey::new_unique());
+    for i in 0..PER_SIDE as u64 {
+        let args = PlaceOrderArgsV0 {
+            activation_delay_slots: Some(20),
+            ..place_args(SideV0::Bid, 1_000 + i, 1)
+        };
+        place(&mut ctx, args, litter);
+    }
+
+    let meta = evict_worst(&mut ctx, SideV0::Ask).unwrap();
+    assert_eq!(parse_removed(&meta.return_data.data).1, tail.order_id);
+    println!(
+        "CU — evict_worst(bound tail, {PER_SIDE} pending crossing orders): {}",
+        meta.compute_units_consumed
+    );
+}
+
 #[test]
 fn speed_bump_gates_matching_until_activation_slot() {
     let mut ctx = setup();

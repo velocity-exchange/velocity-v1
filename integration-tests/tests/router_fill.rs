@@ -11657,6 +11657,16 @@ fn a_part_filled_stop_market_arms_its_unfilled_part_again() {
         trigger.filler_reward,
         Some(state.perp_fee_structure.flat_filler_fee / 10)
     );
+
+    // The bid is gone, so the next fire fills nothing. It fails like a first
+    // fire would, rather than re-arming the stop for a free crank.
+    fixture.svm.expire_blockhash();
+    let err = fire_stop_market(&mut fixture, &stop, Some(&maker)).unwrap_err();
+    assert_velocity_error(&err, ErrorCode::MaxNumberOfOrders);
+
+    let after: User = read_zero_copy(&fixture.svm, &stop.user);
+    assert_eq!(after.orders[0].status, OrderStatus::Open);
+    assert_eq!(after.orders[0].base_asset_amount_filled, UNIT / 10);
 }
 
 /// Rest minimum-size asks far above the oracle until the book refuses one.

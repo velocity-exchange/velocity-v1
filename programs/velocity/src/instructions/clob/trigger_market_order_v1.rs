@@ -419,7 +419,7 @@ fn rest_fired_remainder<'info>(
         DetachedRemainder::Refused(reason) => reason,
     };
 
-    if fired.base_asset_amount_filled == 0 {
+    if fired.base_asset_amount_filled == armed.order.base_asset_amount_filled {
         return Err(reason.error_code().into());
     }
 

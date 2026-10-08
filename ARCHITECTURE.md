@@ -62,9 +62,10 @@ Each flow lists the ordered call chain from the instruction entry point down to 
 8. `settle_take_remainder` (`instructions/user/place_and_take.rs:336`) rests the unfilled remainder
    of an order that is not immediate-or-cancel on the market's CLOB, through
    `rest_remainder_on_clob` (`instructions/clob/helpers/placement.rs:456`). A part that does not
-   rest emits an `OrderActionRecord(Cancel)`. The signed-message and fired stop-market paths use
-   `rest_or_cancel_detached_remainder` (`instructions/clob/helpers/placement.rs:501`) for the same
-   rule.
+   rest emits an `OrderActionRecord(Cancel)`. The signed-message path uses
+   `rest_or_cancel_detached_remainder` (`instructions/clob/helpers/placement.rs:558`) for the same
+   rule. The fired stop-market path uses `rest_detached_remainder` (`placement.rs:530`) and arms
+   the unfilled part again on a refusal that can clear.
 
 ### Place and make perp order
 

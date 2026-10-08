@@ -965,10 +965,11 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
 }
 
 /// A resolver stages the eviction `next_removal_v0` names, and velocity checks
-/// the removal against the maker it loaded. Both must refuse a bound tail;
-/// neither may move eviction onto a better-priced maker.
+/// the removal against the maker it loaded. Both must refuse a bound tail that
+/// another owner's order crosses; neither may move eviction onto a
+/// better-priced maker.
 #[test]
-fn next_removal_and_eviction_both_refuse_a_bound_tail() {
+fn next_removal_and_eviction_both_refuse_a_crossed_bound_tail() {
     let mut ctx = setup_with_capacity(16); // 8 per side, evict threshold 6
     let (maker, taker) = (addr(Pubkey::new_unique()), addr(Pubkey::new_unique()));
 
@@ -977,8 +978,11 @@ fn next_removal_and_eviction_both_refuse_a_bound_tail() {
     }
 
     let remainder = place(&mut ctx, taker_origin_args(SideV0::Bid, 100, 1), taker);
+    place(&mut ctx, place_args(SideV0::Ask, 100, 1), maker);
     assert_eq!(market_state(&ctx).worst_bid, remainder.node_index);
 
+    // Past the one-slot delay, so the crossing ask can fill the remainder.
+    advance_slot(&mut ctx, 1);
     assert_eq!(
         next_removal(&mut ctx, ClobRemovalKindV0::Evictable),
         OrderViewV0::NONE
@@ -988,16 +992,86 @@ fn next_removal_and_eviction_both_refuse_a_bound_tail() {
         err_code(clob::error::ClobError::TakerOriginBound),
     );
 
-    // Past the one-slot delay and the claim, both name the remainder.
+    // Past the claim, both name the remainder.
     place(&mut ctx, place_args(SideV0::Bid, 101, 1), maker);
     advance_slot(
         &mut ctx,
-        1 + clob::state::DEFAULT_RESERVATION_GRACE_SLOTS as u64,
+        clob::state::DEFAULT_RESERVATION_GRACE_SLOTS as u64,
     );
     let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
     assert_eq!(work.order_ref, remainder);
     let meta = evict_worst(&mut ctx, SideV0::Bid).unwrap();
     assert!(parse_removed(&meta.return_data.data).6);
+}
+
+/// One far-priced remainder at the tail, refreshed every claim window, must
+/// not keep a full side from evicting. It crosses nothing, so both the
+/// resolver and the crank take it while it is still bound.
+#[test]
+fn a_bound_tail_that_crosses_nothing_is_evicted() {
+    let mut ctx = setup_with_capacity(16); // 8 per side, evict threshold 6
+    let attacker = addr(Pubkey::new_unique());
+
+    for i in 0..5u64 {
+        place(&mut ctx, place_args(SideV0::Ask, 200 + i, 1), attacker);
+    }
+
+    place(
+        &mut ctx,
+        place_args(SideV0::Bid, 100, 1),
+        addr(Pubkey::new_unique()),
+    );
+    let tail = place(
+        &mut ctx,
+        PlaceOrderArgsV0 {
+            activation_delay_slots: Some(20),
+            ..taker_origin_args(SideV0::Ask, 1_000, 1)
+        },
+        attacker,
+    );
+
+    assert_eq!(
+        next_removal(&mut ctx, ClobRemovalKindV0::Evictable).order_ref,
+        tail
+    );
+    let meta = evict_worst(&mut ctx, SideV0::Ask).unwrap();
+    assert!(parse_removed(&meta.return_data.data).6);
+}
+
+/// The eviction shield walks every crossing order it cannot fill the tail
+/// against. A full opposite side of pending orders is the longest such walk.
+#[test]
+fn cu_benchmark_evict_past_a_full_side_of_pending_crossing_orders() {
+    let mut ctx = setup();
+    let attacker = addr(Pubkey::new_unique());
+
+    for i in 0..5u64 {
+        place(&mut ctx, place_args(SideV0::Ask, 200 + i, 1), attacker);
+    }
+
+    let tail = place(
+        &mut ctx,
+        PlaceOrderArgsV0 {
+            activation_delay_slots: Some(20),
+            ..taker_origin_args(SideV0::Ask, 1_000, 1)
+        },
+        attacker,
+    );
+    let litter = addr(Pubkey::new_unique());
+    for i in 0..PER_SIDE as u64 {
+        let args = PlaceOrderArgsV0 {
+            activation_delay_slots: Some(20),
+            ..place_args(SideV0::Bid, 1_000 + i, 1)
+        };
+        place(&mut ctx, args, litter);
+    }
+
+    let meta = evict_worst(&mut ctx, SideV0::Ask).unwrap();
+    assert_eq!(parse_removed(&meta.return_data.data).1, tail.order_id);
+    println!(
+        "CU — evict_worst(bound tail, {PER_SIDE} pending crossing orders): {}",
+        meta.compute_units_consumed
+    );
 }
 
 #[test]
@@ -3094,49 +3168,41 @@ fn the_config_authority_rotates_only_when_the_successor_accepts() {
     );
 }
 
-/// An order whose `max_ts` falls inside its own activation delay expires
-/// before anything can match it. It would still take an arena slot and still
-/// sit at the head of its side until the expiry crank reclaims it.
+/// The book does not guess at slot length. An order whose `max_ts` may fall
+/// inside its activation delay rests, and a bound remainder stays live past
+/// that `max_ts` until its claim lapses.
 #[test]
-fn an_order_that_cannot_outlive_its_activation_delay_is_refused() {
+fn an_expiry_inside_the_activation_delay_rests() {
     let mut ctx = setup();
     let user = addr(Pubkey::new_unique());
     set_unix_timestamp(&mut ctx, 1_000);
 
-    // Twenty slots of delay is at least eight seconds.
-    let delayed = |max_ts: i64| PlaceOrderArgsV0 {
-        activation_delay_slots: Some(20),
-        max_ts,
-        ..place_args(SideV0::Ask, 100, 5)
-    };
-
-    assert_clob_err(
-        {
-            let ix = place_ix(&ctx, delayed(1_005), user);
-            send(&mut ctx, ix)
-        },
-        err_code(clob::error::ClobError::MaxTsBeforeActivation),
-    );
-
-    // A lifetime that reaches past the activation is accepted, and so is a
-    // good-till-cancelled order.
-    let ix = place_ix(&ctx, delayed(1_100), user);
-    send(&mut ctx, ix).expect("a lifetime past the activation rests");
-    let ix = place_ix(&ctx, delayed(0), user);
-    send(&mut ctx, ix).expect("good-till-cancelled rests");
-
-    // With no delay the order only has to outlive the placement itself.
     let ix = place_ix(
         &ctx,
         PlaceOrderArgsV0 {
-            activation_delay_slots: Some(0),
+            activation_delay_slots: Some(20),
             max_ts: 1_001,
-            ..place_args(SideV0::Ask, 100, 5)
+            ..taker_origin_args(SideV0::Ask, 100, 5)
         },
         user,
     );
+    send(&mut ctx, ix).expect("an expiry inside the delay rests");
 
-    send(&mut ctx, ix).expect("no delay to outlive");
+    set_unix_timestamp(&mut ctx, 2_000);
+    advance_slot(
+        &mut ctx,
+        20 + clob::state::DEFAULT_RESERVATION_GRACE_SLOTS as u64 - 1,
+    );
+    assert_eq!(
+        next_removal(&mut ctx, ClobRemovalKindV0::Expired),
+        OrderViewV0::NONE
+    );
+
+    advance_slot(&mut ctx, 1);
+    assert_ne!(
+        next_removal(&mut ctx, ClobRemovalKindV0::Expired),
+        OrderViewV0::NONE
+    );
 }
 
 /// `order_rules_v0` reports the live side counts and the arena, so a caller

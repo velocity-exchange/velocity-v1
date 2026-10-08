@@ -7,7 +7,7 @@ use {
         arena::unlink_order,
         budget::{settleable, DistinctUsers, Settleable, UserBudget, UserLookup},
         hints::holds_expiry_hint,
-        reservation::{is_bound, CrossReservation},
+        reservation::{is_bound, is_past_expiry, CrossReservation},
         BookHeader, ClobBook, NodeArena,
     },
     crate::{
@@ -92,8 +92,8 @@ where
 /// order alone. Every read of a side asks this first and [`CrossReservation`]
 /// second, because a claim is allocated positionally over the matchable orders.
 /// A reason belonging to the caller must be tested after that allocation.
-pub(crate) fn is_live(node: &OrderNodeV0, slot: u64, now: i64) -> bool {
-    !node.is_expired(now) && node.is_active(slot)
+pub(crate) fn is_live(node: &OrderNodeV0, slot: u64, now: i64, grace_slots: u16) -> bool {
+    !is_past_expiry(node, slot, now, grace_slots) && node.is_active(slot)
 }
 
 /// Aggregate the levels a taker of `direction`/`size` would clear,
@@ -203,7 +203,7 @@ pub(super) fn quote_l3(
     let side = direction.side();
     let rows_wanted = max_rows.min(L3_ROWS_CEILING) as usize;
     let mut reservation =
-        CrossReservation::new(book, side, slot, now, include_taker_origin_reservations);
+        CrossReservation::new(book, side, slot, include_taker_origin_reservations);
     let mut writer = L3Writer::new();
     // Zero asks for the whole side rather than for nothing. A caller that
     // draws a book has no size in mind.
@@ -216,7 +216,7 @@ pub(super) fn quote_l3(
             return Ok(Walk::Stop);
         }
 
-        if !is_live(node, slot, now) {
+        if !is_live(node, slot, now, book.reservation_grace_slots) {
             return Ok(Walk::Continue);
         }
 
@@ -404,7 +404,7 @@ impl<'a> SweepGate<'a> {
             taker: request.taker,
             slot,
             now,
-            reservation: CrossReservation::new(book, side, slot, now, include_reserved),
+            reservation: CrossReservation::new(book, side, slot, include_reserved),
             budget: UserBudget::new(
                 request.caps,
                 side,
@@ -418,7 +418,7 @@ impl<'a> SweepGate<'a> {
     /// self-trade test, because its allocation is positional.
     #[inline(always)]
     fn offer(&mut self, book: &ClobMarketV0, node: &OrderNodeV0, remaining: u64) -> Result<Offer> {
-        if !is_live(node, self.slot, self.now) {
+        if !is_live(node, self.slot, self.now, book.reservation_grace_slots) {
             return Ok(Offer::Skip);
         }
 

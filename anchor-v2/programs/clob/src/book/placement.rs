@@ -9,7 +9,7 @@ use {
         },
         both_or_neither,
         hints::holds_expiry_hint,
-        reservation::{evictable_order, is_bound},
+        reservation::{evictable_order, is_bound, is_past_expiry},
         walk::{check_side_count, is_live, walk_side, Walk},
         BookHeader, ClobBook, NodeArena,
     },
@@ -39,7 +39,7 @@ pub(super) fn place(book: &mut ClobMarketV0, params: PlaceOrderParams) -> Result
 
     if params.reject_if_crossed {
         require!(
-            !crosses_opposite_best(book, side, params.price, params.now)?,
+            !crosses_opposite_best(book, side, params.price, params.placed_slot, params.now)?,
             ClobError::OrderWouldCross
         );
     }
@@ -119,17 +119,19 @@ fn check_order_params(book: &ClobMarketV0, params: &PlaceOrderParams) -> Result<
 
 /// Whether an order of `side` at `price` would cross the best order on the
 /// other side. An order inside its activation delay counts, because it is
-/// resting liquidity a moment from now. An expired order does not, or one cheap
-/// order could refuse every post-only placement on the other side.
+/// resting liquidity a moment from now. An order past expiry does not, or one
+/// cheap order could refuse every post-only placement on the other side.
 fn crosses_opposite_best(
     book: &mut ClobMarketV0,
     side: SideV0,
     price: u64,
+    slot: u64,
     now: i64,
 ) -> Result<bool> {
+    let grace_slots = book.reservation_grace_slots;
     let mut crossed = false;
     walk_side(book, side.opposite(), |_, _, node| {
-        if node.is_expired(now) {
+        if is_past_expiry(node, slot, now, grace_slots) {
             return Ok(Walk::Continue);
         }
 
@@ -388,6 +390,7 @@ pub(super) fn evict_worst(
     book: &mut ClobMarketV0,
     side: SideV0,
     slot: u64,
+    now: i64,
 ) -> Result<RemovedOrderV0> {
     let count = book.node_count(side);
     require!(
@@ -395,7 +398,7 @@ pub(super) fn evict_worst(
         ClobError::BelowEvictThreshold
     );
 
-    let index = evictable_order(book, side, slot)?;
+    let index = evictable_order(book, side, slot, now)?;
     require!(index != NIL, ClobError::TakerOriginBound);
 
     let node = book.read_node(index)?;
@@ -422,10 +425,14 @@ pub(super) fn evict_worst(
 pub(super) fn remove_expired(
     book: &mut ClobMarketV0,
     order_ref: ClobOrderRefV0,
+    slot: u64,
     now: i64,
 ) -> Result<RemovedOrderV0> {
     let node = live_order(book, order_ref)?;
-    require!(node.is_expired(now), ClobError::OrderNotExpired);
+    require!(
+        is_past_expiry(&node, slot, now, book.reservation_grace_slots),
+        ClobError::OrderNotExpired
+    );
     let removed = removed_order(&node);
     remove_order(book, order_ref.node_index)?;
     validate_single_removal(book, &node, order_ref.node_index)?;
@@ -452,7 +459,10 @@ pub(super) fn fill(
 ) -> Result<FilledOrderV0> {
     let node = live_order(book, order_ref)?;
     require!(node.is_taker_origin(), ClobError::OrderNotTakerOrigin);
-    require!(is_live(&node, slot, now), ClobError::OrderNotLive);
+    require!(
+        is_live(&node, slot, now, book.reservation_grace_slots),
+        ClobError::OrderNotLive
+    );
     require!(
         base_asset_amount > 0 && base_asset_amount <= node.base_asset_amount,
         ClobError::FillExceedsOrder

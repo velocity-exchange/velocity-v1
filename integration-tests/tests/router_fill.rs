@@ -3459,7 +3459,9 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     let (node_index, clob_order_id) = maker.orders[0].clob_order_ref();
     assert_eq!(clob_ask_count(&fixture), 1);
 
-    // Expire the CLOB order: the expiry crank frees the shadow for good.
+    // Expire the CLOB order: the expiry crank frees the shadow for good. The
+    // fired order rests taker-origin, so it cannot expire until its claim lapses.
+    fixture.svm.warp_to_slot(19 + RESERVATION_GRACE_SLOTS);
     let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
     clock.unix_timestamp += 2_000;
     fixture.svm.set_sysvar(&clock);
@@ -11438,6 +11440,262 @@ fn trigger_market_order_v1_fires_a_stop_market_straight_to_the_book() {
         1,
         "the remainder rests taker-origin on the book"
     );
+}
+
+/// A keeper and an account whose sell-stop closes a long of one unit bought
+/// at 100, with `deposit` of collateral.
+struct StopLoss {
+    user: Pubkey,
+    stats: Pubkey,
+    filler_user: Pubkey,
+    filler_stats: Pubkey,
+}
+
+fn stop_loss(fixture: &mut Fixture, deposit: u64) -> StopLoss {
+    use velocity::state::user::OrderTriggerCondition;
+
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Short;
+    order.base_asset_amount = UNIT;
+    order.reduce_only = true;
+    order.trigger_price = 101 * PRICE;
+    order.trigger_condition = OrderTriggerCondition::Below;
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    order.max_ts = clock.unix_timestamp + 1_000;
+
+    let authority = Keypair::new();
+    let user = Pubkey::new_unique();
+    let stats = Pubkey::new_unique();
+    let mut state = armed_trigger_user(&authority.pubkey(), deposit, order);
+    let position = &mut state.perp_positions[0];
+    position.base_asset_amount = UNIT as i64;
+    position.quote_asset_amount = -((100 * PRICE) as i64);
+    position.quote_entry_amount = -((100 * PRICE) as i64);
+    position.quote_break_even_amount = -((100 * PRICE) as i64);
+    set_user_account(&mut fixture.svm, user, &state);
+    set_user_stats_account(&mut fixture.svm, stats, &authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    StopLoss {
+        user,
+        stats,
+        filler_user,
+        filler_stats,
+    }
+}
+
+/// `trigger_market_order_v1` for order 1 of `stop`. A `maker` stages the book
+/// as a quoter tail, so the fire fills against that maker first.
+fn fire_stop_market(
+    fixture: &mut Fixture,
+    stop: &StopLoss,
+    maker: Option<&Party>,
+) -> Result<litesvm::types::TransactionMetadata, litesvm::types::FailedTransactionMetadata> {
+    let mut accounts = velocity::accounts::TriggerMarketOrderV1 {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: stop.filler_user,
+        filler_stats: stop.filler_stats,
+        user: stop.user,
+        user_stats: stop.stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        crank_conditions: None,
+        trigger_conditions: user_conditions_pda(&stop.user),
+        ix_sysvar: Some(instructions_sysvar()),
+        sol_spot_market: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    if let Some(maker) = maker {
+        accounts.push(AccountMeta::new(maker.user, false));
+        accounts.push(AccountMeta::new(maker.stats, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+        accounts.push(AccountMeta::new(fixture.clob_market, false));
+        accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    }
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::TriggerMarketOrderV1 {
+            args: TriggerMarketOrderV1Args {
+                market_index: 0,
+                order_id: 1,
+                signed_route: vec![],
+            },
+        }
+        .data(),
+    };
+
+    fixture.svm.expire_blockhash();
+    let keeper = fixture.keeper.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+}
+
+/// A fired stop-market that fills nothing and meets a refusal that can clear
+/// fails the crank. The trigger stays armed and the keeper is not paid.
+///
+/// A reduce-only stop passes the fire's margin gate, which only gates risk
+/// that grows. The rest still needs maintenance margin, so an account under
+/// maintenance but not yet in liquidation fails it. That refusal must not
+/// cancel the stop-loss the account needs most.
+#[test]
+fn a_fired_stop_market_stays_armed_when_its_rest_meets_a_refusal_that_can_clear() {
+    use velocity::state::user::OrderTriggerCondition;
+
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    // One unit of collateral is under the 5% maintenance requirement on 100 of
+    // notional, but the account is not yet in liquidation.
+    let stop = stop_loss(&mut fixture, SPOT_BALANCE_PRECISION_U64);
+
+    let err = fire_stop_market(&mut fixture, &stop, None).unwrap_err();
+    assert_velocity_error(&err, ErrorCode::InsufficientCollateral);
+
+    let taker: User = read_zero_copy(&fixture.svm, &stop.user);
+    assert_eq!(taker.orders[0].status, OrderStatus::Open);
+    assert_eq!(
+        taker.orders[0].trigger_condition,
+        OrderTriggerCondition::Below,
+        "the stop is still armed"
+    );
+    assert_eq!(clob_ask_count(&fixture), 0);
+    let filler: User = read_zero_copy(&fixture.svm, &stop.filler_user);
+    assert_eq!(
+        filler.spot_positions[0].scaled_balance, 0,
+        "the keeper is not paid"
+    );
+}
+
+/// A fired stop-market that fills part of its size keeps the fill. When the
+/// rest of the order meets a refusal that can clear, here a full ask side, the
+/// unfilled part is armed again in the stop's slot rather than cancelled, so
+/// the position stays protected.
+#[test]
+fn a_part_filled_stop_market_arms_its_unfilled_part_again() {
+    use velocity::state::user::OrderTriggerCondition;
+
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let stop = stop_loss(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    fill_ask_side(&mut fixture, &maker);
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Long,
+        99 * PRICE,
+        UNIT / 10,
+    );
+
+    let meta = fire_stop_market(&mut fixture, &stop, Some(&maker)).unwrap();
+    assert!(
+        meta.logs
+            .iter()
+            .any(|log| log.contains("(SideAtCapacity); 900000000 base is armed again")),
+        "the full ask side refused the remainder"
+    );
+
+    let taker: User = read_zero_copy(&fixture.svm, &stop.user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount,
+        (UNIT - UNIT / 10) as i64,
+        "the fire sold into the book's bid"
+    );
+    assert_eq!(taker.orders[0].status, OrderStatus::Open);
+    assert_eq!(taker.orders[0].order_id, 1);
+    assert_eq!(
+        taker.orders[0].trigger_condition,
+        OrderTriggerCondition::Below,
+        "the stop is armed again"
+    );
+    assert_eq!(
+        taker.orders[0].base_asset_amount, UNIT,
+        "the stop keeps its size"
+    );
+    assert_eq!(taker.orders[0].base_asset_amount_filled, UNIT / 10);
+    assert_eq!(taker.perp_positions[0].open_orders, 1);
+    assert_eq!(taker.open_orders, 1);
+
+    // The fire filled a tenth of the stop, so it earns a tenth of the reward.
+    let state: State = read_zero_copy(&fixture.svm, &state_pda());
+    let trigger = events::<velocity::state::events::OrderActionRecord>(&meta)
+        .into_iter()
+        .find(|record| record.action == velocity::state::events::OrderAction::Trigger)
+        .expect("the fire records the trigger");
+    assert_eq!(
+        trigger.filler_reward,
+        Some(state.perp_fee_structure.flat_filler_fee / 10)
+    );
+
+    // The bid is gone, so the next fire fills nothing. It fails like a first
+    // fire would, rather than re-arming the stop for a free crank.
+    fixture.svm.expire_blockhash();
+    let err = fire_stop_market(&mut fixture, &stop, Some(&maker)).unwrap_err();
+    assert_velocity_error(&err, ErrorCode::MaxNumberOfOrders);
+
+    let after: User = read_zero_copy(&fixture.svm, &stop.user);
+    assert_eq!(after.orders[0].status, OrderStatus::Open);
+    assert_eq!(after.orders[0].base_asset_amount_filled, UNIT / 10);
+}
+
+/// Rest minimum-size asks far above the oracle until the book refuses one.
+fn fill_ask_side(fixture: &mut Fixture, maker: &Party) {
+    for _ in 0..1_024 {
+        let ix = place_clob_order_ix(
+            maker.user,
+            &maker.authority,
+            fixture.quoter_slab,
+            fixture.clob_market,
+            fixture.oracle,
+            PlaceClobOrderParams {
+                market_index: 0,
+                direction: PositionDirection::Short,
+                price: 200 * PRICE,
+                base_asset_amount: 1_000,
+                max_ts: 0,
+                activation_delay_slots: Some(0),
+                reject_if_crossed: false,
+            },
+        );
+        fixture.svm.expire_blockhash();
+        let authority = maker.authority.insecure_clone();
+        if send(&mut fixture.svm, &authority, ix, &[]).is_err() {
+            return;
+        }
+    }
+
+    panic!("the ask side never filled");
 }
 
 /// The arbitrage crank cannot reach a crossed taker remainder's cover.

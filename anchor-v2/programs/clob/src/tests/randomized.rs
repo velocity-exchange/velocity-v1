@@ -539,25 +539,24 @@ fn random_operation_sequences_keep_the_book_consistent() {
                     let side = rng.side();
                     let count = book.node_count(side);
                     if count > 0 && count >= book.evict_threshold_per_side {
-                        let worst_bound =
-                            is_bound(&book, &book.read_node(book.worst(side)).unwrap(), slot);
-                        let result = book.evict_worst(side, slot);
+                        let shielded = is_shielded_tail(&book, side, slot, now);
+                        let result = book.evict_worst(side, slot, now);
                         assert_eq!(
                             result.is_ok(),
-                            !worst_bound,
-                            "{context}: eviction must refuse a bound tail"
+                            !shielded,
+                            "{context}: eviction must refuse a shielded tail and only that"
                         );
                     }
                 }
                 4 => {
                     let expired: Vec<_> = live_orders(&book)
                         .into_iter()
-                        .filter(|(_, node)| node.is_expired(now))
+                        .filter(|(_, node)| is_past_expiry(&book, node, slot, now))
                         .collect();
                     if let Some(&(index, node)) =
                         expired.get(rng.below(expired.len() as u64) as usize)
                     {
-                        book.remove_expired(order_ref(index, &node), now)
+                        book.remove_expired(order_ref(index, &node), slot, now)
                             .unwrap_or_else(|error| {
                                 panic!("{context}: remove_expired failed: {error:?}")
                             });
@@ -572,7 +571,7 @@ fn random_operation_sequences_keep_the_book_consistent() {
                         remainders.get(rng.below(remainders.len() as u64) as usize)
                     {
                         let amount = (1 + rng.below(node.base_asset_amount / UNIT)) * UNIT;
-                        let live = node.is_active(slot) && !node.is_expired(now);
+                        let live = is_matchable(&book, &node, slot, now);
                         let result = book.fill(
                             order_ref(index, &node),
                             amount.min(node.base_asset_amount),
@@ -609,6 +608,28 @@ fn is_bound(book: &ClobMarketV0, node: &OrderNodeV0, slot: u64) -> bool {
     node.is_taker_origin() && slot < node.activation_slot + book.reservation_grace_slots as u64
 }
 
+/// Past `max_ts`, recomputed from the rule that a bound remainder cannot expire.
+fn is_past_expiry(book: &ClobMarketV0, node: &OrderNodeV0, slot: u64, now: i64) -> bool {
+    node.is_expired(now) && !is_bound(book, node, slot)
+}
+
+fn is_matchable(book: &ClobMarketV0, node: &OrderNodeV0, slot: u64, now: i64) -> bool {
+    node.is_active(slot) && !is_past_expiry(book, node, slot, now)
+}
+
+/// A tail eviction must leave, recomputed from the rule: a bound remainder that
+/// a matchable maker order of another authority crosses, at any depth.
+fn is_shielded_tail(book: &ClobMarketV0, side: SideV0, slot: u64, now: i64) -> bool {
+    let tail = book.read_node(book.worst(side)).unwrap();
+    is_bound(book, &tail, slot)
+        && best_first(book, side.opposite()).iter().any(|(_, node)| {
+            is_matchable(book, node, slot, now)
+                && !node.is_taker_origin()
+                && node.authority != tail.authority
+                && side.is_crossed_by(tail.price, node.price)
+        })
+}
+
 /// The units of each live order on `cover` that no ordinary caller may take,
 /// recomputed from the reservation's documented rules: each taker-origin order
 /// on the other side, oldest first, claims the best cover units still
@@ -619,7 +640,7 @@ fn reference_withheld(book: &ClobMarketV0, cover: SideV0, slot: u64, now: i64) -
     let claiming = cover.opposite();
     let grace = book.reservation_grace_slots as u64;
     let lapsed = |node: &OrderNodeV0| slot >= node.activation_slot.saturating_add(grace);
-    let matchable = |node: &OrderNodeV0| !node.is_expired(now) && node.is_active(slot);
+    let matchable = |node: &OrderNodeV0| is_matchable(book, node, slot, now);
 
     let covers: Vec<(u32, OrderNodeV0)> = best_first(book, cover)
         .into_iter()
@@ -628,7 +649,7 @@ fn reference_withheld(book: &ClobMarketV0, cover: SideV0, slot: u64, now: i64) -
     let mut claimants: Vec<OrderNodeV0> = best_first(book, claiming)
         .into_iter()
         .map(|(_, node)| node)
-        .filter(|node| node.is_taker_origin() && !lapsed(node) && !node.is_expired(now))
+        .filter(|node| node.is_taker_origin() && !lapsed(node))
         .collect();
     claimants.sort_by_key(|node| node.order_id);
 

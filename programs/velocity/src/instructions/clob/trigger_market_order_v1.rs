@@ -15,10 +15,15 @@
 //! or against the vAMM. The relay-staged cross crank carries no quoter, so a
 //! quoter's price does not reach the order on that path.
 //!
-//! A full book side refuses a fire that filled nothing, so the trigger stays
-//! armed until an eviction frees room. A fire that filled part of the order
-//! keeps the fill and cancels the remainder the side refuses. The crank logs
-//! the cancelled size, and the rest path emits a cancel record for it.
+//! A refusal that can clear, such as a full book side, never cancels a fired
+//! stop. A fire that filled nothing fails, so the trigger stays armed. A fire
+//! that filled part keeps the fill and arms the unfilled part again. A refusal
+//! that comes from the order itself cancels the rest.
+//!
+//! The keeper earns the flat reward in shares. A fire earns the share of the
+//! stop's size that it used: what it filled when the stop is armed again, and
+//! all that was left when the stop is spent. A fire that fills dust earns
+//! dust, and only a fire that spends the stop draws reservoir lamports.
 //!
 //! The account set is the trigger keeper set plus the market's CLOB accounts
 //! the rest needs. `trigger_limit_order_v1` carries the same superset. CLOB
@@ -28,14 +33,15 @@
 use {
     crate::{
         controller,
+        controller::orders::FireOutcome,
         error::ErrorCode,
-        instructions::constraints::*,
-        load,
+        instructions::{constraints::*, DetachedRemainder},
+        load, load_mut,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             fill_mode::FillMode,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{ClobMarket, OrderRulesV0, QuoterSlabExt, QuoterSlabV0},
+            prop_amm::{QuoterSlabExt, QuoterSlabV0},
             spot_market::SpotMarket,
             state::State,
             user::{Order, User, UserStats},
@@ -204,25 +210,22 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     .keeper_fee(market_index, order_id)?;
 
     // Fire the trigger. This validates it, turns a copy of the slot order into
-    // a live market order, frees the slot, and pays the flat reward. `None`
-    // means there was no payable work. The order was past its `max_ts`, or it
-    // was cancelled unpaid because it had nothing to reduce or the account
-    // could not carry it. Either way, skip the fill and the reservoir payout.
-    let Some(controller::orders::FiredTrigger {
-        order: mut fired,
-        filler_reward,
-    }) = controller::orders::trigger_and_route_order(
+    // a live market order, and frees the slot. `None` means there was no
+    // payable work. The order was past its `max_ts`, or it was cancelled unpaid
+    // because it had nothing to reduce or the account could not carry it.
+    // Either way, skip the fill and the reservoir payout.
+    let trigger_accounts = controller::orders::TriggerAccounts {
+        user: &accounts.user,
+        user_stats: &accounts.user_stats,
+        filler: &accounts.filler,
+    };
+    let Some(fire) = controller::orders::trigger_and_route_order(
         controller::orders::OrderToFire {
             market_index,
             order_id,
         },
-        keeper_fee.quote,
         &state,
-        &controller::orders::TriggerAccounts {
-            user: &accounts.user,
-            user_stats: &accounts.user_stats,
-            filler: &accounts.filler,
-        },
+        &trigger_accounts,
         &mut maps,
         clock,
     )?
@@ -230,6 +233,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         return Ok(());
     };
 
+    let mut fired = fire.order;
     route_fill_fired_order(
         accounts,
         &mut maps,
@@ -239,11 +243,20 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         clock,
     )?;
 
-    require_room_for_fired_rest(accounts, market_index, &fired)?;
-    rest_fired_remainder(accounts, &mut maps, &fired, clock)?;
+    let outcome = rest_fired_remainder(accounts, &mut maps, &fired, &fire.armed, clock)?;
+    let filler_reward = controller::orders::pay_fired_trigger(
+        &fire,
+        &fired,
+        outcome,
+        keeper_fee.quote,
+        &trigger_accounts,
+        &mut maps,
+        clock,
+    )?;
 
-    // Pay the reservoir and release the trigger wake slot. Drop the state
-    // borrow first, because the reservoir payout loads state itself.
+    // A fire that arms the stop again earns only a share of the quote reward,
+    // so it draws no reservoir lamports and keeps the trigger wake slot. Drop
+    // the state borrow first, because the reservoir payout loads state itself.
     drop(state);
     super::helpers::crank_common::finish_trigger_crank(
         &accounts.state,
@@ -256,64 +269,10 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
             market_index,
             order_id,
             keeper_reward: filler_reward,
-            pay_lamports: keeper_fee.pay_lamports,
-            release_slot: true,
+            pay_lamports: keeper_fee.pay_lamports && outcome == FireOutcome::Spent,
+            release_slot: outcome == FireOutcome::Spent,
         },
     )?;
-
-    Ok(())
-}
-
-/// Refuse a fire that filled nothing and would rest onto a full side.
-///
-/// The fire cannot be undone, so an order the book refuses would be lost
-/// whole. A full side is a state of the book that an eviction clears, so the
-/// crank fails and the trigger stays armed. A fire that filled part of the
-/// order keeps that fill, and the rest path cancels the remainder the side
-/// refuses. An attacker who keeps the side full then cannot delay the part a
-/// routed fill reaches.
-fn require_room_for_fired_rest<'info>(
-    accounts: &TriggerMarketOrderV1<'info>,
-    market_index: u16,
-    fired: &Order,
-) -> Result<()> {
-    if fired.get_base_asset_amount_unfilled(None)? == 0 {
-        return Ok(());
-    }
-
-    let rules = ClobMarket::from_slab(
-        &accounts.quoter_slab,
-        market_index,
-        &accounts.clob_market,
-        &accounts.clob_program,
-    )?
-    .reader()
-    .order_rules()?;
-
-    fired_rest_admission(&rules, fired)
-}
-
-/// The book's answer for the unfilled part of a fired order. A full side
-/// refuses a fire that filled nothing. A fire that filled part logs the
-/// remainder that the rest path then cancels.
-fn fired_rest_admission(rules: &OrderRulesV0, fired: &Order) -> Result<()> {
-    if super::helpers::crank_common::side_has_room(rules, fired.direction) {
-        return Ok(());
-    }
-
-    validate!(
-        fired.base_asset_amount_filled != 0,
-        ErrorCode::MaxNumberOfOrders,
-        "market {}'s book side is full; the trigger stays armed",
-        fired.market_index
-    )?;
-
-    msg!(
-        "market {}'s book side is full; the fire keeps its fill of {} and cancels the remaining {}",
-        fired.market_index,
-        fired.base_asset_amount_filled,
-        fired.get_base_asset_amount_unfilled(None)?
-    );
 
     Ok(())
 }
@@ -419,16 +378,17 @@ fn route_fill_fired_order<'info>(
 /// trigger-market's worst price is stored relative to the oracle, so the rest
 /// price is read against the live oracle.
 ///
-/// A remainder that cannot rest is lost. The trigger slot was freed and the
-/// flat reward charged before the fill ran, and the fill already moved the
-/// position, so nothing can be restored. The lost remainder emits a cancel
-/// record instead.
+/// A refusal that comes from the order itself cancels the remainder. Any other
+/// refusal can clear, so the stop must not lose the remainder to it. A fire that filled nothing fails the crank,
+/// so the trigger stays armed and nothing is paid. A fire that filled part
+/// cannot be undone, so the unfilled part is armed again in its slot.
 fn rest_fired_remainder<'info>(
     accounts: &TriggerMarketOrderV1<'info>,
     maps: &mut crate::instructions::optional_accounts::AccountMaps<'info>,
     fired: &Order,
+    armed: &controller::orders::ArmedSlot,
     clock: &Clock,
-) -> Result<()> {
+) -> Result<FireOutcome> {
     let rest_oracle_price = {
         let oracle_id = maps
             .perp_market_map
@@ -437,7 +397,7 @@ fn rest_fired_remainder<'info>(
         maps.oracle_map.get_price_data(&oracle_id)?.price
     };
 
-    crate::instructions::rest_or_cancel_detached_remainder(
+    let rest = crate::instructions::rest_detached_remainder(
         &crate::instructions::ClobRestAccounts {
             state: &accounts.state,
             user: &accounts.user,
@@ -454,7 +414,24 @@ fn rest_fired_remainder<'info>(
         clock,
     )?;
 
-    Ok(())
+    let reason = match rest {
+        DetachedRemainder::Rested(_) | DetachedRemainder::Ended => return Ok(FireOutcome::Spent),
+        DetachedRemainder::Refused(reason) => reason,
+    };
+
+    if fired.base_asset_amount_filled == armed.order.base_asset_amount_filled {
+        return Err(reason.error_code().into());
+    }
+
+    let unfilled = fired.get_base_asset_amount_unfilled(None)?;
+    msg!(
+        "book refuses the remainder of trigger order {} ({:?}); {} base is armed again",
+        fired.order_id,
+        reason,
+        unfilled
+    );
+    controller::orders::re_arm_fired_trigger(&mut *load_mut!(accounts.user)?, armed, fired)?;
+    Ok(FireOutcome::ReArmed)
 }
 
 /// The relay resolver for `trigger_market_order_v1`. It is simulation-only and
@@ -571,13 +548,9 @@ pub fn handle_resolve_trigger_market_order_v1(
 
 #[cfg(test)]
 mod side_room_tests {
-    use {
-        super::fired_rest_admission,
-        crate::{
-            controller::position::PositionDirection,
-            instructions::clob::helpers::crank_common::side_has_room,
-            state::{prop_amm::OrderRulesV0, user::Order},
-        },
+    use crate::{
+        controller::position::PositionDirection,
+        instructions::clob::helpers::crank_common::side_has_room, state::prop_amm::OrderRulesV0,
     };
 
     fn rules() -> OrderRulesV0 {
@@ -596,34 +569,11 @@ mod side_room_tests {
         }
     }
 
-    /// A stop-market that would rest on a full side is not fired, so it
-    /// stays armed until an eviction frees room.
+    /// The trigger resolver stages no fire onto a full side, so the stop
+    /// waits for an eviction to free room.
     #[test]
     fn a_full_side_has_no_room_and_the_other_side_does() {
         assert!(side_has_room(&rules(), PositionDirection::Long));
         assert!(!side_has_room(&rules(), PositionDirection::Short));
-    }
-
-    /// A full side refuses only a fire that filled nothing. A routed fill
-    /// keeps what it filled, and the rest path cancels the remainder.
-    #[test]
-    fn a_full_side_refuses_only_an_unfilled_fire() {
-        let unfilled = Order {
-            direction: PositionDirection::Short,
-            base_asset_amount: 10,
-            ..Order::default()
-        };
-        let part_filled = Order {
-            base_asset_amount_filled: 4,
-            ..unfilled
-        };
-        let long = Order {
-            direction: PositionDirection::Long,
-            ..unfilled
-        };
-
-        assert!(fired_rest_admission(&rules(), &unfilled).is_err());
-        assert!(fired_rest_admission(&rules(), &part_filled).is_ok());
-        assert!(fired_rest_admission(&rules(), &long).is_ok());
     }
 }

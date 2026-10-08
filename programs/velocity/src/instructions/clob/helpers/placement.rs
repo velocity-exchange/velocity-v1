@@ -189,9 +189,6 @@ pub enum RestRefusal {
     ExpiryPassed,
     /// The requested activation delay is above the book's maximum.
     DelayAboveMaximum,
-    /// The expiry falls inside the activation delay, so nothing could match
-    /// the order.
-    ExpiresBeforeActivation,
     /// The side the remainder would rest on holds every order it can.
     SideAtCapacity,
     /// The owner is bankrupt.
@@ -203,6 +200,24 @@ pub enum RestRefusal {
 }
 
 impl RestRefusal {
+    /// The refusal comes from the order's own terms, so every later attempt
+    /// meets it again. Any other refusal is a state of the book or the account
+    /// that can clear.
+    pub fn is_permanent(self) -> bool {
+        match self {
+            RestRefusal::SizeBelowMinimum
+            | RestRefusal::SizeOffStep
+            | RestRefusal::PriceOffTick
+            | RestRefusal::ExpiryPassed
+            | RestRefusal::DelayAboveMaximum => true,
+            RestRefusal::BookClosed
+            | RestRefusal::SideAtCapacity
+            | RestRefusal::OwnerBankrupt
+            | RestRefusal::PositionAtOrderLimit
+            | RestRefusal::FailsMarginGate => false,
+        }
+    }
+
     /// The error of a placement that must rest, such as a maker quote.
     pub fn error_code(self) -> ErrorCode {
         match self {
@@ -210,9 +225,7 @@ impl RestRefusal {
             RestRefusal::SizeBelowMinimum => ErrorCode::InvalidOrderMinOrderSize,
             RestRefusal::SizeOffStep => ErrorCode::InvalidOrderNotStepSizeMultiple,
             RestRefusal::PriceOffTick => ErrorCode::InvalidOrderLimitPrice,
-            RestRefusal::ExpiryPassed | RestRefusal::ExpiresBeforeActivation => {
-                ErrorCode::InvalidOrderMaxTs
-            }
+            RestRefusal::ExpiryPassed => ErrorCode::InvalidOrderMaxTs,
             RestRefusal::DelayAboveMaximum => ErrorCode::InvalidOrder,
             RestRefusal::SideAtCapacity | RestRefusal::PositionAtOrderLimit => {
                 ErrorCode::MaxNumberOfOrders
@@ -233,7 +246,6 @@ impl RestRefusal {
             | RestRefusal::PriceOffTick
             | RestRefusal::ExpiryPassed
             | RestRefusal::DelayAboveMaximum
-            | RestRefusal::ExpiresBeforeActivation
             | RestRefusal::SideAtCapacity
             | RestRefusal::OwnerBankrupt
             | RestRefusal::PositionAtOrderLimit => OrderActionExplanation::None,
@@ -309,10 +321,6 @@ pub fn rest_admission(
     let delay = activation_delay_slots.unwrap_or(rules.default_activation_delay_slots);
     if delay > rules.max_activation_delay_slots {
         return RestAdmission::Refused(RestRefusal::DelayAboveMaximum);
-    }
-
-    if clob_wire::expires_before_activation(max_ts, now, delay) {
-        return RestAdmission::Refused(RestRefusal::ExpiresBeforeActivation);
     }
 
     // The arena is shared, so each side holds at most half of it.
@@ -491,7 +499,7 @@ pub fn rest_remainder_on_clob<'info>(
             placed.is_isolated_position,
         )?,
         RestOutcome::Refused(reason) => {
-            msg!("book refuses the remainder ({:?}); stays cancelled", reason);
+            msg!("book refuses the remainder ({:?})", reason);
         }
     }
 
@@ -505,12 +513,48 @@ pub struct DetachedRemainderTerms {
     pub activation_delay_slots: Option<u32>,
 }
 
-/// Rest the unfilled part of a detached taker order, or record its cancel.
-/// Returns the CLOB order id when the part rests.
-///
-/// The fill already landed, so no refusal here is an error. Every part that
-/// does not rest emits an `OrderActionRecord(Cancel)`, so the order does not
-/// leave the order history without a record.
+/// What became of the unfilled part of a detached taker order.
+pub enum DetachedRemainder {
+    /// The part rests on the book under this CLOB order id.
+    Rested(u64),
+    /// Nothing was left, or the part was cancelled and its record emitted.
+    Ended,
+    /// The book or the account refused the part for a reason that can clear.
+    /// Nothing was recorded, so the caller decides what becomes of it.
+    Refused(RestRefusal),
+}
+
+/// Rest the unfilled part of a detached taker order. A part that cannot rest
+/// for a reason of its own emits an `OrderActionRecord(Cancel)`, so the order
+/// does not leave the order history without a record.
+pub fn rest_detached_remainder<'info>(
+    accounts: &ClobRestAccounts<'_, 'info>,
+    maps: &mut AccountMaps,
+    order: &Order,
+    terms: &DetachedRemainderTerms,
+    clock: &Clock,
+) -> Result<DetachedRemainder> {
+    if order.get_base_asset_amount_unfilled(None)? == 0 {
+        return Ok(DetachedRemainder::Ended);
+    }
+
+    let explanation = match detached_remainder_rest(accounts, maps, order, terms, clock)? {
+        RemainderRest::Rested(clob_order_id) => {
+            return Ok(DetachedRemainder::Rested(clob_order_id))
+        }
+        RemainderRest::Cancelled(explanation) => explanation,
+        RemainderRest::Refused(reason) if !reason.is_permanent() => {
+            return Ok(DetachedRemainder::Refused(reason))
+        }
+        RemainderRest::Refused(reason) => reason.cancel_explanation(),
+    };
+
+    emit_remainder_cancel(accounts, maps, order, clock, explanation)?;
+    Ok(DetachedRemainder::Ended)
+}
+
+/// [`rest_detached_remainder`], cancelling the part on any refusal. Returns the
+/// CLOB order id when the part rests.
 pub fn rest_or_cancel_detached_remainder<'info>(
     accounts: &ClobRestAccounts<'_, 'info>,
     maps: &mut AccountMaps,
@@ -518,15 +562,25 @@ pub fn rest_or_cancel_detached_remainder<'info>(
     terms: &DetachedRemainderTerms,
     clock: &Clock,
 ) -> Result<Option<u64>> {
-    if order.get_base_asset_amount_unfilled(None)? == 0 {
-        return Ok(None);
-    }
+    Ok(
+        match rest_detached_remainder(accounts, maps, order, terms, clock)? {
+            DetachedRemainder::Rested(clob_order_id) => Some(clob_order_id),
+            DetachedRemainder::Ended => None,
+            DetachedRemainder::Refused(reason) => {
+                emit_remainder_cancel(accounts, maps, order, clock, reason.cancel_explanation())?;
+                None
+            }
+        },
+    )
+}
 
-    let explanation = match detached_remainder_rest(accounts, maps, order, terms, clock)? {
-        RemainderRest::Rested(clob_order_id) => return Ok(Some(clob_order_id)),
-        RemainderRest::Cancelled(explanation) => explanation,
-    };
-
+fn emit_remainder_cancel(
+    accounts: &ClobRestAccounts<'_, '_>,
+    maps: &mut AccountMaps,
+    order: &Order,
+    clock: &Clock,
+    explanation: OrderActionExplanation,
+) -> Result<()> {
     controller::orders::emit_detached_cancel_record(
         &*load!(accounts.user)?,
         &accounts.user.key(),
@@ -536,13 +590,14 @@ pub fn rest_or_cancel_detached_remainder<'info>(
         explanation,
     )?;
 
-    Ok(None)
+    Ok(())
 }
 
 /// What became of an unfilled part that the caller tried to rest.
 enum RemainderRest {
     Rested(u64),
     Cancelled(OrderActionExplanation),
+    Refused(RestRefusal),
 }
 
 fn detached_remainder_rest<'info>(
@@ -599,7 +654,7 @@ fn detached_remainder_rest<'info>(
 
     Ok(match outcome {
         RestOutcome::Placed(placed) => RemainderRest::Rested(placed.clob_order_id),
-        RestOutcome::Refused(reason) => RemainderRest::Cancelled(reason.cancel_explanation()),
+        RestOutcome::Refused(reason) => RemainderRest::Refused(reason),
     })
 }
 
@@ -930,7 +985,9 @@ mod rest_admission_tests {
     }
 
     #[test]
-    fn an_expiry_inside_the_default_delay_is_refused() {
+    /// The book keeps a taker remainder past its `max_ts` until its claim
+    /// lapses, so an expiry inside the delay still leaves it time to fill.
+    fn an_expiry_inside_the_default_delay_rests() {
         let mut rules = rules();
         rules.default_activation_delay_slots = 10;
         let admission = rest_admission(
@@ -943,10 +1000,7 @@ mod rest_admission_tests {
             100,
         );
 
-        assert_eq!(
-            refusal(admission),
-            Some(RestRefusal::ExpiresBeforeActivation)
-        );
+        assert_eq!(refusal(admission), None);
     }
 
     #[test]
@@ -1170,6 +1224,7 @@ mod detached_remainder_tests {
     fn cancelled_with(rest: RemainderRest) -> Option<OrderActionExplanation> {
         match rest {
             RemainderRest::Cancelled(explanation) => Some(explanation),
+            RemainderRest::Refused(reason) => Some(reason.cancel_explanation()),
             RemainderRest::Rested(_) => None,
         }
     }

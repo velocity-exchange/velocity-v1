@@ -25,7 +25,7 @@
 //! cancelled rather than placed, and the keeper earns the flat reward. Those
 //! refusals come from the order, so every later crank would meet them again.
 //! A full side is a state of the book that an eviction clears. The crank then
-//! fails and the trigger stays armed.
+//! fails and the trigger stays armed, as for every refusal that can clear.
 //!
 //! Re-triggering after an eviction runs behind an edge gate, which is
 //! [`OrderBitFlag::AwaitingTriggerRecross`]. While the flag is set, a crank
@@ -49,8 +49,8 @@
 //! Two consequences follow. The owner pays taker fees when a counterparty
 //! crosses the order, which is the price of demanding liquidity. The order also
 //! cannot be cancelled until `reservation_grace_slots` after its activation
-//! slot, so a trigger commits its owner for that window. A liquidation force-cancel stays exempt, and `max_ts`
-//! still bounds the order's life.
+//! slot, so a trigger commits its owner for that window. A liquidation force-cancel stays exempt.
+//! `max_ts` ends the order's life, but not before the window ends.
 //!
 //! Stop-markets never come here. `trigger_market_order_v1` fires them, fills
 //! them through the router, and rests only the remainder. A fired market order
@@ -486,9 +486,10 @@ impl TriggerLimitCrank<'_, '_> {
 
         let price = match admission {
             RestAdmission::Admitted { price } => price,
-            // A full side is not the order's fault, so the trigger stays armed.
-            RestAdmission::Refused(RestRefusal::SideAtCapacity) => {
-                return Err(RestRefusal::SideAtCapacity.error_code().into());
+            // A refusal that can clear is not the order's fault, so the
+            // trigger stays armed.
+            RestAdmission::Refused(reason) if !reason.is_permanent() => {
+                return Err(reason.error_code().into());
             }
             RestAdmission::Refused(reason) => {
                 cancel_refused_trigger(

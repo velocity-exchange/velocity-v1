@@ -1,9 +1,10 @@
 //! Firing a trigger order.
 //!
 //! A trigger order rests dormant until the market reaches its trigger price.
-//! Firing it turns it into a live market order and pays the keeper the flat
-//! reward. [`trigger_and_route_order`] hands the fired order back detached
-//! for the caller to fill straight against the book.
+//! Firing it turns it into a live market order. [`trigger_and_route_order`]
+//! hands the fired order back detached for the caller to fill straight against
+//! the book, and [`pay_fired_trigger`] pays the keeper once the caller knows
+//! how much of the order the fire used.
 
 use {super::*, crate::state::perp_market::ContractTier};
 
@@ -25,9 +26,6 @@ pub struct TriggerAccounts<'a, 'info> {
 /// The armed slot reserved no exposure, so freeing it releases only the order
 /// count. The remainder the caller rests adds one back for its CLOB order.
 ///
-/// `keeper_fee` is what the crank charges the owner. It is the flat fee, or
-/// more when the reservoir pays the caller.
-///
 /// Returns `None` when there is no payable work. That happens when the order
 /// is past its `max_ts`, or when the order is cancelled instead of fired: a
 /// reduce-only order with nothing to reduce, or a risk-increasing trigger on a
@@ -36,7 +34,6 @@ pub struct TriggerAccounts<'a, 'info> {
 /// market reservoir.
 pub fn trigger_and_route_order(
     order_to_fire: OrderToFire,
-    keeper_fee: u64,
     state: &State,
     accounts: &TriggerAccounts,
     maps: &mut AccountMaps,
@@ -103,31 +100,9 @@ pub fn trigger_and_route_order(
         return Ok(None);
     }
 
-    let is_isolated = user
+    let is_isolated_position = user
         .get_perp_position(market_index)
         .is_ok_and(|position| position.is_isolated());
-
-    // The fill the caller runs settles its own fees. This is the trigger's
-    // own reward, paid once for the crank that fired the order.
-    let filler_reward = pay_trigger_reward(
-        user,
-        &accounts.user.key(),
-        accounts.filler,
-        &mut *maps.perp_market_map.get_ref_mut(&market_index)?,
-        keeper_fee,
-        slot,
-    )?;
-
-    TriggerRecord {
-        fired,
-        user: accounts.user.key(),
-        filler: accounts.filler.key(),
-        filler_reward,
-        oracle_price,
-        trigger_price,
-        is_isolated_position: is_isolated,
-    }
-    .emit(now)?;
 
     free_fired_order_slot(user, order_index)?;
 
@@ -135,15 +110,125 @@ pub fn trigger_and_route_order(
 
     Ok(Some(FiredTrigger {
         order: fired,
-        filler_reward,
+        armed: ArmedSlot {
+            index: order_index,
+            order: armed,
+        },
+        oracle_price,
+        trigger_price,
+        is_isolated_position,
     }))
 }
 
-/// The live order a trigger fired as, and the flat reward the keeper
-/// collected for firing it.
+/// The live order a trigger fired as, before any fill, the armed order the
+/// fire freed, and the facts its trigger record states.
 pub struct FiredTrigger {
     pub order: Order,
-    pub filler_reward: u64,
+    pub armed: ArmedSlot,
+    pub oracle_price: i64,
+    pub trigger_price: u64,
+    pub is_isolated_position: bool,
+}
+
+/// What became of a fired trigger once its fill and rest ran.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FireOutcome {
+    /// The order filled, rests on the book, or was cancelled.
+    Spent,
+    /// The unfilled part is armed again in its slot.
+    ReArmed,
+}
+
+/// Pay the keeper its share of the flat reward, and record the trigger.
+///
+/// A fire earns the share of the trigger's size that it used: what it filled
+/// when the trigger is armed again, and all that was left when it is spent.
+/// The shares of one trigger add up to one reward, so a fire that fills dust
+/// earns dust. `filled` is the fired order after its fill.
+pub fn pay_fired_trigger(
+    fire: &FiredTrigger,
+    filled: &Order,
+    outcome: FireOutcome,
+    keeper_fee: u64,
+    accounts: &TriggerAccounts,
+    maps: &mut AccountMaps,
+    clock: &Clock,
+) -> VelocityResult<u64> {
+    let size = fire.armed.order.base_asset_amount;
+    let used_after = match outcome {
+        FireOutcome::Spent => size,
+        FireOutcome::ReArmed => filled.base_asset_amount_filled,
+    };
+    let reward_due = reward_share(keeper_fee, used_after, size)?.safe_sub(reward_share(
+        keeper_fee,
+        fire.armed.order.base_asset_amount_filled,
+        size,
+    )?)?;
+
+    let filler_reward = pay_trigger_reward(
+        &mut *load_mut!(accounts.user)?,
+        &accounts.user.key(),
+        accounts.filler,
+        &mut *maps.perp_market_map.get_ref_mut(&fire.order.market_index)?,
+        reward_due,
+        clock.slot,
+    )?;
+
+    TriggerRecord {
+        fired: fire.order,
+        user: accounts.user.key(),
+        filler: accounts.filler.key(),
+        filler_reward,
+        oracle_price: fire.oracle_price,
+        trigger_price: fire.trigger_price,
+        is_isolated_position: fire.is_isolated_position,
+    }
+    .emit(clock.unix_timestamp)?;
+
+    Ok(filler_reward)
+}
+
+/// The part of `keeper_fee` that `used` base of a trigger of `size` earns.
+fn reward_share(keeper_fee: u64, used: u64, size: u64) -> VelocityResult<u64> {
+    keeper_fee
+        .cast::<u128>()?
+        .safe_mul(used.cast()?)?
+        .safe_div(size.max(1).cast()?)?
+        .cast()
+}
+
+/// An armed trigger and the `User.orders` slot it occupied.
+#[derive(Clone, Copy)]
+pub struct ArmedSlot {
+    pub index: usize,
+    pub order: Order,
+}
+
+/// Put a part-filled trigger back in the slot the fire freed, armed as before
+/// and carrying what it filled. A stop that the book cannot hold keeps
+/// protecting the position, and the next crank fires it again. The order keeps
+/// its full size, so [`pay_fired_trigger`] still measures each fire's share
+/// against it.
+pub fn re_arm_fired_trigger(user: &mut User, armed: &ArmedSlot, filled: &Order) -> VelocityResult {
+    validate!(
+        user.orders[armed.index].status != OrderStatus::Open
+            && filled.base_asset_amount_filled < armed.order.base_asset_amount,
+        ErrorCode::DefaultError,
+        "cannot re-arm trigger order {} in slot {} with {} of {} filled",
+        armed.order.order_id,
+        armed.index,
+        filled.base_asset_amount_filled,
+        armed.order.base_asset_amount
+    )?;
+
+    let order = Order {
+        base_asset_amount_filled: filled.base_asset_amount_filled,
+        quote_asset_amount_filled: filled.quote_asset_amount_filled,
+        ..armed.order
+    };
+    user.orders[armed.index] = order;
+    user.reserve_orders(&OrderReservation::of_order(&order)?)?;
+    Ok(())
 }
 
 /// The armed order a trigger crank names, and the market the crank runs on.
@@ -700,6 +785,29 @@ pub(crate) fn refuse_unwatched_stop_loss(
 
 #[cfg(test)]
 mod cancel_gate_tests;
+
+#[cfg(test)]
+mod reward_share_tests {
+    use super::reward_share;
+
+    /// A trigger filled in uneven parts pays exactly one fee over its life,
+    /// and a dust fill earns no more than its share.
+    #[test]
+    fn the_shares_of_one_trigger_add_up_to_one_fee() {
+        let (fee, size) = (1_000_003, 1_000_000_007);
+        let used_after_each_fire = [1, 333_333_333, 900_000_000, size];
+        let mut paid = 0;
+        let mut used_before = 0;
+        for used_after in used_after_each_fire {
+            paid += reward_share(fee, used_after, size).unwrap()
+                - reward_share(fee, used_before, size).unwrap();
+            used_before = used_after;
+        }
+
+        assert_eq!(paid, fee);
+        assert_eq!(reward_share(fee, 1, size).unwrap(), 0);
+    }
+}
 
 #[cfg(test)]
 mod gate_tests {

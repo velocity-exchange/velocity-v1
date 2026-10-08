@@ -1114,7 +1114,10 @@ fn removals_free_the_slot_and_close_the_list() {
         book.cancel(maker, mid, ACTIVE_SLOT, false),
         ClobError::StaleOrderRef,
     );
-    assert_err(book.remove_expired(mid, 1), ClobError::StaleOrderRef);
+    assert_err(
+        book.remove_expired(mid, ACTIVE_SLOT, 1),
+        ClobError::StaleOrderRef,
+    );
 }
 
 /// Helper for the cancel-all tests: run the sweep and collect the ids it
@@ -1307,7 +1310,7 @@ fn evict_worst_moves_the_tail_off_the_freed_slot() {
     let tail = place(&mut book, SideV0::Bid, 100, 1, maker);
     let next_tail = place(&mut book, SideV0::Bid, 110, 1, maker);
 
-    let removed = book.evict_worst(SideV0::Bid, ACTIVE_SLOT).unwrap();
+    let removed = book.evict_worst(SideV0::Bid, ACTIVE_SLOT, 0).unwrap();
     assert_eq!((removed.order_id, removed.price), (tail.order_id, 100));
     assert_eq!(book.worst(SideV0::Bid), next_tail.node_index);
     assert!(!book
@@ -1317,15 +1320,15 @@ fn evict_worst_moves_the_tail_off_the_freed_slot() {
     assert_consistent(&book);
 
     // Evicting the last order on a side clears both endpoints.
-    book.evict_worst(SideV0::Bid, ACTIVE_SLOT).unwrap();
-    book.evict_worst(SideV0::Bid, ACTIVE_SLOT).unwrap();
+    book.evict_worst(SideV0::Bid, ACTIVE_SLOT, 0).unwrap();
+    book.evict_worst(SideV0::Bid, ACTIVE_SLOT, 0).unwrap();
     assert_eq!(book.node_count(SideV0::Bid), 0);
     assert_eq!(
         (book.best(SideV0::Bid), book.worst(SideV0::Bid)),
         (NIL, NIL)
     );
     assert_err(
-        book.evict_worst(SideV0::Bid, ACTIVE_SLOT),
+        book.evict_worst(SideV0::Bid, ACTIVE_SLOT, 0),
         ClobError::BelowEvictThreshold,
     );
     assert_consistent(&book);
@@ -1344,11 +1347,11 @@ fn expired_orders_are_reclaimed_only_once_expired() {
         .unwrap();
 
     assert_err(
-        book.remove_expired(order, 1_000),
+        book.remove_expired(order, ACTIVE_SLOT, 1_000),
         ClobError::OrderNotExpired,
     );
 
-    let removed = book.remove_expired(order, 1_001).unwrap();
+    let removed = book.remove_expired(order, ACTIVE_SLOT, 1_001).unwrap();
     assert_eq!(removed.base_asset_amount, 5);
     assert_consistent(&book);
 }

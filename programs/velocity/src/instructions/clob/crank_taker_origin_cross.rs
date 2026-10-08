@@ -88,8 +88,10 @@
 //! rewrites an arena link, not the head. A blocker that leaves the matchable
 //! set by passing its own `max_ts` writes nothing at all. The expire
 //! condition's `AtTimestamp` hint covers the second shape, because removing
-//! the expired order then moves the head. The every-slots cross fallback is
-//! the floor under both, so a missed hint costs latency rather than liveness.
+//! the expired order then moves the head. A bound remainder leaves at the later
+//! of its `max_ts` and the lapse of its claim, so the hint can fire while it is
+//! still bound. The every-slots cross fallback is the floor under every shape,
+//! so a missed hint costs latency rather than liveness.
 
 use {
     super::helpers::crank_common::{

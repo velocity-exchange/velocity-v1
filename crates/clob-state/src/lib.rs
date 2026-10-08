@@ -173,7 +173,9 @@ impl OrderNodeV0 {
         self.activation_slot <= slot
     }
 
-    /// Live and matchable right now: open, activated, not expired.
+    /// Live and matchable right now: open, activated, not expired. The book
+    /// keeps a bound taker-origin order live past `max_ts`, and this check does
+    /// not know the grace window, so it reads such an order as expired.
     pub fn is_matchable(&self, slot: u64, now: i64) -> bool {
         self.is_open() && self.is_active(slot) && !self.is_expired(now)
     }

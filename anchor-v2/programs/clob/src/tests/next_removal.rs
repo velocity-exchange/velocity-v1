@@ -21,6 +21,6 @@ fn expired_excludes_an_order_at_its_own_max_ts() {
     })
     .unwrap();
 
-    assert_eq!(expired(&book, 1_000).unwrap(), OrderViewV0::NONE);
-    assert_ne!(expired(&book, 1_001).unwrap(), OrderViewV0::NONE);
+    assert_eq!(expired(&book, 0, 1_000).unwrap(), OrderViewV0::NONE);
+    assert_ne!(expired(&book, 0, 1_001).unwrap(), OrderViewV0::NONE);
 }

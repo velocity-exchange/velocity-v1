@@ -45,14 +45,6 @@ pub fn handle_place_order_v0(
         }
     };
 
-    // An order whose `max_ts` falls inside its own activation delay expires
-    // before anything can match it. It still takes an arena slot, and it
-    // still sits at the head of its side until the expiry crank reclaims it.
-    require!(
-        !clob_wire::expires_before_activation(args.max_ts, clock.unix_timestamp, delay),
-        ClobError::MaxTsBeforeActivation
-    );
-
     let activation_slot = clock.slot + delay as u64;
     let order_ref = market.place(PlaceOrderParams {
         side: args.side,

@@ -199,10 +199,27 @@ auction an auction. An order its owner can pull the moment a maker lines up offe
 up against. `Book::cancel` refuses a taker-origin node until `reservation_grace_slots` after its
 activation slot, which is exactly when its claim lapses, and the rule lives in the CLOB because
 that is where the flag and the slot are. Liquidation force-cancel passes `force` and stays exempt,
-so a distressed account is never blocked, and `max_ts` still bounds the order's life. The cost is
-real. A taker who signed a market order cannot pull it for the delay plus the grace window, and
-neither can a delegate. A modify is a cancel first, so the same bind holds it, and its replacement
-is a maker order that claims nothing.
+so a distressed account is never blocked. The cost is real. A taker who signed a market order
+cannot pull it for the delay plus the grace window, and neither can a delegate. A modify is a
+cancel first, so the same bind holds it, and its replacement is a maker order that claims nothing.
+
+**`max_ts` cannot end the bind early.** A bound remainder past its `max_ts` stays live, and
+`remove_expired_v0` refuses it until the claim lapses. Otherwise an owner could set `max_ts` just
+past activation, let the order expire before a crank fills it, and escape the claim as a cancel
+would. The bind is counted in slots, so the book needs no guess at how long a slot takes. An order
+can therefore outlive its `max_ts` by up to its delay plus the grace window.
+
+**Eviction respects the bind only while another authority's order crosses the remainder.** Eviction
+takes the tail of a side at its threshold and never passes it for a better price. If any bound
+tail blocked it, one owner could fill a side with cheap orders, rest a far-priced remainder at the
+tail, and place a fresh one each claim window. The side would stay full for good. A remainder that
+crosses nothing claims nothing, so `evict_worst_v0` takes it. The book walks the opposite side
+best-first while its prices cross the tail, and keeps the tail if it finds a live maker order of
+another authority. The cross cranks never fill one authority against itself, so a second
+sub-account does not count. A pair of remainders waits while the vAMM quotes nothing, so a
+remainder does not count either. The walk steps over a pending order, a remainder and an order of
+the tail's authority, so none of them placed in front of a counterparty drops the shield. A side
+holds at most 512 orders, and a walk over all of them costs about 21,000 compute units.
 
 **Every reader withholds through one function, and that is the point.** A router allocates from
 the quote and velocity binds the execute to it. Depth one of them offers and the other withholds

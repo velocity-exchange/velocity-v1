@@ -2525,6 +2525,57 @@ mod get_perp_baseline_start_price_offset {
         assert_eq!(offset, 2 * PRICE_PRECISION_I64); // raw 4%, cut to 2%
     }
 
+    /// The 50bps selector. `slow` is 0 (bid TWAP at oracle) and `fast` is the premium, so
+    /// `abs_diff` is the premium and the threshold is `(ORACLE_TWAP + premium) / 200`. 502_512 is
+    /// the largest premium still inside it: blend, which with zero spreads is `min(0, premium)` = 0.
+    /// One unit more leaves the band and the fast offset passes through alone.
+    #[test]
+    fn switches_from_the_blend_to_the_fast_offset_past_50bps_of_divergence() {
+        let inside = market_with_mark_5min_premium(ContractTier::A, 502_512);
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&inside, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, 0);
+
+        let outside = market_with_mark_5min_premium(ContractTier::A, 502_513);
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&outside, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, 502_513);
+    }
+
+    /// Inside the band the slow offset is blended with fractions of the AMM's cached per-side
+    /// spreads, each scaled by the slow mark TWAP / (PRICE_PRECISION * 10). The SDK parity test
+    /// (`packages/sdk/tests/sdkParity/auctionStartOffsetClamp.test.ts`) asserts the same numbers.
+    #[test]
+    fn blends_the_slow_offset_with_the_amm_spreads_inside_the_band() {
+        // long: slow 200_000, fast 300_000, abs_diff 100_000 <= 100_300_000 / 200.
+        // frac_long = 1000 * 100_200_000 / 1e7 = 10_020.
+        // frac_short = 2000 * 100_200_000 / 1e7 = 20_040.
+        // min(200_000 + 10_020, 300_000 - 20_040) = 210_020.
+        let mut long = market_with_mark_5min_premium(ContractTier::A, 300_000);
+        long.market_stats.last_bid_price_twap = (ORACLE_TWAP + 200_000) as u64;
+        long.amm.long_spread = 1000;
+        long.amm.short_spread = 2000;
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&long, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, 210_020);
+
+        // short: slow -200_000, fast -300_000, abs_diff 100_000 <= 99_700_000 / 200.
+        // frac_long = 1000 * 99_800_000 / 1e7 = 9_980.
+        // frac_short = 2000 * 99_800_000 / 1e7 = 19_960.
+        // max(-200_000 - 19_960, -300_000 + 9_980) = -219_960.
+        let mut short = market_with_mark_5min_premium(ContractTier::A, -300_000);
+        short.market_stats.last_ask_price_twap = (ORACLE_TWAP - 200_000) as u64;
+        short.amm.long_spread = 1000;
+        short.amm.short_spread = 2000;
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&short, PositionDirection::Short)
+                .unwrap();
+        assert_eq!(offset, -219_960);
+    }
+
     /// The end offset derives from the start offset with a `min`/`max` against it, so clamping the
     /// start keeps the long band ordered as start <= end.
     #[test]

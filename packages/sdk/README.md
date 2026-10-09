@@ -41,7 +41,6 @@ Full file: [`examples/read-market.ts`](./examples/read-market.ts).
 ```typescript
 import { Connection, Keypair } from '@solana/web3.js';
 import {
-	BN,
 	BulkAccountLoader,
 	PerpMarkets,
 	PRICE_PRECISION,
@@ -92,8 +91,7 @@ const [bid, ask] = calculateBidAskPrice(
 	perpMarket.marketStats,
 	mmOracle,
 	true,
-	new BN(slot),
-	client.getStateAccount()
+	perpMarket.marketConfig
 );
 
 console.log(`vAMM bid: $${convertToNumber(bid, PRICE_PRECISION)}`);

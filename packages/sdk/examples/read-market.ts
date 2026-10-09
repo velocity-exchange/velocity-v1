@@ -57,7 +57,8 @@ async function main() {
 			perpMarket.amm,
 			perpMarket.marketStats,
 			mmOracle,
-			true
+			true,
+			perpMarket.marketConfig
 		);
 
 		console.log(

@@ -503,7 +503,7 @@ impl<'a> Quoter for AmmQuoter<'a> {
             refresh_cost: 0,
             is_fee_exempt: true,
             fee_policy: FillFeePolicy::AmmHouse,
-            quote_asset_amount_surplus: swap.quote_asset_amount_surplus as i64,
+            quote_asset_amount_surplus: swap.quote_asset_amount_surplus,
         }))
     }
 }

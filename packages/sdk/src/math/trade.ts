@@ -84,7 +84,7 @@ export function calculateTradeSlippage(
 ): [BN, BN, BN, BN] {
 	let oldPrice: BN;
 
-	if (useSpread && market.amm.baseSpread > 0) {
+	if (useSpread) {
 		if (isVariant(direction, 'long')) {
 			oldPrice = calculateAskPrice(market, mmOraclePriceData);
 		} else {
@@ -112,13 +112,14 @@ export function calculateTradeSlippage(
 		.div(acquiredBaseReserve.abs());
 
 	let amm: Parameters<typeof calculateAmmReservesAfterSwap>[0];
-	if (useSpread && market.amm.baseSpread > 0) {
+	if (useSpread) {
 		const { baseAssetReserve, quoteAssetReserve, sqrtK, newPeg } =
 			calculateUpdatedAMMSpreadReserves(
 				market.amm,
 				market.marketStats,
 				direction,
-				mmOraclePriceData
+				mmOraclePriceData,
+				market.marketConfig
 			);
 		amm = {
 			baseAssetReserve,
@@ -186,13 +187,14 @@ export function calculateTradeAcquiredAmounts(
 	const swapDirection = getSwapDirection(inputAssetType, direction);
 
 	let amm: Parameters<typeof calculateAmmReservesAfterSwap>[0];
-	if (useSpread && market.amm.baseSpread > 0) {
+	if (useSpread) {
 		const { baseAssetReserve, quoteAssetReserve, sqrtK, newPeg } =
 			calculateUpdatedAMMSpreadReserves(
 				market.amm,
 				market.marketStats,
 				direction,
-				mmOraclePriceData
+				mmOraclePriceData,
+				market.marketConfig
 			);
 		amm = {
 			baseAssetReserve,
@@ -276,13 +278,14 @@ export function calculateTargetPriceTrade(
 
 	let peg = market.amm.pegMultiplier;
 
-	if (useSpread && market.amm.baseSpread > 0) {
+	if (useSpread) {
 		const { baseAssetReserve, quoteAssetReserve, newPeg } =
 			calculateUpdatedAMMSpreadReserves(
 				market.amm,
 				market.marketStats,
 				direction,
-				mmOraclePriceData
+				mmOraclePriceData,
+				market.marketConfig
 			);
 		baseAssetReserveBefore = baseAssetReserve;
 		quoteAssetReserveBefore = quoteAssetReserve;
@@ -464,7 +467,8 @@ export function calculateEstimatedPerpEntryPrice(
 			market.amm,
 			market.marketStats,
 			direction,
-			mmOraclePriceData
+			mmOraclePriceData,
+			market.marketConfig
 		);
 	const amm = {
 		baseAssetReserve,

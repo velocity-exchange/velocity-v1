@@ -11,6 +11,7 @@ import {
 	calculatePrice,
 	calculateUpdatedAMMSpreadReserves,
 	calculateUpdatedAMM,
+	getKUpdateGate,
 } from './amm';
 import {
 	calculateSizeDiscountAssetWeight,
@@ -45,7 +46,11 @@ export function calculateReservePrice(
 	market: PerpMarketAccount,
 	mmOraclePriceData?: MMOraclePriceData
 ): BN {
-	const newAmm = calculateUpdatedAMM(market.amm, mmOraclePriceData);
+	const newAmm = calculateUpdatedAMM(
+		market.amm,
+		mmOraclePriceData,
+		getKUpdateGate(market)
+	);
 	return calculatePrice(
 		newAmm.baseAssetReserve,
 		newAmm.quoteAssetReserve,
@@ -71,7 +76,8 @@ export function calculateBidPrice(
 			market.amm,
 			market.marketStats,
 			PositionDirection.SHORT,
-			mmOraclePriceData
+			mmOraclePriceData,
+			market.marketConfig
 		);
 
 	return calculatePrice(baseAssetReserve, quoteAssetReserve, newPeg);
@@ -95,7 +101,8 @@ export function calculateAskPrice(
 			market.amm,
 			market.marketStats,
 			PositionDirection.LONG,
-			mmOraclePriceData
+			mmOraclePriceData,
+			market.marketConfig
 		);
 
 	return calculatePrice(baseAssetReserve, quoteAssetReserve, newPeg);

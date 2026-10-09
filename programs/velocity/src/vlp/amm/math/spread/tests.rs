@@ -2136,6 +2136,128 @@ mod test {
             )
         }
 
+        /// Refresh a market with inventory sign `side`, a 1% TWAP premium of the same sign and
+        /// the live oracle `oracle_gap_bps` from the reserve price, fill 0.1 base against it on
+        /// the side the offset makes cheaper, and return (offset, taker quote, curve quote,
+        /// booked surplus).
+        fn fill_against_offset(
+            side: i64,
+            intensity: u8,
+            oracle_gap_bps: i64,
+        ) -> (i32, i64, i64, i64) {
+            use crate::vlp::amm::{
+                controller::{calculate_base_swap_output, SwapDirection},
+                math::amm::{calculate_quote_asset_amount_swapped, calculate_swap_output},
+            };
+
+            let mut amm = AMM {
+                curve_update_intensity: intensity,
+                base_asset_amount_with_amm: side as i128 * AMM_RESERVE_PRECISION as i128,
+                min_base_asset_reserve: 90 * AMM_RESERVE_PRECISION,
+                max_base_asset_reserve: 110 * AMM_RESERVE_PRECISION,
+                ..base_amm()
+            };
+            let reserve_price = amm.reserve_price().unwrap() as i64;
+            let premium = side * reserve_price / 100;
+            let stats = MarketStats {
+                last_24h_avg_funding_rate: side * 100_000,
+                last_funding_oracle_twap: reserve_price,
+                last_mark_price_twap_5min: (reserve_price + premium) as u64,
+                last_mark_price_twap: (reserve_price + premium) as u64,
+                historical_oracle_data: crate::state::oracle::HistoricalOracleData {
+                    last_oracle_price_twap_5min: reserve_price,
+                    last_oracle_price_twap: reserve_price,
+                    ..Default::default()
+                },
+                ..base_stats()
+            };
+            let out = refresh(
+                &mut amm,
+                &stats,
+                side * reserve_price * oracle_gap_bps / 10_000,
+                100,
+            );
+
+            // A negative offset cheapens the ask, so the taker buys. A positive one lifts the
+            // bid, so the taker sells.
+            let direction = if side < 0 {
+                SwapDirection::Remove
+            } else {
+                SwapDirection::Add
+            };
+            let base = AMM_RESERVE_PRECISION as u64 / 10;
+            let swap = calculate_base_swap_output(&amm, base, direction).unwrap();
+            let (curve_quote_asset_reserve, _) =
+                calculate_swap_output(base as u128, amm.base_asset_reserve, direction, amm.sqrt_k)
+                    .unwrap();
+            let curve_quote = calculate_quote_asset_amount_swapped(
+                amm.quote_asset_reserve,
+                curve_quote_asset_reserve,
+                direction,
+                amm.peg_multiplier,
+            )
+            .unwrap() as i64;
+            (
+                out.2,
+                swap.quote_asset_amount as i64,
+                curve_quote,
+                swap.quote_asset_amount_surplus,
+            )
+        }
+
+        #[test]
+        fn offset_past_the_ask_spread_books_negative_surplus() {
+            // Users net short, TWAPs below the oracle, live oracle 30bp under the reserve. The
+            // -1% offset outweighs the long spread, so the ask sits under the curve but above
+            // the oracle. The taker pays less than the curve price and the AMM books the loss.
+            let (offset, paid, curve, surplus) = fill_against_offset(-1, 200, 30);
+            assert_eq!(offset, -10_000);
+            assert!(paid < curve);
+            assert_eq!(surplus, paid - curve);
+            assert_eq!(surplus, -301);
+        }
+
+        #[test]
+        fn offset_past_the_bid_spread_books_negative_surplus() {
+            let (offset, received, curve, surplus) = fill_against_offset(1, 200, 30);
+            assert_eq!(offset, 10_000);
+            assert!(received > curve);
+            assert_eq!(surplus, curve - received);
+            assert_eq!(surplus, -299);
+        }
+
+        #[test]
+        fn spread_inside_the_curve_books_positive_surplus() {
+            // The oracle sits on the TWAP side of the reserve, so the guard widens the reducing
+            // side past the offset and both quotes stay outside the curve.
+            let (_, paid, curve, surplus) = fill_against_offset(-1, 200, -30);
+            assert!(paid > curve);
+            assert_eq!(surplus, paid - curve);
+
+            let (_, received, curve, surplus) = fill_against_offset(1, 200, -30);
+            assert!(received < curve);
+            assert_eq!(surplus, curve - received);
+        }
+
+        #[test]
+        fn quote_state_rejects_an_ask_below_the_bid() {
+            let mut amm = base_amm();
+            refresh(&mut amm, &base_stats(), 0, 100);
+            crate::vlp::amm::math::spread::validate_amm_quote_state(&amm).unwrap();
+
+            // A negative offset leaves only the bid bound, which still holds here, so only the
+            // ordering check sees the ask under the bid.
+            amm.reference_price_offset = -1;
+            amm.ask_quote_asset_reserve = amm.bid_quote_asset_reserve - 1_000;
+            amm.ask_base_asset_reserve = amm.bid_base_asset_reserve + 1_000;
+            assert!(crate::vlp::amm::math::spread::validate_amm_quote_state(&amm).is_err());
+
+            // Same state with the ask restored above the bid passes.
+            amm.ask_quote_asset_reserve = amm.bid_quote_asset_reserve + 1_000;
+            amm.ask_base_asset_reserve = amm.bid_base_asset_reserve - 1_000;
+            crate::vlp::amm::math::spread::validate_amm_quote_state(&amm).unwrap();
+        }
+
         #[test]
         fn golden_baseline() {
             let mut amm = base_amm();

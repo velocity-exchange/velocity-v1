@@ -421,7 +421,7 @@ pub fn update_position_with_base_asset_amount(
 
     // Sole-AMM fast path: the Match contains exactly one QuoterFill from AmmQuoter.
     let (quote_asset_swapped, surplus_from_amm) = match match_result.fills.first() {
-        Some((_, fill)) => (fill.quote_filled, fill.quote_asset_amount_surplus as u64),
+        Some((_, fill)) => (fill.quote_filled, fill.quote_asset_amount_surplus),
         None => (0, 0),
     };
 
@@ -432,7 +432,7 @@ pub fn update_position_with_base_asset_amount(
             base_asset_amount,
             fill_price,
         )?,
-        None => (quote_asset_swapped, surplus_from_amm as i64),
+        None => (quote_asset_swapped, surplus_from_amm),
     };
 
     let position_delta =

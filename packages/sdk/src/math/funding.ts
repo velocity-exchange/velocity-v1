@@ -76,7 +76,8 @@ function calculateLiveMarkTwap(
 			market.amm,
 			market.marketStats,
 			mmOraclePriceData,
-			true
+			true,
+			market.marketConfig
 		);
 		markPrice = bid.add(ask).div(new BN(2));
 	}
@@ -468,9 +469,9 @@ export function calculateLongShortFundingRate(
 		now
 	);
 
-	if (market.baseAssetAmountLong.gt(market.baseAssetAmountShort)) {
+	if (market.baseAssetAmountLong.gt(market.baseAssetAmountShort.abs())) {
 		return [cappedAltEst, interpEst];
-	} else if (market.baseAssetAmountLong.lt(market.baseAssetAmountShort)) {
+	} else if (market.baseAssetAmountLong.lt(market.baseAssetAmountShort.abs())) {
 		return [interpEst, cappedAltEst];
 	} else {
 		return [interpEst, interpEst];

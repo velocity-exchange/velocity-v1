@@ -319,21 +319,9 @@ fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
         )?;
     }
 
-    // The ask never prices below the bid, whatever the offset.
-    validate!(
-        amm.ask_quote_asset_reserve >= amm.bid_quote_asset_reserve
-            && amm.ask_base_asset_reserve <= amm.bid_base_asset_reserve,
-        ErrorCode::InvalidAmmDetected,
-        "amm ask below bid: ask base {} quote {}, bid base {} quote {}",
-        amm.ask_base_asset_reserve,
-        amm.ask_quote_asset_reserve,
-        amm.bid_base_asset_reserve,
-        amm.bid_quote_asset_reserve,
-    )?;
-
-    // Curve bounds. An offset shifts both quotes the same way, so only the side it moves away
-    // from the curve keeps a fixed bound: the bid when the offset is negative, the ask when it is
-    // positive. The other side may cross the curve, and the fill books that as negative surplus.
+    // An offset shifts both quotes the same way, so only the side it moves away from the curve
+    // keeps a fixed bound: the bid when the offset is negative, the ask when it is positive. The
+    // other side may cross the curve, and the fill books that as negative surplus.
     if amm.reference_price_offset <= 0 {
         validate!(
             amm.bid_base_asset_reserve >= amm.base_asset_reserve

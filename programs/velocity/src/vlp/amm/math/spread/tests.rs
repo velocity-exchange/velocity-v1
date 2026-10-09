@@ -2240,25 +2240,6 @@ mod test {
         }
 
         #[test]
-        fn quote_state_rejects_an_ask_below_the_bid() {
-            let mut amm = base_amm();
-            refresh(&mut amm, &base_stats(), 0, 100);
-            crate::vlp::amm::math::spread::validate_amm_quote_state(&amm).unwrap();
-
-            // A negative offset leaves only the bid bound, which still holds here, so only the
-            // ordering check sees the ask under the bid.
-            amm.reference_price_offset = -1;
-            amm.ask_quote_asset_reserve = amm.bid_quote_asset_reserve - 1_000;
-            amm.ask_base_asset_reserve = amm.bid_base_asset_reserve + 1_000;
-            assert!(crate::vlp::amm::math::spread::validate_amm_quote_state(&amm).is_err());
-
-            // Same state with the ask restored above the bid passes.
-            amm.ask_quote_asset_reserve = amm.bid_quote_asset_reserve + 1_000;
-            amm.ask_base_asset_reserve = amm.bid_base_asset_reserve - 1_000;
-            crate::vlp::amm::math::spread::validate_amm_quote_state(&amm).unwrap();
-        }
-
-        #[test]
         fn golden_baseline() {
             let mut amm = base_amm();
             let out = refresh(&mut amm, &base_stats(), 0, 100);

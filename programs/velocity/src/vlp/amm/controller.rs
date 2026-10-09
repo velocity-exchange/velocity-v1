@@ -36,8 +36,8 @@ fn calculate_quote_asset_amount_surplus(
     quote_asset_amount: u128,
 ) -> VelocityResult<i128> {
     let curve_quote_asset_amount = match direction {
-        // The +1 matches the unit `calculate_quote_asset_amount_swapped` adds when the taker
-        // removes base.
+        // `calculate_quote_asset_amount_swapped` adds one unit to the reserve change and one to
+        // the amount when the taker removes base. The curve quote adds only the second.
         SwapDirection::Remove => reserve_to_asset_amount(
             curve_quote_asset_reserve_after.safe_sub(curve_quote_asset_reserve_before)?,
             peg_multiplier,

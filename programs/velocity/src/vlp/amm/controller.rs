@@ -26,35 +26,39 @@ pub enum SwapDirection {
     Remove,
 }
 
+/// The AMM's gain on a fill against the no-spread curve quote. It is negative when the quote
+/// crossed the curve, which a nonzero reference price offset allows.
 fn calculate_quote_asset_amount_surplus(
-    quote_asset_reserve_before: u128,
-    quote_asset_reserve_after: u128,
-    swap_direction: SwapDirection,
+    curve_quote_asset_reserve_before: u128,
+    curve_quote_asset_reserve_after: u128,
+    direction: SwapDirection,
     peg_multiplier: u128,
-    initial_quote_asset_amount: u128,
-    round_down: bool,
-) -> VelocityResult<u128> {
-    let quote_asset_reserve_change = match swap_direction {
-        SwapDirection::Add => quote_asset_reserve_before.safe_sub(quote_asset_reserve_after)?,
-
-        SwapDirection::Remove => quote_asset_reserve_after.safe_sub(quote_asset_reserve_before)?,
+    quote_asset_amount: u128,
+) -> VelocityResult<i128> {
+    let curve_quote_asset_amount = match direction {
+        // `calculate_quote_asset_amount_swapped` adds one unit to the reserve change and one to
+        // the amount when the taker removes base. The curve quote adds only the second.
+        SwapDirection::Remove => reserve_to_asset_amount(
+            curve_quote_asset_reserve_after.safe_sub(curve_quote_asset_reserve_before)?,
+            peg_multiplier,
+        )?
+        .safe_add(1)?,
+        SwapDirection::Add => reserve_to_asset_amount(
+            curve_quote_asset_reserve_before.safe_sub(curve_quote_asset_reserve_after)?,
+            peg_multiplier,
+        )?,
     };
 
-    let mut actual_quote_asset_amount =
-        reserve_to_asset_amount(quote_asset_reserve_change, peg_multiplier)?;
-
-    // Compensate for +1 quote asset amount added when removing base asset
-    if round_down {
-        actual_quote_asset_amount = actual_quote_asset_amount.safe_add(1)?;
+    match direction {
+        // The taker buys base, so the AMM gains what the taker pays above the curve.
+        SwapDirection::Remove => quote_asset_amount
+            .cast::<i128>()?
+            .safe_sub(curve_quote_asset_amount.cast()?),
+        // The taker sells base, so the AMM gains what it pays below the curve.
+        SwapDirection::Add => curve_quote_asset_amount
+            .cast::<i128>()?
+            .safe_sub(quote_asset_amount.cast()?),
     }
-
-    let quote_asset_amount_surplus = if actual_quote_asset_amount > initial_quote_asset_amount {
-        actual_quote_asset_amount.safe_sub(initial_quote_asset_amount)?
-    } else {
-        initial_quote_asset_amount.safe_sub(actual_quote_asset_amount)?
-    };
-
-    Ok(quote_asset_amount_surplus)
 }
 
 /// Output of an AMM swap. Named struct (not a tuple) so call sites
@@ -68,13 +72,10 @@ pub struct AmmSwapOutput {
     pub new_quote_asset_reserve: u128,
     /// Quote amount the taker pays / receives, including the bid/ask spread.
     pub quote_asset_amount: u64,
-    /// Quote profit the AMM captured from its bid/ask spread on this fill
-    /// — the gap between the with-spread quote and the no-spread quote.
-    /// Positive when the spread worked in the AMM's favor (always the case
-    /// for normal fills; the field's `u64` type encodes that). Returned as
-    /// `i64` from the higher-level `swap_base_asset` wrapper since some
-    /// callers want a signed accumulator.
-    pub quote_asset_amount_surplus: u64,
+    /// The AMM's gain on this fill against the no-spread curve quote. A reference price offset
+    /// larger than the spread on one side moves that side's quote across the curve, and the
+    /// value is then negative.
+    pub quote_asset_amount_surplus: i64,
 }
 
 /// AMM swap math primitive. Used by [`crate::vlp::amm::AmmQuoter`] and
@@ -118,22 +119,18 @@ pub(crate) fn calculate_base_swap_output(
     )?;
 
     let quote_asset_amount_surplus = calculate_quote_asset_amount_surplus(
-        new_quote_asset_reserve,
         amm.quote_asset_reserve,
-        match direction {
-            SwapDirection::Remove => SwapDirection::Add,
-            SwapDirection::Add => SwapDirection::Remove,
-        },
+        new_quote_asset_reserve,
+        direction,
         amm.peg_multiplier,
         quote_asset_amount,
-        direction == SwapDirection::Remove,
     )?;
 
     Ok(AmmSwapOutput {
         new_base_asset_reserve,
         new_quote_asset_reserve,
         quote_asset_amount: quote_asset_amount.cast::<u64>()?,
-        quote_asset_amount_surplus: quote_asset_amount_surplus.cast::<u64>()?,
+        quote_asset_amount_surplus: quote_asset_amount_surplus.cast::<i64>()?,
     })
 }
 

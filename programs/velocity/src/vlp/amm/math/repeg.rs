@@ -316,21 +316,29 @@ pub fn adjust_amm(
                 true,
             )?;
 
-            let adjustment_cost = market_clone
-                .amm
-                .adjust_k_cost_and_update(&update_k_result)?;
-            per_peg_cost = calculate_per_peg_cost(
-                market_clone.amm.quote_asset_reserve,
-                market_clone.amm.terminal_quote_asset_reserve,
-            )?;
+            let mut k_adjusted = Box::new(*market);
+            let adjustment_cost = k_adjusted.amm.adjust_k_cost_and_update(&update_k_result)?;
 
-            adjustment_cost
+            // Lower k only when the budget left for the peg stays positive. Otherwise keep the
+            // original curve.
+            if budget_i128.safe_sub(adjustment_cost)? > 0 {
+                market_clone = k_adjusted;
+                per_peg_cost = calculate_per_peg_cost(
+                    market_clone.amm.quote_asset_reserve,
+                    market_clone.amm.terminal_quote_asset_reserve,
+                )?;
+                adjustment_cost
+            } else {
+                0
+            }
         } else {
             0
         };
 
+        // A negative k decrease cost adds to the peg budget, and a positive one takes from it.
+        // The returned cost includes it, so the caller books the whole update.
         budget_delta_peg = budget_i128
-            .safe_add(adjustment_cost.abs())?
+            .safe_sub(adjustment_cost)?
             .safe_mul(PEG_PRECISION_I128)?
             .safe_div(per_peg_cost)?;
 
@@ -350,7 +358,7 @@ pub fn adjust_amm(
             1
         };
 
-        cost = calculate_repeg_cost(&market_clone.amm, new_peg)?;
+        cost = calculate_repeg_cost(&market_clone.amm, new_peg)?.safe_add(adjustment_cost)?;
     }
     market_clone.amm.peg_multiplier = new_peg;
 

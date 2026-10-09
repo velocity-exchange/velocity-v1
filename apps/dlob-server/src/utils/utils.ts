@@ -1544,7 +1544,8 @@ export const getVammSideQuoteWithMargin = (
 			perpMarket.amm,
 			perpMarket.marketStats,
 			mmOracle,
-			true
+			true,
+			perpMarket.marketConfig
 		);
 		const marginPct = parseFloat(
 			process.env.DYNAMIC_VAMM_QUOTE_MARGIN || '0.15'

@@ -3,6 +3,7 @@ import {
 	AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO,
 	PRICE_PRECISION,
 	PEG_PRECISION,
+	AMM_RESERVE_PRECISION,
 	ZERO,
 	BID_ASK_SPREAD_PRECISION,
 	ONE,
@@ -26,17 +27,14 @@ import {
 	SwapDirection,
 	PerpMarketAccount,
 	isVariant,
+	MarketConfigFlag,
 } from '../types';
 import { assert } from '../assert/assert';
 import { squareRootBN, sigNum, clampBN } from './utils';
 import { standardizeBaseAssetAmount } from './orders';
 
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
-import {
-	calculateRepegCost,
-	calculateAdjustKCost,
-	calculateBudgetedPeg,
-} from './repeg';
+import { calculateRepegCost } from './repeg';
 
 import { calculateLiveOracleStd, getNewOracleConfPct } from './oracles';
 
@@ -145,61 +143,253 @@ export function calculateOptimalPegAndBudget(
 }
 
 /**
- * Determines the full curve update (repeg cost, K scale factor, new peg) for `amm` against
- * the current oracle price, mirroring the "use full budget peg" fallback path of `adjust_amm`
- * in `vlp/amm/math/repeg.rs`. Starts from `calculateOptimalPegAndBudget`'s target/budget; if
- * the direct repeg cost meets or exceeds that budget, shrinks `sqrtK` by 0.1% (999/1000) via
- * `calculateAdjustKCost` first to free up additional budget, then re-solves for the peg with
- * `calculateBudgetedPeg` using the combined budget.
+ * Market fields the program reads to decide whether a budget-limited repeg may lower k.
+ * `minOrderSize` is `PerpMarketAccount.marketStats.minOrderSize` and `marketConfig` is
+ * `PerpMarketAccount.marketConfig`.
+ */
+export type KUpdateGate = {
+	minOrderSize: BN;
+	marketConfig: number;
+};
+
+/**
+ * Reads the k update gate fields from a perp market.
+ * @param market Perp market the AMM belongs to.
+ * @returns The market's `KUpdateGate`.
+ */
+export function getKUpdateGate(
+	market: Pick<PerpMarketAccount, 'marketConfig' | 'marketStats'>
+): KUpdateGate {
+	return {
+		minOrderSize: market.marketStats.minOrderSize,
+		marketConfig: market.marketConfig,
+	};
+}
+
+// Mirrors the gate on the k decrease in `adjust_amm`: intensity of at least 100, `can_lower_k`,
+// and `DisableFormulaicKUpdate` unset.
+function canLowerKForRepeg(amm: AMM, kUpdateGate?: KUpdateGate): boolean {
+	if (amm.curveUpdateIntensity < 100) {
+		return false;
+	}
+	if (
+		kUpdateGate &&
+		(kUpdateGate.marketConfig & MarketConfigFlag.DISABLE_FORMULAIC_K_UPDATE) !==
+			0
+	) {
+		return false;
+	}
+	const minOrderSize = kUpdateGate?.minOrderSize ?? ZERO;
+	const [openBids, openAsks] = calculateMarketOpenBidAsk(
+		amm.baseAssetReserve,
+		amm.minBaseAssetReserve,
+		amm.maxBaseAssetReserve
+	);
+	const inventory = amm.baseAssetAmountWithAmm.abs();
+	return (
+		inventory.lt(BN.min(openBids.abs(), openAsks.abs())) &&
+		BN.max(inventory, minOrderSize).lt(amm.sqrtK) &&
+		minOrderSize.lt(BN.max(openBids.abs(), openAsks.abs()))
+	);
+}
+
+/** The curve fields a repeg or k update rewrites. */
+export type AmmCurve = {
+	baseAssetReserve: BN;
+	quoteAssetReserve: BN;
+	sqrtK: BN;
+	pegMultiplier: BN;
+	terminalQuoteAssetReserve: BN;
+};
+
+// Mirrors `calculate_per_peg_cost`: ceil division, then one unit further from zero.
+function calculatePerPegCost(
+	quoteAssetReserve: BN,
+	terminalQuoteAssetReserve: BN
+): BN {
+	const delta = quoteAssetReserve.sub(terminalQuoteAssetReserve);
+	const divisor = AMM_RESERVE_PRECISION.div(PEG_PRECISION);
+	let perPegCost = delta.div(divisor);
+	if (delta.mod(divisor).gt(ZERO)) {
+		perPegCost = perPegCost.add(ONE);
+	}
+	if (perPegCost.gt(ZERO)) {
+		return perPegCost.add(ONE);
+	}
+	return perPegCost.lt(ZERO) ? perPegCost.sub(ONE) : perPegCost;
+}
+
+// Mirrors `AMM::inventory_close_value`.
+function calculateInventoryCloseValue(
+	inventory: BN,
+	curve: Pick<
+		AmmCurve,
+		'baseAssetReserve' | 'quoteAssetReserve' | 'sqrtK' | 'pegMultiplier'
+	>
+): BN {
+	if (inventory.isZero()) {
+		return ZERO;
+	}
+	const swapDirection = inventory.gte(ZERO)
+		? SwapDirection.ADD
+		: SwapDirection.REMOVE;
+	const [, newQuoteAssetReserve] = calculateSwapOutput(
+		curve.baseAssetReserve,
+		inventory.abs(),
+		swapDirection,
+		curve.sqrtK.mul(curve.sqrtK)
+	);
+	return calculateQuoteAssetAmountSwapped(
+		inventory.gte(ZERO)
+			? curve.quoteAssetReserve.sub(newQuoteAssetReserve)
+			: newQuoteAssetReserve.sub(curve.quoteAssetReserve),
+		curve.pegMultiplier,
+		swapDirection
+	);
+}
+
+// Mirrors the k decrease in `adjust_amm`: `get_update_k_result` for 0.1% clamped to
+// `get_lower_bound_sqrt_k`, then `adjust_k_cost_and_update`. A negative cost means it earns.
+function calculateKDecrease(
+	amm: AMM,
+	minOrderSize: BN
+): { curve: AmmCurve; cost: BN } {
+	const inventory = amm.baseAssetAmountWithAmm;
+	const lowerBound = BN.min(amm.sqrtK, BN.max(minOrderSize, inventory.abs()));
+	const sqrtK = BN.max(amm.sqrtK.sub(amm.sqrtK.divn(1000)), lowerBound);
+	let sqrtKRatio = sqrtK.mul(AMM_RESERVE_PRECISION).div(amm.sqrtK);
+	if (sqrtKRatio.lt(AMM_RESERVE_PRECISION)) {
+		sqrtKRatio = sqrtKRatio.add(ONE);
+	}
+	const baseAssetReserve = amm.baseAssetReserve
+		.mul(sqrtKRatio)
+		.div(AMM_RESERVE_PRECISION);
+	const [, terminalQuoteAssetReserve] = calculateSwapOutput(
+		baseAssetReserve,
+		inventory.abs(),
+		inventory.gt(ZERO) ? SwapDirection.ADD : SwapDirection.REMOVE,
+		sqrtK.mul(sqrtK)
+	);
+	const curve = {
+		baseAssetReserve,
+		quoteAssetReserve: sqrtK.mul(sqrtK).div(baseAssetReserve),
+		sqrtK,
+		pegMultiplier: amm.pegMultiplier,
+		terminalQuoteAssetReserve,
+	};
+	const valueBefore = calculateInventoryCloseValue(inventory, amm);
+	const valueAfter = calculateInventoryCloseValue(inventory, curve);
+	const cost = inventory.gte(ZERO)
+		? valueAfter.sub(valueBefore)
+		: valueBefore.sub(valueAfter);
+	return { curve, cost };
+}
+
+// Mirrors `adjust_amm` in `vlp/amm/math/repeg.rs`.
+function adjustAmm(
+	amm: AMM,
+	optimalPeg: BN,
+	budget: BN,
+	kUpdateGate?: KUpdateGate
+): { curve: AmmCurve; cost: BN } {
+	let curve: AmmCurve = {
+		baseAssetReserve: amm.baseAssetReserve,
+		quoteAssetReserve: amm.quoteAssetReserve,
+		sqrtK: amm.sqrtK,
+		pegMultiplier: amm.pegMultiplier,
+		terminalQuoteAssetReserve: amm.terminalQuoteAssetReserve,
+	};
+	if (optimalPeg.eq(amm.pegMultiplier) || amm.curveUpdateIntensity === 0) {
+		return { curve, cost: ZERO };
+	}
+
+	const deltaPeg = optimalPeg.sub(amm.pegMultiplier);
+	let perPegCost = calculatePerPegCost(
+		amm.quoteAssetReserve,
+		amm.terminalQuoteAssetReserve
+	);
+	const fullBudgetDeltaPeg = perPegCost.isZero()
+		? ZERO
+		: budget.mul(PEG_PRECISION).div(perPegCost);
+	if (
+		perPegCost.isZero() ||
+		(perPegCost.gt(ZERO) && deltaPeg.lt(ZERO)) ||
+		(perPegCost.lt(ZERO) && deltaPeg.gt(ZERO)) ||
+		fullBudgetDeltaPeg.abs().gt(deltaPeg.abs())
+	) {
+		return {
+			curve: { ...curve, pegMultiplier: optimalPeg },
+			cost: calculateRepegCost(amm, optimalPeg),
+		};
+	}
+
+	// The k decrease applies only while the budget left for the peg stays positive.
+	let adjustmentCost = ZERO;
+	if (canLowerKForRepeg(amm, kUpdateGate)) {
+		const kDecrease = calculateKDecrease(
+			amm,
+			kUpdateGate?.minOrderSize ?? ZERO
+		);
+		if (budget.sub(kDecrease.cost).gt(ZERO)) {
+			curve = kDecrease.curve;
+			adjustmentCost = kDecrease.cost;
+			perPegCost = calculatePerPegCost(
+				curve.quoteAssetReserve,
+				curve.terminalQuoteAssetReserve
+			);
+		}
+	}
+
+	const budgetDeltaPeg = budget
+		.sub(adjustmentCost)
+		.mul(PEG_PRECISION)
+		.div(perPegCost);
+	let newPeg = ONE;
+	if (budgetDeltaPeg.gt(ZERO)) {
+		newPeg = amm.pegMultiplier.add(budgetDeltaPeg);
+	} else if (amm.pegMultiplier.gt(budgetDeltaPeg.abs())) {
+		newPeg = amm.pegMultiplier.sub(budgetDeltaPeg.abs());
+	}
+
+	const cost = calculateRepegCost({ ...amm, ...curve }, newPeg).add(
+		adjustmentCost
+	);
+	return { curve: { ...curve, pegMultiplier: newPeg }, cost };
+}
+
+/**
+ * Determines the full curve update for `amm` against the current oracle price: the optimal peg
+ * and budget from `calculateOptimalPegAndBudget`, applied as the program's `adjust_amm` does.
  * @param amm AMM state to evaluate a curve update for.
  * @param mmOraclePriceData Current MM oracle price data.
- * @returns `[prePegCost, pKNumer, pKDenom, newPeg, checkLowerBound]`: `prePegCost` is the
- *   quote cost of the full update, QUOTE_PRECISION (1e6); `pKNumer`/`pKDenom` are the sqrtK
- *   scale factor (999/1000 if K was shrunk, else 1/1); `newPeg` is PEG_PRECISION (1e6);
- *   `checkLowerBound` is forwarded from `calculateOptimalPegAndBudget` and tells
- *   `calculateUpdatedAMM` whether it must still verify affordability against
- *   `totalFeeMinusDistributions`.
+ * @param kUpdateGate Market fields that gate the k decrease; see `getKUpdateGate`.
+ * @returns `[prePegCost, pKNumer, pKDenom, newPeg, checkLowerBound, curve]`: `prePegCost` is the
+ *   quote cost of the full update including any k adjustment, QUOTE_PRECISION (1e6);
+ *   `pKNumer`/`pKDenom` are the sqrtK scale factor (new sqrtK over old sqrtK if K was lowered,
+ *   else 1/1); `newPeg` is PEG_PRECISION (1e6); `checkLowerBound` is forwarded from
+ *   `calculateOptimalPegAndBudget` and tells `calculateUpdatedAMM` whether it must still verify
+ *   affordability against `totalFeeMinusDistributions`; `curve` holds the exact new reserves,
+ *   which the program derives from a rounded ratio, so read them from it rather than scaling.
  */
 export function calculateNewAmm(
 	amm: AMM,
-	mmOraclePriceData: Pick<MMOraclePriceData, 'price'>
-): [BN, BN, BN, BN, boolean] {
-	let pKNumer = new BN(1);
-	let pKDenom = new BN(1);
-
-	const [targetPrice, _newPeg, budget, checkLowerBound] =
-		calculateOptimalPegAndBudget(amm, mmOraclePriceData);
-	let prePegCost = calculateRepegCost(amm, _newPeg);
-	let newPeg = _newPeg;
-
-	if (prePegCost.gte(budget) && prePegCost.gt(ZERO)) {
-		[pKNumer, pKDenom] = [new BN(999), new BN(1000)];
-		const deficitMadeup = calculateAdjustKCost(amm, pKNumer, pKDenom);
-		assert(deficitMadeup.lte(new BN(0)));
-		prePegCost = budget.add(deficitMadeup.abs());
-		const newAmm = Object.assign({}, amm);
-		newAmm.baseAssetReserve = newAmm.baseAssetReserve.mul(pKNumer).div(pKDenom);
-		newAmm.sqrtK = newAmm.sqrtK.mul(pKNumer).div(pKDenom);
-		const invariant = newAmm.sqrtK.mul(newAmm.sqrtK);
-		newAmm.quoteAssetReserve = invariant.div(newAmm.baseAssetReserve);
-		const directionToClose = amm.baseAssetAmountWithAmm.gt(ZERO)
-			? PositionDirection.SHORT
-			: PositionDirection.LONG;
-
-		const [newQuoteAssetReserve, _newBaseAssetReserve] =
-			calculateAmmReservesAfterSwap(
-				newAmm,
-				'base',
-				amm.baseAssetAmountWithAmm.abs(),
-				getSwapDirection('base', directionToClose)
-			);
-
-		newAmm.terminalQuoteAssetReserve = newQuoteAssetReserve;
-		newPeg = calculateBudgetedPeg(newAmm, prePegCost, targetPrice);
-		prePegCost = calculateRepegCost(newAmm, newPeg);
-	}
-
-	return [prePegCost, pKNumer, pKDenom, newPeg, checkLowerBound];
+	mmOraclePriceData: Pick<MMOraclePriceData, 'price'>,
+	kUpdateGate?: KUpdateGate
+): [BN, BN, BN, BN, boolean, AmmCurve] {
+	const [, optimalPeg, budget, checkLowerBound] = calculateOptimalPegAndBudget(
+		amm,
+		mmOraclePriceData
+	);
+	const { curve, cost } = adjustAmm(amm, optimalPeg, budget, kUpdateGate);
+	const kLowered = !curve.sqrtK.eq(amm.sqrtK);
+	return [
+		cost,
+		kLowered ? curve.sqrtK : ONE,
+		kLowered ? amm.sqrtK : ONE,
+		curve.pegMultiplier,
+		checkLowerBound,
+		curve,
+	];
 }
 
 /**
@@ -216,11 +406,13 @@ export function calculateNewAmm(
  * cost.
  * @param amm AMM state to update.
  * @param mmOraclePriceData Current MM oracle price data; omit to skip the update entirely.
+ * @param kUpdateGate Market fields that gate the k decrease; see `getKUpdateGate`.
  * @returns Updated `AMM` (new object), or the original `amm` reference if no update applies or the affordability gate rejects it.
  */
 export function calculateUpdatedAMM(
 	amm: AMM,
-	mmOraclePriceData?: Pick<MMOraclePriceData, 'price'>
+	mmOraclePriceData?: Pick<MMOraclePriceData, 'price'>,
+	kUpdateGate?: KUpdateGate
 ): AMM {
 	if (amm.curveUpdateIntensity == 0 || mmOraclePriceData === undefined) {
 		return amm;
@@ -230,9 +422,11 @@ export function calculateUpdatedAMM(
 	if (mmOraclePriceData.price.lte(ZERO)) {
 		return amm;
 	}
-	const newAmm = Object.assign({}, amm);
-	const [prepegCost, pKNumer, pKDenom, newPeg, checkLowerBound] =
-		calculateNewAmm(amm, mmOraclePriceData);
+	const [prepegCost, , , , checkLowerBound, curve] = calculateNewAmm(
+		amm,
+		mmOraclePriceData,
+		kUpdateGate
+	);
 
 	if (prepegCost.gt(ZERO)) {
 		const newTotalFeeMinusDistributions =
@@ -243,11 +437,11 @@ export function calculateUpdatedAMM(
 		}
 	}
 
-	newAmm.baseAssetReserve = newAmm.baseAssetReserve.mul(pKNumer).div(pKDenom);
-	newAmm.sqrtK = newAmm.sqrtK.mul(pKNumer).div(pKDenom);
-	const invariant = newAmm.sqrtK.mul(newAmm.sqrtK);
-	newAmm.quoteAssetReserve = invariant.div(newAmm.baseAssetReserve);
-	newAmm.pegMultiplier = newPeg;
+	const newAmm = Object.assign({}, amm);
+	newAmm.baseAssetReserve = curve.baseAssetReserve;
+	newAmm.quoteAssetReserve = curve.quoteAssetReserve;
+	newAmm.sqrtK = curve.sqrtK;
+	newAmm.pegMultiplier = curve.pegMultiplier;
 
 	const directionToClose = amm.baseAssetAmountWithAmm.gt(ZERO)
 		? PositionDirection.SHORT
@@ -279,15 +473,20 @@ export function calculateUpdatedAMM(
  * @param marketStats Market stats needed for spread and reference-price-offset calculation.
  * @param direction Which side's spread reserves to return.
  * @param mmOraclePriceData Current MM oracle price data, forwarded to `calculateUpdatedAMM`.
+ * @param marketConfig `PerpMarketAccount.marketConfig`, forwarded with `marketStats.minOrderSize` as the k update gate. Omitted means no flags set.
  * @returns `baseAssetReserve`/`quoteAssetReserve` for the requested side (AMM_RESERVE_PRECISION, 1e9), and the post-update `sqrtK`/`newPeg` (AMM_RESERVE_PRECISION 1e9 / PEG_PRECISION 1e6).
  */
 export function calculateUpdatedAMMSpreadReserves(
 	amm: AMM,
 	marketStats: MarketStats,
 	direction: PositionDirection,
-	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>
+	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
+	marketConfig = 0
 ): { baseAssetReserve: BN; quoteAssetReserve: BN; sqrtK: BN; newPeg: BN } {
-	const newAmm = calculateUpdatedAMM(amm, mmOraclePriceData);
+	const newAmm = calculateUpdatedAMM(amm, mmOraclePriceData, {
+		minOrderSize: marketStats.minOrderSize,
+		marketConfig,
+	});
 	const [shortReserves, longReserves] = calculateSpreadReserves(
 		newAmm,
 		marketStats,
@@ -315,17 +514,22 @@ export function calculateUpdatedAMMSpreadReserves(
  * @param marketStats Market stats needed for spread calculation.
  * @param mmOraclePriceData Current MM oracle price data; used both to repeg (if `withUpdate`) and to compute the spread.
  * @param withUpdate If true (default), repegs `amm` to the oracle price (`calculateUpdatedAMM`) before pricing; if false, prices the AMM's stored reserves as-is.
+ * @param marketConfig `PerpMarketAccount.marketConfig`, forwarded with `marketStats.minOrderSize` as the k update gate. Omitted means no flags set.
  * @returns `[bidPrice, askPrice]`, both PRICE_PRECISION (1e6).
  */
 export function calculateBidAskPrice(
 	amm: AMM,
 	marketStats: MarketStats,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
-	withUpdate = true
+	withUpdate = true,
+	marketConfig = 0
 ): [BN, BN] {
 	let newAmm: AMM;
 	if (withUpdate) {
-		newAmm = calculateUpdatedAMM(amm, mmOraclePriceData);
+		newAmm = calculateUpdatedAMM(amm, mmOraclePriceData, {
+			minOrderSize: marketStats.minOrderSize,
+			marketConfig,
+		});
 	} else {
 		newAmm = amm;
 	}

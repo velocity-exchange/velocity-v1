@@ -319,9 +319,9 @@ fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
         )?;
     }
 
-    // Spread-reserve bounds, used by `swap_base_asset` to price a fill.
-    // `reference_price_offset` direction picks which side's bound is
-    // checked (the bound on the side that fills first).
+    // An offset shifts both quotes the same way, so only the side it moves away from the curve
+    // keeps a fixed bound: the bid when the offset is negative, the ask when it is positive. The
+    // other side may cross the curve, and the fill books that as negative surplus.
     if amm.reference_price_offset <= 0 {
         validate!(
             amm.bid_base_asset_reserve >= amm.base_asset_reserve

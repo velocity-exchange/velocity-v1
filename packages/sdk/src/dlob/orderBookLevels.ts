@@ -12,6 +12,7 @@ import {
 	calculateQuoteAssetAmountSwapped,
 	calculateSpreadReserves,
 	calculateUpdatedAMM,
+	getKUpdateGate,
 } from '../math/amm';
 import { DLOBNode } from './DLOBNode';
 import { isOperationPaused } from '../math/exchangeStatus';
@@ -287,7 +288,11 @@ export function getVammL2Generator({
 	now?: BN;
 	topOfBookQuoteAmounts?: BN[];
 }): L2OrderBookGenerator {
-	const updatedAmm = calculateUpdatedAMM(marketAccount.amm, mmOraclePriceData);
+	const updatedAmm = calculateUpdatedAMM(
+		marketAccount.amm,
+		mmOraclePriceData,
+		getKUpdateGate(marketAccount)
+	);
 	const paused = isOperationPaused(
 		marketAccount.pausedOperations,
 		PerpOperation.AMM_FILL

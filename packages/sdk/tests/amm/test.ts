@@ -2354,7 +2354,7 @@ describe('AMM Tests', () => {
 		assert(offsetFor(new BN(-50000)).eq(new BN(-maxOffsetPct / 2)));
 	});
 
-	it('calculateUpdatedAMM is a passthrough when the repeg debit fails the affordability floor', () => {
+	it('calculateUpdatedAMM leaves the curve when the fees pay for no peg move', () => {
 		const myMockPerpMarkets = _.cloneDeep(mockPerpMarkets);
 		const mockMarket1 = myMockPerpMarkets[0];
 		const mockAmm = mockMarket1.amm;
@@ -2366,7 +2366,7 @@ describe('AMM Tests', () => {
 		mockAmm.baseAssetAmountWithAmm = new BN(100).mul(BASE_PRECISION);
 		mockAmm.curveUpdateIntensity = 100;
 		mockAmm.maxSpread = 25000;
-		// tiny positive equity: any positive repeg cost blows through it
+		// tiny positive equity and no room to lower k: the budgeted peg moves by zero
 		mockAmm.totalFeeMinusDistributions = new BN(10);
 		mockAmm.netRevenueSinceLastFunding = new BN(0);
 

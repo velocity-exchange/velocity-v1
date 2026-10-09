@@ -9,7 +9,7 @@ use crate::{
     },
     state::{
         oracle::{HistoricalOracleData, OraclePriceData},
-        perp_market::{ContractTier, MarketStats, AMM},
+        perp_market::{ContractTier, MarketConfigFlag, MarketStats, AMM},
         state::{PriceDivergenceGuardRails, ValidityGuardRails},
         user::MarketType,
     },
@@ -193,7 +193,7 @@ pub fn update_amm_test() {
     assert!(is_oracle_valid);
     assert!(profit < 0);
     assert_eq!(peg, 13145260284);
-    assert_eq!(profit, -6158609264);
+    assert_eq!(profit, -6158310543);
 
     let reserve_price = market.amm.reserve_price().unwrap();
     // Spread / ref-offset are cached on AMM — refresh them in place via the
@@ -773,7 +773,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
     let prev_total_fee_minus_distributions = market.amm.total_fee_minus_distributions;
     let cost_of_update =
         _update_amm(&mut market, &mm_oracle_price_data, &state, now, slot).unwrap();
-    assert_eq!(cost_of_update, 21459587); // amm loses when price decreases (given users are net short)
+    assert_eq!(cost_of_update, 21160194); // amm loses when price decreases (given users are net short)
     assert_eq!(market.amm.sqrt_k, 63936000000); // k lowered since cost_of_update is positive and total_fee_minus_distributions negative
     assert_eq!(market.amm.base_asset_reserve, 64935000065);
     assert_eq!(market.amm.quote_asset_reserve, 62952369167);
@@ -858,7 +858,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
 
     let cost_of_update =
         _update_amm(&mut market, &mm_oracle_price_data, &state, now, slot).unwrap();
-    assert_eq!(cost_of_update, 299367);
+    assert_eq!(cost_of_update, -2); // zero budget: the k decrease gain pays for the repeg
 
     let mrk = market.amm.reserve_price().unwrap();
     {
@@ -1033,14 +1033,15 @@ pub fn refresh_for_mark_sample_repegs_a_stale_curve() {
     assert_eq!(market.amm.peg_multiplier, peg_after);
 }
 
-/// A repeg down costs the pool here (it is long against net-short users), and
-/// with almost no fees to pay for it the curve stays stale and the AMM is not marked
-/// fresh. The quote state is still rebuilt, and the oracle guard keeps the
-/// stale quote from crossing the oracle.
+/// A repeg down costs the pool here (it is long against net-short users). With
+/// one unit of fees and the formulaic k decrease disabled, the curve moves only as far
+/// as that unit pays for and stays far from the oracle. The quote state is still
+/// rebuilt, and the oracle guard keeps the stale quote from crossing the oracle.
 #[test]
-pub fn refresh_for_mark_sample_keeps_the_curve_when_the_repeg_is_unaffordable() {
+pub fn refresh_for_mark_sample_moves_the_curve_only_as_far_as_the_fees_pay() {
     let (mut market, mm_oracle_price_data, validity, now, slot) =
         mark_sample_fixture(18_600 * PRICE_PRECISION_I64, 1, 1);
+    market.market_config = MarketConfigFlag::DisableFormulaicKUpdate as u8;
     let oracle_price = mm_oracle_price_data.get_price() as u64;
     assert!(is_oracle_valid_for_action(
         validity.unwrap(),
@@ -1048,9 +1049,11 @@ pub fn refresh_for_mark_sample_keeps_the_curve_when_the_repeg_is_unaffordable() 
     )
     .unwrap());
 
+    let sqrt_k_before = market.amm.sqrt_k;
     refresh_for_mark_sample(&mut market, &mm_oracle_price_data, validity, now, slot).unwrap();
-    assert_eq!(market.amm.peg_multiplier, 19_400 * PEG_PRECISION);
-    assert_ne!(market.amm.last_update_slot, slot);
+    assert_eq!(market.amm.peg_multiplier, 19_400 * PEG_PRECISION - 1);
+    assert_eq!(market.amm.sqrt_k, sqrt_k_before);
+    assert!(market.amm.total_fee_minus_distributions >= 0);
     assert_eq!(market.amm.last_spread_update_slot, slot);
     assert!(market.amm.last_oracle_reserve_price_spread_pct > 5_000);
 
@@ -1062,6 +1065,22 @@ pub fn refresh_for_mark_sample_keeps_the_curve_when_the_repeg_is_unaffordable() 
         ask,
         oracle_price
     );
+}
+
+/// Same market with the formulaic k decrease enabled. Lowering k earns enough to pay for a
+/// partial repeg, the update books that gain against the repeg cost, and the AMM is marked
+/// fresh without spending equity it does not have.
+#[test]
+pub fn refresh_for_mark_sample_funds_a_partial_repeg_from_the_k_decrease() {
+    let (mut market, mm_oracle_price_data, validity, now, slot) =
+        mark_sample_fixture(18_600 * PRICE_PRECISION_I64, 1, 1);
+    let sqrt_k_before = market.amm.sqrt_k;
+
+    refresh_for_mark_sample(&mut market, &mm_oracle_price_data, validity, now, slot).unwrap();
+    assert!(market.amm.sqrt_k < sqrt_k_before);
+    assert!(market.amm.peg_multiplier < 19_400 * PEG_PRECISION);
+    assert_eq!(market.amm.last_update_slot, slot);
+    assert!(market.amm.total_fee_minus_distributions >= 0);
 }
 
 /// A stale oracle still repegs the curve (`UpdateAMMCurve` rejects only a

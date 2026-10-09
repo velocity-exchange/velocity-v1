@@ -335,8 +335,8 @@ pub fn adjust_amm(
             0
         };
 
-        // A k decrease that earns (negative cost) adds to the peg budget, one that costs takes
-        // from it, and the returned cost includes it so the caller books the whole update.
+        // A negative k decrease cost adds to the peg budget, and a positive one takes from it.
+        // The returned cost includes it, so the caller books the whole update.
         budget_delta_peg = budget_i128
             .safe_sub(adjustment_cost)?
             .safe_mul(PEG_PRECISION_I128)?

@@ -48,7 +48,7 @@ use {
             fulfillment::PerpFulfillmentMethod,
             margin_calculation::{MarginContext, MarginTypeConfig},
             market_status::MarketStatus,
-            oracle::OraclePriceData,
+            oracle::{HistoricalOracleData, OraclePriceData},
             oracle_map::OracleMap,
             order_params::{ModifyOrderParams, OrderParams, PlaceOrderOptions, PostOnlyParam},
             paused_operations::PerpOperation,
@@ -1188,7 +1188,7 @@ pub fn fill_perp_order(
     let safe_oracle_validity: OracleValidity;
     let exchange_oracle_validity: OracleValidity;
     let oracle_price: i64;
-    let oracle_twap_5min: i64;
+    let entry_oracle_twaps: HistoricalOracleData;
     let user_can_skip_duration: bool;
     let oracle_stale_for_margin: bool;
     let amm_not_globally_paused: bool = !state.amm_paused()?;
@@ -1280,21 +1280,12 @@ pub fn fill_perp_order(
                 state.slot_clock(),
             )?;
 
-        // Snapshot the 5-minute oracle TWAP *before* the refresh below advances
-        // it. This fill's own band checks — `is_oracle_too_divergent_with_twap_5min`
-        // and `validate_fill_price_within_price_bands` — both measure against this
-        // value, and the refresh pulls it toward the live oracle price. Reading it
-        // afterwards let a currently-divergent oracle normalize itself inside the
-        // same instruction and clear the very checks meant to stop the fill
-        // (OtterSec #112).
-        //
-        // Unlike the funding crank (#109), the refresh itself stays: a fill is one
-        // of the paths that legitimately advances the TWAPs, and it does not gate
-        // on them, so snapshotting the reader is the whole fix.
-        oracle_twap_5min = market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_5min;
+        // The refresh below pulls the oracle TWAPs toward the live oracle price. The
+        // fill's price bands and the funding gate measure against the TWAPs from
+        // before it, so a divergent oracle cannot clear them inside the same
+        // instruction (OtterSec #112). The refresh itself stays, because a fill is
+        // one of the paths that advances the TWAPs.
+        entry_oracle_twaps = market.market_stats.historical_oracle_data;
 
         market.update_oracle_derived_stats(
             &mm_oracle_price_data,
@@ -1387,7 +1378,7 @@ pub fn fill_perp_order(
 
     let oracle_too_divergent_with_twap_5min = is_oracle_too_divergent_with_twap_5min(
         oracle_price,
-        oracle_twap_5min,
+        entry_oracle_twaps.last_oracle_price_twap_5min,
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence()
@@ -1487,7 +1478,7 @@ pub fn fill_perp_order(
         validate_fill_price_within_price_bands(
             fill_price,
             oracle_price,
-            oracle_twap_5min,
+            entry_oracle_twaps.last_oracle_price_twap_5min,
             perp_market.margin_ratio_initial,
             state
                 .oracle_guard_rails
@@ -1577,13 +1568,8 @@ pub fn fill_perp_order(
         let funding_paused =
             state.funding_paused()? || market.is_operation_paused(PerpOperation::UpdateFunding);
 
-        // Pass `None` so the funding update recomputes the reserve price from
-        // the POST-fill AMM. The fills just moved the reserves, so gating the
-        // mark/oracle divergence check (and the oracle-TWAP sanitization that
-        // shares this value) on `reserve_price_before` would test a stale,
-        // pre-fill mark — letting a fill that pushes the mark past the
-        // divergence band still update funding, or conversely blocking a
-        // funding update the post-fill mark no longer warrants.
+        // The gate reads the post-fill mark, because the fills moved the reserves.
+        // It reads the TWAPs as they stood before this fill advanced them.
         controller::funding::update_funding_rate(
             market_index,
             market,
@@ -1592,7 +1578,7 @@ pub fn fill_perp_order(
             slot,
             &state.oracle_guard_rails,
             funding_paused,
-            None,
+            Some(entry_oracle_twaps),
         )?;
     }
 

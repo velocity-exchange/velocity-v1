@@ -2332,6 +2332,11 @@ export class SpotFillerBot implements Bot {
 			`SpotFiller has ${normalizedFillerVelocityAccountUsdcBalance.toNumber()} USDC`
 		);
 
+		if (isUsdcAmountRebalanceable && this.dryRun) {
+			logger.info(`Dry run: not swapping USDC for SOL`);
+			return;
+		}
+
 		if (isUsdcAmountRebalanceable) {
 			if (this.jupiterClient !== undefined) {
 				logger.info(`Swapping USDC for SOL to rebalance filler`);

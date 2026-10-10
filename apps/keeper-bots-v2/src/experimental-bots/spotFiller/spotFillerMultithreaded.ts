@@ -1966,6 +1966,11 @@ export class SpotFillerMultithreaded {
 
 		this.hasEnoughSolToFill = fillerSolBalance >= this.minimumAmountToFill;
 
+		if (this.dryRun) {
+			logger.info(`Dry run: not swapping USDC for SOL`);
+			return;
+		}
+
 		if (this.jupiterClient !== undefined) {
 			logger.info(`Swapping USDC for SOL to rebalance filler`);
 			swapFillerHardEarnedUSDCForSOL(

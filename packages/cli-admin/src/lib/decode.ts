@@ -18,6 +18,22 @@ function formatValue(value: unknown): string {
 	return ui.safe(renderValue(value));
 }
 
+/** Anchor decodes a unit enum variant as `{ variantName: {} }`. */
+function unitEnumVariant(value: object): string | undefined {
+	const keys = Object.keys(value);
+	if (keys.length !== 1) {
+		return undefined;
+	}
+
+	const inner = (value as Record<string, unknown>)[keys[0]];
+	const isEmptyObject =
+		typeof inner === 'object' &&
+		inner !== null &&
+		!Array.isArray(inner) &&
+		Object.keys(inner).length === 0;
+	return isEmptyObject ? keys[0] : undefined;
+}
+
 function renderValue(value: unknown): string {
 	if (value === null || value === undefined) {
 		return String(value);
@@ -29,18 +45,11 @@ function renderValue(value: unknown): string {
 		return `0x${value.toString('hex')}`;
 	}
 	if (typeof value === 'object') {
-		const obj = value as Record<string, unknown>;
-		// Anchor renders a unit enum variant as { variantName: {} }.
-		const keys = Object.keys(obj);
-		if (
-			keys.length === 1 &&
-			typeof obj[keys[0]] === 'object' &&
-			obj[keys[0]] !== null &&
-			Object.keys(obj[keys[0]] as object).length === 0
-		) {
-			return keys[0];
+		const variant = unitEnumVariant(value);
+		if (variant !== undefined) {
+			return variant;
 		}
-		if (typeof (obj as { toString?: unknown }).toString === 'function') {
+		if (typeof (value as { toString?: unknown }).toString === 'function') {
 			const s = String(value);
 			if (s !== '[object Object]') {
 				return s;
@@ -60,6 +69,9 @@ function isLeaf(value: unknown): boolean {
 		return true;
 	}
 	if (value instanceof PublicKey || Buffer.isBuffer(value)) {
+		return true;
+	}
+	if (unitEnumVariant(value) !== undefined) {
 		return true;
 	}
 	// BN and friends: objects that stringify to something meaningful.
@@ -93,6 +105,7 @@ function flatten(
 	}
 	return out;
 }
+
 /**
  * The JSON IDL names fields in snake_case. The Anchor client uses camelCase, and
  * so do the payload files and `multisig inspect`. Render camelCase so the dry run

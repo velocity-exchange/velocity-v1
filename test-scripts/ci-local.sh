@@ -183,6 +183,12 @@ if [ "$MODE" = "full" ]; then
   echo "==> cleaning SBF cache (flavor-poisoning guard)"
   rm -rf target/sbpf*-solana-solana target/deploy
 
+  # Mirrors the verified-build job's flavor gate. A private target dir keeps the
+  # mainnet flavor out of the SBF cache that the suites below build into.
+  run_check "mainnet artifact flavor"  bash -c "
+    CARGO_TARGET_DIR=\"\$PWD/target/mainnet-flavor\" SBF_OUT_DIR=\"\$PWD/target/mainnet-flavor/deploy\" \\
+      bash deploy-scripts/build-sbf.sh mainnet
+  "
   run_check "router svm tests"         bash -c "
     bash deploy-scripts/build-sbf.sh test protocol-revenue-router &&
     cargo test --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml --locked

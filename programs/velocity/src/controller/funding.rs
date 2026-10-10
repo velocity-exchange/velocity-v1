@@ -16,13 +16,14 @@ use {
                 FundingMarketInputs,
             },
             helpers::on_the_hour_update,
-            oracle,
+            oracle::{self, OracleGateInputs},
             safe_math::SafeMath,
             stats::calculate_new_twap,
         },
         state::{
             events::{FundingPaymentRecord, FundingRateRecord},
             market_status::MarketStatus,
+            oracle::HistoricalOracleData,
             oracle_map::OracleMap,
             perp_market::{MarketConfigFlag, PerpMarket},
             perp_market_map::PerpMarketMap,
@@ -214,6 +215,10 @@ fn refresh_amm_for_funding_gate(
     AmmQuoter::for_amm(&mut market.amm).setup(&ctx)
 }
 
+/// `gate_oracle_twaps` holds the oracle TWAPs as they stood when the instruction began.
+/// A caller that already advanced the TWAPs passes it, so the gate does not measure an
+/// oracle against TWAPs that the same instruction pulled toward it. `None` gates on the
+/// market's current TWAPs.
 #[allow(clippy::comparison_chain)]
 pub fn update_funding_rate(
     market_index: u16,
@@ -223,12 +228,9 @@ pub fn update_funding_rate(
     slot: u64,
     guard_rails: &OracleGuardRails,
     funding_paused: bool,
-    precomputed_reserve_price: Option<u64>,
+    gate_oracle_twaps: Option<HistoricalOracleData>,
 ) -> VelocityResult<bool> {
-    let reserve_price = match precomputed_reserve_price {
-        Some(reserve_price) => reserve_price,
-        None => market.amm.reserve_price()?,
-    };
+    let reserve_price = market.amm.reserve_price()?;
 
     refresh_amm_for_funding_gate(market, oracle_map, slot, guard_rails)?;
 
@@ -236,9 +238,14 @@ pub fn update_funding_rate(
     let slot_clock = oracle_map.slot_clock;
     let block_funding_rate_update = oracle::block_operation(
         market,
-        oracle_map.get_price_data(&market.oracle_id())?,
+        OracleGateInputs {
+            price_data: oracle_map.get_price_data(&market.oracle_id())?,
+            oracle_twaps: gate_oracle_twaps
+                .as_ref()
+                .unwrap_or(&market.market_stats.historical_oracle_data),
+            reserve_price,
+        },
         guard_rails,
-        reserve_price,
         slot,
         slot_clock,
     )?;

@@ -41,7 +41,7 @@ pub mod liquidate_perp {
         crate::{
             controller::{liquidation::liquidate_perp, position::PositionDirection},
             create_account_info, create_anchor_account_info,
-            error::ErrorCode,
+            error::{ErrorCode, VelocityResult},
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64,
@@ -345,6 +345,219 @@ pub mod liquidate_perp {
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
+    }
+
+    struct LiquidationOutcome {
+        result: VelocityResult,
+        market_after: PerpMarket,
+    }
+
+    /// Liquidates a long of one base unit bought for `cost_basis` dollars. `market` is perp
+    /// market 0, and the oracle prints `oracle_price` dollars. The liquidator holds $50.
+    fn liquidate_long_against_oracle(
+        mut market: PerpMarket,
+        oracle_price: i64,
+        cost_basis: i64,
+        now: i64,
+    ) -> LiquidationOutcome {
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(oracle_price, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+
+        market.oracle = oracle_price_key;
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = quote_spot_market(now);
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut user = long_one_base_unit(cost_basis);
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let state = State {
+            liquidation_margin_buffer_ratio: 10,
+            initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
+            liquidation_duration: legacy_slot_duration_u8(150),
+            ..Default::default()
+        };
+
+        let result = liquidate_perp(
+            0,
+            BASE_PRECISION_U64,
+            None,
+            &mut user,
+            &Pubkey::default(),
+            &mut UserStats::default(),
+            &mut liquidator,
+            &Pubkey::default(),
+            &mut UserStats::default(),
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            slot,
+            now,
+            &state,
+        );
+
+        let market_after = *perp_market_map.get_ref(&0).unwrap();
+        LiquidationOutcome {
+            result,
+            market_after,
+        }
+    }
+
+    pub(super) fn quote_spot_market(now: i64) -> SpotMarket {
+        SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            last_interest_ts: now as u64,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        }
+    }
+
+    pub(super) fn long_one_base_unit(cost_basis: i64) -> User {
+        User {
+            orders: [Order::default(); 32],
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: BASE_PRECISION_I64,
+                quote_asset_amount: -cost_basis * QUOTE_PRECISION_I64,
+                quote_entry_amount: -cost_basis * QUOTE_PRECISION_I64,
+                quote_break_even_amount: -cost_basis * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: [SpotPosition::default(); 8],
+            ..User::default()
+        }
+    }
+
+    pub(super) fn liquidatable_market(
+        peg_multiplier: u128,
+        historical: HistoricalOracleData,
+    ) -> PerpMarket {
+        PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            number_of_users_with_base: 1,
+            status: MarketStatus::Initialized,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+            if_liquidation_fee: LIQUIDATION_FEE_PRECISION / 100,
+            order_step_size: 10000000,
+            oracle_source: OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: historical,
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default()
+        }
+    }
+
+    /// The 5-minute TWAP price band judges the oracle against the TWAP as it stood on
+    /// entry. The clock is 10 minutes past the last TWAP stamp, so the refresh moves the
+    /// TWAP by the full sanitize clamp. A $155 oracle against a $100 TWAP is 55% divergent.
+    #[test]
+    pub fn divergent_oracle_bands_against_pre_refresh_twap() {
+        let market = liquidatable_market(
+            100 * PEG_PRECISION,
+            HistoricalOracleData::default_price(100 * PRICE_PRECISION_I64),
+        );
+
+        let outcome = liquidate_long_against_oracle(market, 155, 160, 600);
+
+        assert_eq!(outcome.result, Err(ErrorCode::PriceBandsBreached));
+
+        // Control: the refresh moved the stored TWAP far enough that the same oracle
+        // clears the band. If this trips, the fixture no longer reproduces the flip.
+        let refreshed_twap_5min = outcome
+            .market_after
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap_5min;
+        assert!(
+            !crate::math::orders::is_oracle_too_divergent_with_twap_5min(
+                155 * PRICE_PRECISION_I64,
+                refreshed_twap_5min,
+                State::default()
+                    .oracle_guard_rails
+                    .max_oracle_twap_5min_percent_divergence() as i64,
+            )
+            .unwrap(),
+            "refreshed twap {} no longer clears the band",
+            refreshed_twap_5min
+        );
+    }
+
+    /// The `Liquidate` validity gate reads the 1 hour EMA from before the refresh. The
+    /// oracle at 51 is 6x the stale EMA at 8. The refresh lifts the EMA to 12 under the
+    /// tier C sanitize band, where 51 is only 4.25x and would pass. The 5-minute TWAP
+    /// sits near the oracle so the price band does not decide the outcome.
+    #[test]
+    pub fn too_volatile_oracle_judged_against_pre_refresh_ema() {
+        let mut market = liquidatable_market(
+            50 * PEG_PRECISION,
+            HistoricalOracleData {
+                last_oracle_price: 51 * PRICE_PRECISION_I64,
+                last_oracle_price_twap: 8 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: 50 * PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+        );
+        market.contract_tier = crate::state::perp_market::ContractTier::C;
+        market.market_stats.funding_period = ONE_HOUR;
+
+        let outcome = liquidate_long_against_oracle(market, 51, 52, 3600);
+
+        assert_eq!(outcome.result, Err(ErrorCode::InvalidOracle));
+
+        // Control: the refresh lifted the EMA to where the same oracle is not too
+        // volatile. If this trips, the fixture no longer reproduces the flip.
+        let refreshed_ema = outcome
+            .market_after
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap;
+        assert!(
+            51 * PRICE_PRECISION_I64 / refreshed_ema < 5,
+            "refreshed ema {} no longer clears the volatility gate",
+            refreshed_ema
+        );
     }
 
     #[test]
@@ -3408,6 +3621,165 @@ pub mod liquidate_perp_with_fill {
             .get_ref(&maker_authority)
             .unwrap()
             .is_accelerated_referrer());
+    }
+
+    /// The body builds every account inline, like the other fixtures in this module.
+    /// The 5-minute TWAP price band judges the oracle against the TWAP as it stood on
+    /// entry. A $155 oracle against a $100 TWAP stamped 10 minutes ago is 55% divergent.
+    /// The refresh would move the TWAP far enough for the same oracle to pass.
+    #[test]
+    pub fn divergent_oracle_bands_against_pre_refresh_twap() {
+        let now = 600_i64;
+        let slot = 100_u64;
+
+        let mut oracle_price = get_pyth_price(155, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+
+        let mut market = super::liquidate_perp::liquidatable_market(
+            100 * PEG_PRECISION,
+            HistoricalOracleData::default_price(100 * PRICE_PRECISION_I64),
+        );
+        market.oracle = oracle_price_key;
+        market.status = MarketStatus::Active;
+        market.order_tick_size = 1;
+        market.amm.terminal_quote_asset_reserve = 100 * AMM_RESERVE_PRECISION;
+        market.amm.base_asset_amount_with_amm = 0;
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = super::liquidate_perp::quote_spot_market(now);
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let user_key = Pubkey::new_unique();
+        let mut user = super::liquidate_perp::long_one_base_unit(160);
+        create_anchor_account_info!(user, &user_key, User, user_account_info);
+        let user_account_loader: AccountLoader<User> =
+            AccountLoader::try_from(&user_account_info).unwrap();
+
+        let liquidator_key = Pubkey::new_unique();
+        let mut liquidator = User {
+            authority: Pubkey::new_unique(),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(liquidator, &liquidator_key, User, liquidator_account_info);
+        let liquidator_account_loader: AccountLoader<User> =
+            AccountLoader::try_from(&liquidator_account_info).unwrap();
+
+        let mut user_stats = UserStats::default();
+        create_anchor_account_info!(user_stats, UserStats, user_stats_account_info);
+        let user_stats_account_loader: AccountLoader<UserStats> =
+            AccountLoader::try_from(&user_stats_account_info).unwrap();
+
+        let mut liquidator_stats = UserStats::default();
+        create_anchor_account_info!(liquidator_stats, UserStats, liquidator_stats_account_info);
+        let liquidator_stats_account_loader: AccountLoader<UserStats> =
+            AccountLoader::try_from(&liquidator_stats_account_info).unwrap();
+
+        let maker_key = Pubkey::new_unique();
+        let maker_authority = Pubkey::new_unique();
+        let mut maker = User {
+            authority: maker_authority,
+            orders: get_orders(Order {
+                status: OrderStatus::Open,
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                price: 155 * PRICE_PRECISION_U64,
+                slot: slot - 1,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_bids: BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
+
+        let mut maker_stats = UserStats {
+            authority: maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(maker_stats, UserStats, maker_stats_account_info);
+        let maker_and_referrer_stats = UserStatsMap::load_one(&maker_stats_account_info).unwrap();
+
+        let state = State {
+            liquidation_margin_buffer_ratio: 10,
+            initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
+            liquidation_duration: legacy_slot_duration_u8(150),
+            ..Default::default()
+        };
+
+        let res = liquidate_perp_with_fill(
+            0,
+            &user_account_loader,
+            &user_key,
+            &user_stats_account_loader,
+            &liquidator_account_loader,
+            &liquidator_key,
+            &liquidator_stats_account_loader,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            &Clock {
+                slot,
+                unix_timestamp: now,
+                ..Clock::default()
+            },
+            &state,
+        );
+
+        assert_eq!(res, Err(crate::error::ErrorCode::PriceBandsBreached));
+
+        // Control: the refresh moved the stored TWAP far enough that the same oracle
+        // clears the band. If this trips, the fixture no longer reproduces the flip.
+        let refreshed_twap_5min = perp_market_map
+            .get_ref(&0)
+            .unwrap()
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap_5min;
+        assert!(
+            !crate::math::orders::is_oracle_too_divergent_with_twap_5min(
+                155 * PRICE_PRECISION_I64,
+                refreshed_twap_5min,
+                state
+                    .oracle_guard_rails
+                    .max_oracle_twap_5min_percent_divergence() as i64,
+            )
+            .unwrap(),
+            "refreshed twap {} no longer clears the band",
+            refreshed_twap_5min
+        );
     }
 
     #[test]

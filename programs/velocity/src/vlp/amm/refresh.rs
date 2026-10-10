@@ -378,17 +378,17 @@ pub fn update_amm_and_check_validity(
     clock_slot: u64,
     action: Option<VelocityAction>,
 ) -> VelocityResult {
-    // Oracle TWAPs and quote state refresh, then the one-hour-EMA validity
-    // gate against the requested action. The curve is projected later, in
-    // `Quoter::setup`.
-    let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state, clock_slot)?;
-    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
-
-    // 1 hour EMA
+    // Oracle TWAPs and quote state refresh, then the one-hour-EMA validity gate
+    // against the requested action. The gate reads the EMA from before the refresh,
+    // because the refresh pulls the EMA toward the oracle price that the gate
+    // measures. The curve is projected later, in `Quoter::setup`.
     let risk_ema_price = market
         .market_stats
         .historical_oracle_data
         .last_oracle_price_twap;
+
+    let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state, clock_slot)?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
 
     let oracle_validity = oracle_validity(
         MarketType::Perp,

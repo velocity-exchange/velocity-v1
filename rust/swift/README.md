@@ -145,5 +145,5 @@ Clients are expected to reconnect. The in-repo subscribers do: the two TypeScrip
 (`packages/sdk/src/swift/swiftOrderSubscriber.ts` and
 `apps/keeper-bots-v2/src/experimental-bots/filler-common/swiftOrderSubscriber.ts`) with
 jittered exponential backoff, and `keep-rs`'s filler with capped exponential backoff and no
-jitter (`rust/keep-rs/src/filler.rs`; `velocity-rs`'s `SwiftOrderStream` itself just ends,
+jitter (`rust/keep-rs/src/filler/swift.rs`; `velocity-rs`'s `SwiftOrderStream` itself just ends,
 and the filler drives the resubscribe).

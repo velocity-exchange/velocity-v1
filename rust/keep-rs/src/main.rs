@@ -1,18 +1,17 @@
 //! Rust Keeper Bot
 use std::sync::Arc;
 
+mod common;
 mod filler;
-mod http;
 mod liquidator;
 mod quoter;
 mod relayer;
 mod taker;
-mod util;
 
 use {
     crate::{
+        common::metrics::{health_handler, metrics_handler, Metrics},
         filler::FillerBot,
-        http::{health_handler, metrics_handler, Metrics},
         liquidator::LiquidatorBot,
         quoter::QuoterBot,
         taker::TakerBot,
@@ -204,8 +203,8 @@ async fn main() {
         .await
         .expect("bind metrics port");
 
-    let feed_health = Arc::new(crate::http::FeedHealth::default());
-    let app_state = crate::http::AppState {
+    let feed_health = Arc::new(crate::common::metrics::FeedHealth::default());
+    let app_state = crate::common::metrics::AppState {
         metrics: Arc::clone(&metrics),
         feed_health: Arc::clone(&feed_health),
     };

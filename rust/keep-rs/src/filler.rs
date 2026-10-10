@@ -3,9 +3,10 @@ use {
     crate::{
         http::{FeedHealth, Metrics},
         util::{
-            is_resting_swift_limit, pyth_update_is_fresh, should_poll_swift, swift_order_expired,
-            swift_slot_wait_if_known, OrderSlotLimiter, PendingTxMeta, PendingTxs,
-            PerpFillFallback, PythPriceUpdate, SwiftSlotWait, TxIntent,
+            is_resting_swift_limit, project_perp_oracle, pyth_update_is_fresh, should_poll_swift,
+            swift_order_expired, swift_slot_wait_if_known, OrderSlotLimiter, PendingTxMeta,
+            PendingTxs, PerpFillFallback, ProjectedPerpOracle, PythPriceUpdate, SwiftSlotWait,
+            TxIntent,
         },
         Config, UseMarkets,
     },
@@ -40,10 +41,13 @@ use {
             AccountUpdate, TransactionUpdate,
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
-        program::math::{
-            auction::calculate_auction_price,
-            constants::MM_ORACLE_MIN_WRITE_GAP,
-            time::{Millis, SlotClock},
+        program::{
+            math::{
+                auction::calculate_auction_price,
+                oracle::{is_oracle_valid_for_action, VelocityAction},
+                time::{Millis, SlotClock},
+            },
+            state::user::OrderBitFlag,
         },
         slot_clock_from_state,
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
@@ -58,6 +62,8 @@ use {
 };
 
 const TARGET: &str = "filler";
+/// `update_trigger_order_params` flags a reduce-only trigger that rested longer than this as safe.
+const SAFE_TRIGGER_ORDER_MIN_REST: Millis = Millis::from_secs(60);
 
 pub struct FillerBot {
     velocity: VelocityClient,
@@ -495,7 +501,9 @@ impl FillerBot {
                                 .pyth_price_age_ms
                                 .with_label_values(&[&market_index.to_string()])
                                 .set((age_us / 1_000) as i64);
-                            if !is_stale && oracle_price != p.price {
+                            // A same-price post still refreshes the oracle slot, which the
+                            // immediate vAMM leg needs.
+                            if !is_stale {
                                 oracle_price = p.price;
                                 pyth_update = Some(p.clone());
                             }
@@ -554,21 +562,21 @@ impl FillerBot {
 
                         if !crosses_and_top_makers.crosses.is_empty() {
                             log::info!(target: TARGET, "found auction crosses. market={market_index} oracle={oracle_price} delay={} amm={} trigger={trigger_price} stale_for_amm={oracle_stale_for_amm} crosses={crosses_and_top_makers:?}", chain_oracle_data.delay, perp_market.market_stats.mm_oracle_price);
-                            try_auction_fill(
-                                velocity,
+                            let settings = AuctionFillSettings {
                                 priority_fee,
-                                config.fill_cu_limit,
-                                config.trigger_cu_limit,
-                                market_index,
+                                cu_limit: config.fill_cu_limit,
+                                trigger_cu_limit: config.trigger_cu_limit,
                                 filler_subaccount,
-                                crosses_and_top_makers,
-                                tx_worker_ref.clone(),
-                                pyth_update,
-                                trigger_price,
+                            };
+                            let market = AuctionFillMarket {
+                                market_index,
                                 perp_market,
-                                oracle_stale_for_amm,
-                                chain_oracle_data.delay,
-                            ).await;
+                                trigger_price,
+                                landing_slot: slot + 1,
+                                oracle_update: pyth_update,
+                            };
+
+                            try_auction_fill(velocity, &settings, market, crosses_and_top_makers, &tx_worker_ref).await;
                         }
 
                         // Trigger-only pass: trigger orders whose condition is met but that do
@@ -1384,254 +1392,155 @@ fn build_fill_tx(
     }
 }
 
-/// Try to fill an auction order
-///
-/// - `auction_crosses` list of one or more crosses to fill
-async fn try_auction_fill(
-    velocity: &'static VelocityClient,
+/// Settings that every auction fill in one slot shares.
+struct AuctionFillSettings {
     priority_fee: u64,
     cu_limit: u32,
     trigger_cu_limit: u32,
-    market_index: u16,
     filler_subaccount: Pubkey,
-    auction_crosses: CrossesAndTopMakers,
-    tx_worker_ref: TxSender,
-    oracle_update: Option<PythPriceUpdate>,
-    trigger_price: u64,
+}
+
+/// One market's inputs for the auction fills of one slot.
+struct AuctionFillMarket {
+    market_index: u16,
     perp_market: PerpMarket,
-    oracle_stale_for_amm: bool,
-    oracle_delay: i64,
+    trigger_price: u64,
+    /// The fills land about one slot after the crosses were found.
+    landing_slot: u64,
+    oracle_update: Option<PythPriceUpdate>,
+}
+
+/// Try to fill each auction cross with its own tx.
+///
+/// Every fill tx carries the pyth-lazer post, and every cross reads the oracle as projected with
+/// it. The immediate vAMM leg needs an exchange oracle written in the same slot, and each tx
+/// simulates and lands on its own, so one tx's post does not cover another.
+async fn try_auction_fill(
+    velocity: &'static VelocityClient,
+    settings: &AuctionFillSettings,
+    market: AuctionFillMarket,
+    auction_crosses: CrossesAndTopMakers,
+    tx_worker: &TxSender,
 ) {
-    // the bot's own account missing from cache is structural (lost subscription /
-    // misconfig) and would silently no-op every fill: panic so the service restarts
-    let filler_account_data = velocity
-        .try_get_account::<User>(&filler_subaccount)
-        .expect("filler subaccount in cache; restart");
-
-    // drop makers not yet in cache rather than panicking; a shorter top-maker
-    // list just means fewer fallback makers on the fill
-    let top_maker_asks: Vec<User> = auction_crosses
-        .top_maker_asks
-        .iter()
-        .filter_map(|m| velocity.try_get_account::<User>(m).ok())
-        .collect();
-
-    let top_maker_bids: Vec<User> = auction_crosses
-        .top_maker_bids
-        .iter()
-        .filter_map(|m| velocity.try_get_account::<User>(m).ok())
-        .collect();
-    let mut sent_oracle_update = false;
+    let fill = AuctionFill::new(velocity, settings, &market, &auction_crosses, tx_worker);
     for (taker_order, crosses) in auction_crosses.crosses {
         log::info!(target: TARGET, "try fill auction order: {taker_order:?}");
-        let taker_subaccount = taker_order.user;
+        fill.try_cross(&taker_order, crosses).await;
+    }
+}
 
-        let Some((taker_account_data, taker_stats)) =
-            fetch_user_and_stats(velocity, &taker_subaccount, "auction fill")
-        else {
-            continue;
+/// The state that every cross of one `try_auction_fill` call reads.
+struct AuctionFill<'a> {
+    velocity: &'static VelocityClient,
+    settings: &'a AuctionFillSettings,
+    market: &'a AuctionFillMarket,
+    tx_worker: &'a TxSender,
+    filler_account: User,
+    top_maker_asks: Vec<User>,
+    top_maker_bids: Vec<User>,
+    /// `None` when the cache lacks the state or the oracle, which keeps the vAMM leg closed.
+    oracle: Option<ProjectedPerpOracle>,
+}
+
+impl<'a> AuctionFill<'a> {
+    fn new(
+        velocity: &'static VelocityClient,
+        settings: &'a AuctionFillSettings,
+        market: &'a AuctionFillMarket,
+        auction_crosses: &CrossesAndTopMakers,
+        tx_worker: &'a TxSender,
+    ) -> Self {
+        // the bot's own account missing from cache is structural (lost subscription /
+        // misconfig) and would silently no-op every fill: panic so the service restarts
+        let filler_account = velocity
+            .try_get_account::<User>(&settings.filler_subaccount)
+            .expect("filler subaccount in cache; restart");
+
+        // drop makers not yet in cache rather than panicking; a shorter top-maker
+        // list just means fewer fallback makers on the fill
+        let cached_users = |makers: &[Pubkey]| -> Vec<User> {
+            makers
+                .iter()
+                .filter_map(|m| velocity.try_get_account::<User>(m).ok())
+                .collect()
         };
 
-        let mut tx_builder = TransactionBuilder::new(
-            velocity.program_data(),
-            filler_subaccount,
-            std::borrow::Cow::Borrowed(&filler_account_data),
-            false,
+        let oracle = project_perp_oracle(
+            velocity,
+            &market.perp_market,
+            market.landing_slot,
+            market.oracle_update.as_ref(),
         );
 
-        tx_builder = tx_builder.with_priority_fee(priority_fee, Some(cu_limit));
-
-        let mut includes_oracle_update = false;
-        if let Some(ref update_msg) = oracle_update {
-            if !sent_oracle_update {
-                tx_builder = tx_builder
-                    .post_pyth_lazer_oracle_update(&[update_msg.feed_id], &update_msg.message);
-                sent_oracle_update = true;
-                includes_oracle_update = true;
-            }
+        Self {
+            velocity,
+            settings,
+            market,
+            tx_worker,
+            filler_account,
+            top_maker_asks: cached_users(auction_crosses.top_maker_asks.as_slice()),
+            top_maker_bids: cached_users(auction_crosses.top_maker_bids.as_slice()),
+            oracle,
         }
+    }
+
+    async fn try_cross(&self, taker_order: &L3Order, crosses: MakerCrosses) {
+        let Some((taker, taker_stats)) =
+            fetch_user_and_stats(self.velocity, &taker_order.user, "auction fill")
+        else {
+            return;
+        };
+
+        // The order may be gone since the DLOB snapshot. A trigger taker is then skipped. Any
+        // other taker can still fill against makers, but the vAMM leg cannot be validated.
+        let order = taker
+            .orders
+            .iter()
+            .find(|o| o.order_id == taker_order.order_id)
+            .copied();
 
         let taker_is_trigger = matches!(
             taker_order.kind,
             OrderKind::TriggerMarket | OrderKind::TriggerLimit
         );
-        if taker_is_trigger {
-            // The order may have been triggered/filled/cancelled between the DLOB snapshot and
-            // this fetch; skip rather than panic the run loop.
-            let actual_order = match taker_account_data
-                .orders
-                .iter()
-                .find(|o| o.order_id == taker_order.order_id)
-            {
-                Some(o) => o,
-                None => {
-                    log::debug!(target: TARGET, "trigger order {} gone before fill, skipping", taker_order.order_id);
-                    continue;
-                }
-            };
 
-            let trigger_above = matches!(
-                actual_order.trigger_condition,
-                OrderTriggerCondition::Above | OrderTriggerCondition::TriggeredAbove
-            );
+        if taker_is_trigger && !self.trigger_condition_met(taker_order, order.as_ref()) {
+            return;
+        }
 
-            let can_trigger = if trigger_above && trigger_price > actual_order.trigger_price {
-                true
+        // The trigger ix runs before the fill in the same tx, so the program gates and sizes
+        // the triggered order.
+        let order = order.map(|order| {
+            if taker_is_trigger {
+                order_after_trigger(order, self.market.landing_slot, self.velocity.slot_clock())
             } else {
-                !trigger_above && trigger_price < actual_order.trigger_price
-            };
-            if !can_trigger {
-                continue;
+                order
             }
-            log::info!(
-                target: TARGET,
-                "attempting trigger and fill: trigger_price={trigger_price}, order_price={}, {:?}/{:?}",
-                actual_order.trigger_price,
-                taker_order.order_id,
-                taker_order.user
-            );
-            tx_builder = tx_builder.trigger_order(
-                taker_subaccount,
-                &taker_account_data,
-                taker_order.order_id,
-                (market_index, MarketType::Perp),
-            );
+        });
+
+        let makers = cached_makers(self.velocity, &taker_order.user, &crosses);
+        let gate = self.vamm_gate(&taker, &taker_stats, order, &crosses);
+        let vamm_fillable = order
+            .filter(|_| crosses.has_vamm_cross && gate.is_open())
+            .and_then(|order| self.vamm_fillable(&taker, &order, taker_order.is_reduce_only()));
+        let vamm_usable = vamm_leg_usable(crosses.has_vamm_cross, &gate, vamm_fillable);
+        let action = classify_cross(crosses.has_vamm_cross, vamm_usable, !makers.is_empty());
+        CrossDecision {
+            market_index: self.market.market_index,
+            taker_order,
+            crosses: &crosses,
+            action: &action,
+            gate: &gate,
+            vamm_fillable: vamm_fillable.map(|fillable| fillable.base_asset_amount),
+            n_makers: makers.len(),
         }
+        .emit();
 
-        let mut maker_accounts: Vec<User> = crosses
-            .orders
-            .iter()
-            .filter(|m| m.0.user != taker_subaccount) // can't fill itself
-            // drop makers not yet in cache rather than panicking; a missing maker just
-            // shrinks the cross (handled by the empty-cross check below)
-            .filter_map(|(m, _fill_size)| velocity.try_get_account::<User>(&m.user).ok())
-            .collect();
-
-        // The on-chain order backing this cross; used for the program's low-risk rule and the
-        // AMM fill sizing. It may be gone (filled/cancelled since the DLOB snapshot) — then the
-        // vAMM leg can't be validated, so it doesn't count towards sending the fill.
-        let actual_order = taker_account_data
-            .orders
-            .iter()
-            .find(|o| o.order_id == taker_order.order_id);
-
-        // Mirror the program's AMM availability gates (`amm_fill_gates_ok` +
-        // `amm_fill_timing_ok`): drawdown and oracle staleness hard-block; an order not yet
-        // "low risk" (placed within the oracle delay, `User::is_low_risk_for_amm`) additionally
-        // needs the AMM to want to JIT-make in the taker direction. Inputs are hoisted into
-        // locals so the cross-decision wide event can carry each one.
-        let drawdown = perp_market.has_too_much_drawdown().unwrap_or(false);
-        let order_low_risk = actual_order
-            .is_some_and(|o| (crosses.slot as i64).saturating_sub(oracle_delay) > o.slot as i64);
-        let wants_jit = amm_wants_to_jit_make(
-            &perp_market.amm,
-            perp_market.order_step_size,
-            crosses.taker_direction,
-        );
-        // JIT leg validates the MM oracle at the landing slot (crosses were snapshotted at
-        // `crosses.slot`; the fill lands ~next slot). A same-slot snapshot that looks fresh
-        // routinely lands one slot stale under the immediate threshold, so measure at landing.
-        let landing_slot = crosses.slot.saturating_add(1);
-        let mm_stale_immediate =
-            mm_oracle_stale_for_amm_immediate(&perp_market, landing_slot, velocity.slot_clock());
-        let mut vamm_usable = crosses.has_vamm_cross
-            && vamm_can_fill_taker(
-                drawdown,
-                oracle_stale_for_amm,
-                order_low_risk,
-                wants_jit,
-                mm_stale_immediate,
-            );
-
-        // vAMM-fillable size when it was computable; carried on the wide event either way
-        let mut vamm_fillable: Option<u64> = None;
-        if vamm_usable {
-            if let (Ok(pos), Some(order)) = (
-                taker_account_data.get_perp_position(market_index),
-                actual_order,
-            ) {
-                if let Ok((base_asset_amount, _limit_price)) =
-                    velocity_rs::program::math::orders::calculate_base_asset_amount_for_amm_to_fulfill(
-                        order,
-                        &perp_market,
-                        None,
-                        None,
-                        pos.base_asset_amount,
-                        &FeeTier::default(),
-                    )
-                {
-                    vamm_fillable = Some(base_asset_amount);
-                    // if user position is less than min order size, step size is the threshold
-                    let amm_size_threshold = if !taker_order.is_reduce_only()
-                        && pos.base_asset_amount.unsigned_abs()
-                            > perp_market.market_stats.min_order_size
-                    {
-                        perp_market.market_stats.min_order_size
-                    } else {
-                        perp_market.order_step_size
-                    };
-                    if base_asset_amount < amm_size_threshold {
-                        vamm_usable = false;
-                    }
-                }
-            }
-        }
-
-        let action = classify_cross(
-            crosses.has_vamm_cross,
-            vamm_usable,
-            !maker_accounts.is_empty(),
-        );
-        emit_cross_decision_event(
-            market_index,
-            &taker_subaccount,
-            taker_order.order_id,
-            crosses.slot,
-            &action,
-            crosses.has_vamm_cross,
-            oracle_stale_for_amm,
-            oracle_delay,
-            drawdown,
-            order_low_risk,
-            wants_jit,
-            mm_stale_immediate,
-            vamm_fillable,
-            maker_accounts.len(),
-        );
         match action {
             CrossAction::Skip => {
-                if oracle_stale_for_amm && crosses.has_vamm_cross {
-                    log::info!(target: TARGET, "skip vAMM fill: oracle stale for AMM (market={market_index})");
-                } else {
-                    log::debug!(target: TARGET, "skip cross (vamm gated, no makers): {crosses:?}");
-                }
-                // The fill tx (and the trigger ix piggybacked on it) is dropped, but the
-                // taker is a trigger order whose condition is met. The run loop's
-                // standalone trigger pass suppresses crossing trigger orders on the
-                // assumption this path triggers them atomically — so send the trigger
-                // alone here, or the order stays untriggered until another keeper acts.
-                if taker_is_trigger {
-                    log::info!(
-                        target: TARGET,
-                        "cross skipped but taker trigger condition met; sending standalone trigger: market={market_index}, order={}/{}, slot={}",
-                        taker_order.order_id,
-                        taker_subaccount,
-                        crosses.slot,
-                    );
-                    try_trigger_order(
-                        velocity,
-                        priority_fee,
-                        trigger_cu_limit,
-                        market_index,
-                        filler_subaccount,
-                        taker_subaccount,
-                        taker_order.order_id,
-                        crosses.slot + 1,
-                        tx_worker_ref.clone(),
-                    )
+                self.skip_cross(taker_order, &crosses, &gate, taker_is_trigger)
                     .await;
-                }
-                continue;
+                return;
             }
             CrossAction::FillMakersOnly => {
                 log::debug!(target: TARGET, "vamm leg gated, filling against makers only: {crosses:?}");
@@ -1639,55 +1548,315 @@ async fn try_auction_fill(
             CrossAction::FillWithVamm => {}
         }
 
-        if maker_accounts.len() < 3 {
-            if crosses.taker_direction == PositionDirection::Long {
-                maker_accounts = top_maker_asks.clone();
-            } else {
-                maker_accounts = top_maker_bids.clone();
+        let fill = TakerFill {
+            order: taker_order,
+            account: &taker,
+            stats: &taker_stats,
+            is_trigger: taker_is_trigger,
+        };
+
+        self.send_fill(fill, crosses, makers).await;
+    }
+
+    fn trigger_condition_met(&self, taker_order: &L3Order, order: Option<&Order>) -> bool {
+        let Some(order) = order else {
+            log::debug!(target: TARGET, "trigger order {} gone before fill, skipping", taker_order.order_id);
+            return false;
+        };
+
+        let trigger_price = self.market.trigger_price;
+        let condition_met = match order.trigger_condition {
+            OrderTriggerCondition::Above | OrderTriggerCondition::TriggeredAbove => {
+                trigger_price > order.trigger_price
             }
+            _ => trigger_price < order.trigger_price,
+        };
+
+        if condition_met {
+            log::info!(
+                target: TARGET,
+                "attempting trigger and fill: trigger_price={trigger_price}, order_price={}, {:?}/{:?}",
+                order.trigger_price,
+                taker_order.order_id,
+                taker_order.user
+            );
         }
 
-        tx_builder =
-            with_spot_interest_cranks(tx_builder, velocity, &taker_account_data, &maker_accounts)
-                .fill_perp_order(
-                    market_index,
-                    taker_subaccount,
-                    &taker_account_data,
-                    &taker_stats,
-                    Some(taker_order.order_id),
-                    maker_accounts.as_slice(),
-                    None,
-                );
+        condition_met
+    }
+
+    /// The program's AMM fill gates for this cross, read from the safe oracle at landing.
+    fn vamm_gate(
+        &self,
+        taker: &User,
+        taker_stats: &UserStats,
+        order: Option<Order>,
+        crosses: &MakerCrosses,
+    ) -> VammGate {
+        let perp_market = &self.market.perp_market;
+        let mut gate = VammGate {
+            drawdown: perp_market.has_too_much_drawdown().unwrap_or(false),
+            wants_jit: amm_wants_to_jit_make(
+                &perp_market.amm,
+                perp_market.order_step_size,
+                crosses.taker_direction,
+            ),
+            ..VammGate::CLOSED
+        };
+
+        let Some(oracle) = self.oracle else {
+            return gate;
+        };
+
+        let valid_for = |action| {
+            is_oracle_valid_for_action(oracle.safe_validity, Some(action)).unwrap_or(false)
+        };
+
+        gate.safe_oracle_delay = Some(oracle.safe.delay);
+        gate.safe_stale_for_amm = !valid_for(VelocityAction::FillOrderAmmLowRisk);
+        gate.safe_stale_immediate = !valid_for(VelocityAction::FillOrderAmmImmediate);
+
+        let Some(order) = order else {
+            return gate;
+        };
+
+        let landing_slot = self.market.landing_slot;
+        gate.can_skip_auction = taker
+            .can_skip_auction_duration(taker_stats, order.reduce_only)
+            .unwrap_or(false);
+
+        gate.order_low_risk = order
+            .is_low_risk_for_amm(
+                oracle.safe.delay,
+                landing_slot,
+                false,
+                gate.can_skip_auction,
+            )
+            .unwrap_or(false);
+
+        gate
+    }
+
+    fn vamm_fillable(
+        &self,
+        taker: &User,
+        order: &Order,
+        taker_reduce_only: bool,
+    ) -> Option<VammFillable> {
+        let perp_market = &self.market.perp_market;
+        let position = taker.get_perp_position(self.market.market_index).ok()?;
+        let (base_asset_amount, _limit_price) =
+            velocity_rs::program::math::orders::calculate_base_asset_amount_for_amm_to_fulfill(
+                order,
+                perp_market,
+                None,
+                None,
+                position.base_asset_amount,
+                &FeeTier::default(),
+            )
+            .ok()?;
+
+        // if user position is less than min order size, step size is the threshold
+        let minimum = if !taker_reduce_only
+            && position.base_asset_amount.unsigned_abs() > perp_market.market_stats.min_order_size
+        {
+            perp_market.market_stats.min_order_size
+        } else {
+            perp_market.order_step_size
+        };
+
+        Some(VammFillable {
+            base_asset_amount,
+            meets_minimum: base_asset_amount >= minimum,
+        })
+    }
+
+    async fn skip_cross(
+        &self,
+        taker_order: &L3Order,
+        crosses: &MakerCrosses,
+        gate: &VammGate,
+        taker_is_trigger: bool,
+    ) {
+        let market_index = self.market.market_index;
+        if gate.safe_stale_for_amm && crosses.has_vamm_cross {
+            log::info!(target: TARGET, "skip vAMM fill: oracle stale for AMM (market={market_index})");
+        } else {
+            log::debug!(target: TARGET, "skip cross (vamm gated, no makers): {crosses:?}");
+        }
+
+        // The run loop's standalone trigger pass leaves crossing trigger orders to this path.
+        // A skipped fill drops its trigger ix, so the trigger goes out alone.
+        if !taker_is_trigger {
+            return;
+        }
+
+        log::info!(
+            target: TARGET,
+            "cross skipped but taker trigger condition met; sending standalone trigger: market={market_index}, order={}/{}, slot={}",
+            taker_order.order_id,
+            taker_order.user,
+            crosses.slot,
+        );
+
+        try_trigger_order(
+            self.velocity,
+            self.settings.priority_fee,
+            self.settings.trigger_cu_limit,
+            market_index,
+            self.settings.filler_subaccount,
+            taker_order.user,
+            taker_order.order_id,
+            crosses.slot + 1,
+            self.tx_worker.clone(),
+        )
+        .await;
+    }
+
+    async fn send_fill(&self, taker: TakerFill<'_>, crosses: MakerCrosses, makers: Vec<User>) {
+        let market_index = self.market.market_index;
+        let tx_builder = self.fill_tx_builder(&taker, crosses.taker_direction, makers);
 
         // large accounts list, bump CU limit to compensate
-        let mut effective_cu_limit = cu_limit;
-        if let Some(ix) = tx_builder.ixs().last() {
-            if ix.accounts.len() >= 20 {
-                effective_cu_limit = cu_limit * 2;
-                tx_builder = tx_builder.set_ix(
-                    1,
-                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
-                );
-            }
-        }
+        let cu_limit = self.settings.cu_limit;
+        let (tx_builder, effective_cu_limit) = if tx_builder
+            .ixs()
+            .last()
+            .is_some_and(|ix| ix.accounts.len() >= 20)
+        {
+            let doubled = cu_limit * 2;
+            let builder =
+                tx_builder.set_ix(1, ComputeBudgetInstruction::set_compute_unit_limit(doubled));
+            (builder, doubled)
+        } else {
+            (tx_builder, cu_limit)
+        };
 
-        let (tx, simulation_tx) = build_fill_tx(tx_builder, includes_oracle_update);
-
-        tx_worker_ref
+        let (tx, simulation_tx) = build_fill_tx(tx_builder, self.market.oracle_update.is_some());
+        self.tx_worker
             .send_fill_tx(
                 tx,
                 simulation_tx,
                 TxIntent::AuctionFill {
                     market_index,
-                    taker_order_id: taker_order.order_id,
-                    taker_user: taker_subaccount,
+                    taker_order_id: taker.order.order_id,
+                    taker_user: taker.order.user,
                     maker_crosses: crosses,
-                    has_trigger: taker_is_trigger,
+                    has_trigger: taker.is_trigger,
                 },
                 effective_cu_limit as u64,
             )
             .await;
     }
+
+    /// The fill tx in program order: priority fee, lazer post, trigger, cranks, then the fill.
+    fn fill_tx_builder(
+        &self,
+        taker: &TakerFill<'_>,
+        taker_direction: PositionDirection,
+        mut makers: Vec<User>,
+    ) -> TransactionBuilder<'_> {
+        let settings = self.settings;
+        let market_index = self.market.market_index;
+        let mut tx_builder = TransactionBuilder::new(
+            self.velocity.program_data(),
+            settings.filler_subaccount,
+            std::borrow::Cow::Borrowed(&self.filler_account),
+            false,
+        )
+        .with_priority_fee(settings.priority_fee, Some(settings.cu_limit));
+
+        if let Some(update) = self.market.oracle_update.as_ref() {
+            tx_builder =
+                tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
+        }
+
+        if taker.is_trigger {
+            tx_builder = tx_builder.trigger_order(
+                taker.order.user,
+                taker.account,
+                taker.order.order_id,
+                (market_index, MarketType::Perp),
+            );
+        }
+
+        if makers.len() < 3 {
+            makers = match taker_direction {
+                PositionDirection::Long => self.top_maker_asks.clone(),
+                PositionDirection::Short => self.top_maker_bids.clone(),
+            };
+        }
+
+        with_spot_interest_cranks(tx_builder, self.velocity, taker.account, &makers)
+            .fill_perp_order(
+                market_index,
+                taker.order.user,
+                taker.account,
+                taker.stats,
+                Some(taker.order.order_id),
+                makers.as_slice(),
+                None,
+            )
+    }
+}
+
+/// The taker side of one auction fill tx.
+struct TakerFill<'a> {
+    order: &'a L3Order,
+    account: &'a User,
+    stats: &'a UserStats,
+    is_trigger: bool,
+}
+
+/// The base the vAMM would fill for a taker.
+#[derive(Clone, Copy, Debug)]
+struct VammFillable {
+    base_asset_amount: u64,
+    /// The program skips an AMM fill below the minimum order size, or below the step size
+    /// for a position smaller than the minimum.
+    meets_minimum: bool,
+}
+
+fn vamm_leg_usable(
+    has_vamm_cross: bool,
+    gate: &VammGate,
+    vamm_fillable: Option<VammFillable>,
+) -> bool {
+    // a size the keeper cannot compute does not close the vAMM leg
+    has_vamm_cross && gate.is_open() && vamm_fillable.is_none_or(|fillable| fillable.meets_minimum)
+}
+
+/// The cross's makers that are in the cache, without the taker.
+fn cached_makers(velocity: &VelocityClient, taker: &Pubkey, crosses: &MakerCrosses) -> Vec<User> {
+    // a maker missing from the cache shrinks the cross and is not an error
+    crosses
+        .orders
+        .iter()
+        .filter(|(maker_order, _fill_size)| maker_order.user != *taker)
+        .filter_map(|(maker_order, _fill_size)| {
+            velocity.try_get_account::<User>(&maker_order.user).ok()
+        })
+        .collect()
+}
+
+/// The order as a trigger ix at `trigger_slot` leaves it, as `update_trigger_order_params`
+/// does. A triggered order restarts its auction, so its age counts from the trigger.
+fn order_after_trigger(order: Order, trigger_slot: u64, slot_clock: SlotClock) -> Order {
+    let mut triggered = order;
+    triggered.trigger_condition = match order.trigger_condition {
+        OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
+        OrderTriggerCondition::Below => OrderTriggerCondition::TriggeredBelow,
+        _ => return order,
+    };
+
+    if order.reduce_only
+        && slot_clock.elapsed(order.slot, trigger_slot) > SAFE_TRIGGER_ORDER_MIN_REST
+    {
+        triggered.add_bit_flag(OrderBitFlag::SafeTriggerOrder);
+    }
+
+    triggered.slot = trigger_slot;
+    triggered
 }
 
 /// Try to uncross top of book
@@ -2106,63 +2275,39 @@ fn order_dedup_key(user: &Pubkey, order_id: u32) -> u32 {
     u32::from_le_bytes([b[0], b[1], b[2], b[3]]) ^ order_id
 }
 
-/// Whether the vAMM can participate in filling a taker order right now, mirroring the
-/// program's gates (`PerpMarket::amm_fill_gates_ok` + `amm_fill_timing_ok`):
-/// - `drawdown` (or the low-risk oracle staleness) alone hard-blocks every AMM fill;
-/// - a "low risk" order (rested longer than the oracle delay, `User::is_low_risk_for_amm`)
-///   fills unconditionally past the hard gates;
-/// - otherwise (still within the oracle delay, e.g. mid-auction) the AMM only fills via the
-///   immediate JIT leg, which the program gates on `FillOrderAmmImmediate` oracle validity —
-///   a *tighter* staleness bound than the low-risk one (`mm_stale_immediate`) — in addition to
-///   the AMM *wanting* to JIT-make in the taker's direction.
+/// The program's AMM fill gates for one taker order, from `PerpMarket::amm_fill_gates_ok` and
+/// `amm_fill_timing_ok`. Every oracle input reads the safe oracle at the landing slot, which a
+/// newer pyth-lazer post in the fill tx replaces with a same-slot exchange price.
 ///
-/// The immediate leg reads the *MM* oracle (`market_stats.mm_oracle_slot`), which a pyth-lazer
-/// update posted in the fill tx does NOT refresh, so a MM crank that lands even one slot late
-/// closes it while the exchange oracle looks fresh. Gating the JIT branch only on the loose
-/// low-risk staleness (as before) sent fills that no-op on-chain with "oracle not valid for
-/// immediate fills" — the `vamm_taker no_fill` spam.
-///
-/// Best-effort economy filter only — the program re-checks everything; a `true` here that the
-/// program rejects just costs a failed simulation.
-fn vamm_can_fill_taker(
+/// This is a best-effort filter. The program checks again, and a wrong `true` costs one failed
+/// simulation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VammGate {
     drawdown: bool,
-    oracle_stale_for_amm: bool,
+    safe_stale_for_amm: bool,
+    safe_stale_immediate: bool,
+    safe_oracle_delay: Option<i64>,
     order_low_risk: bool,
-    amm_wants_to_jit_make: bool,
-    mm_stale_immediate: bool,
-) -> bool {
-    !drawdown
-        && !oracle_stale_for_amm
-        && (order_low_risk || (amm_wants_to_jit_make && !mm_stale_immediate))
+    can_skip_auction: bool,
+    wants_jit: bool,
 }
 
-/// MM-oracle staleness for the *immediate* (JIT) AMM-fill leg, mirroring the program's
-/// `is_stale_for_amm_immediate` (`math/oracle.rs`) with the per-market
-/// `oracle_slot_delay_override`: a positive override is used as-is; `override == 0` disables
-/// the immediate leg entirely (always stale); negative means unset and resolves to
-/// `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price (the program refuses MM-oracle writes
-/// closer together than that, so a tighter threshold is unsatisfiable). Delay is measured
-/// against the *MM* oracle slot (`market_stats.mm_oracle_slot`) at the expected landing slot,
-/// since that — not the exchange oracle — is what the JIT leg validates.
-fn mm_oracle_stale_for_amm_immediate(
-    perp_market: &PerpMarket,
-    landing_slot: u64,
-    slot_clock: SlotClock,
-) -> bool {
-    let mm_oracle_delay =
-        (landing_slot as i64).saturating_sub(perp_market.market_stats.mm_oracle_slot as i64);
-    // the age is wall clock, integrated per slot duration regime like
-    // `oracle_validity`; thresholds are 400ms baseline units
-    let mm_oracle_age = slot_clock.elapsed_slot_delta(mm_oracle_delay.max(0) as u64, landing_slot);
-    let override_ = perp_market.oracle_slot_delay_override;
-    if override_ > 0 {
-        mm_oracle_age > Millis::from_stored_units(override_ as u64)
-    } else if override_ < 0 {
-        let accepted_slots =
-            MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_clock.slot_duration_at(landing_slot));
-        mm_oracle_age > slot_clock.elapsed_slot_delta(accepted_slots, landing_slot)
-    } else {
-        true
+impl VammGate {
+    const CLOSED: Self = Self {
+        drawdown: false,
+        safe_stale_for_amm: true,
+        safe_stale_immediate: true,
+        safe_oracle_delay: None,
+        order_low_risk: false,
+        can_skip_auction: false,
+        wants_jit: false,
+    };
+
+    /// A low-risk order fills past the hard gates. Any other order fills only through the
+    /// immediate JIT leg, which has a tighter staleness bound.
+    fn is_open(&self) -> bool {
+        let jit_open = self.can_skip_auction && self.wants_jit && !self.safe_stale_immediate;
+        !self.drawdown && !self.safe_stale_for_amm && (self.order_low_risk || jit_open)
     }
 }
 
@@ -2982,48 +3127,44 @@ impl TxWorker {
     }
 }
 
-/// Emit a wide structured event (one JSON line, log target `tx_event`) for every auction
-/// cross evaluated, capturing the routing decision AND each vAMM gate input that produced it.
-///
-/// The per-tx event (`event: "tx"`) only exists for crosses that result in a send; this event
-/// is the debugging trail for the ones that don't — why a cross was degraded to makers-only or
-/// skipped (drawdown? staleness? order too fresh? no JIT appetite? vAMM fillable too small?).
-/// Correlate with the tx event on (market, order_id).
-#[allow(clippy::too_many_arguments)]
-fn emit_cross_decision_event(
+/// One auction cross's routing decision and each vAMM gate input behind it. The tx event only
+/// covers crosses that send, so this event explains the skipped and makers-only ones. It joins
+/// the tx event on (market, order_id).
+struct CrossDecision<'a> {
     market_index: u16,
-    taker: &Pubkey,
-    order_id: u32,
-    slot: u64,
-    action: &CrossAction,
-    has_vamm_cross: bool,
-    oracle_stale_for_amm: bool,
-    oracle_delay: i64,
-    drawdown: bool,
-    order_low_risk: bool,
-    amm_wants_to_jit_make: bool,
-    mm_stale_immediate: bool,
+    taker_order: &'a L3Order,
+    crosses: &'a MakerCrosses,
+    action: &'a CrossAction,
+    gate: &'a VammGate,
     vamm_fillable: Option<u64>,
     n_makers: usize,
-) {
-    let event = serde_json::json!({
-        "event": "cross_decision",
-        "market": market_index,
-        "taker": taker.to_string(),
-        "order_id": order_id,
-        "slot": slot,
-        "action": action.label(),
-        "has_vamm_cross": has_vamm_cross,
-        "oracle_stale_for_amm": oracle_stale_for_amm,
-        "oracle_delay": oracle_delay,
-        "drawdown": drawdown,
-        "order_low_risk": order_low_risk,
-        "amm_wants_to_jit_make": amm_wants_to_jit_make,
-        "mm_stale_immediate": mm_stale_immediate,
-        "vamm_fillable": vamm_fillable,
-        "n_makers": n_makers,
-    });
-    log::info!(target: "tx_event", "{event}");
+}
+
+impl CrossDecision<'_> {
+    /// Writes one JSON line to the log target `tx_event`.
+    fn emit(&self) {
+        let gate = self.gate;
+        let event = serde_json::json!({
+            "event": "cross_decision",
+            "market": self.market_index,
+            "taker": self.taker_order.user.to_string(),
+            "order_id": self.taker_order.order_id,
+            "slot": self.crosses.slot,
+            "action": self.action.label(),
+            "has_vamm_cross": self.crosses.has_vamm_cross,
+            "safe_stale_for_amm": gate.safe_stale_for_amm,
+            "safe_oracle_delay": gate.safe_oracle_delay,
+            "drawdown": gate.drawdown,
+            "order_low_risk": gate.order_low_risk,
+            "can_skip_auction": gate.can_skip_auction,
+            "amm_wants_to_jit_make": gate.wants_jit,
+            "safe_stale_immediate": gate.safe_stale_immediate,
+            "vamm_fillable": self.vamm_fillable,
+            "n_makers": self.n_makers,
+        });
+
+        log::info!(target: "tx_event", "{event}");
+    }
 }
 
 /// Emit a wide structured event (one JSON line, log target `tx_event`) for each
@@ -3306,8 +3447,8 @@ mod tests {
     use {
         super::{
             build_fill_tx, classify_cross, is_expected_fill_event, is_revert_fill_error,
-            mm_oracle_stale_for_amm_immediate, order_dedup_key, record_perp_fill_fallback,
-            vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
+            order_after_trigger, order_dedup_key, record_perp_fill_fallback, CrossAction, Pubkey,
+            TxIntent, VammGate, VelocityEvent,
         },
         solana_instruction::error::InstructionError,
         solana_transaction::TransactionError,
@@ -3319,38 +3460,6 @@ mod tests {
             TransactionBuilder,
         },
     };
-
-    // The unset (override < 0) MM-sourced immediate threshold compares the
-    // wall clock MM-oracle age against MM_ORACLE_MIN_WRITE_GAP, matching the
-    // program's `oracle_validity`. The age integrates per slot duration
-    // regime, so the effective slot count scales with the clock.
-    #[test]
-    fn unset_mm_immediate_threshold_scales_per_gate() {
-        use velocity_rs::program::math::time::SlotClock;
-        let mut market = PerpMarket {
-            oracle_slot_delay_override: -1, // unset -> source-aware fallback
-            ..Default::default()
-        };
-        market.market_stats.mm_oracle_slot = 1_000;
-        // MM_ORACLE_MIN_WRITE_GAP = 800ms: 2 slots at 400ms, 4 at 200ms
-        for (clock, threshold) in [
-            (SlotClock::baseline(), 2u64),
-            (SlotClock::from_state_fields([1, 0, 0, 0], 0, 0, 0), 3),
-            (SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0), 4),
-        ] {
-            // age exactly at the write gap is NOT stale (`age > gap`)
-            let at = market.market_stats.mm_oracle_slot + threshold;
-            assert!(
-                !mm_oracle_stale_for_amm_immediate(&market, at, clock),
-                "age == write gap should be fresh"
-            );
-            // one slot past is stale
-            assert!(
-                mm_oracle_stale_for_amm_immediate(&market, at + 1, clock),
-                "age past write gap should be stale"
-            );
-        }
-    }
 
     fn order_fill_event(taker: Pubkey, order_id: u32, base_filled: u64) -> VelocityEvent {
         VelocityEvent::OrderFill {
@@ -3512,27 +3621,114 @@ mod tests {
     }
 
     #[test]
-    fn vamm_can_fill_taker_mirrors_program_gates() {
-        // Regression: the old `is_vamm_inactive` closure computed
-        // `drawdown && amm_wants_to_jit_make` — drawdown with no JIT appetite passed as
-        // "active", and JIT appetite was treated as a disqualifier rather than the
-        // requirement it is for non-low-risk orders.
-        // args: (drawdown, oracle_stale_for_amm, order_low_risk, wants_jit, mm_stale_immediate)
-        // drawdown alone hard-blocks (amm_fill_gates_ok), regardless of everything else
-        assert!(!vamm_can_fill_taker(true, false, true, true, false));
-        assert!(!vamm_can_fill_taker(true, false, false, false, false));
-        // low-risk oracle staleness hard-blocks
-        assert!(!vamm_can_fill_taker(false, true, true, true, false));
-        // low-risk order fills without JIT appetite (amm_fill_timing_ok fast path), and is
-        // NOT subject to the immediate-staleness gate
-        assert!(vamm_can_fill_taker(false, false, true, false, true));
-        // non-low-risk order requires the AMM to want to JIT-make
-        assert!(vamm_can_fill_taker(false, false, false, true, false));
-        assert!(!vamm_can_fill_taker(false, false, false, false, false));
-        // Regression (vamm_taker no_fill spam): a non-low-risk JIT cross with the MM oracle
-        // stale for immediate fills must NOT send — the program's FillOrderAmmImmediate gate
-        // rejects it on-chain even though the low-risk staleness looks fine.
-        assert!(!vamm_can_fill_taker(false, false, false, true, true));
+    fn vamm_gate_mirrors_program_gates() {
+        let open_jit = VammGate {
+            drawdown: false,
+            safe_stale_for_amm: false,
+            safe_stale_immediate: false,
+            safe_oracle_delay: Some(0),
+            order_low_risk: false,
+            can_skip_auction: true,
+            wants_jit: true,
+        };
+        let low_risk = VammGate {
+            order_low_risk: true,
+            wants_jit: false,
+            safe_stale_immediate: true,
+            ..open_jit
+        };
+
+        assert!(open_jit.is_open());
+        // a low-risk order needs no JIT appetite and ignores the immediate bound
+        assert!(low_risk.is_open());
+
+        // drawdown and low-risk staleness block every AMM fill
+        for gate in [open_jit, low_risk] {
+            assert!(!VammGate {
+                drawdown: true,
+                ..gate
+            }
+            .is_open());
+            assert!(!VammGate {
+                safe_stale_for_amm: true,
+                ..gate
+            }
+            .is_open());
+        }
+
+        // the JIT leg needs appetite, a fresh immediate oracle, and an auction the user may skip
+        assert!(!VammGate {
+            wants_jit: false,
+            ..open_jit
+        }
+        .is_open());
+        assert!(!VammGate {
+            safe_stale_immediate: true,
+            ..open_jit
+        }
+        .is_open());
+        assert!(!VammGate {
+            can_skip_auction: false,
+            ..open_jit
+        }
+        .is_open());
+        assert!(!VammGate::CLOSED.is_open());
+    }
+
+    #[test]
+    fn order_after_trigger_restarts_age_and_flags_a_rested_reduce_only() {
+        use velocity_rs::{
+            program::{math::time::SlotClock, state::user::OrderBitFlag},
+            types::{Order, OrderTriggerCondition},
+        };
+
+        let clock = SlotClock::baseline();
+        let placed = Order {
+            slot: 1_000,
+            trigger_condition: OrderTriggerCondition::Below,
+            reduce_only: true,
+            ..Order::default()
+        };
+
+        // 151 slots at 400ms is past the 60s rest
+        let triggered = order_after_trigger(placed, 1_151, clock);
+        assert_eq!(triggered.slot, 1_151);
+        assert_eq!(
+            triggered.trigger_condition,
+            OrderTriggerCondition::TriggeredBelow
+        );
+        assert!(triggered.triggered());
+        assert!(triggered.is_bit_flag_set(OrderBitFlag::SafeTriggerOrder));
+        assert!(triggered
+            .is_low_risk_for_amm(i64::MAX / 2, 1_151, false, true)
+            .unwrap());
+
+        let early = order_after_trigger(placed, 1_100, clock);
+        assert_eq!(early.slot, 1_100);
+        assert!(!early.is_bit_flag_set(OrderBitFlag::SafeTriggerOrder));
+        // the trigger restamps the slot, so the old placement no longer counts as low risk
+        assert!(!early.is_low_risk_for_amm(10, 1_100, false, true).unwrap());
+
+        let not_reduce_only = order_after_trigger(
+            Order {
+                reduce_only: false,
+                ..placed
+            },
+            1_151,
+            clock,
+        );
+
+        assert!(!not_reduce_only.is_bit_flag_set(OrderBitFlag::SafeTriggerOrder));
+
+        let already_triggered = Order {
+            trigger_condition: OrderTriggerCondition::TriggeredBelow,
+            ..placed
+        };
+
+        assert_eq!(
+            order_after_trigger(already_triggered, 1_151, clock),
+            already_triggered
+        );
     }
 
     #[test]

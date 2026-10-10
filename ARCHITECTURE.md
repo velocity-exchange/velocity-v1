@@ -268,7 +268,7 @@ ABI discriminants.
 
 ## Build and test quick reference
 
-`CLAUDE.md` has the full command list. These are the entry points you need most:
+[`docs/agents/testing.md`](./docs/agents/testing.md) and [`docs/agents/build.md`](./docs/agents/build.md) have the full command list. These are the entry points you need most:
 
 ```bash
 # Verify program compiles after Rust changes

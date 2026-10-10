@@ -585,5 +585,5 @@ All of the following must hold before a change to this area merges.
   land within about 10% of the pre-change baseline.
 - The boundary checks above do not regress.
 
-After merging a layout-breaking change, run the devnet wipe-and-reinit described in the root
-`CLAUDE.md` runbook.
+After merging a layout-breaking change, run the devnet wipe-and-reinit described in the
+`docs/agents/devnet.md` runbook.

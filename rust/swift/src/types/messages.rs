@@ -438,7 +438,7 @@ mod tests {
             "taker_pubkey": "4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE"
         }"#;
 
-        let actual: IncomingSignedMessage = serde_json::from_str(&message).expect("deserializes");
+        let actual: IncomingSignedMessage = serde_json::from_str(message).expect("deserializes");
         assert!(actual.verify_signature().is_ok());
         assert!(actual.signing_authority == Pubkey::default());
     }
@@ -453,7 +453,7 @@ mod tests {
             "taker_authority": "4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE"
         }"#;
 
-        let actual: IncomingSignedMessage = serde_json::from_str(&message).expect("deserializes");
+        let actual: IncomingSignedMessage = serde_json::from_str(message).expect("deserializes");
         assert!(actual.verify_signature().is_ok());
         assert!(actual.signing_authority == Pubkey::default());
 
@@ -466,7 +466,7 @@ mod tests {
             "taker_authority": "4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE"
         }"#;
 
-        let actual: IncomingSignedMessage = serde_json::from_str(&message).expect("deserializes");
+        let actual: IncomingSignedMessage = serde_json::from_str(message).expect("deserializes");
         assert!(actual.verify_signature().is_ok());
         assert!(actual.signing_authority == Pubkey::default());
     }
@@ -549,7 +549,7 @@ mod tests {
             signed_msg_order_params: OrderParams {
                 market_index: 24,
                 market_type: MarketType::Perp,
-                base_asset_amount: 123456_789,
+                base_asset_amount: 123_456_789,
                 order_type: OrderType::Limit,
                 ..Default::default()
             },

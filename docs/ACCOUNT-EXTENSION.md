@@ -88,7 +88,7 @@ Say a field no longer fits in `User`'s padding and the struct must grow.
 2. **Mirror the layout off-chain.** `bun run program:idl` regenerates the IDL (and
    `velocity_idl.rs` on the next rust-workspace build); update the hand-maintained
    `packages/sdk/src/types.ts` mirror and the SDK decode paths in the same change, per the usual
-   rules in CLAUDE.md. Add a row to [DRIFT-TO-VELOCITY.md](./DRIFT-TO-VELOCITY.md).
+   rules in AGENTS.md. Add a row to [DRIFT-TO-VELOCITY.md](./DRIFT-TO-VELOCITY.md).
 3. **Deploy the upgrade.** From this moment, instructions touching a not-yet-extended account of
    that type fail with the loader's out-of-bounds/size error. Nothing is corrupted; the accounts
    are just unreadable until grown. Plan the crank to follow immediately.

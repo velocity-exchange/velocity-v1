@@ -87,7 +87,6 @@ pub fn project_perp_market_for_quoting(
         &mm_oracle,
         reserve_price,
         slot,
-        slot_clock,
     )
     .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
 

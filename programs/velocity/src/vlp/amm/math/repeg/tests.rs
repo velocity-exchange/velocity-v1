@@ -356,7 +356,7 @@ fn calculate_optimal_peg_and_budget_2_test() {
         .is_recent_oracle_valid(1337, &rewritten_price)
         .unwrap());
 
-    assert_eq!(c, 442);
+    assert_eq!(c, -1); // zero budget: the k decrease gain pays for the repeg
     assert_eq!(market.amm.last_update_slot, 1337);
 }
 
@@ -667,7 +667,64 @@ fn calc_adjust_amm_tests_sufficent_fee_for_repeg() {
     let old_peg = market.amm.peg_multiplier;
     assert!(new_peg > old_peg);
     assert_eq!(new_peg, 34657283);
-    assert_eq!(_amm_update_cost, 304289);
+    // The cost includes the k decrease gain and stays within the 304289 budget.
+    assert_eq!(_amm_update_cost, 304288);
+}
+
+/// The budget-limited repeg lowers k and spends the gain on the peg. The returned cost must
+/// include that gain, so it never exceeds the budget and the refresh stays affordable however
+/// much inventory the AMM holds.
+#[test]
+fn adjust_amm_budget_repeg_cost_includes_the_k_decrease() {
+    for (inventory_base, expected_cost) in
+        [(1_i128, 304288_i128), (1_000, 304195), (10_000, 300236)]
+    {
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 60437939720095,
+                quote_asset_reserve: 60440212459368,
+                terminal_quote_asset_reserve: 60439072663003,
+                sqrt_k: 60439076079049,
+                peg_multiplier: 34353000,
+                base_asset_amount_with_amm: inventory_base * AMM_RESERVE_PRECISION as i128,
+                curve_update_intensity: 100,
+                base_spread: 1000,
+                total_fee_minus_distributions: 304289,
+                concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+                ..AMM::default()
+            },
+            order_step_size: 1000,
+            ..PerpMarket::default()
+        };
+        let (terminal_quote, terminal_base) =
+            amm::calculate_terminal_reserves(&market.amm).unwrap();
+        market.amm.terminal_quote_asset_reserve = terminal_quote;
+        let (min_base, max_base) =
+            amm::calculate_bid_ask_bounds(market.amm.concentration_coef, terminal_base).unwrap();
+        market.amm.min_base_asset_reserve = min_base;
+        market.amm.max_base_asset_reserve = max_base;
+
+        let optimal_peg = calculate_peg_from_target_price(
+            market.amm.quote_asset_reserve,
+            market.amm.base_asset_reserve,
+            35768 * PRICE_PRECISION_U64 / 1000,
+        )
+        .unwrap();
+        let fee_budget = calculate_fee_pool(&market.amm).unwrap();
+
+        let (with_k, cost) = adjust_amm(&market, optimal_peg, fee_budget, true).unwrap();
+        assert!(with_k.amm.sqrt_k < market.amm.sqrt_k);
+        assert!(with_k.amm.peg_multiplier > market.amm.peg_multiplier);
+        assert!(cost <= fee_budget as i128);
+        assert_eq!(cost, expected_cost, "inventory {}", inventory_base);
+
+        // The k decrease moves the peg at least as far as the plain budget does.
+        let (without_k, cost_without_k) =
+            adjust_amm(&market, optimal_peg, fee_budget, false).unwrap();
+        assert_eq!(without_k.amm.sqrt_k, market.amm.sqrt_k);
+        assert!(cost_without_k <= fee_budget as i128);
+        assert!(with_k.amm.peg_multiplier >= without_k.amm.peg_multiplier);
+    }
 }
 
 #[test]
@@ -1196,5 +1253,111 @@ pub fn adjust_amm_with_market_config_flag_eth_perp() {
             assert_eq!(adjusted_without_flag.amm.peg_multiplier, optimal_peg);
             assert_eq!(adjusted_without_flag.amm.sqrt_k, case_market.amm.sqrt_k);
         }
+    }
+}
+
+/// Shared with the SDK's `tests/sdkParity/adjustAmm.test.ts`. Each row runs
+/// `calculate_optimal_peg_and_budget` and `adjust_amm` on one AMM and checks the curve and cost.
+mod parity_fixtures {
+    use {
+        super::*,
+        crate::{
+            math::oracle::OracleValidity,
+            state::{
+                oracle::{MMOraclePriceData, OraclePriceData},
+                perp_market::{PerpMarket, AMM},
+            },
+            vlp::amm::math::amm,
+        },
+    };
+
+    fn rows(csv: &str) -> impl Iterator<Item = Vec<&str>> {
+        csv.lines()
+            .skip(1)
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.split(',').collect())
+    }
+
+    #[test]
+    fn adjust_amm_matches_fixtures() {
+        let csv = include_str!(concat!(
+            "../../../../../../../packages/sdk/tests/sdkParity/fixtures/",
+            "adjust_amm.csv"
+        ));
+        let mut n = 0;
+        for c in rows(csv) {
+            let mut market = PerpMarket {
+                amm: AMM {
+                    base_asset_reserve: c[0].parse().unwrap(),
+                    quote_asset_reserve: c[1].parse().unwrap(),
+                    sqrt_k: c[2].parse().unwrap(),
+                    peg_multiplier: c[3].parse().unwrap(),
+                    base_asset_amount_with_amm: c[4].parse().unwrap(),
+                    min_base_asset_reserve: c[5].parse().unwrap(),
+                    max_base_asset_reserve: c[6].parse().unwrap(),
+                    curve_update_intensity: c[7].parse().unwrap(),
+                    max_spread: c[8].parse().unwrap(),
+                    total_fee_minus_distributions: c[9].parse().unwrap(),
+                    concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+                    ..AMM::default()
+                },
+                market_config: c[11].parse().unwrap(),
+                ..PerpMarket::default()
+            };
+            market.market_stats.min_order_size = c[10].parse().unwrap();
+            let (terminal_quote_asset_reserve, _) =
+                amm::calculate_terminal_reserves(&market.amm).unwrap();
+            market.amm.terminal_quote_asset_reserve = terminal_quote_asset_reserve;
+
+            let oracle_price: i64 = c[12].parse().unwrap();
+            let oracle_price_data = OraclePriceData {
+                price: oracle_price,
+                confidence: 1,
+                delay: 0,
+                has_sufficient_number_of_data_points: true,
+                sequence_id: None,
+            };
+            let mm_oracle_price_data = MMOraclePriceData::new(
+                oracle_price,
+                0,
+                0,
+                OracleValidity::default(),
+                oracle_price_data,
+            )
+            .unwrap();
+
+            let (optimal_peg, budget, check_lower_bound) =
+                calculate_optimal_peg_and_budget(&market, &mm_oracle_price_data).unwrap();
+            let (adjusted, cost) = adjust_amm(
+                &market,
+                optimal_peg,
+                budget,
+                market.amm.curve_update_intensity >= 100,
+            )
+            .unwrap();
+            let out = (
+                adjusted.amm.peg_multiplier,
+                adjusted.amm.sqrt_k,
+                adjusted.amm.base_asset_reserve,
+                adjusted.amm.quote_asset_reserve,
+                cost,
+                check_lower_bound,
+            );
+            assert_eq!(
+                out,
+                (
+                    c[13].parse().unwrap(),
+                    c[14].parse().unwrap(),
+                    c[15].parse().unwrap(),
+                    c[16].parse().unwrap(),
+                    c[17].parse().unwrap(),
+                    c[18].parse().unwrap(),
+                ),
+                "row {}",
+                n + 1
+            );
+            n += 1;
+        }
+        assert!(n > 0);
     }
 }

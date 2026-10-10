@@ -1,5 +1,9 @@
 [toolchain]
 anchor_version = "1.0.2"
+# Without a pin, avm picks and activates its own default Solana (3.1.14 for
+# anchor 1.0.2) on any anchor invocation, which replaces the CLI CI installed and
+# rejects SBPFv3 artifacts. Keep in sync with SOLANA_VERSION in the workflows.
+solana_version = "4.3.0"
 
 [provider]
 cluster = "localnet"

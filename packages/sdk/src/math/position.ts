@@ -15,16 +15,18 @@ import {
 	PerpPosition,
 	SpotMarketAccount,
 	PositionFlag,
+	SpotBalanceType,
 } from '../types';
 import {
 	calculateUpdatedAMM,
+	getKUpdateGate,
 	calculateUpdatedAMMSpreadReserves,
 	calculateAmmReservesAfterSwap,
 	getSwapDirection,
 } from './amm';
 import { calculateBaseAssetValueWithOracle } from './margin';
-import { calculateNetUserPnlImbalance } from './market';
-import { SlotDurationState } from './time';
+import { calculateNetUserPnl } from './market';
+import { getTokenAmount } from './spotBalance';
 
 /**
  * Simulates fully closing `userPosition` against the AMM (optionally through its bid/ask
@@ -34,9 +36,8 @@ import { SlotDurationState } from './time';
  * @param market Perp market whose AMM is used to price the close.
  * @param userPosition Position to value; returns zero if flat (`baseAssetAmount == 0`).
  * @param mmOraclePriceData MM oracle price data used to re-peg/update the AMM before pricing (unless `skipUpdate`).
- * @param useSpread If true (default) and the market has a nonzero base spread, price through the bid/ask spread reserves on the closing side rather than the raw AMM reserves.
+ * @param useSpread If true (default), price through the bid/ask spread reserves on the closing side rather than the raw AMM reserves.
  * @param skipUpdate If true, price against `market.amm` as-is without applying `calculateUpdatedAMM`/spread-reserve updates first (default false).
- * @param latestSlot Current slot, forwarded to the spread-reserve update for reference-price-offset smoothing.
  * @returns Value of fully closing the position, QUOTE_PRECISION (1e6).
  */
 export function calculateBaseAssetValue(
@@ -44,9 +45,7 @@ export function calculateBaseAssetValue(
 	userPosition: PerpPosition,
 	mmOraclePriceData: MMOraclePriceData,
 	useSpread = true,
-	skipUpdate = false,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	skipUpdate = false
 ): BN {
 	if (userPosition.baseAssetAmount.eq(ZERO)) {
 		return ZERO;
@@ -56,15 +55,14 @@ export function calculateBaseAssetValue(
 	let prepegAmm: Parameters<typeof calculateAmmReservesAfterSwap>[0];
 
 	if (!skipUpdate) {
-		if (market.amm.baseSpread > 0 && useSpread) {
+		if (useSpread) {
 			const { baseAssetReserve, quoteAssetReserve, sqrtK, newPeg } =
 				calculateUpdatedAMMSpreadReserves(
 					market.amm,
 					market.marketStats,
 					directionToClose,
 					mmOraclePriceData,
-					latestSlot,
-					slotDurationState
+					market.marketConfig
 				);
 			prepegAmm = {
 				baseAssetReserve,
@@ -73,7 +71,11 @@ export function calculateBaseAssetValue(
 				pegMultiplier: newPeg,
 			};
 		} else {
-			prepegAmm = calculateUpdatedAMM(market.amm, mmOraclePriceData);
+			prepegAmm = calculateUpdatedAMM(
+				market.amm,
+				mmOraclePriceData,
+				getKUpdateGate(market)
+			);
 		}
 	} else {
 		prepegAmm = market.amm;
@@ -151,13 +153,13 @@ export function calculatePositionPNL(
  * `settle_pnl`, mirroring `PerpPosition::get_claimable_pnl` in
  * `programs/velocity/src/state/user.rs`. Positive pnl can only be settled up to whichever is
  * larger: pnl already realized by reducing the position (`quoteAssetAmount -
- * quoteEntryAmount`, floored at zero) plus any pnl-pool surplus over the market's net user
- * pnl (`calculateNetUserPnlImbalance`, negated and floored at zero). Negative pnl passes
- * through uncapped — this function does not itself gate on margin requirements (the program
- * separately blocks settling negative pnl for a user who wouldn't meet maintenance margin
- * afterward).
+ * quoteEntryAmount`, floored at zero) plus the pnl pool's excess over the market's net user
+ * pnl floored at zero, computed as `settle_pnl` does. The AMM fee pool never counts. Negative
+ * pnl passes through uncapped — this function does not itself gate on margin requirements
+ * (the program separately blocks settling negative pnl for a user who wouldn't meet maintenance
+ * margin afterward).
  * @param market Perp market the position belongs to.
- * @param spotMarket Quote spot market, used to size the pnl pool via `calculateNetUserPnlImbalance`.
+ * @param spotMarket Quote spot market, used to size the pnl pool.
  * @param perpPosition Position to evaluate.
  * @param oraclePriceData Must provide `price`, PRICE_PRECISION (1e6).
  * @returns Settleable pnl, QUOTE_PRECISION (1e6, signed) — equal to unrealized pnl if negative or uncapped, otherwise capped.
@@ -177,12 +179,15 @@ export function calculateClaimablePnl(
 
 	let unsettledPnl = unrealizedPnl;
 	if (unrealizedPnl.gt(ZERO)) {
-		const excessPnlPool = BN.max(
-			ZERO,
-			calculateNetUserPnlImbalance(market, spotMarket, oraclePriceData).mul(
-				new BN(-1)
-			)
+		const netUserPnl = calculateNetUserPnl(market, oraclePriceData);
+		const pnlPool = getTokenAmount(
+			market.pnlPool.scaledBalance,
+			spotMarket,
+			SpotBalanceType.DEPOSIT
 		);
+		const excessPnlPool = netUserPnl.lt(pnlPool)
+			? pnlPool.sub(BN.max(netUserPnl, ZERO))
+			: ZERO;
 
 		const maxPositivePnl = BN.max(
 			perpPosition.quoteAssetAmount.sub(perpPosition.quoteEntryAmount),

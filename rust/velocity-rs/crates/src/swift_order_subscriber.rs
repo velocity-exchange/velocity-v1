@@ -630,7 +630,7 @@ pub fn deser_signed_msg_type<'de, D>(deserializer: D) -> Result<SignedOrderType,
 where
     D: serde::Deserializer<'de>,
 {
-    let payload: std::borrow::Cow<String> = serde::Deserialize::deserialize(deserializer)?;
+    let payload: std::borrow::Cow<str> = serde::Deserialize::deserialize(deserializer)?;
     if !payload.len().is_multiple_of(2) {
         return Err(serde::de::Error::custom("Hex string length must be even"));
     }
@@ -729,7 +729,7 @@ mod tests {
                 "uuid":"ru9YBLRt"
             }
         }"#;
-        let result: Result<OrderNotification, _> = serde_json::from_str(&msg);
+        let result: Result<OrderNotification, _> = serde_json::from_str(msg);
         assert!(result.is_err());
 
         let msg = r#"{
@@ -745,7 +745,7 @@ mod tests {
                 "uuid":"ru9YBLRt"
             }
         }"#;
-        let result: Result<OrderNotification, _> = serde_json::from_str(&msg);
+        let result: Result<OrderNotification, _> = serde_json::from_str(msg);
         assert!(result.is_err());
     }
 
@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn test_swift_order_encode_for_signing() {
         let msg = "{\"channel\":\"swift_orders_perp_2\",\"order\":{\"market_index\":2,\"market_type\":\"perp\",\"order_message\":\"c8d5a65e2234f55d0001010080841e0000000000000000000000000002000000000000000001320124c6aa950000000001786b2f94000000000000bb64a9150000000074735730364f6d380000\",\"order_signature\":\"SaOaLJ1i0MqZ2cXdp00jGe2EJFa32eOfiQynFU7mclhT86yhIa4/tWXq7r6l7QPN0Jl6frfsZl0nNOvKZxZpAA==\",\"signing_authority\":\"4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE\",\"taker_authority\":\"4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE\",\"ts\":1740456840770,\"uuid\":\"tsW06Om8\"}}";
-        let order_notification: OrderNotification = serde_json::from_str(&msg).unwrap();
+        let order_notification: OrderNotification = serde_json::from_str(msg).unwrap();
         let signed_message = order_notification.order;
         assert_eq!(
             signed_message.encode_for_signing().as_slice(),

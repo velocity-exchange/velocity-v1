@@ -70,3 +70,6 @@ axum-macros = "0.4.2"
 ring = { opt-level = 0 }
 zstd-sys = { opt-level = 0 }
 solana-program = { opt-level = 0 }
+
+[lints]
+workspace = true

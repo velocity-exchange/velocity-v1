@@ -1116,6 +1116,8 @@ fn evaluate_swift_crosses(
 }
 
 /// Outcome of evaluating a swift order against current liquidity.
+// Returned by value once per swift order; boxing `MakerCrosses` would add an allocation per order.
+#[allow(clippy::large_enum_variant)]
 enum SwiftEval {
     /// Crosses resting liquidity / vAMM right now: fill it immediately.
     Fillable(MakerCrosses),
@@ -1344,10 +1346,11 @@ async fn try_swift_place(
 /// through a stale index and understates the debt. `fill_perp_order`
 /// receives those markets read-only and cannot refresh them, so the permissionless
 /// crank rides in the same transaction. Call this before `fill_perp_order`, which
-/// also keeps the fill as the last instruction for the account-count check.
+/// also keeps the fill as the last instruction for the account-count check. The
+/// liquidator reuses it for its own account, passing no makers.
 ///
 /// A market this misses only costs a reverted fill.
-fn with_spot_interest_cranks<'a>(
+pub(crate) fn with_spot_interest_cranks<'a>(
     mut tx_builder: TransactionBuilder<'a>,
     velocity: &VelocityClient,
     taker: &User,
@@ -1925,8 +1928,8 @@ async fn try_uncross(
     log::debug!(
         target: TARGET,
         "X asks: {:?}, X bids: {:?}",
-        &crosses.crossing_asks.iter().take(3),
-        &crosses.crossing_bids.iter().take(3),
+        crosses.crossing_asks.iter().take(3),
+        crosses.crossing_bids.iter().take(3),
     );
 
     // try valid combinations of taker/maker with all crossing asks/bids
@@ -2517,8 +2520,7 @@ async fn subscribe_grpc(
     let _res = velocity
         .grpc_subscribe(
             std::env::var("GRPC_ENDPOINT")
-                .unwrap_or_else(|_| "https://api.rpcpool.com".to_string())
-                .into(),
+                .unwrap_or_else(|_| "https://api.rpcpool.com".to_string()),
             std::env::var("GRPC_X_TOKEN").expect("GRPC_X_TOKEN set"),
             GrpcSubscribeOpts::default()
                 .commitment(solana_commitment_config::CommitmentLevel::Processed)
@@ -2545,18 +2547,18 @@ async fn subscribe_grpc(
         .await;
 }
 
+// Sent through the tx worker channel by value; boxing would add an allocation per transaction.
+#[allow(clippy::large_enum_variant)]
 pub enum TxWork {
     Send {
         tx: VersionedTransaction,
         simulation_tx: Option<VersionedMessage>,
         require_fill_event: bool,
-        ts: u64,
         intent: TxIntent,
         cu_limit: u64,
     },
     Confirm {
         tx: Signature,
-        ts: u64,
     },
 }
 
@@ -2604,7 +2606,6 @@ impl TxWorker {
                         tx,
                         simulation_tx,
                         require_fill_event,
-                        ts: _,
                         intent,
                         cu_limit,
                     } => {
@@ -2614,7 +2615,7 @@ impl TxWorker {
                         }
                         self.send_tx(&rt, tx, simulation_tx, require_fill_event, intent, cu_limit);
                     }
-                    TxWork::Confirm { tx, ts: _ } => {
+                    TxWork::Confirm { tx } => {
                         self.confirm_tx(&rt, tx);
                     }
                 }
@@ -2853,7 +2854,6 @@ impl TxWorker {
                 signature,
                 intent,
                 cu_limit: sent_cu_limit,
-                ts: _,
             } = pending_tx_meta.unwrap();
 
             let intent_label = intent.label();
@@ -3387,15 +3387,7 @@ pub struct TxSender {
 
 impl TxSender {
     pub fn confirm_tx(&self, tx: Signature) {
-        self.tx
-            .send(TxWork::Confirm {
-                tx,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-            })
-            .expect("sent");
+        self.tx.send(TxWork::Confirm { tx }).expect("sent");
     }
 
     pub async fn send_tx(
@@ -3441,10 +3433,6 @@ impl TxSender {
                 tx: signed_tx,
                 simulation_tx,
                 require_fill_event,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
                 intent,
                 cu_limit,
             })

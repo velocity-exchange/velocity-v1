@@ -1846,9 +1846,9 @@ export type Vaults = {
 				{
 					name: 'velocityState';
 					docs: [
-						"Velocity's `State`, read only for the live slot duration so this",
+						"Velocity's `State`, read only for the slot clock so this",
 						"instruction's oracle staleness windows match every other vault path.",
-						'`State::slot_duration_from_account_info`',
+						'`State::slot_clock_from_account_info`',
 					];
 				},
 			];
@@ -3413,6 +3413,11 @@ export type Vaults = {
 			name: 'invalidRepayAmount';
 			msg: 'invalidRepayAmount';
 		},
+		{
+			code: 6029;
+			name: 'depositNotFullySettled';
+			msg: 'depositNotFullySettled';
+		},
 	];
 	types: [
 		{
@@ -4202,13 +4207,19 @@ export type Vaults = {
 					},
 					{
 						name: 'auctionDuration';
-						docs: ['How many slots the auction lasts'];
+						docs: [
+							'Auction length in wall clock 400ms units (one slot at the 400ms',
+							'baseline, where the raw value is identical to the historical slot',
+							"count). Progress compares `SlotClock::elapsed` against this value's",
+							'wall clock length, so the ramp holds at every slot duration and the',
+							'u8 keeps the full historical 72s range.',
+						];
 						type: 'u8';
 					},
 					{
 						name: 'postedSlotTail';
 						docs: [
-							'Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)',
+							'Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)',
 						];
 						type: 'u8';
 					},
@@ -5333,9 +5344,17 @@ export type Vaults = {
 						};
 					},
 					{
+						name: 'issuedSupply';
+						docs: [
+							'tokens this program has minted minus tokens it has burned. Prices tokenize and redeem',
+							'instead of `mint.supply`, which any holder can shrink with a direct SPL burn.',
+						];
+						type: 'u64';
+					},
+					{
 						name: 'padding';
 						type: {
-							array: ['u64', 10];
+							array: ['u64', 9];
 						};
 					},
 				];
@@ -5812,9 +5831,19 @@ export type Vaults = {
 						type: 'u8';
 					},
 					{
+						name: 'acceleratedReferralStatus';
+						docs: [
+							'Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept',
+							'separate from `referrer_status`, which describes whether this authority',
+							'refers or was referred by somebody else. Carved out of former padding so',
+							'preupgrade accounts read `0` (standard, automatic enrollment allowed).',
+						];
+						type: 'u8';
+					},
+					{
 						name: 'padding';
 						type: {
-							array: ['u8', 62];
+							array: ['u8', 61];
 						};
 					},
 				];

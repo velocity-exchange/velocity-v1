@@ -432,8 +432,10 @@ export function getPerpBaselineMaxPriceOffset(
 
 /**
  * Derives a reasonable auction start price for a newly-triggered trigger order, biasing off
- * the current oracle price by an offset estimated from recent mark/oracle spread (or, if
- * mark and oracle TWAPs have recently diverged or 24h volume is thin, a coarser
+ * the current oracle price by an offset estimated from recent mark/oracle spread: the slow
+ * (bid/ask TWAP) offset blended with fractions of the AMM's cached per-side spreads, or the
+ * 5-minute mark/oracle TWAP offset alone once the two disagree by more than 50bps of the 5-minute
+ * mark TWAP (or, if mark and oracle TWAPs have recently diverged or 24h volume is thin, a coarser
  * TWAP-fraction fallback scaled by contract tier). Clamps that offset to
  * ±`getPerpBaselineMaxPriceOffset`, the tier auction-width band, as the program does. Applies a
  * further directional "start buffer" in bps (tighter for tier A/B markets) so the auction starts
@@ -482,27 +484,31 @@ export function getTriggerAuctionStartPrice(params: {
 		const offsetSlow = markTwapSlow.sub(oracleTwapSlow);
 		const offsetFast = markTwapFast.sub(oracleTwapFast);
 
-		// long_spread/short_spread were removed from AMM in the decoupling refactor.
-		// Fall back to half base_spread as the per-side spread approximation; the
-		// AMM no longer caches an exact per-side spread without oracle context.
-		const halfBaseSpread = new BN(Math.floor(perpMarket.amm.baseSpread / 2));
-		const fracOfLongSpreadInPrice = halfBaseSpread
-			.mul(markTwapSlow)
-			.div(PRICE_PRECISION.muln(10)); // divide by 10x for safety
+		// Mirrors OrderParams::get_perp_baseline_start_price_offset (state/order_params.rs). When the
+		// slow and fast offsets agree to within 50bps of the 5min mark TWAP, blend the slow offset
+		// with fractions of the AMM's cached per-side spreads. Otherwise the fast offset is used alone.
+		if (offsetSlow.sub(offsetFast).abs().lte(markTwapFast.divn(200))) {
+			const fracOfLongSpreadInPrice = new BN(perpMarket.amm.longSpread)
+				.mul(markTwapSlow)
+				.div(PRICE_PRECISION.muln(10)); // divide by 10x for safety
 
-		const fracOfShortSpreadInPrice = halfBaseSpread
-			.mul(markTwapSlow)
-			.div(PRICE_PRECISION.muln(10)); // divide by 10x for safety
+			const fracOfShortSpreadInPrice = new BN(perpMarket.amm.shortSpread)
+				.mul(markTwapSlow)
+				.div(PRICE_PRECISION.muln(10)); // divide by 10x for safety
 
-		baselineStartOffset = isVariant(direction, 'long')
-			? BN.min(
-					offsetSlow.add(fracOfLongSpreadInPrice),
-					offsetFast.sub(fracOfShortSpreadInPrice)
-			  )
-			: BN.max(
-					offsetSlow.sub(fracOfShortSpreadInPrice),
-					offsetFast.add(fracOfLongSpreadInPrice)
-			  );
+			baselineStartOffset = isVariant(direction, 'long')
+				? BN.min(
+						offsetSlow.add(fracOfLongSpreadInPrice),
+						offsetFast.sub(fracOfShortSpreadInPrice)
+				  )
+				: BN.max(
+						offsetSlow.sub(fracOfShortSpreadInPrice),
+						offsetFast.add(fracOfLongSpreadInPrice)
+				  );
+		} else {
+			// more than 50bps different of fast/slow twap, use fast only
+			baselineStartOffset = offsetFast;
+		}
 	}
 
 	// OtterSec #146: the program clamps the baseline start offset to the tier auction-width band

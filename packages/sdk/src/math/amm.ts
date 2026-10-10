@@ -3,6 +3,7 @@ import {
 	AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO,
 	PRICE_PRECISION,
 	PEG_PRECISION,
+	AMM_RESERVE_PRECISION,
 	ZERO,
 	BID_ASK_SPREAD_PRECISION,
 	ONE,
@@ -15,7 +16,8 @@ import {
 	FUNDING_RATE_OFFSET_PERCENTAGE,
 	FUNDING_RATE_OFFSET_DENOMINATOR,
 	TWO,
-	SPREAD_CONF_FULL_WEIGHT_THRESHOLD,
+	LAZER_CONF_FLOOR_PCT,
+	REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT,
 	SPREAD_CONF_DISCOUNT_DIVISOR,
 } from '../constants/numericConstants';
 import {
@@ -25,20 +27,16 @@ import {
 	SwapDirection,
 	PerpMarketAccount,
 	isVariant,
+	MarketConfigFlag,
 } from '../types';
 import { assert } from '../assert/assert';
 import { squareRootBN, sigNum, clampBN } from './utils';
 import { standardizeBaseAssetAmount } from './orders';
 
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
-import {
-	calculateRepegCost,
-	calculateAdjustKCost,
-	calculateBudgetedPeg,
-} from './repeg';
+import { calculateRepegCost } from './repeg';
 
 import { calculateLiveOracleStd, getNewOracleConfPct } from './oracles';
-import { MILLIS_UNIT, SlotDurationState, elapsedMillis } from './time';
 
 /**
  * Solves for the `pegMultiplier` that would make the AMM's constant-product price equal
@@ -145,61 +143,253 @@ export function calculateOptimalPegAndBudget(
 }
 
 /**
- * Determines the full curve update (repeg cost, K scale factor, new peg) for `amm` against
- * the current oracle price, mirroring the "use full budget peg" fallback path of `adjust_amm`
- * in `vlp/amm/math/repeg.rs`. Starts from `calculateOptimalPegAndBudget`'s target/budget; if
- * the direct repeg cost meets or exceeds that budget, shrinks `sqrtK` by 0.1% (999/1000) via
- * `calculateAdjustKCost` first to free up additional budget, then re-solves for the peg with
- * `calculateBudgetedPeg` using the combined budget.
+ * Market fields the program reads to decide whether a budget-limited repeg may lower k.
+ * `minOrderSize` is `PerpMarketAccount.marketStats.minOrderSize` and `marketConfig` is
+ * `PerpMarketAccount.marketConfig`.
+ */
+export type KUpdateGate = {
+	minOrderSize: BN;
+	marketConfig: number;
+};
+
+/**
+ * Reads the k update gate fields from a perp market.
+ * @param market Perp market the AMM belongs to.
+ * @returns The market's `KUpdateGate`.
+ */
+export function getKUpdateGate(
+	market: Pick<PerpMarketAccount, 'marketConfig' | 'marketStats'>
+): KUpdateGate {
+	return {
+		minOrderSize: market.marketStats.minOrderSize,
+		marketConfig: market.marketConfig,
+	};
+}
+
+// Mirrors the gate on the k decrease in `adjust_amm`: intensity of at least 100, `can_lower_k`,
+// and `DisableFormulaicKUpdate` unset.
+function canLowerKForRepeg(amm: AMM, kUpdateGate?: KUpdateGate): boolean {
+	if (amm.curveUpdateIntensity < 100) {
+		return false;
+	}
+	if (
+		kUpdateGate &&
+		(kUpdateGate.marketConfig & MarketConfigFlag.DISABLE_FORMULAIC_K_UPDATE) !==
+			0
+	) {
+		return false;
+	}
+	const minOrderSize = kUpdateGate?.minOrderSize ?? ZERO;
+	const [openBids, openAsks] = calculateMarketOpenBidAsk(
+		amm.baseAssetReserve,
+		amm.minBaseAssetReserve,
+		amm.maxBaseAssetReserve
+	);
+	const inventory = amm.baseAssetAmountWithAmm.abs();
+	return (
+		inventory.lt(BN.min(openBids.abs(), openAsks.abs())) &&
+		BN.max(inventory, minOrderSize).lt(amm.sqrtK) &&
+		minOrderSize.lt(BN.max(openBids.abs(), openAsks.abs()))
+	);
+}
+
+/** The curve fields a repeg or k update rewrites. */
+export type AmmCurve = {
+	baseAssetReserve: BN;
+	quoteAssetReserve: BN;
+	sqrtK: BN;
+	pegMultiplier: BN;
+	terminalQuoteAssetReserve: BN;
+};
+
+// Mirrors `calculate_per_peg_cost`: ceil division, then one unit further from zero.
+function calculatePerPegCost(
+	quoteAssetReserve: BN,
+	terminalQuoteAssetReserve: BN
+): BN {
+	const delta = quoteAssetReserve.sub(terminalQuoteAssetReserve);
+	const divisor = AMM_RESERVE_PRECISION.div(PEG_PRECISION);
+	let perPegCost = delta.div(divisor);
+	if (delta.mod(divisor).gt(ZERO)) {
+		perPegCost = perPegCost.add(ONE);
+	}
+	if (perPegCost.gt(ZERO)) {
+		return perPegCost.add(ONE);
+	}
+	return perPegCost.lt(ZERO) ? perPegCost.sub(ONE) : perPegCost;
+}
+
+// Mirrors `AMM::inventory_close_value`.
+function calculateInventoryCloseValue(
+	inventory: BN,
+	curve: Pick<
+		AmmCurve,
+		'baseAssetReserve' | 'quoteAssetReserve' | 'sqrtK' | 'pegMultiplier'
+	>
+): BN {
+	if (inventory.isZero()) {
+		return ZERO;
+	}
+	const swapDirection = inventory.gte(ZERO)
+		? SwapDirection.ADD
+		: SwapDirection.REMOVE;
+	const [, newQuoteAssetReserve] = calculateSwapOutput(
+		curve.baseAssetReserve,
+		inventory.abs(),
+		swapDirection,
+		curve.sqrtK.mul(curve.sqrtK)
+	);
+	return calculateQuoteAssetAmountSwapped(
+		inventory.gte(ZERO)
+			? curve.quoteAssetReserve.sub(newQuoteAssetReserve)
+			: newQuoteAssetReserve.sub(curve.quoteAssetReserve),
+		curve.pegMultiplier,
+		swapDirection
+	);
+}
+
+// Mirrors the k decrease in `adjust_amm`: `get_update_k_result` for 0.1% clamped to
+// `get_lower_bound_sqrt_k`, then `adjust_k_cost_and_update`. A negative cost means it earns.
+function calculateKDecrease(
+	amm: AMM,
+	minOrderSize: BN
+): { curve: AmmCurve; cost: BN } {
+	const inventory = amm.baseAssetAmountWithAmm;
+	const lowerBound = BN.min(amm.sqrtK, BN.max(minOrderSize, inventory.abs()));
+	const sqrtK = BN.max(amm.sqrtK.sub(amm.sqrtK.divn(1000)), lowerBound);
+	let sqrtKRatio = sqrtK.mul(AMM_RESERVE_PRECISION).div(amm.sqrtK);
+	if (sqrtKRatio.lt(AMM_RESERVE_PRECISION)) {
+		sqrtKRatio = sqrtKRatio.add(ONE);
+	}
+	const baseAssetReserve = amm.baseAssetReserve
+		.mul(sqrtKRatio)
+		.div(AMM_RESERVE_PRECISION);
+	const [, terminalQuoteAssetReserve] = calculateSwapOutput(
+		baseAssetReserve,
+		inventory.abs(),
+		inventory.gt(ZERO) ? SwapDirection.ADD : SwapDirection.REMOVE,
+		sqrtK.mul(sqrtK)
+	);
+	const curve = {
+		baseAssetReserve,
+		quoteAssetReserve: sqrtK.mul(sqrtK).div(baseAssetReserve),
+		sqrtK,
+		pegMultiplier: amm.pegMultiplier,
+		terminalQuoteAssetReserve,
+	};
+	const valueBefore = calculateInventoryCloseValue(inventory, amm);
+	const valueAfter = calculateInventoryCloseValue(inventory, curve);
+	const cost = inventory.gte(ZERO)
+		? valueAfter.sub(valueBefore)
+		: valueBefore.sub(valueAfter);
+	return { curve, cost };
+}
+
+// Mirrors `adjust_amm` in `vlp/amm/math/repeg.rs`.
+function adjustAmm(
+	amm: AMM,
+	optimalPeg: BN,
+	budget: BN,
+	kUpdateGate?: KUpdateGate
+): { curve: AmmCurve; cost: BN } {
+	let curve: AmmCurve = {
+		baseAssetReserve: amm.baseAssetReserve,
+		quoteAssetReserve: amm.quoteAssetReserve,
+		sqrtK: amm.sqrtK,
+		pegMultiplier: amm.pegMultiplier,
+		terminalQuoteAssetReserve: amm.terminalQuoteAssetReserve,
+	};
+	if (optimalPeg.eq(amm.pegMultiplier) || amm.curveUpdateIntensity === 0) {
+		return { curve, cost: ZERO };
+	}
+
+	const deltaPeg = optimalPeg.sub(amm.pegMultiplier);
+	let perPegCost = calculatePerPegCost(
+		amm.quoteAssetReserve,
+		amm.terminalQuoteAssetReserve
+	);
+	const fullBudgetDeltaPeg = perPegCost.isZero()
+		? ZERO
+		: budget.mul(PEG_PRECISION).div(perPegCost);
+	if (
+		perPegCost.isZero() ||
+		(perPegCost.gt(ZERO) && deltaPeg.lt(ZERO)) ||
+		(perPegCost.lt(ZERO) && deltaPeg.gt(ZERO)) ||
+		fullBudgetDeltaPeg.abs().gt(deltaPeg.abs())
+	) {
+		return {
+			curve: { ...curve, pegMultiplier: optimalPeg },
+			cost: calculateRepegCost(amm, optimalPeg),
+		};
+	}
+
+	// The k decrease applies only while the budget left for the peg stays positive.
+	let adjustmentCost = ZERO;
+	if (canLowerKForRepeg(amm, kUpdateGate)) {
+		const kDecrease = calculateKDecrease(
+			amm,
+			kUpdateGate?.minOrderSize ?? ZERO
+		);
+		if (budget.sub(kDecrease.cost).gt(ZERO)) {
+			curve = kDecrease.curve;
+			adjustmentCost = kDecrease.cost;
+			perPegCost = calculatePerPegCost(
+				curve.quoteAssetReserve,
+				curve.terminalQuoteAssetReserve
+			);
+		}
+	}
+
+	const budgetDeltaPeg = budget
+		.sub(adjustmentCost)
+		.mul(PEG_PRECISION)
+		.div(perPegCost);
+	let newPeg = ONE;
+	if (budgetDeltaPeg.gt(ZERO)) {
+		newPeg = amm.pegMultiplier.add(budgetDeltaPeg);
+	} else if (amm.pegMultiplier.gt(budgetDeltaPeg.abs())) {
+		newPeg = amm.pegMultiplier.sub(budgetDeltaPeg.abs());
+	}
+
+	const cost = calculateRepegCost({ ...amm, ...curve }, newPeg).add(
+		adjustmentCost
+	);
+	return { curve: { ...curve, pegMultiplier: newPeg }, cost };
+}
+
+/**
+ * Determines the full curve update for `amm` against the current oracle price: the optimal peg
+ * and budget from `calculateOptimalPegAndBudget`, applied as the program's `adjust_amm` does.
  * @param amm AMM state to evaluate a curve update for.
  * @param mmOraclePriceData Current MM oracle price data.
- * @returns `[prePegCost, pKNumer, pKDenom, newPeg, checkLowerBound]`: `prePegCost` is the
- *   quote cost of the full update, QUOTE_PRECISION (1e6); `pKNumer`/`pKDenom` are the sqrtK
- *   scale factor (999/1000 if K was shrunk, else 1/1); `newPeg` is PEG_PRECISION (1e6);
- *   `checkLowerBound` is forwarded from `calculateOptimalPegAndBudget` and tells
- *   `calculateUpdatedAMM` whether it must still verify affordability against
- *   `totalFeeMinusDistributions`.
+ * @param kUpdateGate Market fields that gate the k decrease; see `getKUpdateGate`.
+ * @returns `[prePegCost, pKNumer, pKDenom, newPeg, checkLowerBound, curve]`: `prePegCost` is the
+ *   quote cost of the full update including any k adjustment, QUOTE_PRECISION (1e6);
+ *   `pKNumer`/`pKDenom` are the sqrtK scale factor (new sqrtK over old sqrtK if K was lowered,
+ *   else 1/1); `newPeg` is PEG_PRECISION (1e6); `checkLowerBound` is forwarded from
+ *   `calculateOptimalPegAndBudget` and tells `calculateUpdatedAMM` whether it must still verify
+ *   affordability against `totalFeeMinusDistributions`; `curve` holds the exact new reserves,
+ *   which the program derives from a rounded ratio, so read them from it rather than scaling.
  */
 export function calculateNewAmm(
 	amm: AMM,
-	mmOraclePriceData: Pick<MMOraclePriceData, 'price'>
-): [BN, BN, BN, BN, boolean] {
-	let pKNumer = new BN(1);
-	let pKDenom = new BN(1);
-
-	const [targetPrice, _newPeg, budget, checkLowerBound] =
-		calculateOptimalPegAndBudget(amm, mmOraclePriceData);
-	let prePegCost = calculateRepegCost(amm, _newPeg);
-	let newPeg = _newPeg;
-
-	if (prePegCost.gte(budget) && prePegCost.gt(ZERO)) {
-		[pKNumer, pKDenom] = [new BN(999), new BN(1000)];
-		const deficitMadeup = calculateAdjustKCost(amm, pKNumer, pKDenom);
-		assert(deficitMadeup.lte(new BN(0)));
-		prePegCost = budget.add(deficitMadeup.abs());
-		const newAmm = Object.assign({}, amm);
-		newAmm.baseAssetReserve = newAmm.baseAssetReserve.mul(pKNumer).div(pKDenom);
-		newAmm.sqrtK = newAmm.sqrtK.mul(pKNumer).div(pKDenom);
-		const invariant = newAmm.sqrtK.mul(newAmm.sqrtK);
-		newAmm.quoteAssetReserve = invariant.div(newAmm.baseAssetReserve);
-		const directionToClose = amm.baseAssetAmountWithAmm.gt(ZERO)
-			? PositionDirection.SHORT
-			: PositionDirection.LONG;
-
-		const [newQuoteAssetReserve, _newBaseAssetReserve] =
-			calculateAmmReservesAfterSwap(
-				newAmm,
-				'base',
-				amm.baseAssetAmountWithAmm.abs(),
-				getSwapDirection('base', directionToClose)
-			);
-
-		newAmm.terminalQuoteAssetReserve = newQuoteAssetReserve;
-		newPeg = calculateBudgetedPeg(newAmm, prePegCost, targetPrice);
-		prePegCost = calculateRepegCost(newAmm, newPeg);
-	}
-
-	return [prePegCost, pKNumer, pKDenom, newPeg, checkLowerBound];
+	mmOraclePriceData: Pick<MMOraclePriceData, 'price'>,
+	kUpdateGate?: KUpdateGate
+): [BN, BN, BN, BN, boolean, AmmCurve] {
+	const [, optimalPeg, budget, checkLowerBound] = calculateOptimalPegAndBudget(
+		amm,
+		mmOraclePriceData
+	);
+	const { curve, cost } = adjustAmm(amm, optimalPeg, budget, kUpdateGate);
+	const kLowered = !curve.sqrtK.eq(amm.sqrtK);
+	return [
+		cost,
+		kLowered ? curve.sqrtK : ONE,
+		kLowered ? amm.sqrtK : ONE,
+		curve.pegMultiplier,
+		checkLowerBound,
+		curve,
+	];
 }
 
 /**
@@ -216,11 +406,13 @@ export function calculateNewAmm(
  * cost.
  * @param amm AMM state to update.
  * @param mmOraclePriceData Current MM oracle price data; omit to skip the update entirely.
+ * @param kUpdateGate Market fields that gate the k decrease; see `getKUpdateGate`.
  * @returns Updated `AMM` (new object), or the original `amm` reference if no update applies or the affordability gate rejects it.
  */
 export function calculateUpdatedAMM(
 	amm: AMM,
-	mmOraclePriceData?: Pick<MMOraclePriceData, 'price'>
+	mmOraclePriceData?: Pick<MMOraclePriceData, 'price'>,
+	kUpdateGate?: KUpdateGate
 ): AMM {
 	if (amm.curveUpdateIntensity == 0 || mmOraclePriceData === undefined) {
 		return amm;
@@ -230,9 +422,11 @@ export function calculateUpdatedAMM(
 	if (mmOraclePriceData.price.lte(ZERO)) {
 		return amm;
 	}
-	const newAmm = Object.assign({}, amm);
-	const [prepegCost, pKNumer, pKDenom, newPeg, checkLowerBound] =
-		calculateNewAmm(amm, mmOraclePriceData);
+	const [prepegCost, , , , checkLowerBound, curve] = calculateNewAmm(
+		amm,
+		mmOraclePriceData,
+		kUpdateGate
+	);
 
 	if (prepegCost.gt(ZERO)) {
 		const newTotalFeeMinusDistributions =
@@ -243,11 +437,11 @@ export function calculateUpdatedAMM(
 		}
 	}
 
-	newAmm.baseAssetReserve = newAmm.baseAssetReserve.mul(pKNumer).div(pKDenom);
-	newAmm.sqrtK = newAmm.sqrtK.mul(pKNumer).div(pKDenom);
-	const invariant = newAmm.sqrtK.mul(newAmm.sqrtK);
-	newAmm.quoteAssetReserve = invariant.div(newAmm.baseAssetReserve);
-	newAmm.pegMultiplier = newPeg;
+	const newAmm = Object.assign({}, amm);
+	newAmm.baseAssetReserve = curve.baseAssetReserve;
+	newAmm.quoteAssetReserve = curve.quoteAssetReserve;
+	newAmm.sqrtK = curve.sqrtK;
+	newAmm.pegMultiplier = curve.pegMultiplier;
 
 	const directionToClose = amm.baseAssetAmountWithAmm.gt(ZERO)
 		? PositionDirection.SHORT
@@ -279,8 +473,7 @@ export function calculateUpdatedAMM(
  * @param marketStats Market stats needed for spread and reference-price-offset calculation.
  * @param direction Which side's spread reserves to return.
  * @param mmOraclePriceData Current MM oracle price data, forwarded to `calculateUpdatedAMM`.
- * @param latestSlot Current slot, forwarded for reference-price-offset smoothing.
- * @param slotDurationState State slot-clock fields used to integrate smoothing across transitions.
+ * @param marketConfig `PerpMarketAccount.marketConfig`, forwarded with `marketStats.minOrderSize` as the k update gate. Omitted means no flags set.
  * @returns `baseAssetReserve`/`quoteAssetReserve` for the requested side (AMM_RESERVE_PRECISION, 1e9), and the post-update `sqrtK`/`newPeg` (AMM_RESERVE_PRECISION 1e9 / PEG_PRECISION 1e6).
  */
 export function calculateUpdatedAMMSpreadReserves(
@@ -288,17 +481,16 @@ export function calculateUpdatedAMMSpreadReserves(
 	marketStats: MarketStats,
 	direction: PositionDirection,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
-	latestSlot?: BN,
-	slotDurationState: SlotDurationState = {}
+	marketConfig = 0
 ): { baseAssetReserve: BN; quoteAssetReserve: BN; sqrtK: BN; newPeg: BN } {
-	const newAmm = calculateUpdatedAMM(amm, mmOraclePriceData);
+	const newAmm = calculateUpdatedAMM(amm, mmOraclePriceData, {
+		minOrderSize: marketStats.minOrderSize,
+		marketConfig,
+	});
 	const [shortReserves, longReserves] = calculateSpreadReserves(
 		newAmm,
 		marketStats,
-		mmOraclePriceData,
-		undefined,
-		latestSlot,
-		slotDurationState
+		mmOraclePriceData
 	);
 
 	const dirReserves = isVariant(direction, 'long')
@@ -322,8 +514,7 @@ export function calculateUpdatedAMMSpreadReserves(
  * @param marketStats Market stats needed for spread calculation.
  * @param mmOraclePriceData Current MM oracle price data; used both to repeg (if `withUpdate`) and to compute the spread.
  * @param withUpdate If true (default), repegs `amm` to the oracle price (`calculateUpdatedAMM`) before pricing; if false, prices the AMM's stored reserves as-is.
- * @param latestSlot Current slot, forwarded for reference-price-offset smoothing.
- * @param slotDurationState State slot-clock fields used to integrate smoothing across transitions.
+ * @param marketConfig `PerpMarketAccount.marketConfig`, forwarded with `marketStats.minOrderSize` as the k update gate. Omitted means no flags set.
  * @returns `[bidPrice, askPrice]`, both PRICE_PRECISION (1e6).
  */
 export function calculateBidAskPrice(
@@ -331,12 +522,14 @@ export function calculateBidAskPrice(
 	marketStats: MarketStats,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	withUpdate = true,
-	latestSlot?: BN,
-	slotDurationState: SlotDurationState = {}
+	marketConfig = 0
 ): [BN, BN] {
 	let newAmm: AMM;
 	if (withUpdate) {
-		newAmm = calculateUpdatedAMM(amm, mmOraclePriceData);
+		newAmm = calculateUpdatedAMM(amm, mmOraclePriceData, {
+			minOrderSize: marketStats.minOrderSize,
+			marketConfig,
+		});
 	} else {
 		newAmm = amm;
 	}
@@ -344,10 +537,7 @@ export function calculateBidAskPrice(
 	const [bidReserves, askReserves] = calculateSpreadReserves(
 		newAmm,
 		marketStats,
-		mmOraclePriceData,
-		undefined,
-		latestSlot,
-		slotDurationState
+		mmOraclePriceData
 	);
 
 	const askPrice = calculatePrice(
@@ -613,17 +803,18 @@ export function calculateInventoryScale(
 }
 
 /**
- * Calculates the AMM's reference-price offset — a persistent skew applied to both bid and
- * ask reserves (on top of the volatility/inventory spread) that lets the AMM's quoted price
- * drift slightly off the raw oracle price when inventory and recent funding both point the
- * same direction. Averages three clamped mark/oracle premium estimates (1-minute, 1-hour,
- * and a 24h-funding-implied premium net of the `FUNDING_RATE_OFFSET_DENOMINATOR` baseline —
- * this baseline subtraction is what keeps the offset from double-counting the funding rate's
- * own built-in offset), converts to a price-relative percentage, then scales by half the
- * (signed) inventory `liquidityFraction`. Zeroed out entirely when inventory skew and the
- * premium disagree in sign (`!sigNum(liquidityFraction).eq(sigNum(markPremiumAvgPct))`) —
- * the offset only applies when it would reduce net exposure, never to compound it. Returns
- * zero immediately if there's no funding history or no inventory skew.
+ * Calculates the AMM's reference-price offset, mirroring the program's
+ * `calculate_reference_price_offset`: a shift applied to both bid and ask that makes the
+ * inventory-reducing side cheaper and the inventory-increasing side pricier.
+ *
+ *   offset = sign(q) * maxOffsetPct * min(1, |liquidityFraction| / 10%)
+ *
+ * The size depends only on inventory: it grows linearly to `maxOffsetPct` at
+ * `REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT` of open liquidity. The market premium only gates
+ * it: three clamped mark/oracle premium estimates (5-minute, 1-hour, and a 24h-funding-implied
+ * premium net of the `FUNDING_RATE_OFFSET_DENOMINATOR` baseline) are averaged, and the offset
+ * applies only when that average is nonzero with the same sign as the inventory. Returns zero
+ * if there's no funding history or no inventory skew.
  * @param reservePrice Current AMM reserve price, PRICE_PRECISION (1e6).
  * @param last24hAvgFundingRate Market's 24h average funding rate, FUNDING_RATE_PRECISION-buffer-scaled (divided internally by `FUNDING_RATE_BUFFER_PRECISION`).
  * @param liquidityFraction Signed inventory liquidity fraction (see `calculateInventoryLiquidityRatioForReferencePriceOffset`, sign-adjusted for inventory direction), PERCENTAGE_PRECISION (1e6).
@@ -685,20 +876,24 @@ export function calculateReferencePriceOffset(
 		.mul(PRICE_PRECISION)
 		.div(reservePrice);
 
-	// Only apply when inventory is consistent with recent and 24h market premium
-	let offsetPct = markPremiumAvgPct.mul(liquidityFraction.abs()).divn(2);
-
-	if (!sigNum(liquidityFraction).eq(sigNum(markPremiumAvgPct))) {
-		offsetPct = ZERO;
+	// Only apply when inventory is consistent with recent and 24h market premium.
+	// A zero premium never applies: `sigNum` maps 0 to +1, where the program's
+	// `signum` gives 0.
+	if (
+		markPremiumAvgPct.isZero() ||
+		!sigNum(liquidityFraction).eq(sigNum(markPremiumAvgPct))
+	) {
+		return ZERO;
 	}
 
-	const clampedOffsetPct = clampBN(
-		offsetPct,
-		new BN(-maxOffsetPct),
-		new BN(maxOffsetPct)
-	);
-
-	return clampedOffsetPct;
+	// Size from inventory alone: linear up to REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT,
+	// maxOffsetPct beyond it.
+	return new BN(maxOffsetPct)
+		.mul(
+			BN.min(liquidityFraction.abs(), REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT)
+		)
+		.div(REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT)
+		.mul(sigNum(liquidityFraction));
 }
 
 /**
@@ -748,14 +943,35 @@ export function calculateEffectiveLeverage(
 }
 
 /**
+ * Confidence contribution to the per-side volatility spread, mirroring the program's
+ * `calculate_spread_conf_component`:
+ *
+ *   c = min(conf, conf / 20 + max(0, conf - LAZER_CONF_FLOOR_PCT))
+ *
+ * Lazer confidence never reports below the 20bp floor, so at the floor `c` is 1bp. Above it
+ * every bp of real source disagreement adds about a bp, until `c` meets `conf` at 4% and follows
+ * it from there. Continuous everywhere, with no threshold.
+ * @param confidencePct Oracle confidence as a fraction of price, PERCENTAGE_PRECISION (1e6).
+ * @returns The confidence contribution, PERCENTAGE_PRECISION (1e6).
+ */
+export function calculateSpreadConfComponent(confidencePct: BN): BN {
+	return BN.min(
+		confidencePct,
+		confidencePct
+			.div(SPREAD_CONF_DISCOUNT_DIVISOR)
+			.add(BN.max(ZERO, confidencePct.sub(LAZER_CONF_FLOOR_PCT)))
+	);
+}
+
+/**
  * Computes the volatility-driven component of the AMM's bid/ask spread, before inventory,
  * leverage, revenue-retreat, or funding-bias adjustments are layered on in `calculateSpreadBN`.
  * Blends the recent mark/oracle standard deviation (`markStd`, `oracleStd`) with oracle
  * confidence, then scales each side independently by that side's recent fill intensity
  * relative to 24h volume (a side that's been trading heavily gets a wider spread on that side).
- * Below the 25bp full-weight threshold the confidence's weight ramps linearly from 1/20 at zero
- * confidence to 1 at the threshold, so tiny confidence noise is damped without a discontinuity
- * at the boundary.
+ * Pyth Lazer confidence is floored at 20bp when posted, so the confidence counts at 1/20 weight
+ * plus its excess over that floor at full weight (see `calculateSpreadConfComponent`), and the
+ * vol base uses that discounted value rather than the raw confidence.
  * @param lastOracleConfPct Oracle confidence interval as a fraction of price, PERCENTAGE_PRECISION (1e6).
  * @param reservePrice Current AMM reserve price, PRICE_PRECISION (1e6).
  * @param markStd Recent mark price standard deviation, PRICE_PRECISION (1e6).
@@ -779,7 +995,8 @@ export function calculateVolSpreadBN(
 		.mul(PERCENTAGE_PRECISION)
 		.div(reservePrice)
 		.div(new BN(4));
-	const volSpread = BN.max(lastOracleConfPct, marketAvgStdPct.div(new BN(2)));
+	const confComponent = calculateSpreadConfComponent(lastOracleConfPct);
+	const volSpread = BN.max(confComponent, marketAvgStdPct.div(new BN(2)));
 
 	const clampMin = PERCENTAGE_PRECISION.div(new BN(100));
 	const clampMax = PERCENTAGE_PRECISION;
@@ -794,20 +1011,6 @@ export function calculateVolSpreadBN(
 		clampMin,
 		clampMax
 	);
-
-	// Mirrors the program's `calculate_spread_conf_component`: below the
-	// full-weight threshold the confidence's weight ramps linearly from 1/D at
-	// zero confidence to 1 at the threshold, rather than stepping off a cliff.
-	let confComponent = lastOracleConfPct;
-
-	if (lastOracleConfPct.lt(SPREAD_CONF_FULL_WEIGHT_THRESHOLD)) {
-		const rampWeight = SPREAD_CONF_FULL_WEIGHT_THRESHOLD.add(
-			SPREAD_CONF_DISCOUNT_DIVISOR.sub(ONE).mul(lastOracleConfPct)
-		);
-		confComponent = lastOracleConfPct
-			.mul(rampWeight)
-			.div(SPREAD_CONF_DISCOUNT_DIVISOR.mul(SPREAD_CONF_FULL_WEIGHT_THRESHOLD));
-	}
 
 	const longVolSpread = BN.max(
 		confComponent,
@@ -1072,62 +1275,114 @@ export function calculateSpreadBN(
 	spreadTerms.longVolSpread = longVolSpread.toNumber();
 	spreadTerms.shortVolSpread = shortVolSpread.toNumber();
 
-	let longSpread = Math.max(baseSpread / 2, longVolSpread.toNumber());
-	let shortSpread = Math.max(baseSpread / 2, shortVolSpread.toNumber());
+	const precision = BID_ASK_SPREAD_PRECISION.toNumber();
+	// Keep the raw divergence for the divergence requirement below, but bound the
+	// value the quote math consumes (as the program does).
+	const rawDivergence = lastOracleReservePriceSpreadPct.toNumber();
+	const divergence = Math.min(Math.max(rawDivergence, -precision), precision);
 
-	if (lastOracleReservePriceSpreadPct.gt(ZERO)) {
-		shortSpread = Math.max(
-			shortSpread,
-			lastOracleReservePriceSpreadPct.abs().toNumber() +
-				shortVolSpread.toNumber()
-		);
-	} else if (lastOracleReservePriceSpreadPct.lt(ZERO)) {
+	// 1: max(base/2, v) per side. base_spread / 2 is integer division on chain.
+	const halfBaseSpread = Math.floor(baseSpread / 2);
+	const floorLong = Math.max(halfBaseSpread, longVolSpread.toNumber());
+	const floorShort = Math.max(halfBaseSpread, shortVolSpread.toNumber());
+	let longSpread = floorLong;
+	let shortSpread = floorShort;
+	// directional widening that discourages inventory-growing flow, per side
+	let steeringLong = 0;
+	let steeringShort = 0;
+
+	// w_max: dynamic ceiling; divergence and vol can raise it above maxSpread.
+	const maxSpreadBaseline = Math.max(
+		Math.abs(divergence),
+		Math.min(
+			Math.max(
+				lastOracleConfPct.muln(2).toNumber(),
+				BN.max(markStd, oracleStd)
+					.mul(PERCENTAGE_PRECISION)
+					.div(reservePrice)
+					.toNumber()
+			),
+			precision
+		)
+	);
+	const maxTargetSpread: number = Math.floor(
+		Math.max(maxSpread, maxSpreadBaseline)
+	);
+	spreadTerms.maxTargetSpread = maxTargetSpread;
+
+	// 2: oracle retreat: the side facing the divergence floors at |gap| + v.
+	if (divergence < 0) {
 		longSpread = Math.max(
 			longSpread,
-			lastOracleReservePriceSpreadPct.abs().toNumber() +
-				longVolSpread.toNumber()
+			Math.abs(divergence) + longVolSpread.toNumber()
+		);
+	} else if (divergence > 0) {
+		shortSpread = Math.max(
+			shortSpread,
+			Math.abs(divergence) + shortVolSpread.toNumber()
 		);
 	}
 	spreadTerms.longSpreadwPS = longSpread;
 	spreadTerms.shortSpreadwPS = shortSpread;
 
-	const maxSpreadBaseline = Math.min(
-		Math.max(
-			lastOracleReservePriceSpreadPct.abs().toNumber(),
-			lastOracleConfPct.muln(2).toNumber(),
-			BN.max(markStd, oracleStd)
-				.mul(PERCENTAGE_PRECISION)
-				.div(reservePrice)
-				.toNumber()
-		),
-		BID_ASK_SPREAD_PRECISION.toNumber()
-	);
+	// The side whose fills grow the pool's net position.
+	const loadedLong = baseAssetAmountWithAmm.gt(ZERO);
+	const loadedShort = baseAssetAmountWithAmm.lt(ZERO);
+	// Scale the loaded side by `factor` (a plain multiplier) the way the program
+	// does, `spread * factor_int / PRECISION` in integers, and record the
+	// positive change as steering.
+	const scaleLoadedInt = (factorInt: BN) => {
+		if (loadedLong) {
+			const before = longSpread;
+			longSpread = new BN(longSpread)
+				.mul(factorInt)
+				.div(BID_ASK_SPREAD_PRECISION)
+				.toNumber();
+			steeringLong += Math.max(0, longSpread - before);
+		} else if (loadedShort) {
+			const before = shortSpread;
+			shortSpread = new BN(shortSpread)
+				.mul(factorInt)
+				.div(BID_ASK_SPREAD_PRECISION)
+				.toNumber();
+			steeringShort += Math.max(0, shortSpread - before);
+		}
+	};
+	const scaleLoaded = (factor: number) => {
+		const factorInt = Math.round(factor * precision);
+		if (loadedLong) {
+			const before = longSpread;
+			longSpread = Math.floor((longSpread * factorInt) / precision);
+			steeringLong += Math.max(0, longSpread - before);
+		} else if (loadedShort) {
+			const before = shortSpread;
+			shortSpread = Math.floor((shortSpread * factorInt) / precision);
+			steeringShort += Math.max(0, shortSpread - before);
+		}
+	};
 
-	const maxTargetSpread: number = Math.floor(
-		Math.max(maxSpread, maxSpreadBaseline)
-	);
-
+	// 3: x sigma(q): inventory scale, loaded side only.
 	const inventorySpreadScale = calculateInventoryScale(
 		baseAssetAmountWithAmm,
 		baseAssetReserve,
 		minBaseAssetReserve,
 		maxBaseAssetReserve,
-		baseAssetAmountWithAmm.gt(ZERO) ? longSpread : shortSpread,
+		loadedLong ? longSpread : shortSpread,
 		maxTargetSpread
 	);
-
-	if (baseAssetAmountWithAmm.gt(ZERO)) {
-		longSpread *= inventorySpreadScale;
-	} else if (baseAssetAmountWithAmm.lt(ZERO)) {
-		shortSpread *= inventorySpreadScale;
-	}
-	spreadTerms.maxTargetSpread = maxTargetSpread;
+	scaleLoaded(inventorySpreadScale);
 	spreadTerms.inventorySpreadScale = inventorySpreadScale;
 	spreadTerms.longSpreadwInvScale = longSpread;
 	spreadTerms.shortSpreadwInvScale = shortSpread;
 
+	// 4: x lambda(q): leverage scale vs fee cushion, loaded side only; both
+	// sides x 10 when the fee cushion is empty.
 	const MAX_SPREAD_SCALE = 10;
-	if (totalFeeMinusDistributions.gt(ZERO)) {
+	const feeCushionEmpty = totalFeeMinusDistributions.lte(ZERO);
+	if (feeCushionEmpty) {
+		longSpread *= MAX_SPREAD_SCALE;
+		shortSpread *= MAX_SPREAD_SCALE;
+	} else {
 		const effectiveLeverage = calculateEffectiveLeverage(
 			baseSpread,
 			quoteAssetReserve,
@@ -1138,31 +1393,36 @@ export function calculateSpreadBN(
 			totalFeeMinusDistributions
 		);
 		spreadTerms.effectiveLeverage = effectiveLeverage;
-
-		const spreadScale = Math.min(MAX_SPREAD_SCALE, 1 + effectiveLeverage);
-		spreadTerms.effectiveLeverageCapped = spreadScale;
-
-		if (baseAssetAmountWithAmm.gt(ZERO)) {
-			longSpread *= spreadScale;
-			longSpread = Math.floor(longSpread);
-		} else {
-			shortSpread *= spreadScale;
-			shortSpread = Math.floor(shortSpread);
-		}
-	} else {
-		longSpread *= MAX_SPREAD_SCALE;
-		shortSpread *= MAX_SPREAD_SCALE;
+		// The multiplier itself is computed in integers in the program's order
+		// (`calculate_spread_leverage_scale`), so rounding matches exactly.
+		const netBaseAssetValue = quoteAssetReserve
+			.sub(terminalQuoteAssetReserve)
+			.mul(pegMultiplier)
+			.div(AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO);
+		const localBaseAssetValue = baseAssetAmountWithAmm
+			.mul(reservePrice)
+			.div(AMM_TO_QUOTE_PRECISION_RATIO.mul(PRICE_PRECISION));
+		const leverageInt = BN.max(ZERO, localBaseAssetValue.sub(netBaseAssetValue))
+			.mul(BID_ASK_SPREAD_PRECISION)
+			.div(BN.max(ZERO, totalFeeMinusDistributions).add(ONE));
+		const leverageScale = BN.min(
+			BID_ASK_SPREAD_PRECISION.muln(MAX_SPREAD_SCALE),
+			BID_ASK_SPREAD_PRECISION.add(leverageInt).add(ONE)
+		);
+		spreadTerms.effectiveLeverageCapped =
+			leverageScale.toNumber() / BID_ASK_SPREAD_PRECISION.toNumber();
+		scaleLoadedInt(leverageScale);
 	}
-
 	spreadTerms.longSpreadwEL = longSpread;
 	spreadTerms.shortSpreadwEL = shortSpread;
 
+	// 5: + r: revenue retreat, full on the loaded side, half on the other.
 	if (
 		netRevenueSinceLastFunding.lt(
 			DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT
 		)
 	) {
-		const maxRetreat = maxTargetSpread / 10;
+		const maxRetreat = Math.floor(maxTargetSpread / 10);
 		let revenueRetreatAmount = maxRetreat;
 		if (
 			netRevenueSinceLastFunding.gte(
@@ -1179,91 +1439,84 @@ export function calculateSpreadBN(
 		}
 
 		const halfRevenueRetreatAmount = Math.floor(revenueRetreatAmount / 2);
+		const directionalRetreat = revenueRetreatAmount - halfRevenueRetreatAmount;
 
 		spreadTerms.revenueRetreatAmount = revenueRetreatAmount;
 		spreadTerms.halfRevenueRetreatAmount = halfRevenueRetreatAmount;
 
-		if (baseAssetAmountWithAmm.gt(ZERO)) {
+		if (loadedLong) {
 			longSpread += revenueRetreatAmount;
 			shortSpread += halfRevenueRetreatAmount;
-		} else if (baseAssetAmountWithAmm.lt(ZERO)) {
+			steeringLong += directionalRetreat;
+		} else if (loadedShort) {
 			longSpread += halfRevenueRetreatAmount;
 			shortSpread += revenueRetreatAmount;
+			steeringShort += directionalRetreat;
 		} else {
 			longSpread += halfRevenueRetreatAmount;
 			shortSpread += halfRevenueRetreatAmount;
 		}
 	}
-
 	spreadTerms.longSpreadwRevRetreat = longSpread;
 	spreadTerms.shortSpreadwRevRetreat = shortSpread;
 
-	// funding bias: w_pay = min(w_max, (w_0 * σ(q) * λ(q) + r(q)) * β(f)).
-	// β multiplies the fully built paying side only, selected by sign(q)
-	// (the same side σ widens); the max-spread cap below still bounds it.
-	// β = 1 when the vAMM receives.
+	// 6: x beta(f): funding bias on the loaded side while the vAMM pays funding.
 	const fundingBiasScale = calculateSpreadFundingBiasScale(
 		baseAssetAmountWithAmm,
 		last24HAvgFundingRate,
 		lastFundingOracleTwap,
 		fundingBiasSensitivity
 	);
-	const spreadPrecision = BID_ASK_SPREAD_PRECISION.toNumber();
-	if (fundingBiasScale > spreadPrecision) {
-		if (baseAssetAmountWithAmm.gt(ZERO)) {
-			longSpread = Math.floor(
-				(longSpread * fundingBiasScale) / spreadPrecision
-			);
-		} else if (baseAssetAmountWithAmm.lt(ZERO)) {
-			shortSpread = Math.floor(
-				(shortSpread * fundingBiasScale) / spreadPrecision
-			);
-		}
+	if (fundingBiasScale > precision) {
+		scaleLoaded(fundingBiasScale / precision);
 	}
 	spreadTerms.fundingBiasScale = fundingBiasScale;
 	spreadTerms.longSpreadwFundingBias = longSpread;
 	spreadTerms.shortSpreadwFundingBias = shortSpread;
 
+	// 7: x tilt gain: ammInventorySpreadAdjustment, floored at max(base/2, v).
 	if (ammInventorySpreadAdjustment < 0) {
 		const adjustment = Math.abs(ammInventorySpreadAdjustment);
-
-		const shrunkLong = Math.max(
-			1,
-			longSpread - Math.floor((longSpread * adjustment) / 100)
+		longSpread = Math.max(
+			floorLong,
+			Math.max(1, longSpread - Math.floor((longSpread * adjustment) / 100))
 		);
-		const shrunkShort = Math.max(
-			1,
-			shortSpread - Math.floor((shortSpread * adjustment) / 100)
+		shortSpread = Math.max(
+			floorShort,
+			Math.max(1, shortSpread - Math.floor((shortSpread * adjustment) / 100))
 		);
-
-		longSpread = Math.max(longVolSpread.toNumber(), shrunkLong);
-		shortSpread = Math.max(shortVolSpread.toNumber(), shrunkShort);
 	} else if (ammInventorySpreadAdjustment > 0) {
 		const adjustment = ammInventorySpreadAdjustment;
-
-		const grownLong = Math.max(
-			1,
-			longSpread + Math.ceil((longSpread * adjustment) / 100)
+		longSpread = Math.max(
+			floorLong,
+			Math.max(1, longSpread + Math.ceil((longSpread * adjustment) / 100))
 		);
-		const grownShort = Math.max(
-			1,
-			shortSpread + Math.ceil((shortSpread * adjustment) / 100)
+		shortSpread = Math.max(
+			floorShort,
+			Math.max(1, shortSpread + Math.ceil((shortSpread * adjustment) / 100))
 		);
-
-		longSpread = Math.max(longVolSpread.toNumber(), grownLong);
-		shortSpread = Math.max(shortVolSpread.toNumber(), grownShort);
 	}
 
+	// 8: cap at the dynamic ceiling. With an empty fee cushion the program scales
+	// proportionally; otherwise it caps by safety priority: divergence, then the
+	// base/vol floor, then steering, then the remaining padding.
 	const totalSpread = longSpread + shortSpread;
-	if (totalSpread > maxTargetSpread) {
-		if (longSpread > shortSpread) {
-			longSpread = Math.ceil((longSpread * maxTargetSpread) / totalSpread);
-			shortSpread = Math.floor(maxTargetSpread - longSpread);
-		} else {
-			shortSpread = Math.ceil((shortSpread * maxTargetSpread) / totalSpread);
-			longSpread = Math.floor(maxTargetSpread - shortSpread);
-		}
+	let capped: [number, number];
+	if (feeCushionEmpty) {
+		capped = capToMaxSpread(longSpread, shortSpread, maxTargetSpread);
+	} else {
+		capped = capSpreadOrdered(
+			[longSpread, shortSpread],
+			[
+				rawDivergence < 0 ? Math.abs(rawDivergence) : 0,
+				rawDivergence > 0 ? rawDivergence : 0,
+			],
+			[floorLong, floorShort],
+			[steeringLong, steeringShort],
+			maxTargetSpread
+		);
 	}
+	[longSpread, shortSpread] = capped;
 
 	spreadTerms.totalSpread = totalSpread;
 	spreadTerms.longSpread = longSpread;
@@ -1272,6 +1525,71 @@ export function calculateSpreadBN(
 		return spreadTerms;
 	}
 	return [longSpread, shortSpread];
+}
+
+/**
+ * Proportionally squeezes a two-sided spread whose total exceeds `maxSpread`, mirroring the
+ * program's `cap_to_max_spread`: the larger side is scaled to `maxSpread / total` with a ceiling
+ * division and the smaller side takes the remainder.
+ */
+function capToMaxSpread(
+	longSpread: number,
+	shortSpread: number,
+	maxSpread: number
+): [number, number] {
+	const total = longSpread + shortSpread;
+	if (total <= maxSpread) {
+		return [longSpread, shortSpread];
+	}
+	if (longSpread > shortSpread) {
+		const long = Math.ceil((longSpread * maxSpread) / total);
+		return [long, maxSpread - long];
+	}
+	const short = Math.ceil((shortSpread * maxSpread) / total);
+	return [maxSpread - short, short];
+}
+
+/**
+ * Caps a spread pair by safety priority, mirroring the program's
+ * `SpreadComponents::from_raw(..).cap_total_ordered(..)`. The raw pair is split into
+ * divergence, base/vol floor, steering and residual padding (each claiming what remains after
+ * the one before), and when the total is over `maxTotal` each layer gets room in that order; a
+ * layer that only partly fits is squeezed within itself and later layers get nothing.
+ */
+function capSpreadOrdered(
+	raw: [number, number],
+	divergenceRequired: [number, number],
+	floorRequired: [number, number],
+	steeringAdded: [number, number],
+	maxTotal: number
+): [number, number] {
+	if (raw[0] + raw[1] <= maxTotal) {
+		return raw;
+	}
+	const layers: [number, number][] = [];
+	let remainingRaw: [number, number] = [raw[0], raw[1]];
+	for (const required of [divergenceRequired, floorRequired, steeringAdded]) {
+		const layer: [number, number] = [
+			Math.min(remainingRaw[0], required[0]),
+			Math.min(remainingRaw[1], required[1]),
+		];
+		layers.push(layer);
+		remainingRaw = [remainingRaw[0] - layer[0], remainingRaw[1] - layer[1]];
+	}
+	layers.push(remainingRaw);
+
+	const result: [number, number] = [0, 0];
+	let remaining = maxTotal;
+	for (const layer of layers) {
+		if (remaining === 0) {
+			break;
+		}
+		const allocated = capToMaxSpread(layer[0], layer[1], remaining);
+		result[0] += allocated[0];
+		result[1] += allocated[1];
+		remaining -= allocated[0] + allocated[1];
+	}
+	return result;
 }
 
 /**
@@ -1334,8 +1652,18 @@ export function calculateSpread(
 	// spread is maxed against. Short-circuiting on baseSpread == 0 made the SDK
 	// report a zero-width vAMM spread on markets configured with baseSpread 0,
 	// while the program was quoting an inventory-skewed spread of >10%.
+	if (!reservePrice) {
+		reservePrice = calculatePrice(
+			amm.baseAssetReserve,
+			amm.quoteAssetReserve,
+			amm.pegMultiplier
+		);
+	}
+
 	if (amm.curveUpdateIntensity == 0) {
-		// integer division on chain: `base_spread.safe_div(2)`
+		// integer division on chain: `base_spread.safe_div(2)`. A market with
+		// curveUpdateIntensity 0 never repegs and quotes off its curve alone, so
+		// neither the oracle retreat nor the oracle guard applies.
 		const halfBaseSpread = Math.floor(amm.baseSpread / 2);
 		return applyAmmSpreadAdjustment(amm, halfBaseSpread, halfBaseSpread);
 	}
@@ -1343,14 +1671,6 @@ export function calculateSpread(
 	if (!oraclePriceData) {
 		throw new Error(
 			'calculateSpread: oraclePriceData is required when curveUpdateIntensity is nonzero'
-		);
-	}
-
-	if (!reservePrice) {
-		reservePrice = calculatePrice(
-			amm.baseAssetReserve,
-			amm.quoteAssetReserve,
-			amm.pegMultiplier
 		);
 	}
 
@@ -1398,72 +1718,196 @@ export function calculateSpread(
 		marketStats.lastFundingOracleTwap,
 		amm.fundingBiasSensitivity
 	);
-	return applyAmmSpreadAdjustment(amm, spreads[0], spreads[1]);
+	const [longSpread, shortSpread] = applyAmmSpreadAdjustment(
+		amm,
+		spreads[0],
+		spreads[1]
+	);
+	return applyOracleGuard(
+		longSpread,
+		shortSpread,
+		calculateReferencePriceOffsetForAmm(amm, marketStats, reservePrice),
+		reservePrice,
+		oraclePriceData.price
+	);
+}
+
+/**
+ * Keeps the final quote on the correct side of the oracle, mirroring the program's
+ * `apply_oracle_guard`: the bid at or below the oracle and the ask at or above it, so the AMM
+ * never quotes a price the market can immediately arbitrage against it. Only ever widens a
+ * spread.
+ *
+ * A side quotes at `reservePrice * (1 + s / 2)^2` for its signed composite spread `s`. With
+ * `r = sqrt(oracle / reservePrice)`, the bid needs `short >= offset + 2 * (1 - r)` and the ask
+ * needs `long >= 2 * (r - 1) - offset`; `r` is rounded down for the bid and up for the ask, and
+ * a binding requirement gets one extra unit for reserve rounding.
+ * @param longSpread Long (ask) spread, BID_ASK_SPREAD_PRECISION (1e6).
+ * @param shortSpread Short (bid) spread, BID_ASK_SPREAD_PRECISION (1e6).
+ * @param referencePriceOffset Reference price offset applied to both quotes, BID_ASK_SPREAD_PRECISION (1e6, signed).
+ * @param reservePrice AMM reserve price, PRICE_PRECISION (1e6).
+ * @param oraclePrice Oracle price the quotes must not cross, PRICE_PRECISION (1e6).
+ * @returns `[longSpread, shortSpread]` after the guard.
+ */
+export function applyOracleGuard(
+	longSpread: number,
+	shortSpread: number,
+	referencePriceOffset: number,
+	reservePrice: BN,
+	oraclePrice: BN
+): [number, number] {
+	if (oraclePrice.lte(ZERO) || reservePrice.lte(ZERO)) {
+		return [longSpread, shortSpread];
+	}
+
+	const numerator = oraclePrice
+		.mul(BID_ASK_SPREAD_PRECISION)
+		.mul(BID_ASK_SPREAD_PRECISION);
+	const scaledRatio = numerator.div(reservePrice);
+	const ratioIsExact = scaledRatio.mul(reservePrice).eq(numerator);
+	const rFloor = squareRootBN(scaledRatio);
+	const rIsExact = ratioIsExact && rFloor.mul(rFloor).eq(scaledRatio);
+	const rCeil = rIsExact ? rFloor : rFloor.add(ONE);
+
+	const precision = BID_ASK_SPREAD_PRECISION;
+	const offset = new BN(referencePriceOffset);
+	const withMargin = (requirement: BN) =>
+		requirement.gt(ZERO) ? requirement.add(ONE) : requirement;
+	// executed price, reservePrice * (1 + s/2)^2
+	const squaredMinShort = withMargin(offset.add(precision.sub(rFloor).muln(2)));
+	const squaredMinLong = withMargin(rCeil.sub(precision).muln(2).sub(offset));
+	// quoted price read by routing and the mark TWAP, reservePrice * (1 + s)
+	const linearNumerator = oraclePrice.mul(precision);
+	const linearFloor = linearNumerator.div(reservePrice);
+	const linearCeil = linearFloor.mul(reservePrice).eq(linearNumerator)
+		? linearFloor
+		: linearFloor.add(ONE);
+	const linearMinShort = precision.add(offset).sub(linearFloor);
+	const linearMinLong = linearCeil.sub(precision).sub(offset);
+	const minShort = BN.max(squaredMinShort, linearMinShort);
+	const minLong = BN.max(squaredMinLong, linearMinLong);
+
+	let long = longSpread;
+	let short = shortSpread;
+	if (minShort.gtn(short)) {
+		short = Math.max(
+			short,
+			Math.min(minShort.toNumber(), precision.toNumber() - long)
+		);
+	}
+	if (minLong.gtn(long)) {
+		long = Math.max(
+			long,
+			Math.min(minLong.toNumber(), precision.toNumber() - short)
+		);
+	}
+	return [long, short];
+}
+
+/**
+ * Computes the AMM's reference price offset from its state, mirroring the offset step of the
+ * program's `compute_quote_state`: zero unless `curveUpdateIntensity > 100`, otherwise
+ * `calculateReferencePriceOffset` on the inventory's share of average open liquidity after the
+ * configured deadband.
+ * @param amm AMM state.
+ * @param marketStats Market stats holding the premium inputs.
+ * @param reservePrice AMM reserve price, PRICE_PRECISION (1e6).
+ * @returns Reference price offset, BID_ASK_SPREAD_PRECISION (1e6, signed).
+ */
+export function calculateReferencePriceOffsetForAmm(
+	amm: AMM,
+	marketStats: MarketStats,
+	reservePrice: BN
+): number {
+	if (amm.curveUpdateIntensity <= 100) {
+		return 0;
+	}
+
+	// always allow 10 bps of price offset, up to a half of the market's max_spread
+	let maxOffset: number;
+	if (amm.curveUpdateIntensity >= 200) {
+		maxOffset = Math.max(Math.floor(amm.maxSpread / 2), 10_000);
+	} else {
+		maxOffset = Math.min(
+			Math.floor(amm.maxSpread / 2),
+			(PERCENTAGE_PRECISION.toNumber() / 10000) *
+				(amm.curveUpdateIntensity - 100)
+		);
+	}
+
+	const liquidityFraction =
+		calculateInventoryLiquidityRatioForReferencePriceOffset(
+			amm.baseAssetAmountWithAmm,
+			amm.baseAssetReserve,
+			amm.minBaseAssetReserve,
+			amm.maxBaseAssetReserve
+		);
+	const liquidityFractionSigned = liquidityFraction.mul(
+		sigNum(amm.baseAssetAmountWithAmm)
+	);
+
+	let liquidityFractionAfterDeadband = liquidityFractionSigned;
+	const deadbandPct = amm.referencePriceOffsetDeadbandPct
+		? PERCENTAGE_PRECISION.mul(
+				new BN(amm.referencePriceOffsetDeadbandPct as number)
+		  ).divn(100)
+		: ZERO;
+	if (!liquidityFractionAfterDeadband.eq(ZERO) && deadbandPct.gt(ZERO)) {
+		const abs = liquidityFractionAfterDeadband.abs();
+		if (abs.lte(deadbandPct)) {
+			liquidityFractionAfterDeadband = ZERO;
+		} else {
+			liquidityFractionAfterDeadband = liquidityFractionAfterDeadband.sub(
+				deadbandPct.mul(sigNum(liquidityFractionAfterDeadband))
+			);
+		}
+	}
+
+	return calculateReferencePriceOffset(
+		reservePrice,
+		marketStats.last24HAvgFundingRate,
+		liquidityFractionAfterDeadband,
+		marketStats.historicalOracleData.lastOraclePriceTwap5Min,
+		marketStats.lastMarkPriceTwap5Min,
+		marketStats.historicalOracleData.lastOraclePriceTwap,
+		marketStats.lastMarkPriceTwap,
+		maxOffset
+	).toNumber();
 }
 
 /**
  * Computes the AMM's one-sided bid and ask reserves — the reserves a long (ask side) or short
- * (bid side) trade would actually execute against — by combining `calculateSpread`'s
- * volatility/inventory spread with the reference-price-offset skew, mirroring
- * `calculate_spread_reserves` in `vlp/amm/math/amm_spread.rs`. The reference price offset
- * (enabled only when `curveUpdateIntensity > 100`) lets quotes drift up to `maxOffset` off the
- * raw reserve price when inventory skew and recent/24h funding premium agree in direction; a
- * configurable deadband (`referencePriceOffsetDeadbandPct`) suppresses small offsets, and when
- * the offset's sign flips versus the market's last stored offset, the change is smoothed in
- * gradually over elapsed time (`latestSlot - amm.lastSpreadUpdateSlot`, counted in 400ms periods) rather than snapping
- * instantly, to avoid quote whiplash.
+ * (bid side) trade would actually execute against — mirroring the program's
+ * `refresh_cached_spread_reserves`. The spreads come from `calculateSpread` (which already
+ * applies the oracle guard), and both sides are shifted by the reference price offset
+ * (`calculateReferencePriceOffsetForAmm`, active only when `curveUpdateIntensity > 100`).
  * @param amm AMM state to derive spread reserves for.
- * @param marketStats Market stats needed for spread and reference-price-offset calculation (including `lastReferencePriceOffset` for smoothing).
+ * @param marketStats Market stats needed for spread and reference-price-offset calculation.
  * @param mmOraclePriceData Current MM oracle price data, forwarded to `calculateSpread`.
  * @param now Current unix timestamp (seconds), forwarded to `calculateSpread`.
- * @param latestSlot Current slot; required for reference-price-offset smoothing to take effect (treated as 0 slots elapsed if omitted).
- * @param slotDurationState State slot-clock fields used to integrate smoothing across transitions.
  * @returns `[bidReserves, askReserves]`, each `{ baseAssetReserve, quoteAssetReserve }` in AMM_RESERVE_PRECISION (1e9).
  */
 export function calculateSpreadReserves(
 	amm: AMM,
 	marketStats: MarketStats,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
-	now?: BN,
-	latestSlot?: BN,
-	slotDurationState: SlotDurationState = {}
+	now?: BN
 ) {
+	// The signed composite spread s moves the quote reserve by exactly
+	// quote * s / (2 * BID_ASK_SPREAD_PRECISION); the base reserve follows from
+	// k = sqrtK^2. Mirrors `compute_spread_reserves_for_direction`.
 	function calculateSpreadReserve(
 		spread: number,
-		direction: PositionDirection,
 		amm: AMM
 	): {
 		baseAssetReserve: BN;
 		quoteAssetReserve: BN;
 	} {
-		if (spread === 0) {
-			return {
-				baseAssetReserve: amm.baseAssetReserve,
-				quoteAssetReserve: amm.quoteAssetReserve,
-			};
-		}
-		let spreadFraction = new BN(spread).div(new BN(2));
-
-		// make non-zero
-		if (spreadFraction.eq(ZERO)) {
-			spreadFraction = spread >= 0 ? new BN(1) : new BN(-1);
-		}
-
-		const quoteAssetReserveDelta = amm.quoteAssetReserve.div(
-			BID_ASK_SPREAD_PRECISION.div(spreadFraction)
-		);
-
-		let quoteAssetReserve;
-		if (quoteAssetReserveDelta.gte(ZERO)) {
-			quoteAssetReserve = amm.quoteAssetReserve.add(
-				quoteAssetReserveDelta.abs()
-			);
-		} else {
-			quoteAssetReserve = amm.quoteAssetReserve.sub(
-				quoteAssetReserveDelta.abs()
-			);
-		}
-
+		// BN division truncates toward zero, like the program's i128 division.
+		const quoteAssetReserveDelta = amm.quoteAssetReserve
+			.mul(new BN(spread))
+			.div(BID_ASK_SPREAD_PRECISION.muln(2));
+		const quoteAssetReserve = amm.quoteAssetReserve.add(quoteAssetReserveDelta);
 		const baseAssetReserve = amm.sqrtK.mul(amm.sqrtK).div(quoteAssetReserve);
 		return {
 			baseAssetReserve,
@@ -1477,61 +1921,13 @@ export function calculateSpreadReserves(
 		amm.pegMultiplier
 	);
 
-	// always allow 10 bps of price offset, up to a half of the market's max_spread
-	let maxOffset = 0;
-	let referencePriceOffset = 0;
-	if (amm.curveUpdateIntensity > 100) {
-		if (amm.curveUpdateIntensity == 200) {
-			maxOffset = Math.max(amm.maxSpread / 2, 10_000);
-		} else {
-			maxOffset = Math.min(
-				amm.maxSpread / 2,
-				(PERCENTAGE_PRECISION.toNumber() / 10000) *
-					(amm.curveUpdateIntensity - 100)
-			);
-		}
+	const referencePriceOffset = calculateReferencePriceOffsetForAmm(
+		amm,
+		marketStats,
+		reservePrice
+	);
 
-		const liquidityFraction =
-			calculateInventoryLiquidityRatioForReferencePriceOffset(
-				amm.baseAssetAmountWithAmm,
-				amm.baseAssetReserve,
-				amm.minBaseAssetReserve,
-				amm.maxBaseAssetReserve
-			);
-		const liquidityFractionSigned = liquidityFraction.mul(
-			sigNum(amm.baseAssetAmountWithAmm)
-		);
-
-		let liquidityFractionAfterDeadband = liquidityFractionSigned;
-		const deadbandPct = amm.referencePriceOffsetDeadbandPct
-			? PERCENTAGE_PRECISION.mul(
-					new BN(amm.referencePriceOffsetDeadbandPct as number)
-			  ).divn(100)
-			: ZERO;
-		if (!liquidityFractionAfterDeadband.eq(ZERO) && deadbandPct.gt(ZERO)) {
-			const abs = liquidityFractionAfterDeadband.abs();
-			if (abs.lte(deadbandPct)) {
-				liquidityFractionAfterDeadband = ZERO;
-			} else {
-				liquidityFractionAfterDeadband = liquidityFractionAfterDeadband.sub(
-					deadbandPct.mul(sigNum(liquidityFractionAfterDeadband))
-				);
-			}
-		}
-
-		referencePriceOffset = calculateReferencePriceOffset(
-			reservePrice,
-			marketStats.last24HAvgFundingRate,
-			liquidityFractionAfterDeadband,
-			marketStats.historicalOracleData.lastOraclePriceTwap5Min,
-			marketStats.lastMarkPriceTwap5Min,
-			marketStats.historicalOracleData.lastOraclePriceTwap,
-			marketStats.lastMarkPriceTwap,
-			maxOffset
-		).toNumber();
-	}
-
-	let [longSpread, shortSpread] = calculateSpread(
+	const [longSpread, shortSpread] = calculateSpread(
 		amm,
 		marketStats,
 		mmOraclePriceData,
@@ -1539,53 +1935,39 @@ export function calculateSpreadReserves(
 		reservePrice
 	);
 
-	const lastReferencePriceOffset = marketStats.lastReferencePriceOffset;
-	const doReferencePricOffsetSmooth =
-		Math.sign(referencePriceOffset) !== Math.sign(lastReferencePriceOffset) &&
-		amm.curveUpdateIntensity > 100;
-
-	if (doReferencePricOffsetSmooth) {
-		// mirror the program: elapsed milliseconds measured from
-		// lastSpreadUpdateSlot, times the per-400ms budget prorated by that
-		// elapsed time. Counting whole periods would floor to zero for any gap
-		// under 400ms and pin the step to the minimum.
-		const elapsedMs = latestSlot
-			? elapsedMillis(
-					slotDurationState,
-					amm.lastSpreadUpdateSlot,
-					latestSlot
-			  ).toNumber()
-			: 0;
-		const budget = Math.trunc((elapsedMs * 1000) / MILLIS_UNIT.toNumber());
-		const fullOffsetDelta = referencePriceOffset - lastReferencePriceOffset;
-		const raw = Math.trunc(Math.min(Math.abs(fullOffsetDelta), budget) / 10);
-		const maxAllowed =
-			Math.abs(lastReferencePriceOffset) || Math.abs(referencePriceOffset);
-
-		const magnitude = Math.min(Math.max(raw, 10), maxAllowed);
-		const referencePriceDelta = Math.sign(fullOffsetDelta) * magnitude;
-
-		referencePriceOffset = lastReferencePriceOffset + referencePriceDelta;
-
-		if (referencePriceDelta < 0) {
-			longSpread += Math.abs(referencePriceDelta);
-			shortSpread += Math.abs(referencePriceOffset);
-		} else {
-			shortSpread += Math.abs(referencePriceDelta);
-			longSpread += Math.abs(referencePriceOffset);
-		}
-	}
-
-	const askReserves = calculateSpreadReserve(
+	let askReserves = calculateSpreadReserve(
 		longSpread + referencePriceOffset,
-		PositionDirection.LONG,
 		amm
 	);
-	const bidReserves = calculateSpreadReserve(
+	let bidReserves = calculateSpreadReserve(
 		-shortSpread + referencePriceOffset,
-		PositionDirection.SHORT,
 		amm
 	);
+
+	// With no reference offset the program clamps asks to at least and bids to
+	// at most the reserve price.
+	if (referencePriceOffset === 0) {
+		askReserves = {
+			baseAssetReserve: BN.min(
+				askReserves.baseAssetReserve,
+				amm.baseAssetReserve
+			),
+			quoteAssetReserve: BN.max(
+				askReserves.quoteAssetReserve,
+				amm.quoteAssetReserve
+			),
+		};
+		bidReserves = {
+			baseAssetReserve: BN.max(
+				bidReserves.baseAssetReserve,
+				amm.baseAssetReserve
+			),
+			quoteAssetReserve: BN.min(
+				bidReserves.quoteAssetReserve,
+				amm.quoteAssetReserve
+			),
+		};
+	}
 
 	return [bidReserves, askReserves];
 }

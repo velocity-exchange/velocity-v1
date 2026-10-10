@@ -14,7 +14,7 @@ use velocity_rs::{
     TransactionBuilder, VelocityClient, Wallet,
 };
 
-const VELOCITY_CLIENT: OnceCell<VelocityClient> = OnceCell::const_new();
+static VELOCITY_CLIENT: OnceCell<VelocityClient> = OnceCell::const_new();
 
 async fn velocity_client() -> VelocityClient {
     VELOCITY_CLIENT
@@ -72,9 +72,8 @@ async fn titan_swap_exact_in_usdc_to_sol() {
         .spot_market_config_by_index(token_out.index())
         .unwrap();
 
-    let in_token_account = Wallet::derive_associated_token_address(&wallet.authority(), &in_market);
-    let out_token_account =
-        Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
+    let in_token_account = Wallet::derive_associated_token_address(wallet.authority(), in_market);
+    let out_token_account = Wallet::derive_associated_token_address(wallet.authority(), out_market);
 
     let tx = TransactionBuilder::new(
         client.program_data(),
@@ -84,8 +83,8 @@ async fn titan_swap_exact_in_usdc_to_sol() {
     )
     .titan_swap(
         titan_swap_info,
-        &in_market,
-        &out_market,
+        in_market,
+        out_market,
         &in_token_account,
         &out_token_account,
         None,
@@ -96,14 +95,11 @@ async fn titan_swap_exact_in_usdc_to_sol() {
     let result = client.simulate_tx(tx).await;
     dbg!(&result);
     let err = result.expect("sim ok").err;
-    match err {
-        Some(err) => {
-            assert_eq!(
-                err,
-                TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
-            )
-        }
-        None => assert!(true),
+    if let Some(err) = err {
+        assert_eq!(
+            err,
+            TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
+        )
     }
 }
 
@@ -147,9 +143,8 @@ async fn titan_swap_exact_in_usdc_jto() {
         .await
         .expect("got titan swap ixs");
 
-    let in_token_account = Wallet::derive_associated_token_address(&wallet.authority(), &in_market);
-    let out_token_account =
-        Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
+    let in_token_account = Wallet::derive_associated_token_address(wallet.authority(), in_market);
+    let out_token_account = Wallet::derive_associated_token_address(wallet.authority(), out_market);
 
     let tx = TransactionBuilder::new(
         client.program_data(),
@@ -159,8 +154,8 @@ async fn titan_swap_exact_in_usdc_jto() {
     )
     .titan_swap(
         titan_swap_info,
-        &in_market,
-        &out_market,
+        in_market,
+        out_market,
         &in_token_account,
         &out_token_account,
         None,
@@ -171,13 +166,10 @@ async fn titan_swap_exact_in_usdc_jto() {
     let result = client.simulate_tx(tx).await;
     dbg!(&result);
     let err = result.expect("sim ok").err;
-    match err {
-        Some(err) => {
-            assert_eq!(
-                err,
-                TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
-            )
-        }
-        None => assert!(true),
+    if let Some(err) = err {
+        assert_eq!(
+            err,
+            TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
+        )
     }
 }

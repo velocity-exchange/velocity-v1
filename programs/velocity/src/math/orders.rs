@@ -559,7 +559,9 @@ pub fn order_satisfies_trigger_condition(order: &Order, oracle_price: u64) -> Ve
     match order.trigger_condition {
         OrderTriggerCondition::Above => Ok(oracle_price > order.trigger_price),
         OrderTriggerCondition::Below => Ok(oracle_price < order.trigger_price),
-        _ => Err(print_error!(ErrorCode::InvalidTriggerOrderCondition)()),
+        OrderTriggerCondition::TriggeredAbove | OrderTriggerCondition::TriggeredBelow => {
+            Err(print_error!(ErrorCode::InvalidTriggerOrderCondition)())
+        }
     }
 }
 
@@ -609,7 +611,7 @@ pub fn is_order_position_reducing(
         PositionDirection::Short if position_base_asset_amount > 0 => {
             order_base_asset_amount <= position_base_asset_amount.unsigned_abs()
         }
-        _ => false,
+        PositionDirection::Long | PositionDirection::Short => false,
     })
 }
 

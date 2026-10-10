@@ -156,6 +156,8 @@ jobs:
             # velocity program source (drives fmt-clippy + unit-tests)
             program:
               - 'programs/**'
+              - 'crates/**'
+              - 'idls/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'Anchor.toml'
@@ -233,8 +235,14 @@ jobs:
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
       - name: Cargo fmt
         run: cargo +${{ env.RUST_NIGHTLY_TOOLCHAIN }} fmt -- --check
+      # Every program crate, tests included, in each velocity flavor `build-sbf.sh` builds. The
+      # default run is mainnet. The others are the anchor-test flavor `bun run program:build`
+      # compiles and the devnet flavor, where cfg-gated code differs from mainnet.
       - name: Cargo clippy
-        run: cargo clippy -p velocity
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
+          cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,isolated-position,vlp-hedge -- -D warnings
   unit-tests:
     name: Unit tests
     needs: changes
@@ -558,7 +566,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           profile: minimal
-          components: rustfmt
+          components: rustfmt, clippy
           override: true
       # The stable rustfmt above stays: velocity-rs's build.rs shells out to the
       # default-toolchain rustfmt when regenerating velocity_idl.rs. The nightly
@@ -593,6 +601,10 @@ jobs:
       # packages/sdk/src/idl/velocity.json; the velocity program crate is compiled as a host lib path-dep.
       - name: cargo check rust workspace
         run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+      # Lints every target with the live tests compiled in. The live tests need RPC credentials to
+      # run, but compiling them catches imports or helpers that the default build sees as unused.
+      - name: cargo clippy rust workspace
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests -- -D warnings
       # build.rs just regenerated velocity_idl.rs from the canonical IDL; a diff
       # means the committed copy is stale. External (git-dep) consumers may build
       # without regenerating — e.g. from a read-only or vendored source dir — so
@@ -837,7 +849,7 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: 'thin'
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
         # Clean any restored SBF artifacts first — building incrementally on top
-        # of them can emit a .so with wrong offsets (see CLAUDE.md). The program
+        # of them can emit a .so with wrong offsets (see docs/agents/build.md). The program
         # cache reuses the *final* .so on a hit; on a miss we always build fresh.
         run: |
           rm -rf target/sbpf*-solana-solana target/deploy
@@ -980,6 +992,53 @@ jobs:
         env:
           RUST_LOG: solana_runtime::message_processor::stable_log=info
         run: bash test-scripts/run-vault-tests.sh --skip-build
+  router-svm-tests:
+    name: Revenue router svm tests
+    needs: changes
+    if: ${{ needs.changes.outputs.program == 'true' && needs.changes.outputs.version_only != 'true' }}
+    runs-on: ubicloud
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          profile: minimal
+          override: true
+      - name: Install Rust nightly (rustfmt only)
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY_TOOLCHAIN }}
+          profile: minimal
+          components: rustfmt
+      - name: Cache build artefacts
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          cache-on-failure: 'true'
+          # Only the host-built svm-tests target; the SBF target is never reused
+          # (same corruption hazard as anchor-tests).
+          workspaces: programs/protocol-revenue-router/svm-tests
+
+      - uses: ./.github/actions/setup-solana/
+
+      - name: Cargo fmt (svm-tests)
+        run: cargo +${{ env.RUST_NIGHTLY_TOOLCHAIN }} fmt --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml --all -- --check
+
+      # The test flavor drops the mainnet init gate, which the tests do not sign for.
+      - name: Build router program
+        env:
+          CARGO_PROFILE_RELEASE_LTO: 'thin'
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+        run: |
+          rm -rf target/sbpf*-solana-solana target/deploy
+          bash deploy-scripts/build-sbf.sh test protocol-revenue-router
+
+      # Loads the vendored svm-tests/fixtures/dfx_redemption.so; a missing
+      # fixture fails the suite.
+      - name: Run router svm tests
+        run: cargo test --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml --locked
   verify-sdk-configs:
     name: Verify SDK Configs
     # Live-RPC SDK tests (tests/ci needs MAINNET/DEVNET_RPC_ENDPOINT). Not a PR
@@ -1155,6 +1214,7 @@ jobs:
       - rust-workspace-check
       - anchor-tests
       - vault-tests
+      - router-svm-tests
       - verified-build
       - docker-images-ts
       - docker-images-rust

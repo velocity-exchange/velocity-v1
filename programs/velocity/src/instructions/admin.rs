@@ -202,28 +202,68 @@ fn name_is_reserved_quote(name: &[u8; 32]) -> bool {
     }
 }
 
+/// Arguments to `initialize_spot_market`.
+///
+/// Named rather than positional: twenty-one arguments, mostly `u32`, with
+/// adjacent same-typed pairs like `initial_asset_weight` and
+/// `maintenance_asset_weight`. Transposed positionally, a pair compiles and
+/// lists a market with the wrong risk profile. Named fields make it a compile
+/// error. Borsh is still positional, so adding a field needs a new instruction.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
+pub struct InitializeSpotMarketArgs {
+    pub optimal_utilization: u32,
+    pub optimal_borrow_rate: u32,
+    pub max_borrow_rate: u32,
+    /// precision: X/200, so 1 is 0.5%. 0 disables the floor.
+    pub min_borrow_rate: u8,
+    pub oracle_source: OracleSource,
+    pub initial_asset_weight: u32,
+    pub maintenance_asset_weight: u32,
+    pub initial_liability_weight: u32,
+    pub maintenance_liability_weight: u32,
+    pub imf_factor: u32,
+    pub liquidator_fee: u32,
+    pub if_liquidation_fee: u32,
+    pub active_status: bool,
+    pub asset_tier: AssetTier,
+    pub scale_initial_asset_weight_start: u64,
+    pub withdraw_guard_threshold: u64,
+    pub order_tick_size: u64,
+    pub order_step_size: u64,
+    pub if_total_factor: u32,
+    /// precision: token mint precision. 0 is no limit.
+    pub max_token_deposits: u64,
+    pub name: [u8; 32],
+}
+
 pub fn handle_initialize_spot_market(
     ctx: Context<InitializeSpotMarket>,
-    optimal_utilization: u32,
-    optimal_borrow_rate: u32,
-    max_borrow_rate: u32,
-    oracle_source: OracleSource,
-    initial_asset_weight: u32,
-    maintenance_asset_weight: u32,
-    initial_liability_weight: u32,
-    maintenance_liability_weight: u32,
-    imf_factor: u32,
-    liquidator_fee: u32,
-    if_liquidation_fee: u32,
-    active_status: bool,
-    asset_tier: AssetTier,
-    scale_initial_asset_weight_start: u64,
-    withdraw_guard_threshold: u64,
-    order_tick_size: u64,
-    order_step_size: u64,
-    if_total_factor: u32,
-    name: [u8; 32],
+    args: InitializeSpotMarketArgs,
 ) -> Result<()> {
+    let InitializeSpotMarketArgs {
+        optimal_utilization,
+        optimal_borrow_rate,
+        max_borrow_rate,
+        min_borrow_rate,
+        oracle_source,
+        initial_asset_weight,
+        maintenance_asset_weight,
+        initial_liability_weight,
+        maintenance_liability_weight,
+        imf_factor,
+        liquidator_fee,
+        if_liquidation_fee,
+        active_status,
+        asset_tier,
+        scale_initial_asset_weight_start,
+        withdraw_guard_threshold,
+        order_tick_size,
+        order_step_size,
+        if_total_factor,
+        max_token_deposits,
+        name,
+    } = args;
+
     let mut state = ctx.accounts.state.load_mut()?;
     let spot_market_pubkey = ctx.accounts.spot_market.key();
 
@@ -253,7 +293,17 @@ pub fn handle_initialize_spot_market(
         &ctx.accounts.spot_market_mint,
     )?;
 
-    validate_borrow_rate(optimal_utilization, optimal_borrow_rate, max_borrow_rate, 0)?;
+    // `min_borrow_rate` is stored in X/200 units (1 => 0.5%) while the other
+    // three are PERCENTAGE_PRECISION, so it has to be scaled before they can be
+    // compared. `handle_update_spot_market_borrow_rate` does the same. Passing
+    // the raw value instead makes the check pass for any floor: 255 reads as
+    // 0.0255% rather than 127.5%.
+    validate_borrow_rate(
+        optimal_utilization,
+        optimal_borrow_rate,
+        max_borrow_rate,
+        (min_borrow_rate as u32).safe_mul((PERCENTAGE_PRECISION / 200) as u32)?,
+    )?;
 
     let spot_market_index = get_then_update_id!(state, number_of_spot_markets);
 
@@ -405,7 +455,7 @@ pub fn handle_initialize_spot_market(
         max_borrow_rate,
         deposit_balance: 0,
         borrow_balance: 0,
-        max_token_deposits: 0,
+        max_token_deposits,
         deposit_token_twap: 0,
         borrow_token_twap: 0,
         utilization_twap: 0,
@@ -440,7 +490,7 @@ pub fn handle_initialize_spot_market(
         flash_loan_initial_token_amount: 0,
         total_swap_fee: 0,
         scale_initial_asset_weight_start,
-        min_borrow_rate: 0,
+        min_borrow_rate,
         token_program_flag: token_program,
         pool_id: 0,
         _padding_align_pfp: 0,
@@ -493,37 +543,80 @@ pub fn handle_update_spot_market_pool_id(
     Ok(())
 }
 
+/// Arguments to `initialize_perp_market`.
+///
+/// Named rather than positional: twenty-eight arguments with adjacent
+/// same-typed pairs that nothing cross-checks, so a transposition lists a
+/// market with the wrong risk profile and no error. Named fields make it a
+/// compile error. Borsh is still positional, so adding a field needs a new
+/// instruction.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
+pub struct InitializePerpMarketArgs {
+    pub market_index: u16,
+    pub amm_base_asset_reserve: u128,
+    pub amm_quote_asset_reserve: u128,
+    pub amm_periodicity: i64,
+    pub amm_peg_multiplier: u128,
+    pub oracle_source: OracleSource,
+    pub contract_tier: ContractTier,
+    pub margin_ratio_initial: u32,
+    pub margin_ratio_maintenance: u32,
+    pub liquidator_fee: u32,
+    pub if_liquidation_fee: u32,
+    pub imf_factor: u32,
+    pub active_status: bool,
+    pub base_spread: u32,
+    pub max_spread: u32,
+    pub max_open_interest: u128,
+    pub max_revenue_withdraw_per_period: u64,
+    pub quote_max_insurance: u64,
+    pub order_step_size: u64,
+    pub order_tick_size: u64,
+    pub min_order_size: u64,
+    pub concentration_coef_scale: u128,
+    pub curve_update_intensity: u8,
+    pub amm_jit_intensity: u8,
+    pub name: [u8; 32],
+    pub lp_pool_id: u8,
+    pub funding_clamp_threshold: u32,
+    pub funding_ramp_slope: u32,
+}
+
 pub fn handle_initialize_perp_market(
     ctx: Context<InitializePerpMarket>,
-    market_index: u16,
-    amm_base_asset_reserve: u128,
-    amm_quote_asset_reserve: u128,
-    amm_periodicity: i64,
-    amm_peg_multiplier: u128,
-    oracle_source: OracleSource,
-    contract_tier: ContractTier,
-    margin_ratio_initial: u32,
-    margin_ratio_maintenance: u32,
-    liquidator_fee: u32,
-    if_liquidation_fee: u32,
-    imf_factor: u32,
-    active_status: bool,
-    base_spread: u32,
-    max_spread: u32,
-    max_open_interest: u128,
-    max_revenue_withdraw_per_period: u64,
-    quote_max_insurance: u64,
-    order_step_size: u64,
-    order_tick_size: u64,
-    min_order_size: u64,
-    concentration_coef_scale: u128,
-    curve_update_intensity: u8,
-    amm_jit_intensity: u8,
-    name: [u8; 32],
-    lp_pool_id: u8,
-    funding_clamp_threshold: u32,
-    funding_ramp_slope: u32,
+    args: InitializePerpMarketArgs,
 ) -> Result<()> {
+    let InitializePerpMarketArgs {
+        market_index,
+        amm_base_asset_reserve,
+        amm_quote_asset_reserve,
+        amm_periodicity,
+        amm_peg_multiplier,
+        oracle_source,
+        contract_tier,
+        margin_ratio_initial,
+        margin_ratio_maintenance,
+        liquidator_fee,
+        if_liquidation_fee,
+        imf_factor,
+        active_status,
+        base_spread,
+        max_spread,
+        max_open_interest,
+        max_revenue_withdraw_per_period,
+        quote_max_insurance,
+        order_step_size,
+        order_tick_size,
+        min_order_size,
+        concentration_coef_scale,
+        curve_update_intensity,
+        amm_jit_intensity,
+        name,
+        lp_pool_id,
+        funding_clamp_threshold,
+        funding_ramp_slope,
+    } = args;
+
     msg!("perp market {}", market_index);
     let perp_market_pubkey = ctx.accounts.perp_market.to_account_info().key;
     let perp_market = &mut ctx.accounts.perp_market.load_init()?;
@@ -549,8 +642,13 @@ pub fn handle_initialize_perp_market(
         return Err(ErrorCode::InvalidInitialPeg.into());
     }
 
+    // (0, 100] is repeg / formulaic k intensity, (100, 200] is reference price
+    // offset intensity. Matches `handle_update_perp_market_curve_update_intensity`,
+    // which has always accepted the full range: capping init at 100 only forced
+    // every market that wanted an offset to ship a follow-up instruction to set
+    // the value it was listed with.
     validate!(
-        (0..=100).contains(&curve_update_intensity),
+        curve_update_intensity <= 200,
         ErrorCode::DefaultError,
         "invalid curve_update_intensity",
     )?;
@@ -2792,8 +2890,8 @@ fn validated_slot_duration_archive_update(
         .copied();
 
     validate!(
-        previous_slot.map_or(true, |slot| effective_slot >= slot)
-            && next_slot.map_or(true, |slot| effective_slot <= slot),
+        previous_slot.is_none_or(|slot| effective_slot >= slot)
+            && next_slot.is_none_or(|slot| effective_slot <= slot),
         ErrorCode::DefaultError,
         "IBRL transition slots are not monotonic"
     )?;
@@ -3659,7 +3757,6 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
             validity,
             clock.unix_timestamp,
             clock.slot,
-            state.slot_clock(),
         )?;
     }
 
@@ -5512,7 +5609,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
         let mint_ai = ctx
             .remaining_accounts
             .get(i + 1)
-            .ok_or_else(|| ErrorCode::DefaultError)?;
+            .ok_or(ErrorCode::DefaultError)?;
         require_keys_eq!(*mint_ai.owner, token_program_id, ErrorCode::DefaultError);
 
         // read current token amount (offset 64..72 in SPL token account layout)
@@ -5526,7 +5623,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
             let burn_accounts = token_interface::Burn {
                 mint: mint_ai.clone(),
                 from: target.clone(),
-                authority: ctx.accounts.velocity_signer.clone(),
+                authority: ctx.accounts.velocity_signer.to_account_info(),
             };
             let burn_ctx =
                 CpiContext::new_with_signer(token_program_id, burn_accounts, cpi_signers);
@@ -5537,7 +5634,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
         let close_accounts = token_interface::CloseAccount {
             account: target.clone(),
             destination: admin_ai.clone(),
-            authority: ctx.accounts.velocity_signer.clone(),
+            authority: ctx.accounts.velocity_signer.to_account_info(),
         };
         let close_ctx = CpiContext::new_with_signer(token_program_id, close_accounts, cpi_signers);
         token_interface::close_account(close_ctx)?;
@@ -5582,7 +5679,7 @@ pub struct ForceWipeAccountsDevnet<'info> {
     pub state: UncheckedAccount<'info>,
     /// CHECK: PDA seeded by [b"velocity_signer", nonce]. Verified by Token Program
     /// at CPI time when closing token vaults; ignored otherwise.
-    pub velocity_signer: AccountInfo<'info>,
+    pub velocity_signer: UncheckedAccount<'info>,
     pub token_program: Interface<'info, TokenInterface>,
     // Targets are passed via `remaining_accounts` so a single call can wipe
     // many accounts in one tx. Velocity-owned PDAs are drained; token-owned vaults
@@ -5694,6 +5791,8 @@ mod native_auth_tests {
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
+    // The native hot-key signer check is compiled out under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn mm_oracle_native_rejects_unauthorized_signer() {
         // Genuine state + market, but the signer is not the configured hot key.
@@ -5847,10 +5946,11 @@ mod native_auth_tests {
         assert_eq!(observed[0], 1_010_000, "first write must land at the cap");
         // Monotonic toward the target, and strictly moving until it arrives.
         for pair in observed.windows(2) {
-            assert!(pair[1] >= pair[0], "price moved backwards: {observed:?}");
+            assert!(pair[1] >= pair[0], "price moved backwards: {:?}", observed);
             assert!(
                 pair[0] == target || pair[1] > pair[0],
-                "price stalled before reaching the target: {observed:?}"
+                "price stalled before reaching the target: {:?}",
+                observed
             );
         }
         assert_eq!(
@@ -5860,7 +5960,8 @@ mod native_auth_tests {
         );
         assert!(
             observed.iter().all(|p| *p <= target),
-            "must never overshoot: {observed:?}"
+            "must never overshoot: {:?}",
+            observed
         );
     }
 
@@ -5874,10 +5975,11 @@ mod native_auth_tests {
 
         assert_eq!(observed[0], 990_000, "first write must land at the cap");
         for pair in observed.windows(2) {
-            assert!(pair[1] <= pair[0], "price moved backwards: {observed:?}");
+            assert!(pair[1] <= pair[0], "price moved backwards: {:?}", observed);
             assert!(
                 pair[0] == target || pair[1] < pair[0],
-                "price stalled before reaching the target: {observed:?}"
+                "price stalled before reaching the target: {:?}",
+                observed
             );
         }
         assert_eq!(*observed.last().unwrap(), target);
@@ -6396,6 +6498,8 @@ mod native_batch_tests {
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
+    // The native hot-key signer check is compiled out under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn batch_rejects_unauthorized_and_non_signing_hot_key() {
         // Two cases: the wrong key that signs, and the right key that does not.
@@ -6846,7 +6950,8 @@ mod native_batch_tests {
             let accounts = [market_info.clone(), signer, state_info];
             assert!(
                 update_mm_oracle(&accounts, &single_payload(price, 6), SLOT).is_err(),
-                "price {price} must be a hard error on opcode 0"
+                "price {} must be a hard error on opcode 0",
+                price
             );
             assert_eq!(read_stats(&market_info), initial);
         }
@@ -7167,7 +7272,7 @@ mod feature_gate_tests {
         // 8-byte discriminator + zeroed State, with the staging fields written at
         // their real offsets
         let mut data = vec![0u8; 8 + std::mem::size_of::<State>()];
-        data[..8].copy_from_slice(&State::DISCRIMINATOR);
+        data[..8].copy_from_slice(State::DISCRIMINATOR);
         let put_u16 = |d: &mut [u8], off: usize, v: u16| {
             d[8 + off..8 + off + 2].copy_from_slice(&v.to_le_bytes())
         };
@@ -7230,7 +7335,7 @@ mod feature_gate_tests {
         let owner = crate::id();
         let mut lamports = 1u64;
         let mut data = vec![0u8; 8 + std::mem::size_of::<State>()];
-        data[..8].copy_from_slice(&State::DISCRIMINATOR);
+        data[..8].copy_from_slice(State::DISCRIMINATOR);
         let put_u16 = |d: &mut [u8], off: usize, v: u16| {
             d[8 + off..8 + off + 2].copy_from_slice(&v.to_le_bytes())
         };
@@ -7272,7 +7377,7 @@ mod feature_gate_tests {
         let (key, _) = Pubkey::find_program_address(&[b"velocity_state"], &crate::id());
         let mut lamports = 1u64;
         let mut data = vec![0u8; 8 + std::mem::size_of::<State>()];
-        data[..8].copy_from_slice(&State::DISCRIMINATOR);
+        data[..8].copy_from_slice(State::DISCRIMINATOR);
         // stale legacy staging fields that must lose to the archive
         let base_off = 8 + std::mem::offset_of!(State, slot_duration_ms);
         data[base_off..base_off + 2].copy_from_slice(&300u16.to_le_bytes());

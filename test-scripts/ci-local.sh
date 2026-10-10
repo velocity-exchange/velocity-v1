@@ -3,7 +3,7 @@
 # pushing, without waiting for (or being able to trigger) the hosted runs.
 #
 # KEEP THIS FILE IN SYNC WITH .github/workflows/main.yml: when a gating job's
-# command changes there, mirror it here in the same change (see CLAUDE.md).
+# command changes there, mirror it here in the same change (see docs/agents/testing.md).
 #
 # Usage:
 #   bash test-scripts/ci-local.sh [tier] [output flags]
@@ -128,12 +128,15 @@ skip_check() {
 # + fuzz crates + velocity-rs examples, same nightly-rustfmt style CI enforces
 # across its fmt steps.
 run_check "rust fmt (all codebases)"  bun run fmt:rust:check
-run_check "cargo clippy -p velocity"  cargo clippy -p velocity
+run_check "cargo clippy (workspace)"  cargo clippy --workspace --all-targets -- -D warnings
+run_check "cargo clippy (anchor-test)" cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,anchor-test -- -D warnings
+run_check "cargo clippy (devnet)"    cargo clippy -p velocity --all-targets --no-default-features --features no-entrypoint,isolated-position,vlp-hedge -- -D warnings
 run_check "prettier"                  bun run prettify
 run_check "eslint"                    bun run lint
 
 # CI job: rust-workspace-check (static parts)
 run_check "rust workspace check"      cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+run_check "rust workspace clippy"    cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features rpc_tests -- -D warnings
 run_check "velocity_idl.rs in sync"   git diff --exit-code rust/velocity-rs/crates/src/velocity_idl.rs
 
 # Not a standalone CI job, but the anchor-tests build compiles this flavor;
@@ -170,7 +173,7 @@ else
   skip_check "unit tests" "--fast"
 fi
 
-# Integration suites (--full only). CI: anchor-tests, vault-tests, rust-workspace tests.
+# Integration suites (--full only). CI: anchor-tests, vault-tests, router-svm-tests, rust-workspace tests.
 
 if [ "$MODE" = "full" ]; then
   # SBF incremental cache corrupts across feature-flavor switches (e.g. a
@@ -180,6 +183,10 @@ if [ "$MODE" = "full" ]; then
   echo "==> cleaning SBF cache (flavor-poisoning guard)"
   rm -rf target/sbpf*-solana-solana target/deploy
 
+  run_check "router svm tests"         bash -c "
+    bash deploy-scripts/build-sbf.sh test protocol-revenue-router &&
+    cargo test --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml --locked
+  "
   run_check "anchor integration suite" bash test-scripts/run-anchor-tests.sh
   run_check "vault tests"              bash -c "
     bash test-scripts/run-vault-tests.sh --build-only &&
@@ -207,6 +214,7 @@ if [ "$MODE" = "full" ]; then
 else
   skip_check "anchor integration suite" "needs --full"
   skip_check "vault tests" "needs --full"
+  skip_check "router svm tests" "needs --full"
   skip_check "rust workspace tests" "needs --full"
 fi
 

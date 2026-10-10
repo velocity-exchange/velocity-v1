@@ -282,31 +282,25 @@ pub const MIN_MARGIN_RATIO: u32 = 125; // 80x leverage
 pub const MAX_BID_ASK_INVENTORY_SKEW_FACTOR: u64 = 10 * BID_ASK_SPREAD_PRECISION;
 
 // SPREAD (vlp/amm/math/spread.rs)
-/// Oracle confidence at or above this carries full weight in the vol spread;
-/// below it the contribution weight ramps continuously from 1/20 to full
-/// weight (PERCENTAGE_PRECISION, 25 bp).
-pub const SPREAD_CONF_FULL_WEIGHT_THRESHOLD: u64 = PERCENTAGE_PRECISION_U64 / 400;
-/// Denominator of the confidence contribution's starting weight below the
-/// full-weight threshold.
+/// Pyth Lazer confidence is floored at `price / LAZER_CONF_FLOOR_DIVISOR`
+/// (20 bp) when the update is posted.
+pub const LAZER_CONF_FLOOR_DIVISOR: i64 = 500;
+/// The Lazer confidence floor as a fraction of price (PERCENTAGE_PRECISION,
+/// 20 bp). Confidence at or below it carries no market information, so the
+/// vol spread counts only the excess over it at full weight.
+pub const LAZER_CONF_FLOOR_PCT: u64 = PERCENTAGE_PRECISION_U64 / LAZER_CONF_FLOOR_DIVISOR as u64;
+/// The vol spread counts the whole confidence at `1 / SPREAD_CONF_DISCOUNT_DIVISOR`
+/// weight, plus the excess over `LAZER_CONF_FLOOR_PCT` at full weight.
 pub const SPREAD_CONF_DISCOUNT_DIVISOR: u64 = 20;
 /// Divisor applied to the market's average std pct when it competes with
 /// the confidence for the vol spread base.
 pub const SPREAD_VOL_STD_DISCOUNT_DIVISOR: u128 = 4;
 /// The revenue retreat is capped at `max_spread` divided by this.
 pub const SPREAD_REVENUE_RETREAT_MAX_DIVISOR: u64 = 10;
-/// Reference-price-offset sign-transition smoothing: the budget for the
-/// pre-division step, calibrated per [`crate::math::time::Millis::UNIT`] (400ms)
-/// of elapsed time. `compute_quote_state` prorates it by the elapsed
-/// milliseconds, so the convergence rate per wall-clock second is the same at
-/// every slot duration and identical to the historical per-slot behavior at
-/// 400ms.
-pub const REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET: i128 = 1000;
-/// Reference-price-offset sign-transition smoothing: the capped delta is
-/// divided by this to get the per-refresh step.
-pub const REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR: i128 = 10;
-/// Reference-price-offset sign-transition smoothing: minimum per-refresh
-/// step, so a transition always makes progress.
-pub const REF_PRICE_OFFSET_SMOOTHING_MIN_STEP: i32 = 10;
+/// Inventory, as a fraction of the AMM's open liquidity
+/// (PERCENTAGE_PRECISION, 10%), at which the reference price offset reaches
+/// its maximum. Below it the offset grows linearly with inventory.
+pub const REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT: i128 = PERCENTAGE_PRECISION_I128 / 10;
 
 /// Maximum percent divergence from oracle price for bids/asks to be included in mark TWAP calculation.
 /// Bids more than this % below oracle and asks more than this % above oracle are filtered out.

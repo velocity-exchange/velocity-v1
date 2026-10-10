@@ -346,6 +346,12 @@ impl OracleMap {
         self.oraclemap.len()
     }
 
+    /// True when the `OracleMap` knows no oracles
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.oraclemap.is_empty()
+    }
+
     /// Returns true if the oraclemap has a Ws subscription for `market`
     pub fn is_subscribed(&self, market: &MarketId) -> bool {
         if let Some((oracle_pubkey, _oracle_source)) = self.oracle_by_market.get(market) {
@@ -533,7 +539,7 @@ async fn get_multi_account_data_with_fallback(
                     target: LOG_TARGET,
                     "failed to fetch oracle accounts: {err:?}"
                 );
-                return Err(err)?;
+                Err(err)?;
             }
         }
     }
@@ -567,7 +573,7 @@ async fn get_multi_account_data_with_fallback(
             }
             Err(err) => {
                 log::warn!("failed to fetch oracle account: {err:?}");
-                return Err(err)?;
+                Err(err)?;
             }
         }
     }
@@ -575,7 +581,7 @@ async fn get_multi_account_data_with_fallback(
     Ok((account_data, latest_slot))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rpc_tests"))]
 mod tests {
     use super::*;
     use crate::utils::{
@@ -599,7 +605,7 @@ mod tests {
             (MarketId::perp(0), SOL_PERP_ORACLE, OracleSource::PythLazer),
             (MarketId::spot(1), SOL_PERP_ORACLE, OracleSource::PythLazer),
         ];
-        let rpc = Arc::new(RpcClient::new(devnet_endpoint().into()));
+        let rpc = Arc::new(RpcClient::new(devnet_endpoint()));
         let pubsub = Arc::new(
             PubsubClient::new(&get_ws_url(&devnet_endpoint()).unwrap())
                 .await

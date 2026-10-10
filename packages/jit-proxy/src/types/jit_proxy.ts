@@ -8,7 +8,7 @@ export type JitProxy = {
 	address: 'J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ';
 	metadata: {
 		name: 'jitProxy';
-		version: '0.21.0';
+		version: '0.22.0';
 		spec: '0.1.0';
 		description: 'Created with Anchor';
 	};

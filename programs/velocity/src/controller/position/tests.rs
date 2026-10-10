@@ -776,7 +776,6 @@ fn amm_ref_price_decay_tail_test() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -867,7 +866,6 @@ fn amm_ref_price_decay_tail_test() {
             &mm_oracle_price_data,
             r,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -951,7 +949,6 @@ fn amm_ref_price_offset_decay_logic() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -1047,7 +1044,6 @@ fn amm_ref_price_offset_decay_logic() {
             &mm_oracle_price_data,
             r,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -1134,7 +1130,6 @@ fn amm_negative_ref_price_offset_decay_logic() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -1230,7 +1225,6 @@ fn amm_negative_ref_price_offset_decay_logic() {
             &mm_oracle_price_data,
             r,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -1323,7 +1317,6 @@ fn amm_perp_ref_offset() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -1385,7 +1378,6 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price_data,
             r,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -1398,8 +1390,8 @@ fn amm_perp_ref_offset() {
             perp_market.amm.reference_price_offset,
         )
         .unwrap();
-    assert_eq!(b, 7103317);
-    assert_eq!(a, 7110447);
+    assert_eq!(b, 7098190);
+    assert_eq!(a, 7105320);
     assert_eq!(
         perp_market
             .market_stats
@@ -1407,7 +1399,9 @@ fn amm_perp_ref_offset() {
             .last_oracle_price,
         7101600
     );
-    assert_eq!(perp_market.amm.reference_price_offset, 742);
+    // 40 base of inventory is a tiny share of the average open liquidity, so
+    // the inventory ramp gives a small offset (the full max needs 10%).
+    assert_eq!(perp_market.amm.reference_price_offset, 20);
     assert_eq!(perp_market.amm.max_spread, 90000);
 
     assert_eq!(r, 7101599);
@@ -1444,7 +1438,6 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price_data,
             reserve_price_mm_offset,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -1457,10 +1450,10 @@ fn amm_perp_ref_offset() {
             perp_market.amm.reference_price_offset,
         )
         .unwrap();
-    assert_eq!(perp_market.amm.reference_price_offset, 742);
+    assert_eq!(perp_market.amm.reference_price_offset, 20);
     assert_eq!(reserve_price_mm_offset, 7137107);
-    assert_eq!(b2, 7105896);
-    assert_eq!(a2, 7178937);
+    assert_eq!(b2, 7113197);
+    assert_eq!(a2, 7161330);
 
     // Uses the original oracle if the slot is old, ignoring MM oracle
     perp_market.market_stats.mm_oracle_price = mm_oracle_price_data.get_price() * 995 / 1000;
@@ -1486,7 +1479,6 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price,
             reserve_price_mm_offset_3,
             clock_slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -1500,8 +1492,8 @@ fn amm_perp_ref_offset() {
         )
         .unwrap();
     assert_eq!(reserve_price_mm_offset_3, r);
-    assert_eq!(b3, 7070543);
-    assert_eq!(a3, 7143221);
+    assert_eq!(b3, 7077808);
+    assert_eq!(a3, 7125701);
 }
 
 #[test]
@@ -2424,6 +2416,8 @@ fn close_short_with_quote_break_even_amount_more_than_quote_asset_amount() {
     assert_eq!(market.quote_break_even_amount_short, 0);
 }
 
+// The oracle fixtures are mainnet accounts, and anchor-test uses the non-mainnet oracle program ids.
+#[cfg(not(feature = "anchor-test"))]
 #[test]
 fn update_amm_near_boundary() {
     let perp_market_str = String::from("Ct8MLGv1N/cU6tVVkVpIHdjrXil5+Blo7M7no01SEzFkvCN2nSnelwDgOhciiAAAAAAAAAAAAAAAhHmUDY7/////////////G//kYQEAAAAAAAAAAAAAAFYkqoqx/v////////////92d53T2QAAAAAAAAAAAAAABdKhg6b+/////////////znMXLbsAAAAAAAAAAAAAAAAQGNSv8YBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAdZ5GkAAAAAAAAAAAAAAAAHWeRpAAAAAAAAAAAAAAAA9MyXjwMAAAAAAAAAAAAAAAPnvtIIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcrAhIXyj/miSKhmq+ZAQnLnYTprQBLTSAlrW9SkxRBkGVC/VBv8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADFNQk9OSy1QRVJQICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHG1E///////cbUT//////9xtRP//////zE8dGUAAAAAAAAAAAAAAAAAAAAAAAAAAADKmjsAAAAAZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKDQIAAAAAAOcZAAAAAAAAJgIAAO4CAAD4JAEA+CQBAMQJAADcBQAAAAAAABAnAAD5AQAA/AIAAAQAAQADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAABy8tIAAAAAADXo1AAAAAAAYEx0ZQAAAAAMdMkAAAAAANlw3AAAAAAAfUcAAAAAAAAfJgMAAAAAALUFAAAAAAAALSoG3VsBAABfrBuoCgAAAM4eyjoEAAAA9Ut0ZQAAAAAKzHcAAAAAABAOAAAAAAAAAPIFKgEAAAAAAAAAAAAAAAAAAAAAAAAADWpTAQAAAADcs90AAAAAAAAAAAABAAAAAAAAAAAAAAB4/t0AAAAAAAAAAAAAAAAAAwAAAAAAAAC9jdoAAAAAAOpW3gAAAAAAYEx0ZQAAAAAAAAAAAAAAAJqv1KwHSwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAijFS/rqUCwAAAAAAAAAAAItkFlgE1wsAAAAAAAAAAAAmkw8AAAAAAAAAAAAAAAAA9RDju89tCwAAAAAAAAAAAKLFAuNA6AsAAAAAAAAAAAARngrEsLULAAAAAAAAAAAAXB3DAAAAAAAAAAAAAAAAAGPs4cMEwQsAAAAAAAAAAAAAZLSrLxYAAAAAAAAAAAAAVtci7jkAAAAAAAAAAAAAAIsRNG42AAAAAAAAAAAAAAADejoEDQAAAAAAAAAAAAAAwY+XFgAAAAAAAAAAAAAAAPem/w0AAAAAEgM0FAEAAAAAAAAAAAAAAAAAAAAAAAAAlBEAAKCGAQBkADIAZMgAAAAAAAAAAAAAAAAAAAAAAAA=");
@@ -2487,6 +2481,8 @@ fn update_amm_near_boundary() {
     let _cost = _update_amm(&mut perp_market, &mm_oracle_price_data, &state, now, slot).unwrap();
 }
 
+// The oracle fixtures are mainnet accounts, and anchor-test uses the non-mainnet oracle program ids.
+#[cfg(not(feature = "anchor-test"))]
 #[test]
 fn update_amm_near_boundary2() {
     let perp_market_str = String::from("Ct8MLGv1N/cU6tVVkVpIHdjrXil5+Blo7M7no01SEzFkvCN2nSnelwDqjJbciAAAAAAAAAAAAAAANiZLB47/////////////Ut/uyv7//////////////802zJqt/v/////////////PSTYa2wAAAAAAAAAAAAAAtPcalqL+/////////////xvHbwvuAAAAAAAAAAAAAAAAQGNSv8YBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAdZ5GkAAAAAAAAAAAAAAAAHWeRpAAAAAAAAAAAAAAAAsdCdkgMAAAAAAAAAAAAAAEFTL9MIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcrAhIXyj/miSKhmq+ZAQnLnYTprQBLTSAlrW9SkxRBkGVC/VBv8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADFNQk9OSy1QRVJQICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHG1E///////cbUT//////9xtRP//////zE8dGUAAAAAAAAAAAAAAAAAAAAAAAAAAADKmjsAAAAAZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB0DQIAAAAAAOcZAAAAAAAAJgIAAO4CAAD4JAEA+CQBAMQJAADcBQAAAAAAABAnAAACAgAAHAMAAAQAAQADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAA7tdQAAAAAAJ3u2wAAAAAA/nF0ZQAAAACjQssAAAAAANMn3gAAAAAAiNUHAAAAAAB3gQEAAAAAAGsEAAAAAAAA/9iJIUQBAAB7ga9oBQAAAADrzocBAAAAxXF0ZQAAAAAKzHcAAAAAABAOAAAAAAAAAPIFKgEAAAAAAAAAAAAAAAAAAAAAAAAACvtTAQAAAAAwy9sAAAAAAAAAAAABAAAAAAAAAAAAAAAgCNwAAAAAAAAAAAAAAAAAAQAAAAAAAAC5SdoAAAAAAMNc2wAAAAAA/nF0ZQAAAAAAAAAAAAAAAJqv1KwHSwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQVzu/0lsCwAAAAAAAAAAAGtL2KwarwsAAAAAAAAAAAAmkw8AAAAAAAAAAAAAAAAAh0UwNc5GCwAAAAAAAAAAABJELnqdvwsAAAAAAAAAAABQGDkJgo0LAAAAAAAAAAAAva/NAAAAAAAAAAAAAAAAADWAeRF3mAsAAAAAAAAAAAAAILPh4xYAAAAAAAAAAAAAlcI8NjoAAAAAAAAAAAAAAHfxTbM2AAAAAAAAAAAAAAAA8z1QCQAAAAAAAAAAAAAAwY+XFgAAAAAAAAAAAAAAANCUB4YJ4QoAAAAAAAAAAAAwTxbPqEQMAAAAAAAAAAAAFy1IP0FvCwAAAAAAAAAAADxP890SrAsAAAAAAAAAAADAjwAOAAAAAA98N2D9////AAAAAAAAAAAAAAAAAAAAAOlM////////wI8ADgAAAACUEQAAoIYBALV+AQDrBwAAAAAAAGQAMgBkyAAAAAAAAA==");
@@ -2546,6 +2542,8 @@ fn update_amm_near_boundary2() {
     assert_eq!(cost, 14770380639); // full-tfmd repeg budget: no protocol floor post-isolation
 }
 
+// The oracle fixtures are mainnet accounts, and anchor-test uses the non-mainnet oracle program ids.
+#[cfg(not(feature = "anchor-test"))]
 #[test]
 fn recenter_amm_1() {
     let perp_market_str: String = String::from("Ct8MLGv1N/cU6tVVkVpIHdjrXil5+Blo7M7no01SEzFkvCN2nSnelwDqjJbciAAAAAAAAAAAAAAANiZLB47/////////////Ut/uyv7//////////////802zJqt/v/////////////PSTYa2wAAAAAAAAAAAAAAtPcalqL+/////////////xvHbwvuAAAAAAAAAAAAAAAAQGNSv8YBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAdZ5GkAAAAAAAAAAAAAAAAHWeRpAAAAAAAAAAAAAAAAsdCdkgMAAAAAAAAAAAAAAEFTL9MIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcrAhIXyj/miSKhmq+ZAQnLnYTprQBLTSAlrW9SkxRBkGVC/VBv8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADFNQk9OSy1QRVJQICAgICAgICAgICAgICAgICAgICAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHG1E///////cbUT//////9xtRP//////zE8dGUAAAAAAAAAAAAAAAAAAAAAAAAAAADKmjsAAAAAZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB0DQIAAAAAAOcZAAAAAAAAJgIAAO4CAAD4JAEA+CQBAMQJAADcBQAAAAAAABAnAAACAgAAHAMAAAQAAgADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAA7tdQAAAAAAJ3u2wAAAAAA/nF0ZQAAAACjQssAAAAAANMn3gAAAAAAiNUHAAAAAAB3gQEAAAAAAGsEAAAAAAAA/9iJIUQBAAB7ga9oBQAAAADrzocBAAAAxXF0ZQAAAAAKzHcAAAAAABAOAAAAAAAAAPIFKgEAAAAAAAAAAAAAAAAAAAAAAAAACvtTAQAAAAAwy9sAAAAAAAAAAAABAAAAAAAAAAAAAAAgCNwAAAAAAAAAAAAAAAAAAQAAAAAAAAC5SdoAAAAAAMNc2wAAAAAA/nF0ZQAAAAAAAAAAAAAAAJqv1KwHSwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQVzu/0lsCwAAAAAAAAAAAGtL2KwarwsAAAAAAAAAAAAmkw8AAAAAAAAAAAAAAAAAh0UwNc5GCwAAAAAAAAAAABJELnqdvwsAAAAAAAAAAABQGDkJgo0LAAAAAAAAAAAAva/NAAAAAAAAAAAAAAAAADWAeRF3mAsAAAAAAAAAAAAAILPh4xYAAAAAAAAAAAAAlcI8NjoAAAAAAAAAAAAAAHfxTbM2AAAAAAAAAAAAAAAA8z1QCQAAAAAAAAAAAAAAwY+XFgAAAAAAAAAAAAAAANCUB4YJ4QoAAAAAAAAAAAAwTxbPqEQMAAAAAAAAAAAAFy1IP0FvCwAAAAAAAAAAADxP890SrAsAAAAAAAAAAADAjwAOAAAAAA98N2D9////AAAAAAAAAAAAAAAAAAAAAOlM////////wI8ADgAAAACUEQAAoIYBALV+AQDrBwAAAAAAAGQAMgBkyAAAAAAAAA==");

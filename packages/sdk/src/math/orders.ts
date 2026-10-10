@@ -34,6 +34,7 @@ import {
 	calculateMaxBaseAssetAmountFillable,
 	calculateMaxBaseAssetAmountToTrade,
 	calculateUpdatedAMM,
+	getKUpdateGate,
 } from './amm';
 import { calculateSizePremiumLiabilityWeight } from './margin';
 
@@ -257,7 +258,11 @@ export function calculateBaseAssetAmountForAmmToFulfill(
 	);
 	let baseAssetAmount;
 
-	const updatedAMM = calculateUpdatedAMM(market.amm, mmOraclePriceData);
+	const updatedAMM = calculateUpdatedAMM(
+		market.amm,
+		mmOraclePriceData,
+		getKUpdateGate(market)
+	);
 	if (limitPrice !== undefined) {
 		baseAssetAmount = calculateBaseAssetAmountToFillUpToLimitPrice(
 			order,

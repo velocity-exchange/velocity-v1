@@ -53,7 +53,7 @@
 #                   Mirrors test-scripts/ci-local.sh -- the SBF incremental cache
 #                   poisons across feature-flavor switches and the resulting .so
 #                   dies at entry with "Access violation in unknown section"
-#                   (see CLAUDE.md).
+#                   (see docs/agents/build.md).
 #   --out DIR       Bundle staging dir (default: fuzz/dist/bundle).
 #                   Requires --native/--zigbuild: the containerized path does not
 #                   forward it to the inner invocation, so it would be ignored.
@@ -424,7 +424,7 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
     # build; the image runs as root so we chown the outputs back to the host user.
     # The named volumes are keyed to the image TAG: a platform-tools bump changes
     # rustc, and a cache populated by the previous toolchain is exactly the
-    # "Access violation in unknown section" class CLAUDE.md documents. Docker
+    # "Access violation in unknown section" class docs/agents/build.md documents. Docker
     # creates a new volume on first use, so a bump self-heals rather than
     # poisoning. (Orphaned older volumes are harmless; `docker volume rm` to
     # reclaim.)

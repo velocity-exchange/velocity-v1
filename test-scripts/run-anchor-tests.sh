@@ -150,8 +150,10 @@ test_files=(
   # TODO BROKEN ^^
 	builderCodes.ts
   decodeUser.ts
+  initMarket.ts
   scaleOrders.ts
   admin.ts
+  bidAskTwapCrank.ts
   accountExtension.ts
   assetTier.ts
   cancelAllOrders.ts
@@ -218,6 +220,7 @@ test_files=(
   switchOracle.ts
   triggerOrders.ts
   transferPerpPosition.ts
+  transferPerpPositionStaleBorrow.ts
   userAccount.ts
   userDelegate.ts
   userOrderId.ts

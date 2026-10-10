@@ -16,10 +16,7 @@ use {
         },
         error::ErrorCode,
         get_then_update_id,
-        ids::{
-            lighthouse, marinade_mainnet, WHITELISTED_EXTERNAL_DEPOSITORS,
-            WHITELISTED_SWAP_PROGRAMS,
-        },
+        ids::{lighthouse, marinade_mainnet, WHITELISTED_SWAP_PROGRAMS},
         instructions::{
             constraints::*,
             optional_accounts::{
@@ -234,11 +231,12 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
         )?;
     }
 
+    #[cfg(feature = "mainnet-beta")]
     let authority_is_signer = ctx.accounts.authority.is_signer;
     #[cfg(feature = "mainnet-beta")]
     if !authority_is_signer && ctx.accounts.authority.key() != ctx.accounts.payer.key() {
         validate!(
-            WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.payer.key()),
+            crate::ids::WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.payer.key()),
             ErrorCode::DefaultError,
             "Authority is not the payer"
         )?;
@@ -279,11 +277,12 @@ pub fn handle_initialize_user_stats<'c: 'info, 'info>(
         ErrorCode::MaxNumberOfUsers
     )?;
 
+    #[cfg(feature = "mainnet-beta")]
     let authority_is_signer = ctx.accounts.authority.is_signer;
     #[cfg(feature = "mainnet-beta")]
     if !authority_is_signer && ctx.accounts.authority.key() != ctx.accounts.payer.key() {
         validate!(
-            WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.payer.key()),
+            crate::ids::WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.payer.key()),
             ErrorCode::DefaultError,
             "Authority is not the payer"
         )?;
@@ -731,7 +730,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
     {
         #[cfg(feature = "mainnet-beta")]
         validate!(
-            WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.authority.key()),
+            crate::ids::WHITELISTED_EXTERNAL_DEPOSITORS.contains(&ctx.accounts.authority.key()),
             ErrorCode::DefaultError,
             "Not whitelisted external depositor"
         )?;
@@ -2328,6 +2327,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
             to_existing_base_asset_amount,
         )
     };
+
+    // OtterSec #135: this handler cranks no spot market, so un-booked borrow
+    // interest is missing from both checks below. Both accounts are gated, as on
+    // the perp fill this transfer mirrors.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(from_user, &spot_market_map, now)?;
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(to_user, &spot_market_map, now)?;
 
     let from_user_margin_context = MarginContext::standard(MarginRequirementType::Maintenance);
 
@@ -4997,6 +5002,10 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         // Spread reserves are cached on the AMM, refreshed by
         // `crate::vlp::amm::math::spread::update_amm_quote_state` on each crank/fill.
     }
+
+    // OtterSec #135: this handler cranks no spot market, so un-booked borrow
+    // interest would be missing from the check below.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(&user, &spot_market_map, now)?;
 
     let user_margin_context = MarginContext::standard(MarginRequirementType::Maintenance);
 

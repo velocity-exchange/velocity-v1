@@ -276,7 +276,6 @@ pub fn block_operation(
     let OracleStatus {
         oracle_validity,
         mark_too_divergent: is_oracle_mark_too_divergent,
-        oracle_reserve_price_spread_pct: _,
         ..
     } = get_oracle_status(
         market,
@@ -473,7 +472,9 @@ pub fn oracle_validity(
     let is_stale_for_amm_low_risk =
         match DelayOverride::from_low_risk(oracle_low_risk_slot_delay_override) {
             DelayOverride::Fixed(threshold) => oracle_age > threshold,
-            _ => oracle_age > valid_oracle_guard_rails.stale_for_amm_ms(),
+            DelayOverride::Never | DelayOverride::Unset => {
+                oracle_age > valid_oracle_guard_rails.stale_for_amm_ms()
+            }
         };
 
     let is_stale_for_margin = if matches!(oracle_source, OracleSource::PythLazerStableCoin) {

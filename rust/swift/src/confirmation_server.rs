@@ -1,4 +1,5 @@
 use {
+    crate::util::shutdown,
     axum::{
         extract::{Query, State},
         http::Method,
@@ -40,9 +41,31 @@ pub async fn fallback(uri: axum::http::Uri) -> impl axum::response::IntoResponse
     (axum::http::StatusCode::NOT_FOUND, format!("No route {uri}"))
 }
 
+/// Drain-only readiness.
+///
+/// Deliberately *not* the health route: that gates on RPC, redis, market subs
+/// and the slot subscriber, every one of which each replica shares with the
+/// others. Wiring a deep check to a readiness probe means one dependency blip
+/// marks every replica NotReady at once and the load balancer is left with no
+/// targets — a harder outage than the degraded service it was avoiding. The
+/// health route stays the deep check, for liveness and alerting.
+pub async fn readiness_check() -> impl axum::response::IntoResponse {
+    if shutdown::is_serving() {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+    }
+}
+
 pub async fn health_check<T: Clone + AsyncCommands>(
     State(server_params): State<ServerParams<T>>,
 ) -> impl axum::response::IntoResponse {
+    // Checked first: once SIGTERM lands this pod must fail readiness so the load
+    // balancer stops routing to it, whatever its dependencies say.
+    if !shutdown::is_serving() {
+        log::info!(target: "server", "Health check reporting draining");
+        return (axum::http::StatusCode::PRECONDITION_FAILED, "serving=false");
+    }
     match server_params.redis_pool.clone().ping().await {
         Ok(()) => (axum::http::StatusCode::OK, "ok"),
         Err(_) => {
@@ -88,7 +111,7 @@ pub async fn get_all_hashes<T: Clone + AsyncCommands>(
     };
 
     let mut map = serde_json::Map::new();
-    for (mut key, value) in keys.into_iter().zip(values.into_iter()) {
+    for (mut key, value) in keys.into_iter().zip(values) {
         if let Some(value) = value {
             if key.starts_with(HASH_KEY_PREFIX) {
                 key.drain(0..HASH_KEY_PREFIX.len());
@@ -189,6 +212,7 @@ pub async fn start_server() {
     let app = Router::new()
         .fallback(fallback)
         .route("/confirmation/health", get(health_check))
+        .route("/confirmation/ready", get(readiness_check))
         .route("/confirmation/hash-status", get(get_hash_status))
         .route("/confirmation/hashes", get(get_all_hashes))
         .with_state(state)
@@ -218,7 +242,7 @@ pub async fn start_server() {
     );
 
     let _ = tokio::join!(
-        axum::serve(listener, app),
+        axum::serve(listener, app).with_graceful_shutdown(shutdown::closing()),
         axum::serve(listener_metrics, metrics_app)
     );
 }
@@ -369,7 +393,7 @@ mod tests {
         let body_str = from_utf8(&body_bytes).unwrap();
         let response: HashesResponse = serde_json::from_str(body_str).unwrap();
 
-        assert!(response.hashes.len() > 0);
+        assert!(!response.hashes.is_empty());
         // The `swift-hashes::` prefix must be stripped from returned keys, and
         // the value preserved.
         assert_eq!(

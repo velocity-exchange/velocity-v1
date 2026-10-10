@@ -105,7 +105,6 @@ export class DLOBSubscriber {
 	 * @param includeVamm whether to synthesize and merge in vAMM liquidity (perp markets only) via `getVammL2Generator`; defaults to `false`. Throws if `true` and `fallbackL2Generators` is non-empty.
 	 * @param numVammOrders number of vAMM levels to generate per side when `includeVamm` is true; defaults to `depth`
 	 * @param fallbackL2Generators additional non-DLOB liquidity sources to merge in, e.g. `getVammL2Generator`'s output; defaults to `[]`
-	 * @param latestSlot latest observed slot (e.g. from a `SlotSubscriber`), used for more accurate vAMM spread-reserve quotes when `includeVamm` is true; optional
 	 * @returns the merged `L2OrderBook` (bids/asks with sizes, BASE_PRECISION 1e9, and prices, PRICE_PRECISION 1e6)
 	 * @throws if `marketName` doesn't resolve to a known market, if neither `marketName` nor both `marketIndex`/`marketType` are given, or if `includeVamm` is combined with a non-empty `fallbackL2Generators`
 	 */
@@ -117,7 +116,6 @@ export class DLOBSubscriber {
 		includeVamm = false,
 		numVammOrders,
 		fallbackL2Generators = [],
-		latestSlot,
 	}: {
 		marketName?: string;
 		marketIndex?: number;
@@ -171,8 +169,6 @@ export class DLOBSubscriber {
 						topOfBookQuoteAmounts: isMajorPerpMarket(marketIndex)
 							? MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS
 							: DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
-						latestSlot,
-						slotDurationState: this.velocityClient.getStateAccount(),
 					}),
 				];
 			}

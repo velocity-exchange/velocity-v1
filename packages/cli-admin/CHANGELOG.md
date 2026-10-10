@@ -1,5 +1,46 @@
 # @velocity-exchange/admin-cli
 
+## 0.17.0
+
+### Minor Changes
+
+- [#522](https://github.com/velocity-exchange/velocity-v1/pull/522) [`6b2075b`](https://github.com/velocity-exchange/velocity-v1/commit/6b2075bfca5d85d045b7430da48999c982b6ca78) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Add `@velocity-exchange/revenue-router-sdk`, the client for the protocol revenue router program:
+  its IDL and types, the router config and redemption PDA helpers, and the `distribute`
+  instruction builder used by the protocol fee collector bot.
+
+  Add `velocity-admin router show|initialize|update-config|distribute` to manage the router.
+
+- [#528](https://github.com/velocity-exchange/velocity-v1/pull/528) [`9f0f160`](https://github.com/velocity-exchange/velocity-v1/commit/9f0f16009da2633bc82c23ec2b0ccaaa15824b77) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `show user [authority]`. It prints the authority's UserStats and, for each sub-account, the delegate, status flags, collateral, health, leverage, spot balances and perp positions. With `--multisig`, `--vault-index` picks the vault PDA used as the authority.
+
+### Patch Changes
+
+- [#528](https://github.com/velocity-exchange/velocity-v1/pull/528) [`ff8a593`](https://github.com/velocity-exchange/velocity-v1/commit/ff8a59322bcd54b0e1786ece88a3a42524e8d29a) Thanks [@0xahzam](https://github.com/0xahzam)! - `show perp-markets` now prints the AMM spread and inventory spread adjustments and the live long/short spreads, and uses the shared section layout.
+
+  `perp-market set-spread-adjustment` takes a market list (`0,1,4`) or `all` and writes every market in one transaction or proposal.
+
+- [#528](https://github.com/velocity-exchange/velocity-v1/pull/528) [`c690663`](https://github.com/velocity-exchange/velocity-v1/commit/c690663795719b3266fdf6a293855fe789fd7913) Thanks [@0xahzam](https://github.com/0xahzam)! - `initialize_spot_market` and `initialize_perp_market` take an args struct
+
+  The two init instructions now take a single `InitializeSpotMarketArgs` /
+  `InitializePerpMarketArgs` struct in place of twenty and twenty-eight positional
+  arguments, and the `_v2` instructions added alongside them are gone. Instruction
+  names, discriminators and account lists are unchanged, so the break is the
+  argument encoding: a client built from an older IDL fails to deserialize.
+
+  The spot struct carries `minBorrowRate` and `maxTokenDeposits`, which the
+  positional form hardcoded to 0, and init accepts `curveUpdateIntensity` up to 200. Both removed a follow-up instruction from a listing.
+
+  SDK: `getInitializeSpotMarketIx(args, mint, oracle, marketIndex?)` and
+  `getInitializePerpMarketIx(args, priceOracle)` take the struct and return one
+  instruction. `initializeSpotMarketV2`, `getInitializeSpotMarketV2Ix`,
+  `initializePerpMarketV2` and `getInitializePerpMarketV2Ix` are removed.
+  `AdminClient.initializeSpotMarket` and `initializePerpMarket` keep their
+  positional signatures as a convenience form and fill the struct, so callers of
+  those are unaffected, but they pass 0 for the two new spot fields.
+
+- Updated dependencies [[`6b2075b`](https://github.com/velocity-exchange/velocity-v1/commit/6b2075bfca5d85d045b7430da48999c982b6ca78), [`c690663`](https://github.com/velocity-exchange/velocity-v1/commit/c690663795719b3266fdf6a293855fe789fd7913), [`98c6416`](https://github.com/velocity-exchange/velocity-v1/commit/98c6416402f7cd3a8328a07589088aaba9d6be8e), [`c003e38`](https://github.com/velocity-exchange/velocity-v1/commit/c003e3815eb68b1ebe5f538361d5f6ead6a104fe)]:
+  - @velocity-exchange/revenue-router-sdk@0.2.0
+  - @velocity-exchange/sdk@0.26.0
+
 ## 0.16.0
 
 ### Minor Changes

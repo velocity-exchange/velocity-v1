@@ -296,6 +296,15 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
 
         drop(spot_market);
 
+        // OtterSec #135: same shape as a withdraw. Cross releases collateral, and
+        // only the quote market is cranked above, so the account's other borrow
+        // markets would be valued through a stale index.
+        crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+            user,
+            spot_market_map,
+            now,
+        )?;
+
         if let Some(_user_stats) = user_stats {
             user.meets_transfer_isolated_position_deposit_margin_requirement(
                 perp_market_map,

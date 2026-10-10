@@ -56,6 +56,10 @@ mod get_auction_duration {
 }
 
 mod update_perp_auction_params {
+    // Most tests here are compiled out under anchor-test, which leaves their imports and helpers
+    // unused in that build.
+    #![cfg_attr(feature = "anchor-test", allow(unused_imports, dead_code))]
+
     use crate::{
         state::{
             order_params::PostOnlyParam,
@@ -66,6 +70,8 @@ mod update_perp_auction_params {
         PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_U64,
     };
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_extreme_sanitize_oracle_order() {
         let oracle_price = 145 * PRICE_PRECISION_I64;
@@ -169,6 +175,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after3.auction_duration, Some(58));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_orders_oracle() {
         let oracle_price = 100 * PRICE_PRECISION_I64;
@@ -493,6 +501,8 @@ mod update_perp_auction_params {
         assert_eq!(sanitized, false);
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_orders_limit() {
         let oracle_price = 100 * PRICE_PRECISION_I64;
@@ -620,6 +630,8 @@ mod update_perp_auction_params {
         assert_eq!(sanitized, true);
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_extreme_sanitize_oracle_order_huge_market_prem() {
         let oracle_price = 145 * PRICE_PRECISION_I64;
@@ -677,6 +689,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.auction_duration, Some(42));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_sanitize_limit() {
         let oracle_price = 100 * PRICE_PRECISION_I64;
@@ -859,6 +873,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.auction_duration, Some(126));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_sanitize_oracle_limit() {
         let oracle_price = 100 * PRICE_PRECISION_I64;
@@ -1021,6 +1037,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.oracle_price_offset, Some(-199003));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_market_sanitize() {
         let oracle_price = 99 * PRICE_PRECISION_I64;
@@ -1135,6 +1153,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.auction_duration, Some(102));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_oracle_market_sanitize() {
         let oracle_price = 99 * PRICE_PRECISION_I64;
@@ -1231,6 +1251,8 @@ mod update_perp_auction_params {
         assert_eq!(sanitized, false,);
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_market_sanatize_no_auction_params() {
         let oracle_price = 99 * PRICE_PRECISION_I64;
@@ -1386,6 +1408,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_after.auction_duration, Some(88));
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_oracle_market_sanitize_no_auction_params() {
         let oracle_price = 99 * PRICE_PRECISION_I64;
@@ -1479,13 +1503,15 @@ mod update_perp_auction_params {
         // test sanitize laxing on stale/mismatched mark/oracle twap timestamps
 
         // not too late, should be the same
-        market_stats
+        let mut lagging_market = perp_market;
+        lagging_market
+            .market_stats
             .historical_oracle_data
             .last_oracle_price_twap_ts = 17000000;
-        market_stats.last_mark_price_twap_ts = 17000000 - 55;
+        lagging_market.market_stats.last_mark_price_twap_ts = 17000000 - 55;
         let mut order_params_after_2 = order_params_before;
         order_params_after_2
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(&lagging_market, oracle_price, false)
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1500,36 +1526,43 @@ mod update_perp_auction_params {
             order_params_after_2.auction_duration.unwrap()
         );
 
+        // A speculative market whose twaps can't be trusted starts from 1% of the bid twap instead
+        // (`get_perp_baseline_start_price_offset`), minus the same 25 bps buffer.
+        let uncertain_start_price =
+            perp_market.market_stats.last_bid_price_twap as i64 / 100 - oracle_price / 400;
+
         // test sanitize skip on stale/mismatched mark/oracle twap timestamps
-        market_stats
+        let mut stale_market = perp_market;
+        stale_market
+            .market_stats
             .historical_oracle_data
             .last_oracle_price_twap_ts = 17000000;
-        market_stats.last_mark_price_twap_ts = 17000000 - 65;
+        stale_market.market_stats.last_mark_price_twap_ts = 17000000 - 65;
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(&stale_market, oracle_price, false)
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
-            17238 - oracle_price / 400
+            uncertain_start_price
         );
         assert_eq!(order_params_after.auction_end_price.unwrap(), 1207026);
 
         // test sanitize skip on low volume
-        market_stats
+        let mut quiet_market = perp_market;
+        quiet_market
+            .market_stats
             .historical_oracle_data
             .last_oracle_price_twap_ts = 17000000;
-        market_stats.last_mark_price_twap_ts = market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_ts;
-        market_stats.volume_24h = 183953; // under $1
+        quiet_market.market_stats.last_mark_price_twap_ts = 17000000;
+        quiet_market.market_stats.volume_24h = 183953; // under $1
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(&quiet_market, oracle_price, false)
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
-            17238 - oracle_price / 400
+            uncertain_start_price
         );
         assert_eq!(order_params_after.auction_end_price.unwrap(), 1207026);
 
@@ -1623,6 +1656,8 @@ mod update_perp_auction_params {
         perp_market
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_tail_market_duration_floor_uses_requested_spread() {
         // HYPE scenario: signed-msg market order on a tail-tier market with a
@@ -1682,6 +1717,8 @@ mod update_perp_auction_params {
         assert_eq!(order_params_before, order_params_after);
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_tail_market_short_end_mutation_floors_on_sanitized_spread() {
         // Short with a fat-finger end far below baseline: sanitization pulls
@@ -1726,6 +1763,8 @@ mod update_perp_auction_params {
         );
     }
 
+    // update_perp_auction_params returns early under anchor-test.
+    #[cfg(not(feature = "anchor-test"))]
     #[test]
     fn test_signed_msg_duration_grace_boundary() {
         // Grace: the floor only overrides a signed-msg duration when it
@@ -2484,6 +2523,57 @@ mod get_perp_baseline_start_price_offset {
         )
         .unwrap();
         assert_eq!(offset, 2 * PRICE_PRECISION_I64); // raw 4%, cut to 2%
+    }
+
+    /// The 50bps selector. `slow` is 0 (bid TWAP at oracle) and `fast` is the premium, so
+    /// `abs_diff` is the premium and the threshold is `(ORACLE_TWAP + premium) / 200`. 502_512 is
+    /// the largest premium still inside it: blend, which with zero spreads is `min(0, premium)` = 0.
+    /// One unit more leaves the band and the fast offset passes through alone.
+    #[test]
+    fn switches_from_the_blend_to_the_fast_offset_past_50bps_of_divergence() {
+        let inside = market_with_mark_5min_premium(ContractTier::A, 502_512);
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&inside, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, 0);
+
+        let outside = market_with_mark_5min_premium(ContractTier::A, 502_513);
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&outside, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, 502_513);
+    }
+
+    /// Inside the band the slow offset is blended with fractions of the AMM's cached per-side
+    /// spreads, each scaled by the slow mark TWAP / (PRICE_PRECISION * 10). The SDK parity test
+    /// (`packages/sdk/tests/sdkParity/auctionStartOffsetClamp.test.ts`) asserts the same numbers.
+    #[test]
+    fn blends_the_slow_offset_with_the_amm_spreads_inside_the_band() {
+        // long: slow 200_000, fast 300_000, abs_diff 100_000 <= 100_300_000 / 200.
+        // frac_long = 1000 * 100_200_000 / 1e7 = 10_020.
+        // frac_short = 2000 * 100_200_000 / 1e7 = 20_040.
+        // min(200_000 + 10_020, 300_000 - 20_040) = 210_020.
+        let mut long = market_with_mark_5min_premium(ContractTier::A, 300_000);
+        long.market_stats.last_bid_price_twap = (ORACLE_TWAP + 200_000) as u64;
+        long.amm.long_spread = 1000;
+        long.amm.short_spread = 2000;
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&long, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, 210_020);
+
+        // short: slow -200_000, fast -300_000, abs_diff 100_000 <= 99_700_000 / 200.
+        // frac_long = 1000 * 99_800_000 / 1e7 = 9_980.
+        // frac_short = 2000 * 99_800_000 / 1e7 = 19_960.
+        // max(-200_000 - 19_960, -300_000 + 9_980) = -219_960.
+        let mut short = market_with_mark_5min_premium(ContractTier::A, -300_000);
+        short.market_stats.last_ask_price_twap = (ORACLE_TWAP - 200_000) as u64;
+        short.amm.long_spread = 1000;
+        short.amm.short_spread = 2000;
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&short, PositionDirection::Short)
+                .unwrap();
+        assert_eq!(offset, -219_960);
     }
 
     /// The end offset derives from the start offset with a `min`/`max` against it, so clamping the

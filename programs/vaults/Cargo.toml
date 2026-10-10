@@ -27,3 +27,6 @@ velocity-macros = { path = "../../crates/velocity-macros" }
 
 [dev-dependencies]
 base64 = "0.13.0"
+
+[lints]
+workspace = true

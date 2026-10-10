@@ -11,6 +11,7 @@ import {
 	calculatePrice,
 	calculateUpdatedAMMSpreadReserves,
 	calculateUpdatedAMM,
+	getKUpdateGate,
 } from './amm';
 import {
 	calculateSizeDiscountAssetWeight,
@@ -30,7 +31,6 @@ import {
 } from '../constants/numericConstants';
 import { getTokenAmount } from './spotBalance';
 import { assert } from '../assert/assert';
-import { SlotDurationState } from './time';
 
 /**
  * Calculates the perp market's current mark (mid) price from its raw (non-spread) AMM reserves,
@@ -46,7 +46,11 @@ export function calculateReservePrice(
 	market: PerpMarketAccount,
 	mmOraclePriceData?: MMOraclePriceData
 ): BN {
-	const newAmm = calculateUpdatedAMM(market.amm, mmOraclePriceData);
+	const newAmm = calculateUpdatedAMM(
+		market.amm,
+		mmOraclePriceData,
+		getKUpdateGate(market)
+	);
 	return calculatePrice(
 		newAmm.baseAssetReserve,
 		newAmm.quoteAssetReserve,
@@ -61,15 +65,11 @@ export function calculateReservePrice(
  * @param {PerpMarketAccount} market - The perp market account
  * @param {MMOraclePriceData} [mmOraclePriceData] - Current MM oracle price data, used both to
  *   repeg the AMM and to compute the spread reserves
- * @param {BN} [latestSlot] - Current slot, used for reference-price-offset smoothing in the
- *   spread calculation
  * @return {BN} The bid price, PRICE_PRECISION (1e6)
  */
 export function calculateBidPrice(
 	market: PerpMarketAccount,
-	mmOraclePriceData?: MMOraclePriceData,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	mmOraclePriceData?: MMOraclePriceData
 ): BN {
 	const { baseAssetReserve, quoteAssetReserve, newPeg } =
 		calculateUpdatedAMMSpreadReserves(
@@ -77,8 +77,7 @@ export function calculateBidPrice(
 			market.marketStats,
 			PositionDirection.SHORT,
 			mmOraclePriceData,
-			latestSlot,
-			slotDurationState
+			market.marketConfig
 		);
 
 	return calculatePrice(baseAssetReserve, quoteAssetReserve, newPeg);
@@ -91,15 +90,11 @@ export function calculateBidPrice(
  * @param {PerpMarketAccount} market - The perp market account
  * @param {MMOraclePriceData} [mmOraclePriceData] - Current MM oracle price data, used both to
  *   repeg the AMM and to compute the spread reserves
- * @param {BN} [latestSlot] - Current slot, used for reference-price-offset smoothing in the
- *   spread calculation
  * @return {BN} The ask price, PRICE_PRECISION (1e6)
  */
 export function calculateAskPrice(
 	market: PerpMarketAccount,
-	mmOraclePriceData?: MMOraclePriceData,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	mmOraclePriceData?: MMOraclePriceData
 ): BN {
 	const { baseAssetReserve, quoteAssetReserve, newPeg } =
 		calculateUpdatedAMMSpreadReserves(
@@ -107,8 +102,7 @@ export function calculateAskPrice(
 			market.marketStats,
 			PositionDirection.LONG,
 			mmOraclePriceData,
-			latestSlot,
-			slotDurationState
+			market.marketConfig
 		);
 
 	return calculatePrice(baseAssetReserve, quoteAssetReserve, newPeg);

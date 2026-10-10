@@ -1,5 +1,80 @@
 # @velocity-exchange/sdk
 
+## 0.26.0
+
+### Minor Changes
+
+- [#528](https://github.com/velocity-exchange/velocity-v1/pull/528) [`c690663`](https://github.com/velocity-exchange/velocity-v1/commit/c690663795719b3266fdf6a293855fe789fd7913) Thanks [@0xahzam](https://github.com/0xahzam)! - `initialize_spot_market` and `initialize_perp_market` take an args struct
+
+  The two init instructions now take a single `InitializeSpotMarketArgs` /
+  `InitializePerpMarketArgs` struct in place of twenty and twenty-eight positional
+  arguments, and the `_v2` instructions added alongside them are gone. Instruction
+  names, discriminators and account lists are unchanged, so the break is the
+  argument encoding: a client built from an older IDL fails to deserialize.
+
+  The spot struct carries `minBorrowRate` and `maxTokenDeposits`, which the
+  positional form hardcoded to 0, and init accepts `curveUpdateIntensity` up to 200. Both removed a follow-up instruction from a listing.
+
+  SDK: `getInitializeSpotMarketIx(args, mint, oracle, marketIndex?)` and
+  `getInitializePerpMarketIx(args, priceOracle)` take the struct and return one
+  instruction. `initializeSpotMarketV2`, `getInitializeSpotMarketV2Ix`,
+  `initializePerpMarketV2` and `getInitializePerpMarketV2Ix` are removed.
+  `AdminClient.initializeSpotMarket` and `initializePerpMarket` keep their
+  positional signatures as a convenience form and fill the struct, so callers of
+  those are unaffected, but they pass 0 for the two new spot fields.
+
+- [#531](https://github.com/velocity-exchange/velocity-v1/pull/531) [`98c6416`](https://github.com/velocity-exchange/velocity-v1/commit/98c6416402f7cd3a8328a07589088aaba9d6be8e) Thanks [@0xahzam](https://github.com/0xahzam)! - Mirror the program's vAMM quoting fixes.
+
+  - The vol spread discounts the 20bp Pyth Lazer confidence floor:
+    `c = min(conf, conf / 20 + max(0, conf - 20bp))`, which is 1bp at the floor. The vol base uses
+    `c` in place of the raw confidence. `SPREAD_CONF_FULL_WEIGHT_THRESHOLD` is removed;
+    `LAZER_CONF_FLOOR_PCT` and `calculateSpreadConfComponent` are added.
+  - `calculateReferencePriceOffset` sizes the offset by inventory alone:
+    `sign(inventory) * maxOffset * min(1, liquidityFraction / 10%)`, with the premium used only as a
+    sign gate. `REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT` is added. The sign-flip smoothing is
+    removed.
+  - `calculateSpread` applies the oracle guard (`applyOracleGuard`) when `curveUpdateIntensity > 0`,
+    so neither quote crosses the oracle, whether read as the marginal price at the spread reserves
+    or through `calculateBidAskPrice`. `calculateReferencePriceOffsetForAmm` computes the offset
+    from AMM state.
+  - `calculateSpreadBN` now matches the program where they had drifted apart: the inventory
+    adjustment floors at `max(baseSpread / 2, vol)`, the cap applies by safety priority, and the
+    scales use the program's integer rounding. `calculateSpreadReserves` computes the reserve delta
+    exactly.
+
+  Breaking: the `latestSlot` and `slotDurationState` parameters, which only fed the removed
+  smoothing, are dropped from `calculateSpreadReserves`, `calculateUpdatedAMMSpreadReserves`,
+  `calculateBidAskPrice`, `calculateBidPrice`, `calculateAskPrice`, `calculateBaseAssetValue`,
+  `calculateTradeAcquiredAmounts`, `calculateTradeSlippage`, `calculateTargetPriceTrade`,
+  `calculateAllEstimatedFundingRate`, `calculateLongShortFundingRate`,
+  `calculateLongShortFundingRateAndLiveTwaps`, `getVammL2Generator` and `DLOBSubscriber.getL2`.
+  Callers passing them need to drop the arguments.
+
+### Patch Changes
+
+- [#538](https://github.com/velocity-exchange/velocity-v1/pull/538) [`c003e38`](https://github.com/velocity-exchange/velocity-v1/commit/c003e3815eb68b1ebe5f538361d5f6ead6a104fe) Thanks [@jt-lumen](https://github.com/jt-lumen)! - Fix `SwiftOrderSubscriber` crashing the process instead of reconnecting.
+
+  - The `close` and `error` handlers were registered inside the socket's `open` callback, so a
+    socket that failed _during_ the handshake — connection refused, reset, the server pod being
+    evicted — emitted `'error'` with no listener attached. Node throws on an unhandled `'error'`
+    event, so the process died rather than retrying. Both handlers, plus `unexpected-response`, are
+    now registered on the socket immediately.
+  - Reconnects use jittered exponential backoff (500ms base, 30s cap, reset once the auth handshake
+    completes) in place of a flat 1s retry, so a fleet of subscribers knocked off the same server
+    does not retry in lockstep.
+  - A single disconnect normally emits both `close` and `error`, and the heartbeat timer could fire
+    on top of them. Each of the three previously scheduled its own reconnect, leaving duplicate
+    sockets; reconnects are now idempotent per disconnect.
+  - A reconnect re-entered `subscribe(onOrder)` with no further arguments, silently dropping the
+    caller's `acceptSanitized` and `acceptDepositTrade` options. Both are now retained.
+  - `unsubscribe()` no longer no-ops when called before the subscription is established, and it
+    cancels any pending reconnect so a queued timer cannot resurrect the socket.
+
+  `IndicativeQuotesSender` had the same nested-handler crash path and gets the same treatment:
+  handlers registered on the socket immediately, jittered exponential backoff in place of a
+  plain doubling delay, reconnects idempotent per disconnect, and `connected` reset on
+  disconnect rather than staying `true` until the next successful auth.
+
 ## 0.25.0
 
 ### Minor Changes

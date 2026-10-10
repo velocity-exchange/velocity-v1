@@ -288,7 +288,8 @@ fn immediate_staleness_threshold_by_override() {
     for delay in 0..=min_gap {
         assert!(
             is_valid(delay, -1, true),
-            "delay {delay} should be Valid when unset and MM-sourced"
+            "delay {} should be Valid when unset and MM-sourced",
+            delay
         );
     }
     assert!(

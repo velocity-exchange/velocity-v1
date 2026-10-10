@@ -651,7 +651,7 @@ These public exports were added, or restored, relative to the fork point:
   `VelocityClient.getStaleSpotInterestCrankIxs` (fill-stale-margin-bad-debt). They name the
   spot markets whose interest must be accrued before a set of accounts can be used on a
   value-releasing path, and they build the permissionless cranks for them. Prepend the cranks
-  to a fill, withdraw, transfer, or swap. Each market gets its own window from its rate
+  to a fill, withdraw, transfer, swap, or (for the liquidator's account) a liquidation. Each market gets its own window from its rate
   ceiling, so a market that may charge more interest must be cranked more often. The program
   exempts a borrow whose un-booked interest is still under one token unit, which these
   helpers do not model, so they name a superset. The Rust SDK gains the equivalent pair,
@@ -717,6 +717,20 @@ These public exports were added, or restored, relative to the fork point:
   that prices a given tier instead of the account's, with every other modifier unchanged. Use
   it to quote a tier an account is not on, for example the saving a promo makes against a
   volume tier, so both figures come from one pipeline. Existing calls are unaffected.
+- `InitializeSpotMarketArgs` and `InitializePerpMarketArgs` (#528), the args structs
+  `getInitializeSpotMarketIx` and `getInitializePerpMarketIx` now take in place of their twenty and
+  twenty-eight positional arguments. `AdminClient.initializeSpotMarket` and `initializePerpMarket`
+  keep their positional signatures and fill the struct, so callers of those are unaffected, but they
+  cannot reach the spot struct's `minBorrowRate` and `maxTokenDeposits`, which they pass as 0.
+- `AdminClient.depositIntoPerpMarketPnlPool` and `getDepositIntoPerpMarketPnlPoolIx` (#528).
+- `getKUpdateGate` and the `KUpdateGate` and `AmmCurve` types (`math/amm`,
+  amm-surplus-repeg-fixes). `calculateNewAmm` and `calculateUpdatedAMM` take an optional
+  `KUpdateGate`, and `calculateUpdatedAMMSpreadReserves` and `calculateBidAskPrice` an optional
+  `marketConfig`, the market fields the program checks before it lowers k on a repeg. Without them
+  the minimum order size counts as 0 and `DisableFormulaicKUpdate` as unset. `calculateNewAmm`
+  returns a sixth element, the exact new curve. `pKNumer`/`pKDenom` keep their sqrtK scale
+  meaning, but the program sizes the reserves from a rounded ratio, so read exact reserves from
+  that curve rather than scaling. Existing calls compile unchanged.
 - Several types were added by the `types.ts` and IDL reconciliation (see §4.7).
 
 ### 4.7 SDK type reconciliation (`types.ts` against the IDL)
@@ -1070,6 +1084,16 @@ the current ones.
   `exchange_not_paused` trips only on `is_all()`. Deposits, withdrawals, fills and
   liquidations are already blocked in a full halt, so the added coupling is share accounting
   only, and it lifts when the halt lifts.
+- `deposit_into_perp_market_pnl_pool` (velocity) moves quote tokens into a perp market's pnl pool,
+  transferring and crediting in one instruction. Warm admin. Accounts: `state`, `perp_market`, `admin`,
+  `source_vault`, `velocity_signer`, `quote_spot_market`, `spot_market_vault`, `token_program`, plus the
+  quote mint in `remaining_accounts` for a Token-2022 mint. Argument: `amount: u64`. It is the counterpart
+  to `deposit_into_perp_market_fee_pool`. `update_perp_market_pnl_pool` credits the pool without moving
+  tokens, so seeding a pool through it took a raw transfer into `spot_market_vault` and a credit with
+  nothing linking the two, and `validate_spot_market_vault_amount` catches neither half, because a surplus
+  only makes it pass more easily. Here the amount transferred and the amount credited are the same value.
+  The pnl pool is quote denominated, so the quote spot market and its vault are pinned to index 0 by seeds.
+  SDK: `AdminClient.depositIntoPerpMarketPnlPool` and `getDepositIntoPerpMarketPnlPoolIx`.
 - Mainnet `initialize` requires a fixed signer (#158). The one-time global `State` creation
   locks the `admin` account to `state_init_authority`
   (`prpHJmuXnqdaz92tBVdwsqmqyhqPLuq5Km35a5QWco3`) on real mainnet builds only, to prevent
@@ -1113,6 +1137,10 @@ Decode errors by code as before, but expect `Deprecated*` names for retired feat
 
 ### 5.7 Behavior changes visible through the ABI
 
+- `OrderActionRecord.quote_asset_amount_surplus` on a vAMM fill is signed (amm-surplus-repeg-fixes).
+  It is negative when the reference price offset moved the quote across the AMM's curve, so the AMM
+  filled worse than its curve price. Before this change the field held the absolute gap and was never
+  negative on these fills.
 - `add_insurance_fund_stake`'s `amount` is an upper bound rather than the staked amount
   (if-add-exact-share-pricing). IF shares are indivisible, so the program transfers only the
   portion of `amount` that prices to whole shares and leaves the remainder, always less than
@@ -1273,7 +1301,9 @@ long carry a one-line summary here and a link into §6.2.
 | #389 lazer-future-bound | Bound a signed Lazer message's feed timestamp above the wall clock as well as below it. `post_pyth_lazer_oracle_update` skips a feed whose message timestamp leads `Clock::unix_timestamp` by more than the new `PYTH_LAZER_MAX_FUTURE_SECONDS` (60s). The monotonic gate skips every message at or below the stored `publish_time`, so one message stamped ahead of the clock stopped all later messages until real time reached that stamp, and the bound holds that freeze to 60s. The bound is wider than the 15s staleness bound because a future stamp only delays the feed, while `Clock::unix_timestamp` is a stake-weighted median that can lag slot progression by more than 15s and would then make every legitimate message read as future. The monotonic gate also tightens from `<` to `<=`, since an equal timestamp carries the same signed content, so re-posting it added no price information but refreshed `posted_slot` and held the feed at slot-fresh. Keepers must post a message stamped no more than 15s behind the chain clock and no more than 60s ahead of it, and a repeat of the stored timestamp is a no-op. No account-layout or IDL change, since the constant is not IDL-exposed |
 | #429 accelerated-referrals | Two referrer reward rates. Standard stays per-fee-tier (`FeeTier.referrer_reward_numerator`, fresh default cut from 15% to 10%), and Accelerated is the fixed `ACCELERATED_REFERRER_REWARD_PERCENT` constant, independent of the tier. The referee discount still comes from the tier. New `UserStats.accelerated_referral_status` (padding carve-out, no layout break) plus the `AcceleratedReferralStatus` flags. Automatic enrollment happens on account init, on perp fills for taker and maker excluding a liquidation's liquidatee, and on completed swaps, gated by the beta-scoped `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` constant rather than a state field, so ending the beta is a program upgrade. Warm and cold admin `update_user_accelerated_referral_status`, where a revoke blocks reenrollment until a grant clears it. New `AcceleratedReferralStatusChangedRecord` event. The referred taker's fill paths accept an optional readonly referrer `UserStats` after the taker's `RevenueShareEscrow`, and omitting it applies the Standard rate rather than failing the fill |
 | #470 swift-slot-gate (plus follow-up) | Off-chain only. Fillers no longer burn their single signed-msg place-and-fill attempt on a future-stamped message slot. `place_signed_msg_taker_order` rejects `order_slot > clock.slot` with `InvalidSignedMsgOrderParam` (6288), and takers stamp the message a few slots ahead as a signing buffer, so the TS filler and keep-rs defer the place-and-fill until the slot arrives instead of attempting on arrival. New SDK exports `signedMsgOrderMaxSlot` and `signedMsgOrderSlotReached` (`math/orders`, §4.6) mirror the program's placement window for any consumer building on `DLOB.insertSignedMsgOrder`, which does no slot gating of its own. No program, layout, IDL or error-code change |
+| #528 market-listing | Listing a market took six cold-multisig proposals, three of them only setting fields the init instructions had no argument for. Program side, `initialize_spot_market` and `initialize_perp_market` now take a single args struct, `InitializeSpotMarketArgs` and `InitializePerpMarketArgs`, in place of twenty and twenty-eight positional arguments. This is an instruction-signature change on both, so a client built from an older IDL fails to deserialize; the instruction names, discriminators and account lists are unchanged. The spot struct adds `min_borrow_rate` (X/200, 1 is 0.5%) and `max_token_deposits` (mint precision, 0 is no limit), which the positional form hardcoded to 0 and every listing then set with follow-up instructions. Init accepts `curve_update_intensity` up to 200, matching `update_perp_market_curve_update_intensity`, where it previously capped at 100 and a market wanting reference-price-offset intensity needed a second instruction. New `deposit_into_perp_market_pnl_pool` (§5.5). SDK: `getInitializeSpotMarketIx` and `getInitializePerpMarketIx` take the args struct, the exported types `InitializeSpotMarketArgs` and `InitializePerpMarketArgs` mirror it, and `AdminClient.initializeSpotMarket` / `initializePerpMarket` keep their positional signatures as a convenience form that fills the struct with the old hardcoded zeros. No account-layout or error-code change |
 | amm-refresh-dedup | CU optimization of the #317 projected-routing fill path, a behavioral refinement with no layout, IDL or SDK-surface change. #317 projected the post-refresh curve onto a scratch AMM copy for routing and left the real curve to mutate inside `Quoter::setup`, so a fill ran the projection twice, once for routing and once in setup, plus an AMM struct clone and a third `update_amm_quote_state`. The projection and spread math are the heavy part of a fill on SBF, and duplicating them raised median fill CU by about 2.5x. Routing now projects and applies the refresh on the real AMM before selecting a fulfillment method, through a shared `project_and_apply` helper that both routing and `Quoter::setup` call. It is slot-idempotent, since `last_update_slot >= slot` skips, so the projection runs at most once per market per slot. Routing does it, and the first fill step's `setup` then skips it. The net op count returns to the pre-#317 baseline of one projection, one pre-route spread refresh and one per-step spread refresh, with no AMM clone. One behavioral refinement follows. Because routing now mutates the real AMM, a stale-market fill attempt that finds no crossing method still snaps the curve toward oracle before returning zero, where previously the scratch projection was discarded on a no-fill. That is identical to what the permissionless `update_amms` crank already does, being budget-floored, oracle-gated and direction-toward-oracle only, so it grants no new capability and reduces reliance on the staleness crank. Routing decisions and fills are unchanged, and the TS SDK already projects via `calculateUpdatedAMM`, so no SDK change was required |
+| amm-surplus-repeg-fixes | Two AMM accounting fixes. A vAMM fill that the reference price offset priced across the AMM's curve booked the AMM's loss as positive spread surplus, because the surplus was an absolute value. It is now signed, so `OrderActionRecord.quote_asset_amount_surplus` can be negative on vAMM fills and `total_fee_minus_distributions` no longer overstates the AMM's equity. A budget-limited repeg that lowered k left the k decrease gain out of its cost, so the refresh asked for more than the budget and was rejected. The cost now includes that gain. SDK: `calculateNewAmm` and `calculateUpdatedAMM` mirror the repeg fix and the program's k decrease gates, `calculateLongShortFundingRate` compares the long and short sizes by magnitude, trade and position pricing go through the spread reserves when `baseSpread` is 0, and `calculateClaimablePnl` computes the pnl pool excess as `settle_pnl` does, without the AMM fee pool and with net user pnl floored at zero. No account-layout, IDL or error-code change |
 | bankruptcy-admission-dust | Fix a Medium audit finding (OtterSec #151) where a zero-token deposit residue vetoed cross-margin bankruptcy admission. `math::bankruptcy::is_cross_margin_bankrupt` returned `false` for any deposit row with `scaled_balance > 0`, but a full spot-market socialization floors `cumulative_deposit_interest` at 1 and leaves each wiped depositor's scaled row positive, so the row survives while its token value is zero. For a user with unrelated cross-margin debt, that worthless row blocked both bankruptcy admission and PnL liquidation, stalling the next bad-debt repair indefinitely. The deposit branch now converts the row through `get_token_amount` and only vetoes when it is worth at least one token. The predicate therefore takes `&SpotMarketMap`, threaded through the `LiquidatePerpMode::should_user_enter_bankruptcy` trait method and its two implementors, and the isolated mode ignores it since isolated positions carry their own collateral. The change is deliberately narrow, since a deposit worth at least 1 token still vetoes, so it only ever admits bankruptcy for a row that cannot be realized at all. Mirrored in the SDK by `math::bankruptcy::isUserBankrupt`, the keeper's bankruptcy predicate that the liquidator bot uses to decide when to send a resolver, which applies the same two value-aware vetoes. Its exported signature is unchanged, but it now reads market state, meaning the deposit index and PnL pool, as well as the user account, so every spot and perp market referenced by a nonzero position must be loaded on the client. Keeping that mirror current matters, because the resolvers self-admit and an under-reporting keeper is the only thing standing between a newly admissible account and its repair. No account-layout, IDL, error-code or SDK-API-shape change |
 | bankruptcy-claim-freeze | Complete the #245 fix for the permissionless-sweep front-run of a bankruptcy resolution. New `PerpMarket.pending_bankruptcy_claims: u16` books the debt itself, the standing floor is on by default, and delisting waits on the counter. [Details](#bankruptcy-claim-freeze) |
 | bankruptcy-estate-setoff | Fix a High audit finding (OtterSec #130) where assets arriving after the bankruptcy latch escaped setoff, so insurance and depositors covered a debt the estate could have paid itself. [Details](#bankruptcy-estate-setoff) |
@@ -1324,13 +1354,17 @@ long carry a one-line summary here and a link into §6.2.
 | slot-duration-sync | Audit follow-up to `slot-duration-scaling`. New `State.slot_duration_transition_slots: [u64; 4]`, the permissionless `sync_state_slot_duration` replacing the warm-admin setter, and auction durations redefined as wall-clock 400ms units. [Details](#slot-duration-sync) |
 | spot-bankruptcy-revenue-pool | See the `#238 spot-bankruptcy-revenue-pool` row above |
 | spot-oracle-twap-ts-init | Fix a Medium audit finding (OtterSec #121): a freshly initialized spot market carried `last_oracle_price_twap_ts == 0`, which collapsed both `StrictOraclePrice` bounds on its first refresh. [Details](#spot-oracle-twap-ts-init) |
+| spread-quote-fixes | vAMM quoting fixes. The vol spread discounts the 20bp Pyth Lazer confidence floor, the reference price offset is sized by inventory alone, a final guard keeps both quotes on the correct side of the oracle, and `update_perp_bid_ask_twap` refreshes the curve before sampling the mark TWAP. No layout change. Several SDK spread helpers drop their `latestSlot` / `slotDurationState` parameters. [Details](#spread-quote-fixes) |
 | stale-curve-fill-routing | See the `#317 stale-curve-fill-routing` row above |
 | swap-twap-write-after-check | Restore the oracle-TWAP refresh that the #110 and #111 fix dropped from the two split begin and end swap lanes, on the far side of their own gates. `begin_swap` and `liquidate_spot_with_swap_begin` pass `None` so neither can refresh the anchor its band check reads, which closed the finding but left both lanes contributing nothing to the oracle EMA, so a swap-heavy market depended on other paths and on the permissionless crank to keep its TWAP fresh. `end_swap` now advances both markets' oracle TWAPs through `update_spot_market_twap_stats` after `validate_price_bands_for_swap`, and `liquidate_spot_with_swap_end` does the same after every check in its lane. The check still reads the pre-swap value, and `begin_swap`'s instruction introspection forbids any Velocity instruction after the end instruction, so nothing else in the transaction can read the new value. `begin_swap` leaves `last_oracle_price_twap_ts` alone, so the deferred update still weights the full elapsed interval, and the deposit, borrow and utilization TWAPs were already advanced in the begin instruction and are a no-op in the end instruction. This grants no capability a caller did not already have, since `update_spot_market_cumulative_interest` is permissionless and advances the same TWAPs. Program-internal ordering only, with no account-layout, IDL, error-code or SDK change |
 | swift-resting-limit-placement | `place_signed_msg_taker_order` accepts a resting limit, meaning a limit order with no auction, ahead of its message slot. For such an order the message slot is the placement deadline rather than an auction start, so `max_slot = order_slot + 0`, and with the #470 gate rejecting `order_slot > clock.slot` the order was placeable in exactly one slot and never landed. Clients stamp a no-auction limit its whole signing budget, about 14s, ahead (`@velocity-exchange/common` `MINIMUM_SWIFT_NON_AUCTION_ORDER_SIGNING_BUDGET_MS`), which under Drift was placed before the stamp arrived. The future-slot rejection now applies only to orders with an auction. A resting limit stamped ahead is accepted while the lead is within 30s (`max_resting_limit_lead`, and the UI stamps about 14s), and still rejected with `InvalidSignedMsgOrderParam` (6288) beyond it. The stored order slot is unchanged at `min(clock.slot, message slot)`, and the `max_slot < clock.slot` no-op still applies after the stamp. keep-rs places a resting limit on arrival instead of deferring it, since its 10s deferral bound dropped the roughly 14s stamp outright. The TS filler mirrors the gate via the new SDK `signedMsgOrderPlaceable` (§4.6) but still ignores no-auction signed-msg orders in `dlobBuilder`, so keep-rs remains the placer of resting swift limits. Rollout: deploy the program upgrade before the keep-rs release, because keep-rs against the old program sends a place tx per resting swift limit that fails with 6288, which is the same net outcome as dropping it plus the fee. Side effect: a resting limit's `SignedMsgOrderId.max_slot` is now its future stamp, so the entry occupies the per-user id ring for the lead plus the eviction buffer, about 18s for the UI's stamp and up to about 34s at the bound, instead of about 4s. A burst of resting swift limits can therefore reach `SignedMsgUserOrdersAccountFull` sooner. No account-layout, IDL or error-code change |
+| tokenized-issued-supply | Fix a bug in the `vaults` program, where an incumbent could burn wrapper tokens directly through the SPL Token program to shrink the mint supply that `tokenize_shares` priced from, and capture a later tokenizer's deposit. [Details](#tokenized-issued-supply) |
 | tokenized-pooled-basis-gate | Fix a High audit finding (OtterSec #140) in the `vaults` program, where a newcomer tokenizing into an under-water tokenized depositor captured part of the existing holders' loss shelter. [Details](#tokenized-pooled-basis-gate) |
 | tokenized-rebase-backing | Fix a Medium audit finding (OtterSec #122) in the `vaults` program, where the signerless `apply_rebase_tokenized_depositor` could floor a tokenized depositor's backing shares to zero while the mint supply was live. [Details](#tokenized-rebase-backing) |
+| transfer-perp-position-stale-interest | Close the remaining #135 gaps: paths that checked margin without the borrow-interest freshness gate, so a stale `cumulative_borrow_interest` understated the account's debt. Now gated: `transfer_perp_position` (both accounts, as on the perp fill), `special_transfer_perp_position_to_vamm`, the cross-to-isolated direction of `transfer_isolated_perp_position_deposit`, and the liquidator side of `liquidate_perp`, `liquidate_spot`, `liquidate_borrow_for_perp_pnl` and `liquidate_perp_pnl_for_deposit`. Each can now revert with `SpotMarketInterestStaleForMargin` (6371). Prepend the permissionless `update_spot_market_cumulative_interest` crank (`getStaleSpotInterestCrankIxs`) to avoid it. The keeper-bots-v2 and keep-rs liquidators now do this for their own account, and the SDK does it on every cross-to-isolated deposit transfer it builds (`transferIsolatedPerpPositionDeposit` with a positive amount, and the `isolatedPositionDepositAmount` option on order placement). [Details](#fill-stale-margin-bad-debt) |
 | vault-nav-interest-refresh | Fix two High audit findings on vault NAV pricing (OtterSec #136, #137), where a vault priced shares off a stale spot-market interest index. Changed 19 vault instruction account lists (ABI). [Details](#vault-nav-interest-refresh) |
 | vault-nav-spot-market-refresh | Follow-up to `vault-nav-interest-refresh`, which fixed OtterSec #136 and #137 for one market only. Changed 20 vault instruction account lists (ABI) and added `refresh_spot_market_interest`. [Details](#vault-nav-spot-market-refresh) |
+| vault-reduce-only-deposit-settlement | Fix a bug in the `vaults` program, where a deposit larger than the borrow in a `ReduceOnly` market left the excess outside NAV. Adds the vaults error `DepositNotFullySettled` (6029). [Details](#vault-reduce-only-deposit-settlement) |
 | vault-share-pricing-hardening | Fix four High audit findings on vault share pricing (OtterSec #91 through #94). Adds `UserStatus::VaultOwned` and the CPI-only velocity instruction `update_user_vault_owned`. [Details](#vault-share-pricing-hardening) |
 | vault-token-transfer-basis | Fix a Medium audit finding (OtterSec #138) in the `vaults` program, where a token-denominated share transfer moved cost basis by the caller's raw request rather than by the value of the shares actually transferred. `WithdrawUnit::get_withdraw_value_and_shares` returns `withdraw_value = withdraw_amount` verbatim for `WithdrawUnit::Token` while flooring `n_shares` out of it, so `transfer_shares` credited the recipient with more `net_deposits` than their new shares were worth, sheltering that much future profit from the manager and protocol performance fees, and symmetrically over-debited the sender. `transfer_shares` now re-derives the moved value from the floored `n_shares`, as `depositor_shares_to_vault_amount(..).min(vault_equity)`, which is exactly what the `Shares` and `SharesPercent` units already did, so all three units agree. The `ShareTransferRecord.value` field reports the same actual figure. Program-internal only, with no account-layout, IDL, error-code or SDK-API change |
 | vaults-fee-policy-grandfathering | Follow-up to `vaults-fee-rebase-hardening`, replacing its #98 fix. That fix stamped `last_fee_update_ts` to the activation instant, which forfeited the manager's pre-activation accrual and left profit share and the hurdle rate untouched, since both are priced off a depositor's high-water mark rather than a clock so no timestamp can slice them. Management fee: `apply_fee` accrues the closing interval at the policy in force while it accrued, stamps `last_fee_update_ts`, and only then installs a matured update. `try_update_vault_fees` rejects an install on an unsettled vault, making `apply_fee` the single installer. The window between maturity and the first vault interaction is charged at the old rate. `manager_update_fees` therefore settles through `apply_fee` instead of writing the policy directly, and gains a `velocity_user` account plus the spot market and its oracle in `remaining_accounts`, which SDK `getManagerUpdateFeesIx` passes, while protocol vaults still append `VaultProtocol`. Profit share and hurdle: `VaultDepositor` and `TokenizedVaultDepositor` gain `profit_share_at_basis` and `hurdle_rate_at_basis`, recording the policy in force when the high-water mark was last set. Gain above that mark is priced at `min(vault.profit_share, profit_share_at_basis)` and sheltered by `max(vault.hurdle_rate, hurdle_rate_at_basis)`, so a raised profit share or a lowered hurdle never prices gain earned before it, while a policy better for the depositor applies at once. A realization that leaves no unpriced gain advances the stamps to the live policy, so the manager moves depositors onto a new policy with `apply_profit_share`, which realizes their gain at the old policy first. Consequence: gain that stays unpriced, being sheltered by the hurdle, keeps its old policy until the depositor clears the old hurdle once. Also removes a dead `VaultDepositor::calculate_profit_share_and_update` that shadowed the trait implementation with gross-profit semantics. Account layout: both depositor accounts repurpose trailing padding for the two new fields and keep their existing size, and the IDL adds those fields plus `manager_update_fees`' `velocity_user` account. No error-code change, since it reuses `InvalidVaultUpdate` |
@@ -1768,7 +1802,7 @@ matching profit out of the PnL pool, so a gate that exempted reducing fills woul
 neither seat. `meets_withdraw_margin_requirement` draws the same line and exempts no
 direction.
 
-Liquidations are excluded on both sides. The taker block is already
+Liquidation fills are excluded on both sides. The taker block is already
 `if !fill_mode.is_liquidation()`, and the maker loop runs for liquidation fills too so its
 gate carries the same condition. Otherwise one maker's stale spot oracle, or one maker's
 un-cranked borrow market, would block the liquidation of an unrelated account.
@@ -1796,11 +1830,19 @@ arrive read-only so they cannot be refreshed in place.
 Every value-releasing path now requires recent accrual on any market carrying one of the
 account's borrows. Those paths are `handle_withdraw`, the perp fill for the taker and every
 maker whichever direction each moves, `handle_transfer_deposit`, `handle_transfer_pools` for
-both accounts since the transfer moves debt onto the recipient, `handle_end_swap`, and
-`withdraw_from_isolated_perp_position`. The last four reach the same check through
+both accounts since the transfer moves debt onto the recipient, `handle_transfer_perp_position`
+for both accounts like the fill it mirrors, `handle_end_swap`, and
+`withdraw_from_isolated_perp_position`. `handle_transfer_deposit`, `handle_transfer_pools`,
+`handle_end_swap` and the isolated withdraw reach the same check through
 `meets_withdraw_margin_requirement*` and crank only the market they touch, so #135 applies to
-them unchanged. New error `SpotMarketInterestStaleForMargin` (6371 / `0x18E3`), appended at
-the enum tail.
+them unchanged. `handle_transfer_perp_position` cranks no spot market at all. The same gate
+also covers `handle_special_transfer_perp_position_to_vamm`, the cross-to-isolated direction
+of `transfer_isolated_perp_position_deposit`, and the **liquidator** (never the liquidatee) in
+`liquidate_perp`, `liquidate_spot`, `liquidate_borrow_for_perp_pnl` and
+`liquidate_perp_pnl_for_deposit`, because the liquidator takes on exposure against its own
+borrows. Only the liquidator's own stale borrows can block its liquidation, and it can crank
+them in the same transaction. New error `SpotMarketInterestStaleForMargin` (6371 / `0x18E3`),
+appended at the enum tail.
 
 The quantity held down is the share of the debt the omission hides, not the elapsed time. The
 omission is `debt x rate x elapsed / year`, and the rate is per-market configuration with no
@@ -1833,12 +1875,15 @@ calculation, which costs CU on every fill's margin loop and needs an SDK mirror,
 refreshing every position's market, which would require clients to pass them writable and so
 break the ABI.
 
-Integrator-visible: a withdrawal, transfer, swap, isolated-position withdrawal, or perp fill
-can now revert with `SpotMarketInterestStaleForMargin`. Recovery needs no privileges, since
+Integrator-visible: a withdrawal, transfer (including a perp-position, vAMM-hedger or
+cross-to-isolated deposit transfer), swap, isolated-position withdrawal, perp fill, or
+liquidation (for the liquidator's own borrows only) can now revert with
+`SpotMarketInterestStaleForMargin`. Recovery needs no privileges, since
 `update_spot_market_cumulative_interest` is permissionless and can be bundled into the same
 transaction. Both SDKs gained helpers that name the markets and build the cranks (§4.6), and
 both fillers (`apps/keeper-bots-v2` and `keep-rs`) bundle them ahead of every
-`fill_perp_order`. The IDL gains error 6371, with no instruction or account-layout change, and
+`fill_perp_order`, and both liquidators bundle them for their own account ahead of each
+liquidation. The IDL gains error 6371, with no instruction or account-layout change, and
 no SDK mirror of the margin validity flags exists.
 
 #### if-carveout-floor
@@ -2450,6 +2495,56 @@ change, since the SDK reads the stored TWAP for the spot band rather than projec
 its `lastOraclePriceTwapTs` consumers are all perp-side (`marketStats`) where the timestamp was
 always stamped.
 
+#### spread-quote-fixes
+
+Behavioral changes to how the vAMM builds its quote. Account layouts and the IDL are unchanged,
+apart from the doc comment on `MarketStats.last_reference_price_offset`.
+
+- **Confidence floor.** `calculate_lazer_conf` floors Pyth Lazer confidence at `price / 500`
+  (20bp), and over a week of mainnet updates the posted confidence never rose above that floor.
+  The previous confidence ramp turned 20bp into 16.2bp of spread on each side of every market.
+  The vol spread now uses `c = min(conf, conf / 20 + max(0, conf - 20bp))`, which is 1bp at the
+  floor, adds about a bp per bp of confidence above it, and meets the raw confidence at 4%. The vol
+  base uses `c` in place of the raw confidence. `SPREAD_CONF_FULL_WEIGHT_THRESHOLD` is removed and
+  `LAZER_CONF_FLOOR_PCT` is added, in the program and the SDK.
+- **Reference price offset.** The offset was `premium * liquidity_fraction / 2` with both inputs
+  at 1e6 precision and no rescale, so any nonzero inventory hit the cap. It is now
+  `sign(inventory) * max_offset * min(1, liquidity_fraction / 10%)`, with the premium used only as
+  a sign gate. `REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT` (10%) is new. The sign-flip smoothing
+  is removed because the offset now passes through zero continuously.
+  `MarketStats.last_reference_price_offset` is still written but no longer read by the quote math.
+- **Oracle guard.** After the admin spread adjustments and the offset, `compute_quote_state`
+  widens whichever side would otherwise quote through the oracle, so the bid stays at or below it
+  and the ask at or above it. It covers both readings of the quote: the marginal price at the
+  spread reserves, `reserve_price * (1 + s/2)^2`, and the linear `reserve_price * (1 + s)` that
+  routing and the mark TWAP crank read through `AMM::bid_ask_price`. It only ever widens a spread,
+  and caps the pair at 100%, so a side can widen only by 100% minus the opposite spread. When the
+  requirement is larger, that side still quotes through the oracle. With a zero opposite spread and
+  offset that takes an oracle past about twice the reserve price or under a quarter of it; a wide
+  opposite spread or an offset brings the limit closer. Like the existing oracle retreat, it
+  applies only when `curve_update_intensity > 0`. A market at 0 never repegs and quotes off its
+  curve alone.
+- **Mark TWAP crank.** `update_perp_bid_ask_twap` runs `project_and_apply` before refreshing the
+  quote state and sampling the AMM bid/ask into the mark TWAP, as fills and `update_funding_rate`
+  already do. It had sampled a curve whose peg could be minutes stale. The handler also stops
+  refreshing the quote state a second time, so the crank costs about the same compute as before.
+- **Funding k step.** The funding-imbalance k update clamps `curve_update_intensity` at 100, as
+  repeg already does, so values above 100 no longer enlarge the k step.
+
+SDK: `calculateVolSpreadBN`, `calculateSpreadBN`, `calculateReferencePriceOffset`,
+`calculateSpread` and `calculateSpreadReserves` mirror the above. `calculateSpreadBN` now floors the
+inventory adjustment at `max(baseSpread / 2, vol)` and caps by safety priority, as the program
+does. `calculateSpreadReserves` computes the reserve delta exactly, as
+`compute_spread_reserves_for_direction` does. New exports: `applyOracleGuard`,
+`calculateSpreadConfComponent`, `calculateReferencePriceOffsetForAmm`, `LAZER_CONF_FLOOR_PCT`,
+`REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT`. The `latestSlot` and `slotDurationState` parameters,
+which only fed the removed smoothing, are dropped from `calculateSpreadReserves`,
+`calculateUpdatedAMMSpreadReserves`, `calculateBidAskPrice`, `calculateBidPrice`,
+`calculateAskPrice`, `calculateBaseAssetValue`, `calculateTradeAcquiredAmounts`,
+`calculateTradeSlippage`, `calculateTargetPriceTrade`, `calculateAllEstimatedFundingRate`,
+`calculateLongShortFundingRate`, `calculateLongShortFundingRateAndLiveTwaps`,
+`getVammL2Generator` and `DLOBSubscriber.getL2`. Callers passing them need to drop the arguments.
+
 #### swap-provider-interface
 
 SDK-only, from #331. Jupiter and Titan now sit behind one `SwapProvider` interface, calling
@@ -2480,6 +2575,35 @@ provider-generic `getProviderSwapIx`.
 
 This is a breaking SDK surface change only, with no program, account-layout, IDL or error-code
 change. See §4.3 and §4.6.
+
+#### tokenized-issued-supply
+
+Fixes a bug in the `vaults` program. `tokenize_shares` and `redeem_tokens`
+converted between shares and wrapper tokens using the live `mint.supply`. Any holder can shrink
+that supply by burning tokens directly through the SPL Token program, which the vaults program
+never sees, so the tokenized depositor's `vault_shares` stayed put. After burning the supply down
+to one base unit, an incumbent made the next tokenizer's mint round down to one token while that
+tokenizer's full shares joined the pool, and then redeemed half the combined backing. Burning the
+supply to zero instead made every later tokenization mint zero tokens and fail.
+
+`TokenizedVaultDepositor` now carries `issued_supply`: tokens the program minted minus tokens it
+burned. The state-level `tokenize_shares` and `redeem_tokens` price from it and update it, and
+take no supply argument. A direct burn leaves the counter unchanged, so the price per token cannot
+be moved from outside. The shares behind burned tokens stay in the pool and nobody can redeem
+them, which is the burner's own loss.
+
+When a `redeem_tokens` call burns the whole live supply, the shares that remain back only tokens
+burned outside the program. The program removes them from `vault.total_shares` and
+`vault.user_shares`, so every vault depositor gains pro rata. It then zeroes `issued_supply` and
+clears the orphaned cost basis. Without this step, one burned base unit kept the pool from ever
+emptying, and an under-water pool then refused every later tokenization. The shares stay if they
+are the whole vault, because a vault with zero shares gives its equity to the next depositor.
+
+Account layout: `issued_supply: u64` takes the first word of the trailing padding, which is now
+`[u64; 9]`, and `SIZE` is unchanged. The IDL gains the field. No instruction signature, account
+list or error-code change. No `TokenizedVaultDepositor` account existed on mainnet or devnet when
+this shipped, so there is no migration. An account created before the change would read
+`issued_supply == 0` with a live supply, and both conversions fail closed on it.
 
 #### tokenized-pooled-basis-gate
 
@@ -2644,6 +2768,22 @@ position.
 
 Instruction accounts changed (ABI, §5.4): 20 vault instructions, `manager_update_fees`
 included. No account-layout or error-code change.
+
+#### vault-reduce-only-deposit-settlement
+
+Fixes a bug in the `vaults` program. Velocity `deposit` caps the amount it takes at the
+outstanding borrow when the spot market is `ReduceOnly`, and still succeeds. A vault `deposit`,
+`manager_deposit` or `manager_repay` larger than the borrow therefore left the excess in the
+vault's transit token account. That account is outside NAV and outside every depositor's claim.
+`deposit` had also minted shares for the full amount.
+
+All three instructions now reload the transit account after the Velocity CPI. They revert with
+the new vaults error `DepositNotFullySettled` (6029) unless the account is back at its starting
+balance. A deposit that only repays the borrow still succeeds.
+
+Integrators must cap the amount at the vault's outstanding borrow when the target market is
+`ReduceOnly`. For `deposit` and `manager_deposit` the target is the denomination market. For
+`manager_repay` it is the repay market. No account-layout or instruction-signature change.
 
 #### vault-share-pricing-hardening
 

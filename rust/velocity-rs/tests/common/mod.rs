@@ -175,9 +175,11 @@ impl TestCtx {
         if self.client.rpc().get_account(&sub).await.is_ok() {
             return;
         }
-        let mut user = User::default();
-        user.authority = self.authority();
-        user.sub_account_id = sub_id;
+        let user = User {
+            authority: self.authority(),
+            sub_account_id: sub_id,
+            ..Default::default()
+        };
         let tx = TransactionBuilder::new(self.client.program_data(), sub, Cow::Owned(user), false)
             .initialize_user_account(sub_id, None, None)
             .build();
@@ -225,9 +227,11 @@ impl TestCtx {
         while next <= sub_id {
             let id = next;
             if self.client.rpc().get_account(&self.sub(id)).await.is_err() {
-                let mut user = User::default();
-                user.authority = self.authority();
-                user.sub_account_id = id;
+                let user = User {
+                    authority: self.authority(),
+                    sub_account_id: id,
+                    ..Default::default()
+                };
                 let tx = TransactionBuilder::new(
                     self.client.program_data(),
                     self.sub(id),

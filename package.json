@@ -73,6 +73,7 @@
 		"program:idl": "bash deploy-scripts/build-idl.sh velocity",
 		"program:idl:vaults": "bash deploy-scripts/build-idl.sh vaults",
 		"program:idl:jit-proxy": "bash deploy-scripts/build-idl.sh jit-proxy",
+		"program:idl:revenue-router": "bash deploy-scripts/build-idl.sh revenue-router",
 		"rust:build": "cargo build --locked --manifest-path rust/Cargo.toml",
 		"release": "bash deploy-scripts/release.sh",
 		"verify-buffer": "bash deploy-scripts/verify-buffer.sh",

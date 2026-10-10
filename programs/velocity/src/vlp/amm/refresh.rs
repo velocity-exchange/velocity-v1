@@ -115,7 +115,7 @@ pub fn update_amms(
     let now = clock.unix_timestamp;
 
     let updated = true; // todo
-    for (_key, market_account_loader) in perp_market_map.0.iter_mut() {
+    for market_account_loader in perp_market_map.0.values_mut() {
         let market = &mut load_mut!(market_account_loader)?;
         let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
         let mm_oracle_price_data = market.get_mm_oracle_price_data(
@@ -134,13 +134,7 @@ pub fn update_amms(
         let validity =
             compute_amm_refresh_validity(market, &mm_oracle_price_data, state, clock_slot)?;
         snap_to_oracle(market, &mm_oracle_price_data, validity, clock_slot, now)?;
-        market.update_oracle_derived_stats(
-            &mm_oracle_price_data,
-            validity,
-            now,
-            clock_slot,
-            state.slot_clock(),
-        )?;
+        market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
     }
 
     Ok(updated)
@@ -176,7 +170,6 @@ pub fn update_amm(
         validity,
         clock.unix_timestamp,
         clock.slot,
-        state.slot_clock(),
     )?;
 
     Ok(outcome)
@@ -197,13 +190,7 @@ pub fn _update_amm(
 ) -> VelocityResult<i128> {
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state, clock_slot)?;
     let outcome: i128 = snap_to_oracle(market, mm_oracle_price_data, validity, clock_slot, now)?;
-    market.update_oracle_derived_stats(
-        mm_oracle_price_data,
-        validity,
-        now,
-        clock_slot,
-        SlotClock::baseline(),
-    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
     Ok(outcome)
 }
 
@@ -315,10 +302,10 @@ pub fn snap_to_oracle(
     // PerpMarket-stats field — the orchestrator updates it via
     // `refresh_perp_market_stats_from_oracle` alongside this call.
     if let Some(validity) = oracle_validity {
-        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))? {
-            if !projection.rejected_due_to_affordability {
-                market.amm.last_update_slot = slot;
-            }
+        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))?
+            && !projection.rejected_due_to_affordability
+        {
+            market.amm.last_update_slot = slot;
         }
     }
 
@@ -362,6 +349,27 @@ pub fn project_and_apply(
     Ok(())
 }
 
+/// Project the curve onto this slot's oracle, then refresh the oracle TWAPs and
+/// quote state against it. `update_perp_bid_ask_twap` runs this before
+/// sampling the quote into the mark TWAP.
+pub fn refresh_for_mark_sample(
+    market: &mut PerpMarket,
+    mm_oracle_price_data: &MMOraclePriceData,
+    oracle_validity: Option<OracleValidity>,
+    now: i64,
+    slot: u64,
+) -> VelocityResult<()> {
+    let projection_inputs = repeg::ProjectionInputs::from_market(market);
+    project_and_apply(
+        &mut market.amm,
+        &projection_inputs,
+        mm_oracle_price_data,
+        oracle_validity,
+        slot,
+    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, oracle_validity, now, slot)
+}
+
 pub fn update_amm_and_check_validity(
     market: &mut PerpMarket,
     mm_oracle_price_data: &MMOraclePriceData,
@@ -370,17 +378,11 @@ pub fn update_amm_and_check_validity(
     clock_slot: u64,
     action: Option<VelocityAction>,
 ) -> VelocityResult {
-    // PerpMarket-stats refresh + one-hour-EMA validity gate against the
-    // requested action. AMM mutation happens later in the liquidation
-    // fill flow via `Quoter::setup` — not here.
+    // Oracle TWAPs and quote state refresh, then the one-hour-EMA validity
+    // gate against the requested action. The curve is projected later, in
+    // `Quoter::setup`.
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state, clock_slot)?;
-    market.update_oracle_derived_stats(
-        mm_oracle_price_data,
-        validity,
-        now,
-        clock_slot,
-        state.slot_clock(),
-    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
 
     // 1 hour EMA
     let risk_ema_price = market

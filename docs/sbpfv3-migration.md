@@ -25,6 +25,12 @@ fails with ``can't find crate for `core` `` and passing `--tools-version` yourse
 duplicate argument. Driving cargo-build-sbf decouples the bytecode version from the Anchor CLI
 version. The IDL still comes from `anchor idl build` via `bun run program:idl`.
 
+The deployable `.so` that CI stages for Squads is built differently, with `solana-verify build` in
+the `build-program` action, used by `manual-devnet-deploy.yaml` and `release-program.yaml`. That
+build passes `--arch v3 --cargo-build-sbf-args=--tools-version=v1.57` with the 4.1.2 image, the same
+recipe as the `verified-build` job and `verify-buffer.sh`, and then runs `assert-sbpf-version.sh`
+on the output. Without those flags solana-verify emits v0.
+
 The build passes `-z defs`. Without it an unresolved syscall links as `call -1`, which builds,
 deploys, and only traps when that code path runs on chain. This is the failure mode the Anza guide
 warns about, and the flag is the only thing that catches it.
@@ -69,7 +75,7 @@ fewer chunked writes per deploy and less rent on the buffer account.
 
 The old suite ran on `solana-bankrun@0.4.0`, which embeds an Agave 2.x runtime. It rejects a v3
 `.so` at the first instruction with `Program is not deployed` / `invalid account data for
-instruction`. Note that CLAUDE.md attributes that same text to 896-byte stub `.so` files built with
+instruction`. Note that docs/agents/testing.md attributes that same text to 896-byte stub `.so` files built with
 the wrong feature flags; under v3 it means the runtime does not recognize the bytecode version.
 
 `solana-bankrun` stopped at 0.4.0 and will not gain v3 support. The `litesvm` npm package is its

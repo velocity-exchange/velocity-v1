@@ -1,6 +1,6 @@
 [package]
 name = "velocity"
-version = "2.168.0"
+version = "2.169.0"
 description = "Created with Anchor"
 edition = "2018"
 
@@ -58,3 +58,6 @@ pyth = { path = "../pyth", features = ["no-entrypoint"], optional = true }
 bytes = "1.2.0"
 pyth = { path = "../pyth", features = ["no-entrypoint"]}
 base64 = "0.13.0"
+
+[lints]
+workspace = true

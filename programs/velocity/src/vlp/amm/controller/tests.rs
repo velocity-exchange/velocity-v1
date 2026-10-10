@@ -1513,7 +1513,6 @@ fn update_pool_balances_revenue_to_fee_devnet_state_test() {
     assert_eq!(market.insurance_claim.revenue_withdraw_since_last_settle, 0);
     assert_eq!(market.insurance_claim.last_revenue_withdraw_ts, 0);
 
-    market.insurance_claim.max_revenue_withdraw_per_period = 100000000 * 2;
     assert_eq!(spot_market.deposit_balance, 200 * SPOT_BALANCE_PRECISION);
     assert_eq!(
         spot_market.revenue_pool.scaled_balance,
@@ -1613,7 +1612,6 @@ fn update_pool_balances_revenue_to_fee_new_market() {
     assert_eq!(market.insurance_claim.revenue_withdraw_since_last_settle, 0);
     assert_eq!(market.insurance_claim.last_revenue_withdraw_ts, 0);
 
-    market.insurance_claim.max_revenue_withdraw_per_period = 100000000 * 2;
     assert_eq!(spot_market.deposit_balance, 200 * SPOT_BALANCE_PRECISION);
     assert_eq!(
         spot_market.revenue_pool.scaled_balance,

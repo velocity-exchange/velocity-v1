@@ -59,7 +59,7 @@ pub fn simulate_place_perp_order(
     let state = NativeState::try_deserialize(&mut state_aligned.as_slice())
         .map_err(|_| ErrorCode::UnableToLoadAccountLoader)?;
 
-    let mut user = user.clone();
+    let mut user = *user;
     if let Some(max_margin_ratio) = max_margin_ratio {
         user.update_perp_position_max_margin_ratio(order_params.market_index, max_margin_ratio)?;
     }

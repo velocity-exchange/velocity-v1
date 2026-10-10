@@ -387,11 +387,11 @@ export class VelocityClient {
 				this.isOrderIncreasingPosition(orderParams, userAccount.subAccountId)
 			) {
 				preIxs.push(
-					await this.getTransferIsolatedPerpPositionDepositIx(
+					...(await this.getIsolatedDepositIxsForOrder(
 						isolatedPositionDepositAmount as BN,
 						orderParams.marketIndex,
 						userAccount.subAccountId
-					)
+					))
 				);
 			}
 
@@ -5466,7 +5466,10 @@ export class VelocityClient {
 	 * @throws (on-chain `UserBankrupt`/`CantTransferBetweenSameUserAccount`) for the standard transfer
 	 * preconditions, or `InvalidTransferPerpPosition` if the oracle is invalid, fills are paused for
 	 * `marketIndex`, `amount`'s sign/magnitude/step-size don't satisfy the constraints above, or
-	 * `fromSubAccountId` has no position in `marketIndex`.
+	 * `fromSubAccountId` has no position in `marketIndex`, or `SpotMarketInterestStaleForMargin` if
+	 * either sub-account borrows from a spot market whose interest is stale. To avoid that, build the
+	 * transaction yourself from `getStaleSpotInterestCrankIxs([fromUserAccount, toUserAccount])`
+	 * followed by `getTransferPerpPositionIx`.
 	 */
 	public async transferPerpPosition(
 		fromSubAccountId: number,
@@ -5716,7 +5719,9 @@ export class VelocityClient {
 	 * **from the isolated position back to general**. If the requested outflow from the isolated
 	 * position would exceed its current deposit (i.e. it needs unrealized PnL to be realized first, or
 	 * the caller wants to withdraw everything), prepends a `TRY_SETTLE` settle-PnL instruction for
-	 * `perpMarketIndex` before the transfer.
+	 * `perpMarketIndex` before the transfer. A positive `amount` also prepends
+	 * `getStaleSpotInterestCrankIxs` for the sub-account, since releasing cross collateral values its
+	 * spot borrows for margin.
 	 * @param amount - Signed amount to move, in the quote spot market's token precision (e.g.
 	 * QUOTE_PRECISION (1e6) for USDC); positive = into the isolated position, negative = out of it. Pass
 	 * `MIN_I64` to move the entire isolated deposit back to general.
@@ -5764,6 +5769,15 @@ export class VelocityClient {
 			ixs.push(settleIx);
 		}
 
+		if (amount.gt(ZERO)) {
+			// Cross releases collateral, so its stale borrow markets must be cranked first.
+			ixs.push(
+				...(await this.getStaleSpotInterestCrankIxs([
+					this.getUserAccountOrThrow(subAccountId),
+				]))
+			);
+		}
+
 		ixs.push(transferIx);
 
 		const tx = await this.buildTransaction(ixs, txParams);
@@ -5772,6 +5786,29 @@ export class VelocityClient {
 			skipPreflight: true,
 		});
 		return txSig;
+	}
+
+	/**
+	 * The cross-to-isolated transfer an order prepends, preceded by the interest cranks it
+	 * needs. Moving collateral out of cross values the sub-account's spot borrows for margin,
+	 * and the program reverts with `SpotMarketInterestStaleForMargin` when one of their markets
+	 * is stale.
+	 */
+	private async getIsolatedDepositIxsForOrder(
+		amount: BN,
+		perpMarketIndex: number,
+		subAccountId?: number
+	): Promise<TransactionInstruction[]> {
+		return [
+			...(await this.getStaleSpotInterestCrankIxs([
+				this.getUserAccountOrThrow(subAccountId),
+			])),
+			await this.getTransferIsolatedPerpPositionDepositIx(
+				amount,
+				perpMarketIndex,
+				subAccountId
+			),
+		];
 	}
 
 	/**
@@ -6134,8 +6171,11 @@ export class VelocityClient {
 	 *
 	 * The program refuses to value a spot **borrow** for margin through an index that
 	 * has not accrued recently (`SpotMarketInterestStaleForMargin`). It applies on
-	 * withdraw, transfer deposit, transfer pools, swap, isolated-position withdraw,
-	 * and any perp fill — for the taker and for every maker alike. Only borrow
+	 * withdraw, transfer deposit, transfer pools, transfer perp position (including
+	 * the vAMM-hedger transfer), swap, cross-to-isolated deposit transfer, isolated-position
+	 * withdraw, any perp fill — for the taker and for every maker alike — and the
+	 * liquidator's own account on `liquidatePerp`, `liquidateSpot`,
+	 * `liquidateBorrowForPerpPnl` and `liquidatePerpPnlForDeposit`. Only borrow
 	 * positions count; a stale deposit index understates collateral and is allowed.
 	 *
 	 * Each market earns its own window from its rate ceiling
@@ -6182,7 +6222,8 @@ export class VelocityClient {
 	/**
 	 * Builds one `updateSpotMarketCumulativeInterest` instruction per market that
 	 * `getStaleSpotInterestMarketIndexes` names. Prepend them to a withdraw, swap,
-	 * transfer, or fill so the margin check sees a current borrow index.
+	 * transfer, fill, or (for the liquidator's account) a liquidation so the margin
+	 * check sees a current borrow index.
 	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
 	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
 	 * @returns The instructions, in ascending market-index order.
@@ -6487,11 +6528,11 @@ export class VelocityClient {
 			this.isOrderIncreasingPosition(orderParams, subAccountId)
 		) {
 			preIxs.push(
-				await this.getTransferIsolatedPerpPositionDepositIx(
+				...(await this.getIsolatedDepositIxsForOrder(
 					isolatedPositionDepositAmount as BN,
 					orderParams.marketIndex,
 					subAccountId
-				)
+				))
 			);
 		}
 
@@ -7294,11 +7335,11 @@ export class VelocityClient {
 				this.isOrderIncreasingPosition(p, subAccountId)
 			) {
 				preIxs.push(
-					await this.getTransferIsolatedPerpPositionDepositIx(
+					...(await this.getIsolatedDepositIxsForOrder(
 						isolatedPositionDepositAmount as BN,
 						p.marketIndex,
 						subAccountId
-					)
+					))
 				);
 			}
 		}
@@ -8954,11 +8995,11 @@ export class VelocityClient {
 				this.isOrderIncreasingPosition(orderParams, subAccountId)
 			) {
 				placeAndTakeIxs.push(
-					await this.getTransferIsolatedPerpPositionDepositIx(
+					...(await this.getIsolatedDepositIxsForOrder(
 						isolatedPositionDepositAmount as BN,
 						orderParams.marketIndex,
 						subAccountId
-					)
+					))
 				);
 			}
 

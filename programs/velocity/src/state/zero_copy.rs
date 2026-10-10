@@ -14,6 +14,10 @@ use {
 
 pub trait HasLen {
     fn len(&self) -> u32;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 pub struct AccountZeroCopy<'a, T, F> {
@@ -29,6 +33,10 @@ where
 {
     pub fn len(&self) -> u32 {
         self.fixed.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn get(&self, index: u32) -> &T {
@@ -55,6 +63,10 @@ where
 {
     pub fn len(&self) -> u32 {
         self.fixed.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn get_mut(&mut self, index: u32) -> &mut T {

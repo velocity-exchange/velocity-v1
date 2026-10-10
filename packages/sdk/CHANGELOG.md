@@ -1,5 +1,43 @@
 # @velocity-exchange/sdk
 
+## 0.26.1
+
+### Patch Changes
+
+- [#559](https://github.com/velocity-exchange/velocity-v1/pull/559) [`2e8caee`](https://github.com/velocity-exchange/velocity-v1/commit/2e8caeeed123b99e59edc60bcc14f985494769f6) Thanks [@0xahzam](https://github.com/0xahzam)! - `calculateNewAmm` and `calculateUpdatedAMM` now run a port of the program's `adjust_amm`, and
+  shared fixtures check it against the program. The k decrease uses the
+  program's arithmetic and lower bound, and its gain counts toward the cost, so the projected
+  update stays within the AMM's fees instead of being rejected. The SDK lowers k only where the
+  program does: curve update intensity of at least 100, the AMM able to lower k, and
+  `DisableFormulaicKUpdate` unset. Pass the market's fields through the new
+  `getKUpdateGate(market)` for an exact mirror. Without k, the peg moves as far as the plain budget
+  pays. `calculateNewAmm` returns the exact new curve as a sixth element.
+
+  `calculateLongShortFundingRate` compares long and short open interest by magnitude, so the larger
+  side gets the capped rate. It used to give longs the capped rate almost always, because
+  `baseAssetAmountShort` is negative.
+
+  Trade and position pricing (`calculateTradeSlippage`, `calculateTradeAcquiredAmounts`,
+  `calculateTargetPriceTrade`, `calculateBaseAssetValue`) go through the spread reserves when
+  `useSpread` is set, including on markets with `baseSpread` 0, as program fills do.
+
+  `calculateClaimablePnl` computes the pnl pool excess as `settle_pnl` does. The AMM fee pool no
+  longer counts, and net user pnl is floored at zero, so the result no longer exceeds what the
+  program settles.
+
+- [#547](https://github.com/velocity-exchange/velocity-v1/pull/547) [`4aa7170`](https://github.com/velocity-exchange/velocity-v1/commit/4aa71708fff4fd437f32458590e9ddffc74a3aa6) Thanks [@plutohan](https://github.com/plutohan)! - `getTriggerAuctionStartPrice` now matches the program on both branches of `get_perp_baseline_start_price_offset`: past 50bps of fast/slow TWAP divergence it uses the 5-minute mark/oracle offset alone, and inside the band it blends with the AMM's cached `longSpread`/`shortSpread` instead of half of `baseSpread`.
+
+- [#548](https://github.com/velocity-exchange/velocity-v1/pull/548) [`c906ea1`](https://github.com/velocity-exchange/velocity-v1/commit/c906ea1e591635da8a336ca02e2f6a2ae101ecae) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Paths that move collateral from cross into an isolated perp position now prepend
+  `updateSpotMarketCumulativeInterest` for every stale spot market the sub-account borrows from:
+  `transferIsolatedPerpPositionDeposit` with a positive amount, and the `isolatedPositionDepositAmount`
+  option of `prepareMarketOrderTxs`, `placePerpOrder`, `preparePlaceOrdersTx` and
+  `preparePlaceAndTakePerpOrderWithAdditionalOrders`. The program now values the sub-account's borrows
+  on that transfer and reverts with `SpotMarketInterestStaleForMargin` (6371) when one is stale.
+
+  `transferPerpPosition`, the vAMM-hedger transfer and the liquidator side of the four liquidation
+  instructions can also revert with 6371. Prepend `getStaleSpotInterestCrankIxs` for the accounts
+  involved; `transferPerpPosition` needs `getTransferPerpPositionIx` to do so.
+
 ## 0.26.0
 
 ### Minor Changes

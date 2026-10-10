@@ -360,17 +360,12 @@ impl FeedHealth {
     /// pyth-lazer feeds tick every 50-200ms; this much silence means the feed is dead
     const PYTH_STALE_LIMIT_MS: u64 = 60_000;
 
-    fn unix_now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-
     /// Record a gRPC slot update (marks the grpc feed tracked)
     pub fn touch_slot(&self) {
-        self.last_slot_update_ms
-            .store(Self::unix_now_ms(), std::sync::atomic::Ordering::Relaxed);
+        self.last_slot_update_ms.store(
+            crate::common::keeper::unix_now_ms(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// Record the swift subscription state (marks the swift feed tracked)
@@ -383,8 +378,10 @@ impl FeedHealth {
 
     /// Record a pyth-lazer price update (marks the pyth feed tracked)
     pub fn touch_pyth(&self) {
-        self.last_pyth_update_ms
-            .store(Self::unix_now_ms(), std::sync::atomic::Ordering::Relaxed);
+        self.last_pyth_update_ms.store(
+            crate::common::keeper::unix_now_ms(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// false only when the grpc feed is tracked and stale
@@ -392,7 +389,8 @@ impl FeedHealth {
         let last = self
             .last_slot_update_ms
             .load(std::sync::atomic::Ordering::Relaxed);
-        last == 0 || Self::unix_now_ms().saturating_sub(last) < Self::GRPC_STALE_LIMIT_MS
+        last == 0
+            || crate::common::keeper::unix_now_ms().saturating_sub(last) < Self::GRPC_STALE_LIMIT_MS
     }
 
     /// false only when the swift feed is tracked and disconnected
@@ -405,6 +403,7 @@ impl FeedHealth {
         let last = self
             .last_pyth_update_ms
             .load(std::sync::atomic::Ordering::Relaxed);
-        last == 0 || Self::unix_now_ms().saturating_sub(last) < Self::PYTH_STALE_LIMIT_MS
+        last == 0
+            || crate::common::keeper::unix_now_ms().saturating_sub(last) < Self::PYTH_STALE_LIMIT_MS
     }
 }

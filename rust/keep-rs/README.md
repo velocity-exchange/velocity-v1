@@ -107,7 +107,7 @@ flowchart TD
         C1["Slot Receiver (from gRPC)"]
         C2["Swift Order Stream"]
         C3["Find Crosses"]
-        C4["try_auction_fill / try_swift_fill"]
+        C4["fill_auction_crosses / fill_swift_order"]
     end
 
     subgraph Transaction_Worker
@@ -224,7 +224,7 @@ flowchart TD
 
 ### 1. Initialization (`LiquidatorBot::new`)
 
-`new` builds the DLOB the strategy matches against and spawns its notifier thread, a
+`new` builds the DLOB the liquidator matches against and spawns its notifier thread, a
 `TxWorker` thread that signs, sends, and confirms transactions, a `MarketState` cache of
 market metadata and oracle prices, gRPC subscriptions for users, oracles, and markets, and
 a liquidation worker thread that consumes liquidatable users. It skips markets whose name
@@ -249,13 +249,14 @@ at most every 2 seconds, converted to slots at the current slot duration. After 
 attempt it backs off, starting at 5 seconds and doubling up to a 5 minute cap, and it
 prices each transaction at the 60th percentile priority fee.
 
-### 5. Liquidation strategy (`PrimaryLiquidationStrategy`)
+### 5. Liquidation plan and execution (`LiquidationEngine`)
 
-For perps the strategy takes the position with the largest notional, asks the DLOB for the
-top makers on the side that absorbs it (bids for a long liquidatee, asks for a short), and
-builds a `liquidate_perp_with_fill` transaction. With no eligible makers it falls back to
-taking the position over with `liquidate_perp`, which it only does when the subaccount
-holds enough free collateral.
+`plan.rs` picks the route and `execute.rs` sends it. For perps the engine tries each
+liquidatable isolated position, then the cross position with the largest notional. It asks
+the DLOB for the top makers on the side that absorbs it (bids for a long liquidatee, asks
+for a short) and builds a `liquidate_perp_with_fill` transaction. With no eligible makers it
+falls back to taking the position over with `liquidate_perp`, which it only does when a
+subaccount holds enough free collateral.
 
 For spot it takes the largest borrow that is not dust (below twice the market's minimum
 order size), uses the largest deposit as collateral, and quotes Jupiter and Titan in
@@ -265,7 +266,7 @@ parallel, sending whichever route returns more output tokens. The swap is wrappe
 
 ### 6. Transaction lifecycle
 
-The strategy builds each transaction with a priority fee and a compute limit and hands it
+The engine builds each transaction with a priority fee and a compute limit and hands it
 to the `TxWorker` over the tx sender channel. The worker signs it, sends it, and records it
 as pending. gRPC transaction updates then confirm it, update the metrics, and drop it from
 the pending set.

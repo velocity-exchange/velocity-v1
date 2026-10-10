@@ -1409,8 +1409,9 @@ struct AuctionFillMarket {
 
 /// Try to fill each auction cross with its own tx.
 ///
-/// The first tx that sends carries the pyth-lazer post. Every cross reads the oracle as projected
-/// with the post, because the later txs land after the tx that carries it.
+/// Every fill tx carries the pyth-lazer post, and every cross reads the oracle as projected with
+/// it. The immediate vAMM leg needs an exchange oracle written in the same slot, and each tx
+/// simulates and lands on its own, so one tx's post does not cover another.
 async fn try_auction_fill(
     velocity: &'static VelocityClient,
     settings: &AuctionFillSettings,
@@ -1419,16 +1420,9 @@ async fn try_auction_fill(
     tx_worker: &TxSender,
 ) {
     let fill = AuctionFill::new(velocity, settings, &market, &auction_crosses, tx_worker);
-    let mut oracle_post_sent = false;
     for (taker_order, crosses) in auction_crosses.crosses {
         log::info!(target: TARGET, "try fill auction order: {taker_order:?}");
-        let carries_oracle_post = !oracle_post_sent && market.oracle_update.is_some();
-        if fill
-            .try_cross(&taker_order, crosses, carries_oracle_post)
-            .await
-        {
-            oracle_post_sent |= carries_oracle_post;
-        }
+        fill.try_cross(&taker_order, crosses).await;
     }
 }
 
@@ -1487,17 +1481,11 @@ impl<'a> AuctionFill<'a> {
         }
     }
 
-    /// Returns true when a fill tx was sent.
-    async fn try_cross(
-        &self,
-        taker_order: &L3Order,
-        crosses: MakerCrosses,
-        carries_oracle_post: bool,
-    ) -> bool {
+    async fn try_cross(&self, taker_order: &L3Order, crosses: MakerCrosses) {
         let Some((taker, taker_stats)) =
             fetch_user_and_stats(self.velocity, &taker_order.user, "auction fill")
         else {
-            return false;
+            return;
         };
 
         // The order may be gone since the DLOB snapshot. A trigger taker is then skipped. Any
@@ -1514,11 +1502,21 @@ impl<'a> AuctionFill<'a> {
         );
 
         if taker_is_trigger && !self.trigger_condition_met(taker_order, order.as_ref()) {
-            return false;
+            return;
         }
 
+        // The trigger ix runs before the fill in the same tx, so the program gates and sizes
+        // the triggered order.
+        let order = order.map(|order| {
+            if taker_is_trigger {
+                order_after_trigger(order, self.market.landing_slot, self.velocity.slot_clock())
+            } else {
+                order
+            }
+        });
+
         let makers = cached_makers(self.velocity, &taker_order.user, &crosses);
-        let gate = self.vamm_gate(&taker, &taker_stats, order, taker_is_trigger, &crosses);
+        let gate = self.vamm_gate(&taker, &taker_stats, order, &crosses);
         let vamm_fillable = order
             .filter(|_| crosses.has_vamm_cross && gate.is_open())
             .and_then(|order| self.vamm_fillable(&taker, &order, taker_order.is_reduce_only()));
@@ -1539,7 +1537,7 @@ impl<'a> AuctionFill<'a> {
             CrossAction::Skip => {
                 self.skip_cross(taker_order, &crosses, &gate, taker_is_trigger)
                     .await;
-                return false;
+                return;
             }
             CrossAction::FillMakersOnly => {
                 log::debug!(target: TARGET, "vamm leg gated, filling against makers only: {crosses:?}");
@@ -1554,10 +1552,7 @@ impl<'a> AuctionFill<'a> {
             is_trigger: taker_is_trigger,
         };
 
-        self.send_fill(fill, crosses, makers, carries_oracle_post)
-            .await;
-
-        true
+        self.send_fill(fill, crosses, makers).await;
     }
 
     fn trigger_condition_met(&self, taker_order: &L3Order, order: Option<&Order>) -> bool {
@@ -1593,7 +1588,6 @@ impl<'a> AuctionFill<'a> {
         taker: &User,
         taker_stats: &UserStats,
         order: Option<Order>,
-        taker_is_trigger: bool,
         crosses: &MakerCrosses,
     ) -> VammGate {
         let perp_market = &self.market.perp_market;
@@ -1619,15 +1613,11 @@ impl<'a> AuctionFill<'a> {
         gate.safe_stale_for_amm = !valid_for(VelocityAction::FillOrderAmmLowRisk);
         gate.safe_stale_immediate = !valid_for(VelocityAction::FillOrderAmmImmediate);
 
-        let Some(mut order) = order else {
+        let Some(order) = order else {
             return gate;
         };
 
         let landing_slot = self.market.landing_slot;
-        if taker_is_trigger {
-            order = order_after_trigger(order, landing_slot, self.velocity.slot_clock());
-        }
-
         gate.can_skip_auction = taker
             .can_skip_auction_duration(taker_stats, order.reduce_only)
             .unwrap_or(false);
@@ -1720,16 +1710,9 @@ impl<'a> AuctionFill<'a> {
         .await;
     }
 
-    async fn send_fill(
-        &self,
-        taker: TakerFill<'_>,
-        crosses: MakerCrosses,
-        makers: Vec<User>,
-        carries_oracle_post: bool,
-    ) {
+    async fn send_fill(&self, taker: TakerFill<'_>, crosses: MakerCrosses, makers: Vec<User>) {
         let market_index = self.market.market_index;
-        let tx_builder =
-            self.fill_tx_builder(&taker, crosses.taker_direction, makers, carries_oracle_post);
+        let tx_builder = self.fill_tx_builder(&taker, crosses.taker_direction, makers);
 
         // large accounts list, bump CU limit to compensate
         let cu_limit = self.settings.cu_limit;
@@ -1746,7 +1729,7 @@ impl<'a> AuctionFill<'a> {
             (tx_builder, cu_limit)
         };
 
-        let (tx, simulation_tx) = build_fill_tx(tx_builder, carries_oracle_post);
+        let (tx, simulation_tx) = build_fill_tx(tx_builder, self.market.oracle_update.is_some());
         self.tx_worker
             .send_fill_tx(
                 tx,
@@ -1769,7 +1752,6 @@ impl<'a> AuctionFill<'a> {
         taker: &TakerFill<'_>,
         taker_direction: PositionDirection,
         mut makers: Vec<User>,
-        carries_oracle_post: bool,
     ) -> TransactionBuilder<'_> {
         let settings = self.settings;
         let market_index = self.market.market_index;
@@ -1781,12 +1763,7 @@ impl<'a> AuctionFill<'a> {
         )
         .with_priority_fee(settings.priority_fee, Some(settings.cu_limit));
 
-        if let Some(update) = self
-            .market
-            .oracle_update
-            .as_ref()
-            .filter(|_| carries_oracle_post)
-        {
+        if let Some(update) = self.market.oracle_update.as_ref() {
             tx_builder =
                 tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
         }
@@ -1862,14 +1839,13 @@ fn cached_makers(velocity: &VelocityClient, taker: &Pubkey, crosses: &MakerCross
 /// The order as a trigger ix at `trigger_slot` leaves it, as `update_trigger_order_params`
 /// does. A triggered order restarts its auction, so its age counts from the trigger.
 fn order_after_trigger(order: Order, trigger_slot: u64, slot_clock: SlotClock) -> Order {
-    if !matches!(
-        order.trigger_condition,
-        OrderTriggerCondition::Above | OrderTriggerCondition::Below
-    ) {
-        return order;
-    }
-
     let mut triggered = order;
+    triggered.trigger_condition = match order.trigger_condition {
+        OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
+        OrderTriggerCondition::Below => OrderTriggerCondition::TriggeredBelow,
+        _ => return order,
+    };
+
     if order.reduce_only
         && slot_clock.elapsed(order.slot, trigger_slot) > SAFE_TRIGGER_ORDER_MIN_REST
     {
@@ -3729,6 +3705,11 @@ mod tests {
         // 151 slots at 400ms is past the 60s rest
         let triggered = order_after_trigger(placed, 1_151, clock);
         assert_eq!(triggered.slot, 1_151);
+        assert_eq!(
+            triggered.trigger_condition,
+            OrderTriggerCondition::TriggeredBelow
+        );
+        assert!(triggered.triggered());
         assert!(triggered.is_bit_flag_set(OrderBitFlag::SafeTriggerOrder));
         assert!(triggered
             .is_low_risk_for_amm(i64::MAX / 2, 1_151, false, true)

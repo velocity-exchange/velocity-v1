@@ -154,9 +154,10 @@ Known gaps:
 
 `bun run local:upgrade <velocity|clob|midpoint|relay>` builds one program and deploys it to the
 running validator. The ledger stays. `--no-build` deploys the binary that is already built.
-`bun run sandbox:upgrade` does the same in the pamm-sandbox cluster. It reads the authority key
-from the secret store and deploys through the sandbox RPC host, so it needs Tailscale and an SSO
-session for the non-prod account.
+`bun run sandbox:upgrade` does the same in the pamm-sandbox cluster. It deploys through the
+sandbox RPC host, so it needs Tailscale. It signs with `~/.config/solana/id-pamm-sandbox.json`,
+or with the keypair at `SANDBOX_AUTHORITY`. That file is a copy of `authority.json` from the
+sandbox secret store. The SSO roles cannot read the secret store, so the copy must be local.
 
 ## The pamm-sandbox cluster
 

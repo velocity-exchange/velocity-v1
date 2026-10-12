@@ -1,7 +1,9 @@
 import { Keypair } from '@solana/web3.js';
 import { BN } from '../isomorphic/anchor';
-import nacl from 'tweetnacl';
-import { decodeUTF8 } from 'tweetnacl-util';
+import {
+	isValidChallengeNonce,
+	signChallengeNonce,
+} from '../swift/challengeNonce';
 import WebSocket from 'ws';
 
 const SEND_INTERVAL = 500;
@@ -19,6 +21,7 @@ type Quote = {
 type WsMessage = {
 	channel: string;
 	nonce?: string;
+	auth_domain?: string;
 	message?: string;
 };
 
@@ -50,16 +53,24 @@ export class IndicativeQuotesSender {
 		private keypair: Keypair
 	) {}
 
-	generateChallengeResponse(nonce: string): string {
-		const messageBytes = decodeUTF8(nonce);
-		const signature = nacl.sign.detached(messageBytes, this.keypair.secretKey);
-		const signatureBase64 = Buffer.from(signature).toString('base64');
-		return signatureBase64;
+	generateChallengeResponse(nonce: string, authDomain?: unknown): string {
+		return signChallengeNonce(nonce, this.keypair, authDomain);
 	}
 
 	handleAuthMessage(message: WsMessage): void {
 		if (message['channel'] === 'auth' && message['nonce'] != null) {
-			const signatureBase64 = this.generateChallengeResponse(message['nonce']);
+			if (!isValidChallengeNonce(message['nonce'])) {
+				console.error(
+					'indicative quotes server sent a malformed auth nonce; not signing it, reconnecting'
+				);
+				this.scheduleReconnect();
+				return;
+			}
+
+			const signatureBase64 = this.generateChallengeResponse(
+				message['nonce'],
+				message['auth_domain']
+			);
 			this.ws?.send(
 				JSON.stringify({
 					pubkey: this.keypair.publicKey.toBase58(),

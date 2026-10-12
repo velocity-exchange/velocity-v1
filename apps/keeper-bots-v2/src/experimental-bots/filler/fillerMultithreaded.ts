@@ -3242,6 +3242,11 @@ export class FillerMultithreaded {
 
 	protected async rebalance() {
 		logger.info(`Rebalancing filler`);
+		if (this.dryRun) {
+			logger.info(`Dry run: not swapping USDC for SOL`);
+			return;
+		}
+
 		if (this.jupiterClient !== undefined) {
 			logger.info(`Swapping USDC for SOL to rebalance filler`);
 			swapFillerHardEarnedUSDCForSOL(

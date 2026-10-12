@@ -54,7 +54,9 @@ use {
     },
     velocity_rs::{
         constants::MarketExt,
-        swift_order_subscriber::SignedMessageInfo,
+        swift_order_subscriber::{
+            domain_separated_challenge, SignedMessageInfo, SWIFT_AUTH_DOMAIN,
+        },
         types::{
             accounts::{PerpMarket, SignedMsgWsDelegates, UserStats},
             MarketType, MarketTypeExt,
@@ -125,10 +127,8 @@ pub struct ServerParams {
 }
 
 impl Challenge {
-    /// Try to authenticate
-    ///
-    /// * `pubkey` purported identity
-    /// * `signature` signed bytes of challenge `nonce`
+    /// Try to authenticate `pubkey` by its signature over the challenge `nonce`. A client
+    /// that predates the auth domain signs the bare nonce, so both forms pass.
     fn authenticate(&self, pubkey: [u8; 32], signature: &Signature) -> Result<()> {
         let pubkey = PublicKey::from_bytes(pubkey.as_slice()).context("Invalid public key")?;
 
@@ -138,7 +138,8 @@ impl Challenge {
         }
 
         pubkey
-            .verify(self.nonce.as_bytes(), signature)
+            .verify(&domain_separated_challenge(&self.nonce), signature)
+            .or_else(|_| pubkey.verify(self.nonce.as_bytes(), signature))
             .context("Invalid message/signature")
     }
 }
@@ -454,9 +455,11 @@ impl WsConnection {
     ) -> Result<(), WsError> {
         let log_prefix = format!("[websocket: {}]", self.pubkey);
 
-        if let Err(err) = self
-            .send_message(WsMessage::auth().set_nonce(self.nonce().expect("nonce exists").as_str()))
-        {
+        if let Err(err) = self.send_message(
+            WsMessage::auth()
+                .set_nonce(self.nonce().expect("nonce exists").as_str())
+                .set_auth_domain(SWIFT_AUTH_DOMAIN),
+        ) {
             log::error!(target: "ws", "{log_prefix}: failed to init Ws auth challenge: {err:?}");
             return Err(WsError::ChannelClosed);
         }
@@ -1287,6 +1290,28 @@ mod test {
     }
 
     #[tokio::test]
+    async fn auth_challenge_ok_with_auth_domain() {
+        let wallet = Wallet::new(Keypair::new());
+
+        let mut ws_conn = WsConnection::new(*wallet.authority());
+        let signature = wallet
+            .sign_message(&domain_separated_challenge(&ws_conn.nonce().unwrap()))
+            .expect("signed");
+
+        let res = ws_conn.handle_client_message(
+            WsClientMessage::Auth(WsAuthMessage {
+                pubkey: *wallet.authority(),
+                stake_pubkey: Pubkey::new_unique(),
+                signature: signature.as_ref().try_into().unwrap(),
+            }),
+            Box::leak(Box::default()),
+        );
+
+        assert!(res.is_ok());
+        assert!(ws_conn.is_authenticated());
+    }
+
+    #[tokio::test]
     async fn auth_challenge_fail() {
         let pubkey = Pubkey::new_unique();
         let stake_pubkey = Pubkey::new_unique();
@@ -1373,6 +1398,13 @@ mod test {
         assert_eq!(
             auth_response.get("nonce").map(|m| m.as_str()).unwrap(),
             Some(expected_nonce.as_str()),
+        );
+        assert_eq!(
+            auth_response
+                .get("auth_domain")
+                .map(|m| m.as_str())
+                .unwrap(),
+            Some(SWIFT_AUTH_DOMAIN),
         );
     }
 

@@ -11,7 +11,7 @@ use {
             },
             funding::*,
             helpers::on_the_hour_update,
-            oracle::{block_operation, OracleValidity},
+            oracle::{block_operation, OracleGateInputs, OracleValidity},
             time::legacy_slot_duration_i64,
         },
         state::{
@@ -416,51 +416,12 @@ fn max_funding_rates() {
     assert!(!did_succeed);
 }
 
-/// OtterSec #109 — the funding crank must evaluate its own oracle gate against
-/// the TWAP as it stood *before* the instruction's own refresh.
-///
-/// `handle_update_funding_rate` used to call the composed
-/// `update_oracle_derived_stats` (which advances `last_oracle_price_twap` /
-/// `last_oracle_price_twap_5min`) and only then call `update_funding_rate`, whose
-/// gate `oracle::block_operation` reads those same two fields. The refresh drags
-/// the TWAP toward the live price, so a genuinely `TooVolatile` oracle cleared its
-/// own gate inside the same instruction and went on to mutate cumulative funding.
-/// It now calls the TWAP-free `refresh_amm_quote_state` instead.
-#[test]
-fn funding_gate_not_cleared_by_own_twap_refresh() {
-    let now = 3600_i64;
-    let slot = 1_u64;
-
-    let state = State {
-        oracle_guard_rails: OracleGuardRails {
-            validity: ValidityGuardRails {
-                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
-                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
-                confidence_interval_max_size: 1000,
-                too_volatile_ratio: 5,
-            },
-            ..OracleGuardRails::default()
-        },
-        ..State::default()
-    };
-
-    // Live oracle 51, mark 12, and a funding-period TWAP still sitting at a stale
-    // 8. 51 / 8 == 6 > too_volatile_ratio(5), so the oracle is `TooVolatile` and
-    // funding must not update. The 5-min TWAP sits on the mark so the divergence
-    // half of the gate stays clear and only the volatility term is in play.
-    let mut oracle_price = get_pyth_price(51, 6);
-    let oracle_price_key =
-        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-    create_anchor_account_info!(
-        oracle_price,
-        &oracle_price_key,
-        PythLazerOracle,
-        oracle_account_info
-    );
-    let mut oracle_map =
-        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
-    let market = PerpMarket {
+/// Live oracle 51, mark 12, and a funding-period TWAP still sitting at a stale
+/// 8. 51 / 8 == 6 > too_volatile_ratio(5), so the oracle is `TooVolatile` and
+/// funding must not update. The 5-min TWAP sits on the mark so only the
+/// volatility term of the gate is in play.
+fn too_volatile_market(oracle_price_key: Pubkey) -> PerpMarket {
+    PerpMarket {
         market_index: 0,
         status: crate::state::market_status::MarketStatus::Active,
         // ContractTier::C => a 50% sanitize band, wide enough for one refresh to
@@ -488,7 +449,54 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
             ..MarketStats::default()
         },
         ..PerpMarket::default()
-    };
+    }
+}
+
+fn funding_gate_state() -> State {
+    State {
+        oracle_guard_rails: OracleGuardRails {
+            validity: ValidityGuardRails {
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
+                confidence_interval_max_size: 1000,
+                too_volatile_ratio: 5,
+            },
+            ..OracleGuardRails::default()
+        },
+        ..State::default()
+    }
+}
+
+/// OtterSec #109 — the funding crank must evaluate its own oracle gate against
+/// the TWAP as it stood *before* the instruction's own refresh.
+///
+/// `handle_update_funding_rate` used to call the composed
+/// `update_oracle_derived_stats` (which advances `last_oracle_price_twap` /
+/// `last_oracle_price_twap_5min`) and only then call `update_funding_rate`, whose
+/// gate `oracle::block_operation` reads those same two fields. The refresh drags
+/// the TWAP toward the live price, so a genuinely `TooVolatile` oracle cleared its
+/// own gate inside the same instruction and went on to mutate cumulative funding.
+/// It now calls the TWAP-free `refresh_amm_quote_state` instead.
+#[test]
+fn funding_gate_not_cleared_by_own_twap_refresh() {
+    let now = 3600_i64;
+    let slot = 1_u64;
+
+    let state = funding_gate_state();
+
+    let mut oracle_price = get_pyth_price(51, 6);
+    let oracle_price_key =
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+    create_anchor_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        PythLazerOracle,
+        oracle_account_info
+    );
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+
+    let market = too_volatile_market(oracle_price_key);
 
     let reserve_price = market.amm.reserve_price().unwrap();
     assert_eq!(reserve_price, 12 * PRICE_PRECISION_U64);
@@ -514,9 +522,8 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     // Baseline: the gate blocks this oracle.
     assert!(block_operation(
         &market,
-        &oracle_price_data,
+        OracleGateInputs::with_current_twaps(&market, &oracle_price_data, reserve_price),
         &state.oracle_guard_rails,
-        reserve_price,
         slot,
         SlotClock::baseline(),
     )
@@ -538,9 +545,12 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     assert!(
         !block_operation(
             &unfixed,
-            &oracle_price_data,
+            OracleGateInputs::with_current_twaps(
+                &unfixed,
+                &oracle_price_data,
+                unfixed.amm.reserve_price().unwrap()
+            ),
             &state.oracle_guard_rails,
-            unfixed.amm.reserve_price().unwrap(),
             slot,
             SlotClock::baseline(),
         )
@@ -567,9 +577,12 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     assert_eq!(historical.last_oracle_price_twap_ts, 0);
     assert!(block_operation(
         &fixed,
-        &oracle_price_data,
+        OracleGateInputs::with_current_twaps(
+            &fixed,
+            &oracle_price_data,
+            fixed.amm.reserve_price().unwrap()
+        ),
         &state.oracle_guard_rails,
-        fixed.amm.reserve_price().unwrap(),
         slot,
         SlotClock::baseline(),
     )
@@ -577,6 +590,90 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     // ...and it still performed its own half: `last_oracle_valid` is stamped
     // (false here, since a TooVolatile oracle is not valid for an AMM fill).
     assert!(!fixed.market_stats.last_oracle_valid);
+}
+
+/// A fill advances the oracle TWAPs before it updates funding. The funding gate must
+/// read the TWAPs as they stood before the fill, or a too-volatile oracle clears it.
+#[test]
+fn fill_funding_gate_reads_entry_twaps() {
+    let now = 3600_i64;
+    let slot = 1_u64;
+    let state = funding_gate_state();
+
+    let mut oracle_price = get_pyth_price(51, 6);
+    let oracle_price_key =
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+    create_anchor_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        PythLazerOracle,
+        oracle_account_info
+    );
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+
+    let mut market = too_volatile_market(oracle_price_key);
+    let entry_oracle_data = market.market_stats.historical_oracle_data;
+
+    let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id()).unwrap();
+    let mm_oracle_price_data = market
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
+        )
+        .unwrap();
+    let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
+        &market,
+        &mm_oracle_price_data,
+        &state,
+        slot,
+    )
+    .unwrap();
+    market
+        .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
+        .unwrap();
+    let refreshed_oracle_data = market.market_stats.historical_oracle_data;
+    assert_ne!(refreshed_oracle_data, entry_oracle_data);
+
+    let mut unfixed = market;
+    assert!(
+        !matches!(
+            update_funding_rate(
+                0,
+                &mut unfixed,
+                &mut oracle_map,
+                now,
+                slot,
+                &state.oracle_guard_rails,
+                false,
+                None,
+            ),
+            Ok(false)
+        ),
+        "gating on the refreshed TWAPs is expected to clear the gate; if this trips, \
+         the fixture no longer reproduces the flip"
+    );
+
+    let updated = update_funding_rate(
+        0,
+        &mut market,
+        &mut oracle_map,
+        now,
+        slot,
+        &state.oracle_guard_rails,
+        false,
+        Some(entry_oracle_data),
+    )
+    .unwrap();
+
+    assert!(!updated);
+    assert_eq!(market.cumulative_funding_rate_long, 0);
+    assert_eq!(
+        market.market_stats.historical_oracle_data,
+        refreshed_oracle_data
+    );
 }
 
 #[test]
@@ -670,9 +767,12 @@ fn unsettled_funding_pnl() {
     assert_eq!(time_until_next_update, 0);
     let block_funding_rate_update = block_operation(
         &market,
-        oracle_price_data,
+        OracleGateInputs::with_current_twaps(
+            &market,
+            oracle_price_data,
+            market.amm.reserve_price().unwrap(),
+        ),
         &state.oracle_guard_rails,
-        market.amm.reserve_price().unwrap(),
         slot,
         SlotClock::baseline(),
     )
@@ -698,9 +798,12 @@ fn unsettled_funding_pnl() {
 
     let block_funding_rate_update = block_operation(
         &market,
-        oracle_price_data,
+        OracleGateInputs::with_current_twaps(
+            &market,
+            oracle_price_data,
+            market.amm.reserve_price().unwrap(),
+        ),
         &state.oracle_guard_rails,
-        market.amm.reserve_price().unwrap(),
         slot,
         SlotClock::baseline(),
     )

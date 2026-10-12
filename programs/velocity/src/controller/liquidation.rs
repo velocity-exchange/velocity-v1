@@ -271,6 +271,11 @@ pub fn liquidate_perp(
         state.slot_clock(),
     )?;
 
+    let pre_refresh_twap_5min = market
+        .market_stats
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+
     update_amm_and_check_validity(
         &mut market,
         &mm_oracle_price_data,
@@ -363,10 +368,7 @@ pub fn liquidate_perp(
         if perp_market.status != MarketStatus::Settlement {
             let oracle_price_too_divergent = is_oracle_too_divergent_with_twap_5min(
                 oracle_price,
-                perp_market
-                    .market_stats
-                    .historical_oracle_data
-                    .last_oracle_price_twap_5min,
+                pre_refresh_twap_5min,
                 state
                     .oracle_guard_rails
                     .max_oracle_twap_5min_percent_divergence()
@@ -958,6 +960,11 @@ pub fn liquidate_perp_with_fill(
         state.slot_clock(),
     )?;
 
+    let pre_refresh_twap_5min = market
+        .market_stats
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+
     update_amm_and_check_validity(
         &mut market,
         &mm_oracle_price_data,
@@ -1035,11 +1042,7 @@ pub fn liquidate_perp_with_fill(
 
     let oracle_price_too_divergent = is_oracle_too_divergent_with_twap_5min(
         oracle_price,
-        perp_market_map
-            .get_ref(&market_index)?
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_5min,
+        pre_refresh_twap_5min,
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence()

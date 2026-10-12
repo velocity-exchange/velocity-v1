@@ -1,0 +1,145 @@
+# Push a tag `sandbox-v<version>` to build every pamm-sandbox image from the
+# tagged commit, on any branch. Each image goes to ECR as
+# `pamm-sandbox/<name>:v<version>`, and the run summary lists the digest pins
+# for infrastructure-v3 gitops/non-prod/workloads/pamm-sandbox.
+#
+# Only the pamm-sandbox namespace runs these images. That is why this path may
+# skip the master-only gate that velocity-publish.yml applies.
+name: Publish pamm-sandbox images (sandbox tag)
+
+on:
+  push:
+    tags:
+      - 'sandbox-v*'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  SOLANA_VERSION: 4.3.0
+  REGISTRY: 725652782496.dkr.ecr.eu-west-1.amazonaws.com
+
+jobs:
+  programs:
+    name: Build the validator's programs
+    runs-on: ubicloud
+    timeout-minutes: 60
+    outputs:
+      relay_rev: ${{ steps.relay.outputs.rev }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          profile: minimal
+          override: true
+      - uses: ./.github/actions/setup-solana/
+      - name: Check out the pinned relay
+        id: relay
+        run: |
+          set -euo pipefail
+          rev="$(sed -n 's/^relay-spec = .*rev = "\([0-9a-f]\{7,40\}\)".*/\1/p' programs/velocity/Cargo.toml | head -1)"
+          git clone https://github.com/velocity-exchange/relay "$RUNNER_TEMP/relay"
+          git -C "$RUNNER_TEMP/relay" checkout --detach "$rev"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+      - name: Build programs
+        run: |
+          set -euo pipefail
+          bash deploy-scripts/build-sbf.sh devnet velocity
+          bash deploy-scripts/build-sbf-anchor-v2.sh clob
+          bash deploy-scripts/build-sbf-anchor-v2.sh midpoint
+          (cd "$RUNNER_TEMP/relay/programs" && cargo-build-sbf --arch v3 --tools-version v1.57 --manifest-path relay/Cargo.toml)
+          mkdir -p staged
+          cp target/deploy/velocity.so anchor-v2/target/deploy/clob.so anchor-v2/target/deploy/midpoint.so \
+            "$RUNNER_TEMP/relay/programs/target/deploy/relay.so" staged/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sandbox-programs
+          path: staged/
+          if-no-files-found: error
+
+  images:
+    name: Image ${{ matrix.name }}
+    needs: programs
+    runs-on: ubicloud
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: validator
+            context: local-stack
+            file: local-stack/validator.Dockerfile
+            target: sandbox
+          - name: tools
+            file: docker/ts-app.Dockerfile
+            target: tools
+            build_args: APP_SCOPE=@velocity-exchange/admin-cli
+          - name: relay-turner
+            file: docker/relay-turner.Dockerfile
+          - name: dlob-server
+            file: docker/ts-app.Dockerfile
+            build_args: |
+              APP_PATH=apps/dlob-server
+              APP_SCOPE=@velocity-exchange/dlob-server
+              APP_OUT=lib
+              APP_START=lib/index.js
+          - name: keeper-bots-v2
+            file: docker/ts-app.Dockerfile
+            build_args: |
+              APP_PATH=apps/keeper-bots-v2
+              APP_SCOPE=@velocity-exchange/keeper-bots-v2
+              APP_OUT=lib
+              APP_START=lib/index.js
+          - name: book-publisher
+            file: docker/rust-app.Dockerfile
+            build_args: APP_BIN=book-publisher
+          - name: swift
+            file: docker/rust-app.Dockerfile
+            build_args: APP_BIN=swift-server
+          - name: keep-rs
+            file: docker/rust-app.Dockerfile
+            build_args: APP_BIN=keeprs
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Stage the programs
+        if: matrix.name == 'validator'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sandbox-programs
+          path: local-stack/programs
+      - uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.PAMM_SANDBOX_ECR_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}
+          aws-region: eu-west-1
+      - uses: aws-actions/amazon-ecr-login@19d944daaa35f0fa1d3f7f8af1d3f2e5de25c5b7 # v2.1.4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Image tag
+        id: version
+        run: echo "tag=${GITHUB_REF_NAME#sandbox-}" >> "$GITHUB_OUTPUT"
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ matrix.context || '.' }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          push: true
+          provenance: false
+          platforms: linux/amd64
+          tags: ${{ env.REGISTRY }}/pamm-sandbox/${{ matrix.name }}:${{ steps.version.outputs.tag }}
+          build-args: |
+            ${{ matrix.build_args }}
+            RELAY_REV=${{ needs.programs.outputs.relay_rev }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_VERSION=${{ steps.version.outputs.tag }}
+          cache-from: type=gha,scope=sandbox-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=sandbox-${{ matrix.name }}
+      - name: Record the pin
+        env:
+          PIN: ${{ env.REGISTRY }}/pamm-sandbox/${{ matrix.name }}:${{ steps.version.outputs.tag }}@${{ steps.build.outputs.digest }}
+        run: echo "\`${PIN}\`" >> "$GITHUB_STEP_SUMMARY"

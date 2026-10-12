@@ -1,6 +1,6 @@
 # solana-test-validator and the solana CLI, for the local stack.
 # The `sandbox` target also bakes in the programs from programs/, where
-# sandbox-push.sh stages them, so the image runs without a checkout.
+# sandbox-publish.yml stages them, so the image runs without a checkout.
 #
 # Anza publishes no Linux arm64 release, and the x86_64 release cannot run
 # under Rosetta: agave asserts io_uring support at startup, and Rosetta does

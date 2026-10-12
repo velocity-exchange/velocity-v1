@@ -160,9 +160,9 @@ running validator. The ledger stays. `--no-build` deploys the binary that is alr
 
 The same stack also runs in the non-prod cluster, in the `pamm-sandbox` namespace. Its manifests
 and runbook live in infrastructure-v3 under `gitops/non-prod/workloads/pamm-sandbox/`.
-`bun run sandbox:push v0.1.0` builds the programs and every image for linux/amd64, pushes them to
-ECR with your AWS credentials, and prints the digest pins for those manifests. The Rust images
-compile under emulation on Apple Silicon, so a first push is slow.
+`bash deploy-scripts/release.sh sandbox --execute` tags `sandbox-v<next patch>` at HEAD on any
+branch. The tag runs `sandbox-publish.yml`, which builds the programs and every image and pushes
+them to ECR. Its run summary lists the digest pins for those manifests.
 
 Every program loads upgradeable under the authority key. When the validator starts on an existing
 ledger, it also deploys each mounted binary that changed since it last started. A ledger from

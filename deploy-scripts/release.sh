@@ -16,6 +16,7 @@
 #   docker  [app...]              push docker-<app>-v<next patch> for changed images
 #   infra   <stage...>            infra-v3 `yarn deploy a,b,c <stage>` for stale pins
 #   mainnet [prog]                push program-<prog>-v<Cargo version>
+#   sandbox [X.Y.Z]               push sandbox-v<next patch> at HEAD, on any branch
 #
 # Truth is git tags, Cargo.toml, packages/*/package.json, docker-info.json and
 # the gitops manifests; there is no state file. Re-running after a failure is
@@ -46,11 +47,13 @@ commands (in release order; no command = status)
   infra   <stage...>          infra-v3 \`yarn deploy a,b,c <stage>\` for every
                               image whose gitops pin is behind, one PR
   mainnet [prog]              push program-<prog>-v<Cargo version> at origin/master
+  sandbox [X.Y.Z]             push sandbox-v<next patch> at HEAD (or --branch ref):
+                              every pamm-sandbox image, from any branch
 
 options
   --execute        do it (default: dry run, read-only)
   --infra <path>   infrastructure-v3 checkout (or VELOCITY_INFRA_DIR)
-  --branch <ref>   devnet: build this ref instead of master
+  --branch <ref>   devnet: build this ref instead of master; sandbox: tag this ref
   --no-fetch       skip the initial \`git fetch origin master --tags\`
   --no-color       plain output (also honours NO_COLOR)
   -h, --help       this text
@@ -92,6 +95,7 @@ DEVNET_WF="manual-devnet-deploy.yaml"
 MAINNET_WF="release-program.yaml"
 NPM_WF="npm-publish.yml"
 DOCKER_WF="velocity-publish.yml"
+SANDBOX_WF="sandbox-publish.yml"
 # npm-publish.yml's `if:` skips these packages' tags (not public yet).
 NPM_CI_SKIPPED=" vaults-sdk cli-admin "
 # PROGRAMS is what manual-devnet-deploy.yaml offers; the router has no devnet workflow.
@@ -543,6 +547,32 @@ cmd_docker() {
 	dry_run_kv
 }
 
+cmd_sandbox() {
+	local ref="HEAD"; [ "$branch_ref" = master ] || ref="$branch_ref"
+	local sha last ver tag
+	sha="$(git rev-parse "$ref")"; last="$(latest_tag "sandbox-")"
+	ver="${args[0]:-$(next_patch "$( [ -n "$last" ] && tag_version "$last" || echo 0.1.-1)")}"
+	tag="sandbox-v$ver"
+
+	header "release sandbox" "$([ "$execute" -eq 1 ] || echo '(dry run)')"
+	kv "workflow" "$SANDBOX_WF"
+	kv "tag" "$tag → $ref @$(short "$sha")"
+	kv "last tag" "${last:-none}"
+
+	is_semver "$ver" || die "\"$ver\" is not X.Y.Z"
+	tag_exists "$tag" && die "$tag already exists"
+
+	steps_total=1
+	step "tag $(short "$sha") and push the tag"
+	mutate git tag "$tag" "$sha"
+	push_tags "$tag"
+
+	header "result"
+	kv "builds" "$(actions_url "$SANDBOX_WF")"
+	kv "then" "pin the digests from the run summary in infra-v3 gitops/non-prod/workloads/pamm-sandbox/"
+	dry_run_kv
+}
+
 cmd_infra() {
 	[ -n "$infra_dir" ] || die "no infra checkout: pass --infra <path> or set VELOCITY_INFRA_DIR"
 	[ -f "$infra_dir/scripts/deploy.js" ] || die "$infra_dir does not look like infrastructure-v3 (no scripts/deploy.js)"
@@ -605,5 +635,6 @@ case "$cmd" in
 	docker) cmd_docker ;;
 	infra) cmd_infra ;;
 	mainnet) cmd_mainnet ;;
+	sandbox) cmd_sandbox ;;
 	*) usage >&2; die "unknown command: $cmd" ;;
 esac

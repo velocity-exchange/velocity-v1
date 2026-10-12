@@ -99,8 +99,16 @@ jobs:
           # npm does not understand the workspace: protocol — rewrite those
           # ranges to concrete versions before packing.
           node .github/scripts/rewrite-workspace-deps.mjs "$path"
-          echo "publishing $name@$ver"
-          ( cd "$path" && npm publish --access public )
+          # A prerelease publishes under its prerelease id as the dist-tag, so
+          # `latest` stays on the last release. npm refuses a prerelease without --tag.
+          dist_tag=latest
+          if [[ "$ver" == *-* ]]; then
+            pre="${ver#*-}"
+            dist_tag="${pre%%.*}"
+          fi
+
+          echo "publishing $name@$ver under dist-tag $dist_tag"
+          ( cd "$path" && npm publish --access public --tag "$dist_tag" )
       - name: Notify Slack on failure
         if: failure()
         uses: slackapi/slack-github-action@e28cf165c92ffef168d23c5c9000cffc8a25e117 # v1.24.0

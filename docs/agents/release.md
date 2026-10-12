@@ -18,7 +18,9 @@ trusted publishing. `<pkg>` is the directory name under `packages/`.
 | `@velocity-exchange/vaults-sdk` | `npm-vaults-sdk-v0.2.3` |
 
 The tag version must match the `package.json` version set by the "Version Packages" PR. The
-workflow skips the publish if that version is already on the registry. Publishing uses `npm`, not
+workflow skips the publish if that version is already on the registry. A prerelease version such
+as `0.27.0-propamm.0` publishes under its prerelease id as the dist-tag (`propamm`), so `latest`
+does not move. Publishing uses `npm`, not
 `bun`, because bun does not implement npm's OIDC trusted-publishing flow.
 `.github/scripts/rewrite-workspace-deps.mjs` rewrites workspace dependency ranges to concrete
 versions before publish.

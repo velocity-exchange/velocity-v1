@@ -18,7 +18,7 @@
 use {
     crate::error::ErrorCode,
     anchor_lang::prelude::*,
-    relay_spec::{ResolvedCrankV0, RESPONSE_POINTER_LEN},
+    relay_spec::{AccountsRequestV0, ResolvedCrankV0, RESPONSE_POINTER_LEN},
 };
 
 /// PDA seed: `["relay_scratch"]`. One per program.
@@ -65,6 +65,22 @@ impl RelayScratchV0 {
         )
         .map_err(|e| {
             msg!("staging a resolved crank failed: {:?}", e);
+            error!(ErrorCode::RelayScratchStageFailed)
+        })
+    }
+
+    pub fn stage_request(
+        &mut self,
+        request: &AccountsRequestV0,
+    ) -> Result<[u8; RESPONSE_POINTER_LEN]> {
+        relay_spec::stage_request_into(
+            &mut self.scratch,
+            RELAY_SCRATCH_ACCOUNT_INDEX,
+            RELAY_SCRATCH_OFFSET,
+            request,
+        )
+        .map_err(|e| {
+            msg!("staging an accounts request failed: {:?}", e);
             error!(ErrorCode::RelayScratchStageFailed)
         })
     }

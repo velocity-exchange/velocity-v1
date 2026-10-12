@@ -25,9 +25,11 @@ use {
     program::{
         instructions::CrankCrossMatchArgs,
         state::{
+            perp_market::PerpMarket,
             prop_amm::{QuoterSlotV0, QuoterType, UserRefV0},
             router_quote::QuotedSourceKind,
             state::State,
+            user::User,
         },
     },
     relay_chain_source::ChainSource,
@@ -44,6 +46,99 @@ use {
         quoter_slab_pda, quoter_slab_slots,
     },
 };
+
+/// The crossed market's identity, as the map section needs it.
+struct MapSectionMarkets {
+    perp_market_index: u16,
+    perp_oracle: Pubkey,
+    quote_spot_market_index: u16,
+}
+
+/// The map section of a staged cross: the oracles, then the spot markets with
+/// the quote market first, then every other perp market the users hold. Each
+/// fill checks the margin of the users it moves, and that check reads every
+/// market they hold. The executor also prices its keeper payment off the SOL
+/// spot market, and refuses a cross that carries no SOL price.
+async fn map_section<S: ChainSource + ?Sized>(
+    source: &S,
+    velocity: &Pubkey,
+    state: &State,
+    crossed: MapSectionMarkets,
+    users: &[Pubkey],
+) -> Result<Vec<AccountMeta>> {
+    let mut held = held_markets(source, users).await?;
+    if state.sol_spot_market_index != 0 {
+        held.spot.insert(state.sol_spot_market_index);
+    }
+
+    held.spot.remove(&crossed.quote_spot_market_index);
+    held.perp.remove(&crossed.perp_market_index);
+    let spot_markets: Vec<u16> = std::iter::once(crossed.quote_spot_market_index)
+        .chain(held.spot.iter().copied())
+        .collect();
+
+    let mut oracles = map_oracles(source, velocity, crossed.perp_oracle, &spot_markets).await?;
+    for &index in &held.perp {
+        let market: PerpMarket =
+            fetch_zero_copy(source, &perp_market_pda(velocity, index), "perp market").await?;
+        if market.oracle != Pubkey::default() && !oracles.contains(&market.oracle) {
+            oracles.push(market.oracle);
+        }
+    }
+
+    let readonly = |key: Pubkey| AccountMeta::new_readonly(key, false);
+    Ok(oracles
+        .into_iter()
+        .map(readonly)
+        .chain(std::iter::once(AccountMeta::new(
+            spot_market_pda(velocity, crossed.quote_spot_market_index),
+            false,
+        )))
+        .chain(
+            spot_markets[1..]
+                .iter()
+                .map(|&index| readonly(spot_market_pda(velocity, index))),
+        )
+        .chain(
+            held.perp
+                .iter()
+                .map(|&index| readonly(perp_market_pda(velocity, index))),
+        )
+        .collect())
+}
+
+/// The markets a set of users hold positions in.
+struct HeldMarkets {
+    spot: std::collections::BTreeSet<u16>,
+    perp: std::collections::BTreeSet<u16>,
+}
+
+async fn held_markets<S: ChainSource + ?Sized>(
+    source: &S,
+    users: &[Pubkey],
+) -> Result<HeldMarkets> {
+    let mut held = HeldMarkets {
+        spot: Default::default(),
+        perp: Default::default(),
+    };
+    for key in users {
+        let user: User = fetch_zero_copy(source, key, "user").await?;
+        held.spot.extend(
+            user.spot_positions
+                .iter()
+                .filter(|position| !position.is_available())
+                .map(|position| position.market_index),
+        );
+        held.perp.extend(
+            user.perp_positions
+                .iter()
+                .filter(|position| !position.is_available())
+                .map(|position| position.market_index),
+        );
+    }
+
+    Ok(held)
+}
 
 fn speed_bump_refuses(legs: &[QuoterSlotV0]) -> bool {
     let custom = legs
@@ -288,27 +383,22 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         .to_account_metas(None)
     };
 
-    // The executor prices its keeper payment off the SOL spot market, and
-    // refuses a cross that carries no SOL price.
-    let mut spot_markets = vec![quote_spot_market_index];
-    if state.sol_spot_market_index != 0 && state.sol_spot_market_index != quote_spot_market_index {
-        spot_markets.push(state.sol_spot_market_index);
-    }
-
-    let oracles = map_oracles(source, velocity, *oracle, &spot_markets).await?;
+    let users: Vec<Pubkey> = std::iter::once(protocol.user)
+        .chain(makers.iter().map(|maker| pdas::user_of(velocity, maker)))
+        .collect();
     accounts.extend(
-        oracles
-            .iter()
-            .map(|key| AccountMeta::new_readonly(*key, false)),
-    );
-    accounts.push(AccountMeta::new(
-        spot_market_pda(velocity, quote_spot_market_index),
-        false,
-    ));
-    accounts.extend(
-        spot_markets[1..]
-            .iter()
-            .map(|&index| AccountMeta::new_readonly(spot_market_pda(velocity, index), false)),
+        map_section(
+            source,
+            velocity,
+            &state,
+            MapSectionMarkets {
+                perp_market_index: market_index,
+                perp_oracle: *oracle,
+                quote_spot_market_index,
+            },
+            &users,
+        )
+        .await?,
     );
 
     for maker in &makers {

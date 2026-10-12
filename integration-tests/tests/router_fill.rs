@@ -2532,16 +2532,40 @@ fn run_cross_resolver(
         }
         .data(),
     };
-    let keeper = fixture.keeper.insecure_clone();
-    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
-    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
-    if !pointer.has_work() {
-        return None;
+    resolve_in_rounds(fixture, ix)
+}
+
+/// Run a resolver the way a turner does. An accounts request appends the
+/// accounts and runs the resolver again, for at most relay's round count.
+fn resolve_in_rounds(
+    fixture: &mut Fixture,
+    mut ix: Instruction,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    for _ in 0..velocity::relay_spec::MAX_RESOLVE_ROUNDS {
+        let keeper = fixture.keeper.insecure_clone();
+        let meta = send(&mut fixture.svm, &keeper, ix.clone(), &[]).unwrap();
+        let pointer =
+            velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+        if !pointer.has_work() {
+            return None;
+        }
+
+        let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
+        let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+        if !pointer.wants_more_accounts() {
+            return Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap());
+        }
+
+        let request = velocity::relay_spec::AccountsRequestV0::read(staged).unwrap();
+        ix.accounts
+            .extend(request.accounts.iter().map(|account| AccountMeta {
+                pubkey: Pubkey::new_from_array(account.address),
+                is_signer: false,
+                is_writable: account.is_writable(),
+            }));
     }
 
-    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
-    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
-    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+    panic!("the resolver still asked for accounts in relay's last round");
 }
 
 /// Submit a staged executor the way a turner does: the instruction is the
@@ -6447,16 +6471,7 @@ fn run_quoter_cross_resolver(
         accounts,
         data: velocity::instruction::ResolveCrankCrossMatchQuoter {}.data(),
     };
-    let keeper = fixture.keeper.insecure_clone();
-    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
-    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
-    if !pointer.has_work() {
-        return None;
-    }
-
-    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
-    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
-    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+    resolve_in_rounds(fixture, ix)
 }
 
 /// The whole generic loop, turner-shaped: a maker declares their reprice
@@ -10869,14 +10884,11 @@ fn a_cross_carries_the_quote_markets_oracle() {
         .iter()
         .map(|a| Pubkey::new_from_array(a.address))
         .collect();
-    let perp_oracle_at = staged
-        .iter()
-        .position(|key| *key == fixture.oracle)
-        .expect("the perp oracle opens the map section");
-    assert_eq!(
-        staged[perp_oracle_at..perp_oracle_at + 3],
-        [fixture.oracle, quote_oracle, spot_market_pda(0)],
-        "the quote oracle sits between the perp oracle and the quote spot market"
+    let at = |wanted: Pubkey| staged.iter().position(|key| *key == wanted).unwrap();
+    assert_eq!(staged[at(fixture.oracle) + 1], quote_oracle);
+    assert!(
+        at(quote_oracle) < at(spot_market_pda(0)),
+        "oracles precede spot markets"
     );
 
     let payout = Pubkey::new_unique();
@@ -10891,6 +10903,127 @@ fn a_cross_carries_the_quote_markets_oracle() {
     assert_eq!(
         perp_position(&fixture.svm, &taker.user).base_asset_amount,
         (UNIT / 2) as i64
+    );
+}
+
+/// Rest half a unit at `price` from `maker`, active at once.
+fn place_clob_order_from(
+    fixture: &mut Fixture,
+    maker: &ClobMaker,
+    direction: PositionDirection,
+    price: u64,
+) {
+    let ix = place_clob_order_ix(
+        maker.user,
+        &maker.authority,
+        fixture.quoter_slab,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction,
+            price,
+            base_asset_amount: UNIT / 2,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+            reject_if_crossed: false,
+        },
+    );
+    send(&mut fixture.svm, &maker.authority, ix, &[]).unwrap();
+}
+
+/// Give `user` one SOL of collateral and a 0.1 long in perp market 1.
+fn hold_sol_and_a_second_perp(svm: &mut litesvm::LiteSVM, user: Pubkey) {
+    let mut account: User = read_zero_copy(svm, &user);
+    account.spot_positions[1].market_index = 1;
+    account.spot_positions[1].balance_type = SpotBalanceType::Deposit;
+    account.spot_positions[1].scaled_balance = SPOT_BALANCE_PRECISION_U64;
+    account.perp_positions[1].market_index = 1;
+    account.perp_positions[1].base_asset_amount = (UNIT / 10) as i64;
+    account.perp_positions[1].quote_asset_amount = -10 * QUOTE_PRECISION_I64;
+    account.perp_positions[1].quote_entry_amount = -10 * QUOTE_PRECISION_I64;
+    account.perp_positions[1].quote_break_even_amount = -10 * QUOTE_PRECISION_I64;
+    set_user_account(svm, user, &account);
+}
+
+/// A maker holding SOL collateral and a position in a second perp market is
+/// still crossed. The resolver asks relay for the makers' accounts, then for
+/// the markets their positions name, and stages every oracle their margin
+/// checks read.
+#[test]
+fn a_cross_names_every_market_a_makers_margin_reads() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+    let sol_market: SpotMarket = read_zero_copy(&fixture.svm, &spot_market_pda(1));
+    let sol_oracle = Pubkey::new_from_array(sol_market.oracle.to_bytes());
+    let other_oracle = add_bookless_perp_market(&mut fixture);
+
+    let maker = fixture.clob_maker_authority.pubkey();
+    let maker_stats =
+        Pubkey::find_program_address(&[b"user_stats", maker.as_ref()], &velocity_id()).0;
+    set_user_stats_account(&mut fixture.svm, maker_stats, &maker);
+
+    let bidder = add_clob_maker(&mut fixture);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    place_clob_order_from(&mut fixture, &bidder, PositionDirection::Long, 101 * PRICE);
+
+    // The positions land after the bid rests, because placement reads only
+    // the market it places into.
+    hold_sol_and_a_second_perp(&mut fixture.svm, bidder.user);
+
+    fixture.svm.warp_to_slot(12);
+    for (oracle, price) in [
+        (fixture.oracle, 100),
+        (other_oracle, 100),
+        (sol_oracle, 150),
+    ] {
+        set_oracle(
+            &mut fixture.svm,
+            oracle,
+            (price * PRICE_PRECISION) as i64,
+            12,
+        );
+    }
+
+    let resolved = run_cross_resolver(&mut fixture, conditions).expect("the book is crossed");
+    let staged: Vec<Pubkey> = resolved
+        .accounts
+        .iter()
+        .map(|a| Pubkey::new_from_array(a.address))
+        .collect();
+    for wanted in [
+        sol_oracle,
+        other_oracle,
+        spot_market_pda(1),
+        perp_market_pda(1),
+    ] {
+        assert!(staged.contains(&wanted), "the cross stages {wanted}");
+    }
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankCrossMatch::DISCRIMINATOR,
+        payout,
+    );
+
+    let bidder_after: User = read_zero_copy(&fixture.svm, &bidder.user);
+    let filled = bidder_after
+        .perp_positions
+        .iter()
+        .find(|position| position.market_index == 0 && position.base_asset_amount != 0)
+        .expect("the bid filled");
+    assert_eq!(filled.base_asset_amount, (UNIT / 2) as i64);
+    assert_eq!(
+        bidder_after.perp_positions[1].base_asset_amount,
+        (UNIT / 10) as i64,
+        "the second market keeps its position"
     );
 }
 

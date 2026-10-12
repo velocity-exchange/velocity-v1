@@ -10,6 +10,7 @@
 //!   contexts that the removal cranks and their resolvers share.
 
 pub mod crank_common;
+pub mod margin_section;
 pub mod placement;
 pub mod records;
 

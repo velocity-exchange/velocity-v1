@@ -16,6 +16,7 @@ import {
 	isVariant,
 	VELOCITY_PROGRAM_ID,
 } from '@velocity-exchange/sdk';
+import { keyPath } from './tools';
 
 const coder = new BorshEventCoder(
 	JSON.parse(
@@ -33,10 +34,9 @@ export type FillLeg = {
 };
 
 function instanceMaker(instance: string): string | undefined {
-	const file =
-		instance === 'a'
-			? '/state/keys/midpoint-maker.json'
-			: `/state/keys/midpoint-${instance}-maker.json`;
+	const file = keyPath(
+		instance === 'a' ? 'midpoint-maker' : `midpoint-${instance}-maker`
+	);
 	if (!fs.existsSync(file)) return undefined;
 
 	const secret = Uint8Array.from(JSON.parse(fs.readFileSync(file, 'utf-8')));

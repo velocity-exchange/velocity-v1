@@ -150,6 +150,28 @@ Known gaps:
 
 - `/batchPriorityFees` returns nothing, because its publisher calls a Helius-only RPC method.
 
+## Upgrade a program in place
+
+`bun run local:upgrade <velocity|clob|midpoint|relay>` builds one program and deploys it to the
+running validator. The ledger stays. `--no-build` deploys the binary that is already built.
+`bun run sandbox:upgrade` does the same in the pamm-sandbox cluster through kubectl.
+
+## The pamm-sandbox cluster
+
+The same stack also runs in the non-prod cluster, in the `pamm-sandbox` namespace. Its manifests
+and runbook live in infrastructure-v3 under `gitops/non-prod/workloads/pamm-sandbox/`.
+`bun run sandbox:push v0.1.0` builds the programs and every image for linux/amd64, pushes them to
+ECR with your AWS credentials, and prints the digest pins for those manifests. The Rust images
+compile under emulation on Apple Silicon, so a first push is slow.
+
+Every program loads upgradeable under the authority key. When the validator starts on an existing
+ledger, it also deploys each mounted binary that changed since it last started. A ledger from
+before this change records the binaries on its first start and deploys nothing. On that ledger,
+clob, midpoint and relay cannot be upgraded until a `local:reset`.
+
+An upgrade cannot change the size or layout of an account that is already on the ledger. That
+change needs `local:reset`.
+
 ## Reset
 
 - `bun run local:reset` deletes the ledger. The next `up` boots from the same dump and runs the

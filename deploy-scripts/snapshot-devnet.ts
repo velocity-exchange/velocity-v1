@@ -6,13 +6,15 @@
  * `rehearse-devnet-upgrade.sh` runs an upgrade against it.
  *
  *   bun run deploy-scripts/snapshot-devnet.ts --url <rpc> --out <dir>
+ *     [--authority <keypair>] [--lazer-signer <keypair>]
  *
  * It also writes the accounts and binaries that velocity reaches without naming them: the Pyth
  * Lazer storage account, each mint's faucet config, and the vaults and faucet programs.
  *
- * Every admin and hot-role key in `State` becomes the local key in `<dir>/authority.json`, so
- * the rehearsal can sign admin instructions. The Lazer storage account also trusts the key in
- * `<dir>/lazer-signer.json`, so a local service can sign oracle updates. `manifest.json` records the slot and the old keys.
+ * Every admin and hot-role key in `State` becomes the `--authority` key, so the rehearsal can
+ * sign admin instructions. The Lazer storage account also trusts the `--lazer-signer` key, so a
+ * local service can sign oracle updates. Each key defaults to a file in `<dir>`, and a missing
+ * file gets a new key. `manifest.json` records the slot and the old keys.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -35,7 +37,12 @@ const PROGRAM_DATA_HEADER = 45;
  * yet is shorter than the new layout, and borsh fails on a short buffer. */
 const DECODE_TAIL = 8192;
 
-type Args = { url: string; out: string };
+type Args = {
+	url: string;
+	out: string;
+	authority: string;
+	lazerSigner: string;
+};
 
 function parseArgs(): Args {
 	const argv = process.argv.slice(2);
@@ -46,12 +53,15 @@ function parseArgs(): Args {
 		throw new Error(`missing ${flag}`);
 	};
 
+	const out = get('--out');
 	return {
 		url: get(
 			'--url',
 			process.env.DEVNET_RPC_URL ?? 'https://api.devnet.solana.com'
 		),
-		out: get('--out'),
+		out,
+		authority: get('--authority', path.join(out, 'authority.json')),
+		lazerSigner: get('--lazer-signer', path.join(out, 'lazer-signer.json')),
 	};
 }
 
@@ -169,8 +179,7 @@ function writeAccount(
 	);
 }
 
-function loadKeypair(out: string, name: string): Keypair {
-	const file = path.join(out, name);
+function loadKeypair(file: string): Keypair {
 	if (fs.existsSync(file)) {
 		return Keypair.fromSecretKey(
 			Uint8Array.from(JSON.parse(fs.readFileSync(file, 'utf-8')))
@@ -319,8 +328,8 @@ async function main() {
 	const accountsDir = path.join(args.out, 'accounts');
 	fs.rmSync(accountsDir, { recursive: true, force: true });
 	fs.mkdirSync(accountsDir, { recursive: true });
-	const authority = loadKeypair(args.out, 'authority.json');
-	const lazerSigner = loadKeypair(args.out, 'lazer-signer.json');
+	const authority = loadKeypair(args.authority);
+	const lazerSigner = loadKeypair(args.lazerSigner);
 	const velocityDecoder = new ProgramDecoder(
 		readIdl('packages/sdk/src/idl/velocity.json')
 	);

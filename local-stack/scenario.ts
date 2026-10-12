@@ -38,7 +38,7 @@ import {
 	VELOCITY_PROGRAM_ID,
 	Wallet,
 } from '@velocity-exchange/sdk';
-import { AUTHORITY_PATH, DLOB_URL, loadKey, RPC_URL } from './tools';
+import { AUTHORITY_PATH, DLOB_URL, keyPath, loadKey, RPC_URL } from './tools';
 import {
 	decodeFillLegs,
 	FillLeg,
@@ -372,7 +372,7 @@ async function run(connection: Connection, name: string, path: string) {
 		throw new Error(`--path is onchain or swift, not "${path}"`);
 	}
 
-	const trader = loadKey('/state/keys/trader-b.json').publicKey;
+	const trader = loadKey(keyPath('trader-b')).publicKey;
 	const user = getUserAccountPublicKeySync(
 		new PublicKey(VELOCITY_PROGRAM_ID),
 		trader,

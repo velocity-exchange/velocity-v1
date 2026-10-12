@@ -3,6 +3,7 @@
  * keys, a connected client, SOL and dUSDT funding, and the parsing of market names and amounts.
  */
 import * as fs from 'fs';
+import * as path from 'path';
 import { BN } from '@coral-xyz/anchor';
 import {
 	Connection,
@@ -25,7 +26,9 @@ import {
 
 export const RPC_URL = process.env.RPC_URL ?? 'http://rpc:8899';
 export const DLOB_URL = process.env.DLOB_URL ?? 'http://dlob-server:6969';
-export const AUTHORITY_PATH = '/state/snapshot/authority.json';
+export const AUTHORITY_PATH =
+	process.env.AUTHORITY_KEYPAIR ?? '/state/snapshot/authority.json';
+export const KEYS_DIR = process.env.KEYS_DIR ?? '/state/keys';
 
 const TOKEN_FAUCET = new PublicKey(
 	'V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB'
@@ -34,6 +37,10 @@ const DUSDT_MINT = new PublicKey(
 	'GqmEqYsy8EyvofDpmtFxK8zhYrgWgNokAtYoduQdL7v6'
 );
 const DUSDT_DECIMALS = 6;
+
+export function keyPath(name: string): string {
+	return path.join(KEYS_DIR, `${name}.json`);
+}
 
 /** Loads a keypair file, and writes a new keypair there first when the file is missing. */
 export function loadKey(file: string): Keypair {

@@ -6,7 +6,15 @@ name: velocity-local
 # it on import. The TypeScript services therefore run as amd64 everywhere.
 x-ts-platform: &ts-platform linux/amd64
 
+# Docker keeps container logs without a limit by default, and the services log
+# every slot. The cap keeps a long-running stack from filling Docker's disk.
+x-logging: &capped-logs
+  options:
+    max-size: 50m
+    max-file: '3'
+
 x-ts-tools: &ts-tools
+  logging: *capped-logs
   image: velocity-local/ts-tools:dev
   platform: *ts-platform
   build:
@@ -29,6 +37,7 @@ x-velocity-env: &velocity-env
 
 services:
   snapshot:
+    logging: *capped-logs
     <<: *ts-tools
     entrypoint: ['sh', '-c']
     command:
@@ -39,11 +48,12 @@ services:
       DEVNET_RPC_URL: ${DEVNET_RPC_URL:-https://api.devnet.solana.com}
 
   validator:
+    logging: *capped-logs
     image: velocity-local/validator:dev
     build:
       context: .
       dockerfile: validator.Dockerfile
-    entrypoint: ['bash', '/local-stack/validator-entrypoint.sh']
+      target: validator
     depends_on:
       snapshot:
         condition: service_completed_successfully
@@ -51,7 +61,8 @@ services:
       - '8899:8899'
       - '8900:8900'
     volumes:
-      - ./validator-entrypoint.sh:/local-stack/validator-entrypoint.sh:ro
+      - ./validator-entrypoint.sh:/usr/local/bin/validator-entrypoint.sh:ro
+      - ./validator-upgrade.sh:/usr/local/bin/validator-upgrade:ro
       - ../target/deploy/velocity.so:/programs/velocity.so:ro
       - ../anchor-v2/target/deploy/clob.so:/programs/clob.so:ro
       - ../anchor-v2/target/deploy/midpoint.so:/programs/midpoint.so:ro
@@ -59,15 +70,14 @@ services:
       - state:/state
       - ledger:/ledger
     healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          curl -sf "http://$$(hostname -i | awk '{print $$1}'):8899" -X POST -H 'Content-Type: application/json'
-          -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | grep -q ok && touch /ledger/.booted
+      test: ['CMD', 'test', '-e', '/tmp/ready']
       interval: 2s
       retries: 90
+      # A program upgrade on start runs before the validator reports ready.
+      start_period: 10m
 
   rpc:
+    logging: *capped-logs
     image: nginx:1.27-alpine
     depends_on:
       validator:
@@ -76,6 +86,7 @@ services:
       - ./rpc.nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
   oracle:
+    logging: *capped-logs
     <<: *ts-tools
     command: ['bun', 'run', 'local-stack/oracle.ts']
     restart: unless-stopped
@@ -88,6 +99,7 @@ services:
       RPC_URL: http://rpc:8899
 
   redis:
+    logging: *capped-logs
     image: redis:7.4
     # The TypeScript redis client only speaks cluster mode without TLS, so this
     # is a one-node cluster that owns every slot. A cluster client connects to
@@ -106,6 +118,7 @@ services:
       retries: 30
 
   bootstrap:
+    logging: *capped-logs
     <<: *ts-tools
     command: ['bun', 'run', 'local-stack/bootstrap.ts']
     environment:
@@ -117,6 +130,7 @@ services:
         condition: service_started
 
   book-publisher:
+    logging: *capped-logs
     image: velocity-local/book-publisher:dev
     build:
       context: ..
@@ -146,6 +160,7 @@ services:
       RUST_LOG: info
 
   dlob-server:
+    logging: *capped-logs
     image: velocity-local/dlob-server:dev
     platform: *ts-platform
     build: &dlob-build
@@ -168,6 +183,7 @@ services:
       LOCAL_CACHE: 'true'
 
   dlob-ws:
+    logging: *capped-logs
     image: velocity-local/dlob-server:dev
     platform: *ts-platform
     command: ['node', 'lib/wsConnectionManager.js']
@@ -182,6 +198,7 @@ services:
       REDIS_CLIENT: DLOB
 
   keepers:
+    logging: *capped-logs
     image: velocity-local/keeper-bots-v2:dev
     platform: *ts-platform
     build:
@@ -202,6 +219,7 @@ services:
       PYTH_LAZER_TOKEN: ${PYTH_LAZER_TOKEN:-}
 
   relay-turner:
+    logging: *capped-logs
     image: velocity-local/relay-turner:dev
     build:
       context: ${RELAY_SRC:-${HOME}/.cache/velocity-e2e/relay}
@@ -233,6 +251,7 @@ services:
       RUST_LOG: relay_crank_turner=info
 
   swift:
+    logging: *capped-logs
     image: velocity-local/swift:dev
     build: &swift-build
       context: ..
@@ -259,6 +278,7 @@ services:
       RUST_LOG: info
 
   liquidator:
+    logging: *capped-logs
     image: velocity-local/keep-rs:dev
     build:
       context: ..
@@ -284,6 +304,7 @@ services:
       RUST_LOG: info
 
   swift-ws:
+    logging: *capped-logs
     image: velocity-local/swift:dev
     build: *swift-build
     user: '0'
@@ -299,6 +320,7 @@ services:
       RUST_LOG: info
 
   swift-placer:
+    logging: *capped-logs
     <<: *ts-tools
     command: ['bun', 'run', 'local-stack/swift-placer.ts']
     restart: unless-stopped

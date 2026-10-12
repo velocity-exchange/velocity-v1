@@ -271,8 +271,12 @@ async function tick(
 
 async function main() {
 	const connection = new Connection(RPC_URL, 'confirmed');
-	const authority = loadKey('/state/snapshot/authority.json');
-	const signer = loadKey('/state/snapshot/lazer-signer.json');
+	const authority = loadKey(
+		process.env.AUTHORITY_KEYPAIR ?? '/state/snapshot/authority.json'
+	);
+	const signer = loadKey(
+		process.env.LAZER_SIGNER_KEYPAIR ?? '/state/snapshot/lazer-signer.json'
+	);
 	await assertSignerTrusted(connection, signer.publicKey);
 
 	const client = new VelocityClient({

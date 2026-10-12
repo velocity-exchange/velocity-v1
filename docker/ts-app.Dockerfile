@@ -54,6 +54,13 @@ COPY apps/ ./apps/
 ARG APP_SCOPE
 RUN bunx turbo run build --filter="${APP_SCOPE}"
 
+# The operator scripts the pamm sandbox runs: snapshot, bootstrap, oracle and swift-placer.
+# Build it with APP_SCOPE=@velocity-exchange/admin-cli, which bootstrap shells out to.
+FROM builder AS tools
+COPY deploy-scripts/ ./deploy-scripts/
+COPY local-stack/ ./local-stack/
+COPY tests/e2e/idl/ ./tests/e2e/idl/
+
 FROM node:24-alpine AS runner
 ENV NODE_ENV=production
 ARG APP_PATH

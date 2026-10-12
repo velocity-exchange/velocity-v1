@@ -4,7 +4,7 @@
  * Bring the validator's copy of devnet to the state the services need. Every step reads chain
  * state first and skips what is already done, so the service runs again on every `up`.
  *
- *   1. Create and fund the service keys in /state/keys.
+ *   1. Fund the service keys in $KEYS_DIR, creating any that are missing.
  *   2. Run migrate.ts. On a new ledger it creates the crank treasury inert and stops, because
  *      it attaches no book to a treasury that cannot refill it.
  *   3. Price and fund the crank treasury, then run migrate.ts again. It creates every perp
@@ -12,7 +12,7 @@
  *   4. Make swift's key the flow authority.
  *   5. Mint dUSDT to the keeper for the insurance-fund stake the mark TWAP crank needs, and to
  *      the keep-rs liquidator, which deposits it as collateral for takeover liquidations.
- *   6. Write the keeper config and the UI's env file into /state.
+ *   6. Write the keeper config and the UI's env file into $STATE_DIR.
  */
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
@@ -35,9 +35,11 @@ import {
 
 const RPC_URL = process.env.RPC_URL ?? 'http://rpc:8899';
 const UI_RPC_URL = process.env.UI_RPC_URL ?? 'http://localhost:8899';
-const STATE = '/state';
-const KEYS = path.join(STATE, 'keys');
-const AUTHORITY_PATH = path.join(STATE, 'snapshot', 'authority.json');
+const STATE = process.env.STATE_DIR ?? '/state';
+const KEYS = process.env.KEYS_DIR ?? path.join(STATE, 'keys');
+const AUTHORITY_PATH =
+	process.env.AUTHORITY_KEYPAIR ??
+	path.join(STATE, 'snapshot', 'authority.json');
 const TOKEN_FAUCET = new PublicKey(
 	'V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB'
 );
@@ -62,20 +64,21 @@ const KEEPER_DUSDT = new BN(10_000_000_000);
 
 type ServiceKey = (typeof SERVICE_KEYS)[number];
 
+/** A provisioned key directory may be read-only, so files are written only for a new key. */
 function loadOrCreateKey(name: string): Keypair {
 	const file = path.join(KEYS, `${name}.json`);
 	if (!fs.existsSync(file)) {
+		const key = Keypair.generate();
+		fs.writeFileSync(file, JSON.stringify(Array.from(key.secretKey)));
 		fs.writeFileSync(
-			file,
-			JSON.stringify(Array.from(Keypair.generate().secretKey))
+			path.join(KEYS, `${name}.pubkey`),
+			key.publicKey.toBase58()
 		);
 	}
 
-	const key = Keypair.fromSecretKey(
+	return Keypair.fromSecretKey(
 		Uint8Array.from(JSON.parse(fs.readFileSync(file, 'utf-8')))
 	);
-	fs.writeFileSync(path.join(KEYS, `${name}.pubkey`), key.publicKey.toBase58());
-	return key;
 }
 
 async function topUp(
@@ -212,7 +215,7 @@ function writeKeeperConfig(): void {
 	);
 }
 
-function writeUiEnv(): void {
+function writeUiEnv(keeper: PublicKey): void {
 	const lines = [
 		'NEXT_PUBLIC_DEFAULT_TO_DEVNET=true',
 		`NEXT_PUBLIC_RPC_OVERRIDE=${UI_RPC_URL}`,
@@ -224,16 +227,14 @@ function writeUiEnv(): void {
 		'NEXT_PUBLIC_OVERRIDE_WS_URL=ws://localhost:3000/ws',
 		'NEXT_PUBLIC_SWIFT_SERVER_URL_OVERRIDE=http://localhost:3003',
 		'NEXT_PUBLIC_IGNORE_GEOBLOCK=true',
-		`NEXT_PUBLIC_FEE_PAYER_DEVNET_PUBLIC_KEY=${fs.readFileSync(
-			path.join(KEYS, 'keeper.pubkey'),
-			'utf-8'
-		)}`,
+		`NEXT_PUBLIC_FEE_PAYER_DEVNET_PUBLIC_KEY=${keeper.toBase58()}`,
 	];
 
 	fs.writeFileSync(path.join(STATE, 'ui.env.local'), lines.join('\n') + '\n');
 }
 
 async function main() {
+	fs.mkdirSync(STATE, { recursive: true });
 	fs.mkdirSync(KEYS, { recursive: true });
 	const authority = Keypair.fromSecretKey(
 		Uint8Array.from(JSON.parse(fs.readFileSync(AUTHORITY_PATH, 'utf-8')))
@@ -275,7 +276,7 @@ async function main() {
 	await mintKeeperDusdt(provider, keys.liquidator.publicKey);
 
 	writeKeeperConfig();
-	writeUiEnv();
+	writeUiEnv(keys.keeper.publicKey);
 	console.log('\n== bootstrap done ==');
 }
 

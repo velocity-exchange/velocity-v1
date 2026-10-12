@@ -31,6 +31,7 @@ import {
 	connectClient,
 	DLOB_URL,
 	fundWallet,
+	keyPath,
 	loadKey,
 	parseDecimal,
 	RPC_URL,
@@ -39,7 +40,7 @@ import {
 
 const SWIFT_URL = process.env.SWIFT_URL ?? 'http://swift:3003';
 const SWIFT_WS_URL = process.env.SWIFT_WS_URL ?? 'ws://swift-ws:3004';
-const KEY_PATH = '/state/keys/swift-placer.json';
+const KEY_PATH = keyPath('swift-placer');
 const FILLER_DEPOSIT_DUSDT = '100';
 const MAKERS_PER_PLACEMENT = 4;
 const ATTEST_ATTEMPTS = 8;

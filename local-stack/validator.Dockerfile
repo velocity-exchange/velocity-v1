@@ -1,4 +1,6 @@
 # solana-test-validator and the solana CLI, for the local stack.
+# The `sandbox` target also bakes in the programs from programs/, where
+# sandbox-push.sh stages them, so the image runs without a checkout.
 #
 # Anza publishes no Linux arm64 release, and the x86_64 release cannot run
 # under Rosetta: agave asserts io_uring support at startup, and Rosetta does
@@ -25,7 +27,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
       cp /agave-target/release/solana-test-validator /agave-target/release/solana /agave-target/release/solana-keygen /out/; \
     fi
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS validator
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl bzip2 libssl3 libudev1 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=binaries /out/ /usr/local/bin/
+COPY validator-entrypoint.sh /usr/local/bin/validator-entrypoint.sh
+COPY validator-upgrade.sh /usr/local/bin/validator-upgrade
+ENTRYPOINT ["validator-entrypoint.sh"]
+
+FROM validator AS sandbox
+COPY programs/velocity.so programs/clob.so programs/midpoint.so programs/relay.so /programs/

@@ -46,6 +46,7 @@ import {
 	connectClient,
 	DLOB_URL,
 	fundWallet,
+	keyPath,
 	loadKey,
 	parseDecimal,
 	perpMarketIndex,
@@ -132,7 +133,7 @@ async function openSession(
 	name: string,
 	depositDusdt: string
 ): Promise<Session> {
-	const trader = loadKey(`/state/keys/trader-${name}.json`);
+	const trader = loadKey(keyPath(`trader-${name}`));
 	const client = await connectClient(connection, trader);
 	const user = userAccountPublicKey(client, trader.publicKey);
 

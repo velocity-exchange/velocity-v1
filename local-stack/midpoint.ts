@@ -13,7 +13,7 @@
  * `mid` re-quotes around a new price. The instance stops quoting once its mid is 1000 slots old,
  * about seven minutes, so a test refreshes it before it relies on the quote. `--name` picks
  * another instance with its own maker, so two PropAMMs can quote one market. The default instance
- * keeps its keys in /state/keys/midpoint-*.json, and instance `x` in /state/keys/midpoint-x-*.json.
+ * keeps its keys in $KEYS_DIR/midpoint-*.json, and instance `x` in $KEYS_DIR/midpoint-x-*.json.
  */
 import * as fs from 'fs';
 import { createHash } from 'crypto';
@@ -45,6 +45,7 @@ import {
 	AUTHORITY_PATH,
 	connectClient,
 	fundWallet,
+	keyPath,
 	loadKey,
 	parseDecimal,
 	RPC_URL,
@@ -101,14 +102,11 @@ async function send(
 const DEFAULT_INSTANCE = 'a';
 
 function keys(name: string) {
-	const prefix =
-		name === DEFAULT_INSTANCE
-			? '/state/keys/midpoint'
-			: `/state/keys/midpoint-${name}`;
+	const prefix = name === DEFAULT_INSTANCE ? 'midpoint' : `midpoint-${name}`;
 	return {
-		maker: loadKey(`${prefix}-maker.json`),
-		config: loadKey(`${prefix}-config.json`),
-		hot: loadKey(`${prefix}-hot.json`),
+		maker: loadKey(keyPath(`${prefix}-maker`)),
+		config: loadKey(keyPath(`${prefix}-config`)),
+		hot: loadKey(keyPath(`${prefix}-hot`)),
 		authority: loadKey(AUTHORITY_PATH),
 	};
 }

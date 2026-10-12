@@ -154,7 +154,9 @@ Known gaps:
 
 `bun run local:upgrade <velocity|clob|midpoint|relay>` builds one program and deploys it to the
 running validator. The ledger stays. `--no-build` deploys the binary that is already built.
-`bun run sandbox:upgrade` does the same in the pamm-sandbox cluster through kubectl.
+`bun run sandbox:upgrade` does the same in the pamm-sandbox cluster. It reads the authority key
+from the secret store and deploys through the sandbox RPC host, so it needs Tailscale and an SSO
+session for the non-prod account.
 
 ## The pamm-sandbox cluster
 

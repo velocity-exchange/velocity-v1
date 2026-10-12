@@ -3,7 +3,9 @@
 #
 #   upgrade-program.sh <local|sandbox> <velocity|clob|midpoint|relay> [--no-build]
 #
-# The deploy runs inside the validator container, so the buffer writes never cross the network.
+# Locally the deploy runs inside the validator container. The sandbox deploy reads the authority
+# from the secret store and goes through the sandbox RPC host, so it needs Tailscale and an SSO
+# session for the non-prod account.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TARGET="${1:?usage: upgrade-program.sh <local|sandbox> <program> [--no-build]}"
@@ -39,9 +41,16 @@ case "$TARGET" in
     "${COMPOSE[@]}" exec validator validator-upgrade "$PROGRAM" "/tmp/$PROGRAM.so"
     ;;
   sandbox)
-    POD=(-n "${SANDBOX_NAMESPACE:-pamm-sandbox}")
-    kubectl "${POD[@]}" cp "$SO" "validator-0:/tmp/$PROGRAM.so" -c validator
-    kubectl "${POD[@]}" exec validator-0 -c validator -- validator-upgrade "$PROGRAM" "/tmp/$PROGRAM.so"
+    AUTHORITY="$(mktemp)"
+    trap 'rm -f "$AUTHORITY"' EXIT
+    aws secretsmanager get-secret-value --profile "${AWS_PROFILE:-velocity-non-prod}" --region eu-west-1 \
+      --secret-id velocity/non-prod/pamm-sandbox-secret-store --query SecretString --output text |
+      jq -r '."authority.json"' >"$AUTHORITY"
+    PROGRAM_ID="$(bash local-stack/validator-upgrade.sh --list | awk -v name="$PROGRAM" '$1 == name { print $2 }')"
+    solana program deploy --use-rpc \
+      --url "${SANDBOX_RPC_URL:-https://pamm-sandbox-rpc.master.velocity.exchange}" \
+      --keypair "$AUTHORITY" --upgrade-authority "$AUTHORITY" \
+      --program-id "$PROGRAM_ID" "$SO"
     ;;
   *)
     echo "unknown target '$TARGET'. Targets: local sandbox" >&2

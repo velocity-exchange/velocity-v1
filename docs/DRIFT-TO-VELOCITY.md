@@ -1383,7 +1383,7 @@ max_priority_micro_lamports_per_cu: u32 }`, 20 bytes, alongside `hot_flow_author
   spot and perp market the user holds, with the market's oracle. `crank_cross_match` reads
   optional perp markets after its spot markets, read-only, and refuses one that repeats the
   crossed market. The cross resolvers learn these markets by asking relay for accounts in rounds:
-  first the users, then the markets their positions name. A turner older than relay `1e9dbc8`
+  first the users, then each market whose oracle the conditions account does not store. A turner older than relay `1e9dbc8`
   cannot serve a round, so the cross cranks need that turner. A manual builder reads the users'
   positions and names the markets itself, as the book publisher does.
 - The `crank_taker_origin_cross` resolver stages the market's quoting `Custom` quoters

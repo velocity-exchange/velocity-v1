@@ -3095,6 +3095,7 @@ pub(super) struct TakerOriginKeys {
     pub quoter_slab: Pubkey,
     pub clob_market: Pubkey,
     pub oracle: Pubkey,
+    pub quote_oracle: Pubkey,
     pub quote_spot_market_index: u16,
 }
 
@@ -3104,6 +3105,7 @@ impl TakerOriginKeys {
             perp_market_index: self.market_index,
             oracle: self.oracle,
             quote_spot_market_index: self.quote_spot_market_index,
+            quote_oracle: self.quote_oracle,
         }
     }
 
@@ -3115,6 +3117,7 @@ impl TakerOriginKeys {
             quoter_slab: ctx.accounts.quoter_slab.key(),
             clob_market: ctx.accounts.clob_market.key(),
             oracle: conditions.oracle,
+            quote_oracle: conditions.quote_oracle,
             quote_spot_market_index: conditions.quote_spot_market_index,
         })
     }

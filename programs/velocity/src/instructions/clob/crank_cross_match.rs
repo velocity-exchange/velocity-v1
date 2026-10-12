@@ -968,6 +968,7 @@ fn stage_maker_cross(ctx: &Context<ResolveClobCrank>) -> Result<Resolution> {
             perp_market_index: conditions.market_index,
             oracle: conditions.oracle,
             quote_spot_market_index: conditions.quote_spot_market_index,
+            quote_oracle: conditions.quote_oracle,
         }
     };
     let market_index = crossed.perp_market_index;
@@ -1219,6 +1220,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                         quoter_slab: ctx.accounts.quoter_slab.key(),
                         clob_market: ctx.accounts.clob_market.key(),
                         oracle: conditions.oracle,
+                        quote_oracle: conditions.quote_oracle,
                         quote_spot_market_index: conditions.quote_spot_market_index,
                     },
                     state: &*ctx.accounts.state.load()?,
@@ -1399,6 +1401,7 @@ fn stage_quoter_cross<'info>(
                 perp_market_index: market_index,
                 oracle: conditions.oracle,
                 quote_spot_market_index: conditions.quote_spot_market_index,
+                quote_oracle: conditions.quote_oracle,
             },
             conditions.clob_program,
         )

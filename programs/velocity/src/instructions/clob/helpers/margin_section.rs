@@ -4,10 +4,11 @@
 //! market each user holds a position in, with the market's oracle. A resolver
 //! holds only the accounts its condition registered, so it cannot see those
 //! markets until it reads the users. It therefore asks relay for accounts in
-//! rounds: first the users, then the markets their positions name, and then it
-//! stages the fill with every oracle. Each round re-derives what it needs from
-//! the accounts it was given, so a book that moves between rounds costs one
-//! more round rather than a wrong answer.
+//! rounds: first the users, then any market whose oracle it does not already
+//! hold, and then it stages the fill with every oracle. Users who hold only the
+//! quote and crossed markets take two rounds. Each round re-derives what it
+//! needs from the accounts it was given, so a book that moves between rounds
+//! costs one more round rather than a wrong answer.
 
 use {
     crate::{
@@ -24,6 +25,8 @@ pub struct CrossedMarket {
     pub perp_market_index: u16,
     pub oracle: Pubkey,
     pub quote_spot_market_index: u16,
+    /// The default key for a quote market with no oracle account.
+    pub quote_oracle: Pubkey,
 }
 
 /// The accounts the fill's margin checks read, in the order `load_maps`
@@ -58,7 +61,7 @@ pub fn margin_accounts(
         return Ok(MarginAccounts::Missing(missing_users));
     }
 
-    let mut held_spot = BTreeSet::from([crossed.quote_spot_market_index]);
+    let mut held_spot = BTreeSet::new();
     let mut perp_indexes = BTreeSet::new();
     for user in users {
         let info = find(available, user)?;
@@ -78,23 +81,22 @@ pub fn margin_accounts(
         );
     }
 
-    // The SOL spot market prices the keeper payment off its TWAP, so it rides
-    // even when no user holds SOL. Its oracle rides only when one does.
-    let mut spot_indexes = held_spot.clone();
-    if sol_spot_market_index != 0 {
-        spot_indexes.insert(sol_spot_market_index);
-    }
-
+    // The conditions account stores the crossed and quote oracles, so only the
+    // other markets are read.
+    held_spot.remove(&crossed.quote_spot_market_index);
     perp_indexes.remove(&crossed.perp_market_index);
-    let spot_markets: Vec<Pubkey> = spot_indexes.iter().map(|&i| pdas::spot_market(i)).collect();
     let perp_markets: Vec<Pubkey> = perp_indexes.iter().map(|&i| pdas::perp_market(i)).collect();
-
-    let missing_markets = missing(available, spot_markets.iter().chain(&perp_markets).copied());
+    let unread = held_spot
+        .iter()
+        .map(|&i| pdas::spot_market(i))
+        .chain(perp_markets.iter().copied());
+    let missing_markets = missing(available, unread);
     if !missing_markets.is_empty() {
         return Ok(MarginAccounts::Missing(missing_markets));
     }
 
     let mut oracles = vec![crossed.oracle];
+    push_oracle(&mut oracles, crossed.quote_oracle);
     for &index in &held_spot {
         let data = find(available, &pdas::spot_market(index))?.try_borrow_data()?;
         push_oracle(
@@ -111,6 +113,15 @@ pub fn margin_accounts(
         );
     }
 
+    // The SOL spot market prices the keeper payment off its TWAP, so it rides
+    // even when no user holds SOL. Its oracle rides only when one does.
+    let mut spot_indexes = held_spot;
+    spot_indexes.insert(crossed.quote_spot_market_index);
+    if sol_spot_market_index != 0 {
+        spot_indexes.insert(sol_spot_market_index);
+    }
+
+    let spot_markets = spot_indexes.iter().map(|&i| pdas::spot_market(i)).collect();
     Ok(MarginAccounts::Ready(MarginSection {
         oracles,
         spot_markets,
@@ -182,6 +193,7 @@ mod tests {
             perp_market_index: CROSSED,
             oracle,
             quote_spot_market_index: QUOTE,
+            quote_oracle: Pubkey::default(),
         }
     }
 
@@ -225,9 +237,8 @@ mod tests {
         assert_eq!(missing_of(answer), users.to_vec());
     }
 
-    /// Every market the maker holds, plus the quote and SOL markets the fill
-    /// prices against. The crossed market is named by the executor, so it is
-    /// never requested.
+    /// Only markets whose oracle the conditions account does not store. The
+    /// crossed and quote markets never cost a round.
     #[test]
     fn then_the_markets_their_positions_name() {
         let user_key = Pubkey::new_unique();
@@ -243,11 +254,33 @@ mod tests {
         .unwrap();
         assert_eq!(
             missing_of(answer),
-            vec![
-                pdas::spot_market(QUOTE),
-                pdas::spot_market(SOL),
-                pdas::perp_market(OTHER_PERP),
-            ]
+            vec![pdas::spot_market(SOL), pdas::perp_market(OTHER_PERP)]
+        );
+    }
+
+    /// A user who holds only the quote and crossed markets needs no market
+    /// read, so the second round stages the cross.
+    #[test]
+    fn a_quote_and_crossed_only_user_is_ready_in_the_second_round() {
+        let user_key = Pubkey::new_unique();
+        let mut user = maker();
+        user.spot_positions[1] = SpotPosition::default();
+        user.perp_positions[1] = PerpPosition::default();
+        create_anchor_account_info!(user, &user_key, User, user_info);
+
+        let quote_oracle = Pubkey::new_unique();
+        let market = CrossedMarket {
+            quote_oracle,
+            ..crossed(Pubkey::new_unique())
+        };
+        let section = match margin_accounts(&[user_info], &[user_key], &market, SOL).unwrap() {
+            MarginAccounts::Ready(section) => section,
+            MarginAccounts::Missing(accounts) => panic!("still missing {:?}", accounts),
+        };
+        assert_eq!(section.oracles, vec![market.oracle, quote_oracle]);
+        assert_eq!(
+            section.spot_markets,
+            vec![pdas::spot_market(QUOTE), pdas::spot_market(SOL)]
         );
     }
 

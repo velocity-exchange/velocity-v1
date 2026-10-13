@@ -201,8 +201,6 @@ impl FillerBot {
         let priority_fee_subscriber = Arc::clone(&self.priority_fee_subscriber);
         let metrics = Arc::clone(&self.metrics);
         let feed_health = Arc::clone(&self.feed_health);
-        // reused per-slot scratch buffer for triggerable order ids (avoids per-slot allocation)
-        let _triggerable_buf: Vec<(Pubkey, u32)> = Vec::new();
         // Refresh the state config on elapsed slots and not on `slot % N == 0`. A
         // skipped exact multiple would stall the refresh for another window.
         const CONFIG_REFRESH_SLOTS: u64 = 300;
@@ -1318,8 +1316,10 @@ impl TxWorker {
                         }
                         log::warn!(
                             target: TARGET,
-                            "sim failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, slot: {:?}",
+                            "sim failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, user: {:?}, order_id: {:?}, slot: {:?}",
                             intent.liquidatee(),
+                            intent.user(),
+                            intent.order_id(),
                             intent.slot()
                         );
 
@@ -1339,7 +1339,10 @@ impl TxWorker {
                         // Log simulation logs for liquidation and uncross intents to help
                         // diagnose failures
                         if intent.is_liquidation()
-                            || matches!(intent, TxIntent::LimitUncross { .. })
+                            || matches!(
+                                intent,
+                                TxIntent::LimitUncross { .. } | TxIntent::Trigger { .. }
+                            )
                         {
                             if let Some(logs) = sim_result.logs {
                                 for log_line in &logs {

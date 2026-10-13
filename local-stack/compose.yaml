@@ -313,9 +313,11 @@ services:
     volumes:
       - state:/state
     # The validator has no geyser plugin and no live Lazer feed, so the bot reads accounts over
-    # websockets and prices margin from the local oracle.
+    # websockets and prices margin from the local oracle. `--trigger` fires a crossed trigger
+    # order that relay leaves armed for 20 slots.
     command:
       - --liquidator
+      - --trigger
       - --init-user
       - --all-markets
       - --account-source=websocket

@@ -118,7 +118,7 @@ pub enum TxIntent {
         market_index: u16,
         liquidatee: Pubkey,
     },
-    /// standalone trigger of a trigger order whose condition is met but that does not yet cross
+    /// A backup fire of a crossed trigger order that relay left armed.
     Trigger {
         market_index: u16,
         order_id: u32,

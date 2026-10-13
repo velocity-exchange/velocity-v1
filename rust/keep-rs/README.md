@@ -1,7 +1,7 @@
 # Rust keeper bots
 
 Keeper bots for Velocity. Every mode ships in the one `keeprs` binary and is picked with a
-flag: `--filler` (on by default), `--liquidator`, `--quoter`, `--taker`, `--relayer`. Add
+flag: `--filler` (on by default), `--liquidator`, `--trigger`, `--quoter`, `--taker`, `--relayer`. Add
 `--dry` to simulate transactions instead of sending them, and `--init-user` to create the
 bot's subaccounts before the selected mode starts.
 
@@ -49,6 +49,22 @@ borrows with atomic swaps.
 RUST_LOG=liquidator=info,dlob=info,swift=info \
     cargo run --release -- --mainnet --liquidator
 ```
+
+## Run the trigger backup
+
+Relay fires crossed trigger orders. `--trigger` is a backup for when relay does not. Each tick
+it scans the account map for armed `TriggerMarket` and `TriggerLimit` orders whose condition
+the market's trigger price meets. An order that stays due for `--trigger-grace-slots` (default
+20) is fired through `trigger_market_order_v1` or `trigger_limit_order_v1`. The bot's
+`--sub-account-id` `User` is the filler and collects the keeper reward. The send path simulates
+each fire and sends only a fire that passes. A fire that fails waits longer before each retry.
+
+```shell
+RUST_LOG=trigger=info cargo run --release -- --mainnet --trigger
+```
+
+It runs alone, or beside `--liquidator` and reads the liquidator's account source. Alone it
+reads accounts from `--account-source`.
 
 ## Simulate trading on devnet (market maker + taker)
 

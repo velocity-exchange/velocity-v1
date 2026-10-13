@@ -10,7 +10,9 @@
 //! The instruction relay stages therefore takes no payer and allocates
 //! nothing. The opt-in sync created the account before relay ever stages this.
 //! A staged resync replays the stored account list and adds the accounts of
-//! every market the user entered since, so coverage follows new exposure.
+//! every market the user entered since, so coverage follows new exposure. It
+//! also rewrites the trigger slots, so a trigger order that no other path armed
+//! is watched after the next resync.
 //! The keeper is paid from the protocol crank treasury, and only for a resync
 //! that found the user's positions changed. The stored payment prices a whole
 //! transaction, so resyncs batched into one transaction share it. A resync
@@ -27,6 +29,7 @@ use {
     super::sync_liq_conditions::{rewrite_liq_conditions, SyncLiqConditionsTerms},
     crate::{
         error::ErrorCode,
+        instructions::trigger_relay::sync_trigger_conditions::rewrite_trigger_conditions,
         state::{
             crank_treasury::{CrankTreasuryV0, CRANK_TREASURY_PDA_SEED},
             user::User,
@@ -90,6 +93,7 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
         args,
         false,
     )?;
+    arm_trigger_slots(&ctx);
 
     // Terms below the interval floor pay nothing, since paying them would let
     // any permissionless account fund a crank once per slot. The rewrite
@@ -162,6 +166,21 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     let mut treasury_state = ctx.accounts.treasury.load_mut()?;
     treasury_state.total_paid = treasury_state.total_paid.saturating_add(paid);
     Ok(())
+}
+
+/// Rewrites the trigger slots, which share this block and its account list. A
+/// trigger order placed on a path that armed nothing, such as a signed-message
+/// bracket, is armed here. A failed trigger pass must not block the liquidation
+/// pass, so it is logged and skipped.
+fn arm_trigger_slots<'info>(ctx: &Context<'info, ResyncLiqConditions<'info>>) {
+    if let Err(err) = rewrite_trigger_conditions(
+        &ctx.accounts.liq_conditions,
+        &ctx.accounts.user,
+        ctx.remaining_accounts,
+        false,
+    ) {
+        msg!("trigger slots left as they were: {:?}", err);
+    }
 }
 
 /// Whether a resync may draw its payment at all. The treasury pays for a
@@ -239,7 +258,7 @@ pub fn handle_resolve_resync_liq_conditions(
                 .saturating_add(LIQ_SYNC_ACTIVE_POLL_SLOTS);
 
             (
-                UserConditionsV0::digest_positions(&user) != conditions.positions_digest
+                UserConditionsV0::digest_watched_state(&user) != conditions.positions_digest
                     || conditions.sync_poll_is_active(),
                 terms.payable_lamports() > 0 && slot >= due_slot,
             )
@@ -272,8 +291,20 @@ pub fn handle_resolve_resync_liq_conditions(
     })
 }
 
-/// The accounts of every market the user holds a position in that the stored
-/// list does not carry. `stored_accounts` is that list as relay passed it.
+/// The markets of the user's open trigger orders. The resync arms their slots, and
+/// an entry stop can sit on a market the user holds no position in.
+fn open_trigger_order_markets(user: &User) -> impl Iterator<Item = u16> + '_ {
+    user.orders
+        .iter()
+        .filter(|order| {
+            order.status == crate::state::user::OrderStatus::Open && order.must_be_triggered()
+        })
+        .map(|order| order.market_index)
+}
+
+/// The accounts of every market the user holds a position or an open trigger
+/// order in that the stored list does not carry. `stored_accounts` is that list
+/// as relay passed it.
 ///
 /// A perp market brings its crank account and slab, which exist only for a
 /// market with a book. The executor skips an account that does not exist. Every
@@ -313,6 +344,7 @@ fn entered_market_accounts(
         .iter()
         .filter(|position| !position.is_available())
         .map(|position| position.market_index)
+        .chain(open_trigger_order_markets(user))
         .filter(|index| !covered_perps.contains(index));
     let perp_keys = entered_perps.flat_map(|index| {
         [

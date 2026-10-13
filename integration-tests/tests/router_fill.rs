@@ -13994,6 +13994,72 @@ fn fix4_liq_a_dust_deposit_in_a_new_market_keeps_relay_coverage() {
     );
 }
 
+/// A stop-loss that reached `User.orders` without arming a watch, as a
+/// signed-message bracket does, is armed by the user's next resync. The resync
+/// would otherwise leave it unwatched, and nothing fires an unwatched trigger.
+#[test]
+fn a_resync_arms_a_trigger_order_no_path_armed() {
+    use velocity::state::{
+        user::{OrderTriggerCondition, OrderType},
+        user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE},
+    };
+
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+    let user = fix4_liq_synced_long(&mut fixture, market_conditions, ANY_SYNC_COST_UNITS);
+
+    let mut account: User = read_zero_copy(&fixture.svm, &user);
+    let stop_loss = &mut account.orders[0];
+    stop_loss.order_id = 7;
+    stop_loss.status = OrderStatus::Open;
+    stop_loss.order_type = OrderType::TriggerMarket;
+    stop_loss.market_type = MarketType::Perp;
+    stop_loss.market_index = 0;
+    stop_loss.direction = PositionDirection::Short;
+    stop_loss.reduce_only = true;
+    stop_loss.base_asset_amount = 10 * UNIT;
+    stop_loss.trigger_price = 90 * PRICE;
+    stop_loss.trigger_condition = OrderTriggerCondition::Below;
+    set_user_account(&mut fixture.svm, user, &account);
+
+    fixture.svm.warp_to_slot(3_100);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        3_100,
+    );
+
+    let resync = fix4_liq_resolve_resync(&mut fixture, user)
+        .expect("an unarmed trigger order makes the block stale");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resync,
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
+        payout,
+    );
+
+    let conditions: UserConditionsV0 = read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
+    let (_, block) = velocity::relay_spec::read_block(conditions.block(), 0).unwrap();
+    assert!(
+        block[TRIGGER_SLOT_BASE].is_active(),
+        "the resync arms the stop-loss"
+    );
+    assert_eq!(conditions.trigger_slots[0].order_id, 7);
+    assert_eq!(
+        value_cross(&block[TRIGGER_SLOT_BASE]).4,
+        1,
+        "a Below stop watches downward"
+    );
+}
+
 /// The admin lowers the market's crank payments after a user's sync. The
 /// liveness poll still asks relay for the old figure, so the staged
 /// liquidation pays that figure and relay's payment guard holds.

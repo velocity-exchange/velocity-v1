@@ -37,13 +37,11 @@ const SAFE_TRIGGER_ORDER_MIN_REST: Millis = Millis::from_secs(60);
 
 /// Fill each auction cross of one market with its own tx.
 ///
-/// A fill tx carries the pyth-lazer post whenever the post changes what the fill reads, and
-/// then reads the oracle as projected with it. The immediate AMM leg needs an exchange oracle
-/// written in the same slot, and each tx simulates and lands on its own, so one tx's post does
-/// not cover another. The post is left out only when the fill would read identical oracle
-/// inputs without it, which happens when the MM oracle stays the safe price and the cached
-/// exchange price already matches the update. A trigger taker always posts, because its
-/// trigger instruction reads the exchange oracle.
+/// Each tx simulates and lands on its own, so each carries the pyth-lazer post when the post
+/// changes what its fill reads. The post is left out only when the fill reads the same oracle
+/// inputs without it: the MM oracle stays the safe price and the cached exchange price already
+/// matches the update. A trigger taker always posts, because its trigger reads the exchange
+/// oracle.
 pub(super) async fn fill_auction_crosses(
     filler: &Filler,
     tick: &SlotTick,

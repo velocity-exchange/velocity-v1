@@ -736,7 +736,7 @@ mod tests {
         // stable for the same (user, order_id)
         assert_eq!(order_dedup_key(&a, 3), order_dedup_key(&a, 3));
         // order_id is per-user: the same id under different users must NOT collide, otherwise
-        // one user's trigger would suppress another's (regression guard for the H1 bug).
+        // one user's trigger would suppress another's
         assert_ne!(order_dedup_key(&a, 3), order_dedup_key(&b, 3));
         // different order_id under the same user must differ too
         assert_ne!(order_dedup_key(&a, 3), order_dedup_key(&a, 4));

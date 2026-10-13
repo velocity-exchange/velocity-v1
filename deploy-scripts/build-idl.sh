@@ -7,10 +7,18 @@ set -euo pipefail
 PROGRAM="${1:?usage: build-idl.sh <velocity|vaults|jit-proxy|revenue-router>}"
 
 # `anchor idl build` shells out to `cargo +stable`, which resolves only through
-# the rustup shim, so it must come before any other cargo on PATH.
-export PATH="$HOME/.cargo/bin:$PATH"
+# the rustup shim, so it must come before any other cargo on PATH. avm goes
+# first so a stale `cargo install`ed anchor in ~/.cargo/bin cannot shadow it.
+export PATH="$HOME/.avm/bin:$HOME/.cargo/bin:$PATH"
 
 cd "$(dirname "$0")/.."
+
+want_anchor=$(sed -n 's/^anchor_version *= *"\(.*\)"/\1/p' Anchor.toml)
+have_anchor=$(anchor --version | awk '{print $2}')
+if [ "$have_anchor" != "$want_anchor" ]; then
+	echo "anchor $have_anchor on PATH ($(command -v anchor)), Anchor.toml wants $want_anchor: run \`avm use $want_anchor\`" >&2
+	exit 1
+fi
 
 case "$PROGRAM" in
 	velocity)

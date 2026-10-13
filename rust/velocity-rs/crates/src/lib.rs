@@ -1109,9 +1109,15 @@ impl VelocityClient {
         let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
         let slot_clock = slot_clock_from_state(&state);
+        // the cached delay is as of the update's slot, so age it to `current_slot` the way the
+        // program sees an oracle that has not been written since
+        let mut exchange_oracle = oracle_data.data;
+        exchange_oracle.delay = exchange_oracle.delay.saturating_add(
+            i64::try_from(current_slot.saturating_sub(oracle_data.slot)).unwrap_or(i64::MAX),
+        );
         perp_market
             .get_mm_oracle_price_data(
-                oracle_data.data,
+                exchange_oracle,
                 current_slot,
                 &velocity_validity_guard_rails,
                 slot_clock,
@@ -1156,12 +1162,16 @@ impl VelocityClient {
             exchange_oracle.delay = 0;
         }
 
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs() as i64);
         crate::math::amm_quote::project_perp_market_for_quoting(
             perp_market,
             exchange_oracle,
             &velocity_validity_guard_rails,
             slot,
             slot_clock_from_state(&state),
+            now,
         )
     }
 

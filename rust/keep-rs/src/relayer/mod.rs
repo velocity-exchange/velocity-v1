@@ -74,7 +74,7 @@ pub async fn run(config: Config, velocity: VelocityClient) {
         pyth_access_token.as_str(),
     )
     .expect("pyth lazer client connects");
-    let mut feed = crate::util::subscribe_price_feeds(
+    let mut feed = crate::common::oracle::subscribe_price_feeds(
         pyth_feed_cli,
         &perp_market_ids,
         &spot_market_ids,

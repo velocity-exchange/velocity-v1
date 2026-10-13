@@ -863,7 +863,8 @@ export function fillCorrelationSuffix(nodes: Array<NodeToFill>): string {
  * object, `{"event":"<name>", ...}`, with snake_case keys.
  *
  * This is the TypeScript counterpart of keep-rs's `tx_event` wide events
- * (`emit_tx_event` / `emit_cross_decision_event` in `rust/keep-rs/src/filler.rs`).
+ * (`emit_tx_event` in `rust/keep-rs/src/common/tx.rs`, `CrossDecision::emit` in
+ * `rust/keep-rs/src/filler/auction.rs`).
  * Both bots' payloads are read by the Order Trace Grafana dashboard
  * (infrastructure-v3 `grafana/src/authored/order-history.ts`), which line-filters
  * on `"event":"<name>"`, extracts the JSON with `| regexp "(?P<payload>\{.*\})"`

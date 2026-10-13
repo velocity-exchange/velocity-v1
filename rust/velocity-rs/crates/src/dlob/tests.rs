@@ -4290,9 +4290,7 @@ fn dlob_vamm_taker_ignores_non_crossing_orders() {
     assert!(crosses.vamm_taker_bid.is_none());
 }
 
-/// Resting orders use the same min-size distinction as placement validation:
-/// normal orders need `min_order_size`, while reduce-only orders may cross vAMM
-/// below that size.
+/// An order crosses the vAMM once its size reaches one step, reduce-only or not.
 #[test]
 fn dlob_vamm_taker_needs_one_step() {
     let _ = env_logger::try_init();

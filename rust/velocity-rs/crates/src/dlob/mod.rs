@@ -994,8 +994,6 @@ impl DLOB {
         // non-post-only resting limit that takes against the AMM quote — the price
         // predicate is the same, the program dispatches on `post_only` at fill time.
         // Crossing is inclusive, mirroring `do_orders_cross` (math/matching.rs).
-        // Reduce-only orders bypass the program's min-order-size gate; normal
-        // orders must satisfy it. Do not use a separate vAMM min-size rule here.
         if let Some(best_ask) = resting_asks.first() {
             if can_order_cross_vamm(best_ask.size, step_size)
                 && vamm_bid.is_some_and(|v| v >= best_ask.price)

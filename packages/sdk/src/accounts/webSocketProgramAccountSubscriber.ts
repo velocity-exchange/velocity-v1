@@ -9,6 +9,11 @@ import {
 } from '@solana/web3.js';
 import { VelocityProgram } from '../config';
 import * as Buffer from 'buffer';
+import { promiseTimeout } from '../util/promiseTimeout';
+
+// A half-open websocket never answers the unsubscribe, so the teardown promise
+// can pend forever. Abandon it rather than let the resubscribe chain wait.
+const UNSUBSCRIBE_TIMEOUT_MS = 10_000;
 
 /**
  * Default `ProgramAccountSubscriber` implementation: tracks every account owned by the program
@@ -155,15 +160,29 @@ export class WebSocketProgramAccountSubscriber<T>
 					return;
 				}
 
-				if (this.receivingData) {
-					if (this.resubOpts?.logResubMessages) {
-						console.log(
-							`No ws data from ${this.subscriptionName} in ${this.resubOpts?.resubTimeoutMs}ms, resubscribing`
-						);
-					}
+				if (!this.receivingData) {
+					return;
+				}
+
+				if (this.resubOpts?.logResubMessages) {
+					console.log(
+						`No ws data from ${this.subscriptionName} in ${this.resubOpts?.resubTimeoutMs}ms, resubscribing`
+					);
+				}
+				try {
 					await this.unsubscribe(true);
 					this.receivingData = false;
 					await this.subscribe(this.onChange);
+				} catch (e) {
+					console.error(`${this.subscriptionName} resubscribe failed`, e);
+				} finally {
+					// subscribe() arms the next timeout on success. If anything above
+					// threw, nothing is armed and receivingData is false, so the
+					// watchdog chain would silently end here.
+					if (this.resubOpts?.resubTimeoutMs && this.timeoutId === undefined) {
+						this.receivingData = true;
+						this.setTimeout();
+					}
 				}
 			},
 			this.resubOpts?.resubTimeoutMs
@@ -220,7 +239,7 @@ export class WebSocketProgramAccountSubscriber<T>
 	 * Tears down the `onProgramAccountChange` listener and cancels any pending resub timeout.
 	 * @param onResub Internal flag set to `true` when called as part of an automatic resubscribe cycle, which preserves `resubOpts.resubTimeoutMs` instead of clearing it. Callers should omit this.
 	 */
-	unsubscribe(onResub = false): Promise<void> {
+	async unsubscribe(onResub = false): Promise<void> {
 		if (!onResub && this.resubOpts) {
 			this.resubOpts.resubTimeoutMs = undefined;
 		}
@@ -229,16 +248,26 @@ export class WebSocketProgramAccountSubscriber<T>
 		this.timeoutId = undefined;
 
 		if (this.listenerId != null) {
-			const promise = this.program.provider.connection
-				.removeAccountChangeListener(this.listenerId)
-				.then(() => {
-					this.listenerId = undefined;
-					this.isUnsubscribing = false;
-				});
-			return promise;
-		} else {
-			this.isUnsubscribing = false;
-			return Promise.resolve();
+			try {
+				const removed = await promiseTimeout(
+					this.program.provider.connection
+						.removeAccountChangeListener(this.listenerId)
+						.then(() => true),
+					UNSUBSCRIBE_TIMEOUT_MS
+				);
+				if (!removed) {
+					console.error(
+						`${this.subscriptionName} unsubscribe timed out after ${UNSUBSCRIBE_TIMEOUT_MS}ms, forcing cleanup`
+					);
+				}
+			} catch (e) {
+				console.error(
+					`${this.subscriptionName} unsubscribe failed, forcing cleanup`,
+					e
+				);
+			}
+			this.listenerId = undefined;
 		}
+		this.isUnsubscribing = false;
 	}
 }

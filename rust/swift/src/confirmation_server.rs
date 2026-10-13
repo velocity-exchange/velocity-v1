@@ -19,6 +19,9 @@ use {
 const HASH_KEY_PREFIX: &str = "swift-hashes::";
 /// SCAN glob for enumerating every confirmation key.
 const HASH_SCAN_PATTERN: &str = "swift-hashes::*";
+/// A placer that could not land an order writes `failed:<reason>` under its
+/// hash. The order can no longer fill, so the client stops waiting at once.
+const FAILED_VALUE_PREFIX: &str = "failed:";
 
 #[derive(Clone)]
 pub struct ServerParams<T: Clone + AsyncCommands> {
@@ -156,7 +159,13 @@ pub async fn get_hash_status<T: Clone + AsyncCommands>(
     match conn.get::<_, Option<String>>(redis_key).await {
         Ok(Some(value)) => {
             log::info!("Value for decoded_hash {decoded_hash}: {value}");
-            (axum::http::StatusCode::OK, Cow::Owned(value))
+            match value.strip_prefix(FAILED_VALUE_PREFIX) {
+                Some(reason) => (
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                    Cow::Owned(reason.to_string()),
+                ),
+                None => (axum::http::StatusCode::OK, Cow::Owned(value)),
+            }
         }
         Ok(None) => {
             log::info!("No value found for key: {decoded_hash}");
@@ -187,9 +196,11 @@ pub async fn start_server() {
         format!("redis://{}:{}", elasticache_host, elasticache_port)
     };
 
+    // A connection manager reconnects after redis restarts. A bare multiplexed
+    // connection stays broken, and every lookup then fails.
     let redis_client = redis::Client::open(connection_string).expect("valid redis URL");
     let redis_pool = redis_client
-        .get_multiplexed_tokio_connection()
+        .get_connection_manager()
         .await
         .expect("redis connects");
 
@@ -330,6 +341,44 @@ mod tests {
         let uri = "/not-found".parse().unwrap();
         let response = fallback(uri).await;
         assert_eq!(response.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A placer's `failed:` value answers 422 with the reason, so the client
+    /// stops waiting. Any other value is the order id, as before.
+    #[tokio::test]
+    async fn test_get_hash_status_reports_a_failed_placement() {
+        let state = setup_test_server().await;
+        let mut conn = state.redis_pool.clone();
+        let failed = "test-failed-placement-hash";
+        let placed = "test-placed-order-hash";
+        let _: () = conn
+            .set(
+                format!("{HASH_KEY_PREFIX}{failed}"),
+                "failed:InsufficientCollateral",
+            )
+            .await
+            .expect("seed failed hash");
+        let _: () = conn
+            .set(format!("{HASH_KEY_PREFIX}{placed}"), "7")
+            .await
+            .expect("seed placed hash");
+
+        let status = |hash: &str| {
+            let query = HashQuery {
+                hash: hash.to_string(),
+            };
+            get_hash_status(State(state.clone()), Query(query))
+        };
+
+        let response = status(failed).await.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(from_utf8(&body).unwrap(), "InsufficientCollateral");
+
+        let response = status(placed).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(from_utf8(&body).unwrap(), "7");
     }
 
     #[tokio::test]

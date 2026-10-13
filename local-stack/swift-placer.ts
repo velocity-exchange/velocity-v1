@@ -27,6 +27,7 @@ import {
 } from '@velocity-exchange/sdk';
 import bs58 from 'bs58';
 import { RedisClient } from 'bun';
+import { createHash } from 'crypto';
 import nacl from 'tweetnacl';
 import {
 	connectClient,
@@ -229,8 +230,7 @@ async function place(client: VelocityClient, order: SwiftOrder): Promise<void> {
 	const flowAttestation = await attest(order.order_signature);
 	// A bumped book takes an unattested message only from the taker's own signer.
 	if (!flowAttestation) {
-		console.warn(`${order.uuid}: no attestation, skipping`);
-		return;
+		throw new Error('swift gave the order no flow attestation');
 	}
 
 	const makers = await topMakers(
@@ -269,12 +269,10 @@ async function place(client: VelocityClient, order: SwiftOrder): Promise<void> {
 	);
 
 	const signature = await send(client, [cuLimit, placeIx]);
-	if (signature) {
-		console.log(
-			`${order.uuid}: placed ${signature} with ${makers.length} makers`
-		);
-		await seedConfirmation(client, signature);
-	}
+	console.log(
+		`${order.uuid}: placed ${signature} with ${makers.length} makers`
+	);
+	await seedConfirmation(client, signature);
 }
 
 const redis = new RedisClient(REDIS_URL);
@@ -306,6 +304,41 @@ async function seedConfirmation(
 	} catch (error) {
 		console.warn(`${signature}: seeding the swift confirmation failed`, error);
 	}
+}
+
+/**
+ * Writes `failed:<reason>` under the order's hash, so the confirmation server answers its
+ * client with the reason instead of leaving it to wait. `NX` keeps a placement that did
+ * land from being overwritten.
+ */
+async function recordFailure(order: SwiftOrder, reason: string): Promise<void> {
+	const hash = createHash('sha256')
+		.update(Buffer.from(order.order_signature, 'base64'))
+		.digest('base64');
+	try {
+		await redis.send('SET', [
+			`swift-hashes::${hash}`,
+			`failed:${reason}`,
+			'EX',
+			String(SWIFT_HASH_TTL_SECONDS),
+			'NX',
+		]);
+	} catch (error) {
+		console.warn(`${order.uuid}: recording the failure failed`, error);
+	}
+}
+
+/** The program's error message when the logs carry one, otherwise the error itself. */
+function failureReason(err: unknown): string {
+	const logs = (err as { logs?: string[] }).logs ?? [];
+	const anchorError = logs.find((line) => line.includes('Error Message: '));
+	if (anchorError) {
+		return anchorError
+			.slice(anchorError.indexOf('Error Message: ') + 15)
+			.trim();
+	}
+
+	return err instanceof Error ? err.message : String(err);
 }
 
 const V1_VERSION_PREFIX = 0x81;
@@ -412,11 +445,11 @@ async function transactionLogs(
 	return result?.meta?.logMessages;
 }
 
-/** Sends a v1 transaction and prints its logs when it fails. */
+/** Sends a v1 transaction. A failure throws with the transaction's logs. */
 async function send(
 	client: VelocityClient,
 	instructions: TransactionInstruction[]
-): Promise<string | undefined> {
+): Promise<string> {
 	const { blockhash } = await client.connection.getLatestBlockhash();
 	const payer = (client.wallet as unknown as { payer: Keypair }).payer;
 	const { wire, signature } = signedV1Transaction(
@@ -432,11 +465,9 @@ async function send(
 	);
 	if (!result.value.err) return signature;
 
-	console.warn(
-		`placement ${signature} failed`,
-		await transactionLogs(client, signature)
-	);
-	return undefined;
+	throw Object.assign(new Error(`placement ${signature} failed`), {
+		logs: await transactionLogs(client, signature),
+	});
 }
 
 /** Connects to swift's websocket, answers its nonce, and subscribes to every perp market. */
@@ -478,9 +509,11 @@ function subscribe(client: VelocityClient): void {
 		}
 
 		if (message.order) {
-			place(client, message.order as SwiftOrder).catch((err) =>
-				console.warn(`${message.order.uuid}: ${err}`)
-			);
+			const order = message.order as SwiftOrder;
+			place(client, order).catch(async (err) => {
+				console.warn(`${order.uuid}: ${err}`);
+				await recordFailure(order, failureReason(err));
+			});
 		}
 	};
 

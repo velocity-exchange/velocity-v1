@@ -1713,19 +1713,29 @@ impl ServerParams {
                     .observe((unix_now_ms() - context.recv_ts) as f64);
 
                 let publish_latency = unix_now_ms().saturating_sub(context.recv_ts);
+                // With no subscriber, nothing forwards the order to a placer, so it
+                // never lands. The client gets an error rather than a success that
+                // leaves it waiting on a fill.
                 if receivers == 0 && topic != "heartbeat" {
                     log::warn!(
                         target: "redis",
                         "{} topic={topic}: published order {uuid} latency_ms={publish_latency} publish_rtt_ms={publish_rtt_ms:.2} receivers=0",
                         context.log_prefix
                     );
-                } else {
-                    log::info!(
-                        target: "redis",
-                        "{} topic={topic}: published order {uuid} latency_ms={publish_latency} publish_rtt_ms={publish_rtt_ms:.2} receivers={receivers}",
-                        context.log_prefix
+                    return (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        ProcessOrderResponse {
+                            message: PROCESS_ORDER_RESPONSE_ERROR_MSG_DELIVERY_FAILED,
+                            error: Some("no subscriber received the order".to_string()),
+                        },
                     );
                 }
+
+                log::info!(
+                    target: "redis",
+                    "{} topic={topic}: published order {uuid} latency_ms={publish_latency} publish_rtt_ms={publish_rtt_ms:.2} receivers={receivers}",
+                    context.log_prefix
+                );
                 (
                     axum::http::StatusCode::OK,
                     ProcessOrderResponse {

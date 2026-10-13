@@ -340,9 +340,8 @@ impl PubsubClient {
         mut shutdown_receiver: oneshot::Receiver<()>,
     ) -> PubsubClientResult {
         // manage Ws requests and forward subscription messages to subscribers
-        // this loop will retry indefinitely unless the consumer invokes `shutdown` or successive failures exceed maximum
-        let max_retry_count = 3;
-        let mut retry_count = 0;
+        // this loop retries indefinitely unless the consumer invokes `shutdown`
+        let mut retry_count: u32 = 0;
 
         // all existing subscriptions here
         let mut request_id: u64 = 0;
@@ -356,10 +355,10 @@ impl PubsubClient {
                 Ok((ws, response)) => {
                     if response.status().is_server_error() || response.status().is_client_error() {
                         log::warn!(target: "ws", "couldn't reconnect: {response:?}");
-                        retry_count += 1;
-                        let delay = 2_u64.pow(2 + retry_count);
-                        info!(target: "ws", "PubsubClient trying reconnect after {delay}s, attempt: {retry_count}/{max_retry_count}");
-                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        retry_count = retry_count.saturating_add(1);
+                        let delay = reconnect_delay(retry_count);
+                        info!(target: "ws", "PubsubClient trying reconnect after {delay:?}, attempt: {retry_count}");
+                        tokio::time::sleep(delay).await;
                         continue 'reconnect;
                     }
 
@@ -368,14 +367,10 @@ impl PubsubClient {
                 }
                 Err(err) => {
                     log::warn!(target: "ws", "couldn't reconnect: {err:?}");
-                    if retry_count >= max_retry_count {
-                        log::error!(target: "ws", "reached max reconnect attempts: {err:?}");
-                        panic!("PubsubCliwnt reached max reconnect attempts: {err:?}");
-                    }
-                    retry_count += 1;
-                    let delay = 2_u64.pow(2 + retry_count);
-                    info!(target: "ws", "PubsubClient trying reconnect after {delay}s, attempt: {retry_count}/{max_retry_count}");
-                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                    retry_count = retry_count.saturating_add(1);
+                    let delay = reconnect_delay(retry_count);
+                    info!(target: "ws", "PubsubClient trying reconnect after {delay:?}, attempt: {retry_count}");
+                    tokio::time::sleep(delay).await;
                     continue 'reconnect;
                 }
             };
@@ -622,5 +617,26 @@ impl PubsubClient {
             }
             log::debug!(target: "ws", "manager finished");
         }
+    }
+}
+
+/// Backoff before reconnect attempt `retry_count`, which counts from 1. It doubles
+/// from 8 seconds and holds at 30. A restarting node can be down for minutes, and a
+/// client that stops retrying leaves every subscription on a closed channel.
+fn reconnect_delay(retry_count: u32) -> Duration {
+    let doubled = 2_u64.saturating_pow(2_u32.saturating_add(retry_count));
+    Duration::from_secs(doubled.min(30))
+}
+
+#[cfg(test)]
+mod reconnect_delay_tests {
+    use super::*;
+
+    #[test]
+    fn the_delay_doubles_then_holds() {
+        assert_eq!(reconnect_delay(1), Duration::from_secs(8));
+        assert_eq!(reconnect_delay(2), Duration::from_secs(16));
+        assert_eq!(reconnect_delay(3), Duration::from_secs(30));
+        assert_eq!(reconnect_delay(u32::MAX), Duration::from_secs(30));
     }
 }

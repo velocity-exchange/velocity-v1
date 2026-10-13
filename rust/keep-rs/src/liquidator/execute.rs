@@ -10,7 +10,7 @@
 use {
     crate::{
         common::{
-            collateral::CollateralBook,
+            collateral::{CollateralBook, ReservationGuard},
             keeper::Keeper,
             metrics::MarginStatus,
             oracle::PythPriceUpdate,
@@ -231,6 +231,18 @@ impl LiquidationEngine {
         Ok((keeper_account, liquidatee_account))
     }
 
+    /// Reserve `amount` of `subaccount`'s collateral. A subaccount with no balance snapshot yet
+    /// is skipped under its own reason, so the log does not point at contention.
+    fn reserve(&self, subaccount: Pubkey, amount: u128) -> Result<ReservationGuard, &'static str> {
+        if self.collateral.available(&subaccount).is_none() {
+            return Err("no_collateral_snapshot");
+        }
+
+        self.collateral
+            .try_reserve(subaccount, amount)
+            .ok_or("collateral_reserved_elsewhere")
+    }
+
     /// A tx from `subaccount` with the priority fee, the CU limit and, when given, the
     /// pyth-lazer post the liquidation reads.
     fn liquidation_tx<'a>(
@@ -331,8 +343,9 @@ impl LiquidationEngine {
             Ok(accounts) => accounts,
             Err(reason) => return LiquidationOutcome::Skipped(reason),
         };
-        let Some(reservation) = self.collateral.try_reserve(subaccount, collateral_required) else {
-            return LiquidationOutcome::Skipped("collateral_reserved_elsewhere");
+        let reservation = match self.reserve(subaccount, collateral_required) {
+            Ok(reservation) => reservation,
+            Err(reason) => return LiquidationOutcome::Skipped(reason),
         };
 
         let tx_builder = self.liquidation_tx(
@@ -397,8 +410,9 @@ impl LiquidationEngine {
                 return LiquidationOutcome::Skipped(reason);
             }
         };
-        let Some(reservation) = self.collateral.try_reserve(subaccount, collateral_required) else {
-            return LiquidationOutcome::Skipped("collateral_reserved_elsewhere");
+        let reservation = match self.reserve(subaccount, collateral_required) {
+            Ok(reservation) => reservation,
+            Err(reason) => return LiquidationOutcome::Skipped(reason),
         };
 
         let tx_builder = self.liquidation_tx(

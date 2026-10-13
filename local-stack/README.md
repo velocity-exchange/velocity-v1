@@ -82,13 +82,13 @@ bun run local:scenario run three-way                 # swift, with the market's 
 bun run local:scenario run three-way --path onchain  # rests behind the speed bump, relay crosses it
 ```
 
-| Scenario       | Arrangement                                                     | Expected fill                          |
-| -------------- | --------------------------------------------------------------- | -------------------------------------- |
-| `rung-walk`    | Midpoint `a` at the oracle. The vAMM quotes far above.          | 1.5 from `a`, across both of its rungs |
-| `partial-rest` | Midpoint `a` at the oracle. The vAMM is paused.                 | 2 from `a`, and 0.5 rests on the book  |
-| `three-way`    | Midpoint `a` and a book ask from trader c, both near the vAMM   | `a`, 0.5 from the book, and the vAMM   |
-| `two-propamms` | Midpoint `b` 20 bps above `a`                                   | 2 from `a`, then 0.5 from `b`          |
-| `propamm-tie`  | Midpoints `a` and `b` at the same mid                           | 1.25 from each, pro rata               |
+| Scenario       | Arrangement                                                   | Expected fill                          |
+| -------------- | ------------------------------------------------------------- | -------------------------------------- |
+| `rung-walk`    | Midpoint `a` at the oracle. The vAMM quotes far above.        | 1.5 from `a`, across both of its rungs |
+| `partial-rest` | Midpoint `a` at the oracle. The vAMM is paused.               | 2 from `a`, and 0.5 rests on the book  |
+| `three-way`    | Midpoint `a` and a book ask from trader c, both near the vAMM | `a`, 0.5 from the book, and the vAMM   |
+| `two-propamms` | Midpoint `b` 20 bps above `a`                                 | 2 from `a`, then 0.5 from `b`          |
+| `propamm-tie`  | Midpoints `a` and `b` at the same mid                         | 1.25 from each, pro rata               |
 
 Run each scenario on both paths after a change to the router, the quoter slab, the swift placement
 or the taker-origin cross. `arrange <name>` sets the market up without buying, and
@@ -118,23 +118,25 @@ names more accounts than a v0 transaction holds without a lookup table.
 
 ## What runs
 
-| Service          | Port       | Role                                                                  |
-| ---------------- | ---------- | --------------------------------------------------------------------- |
-| `snapshot`       |            | Dumps devnet on the first run only, then re-lays out its `User`s      |
-| `validator`      | 8899, 8900 | `solana-test-validator` at the dump's slot                            |
-| `oracle`         | 7070       | Signs and posts every Pyth Lazer feed, and moves a price on request   |
-| `rpc`            |            | Serves HTTP and websocket RPC on 8899 and on 8900                     |
-| `bootstrap`      |            | Keys, `migrate.ts`, CLOB books, crank treasury, configs               |
-| `redis`          |            | One-node cluster. The TypeScript client has no plain mode             |
-| `book-publisher` |            | Books, the user-orders feed, and the cross fast path                  |
-| `dlob-server`    | 6969       | HTTP: `/l2`, `/batchL2`, `/userOrders`, `/marketOrderParams`          |
-| `dlob-ws`        | 3000       | Websocket: `orderbook`, `user_orders`                                 |
-| `relay-turner`   |            | Triggers, liquidations, expiry and crosses                            |
-| `liquidator`     |            | keep-rs liquidator over websockets, the keeper floor under relay      |
-| `keepers`        |            | Funding and PnL settlement, and the mark TWAP with a Lazer token      |
-| `swift`          | 3003       | Signed-message intake and `/attest`                                   |
-| `swift-ws`       |            | Swift's order websocket, which keepers subscribe to                   |
-| `swift-placer`   |            | Attests each swift order and places it, as keep-rs does in production |
+| Service              | Port       | Role                                                                                           |
+| -------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| `snapshot`           |            | Dumps devnet on the first run only, then re-lays out its `User`s                               |
+| `validator`          | 8899, 8900 | `solana-test-validator` at the dump's slot                                                     |
+| `oracle`             | 7070       | Signs and posts every Pyth Lazer feed, and moves a price on request                            |
+| `rpc`                |            | Serves HTTP and websocket RPC on 8899 and on 8900                                              |
+| `bootstrap`          |            | Keys, `migrate.ts`, CLOB books, crank treasury, configs                                        |
+| `redis`              |            | One-node cluster. The TypeScript client has no plain mode                                      |
+| `book-publisher`     |            | Books, the user-orders feed, and the cross fast path                                           |
+| `dlob-server`        | 6969       | HTTP: `/l2`, `/batchL2`, `/userOrders`, `/marketOrderParams`                                   |
+| `dlob-ws`            | 3000       | Websocket: `orderbook`, `user_orders`                                                          |
+| `relay-turner`       |            | Triggers, liquidations, expiry and crosses                                                     |
+| `liquidator`         |            | keep-rs liquidator over websockets, the keeper floor under relay                               |
+| `keepers`            |            | Funding and PnL settlement, and the mark TWAP with a Lazer token                               |
+| `swift-gateway`      | 3003       | One swift URL: `/confirmation/` to `swift-confirmation`, the rest to `swift`                   |
+| `swift`              |            | Signed-message intake and `/attest`                                                            |
+| `swift-confirmation` |            | `/confirmation/hash-status`, which a client polls until its order lands                        |
+| `swift-ws`           |            | Swift's order websocket, which keepers subscribe to                                            |
+| `swift-placer`       |            | Attests and places each swift order, as keep-rs does in production, and seeds its confirmation |
 
 The bootstrap writes `ui.env.local` into the `state` volume. It holds the overrides that point the
 webapp at these ports:

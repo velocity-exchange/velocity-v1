@@ -26,6 +26,7 @@ import {
 	VelocityClient,
 } from '@velocity-exchange/sdk';
 import bs58 from 'bs58';
+import { RedisClient } from 'bun';
 import nacl from 'tweetnacl';
 import {
 	connectClient,
@@ -40,6 +41,8 @@ import {
 
 const SWIFT_URL = process.env.SWIFT_URL ?? 'http://swift:3003';
 const SWIFT_WS_URL = process.env.SWIFT_WS_URL ?? 'ws://swift-ws:3004';
+const REDIS_URL = process.env.REDIS_URL ?? 'redis://redis:6379';
+const SWIFT_HASH_TTL_SECONDS = 180;
 const KEY_PATH = keyPath('swift-placer');
 const FILLER_DEPOSIT_DUSDT = '100';
 const MAKERS_PER_PLACEMENT = 4;
@@ -270,6 +273,38 @@ async function place(client: VelocityClient, order: SwiftOrder): Promise<void> {
 		console.log(
 			`${order.uuid}: placed ${signature} with ${makers.length} makers`
 		);
+		await seedConfirmation(client, signature);
+	}
+}
+
+const redis = new RedisClient(REDIS_URL);
+
+/**
+ * Writes the `swift-hashes::<hash>` key that swift's confirmation server reads, from the
+ * placement's `SignedMsgOrderRecord`. A client polls that server to learn its order landed.
+ * Production seeds the key from its event feed, which the stack does not run.
+ */
+async function seedConfirmation(
+	client: VelocityClient,
+	signature: string
+): Promise<void> {
+	try {
+		for (const line of (await transactionLogs(client, signature)) ?? []) {
+			const data = line.startsWith('Program data: ')
+				? line.slice('Program data: '.length)
+				: undefined;
+			const event = data && client.program.coder.events.decode(data);
+			if (!event || event.name !== 'signedMsgOrderRecord') continue;
+
+			const record = event.data as { hash: string; userOrderId: number };
+			await redis.send('SETEX', [
+				`swift-hashes::${record.hash}`,
+				String(SWIFT_HASH_TTL_SECONDS),
+				String(record.userOrderId),
+			]);
+		}
+	} catch (error) {
+		console.warn(`${signature}: seeding the swift confirmation failed`, error);
 	}
 }
 

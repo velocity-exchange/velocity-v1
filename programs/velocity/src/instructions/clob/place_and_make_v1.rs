@@ -343,6 +343,7 @@ fn maker_rest(
         reject_if_crossed: params.post_only != PostOnlyParam::None,
         reduce_only: order.reduce_only,
         activation_delay_slots: params.activation_delay_slots,
+        labels: super::OrderLabels::of(order),
     }
 }
 

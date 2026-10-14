@@ -3367,7 +3367,16 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
 
     fixture.svm.warp_to_slot(12);
     let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
-    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    // The resting record still names the order as the stop it fired from.
+    let placed: Vec<velocity::state::events::OrderRecord> = events(&meta);
+    assert_eq!(placed.len(), 1);
+    assert!(placed[0].order.order_type == OrderType::TriggerLimit);
+    assert_eq!(placed[0].order.trigger_price, 98 * PRICE);
+    assert!(placed[0].order.trigger_condition == OrderTriggerCondition::TriggeredBelow);
+    assert!(placed[0].order.is_placed_on_clob());
+
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(maker.orders[0].is_placed_on_clob());
     assert_eq!(

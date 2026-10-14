@@ -1258,6 +1258,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                     max_ts: 0,
                     slot: self.conditions.slot,
                     taker_origin: false,
+                    reduce_only: cancelled.is_reduce_only(),
+                    labels: crate::instructions::OrderLabels::plain_limit(),
                 },
                 OrderActionExplanation::ClobRemainderCulled,
                 None,

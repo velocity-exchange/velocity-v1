@@ -362,6 +362,8 @@ pub struct ClobRestOrder {
     /// `None` takes the book's default speed bump. The caller attests a
     /// below-default value before it reaches here.
     pub activation_delay_slots: Option<u32>,
+    /// What the order record states beyond the book's terms.
+    pub labels: super::OrderLabels,
 }
 
 /// An order the book now holds.
@@ -487,6 +489,8 @@ pub fn rest_remainder_on_clob<'info>(
                 max_ts: order.max_ts,
                 slot: clock.slot,
                 taker_origin: order.taker_origin,
+                reduce_only: order.reduce_only,
+                labels: order.labels,
             },
             placed.is_isolated_position,
         )?,
@@ -593,6 +597,7 @@ fn detached_remainder_rest<'info>(
             reject_if_crossed: false,
             reduce_only: remainder.reduce_only,
             activation_delay_slots: terms.activation_delay_slots,
+            labels: super::OrderLabels::of(order),
         },
         clock,
     )?;
@@ -1051,6 +1056,7 @@ mod rest_risk_tests {
             reject_if_crossed: false,
             reduce_only,
             activation_delay_slots: None,
+            labels: crate::instructions::OrderLabels::plain_limit(),
         }
     }
 

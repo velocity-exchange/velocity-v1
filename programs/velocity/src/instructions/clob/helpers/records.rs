@@ -40,11 +40,44 @@ use {
                 OrderActionRecord, OrderRecord,
             },
             traits::Size,
-            user::{MarketType, Order, OrderBitFlag, OrderStatus, OrderType},
+            user::{
+                MarketType, Order, OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType,
+            },
         },
     },
     anchor_lang::prelude::*,
 };
+
+/// The fields of an order record that the book does not hold. A fired trigger
+/// keeps its type and trigger fields, so a reader still sees a TP or an SL.
+#[derive(Clone, Copy, Debug)]
+pub struct OrderLabels {
+    pub order_type: OrderType,
+    pub user_order_id: u8,
+    pub trigger_price: u64,
+    pub trigger_condition: OrderTriggerCondition,
+}
+
+impl OrderLabels {
+    /// A book order with no source order to describe it.
+    pub fn plain_limit() -> Self {
+        Self {
+            order_type: OrderType::Limit,
+            user_order_id: 0,
+            trigger_price: 0,
+            trigger_condition: OrderTriggerCondition::Above,
+        }
+    }
+
+    pub fn of(order: &Order) -> Self {
+        Self {
+            order_type: order.order_type,
+            user_order_id: order.user_order_id,
+            trigger_price: order.trigger_price,
+            trigger_condition: order.trigger_condition,
+        }
+    }
+}
 
 /// One resting book order, in the shape the records speak.
 ///
@@ -63,6 +96,8 @@ pub struct ClobOrderFacts {
     pub slot: u64,
     /// A migrated taker remainder rather than a quote its owner chose to post.
     pub taker_origin: bool,
+    pub reduce_only: bool,
+    pub labels: OrderLabels,
 }
 
 impl ClobOrderFacts {
@@ -85,6 +120,8 @@ impl ClobOrderFacts {
             max_ts: removed.max_ts,
             slot,
             taker_origin: removed.taker_origin,
+            reduce_only: removed.reduce_only,
+            labels: OrderLabels::plain_limit(),
         }
     }
 
@@ -102,7 +139,11 @@ impl ClobOrderFacts {
             order_id: self.order_id,
             market_index: self.market_index,
             status,
-            order_type: OrderType::Limit,
+            order_type: self.labels.order_type,
+            user_order_id: self.labels.user_order_id,
+            trigger_price: self.labels.trigger_price,
+            trigger_condition: self.labels.trigger_condition,
+            reduce_only: self.reduce_only,
             market_type: MarketType::Perp,
             direction: self.direction,
             post_only: !self.taker_origin,

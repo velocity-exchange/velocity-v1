@@ -972,7 +972,9 @@ New endpoints take a single args struct (`PlaceAndTakePerpOrderV1Args`, `Trigger
 `PlaceTriggerOrdersV1Args`, `UpdateQuoterApprovedArgs` and the rest).
 
 `OrderActionExplanation` gains `CLOB_ORDER_EVICTED` and `CLOB_REMAINDER_CULLED`, which name a book
-order that a crank evicted and a remainder that a fill culled under the book's minimum.
+order that a crank evicted and a remainder that a fill culled under the book's minimum. It also gains
+`ORDER_FILLED_WITH_CLOB`, which labels a fill against a book order. A fill against a PropAMM quote
+keeps `ORDER_FILLED_WITH_EXTERNAL_QUOTER`.
 
 `getPlaceAndMakePerpOrderIx`, `getPlaceTriggerOrdersIx`, `getCancelOrderV1Ix`,
 `getCancelOrdersV1Ix` and `getModifyOrderV1Ix` take `overrides.authority`, and

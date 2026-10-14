@@ -1128,6 +1128,8 @@ pub(crate) struct ExternalMatch {
     pub effective_taker_limit: u64,
     /// The oracle price the filler-reward tier is measured against.
     pub oracle_price: i64,
+    /// What kind of resting liquidity filled, for the fill record.
+    pub explanation: OrderActionExplanation,
 }
 
 /// What the keeper's reward tier is measured against.
@@ -1280,7 +1282,7 @@ pub(crate) fn settle_external_match_fill(
         &settled,
         filled,
         MatchedRecord {
-            explanation: OrderActionExplanation::OrderFilledWithExternalQuoter,
+            explanation: prices.explanation,
             maker_order: maker.order_id.map(|order_id| Order {
                 order_id,
                 market_index: cx.market.market_index,

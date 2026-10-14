@@ -2385,6 +2385,7 @@ fn settle_pair_match<'info>(
         &controller::orders::ExternalMatch {
             effective_taker_limit: pair.aggressor.price,
             oracle_price: pricing.oracle_price,
+            explanation: OrderActionExplanation::OrderFilledWithClob,
         },
         &mut controller::orders::FillerSide {
             user: &mut none_filler,

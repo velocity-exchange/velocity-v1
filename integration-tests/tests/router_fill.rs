@@ -35,6 +35,7 @@ use {
         },
         state::{
             clob_crank::CrankCostUnitsV0,
+            events::OrderActionExplanation,
             market_status::MarketStatus,
             oracle::OracleSource,
             order_params::{OrderParams, PostOnlyParam},
@@ -9549,6 +9550,7 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     let fills = fill_records(&meta);
     assert_eq!(fills.len(), 2, "one fill per maker");
     for fill in &fills {
+        assert!(fill.action_explanation == OrderActionExplanation::OrderFilledWithClob);
         assert_eq!(fill.taker_order_id, Some(taker_order_id));
         assert!(
             fill.maker_order_id
@@ -10672,6 +10674,7 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     // one aggresses, so it is the taker.
     let fills = fill_records(&meta);
     assert_eq!(fills.len(), 1);
+    assert!(fills[0].action_explanation == OrderActionExplanation::OrderFilledWithClob);
     assert_eq!(fills[0].taker_order_id, Some(late_order_id));
     assert_eq!(fills[0].maker_order_id, Some(early_order_id));
 

@@ -438,6 +438,9 @@ pub enum OrderActionExplanation {
     /// minimum order size. The maker was filled in the same transaction, so a
     /// fill record always accompanies this one.
     ClobRemainderCulled,
+    /// A fill against a resting CLOB order. `OrderFilledWithExternalQuoter`
+    /// labels a fill against a PropAMM quote.
+    OrderFilledWithClob,
 }
 
 #[event]

@@ -423,6 +423,7 @@ fn rest_take_remainder<'info>(
             reject_if_crossed: false,
             reduce_only: remainder.reduce_only,
             activation_delay_slots: outcome.activation_delay_slots,
+            labels: crate::instructions::OrderLabels::of(order),
         },
         &Clock::get()?,
     )?;

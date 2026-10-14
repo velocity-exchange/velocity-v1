@@ -32,7 +32,7 @@ use {
     },
     crate::{
         error::ErrorCode,
-        instructions::relay_harness::resolve_into,
+        instructions::relay_harness::{resolve_into, Resolution},
         state::clob_crank::{CLOB_CRANK_CROSS_FALLBACK, CLOB_CRANK_REFILL},
         validate,
     },
@@ -144,10 +144,12 @@ pub fn handle_resolve_clob_crank(
     validate_linkage(&ctx)?;
     let work = fired.work(&ctx)?;
     resolve_into(&ctx.accounts.scratch, || match work {
-        ClobCrankWork::Removal(Removal::Expired) => stage_expired_removal(&ctx),
-        ClobCrankWork::Removal(Removal::Evictable) => stage_eviction(&ctx),
+        ClobCrankWork::Removal(Removal::Expired) => {
+            stage_expired_removal(&ctx).map(Resolution::from)
+        }
+        ClobCrankWork::Removal(Removal::Evictable) => stage_eviction(&ctx).map(Resolution::from),
         ClobCrankWork::Cross => stage_cross(&ctx),
-        ClobCrankWork::Refill => stage_refill(&ctx),
+        ClobCrankWork::Refill => stage_refill(&ctx).map(Resolution::from),
     })
 }
 

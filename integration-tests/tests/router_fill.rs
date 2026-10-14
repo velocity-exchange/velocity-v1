@@ -35,6 +35,7 @@ use {
         },
         state::{
             clob_crank::CrankCostUnitsV0,
+            events::OrderActionExplanation,
             market_status::MarketStatus,
             oracle::OracleSource,
             order_params::{OrderParams, PostOnlyParam},
@@ -2532,16 +2533,40 @@ fn run_cross_resolver(
         }
         .data(),
     };
-    let keeper = fixture.keeper.insecure_clone();
-    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
-    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
-    if !pointer.has_work() {
-        return None;
+    resolve_in_rounds(fixture, ix)
+}
+
+/// Run a resolver the way a turner does. An accounts request appends the
+/// accounts and runs the resolver again, for at most relay's round count.
+fn resolve_in_rounds(
+    fixture: &mut Fixture,
+    mut ix: Instruction,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    for _ in 0..velocity::relay_spec::MAX_RESOLVE_ROUNDS {
+        let keeper = fixture.keeper.insecure_clone();
+        let meta = send(&mut fixture.svm, &keeper, ix.clone(), &[]).unwrap();
+        let pointer =
+            velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+        if !pointer.has_work() {
+            return None;
+        }
+
+        let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
+        let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+        if !pointer.wants_more_accounts() {
+            return Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap());
+        }
+
+        let request = velocity::relay_spec::AccountsRequestV0::read(staged).unwrap();
+        ix.accounts
+            .extend(request.accounts.iter().map(|account| AccountMeta {
+                pubkey: Pubkey::new_from_array(account.address),
+                is_signer: false,
+                is_writable: account.is_writable(),
+            }));
     }
 
-    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
-    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
-    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+    panic!("the resolver still asked for accounts in relay's last round");
 }
 
 /// Submit a staged executor the way a turner does: the instruction is the
@@ -3342,7 +3367,16 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
 
     fixture.svm.warp_to_slot(12);
     let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
-    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    // The resting record still names the order as the stop it fired from.
+    let placed: Vec<velocity::state::events::OrderRecord> = events(&meta);
+    assert_eq!(placed.len(), 1);
+    assert!(placed[0].order.order_type == OrderType::TriggerLimit);
+    assert_eq!(placed[0].order.trigger_price, 98 * PRICE);
+    assert!(placed[0].order.trigger_condition == OrderTriggerCondition::TriggeredBelow);
+    assert!(placed[0].order.is_placed_on_clob());
+
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(maker.orders[0].is_placed_on_clob());
     assert_eq!(
@@ -6447,16 +6481,7 @@ fn run_quoter_cross_resolver(
         accounts,
         data: velocity::instruction::ResolveCrankCrossMatchQuoter {}.data(),
     };
-    let keeper = fixture.keeper.insecure_clone();
-    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
-    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
-    if !pointer.has_work() {
-        return None;
-    }
-
-    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
-    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
-    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+    resolve_in_rounds(fixture, ix)
 }
 
 /// The whole generic loop, turner-shaped: a maker declares their reprice
@@ -9534,6 +9559,7 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     let fills = fill_records(&meta);
     assert_eq!(fills.len(), 2, "one fill per maker");
     for fill in &fills {
+        assert!(fill.action_explanation == OrderActionExplanation::OrderFilledWithClob);
         assert_eq!(fill.taker_order_id, Some(taker_order_id));
         assert!(
             fill.maker_order_id
@@ -10657,6 +10683,7 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     // one aggresses, so it is the taker.
     let fills = fill_records(&meta);
     assert_eq!(fills.len(), 1);
+    assert!(fills[0].action_explanation == OrderActionExplanation::OrderFilledWithClob);
     assert_eq!(fills[0].taker_order_id, Some(late_order_id));
     assert_eq!(fills[0].maker_order_id, Some(early_order_id));
 
@@ -10869,14 +10896,11 @@ fn a_cross_carries_the_quote_markets_oracle() {
         .iter()
         .map(|a| Pubkey::new_from_array(a.address))
         .collect();
-    let perp_oracle_at = staged
-        .iter()
-        .position(|key| *key == fixture.oracle)
-        .expect("the perp oracle opens the map section");
-    assert_eq!(
-        staged[perp_oracle_at..perp_oracle_at + 3],
-        [fixture.oracle, quote_oracle, spot_market_pda(0)],
-        "the quote oracle sits between the perp oracle and the quote spot market"
+    let at = |wanted: Pubkey| staged.iter().position(|key| *key == wanted).unwrap();
+    assert_eq!(staged[at(fixture.oracle) + 1], quote_oracle);
+    assert!(
+        at(quote_oracle) < at(spot_market_pda(0)),
+        "oracles precede spot markets"
     );
 
     let payout = Pubkey::new_unique();
@@ -10891,6 +10915,127 @@ fn a_cross_carries_the_quote_markets_oracle() {
     assert_eq!(
         perp_position(&fixture.svm, &taker.user).base_asset_amount,
         (UNIT / 2) as i64
+    );
+}
+
+/// Rest half a unit at `price` from `maker`, active at once.
+fn place_clob_order_from(
+    fixture: &mut Fixture,
+    maker: &ClobMaker,
+    direction: PositionDirection,
+    price: u64,
+) {
+    let ix = place_clob_order_ix(
+        maker.user,
+        &maker.authority,
+        fixture.quoter_slab,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction,
+            price,
+            base_asset_amount: UNIT / 2,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+            reject_if_crossed: false,
+        },
+    );
+    send(&mut fixture.svm, &maker.authority, ix, &[]).unwrap();
+}
+
+/// Give `user` one SOL of collateral and a 0.1 long in perp market 1.
+fn hold_sol_and_a_second_perp(svm: &mut litesvm::LiteSVM, user: Pubkey) {
+    let mut account: User = read_zero_copy(svm, &user);
+    account.spot_positions[1].market_index = 1;
+    account.spot_positions[1].balance_type = SpotBalanceType::Deposit;
+    account.spot_positions[1].scaled_balance = SPOT_BALANCE_PRECISION_U64;
+    account.perp_positions[1].market_index = 1;
+    account.perp_positions[1].base_asset_amount = (UNIT / 10) as i64;
+    account.perp_positions[1].quote_asset_amount = -10 * QUOTE_PRECISION_I64;
+    account.perp_positions[1].quote_entry_amount = -10 * QUOTE_PRECISION_I64;
+    account.perp_positions[1].quote_break_even_amount = -10 * QUOTE_PRECISION_I64;
+    set_user_account(svm, user, &account);
+}
+
+/// A maker holding SOL collateral and a position in a second perp market is
+/// still crossed. The resolver asks relay for the makers' accounts, then for
+/// the markets their positions name, and stages every oracle their margin
+/// checks read.
+#[test]
+fn a_cross_names_every_market_a_makers_margin_reads() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, 150);
+    let sol_market: SpotMarket = read_zero_copy(&fixture.svm, &spot_market_pda(1));
+    let sol_oracle = Pubkey::new_from_array(sol_market.oracle.to_bytes());
+    let other_oracle = add_bookless_perp_market(&mut fixture);
+
+    let maker = fixture.clob_maker_authority.pubkey();
+    let maker_stats =
+        Pubkey::find_program_address(&[b"user_stats", maker.as_ref()], &velocity_id()).0;
+    set_user_stats_account(&mut fixture.svm, maker_stats, &maker);
+
+    let bidder = add_clob_maker(&mut fixture);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    place_clob_order_from(&mut fixture, &bidder, PositionDirection::Long, 101 * PRICE);
+
+    // The positions land after the bid rests, because placement reads only
+    // the market it places into.
+    hold_sol_and_a_second_perp(&mut fixture.svm, bidder.user);
+
+    fixture.svm.warp_to_slot(12);
+    for (oracle, price) in [
+        (fixture.oracle, 100),
+        (other_oracle, 100),
+        (sol_oracle, 150),
+    ] {
+        set_oracle(
+            &mut fixture.svm,
+            oracle,
+            (price * PRICE_PRECISION) as i64,
+            12,
+        );
+    }
+
+    let resolved = run_cross_resolver(&mut fixture, conditions).expect("the book is crossed");
+    let staged: Vec<Pubkey> = resolved
+        .accounts
+        .iter()
+        .map(|a| Pubkey::new_from_array(a.address))
+        .collect();
+    for wanted in [
+        sol_oracle,
+        other_oracle,
+        spot_market_pda(1),
+        perp_market_pda(1),
+    ] {
+        assert!(staged.contains(&wanted), "the cross stages {wanted}");
+    }
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankCrossMatch::DISCRIMINATOR,
+        payout,
+    );
+
+    let bidder_after: User = read_zero_copy(&fixture.svm, &bidder.user);
+    let filled = bidder_after
+        .perp_positions
+        .iter()
+        .find(|position| position.market_index == 0 && position.base_asset_amount != 0)
+        .expect("the bid filled");
+    assert_eq!(filled.base_asset_amount, (UNIT / 2) as i64);
+    assert_eq!(
+        bidder_after.perp_positions[1].base_asset_amount,
+        (UNIT / 10) as i64,
+        "the second market keeps its position"
     );
 }
 
@@ -13858,6 +14003,72 @@ fn fix4_liq_a_dust_deposit_in_a_new_market_keeps_relay_coverage() {
     assert_eq!(
         liquidation.executor_disc,
         velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR
+    );
+}
+
+/// A stop-loss that reached `User.orders` without arming a watch, as a
+/// signed-message bracket does, is armed by the user's next resync. The resync
+/// would otherwise leave it unwatched, and nothing fires an unwatched trigger.
+#[test]
+fn a_resync_arms_a_trigger_order_no_path_armed() {
+    use velocity::state::{
+        user::{OrderTriggerCondition, OrderType},
+        user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE},
+    };
+
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+    let user = fix4_liq_synced_long(&mut fixture, market_conditions, ANY_SYNC_COST_UNITS);
+
+    let mut account: User = read_zero_copy(&fixture.svm, &user);
+    let stop_loss = &mut account.orders[0];
+    stop_loss.order_id = 7;
+    stop_loss.status = OrderStatus::Open;
+    stop_loss.order_type = OrderType::TriggerMarket;
+    stop_loss.market_type = MarketType::Perp;
+    stop_loss.market_index = 0;
+    stop_loss.direction = PositionDirection::Short;
+    stop_loss.reduce_only = true;
+    stop_loss.base_asset_amount = 10 * UNIT;
+    stop_loss.trigger_price = 90 * PRICE;
+    stop_loss.trigger_condition = OrderTriggerCondition::Below;
+    set_user_account(&mut fixture.svm, user, &account);
+
+    fixture.svm.warp_to_slot(3_100);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        3_100,
+    );
+
+    let resync = fix4_liq_resolve_resync(&mut fixture, user)
+        .expect("an unarmed trigger order makes the block stale");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resync,
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
+        payout,
+    );
+
+    let conditions: UserConditionsV0 = read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
+    let (_, block) = velocity::relay_spec::read_block(conditions.block(), 0).unwrap();
+    assert!(
+        block[TRIGGER_SLOT_BASE].is_active(),
+        "the resync arms the stop-loss"
+    );
+    assert_eq!(conditions.trigger_slots[0].order_id, 7);
+    assert_eq!(
+        value_cross(&block[TRIGGER_SLOT_BASE]).4,
+        1,
+        "a Below stop watches downward"
     );
 }
 

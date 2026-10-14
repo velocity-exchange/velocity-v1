@@ -61,7 +61,9 @@ use {
         state::{pdas, relay_scratch::RelayScratchV0},
     },
     anchor_lang::prelude::*,
-    relay_spec::{AccountRefV0, ResolvedCrankV0, ResponsePointerV0, KEEPER_PLACEHOLDER},
+    relay_spec::{
+        AccountRefV0, AccountsRequestV0, ResolvedCrankV0, ResponsePointerV0, KEEPER_PLACEHOLDER,
+    },
     solana_program::{instruction::AccountMeta, program::set_return_data},
     std::ops::DerefMut,
 };
@@ -104,26 +106,31 @@ impl StagedCall {
         self.account(user, true).account(stats, true)
     }
 
-    /// The margin-map section for an executor that names the perp market in
-    /// its own accounts struct. It appends the oracles as readonly, then the
-    /// quote spot market. `load_maps` reads these by order rather than by
-    /// name, so the order lives here once instead of in each resolver. A
-    /// default `quote_oracle` is a quote market with no oracle account, and
-    /// adds nothing.
-    pub fn map_section_named_perp(
+    /// The margin-map section a [`MarginSection`] describes: the oracles as
+    /// readonly, then the spot markets, then `perp_markets`. Only the quote
+    /// spot market is writable, because a fill settles fees into it. An
+    /// executor that names the crossed perp market leaves it out of
+    /// `perp_markets`.
+    ///
+    /// [`MarginSection`]: crate::instructions::clob::helpers::margin_section::MarginSection
+    pub fn map_section(
         self,
-        oracle: Pubkey,
-        quote_oracle: Pubkey,
-        quote_spot_market_index: u16,
+        section: &crate::instructions::clob::helpers::margin_section::MarginSection,
+        perp_markets: impl IntoIterator<Item = (Pubkey, bool)>,
     ) -> Self {
-        let call = self.account(oracle, false);
-        let call = if quote_oracle == Pubkey::default() || quote_oracle == oracle {
-            call
-        } else {
-            call.account(quote_oracle, false)
-        };
+        let call = section
+            .oracles
+            .iter()
+            .fold(self, |call, oracle| call.account(*oracle, false));
+        let call = section.spot_markets.iter().fold(call, |call, market| {
+            call.account(*market, *market == section.quote_spot_market)
+        });
 
-        call.account(pdas::spot_market(quote_spot_market_index), true)
+        perp_markets
+            .into_iter()
+            .fold(call, |call, (market, writable)| {
+                call.account(market, writable)
+            })
     }
 
     /// Append the `(User, UserStats)` pairs of maker identities read off a
@@ -201,20 +208,45 @@ impl StagedCall {
     }
 }
 
-/// Run a resolver. `discover` returns the executor call, or `None` for no
-/// work. This function does everything else: the no-work response, the
-/// account-ref conversion and its rule checks, the staging, and the return
-/// data.
-pub fn resolve_into<'info>(
+/// A resolver's answer for one relay round.
+pub enum Resolution {
+    NoWork,
+    Call(StagedCall),
+    /// Accounts the resolver must read before it can answer. Relay appends
+    /// them to the resolver's accounts and runs it again.
+    MoreAccounts(Vec<Pubkey>),
+}
+
+impl From<Option<StagedCall>> for Resolution {
+    fn from(call: Option<StagedCall>) -> Self {
+        call.map_or(Resolution::NoWork, Resolution::Call)
+    }
+}
+
+/// Run a resolver. `discover` returns its [`Resolution`]. This function does
+/// everything else: the no-work response, the account-ref conversion and its
+/// rule checks, the staging, and the return data.
+pub fn resolve_into<'info, R: Into<Resolution>>(
     scratch: &AccountLoader<'info, RelayScratchV0>,
-    discover: impl FnOnce() -> Result<Option<StagedCall>>,
+    discover: impl FnOnce() -> Result<R>,
 ) -> Result<()> {
-    let Some(call) = discover()? else {
-        set_return_data(&ResponsePointerV0::no_work().to_bytes());
-        return Ok(());
+    let pointer = match discover()?.into() {
+        Resolution::NoWork => ResponsePointerV0::no_work().to_bytes(),
+        Resolution::Call(call) => {
+            let resolved = call.into_resolved()?;
+            scratch.load_mut()?.deref_mut().stage(&resolved)?
+        }
+        Resolution::MoreAccounts(accounts) => {
+            let request = AccountsRequestV0::new(
+                accounts
+                    .iter()
+                    .map(|key| AccountRefV0::readonly(key.to_bytes()))
+                    .collect(),
+            );
+            scratch.load_mut()?.deref_mut().stage_request(&request)?
+        }
     };
-    let resolved = call.into_resolved()?;
-    let pointer = scratch.load_mut()?.deref_mut().stage(&resolved)?;
+
     set_return_data(&pointer);
     Ok(())
 }
@@ -260,33 +292,35 @@ mod map_section_tests {
         call.metas.iter().map(|meta| meta.pubkey).collect()
     }
 
-    /// The fill values collateral through the quote market's oracle, so a
-    /// staged cross without it fails with `OracleNotFound`.
+    /// `load_maps` reads oracles, then spot markets, then perp markets, by
+    /// position. Only the quote market is writable, because fees settle into
+    /// it.
     #[test]
-    fn a_quote_market_with_an_oracle_carries_it() {
-        let (oracle, quote_oracle) = (Pubkey::new_unique(), Pubkey::new_unique());
-        let call = empty_call().map_section_named_perp(oracle, quote_oracle, 0);
+    fn the_section_stages_in_load_order() {
+        use crate::instructions::clob::helpers::margin_section::MarginSection;
+
+        let oracles = vec![Pubkey::new_unique(), Pubkey::new_unique()];
+        let section = MarginSection {
+            oracles: oracles.clone(),
+            spot_markets: vec![pdas::spot_market(0), pdas::spot_market(1)],
+            quote_spot_market: pdas::spot_market(0),
+            perp_markets: vec![pdas::perp_market(2)],
+        };
+        let perp_markets = [(pdas::perp_market(1), true), (pdas::perp_market(2), false)];
+        let call = empty_call().map_section(&section, perp_markets);
 
         assert_eq!(
             keys(&call),
-            vec![oracle, quote_oracle, pdas::spot_market(0)]
+            vec![
+                oracles[0],
+                oracles[1],
+                pdas::spot_market(0),
+                pdas::spot_market(1),
+                pdas::perp_market(1),
+                pdas::perp_market(2),
+            ]
         );
-        assert!(!call.metas[1].is_writable);
-    }
-
-    #[test]
-    fn a_quote_asset_market_adds_no_oracle() {
-        let oracle = Pubkey::new_unique();
-        let call = empty_call().map_section_named_perp(oracle, Pubkey::default(), 0);
-
-        assert_eq!(keys(&call), vec![oracle, pdas::spot_market(0)]);
-    }
-
-    #[test]
-    fn an_oracle_both_markets_share_is_staged_once() {
-        let oracle = Pubkey::new_unique();
-        let call = empty_call().map_section_named_perp(oracle, oracle, 0);
-
-        assert_eq!(keys(&call), vec![oracle, pdas::spot_market(0)]);
+        let writable: Vec<bool> = call.metas.iter().map(|meta| meta.is_writable).collect();
+        assert_eq!(writable, vec![false, false, true, false, true, false]);
     }
 }

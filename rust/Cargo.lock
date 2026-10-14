@@ -3063,7 +3063,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -4390,7 +4390,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "log",
  "multimap",
  "petgraph",
@@ -4411,7 +4411,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4641,7 +4641,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -4681,7 +4681,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -4954,7 +4954,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relay-anchor"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
+source = "git+https://github.com/velocity-exchange/relay?rev=1e9dbc8#1e9dbc8da62b9e92f50ee29e078340b88ad2a0de"
 dependencies = [
  "relay-spec",
 ]
@@ -4962,7 +4962,7 @@ dependencies = [
 [[package]]
 name = "relay-chain-source"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
+source = "git+https://github.com/velocity-exchange/relay?rev=1e9dbc8#1e9dbc8da62b9e92f50ee29e078340b88ad2a0de"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4988,7 +4988,7 @@ dependencies = [
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
+source = "git+https://github.com/velocity-exchange/relay?rev=1e9dbc8#1e9dbc8da62b9e92f50ee29e078340b88ad2a0de"
 dependencies = [
  "bytemuck",
 ]
@@ -9790,7 +9790,7 @@ dependencies = [
  "relay-chain-source",
  "solana-account 4.3.2",
  "solana-compute-budget-interface",
- "solana-loader-v3-interface 7.0.0",
+ "solana-loader-v3-interface 6.1.1",
  "solana-sdk 3.0.0",
  "solana-sdk-ids",
  "solana-system-interface 3.2.0",

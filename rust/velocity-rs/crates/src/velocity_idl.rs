@@ -5134,6 +5134,7 @@ pub mod types {
         OrderFilledWithExternalQuoter,
         ClobOrderEvicted,
         ClobRemainderCulled,
+        OrderFilledWithClob,
     }
     #[repr(C)]
     #[derive(

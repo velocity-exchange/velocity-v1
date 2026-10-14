@@ -309,6 +309,7 @@ struct ExternalLeg {
     /// fills and culls unwind open-order aggregates. Custom PropAMM depth is
     /// never reserved, so there is nothing to unwind.
     maker_aggregates_tracked: bool,
+    fill_explanation: OrderActionExplanation,
 }
 
 /// One quote-and-split pass: what the split gave every source, and what the vAMM leg
@@ -806,6 +807,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 .execute(index, self.route_direction, allocation.base)?;
         let data = located.borrow()?;
         let response = located.execute_response(&data)?;
+        let quoter_type = venue.router.executor.quoter_type(index);
         let leg = ExternalLeg {
             quoter_key: venue.router.executor.quoter_key(index),
             protocol_authority: venue.router.standing.protocol_authority,
@@ -815,11 +817,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 .router
                 .executor
                 .oracle_band(index, market.margin_ratio_initial),
-            maker_aggregates_tracked: venue
-                .router
-                .executor
-                .quoter_type(index)
-                .tracks_maker_aggregates(),
+            maker_aggregates_tracked: quoter_type.tracks_maker_aggregates(),
+            fill_explanation: quoter_type.fill_explanation(),
         };
 
         self.validate_external_volume_and_price(&leg, &response, allocation)?;
@@ -1028,6 +1027,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             &ExternalMatch {
                 effective_taker_limit: self.setup.effective_taker_limit,
                 oracle_price: self.conditions.oracle_price,
+                explanation: leg.fill_explanation,
             },
             filler,
             &mut SettleContext {
@@ -1258,6 +1258,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                     max_ts: 0,
                     slot: self.conditions.slot,
                     taker_origin: false,
+                    reduce_only: cancelled.is_reduce_only(),
+                    labels: crate::instructions::OrderLabels::plain_limit(),
                 },
                 OrderActionExplanation::ClobRemainderCulled,
                 None,

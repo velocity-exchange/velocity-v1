@@ -268,6 +268,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         base_asset_amount,
         max_ts,
         reduce_only,
+        labels,
         user_ref,
         is_isolated_position,
         filler_reward,
@@ -370,6 +371,8 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             max_ts,
             slot,
             taker_origin: true,
+            reduce_only,
+            labels,
         },
         is_isolated_position,
     )?;
@@ -439,6 +442,7 @@ struct TriggerPlacement {
     base_asset_amount: u64,
     max_ts: i64,
     reduce_only: bool,
+    labels: super::OrderLabels,
     user_ref: UserRefV0,
     is_isolated_position: bool,
     filler_reward: u64,
@@ -581,8 +585,9 @@ impl TriggerLimitCrank<'_, '_> {
         // The reservation holds `open_orders` on the position, so the order's
         // margin regime is fixed from here on and the records can state it.
         let is_isolated_position = user.get_perp_position(self.market_index)?.is_isolated();
+        let fired_order = fired_view(&user.orders[fired.order_index]);
         crate::controller::orders::TriggerRecord {
-            fired: fired_view(&user.orders[fired.order_index]),
+            fired: fired_order,
             user: self.user.key(),
             filler: self.filler.key(),
             filler_reward,
@@ -598,6 +603,7 @@ impl TriggerLimitCrank<'_, '_> {
             base_asset_amount: reserved.base_asset_amount,
             max_ts: user.orders[fired.order_index].max_ts,
             reduce_only: reserved.reduce_only,
+            labels: super::OrderLabels::of(&fired_order),
             user_ref: user.clob_user_ref(),
             is_isolated_position,
             filler_reward,

@@ -47,12 +47,12 @@ use {
 };
 
 /// The region of the user account a sync watch covers. It runs from
-/// `spot_positions` to the start of `orders`, so it holds both position
-/// arrays. A trade, a deposit or a settlement writes here. Most unrelated
-/// writes, such as the last active slot, do not.
+/// `spot_positions` to the end of `orders`, so it holds both position arrays
+/// and the orders. A trade, a deposit, a settlement or a new trigger order
+/// writes here. Most unrelated writes, such as the last active slot, do not.
 pub fn user_positions_watch_region() -> (u32, u32) {
     let start = 8 + core::mem::offset_of!(User, spot_positions);
-    let end = 8 + core::mem::offset_of!(User, orders);
+    let end = 8 + core::mem::offset_of!(User, total_deposits);
     (start as u32, (end - start) as u32)
 }
 
@@ -316,7 +316,7 @@ pub fn rewrite_liq_conditions<'info>(
     let user = crate::load!(user_loader)?;
     // Stamped before the conditions are armed, so a sync that arms none still
     // converges. The resolver compares digests rather than slot contents.
-    conditions.positions_digest = UserConditionsV0::digest_positions(&user);
+    conditions.positions_digest = UserConditionsV0::digest_watched_state(&user);
     if stamp_sync_slot {
         conditions.last_paid_sync_slot = Clock::get()?.slot;
     }
@@ -936,7 +936,7 @@ mod tests {
         assert_eq!(min_payment(&conditions, LIQ_LIVENESS_POLL), 0);
         assert_eq!(
             conditions.positions_digest,
-            UserConditionsV0::digest_positions(&User::default())
+            UserConditionsV0::digest_watched_state(&User::default())
         );
     }
 

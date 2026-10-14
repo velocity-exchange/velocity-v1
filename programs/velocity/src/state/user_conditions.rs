@@ -5,8 +5,9 @@
 //! [`TRIGGER_SLOT_BASE`] for why the two live on one account.
 //!
 //! - [`LIQ_SYNC_WATCH`] is an `OnAccountChange` over the user's own position
-//!   regions. Its executor is the sync itself, so a position change rewrites
-//!   the block. The protocol crank treasury pays the keeper that runs it.
+//!   and order regions. Its executor is the sync itself, so a position change
+//!   or a new trigger order rewrites the block, trigger slots included. The
+//!   protocol crank treasury pays the keeper that runs it.
 //! - [`LIQ_SYNC_FALLBACK`] is a coarse `EverySlots` poll into the same sync.
 //!   It catches whatever the watch misses.
 //! - [`LIQ_LIVENESS_POLL`] wakes the liquidation resolver on a fixed
@@ -185,9 +186,11 @@ impl UserConditionsV0 {
     /// The digest of a user with no live position: the FNV-1a offset basis.
     pub const EMPTY_POSITIONS_DIGEST: u64 = 0xcbf2_9ce4_8422_2325;
 
-    /// FNV-1a over every live position. It is cheap enough for the executor to
-    /// recompute on each sync.
-    pub fn digest_positions(user: &crate::state::user::User) -> u64 {
+    /// FNV-1a over every live position and every open trigger order. It is cheap
+    /// enough for the executor to recompute on each sync. The trigger orders are
+    /// in it because the resync also arms the trigger slots, so a trigger order
+    /// that no other path armed makes the block stale.
+    pub fn digest_watched_state(user: &crate::state::user::User) -> u64 {
         let mut hash = Self::EMPTY_POSITIONS_DIGEST;
         let mut fold = |value: u64| {
             for byte in value.to_le_bytes() {
@@ -223,6 +226,19 @@ impl UserConditionsV0 {
             fold(position.balance_type as u64);
             fold(position.open_bids as u64);
             fold(position.open_asks as u64);
+        }
+        for order in user.orders.iter() {
+            if order.status != crate::state::user::OrderStatus::Open || !order.must_be_triggered() {
+                continue;
+            }
+
+            fold(order.order_id as u64);
+            fold(order.market_index as u64);
+            fold(order.trigger_price);
+            fold(order.trigger_condition as u64);
+            fold(order.base_asset_amount);
+            fold(order.max_ts as u64);
+            fold(order.bit_flags as u64);
         }
 
         hash

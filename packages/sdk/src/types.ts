@@ -405,6 +405,10 @@ export class OrderActionExplanation {
 	static readonly CLOB_REMAINDER_CULLED = {
 		clobRemainderCulled: {},
 	};
+	/** a fill against a resting CLOB order. `ORDER_FILLED_WITH_EXTERNAL_QUOTER` labels a fill against a PropAMM quote */
+	static readonly ORDER_FILLED_WITH_CLOB = {
+		orderFilledWithClob: {},
+	};
 }
 
 /** Which kind of liquidity a quoted book came from (`QuotedSourceKind` on-chain). A `quoter` source executes through a CPI leg and `vamm` off the curve. A PropAMM's levels are a quote at a size rather than resting orders, so a UI needs the distinction. `dlobOrder` is deprecated: no source publishes it, and the variant stays so the wire layout does not shift. */

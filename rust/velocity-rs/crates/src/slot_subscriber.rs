@@ -9,6 +9,7 @@ use velocity_pubsub_client::PubsubClient;
 use crate::types::{SdkError, SdkResult};
 
 const LOG_TARGET: &str = "slotsub";
+const SUBSCRIBE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Subscribes to network slot number increases
 ///
@@ -99,7 +100,9 @@ impl SlotSubscriber {
                 let (mut slot_updates, unsubscriber) = match pubsub.slot_subscribe().await {
                     Ok(s) => s,
                     Err(err) => {
+                        // A retry with no pause spins a core while the client is down.
                         error!(target: LOG_TARGET, "slot subscribe failed: {err:?}");
+                        tokio::time::sleep(SUBSCRIBE_RETRY_DELAY).await;
                         continue;
                     }
                 };

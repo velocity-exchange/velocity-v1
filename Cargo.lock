@@ -1743,7 +1743,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 [[package]]
 name = "relay-anchor"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
+source = "git+https://github.com/velocity-exchange/relay?rev=1e9dbc8#1e9dbc8da62b9e92f50ee29e078340b88ad2a0de"
 dependencies = [
  "anchor-lang 1.0.2",
  "relay-spec",
@@ -1752,7 +1752,7 @@ dependencies = [
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
+source = "git+https://github.com/velocity-exchange/relay?rev=1e9dbc8#1e9dbc8da62b9e92f50ee29e078340b88ad2a0de"
 dependencies = [
  "bytemuck",
 ]

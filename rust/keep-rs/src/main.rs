@@ -8,6 +8,7 @@ mod liquidator;
 mod quoter;
 mod relayer;
 mod taker;
+mod trigger;
 mod util;
 mod ws_source;
 
@@ -18,6 +19,7 @@ use {
         liquidator::LiquidatorBot,
         quoter::QuoterBot,
         taker::TakerBot,
+        trigger::TriggerBot,
     },
     clap::Parser,
     mimalloc::MiMalloc,
@@ -142,9 +144,17 @@ pub struct Config {
     pub swift_cu_limit: u32,
     #[clap(long, default_value = "256000")]
     pub fill_cu_limit: u32,
-    /// CU limit for standalone trigger_order txs. Triggers are far cheaper than fills, and the
-    /// priority fee is billed on the *requested* limit, so keep this tight to avoid overpaying.
-    #[clap(long, default_value = "100000")]
+    /// Run the trigger backup, which fires crossed trigger orders that relay left armed. It runs
+    /// alone or beside `--liquidator`.
+    #[clap(long, default_value = "false")]
+    pub trigger: bool,
+    /// Slots a trigger order stays crossed before the backup fires it. Relay fires in about one
+    /// second, so the wait keeps the backup from racing relay for the keeper fee.
+    #[clap(long, env = "TRIGGER_GRACE_SLOTS", default_value = "20")]
+    pub trigger_grace_slots: u64,
+    /// CU limit for a trigger fire before simulation sizes it. The priority fee is billed on the
+    /// requested limit.
+    #[clap(long, default_value = "400000")]
     pub trigger_cu_limit: u32,
     #[clap(long, env = "DRY_RUN", default_value = "false")]
     pub dry: bool,
@@ -291,11 +301,27 @@ async fn main() {
         relayer::auto_deposit_idle_funds(&config, &velocity).await;
     }
 
+    run_mode(config, velocity, metrics, feed_health).await;
+}
+
+/// Run the bot mode the flags select. Only the trigger backup can run beside another mode.
+async fn run_mode(
+    config: Config,
+    velocity: VelocityClient,
+    metrics: Arc<Metrics>,
+    feed_health: Arc<crate::http::FeedHealth>,
+) {
     if config.relayer {
         relayer::run(config, velocity).await;
     } else if config.liquidator {
-        let bot = LiquidatorBot::new(config, velocity, metrics).await;
-        bot.run().await;
+        let liquidator =
+            LiquidatorBot::new(config.clone(), velocity.clone(), metrics.clone()).await;
+        if config.trigger {
+            let trigger = TriggerBot::new(&config, velocity, metrics).await;
+            tokio::spawn(trigger.run());
+        }
+
+        liquidator.run().await;
     } else if config.quoter {
         let bot = std::sync::Arc::new(QuoterBot::new(config, velocity.clone()).await);
         // Cancel resting quotes before exiting so ctrl+c / container stop never
@@ -317,10 +343,16 @@ async fn main() {
     } else if config.taker {
         let bot = TakerBot::new(config, velocity).await;
         bot.run().await;
+    } else if config.trigger {
+        trigger::subscribe_accounts(&config, &velocity).await;
+        let bot = TriggerBot::new(&config, velocity, metrics).await;
+        bot.run().await;
     } else if config.filler {
         let bot = FillerBot::new(config, velocity, metrics, feed_health).await;
         bot.run().await;
     } else {
-        log::warn!("provide --filler, --liquidator, --quoter, --taker, or --relayer mode");
+        log::warn!(
+            "provide --filler, --liquidator, --trigger, --quoter, --taker, or --relayer mode"
+        );
     }
 }

@@ -670,6 +670,24 @@ impl WsConnection {
     }
 }
 
+/// The swift server publishes a heartbeat every 2 seconds. A connection that
+/// dies without closing delivers nothing and never ends the stream, so this
+/// much silence ends the subscriber and its caller reconnects.
+const REDIS_SILENCE_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn next_message<S: Stream + Unpin>(
+    stream: &mut S,
+    silence: Duration,
+) -> Result<Option<S::Item>, ()> {
+    timeout(silence, stream.next()).await.map_err(|_| {
+        log::warn!(
+            target: "redis",
+            "no redis message for {}ms; reconnecting",
+            silence.as_millis()
+        );
+    })
+}
+
 async fn subscribe_redis_pubsub(
     mut redis: redis::aio::PubSub,
     server_params: &'static ServerParams,
@@ -690,7 +708,7 @@ async fn subscribe_redis_pubsub(
     log::info!(target: "redis", "subscribed to {} topics", all_topics.len());
 
     let mut stream = redis.on_message();
-    while let Some(message) = stream.next().await {
+    while let Some(message) = next_message(&mut stream, REDIS_SILENCE_TIMEOUT).await? {
         let topic = message.get_channel_name();
 
         // encountered new topic
@@ -1307,6 +1325,24 @@ mod test {
         assert!(!ws_conn.is_authenticated());
     }
 
+    /// A connection that dies without closing yields nothing. The subscriber
+    /// gives up after the silence window instead of waiting forever.
+    #[tokio::test]
+    async fn a_silent_redis_stream_ends_the_subscriber() {
+        let mut silent = futures_util::stream::pending::<()>();
+        let result = next_message(&mut silent, Duration::from_millis(20)).await;
+        assert!(result.is_err());
+
+        let mut one = futures_util::stream::iter([7u8]);
+        assert_eq!(
+            next_message(&mut one, Duration::from_millis(20)).await,
+            Ok(Some(7))
+        );
+        assert_eq!(
+            next_message(&mut one, Duration::from_millis(20)).await,
+            Ok(None)
+        );
+    }
     #[tokio::test]
     async fn subscribe_authenticated_ok() {
         let mut ws_conn = WsConnection::new(Pubkey::new_unique());

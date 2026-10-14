@@ -8,7 +8,12 @@
 //! quoter through.
 
 use {
-    crate::{error::ErrorCode, msg, state::traits::Size, validate},
+    crate::{
+        error::ErrorCode,
+        msg,
+        state::{events::OrderActionExplanation, traits::Size},
+        validate,
+    },
     anchor_lang::prelude::*,
     static_assertions::const_assert_eq,
 };
@@ -51,6 +56,15 @@ impl QuoterType {
     /// quoter could decrement other loaded users' aggregates and free their margin.
     pub fn tracks_maker_aggregates(self) -> bool {
         self.depth_is_margin_reserved()
+    }
+
+    /// How a fill against this quoter's depth is labelled in its records.
+    pub fn fill_explanation(self) -> OrderActionExplanation {
+        match self {
+            QuoterType::Vamm => OrderActionExplanation::OrderFilledWithAMM,
+            QuoterType::Clob => OrderActionExplanation::OrderFilledWithClob,
+            QuoterType::Custom => OrderActionExplanation::OrderFilledWithExternalQuoter,
+        }
     }
 }
 

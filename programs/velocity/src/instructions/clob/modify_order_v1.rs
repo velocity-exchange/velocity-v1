@@ -250,7 +250,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         reduce_only: removed.reduce_only,
     })?;
 
-    restamp_placed_trigger_shadow(
+    let labels = restamp_placed_trigger_shadow(
         &ctx.accounts.user,
         params.market_index,
         removed.order_id,
@@ -281,6 +281,8 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
             max_ts: terms.max_ts,
             slot: clock.slot,
             taker_origin: false,
+            reduce_only: removed.reduce_only,
+            labels,
         },
         is_isolated_position,
     )?;
@@ -540,25 +542,28 @@ fn reserve_replacement_margin<'info>(
 /// the re-stamp the shadow points at a dead node, and every later removal path
 /// fails to find it. The size is restated as the replacement's total, with
 /// `base_asset_amount_filled` cleared. That keeps the shadow's unfilled amount
-/// equal to the live order's size, which is what an eviction re-arms on.
+/// equal to the live order's size, which is what an eviction re-arms on. It
+/// returns the shadow's labels, so the modify record still names a fired
+/// trigger.
 fn restamp_placed_trigger_shadow<'info>(
     user_loader: &AccountLoader<'info, User>,
     market_index: u16,
     cancelled_order_id: u64,
     order_ref: ClobOrderRefV0,
     terms: &ReplacementTerms,
-) -> Result<()> {
+) -> Result<super::OrderLabels> {
     let mut user = load_mut!(user_loader)?;
-    if let Some(index) = user.find_placed_trigger_slot(market_index, cancelled_order_id) {
-        let order = &mut user.orders[index];
-        order.set_clob_order_ref(order_ref.node_index, order_ref.order_id);
-        order.base_asset_amount = terms.base_asset_amount;
-        order.base_asset_amount_filled = 0;
-        order.price = terms.price;
-        order.max_ts = terms.max_ts;
-    }
+    let Some(index) = user.find_placed_trigger_slot(market_index, cancelled_order_id) else {
+        return Ok(super::OrderLabels::plain_limit());
+    };
 
-    Ok(())
+    let order = &mut user.orders[index];
+    order.set_clob_order_ref(order_ref.node_index, order_ref.order_id);
+    order.base_asset_amount = terms.base_asset_amount;
+    order.base_asset_amount_filled = 0;
+    order.price = terms.price;
+    order.max_ts = terms.max_ts;
+    Ok(super::OrderLabels::of(order))
 }
 
 #[cfg(test)]

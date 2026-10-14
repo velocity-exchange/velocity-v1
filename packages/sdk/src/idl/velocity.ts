@@ -27430,6 +27430,9 @@ export type Velocity = {
           },
           {
             "name": "clobRemainderCulled"
+          },
+          {
+            "name": "orderFilledWithClob"
           }
         ]
       }

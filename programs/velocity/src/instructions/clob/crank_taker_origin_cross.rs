@@ -92,8 +92,9 @@
 //! the floor under both, so a missed hint costs latency rather than liveness.
 
 use {
-    super::helpers::crank_common::{
-        book_l3_sides, program_keeper_mode, BookSides, ResolveClobCrank,
+    super::helpers::{
+        crank_common::{book_l3_sides, program_keeper_mode, BookSides, ResolveClobCrank},
+        margin_section::{margin_accounts, CrossedMarket, MarginAccounts},
     },
     crate::{
         controller::{
@@ -104,7 +105,7 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{load_maps, AccountMaps},
-            StagedCall,
+            relay_harness::Resolution,
         },
         load, load_mut,
         math::crosses::{resolve_crosses, Cross, CrossKind, RestingOrder},
@@ -2384,6 +2385,7 @@ fn settle_pair_match<'info>(
         &controller::orders::ExternalMatch {
             effective_taker_limit: pair.aggressor.price,
             oracle_price: pricing.oracle_price,
+            explanation: OrderActionExplanation::OrderFilledWithClob,
         },
         &mut controller::orders::FillerSide {
             user: &mut none_filler,
@@ -2627,9 +2629,12 @@ pub(super) fn stage_taker_origin_cross(
             &TakerOriginKeys::of_book_conditions(ctx)?,
             &*ctx.accounts.state.load()?,
             &ctx.accounts.quoter_slab.slots()?,
-            stage.taker,
-            &stage.makers,
-            stage.read_depth,
+            TakerOriginLegs {
+                taker: stage.taker,
+                makers: &stage.makers,
+                cross_rows: stage.read_depth,
+            },
+            ctx.remaining_accounts,
         )?,
         yields_to_maker_cross: stage.yields_to_maker_cross,
     }))
@@ -2645,7 +2650,7 @@ fn cross_stalled(cross: &Cross, slot: u64) -> bool {
 
 /// A staged taker-origin crank, and whether a maker cross may go first.
 pub(super) struct TakerOriginStage {
-    pub call: StagedCall,
+    pub call: Resolution,
     /// The claimed cross stalled past `STALLED_TAKER_ORIGIN_CROSS_SLOTS`, or
     /// the stage settles no book cross the taker claims.
     pub yields_to_maker_cross: bool,
@@ -2928,6 +2933,8 @@ pub(super) struct QuoterCrossedRead<'a, 'info> {
     pub clob_accounts: &'a [AccountInfo<'info>],
     pub quoter: QuoterTops,
     pub quoter_user: UserRefV0,
+    /// Every account the resolver round was given.
+    pub available: &'a [AccountInfo<'info>],
 }
 
 /// Stage this crank for a remainder that a `Custom` quoter's quote crosses.
@@ -2938,7 +2945,7 @@ pub(super) struct QuoterCrossedRead<'a, 'info> {
 pub(super) fn stage_quoter_crossed_remainder<'info>(
     read: QuoterCrossedRead<'_, 'info>,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<Option<StagedCall>> {
+) -> Result<Option<Resolution>> {
     let market_index = read.keys.market_index;
     let book_slot = read.quoter_slab.clob_slot(market_index)?;
     if !book_slot.quotes() {
@@ -2973,9 +2980,12 @@ pub(super) fn stage_quoter_crossed_remainder<'info>(
         &read.keys,
         read.state,
         &read.quoter_slab.slots()?,
-        stage.taker,
-        &stage.makers,
-        stage.read_depth,
+        TakerOriginLegs {
+            taker: stage.taker,
+            makers: &stage.makers,
+            cross_rows: stage.read_depth,
+        },
+        read.available,
     )?))
 }
 
@@ -3091,6 +3101,15 @@ pub(super) struct TakerOriginKeys {
 }
 
 impl TakerOriginKeys {
+    fn crossed_market(&self) -> CrossedMarket {
+        CrossedMarket {
+            perp_market_index: self.market_index,
+            oracle: self.oracle,
+            quote_spot_market_index: self.quote_spot_market_index,
+            quote_oracle: self.quote_oracle,
+        }
+    }
+
     fn of_book_conditions(ctx: &Context<ResolveClobCrank>) -> Result<Self> {
         let conditions = ctx.accounts.crank_conditions.load()?;
         Ok(Self {
@@ -3105,16 +3124,45 @@ impl TakerOriginKeys {
     }
 }
 
+/// The legs a taker-origin crank settles.
+struct TakerOriginLegs<'a> {
+    taker: UserRefV0,
+    makers: &'a [UserRefV0],
+    cross_rows: u16,
+}
+
 fn taker_origin_call(
     keys: &TakerOriginKeys,
     state: &State,
     slots: &[crate::state::prop_amm::QuoterSlotV0],
-    taker_ref: UserRefV0,
-    makers: &[UserRefV0],
-    cross_rows: u16,
-) -> Result<StagedCall> {
+    legs: TakerOriginLegs,
+    available: &[AccountInfo],
+) -> Result<Resolution> {
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
-    let (taker, taker_stats) = pdas::user_pair(&taker_ref.authority, taker_ref.sub_account_id);
+    let (taker, taker_stats) = pdas::user_pair(&legs.taker.authority, legs.taker.sub_account_id);
+    let book_makers: Vec<Pubkey> = legs
+        .makers
+        .iter()
+        .map(|maker| pdas::user(&maker.authority, maker.sub_account_id))
+        .collect();
+    let custom = custom_quoter_accounts(
+        slots,
+        &CrossStaged {
+            tail: &[keys.clob_market, crate::ids::clob_program::id()],
+            taker,
+            book_makers: &book_makers,
+        },
+    );
+
+    let users = settled_users(protocol_user, taker, &book_makers, &custom);
+    let crossed = keys.crossed_market();
+    let section = match margin_accounts(available, &users, &crossed, state.sol_spot_market_index)? {
+        MarginAccounts::Missing(accounts) => return Ok(Resolution::MoreAccounts(accounts)),
+        MarginAccounts::Ready(section) => section,
+    };
+
+    let perp_markets = std::iter::once((pdas::perp_market(keys.market_index), true))
+        .chain(section.perp_markets.iter().map(|market| (*market, false)));
     let call = crate::staged_call!(CrankTakerOriginCross {
         state: keys.state,
         authority: pdas::keeper_placeholder(),
@@ -3128,33 +3176,17 @@ fn taker_origin_call(
         crank_conditions: Some(pdas::clob_crank_conditions(keys.market_index)),
         // The route the taker signed rides its own signed-message record,
         // derived from the authority the book stores on the node.
-        signed_msg_user_orders: pdas::signed_msg_user_orders(&taker_ref.authority),
+        signed_msg_user_orders: pdas::signed_msg_user_orders(&legs.taker.authority),
         instructions_sysvar: IX_ID,
     })
-    .map_section_named_perp(keys.oracle, keys.quote_oracle, keys.quote_spot_market_index);
-    let custom = custom_quoter_accounts(
-        slots,
-        &CrossStaged {
-            tail: &[keys.clob_market, crate::ids::clob_program::id()],
-            taker,
-            book_makers: &makers
-                .iter()
-                .map(|maker| pdas::user(&maker.authority, maker.sub_account_id))
-                .collect::<Vec<Pubkey>>(),
-        },
-    );
-    // The SOL spot market prices the keeper payment's floor. It sits after the
-    // quote spot market, so the perp market still closes the maps section.
-    let call =
-        super::crank_cross_match::with_sol_spot_market(call, state, keys.quote_spot_market_index)
-            .account(pdas::perp_market(keys.market_index), true)
-            .maker_refs(makers.iter().copied());
+    .map_section(&section, perp_markets)
+    .maker_refs(legs.makers.iter().copied());
     let call = custom
         .makers
         .iter()
         .fold(call, |call, maker| call.user_pair(maker.user, maker.stats));
     let call = if state.builder_codes_enabled() {
-        call.account(revenue_share_escrow(&taker_ref.authority), true)
+        call.account(revenue_share_escrow(&legs.taker.authority), true)
     } else {
         call
     };
@@ -3165,15 +3197,32 @@ fn taker_origin_call(
         .account(keys.quoter_slab, false)
         .account(keys.clob_market, true)
         .account(crate::ids::clob_program::id(), false);
-    custom
-        .tail
-        .into_iter()
-        .fold(call, |call, (key, writable)| call.account(key, writable))
-        .arg(CrankTakerOriginCrossArgs {
-            market_index: keys.market_index,
-            cross_rows,
-            signed_route: Vec::new(),
-        })
+    Ok(Resolution::Call(
+        custom
+            .tail
+            .into_iter()
+            .fold(call, |call, (key, writable)| call.account(key, writable))
+            .arg(CrankTakerOriginCrossArgs {
+                market_index: keys.market_index,
+                cross_rows: legs.cross_rows,
+                signed_route: Vec::new(),
+            })?,
+    ))
+}
+
+/// Every user whose margin the crank checks.
+fn settled_users(
+    protocol_user: Pubkey,
+    taker: Pubkey,
+    book_makers: &[Pubkey],
+    custom: &CustomQuoterAccounts,
+) -> Vec<Pubkey> {
+    [protocol_user, taker]
+        .iter()
+        .chain(book_makers)
+        .copied()
+        .chain(custom.makers.iter().map(|maker| maker.user))
+        .collect()
 }
 
 /// The accounts a cross already stages, which a Custom slot must not repeat.

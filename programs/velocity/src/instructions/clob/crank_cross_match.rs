@@ -64,6 +64,7 @@ use {
     super::{
         crank_common::{book_l3_sides, BookSides, ResolveClobCrank, MAX_CROSS_MAKERS},
         crank_taker_origin_cross::{stage_taker_origin_cross, TakerOriginStage},
+        helpers::margin_section::{margin_accounts, CrossedMarket, MarginAccounts, MarginSection},
     },
     crate::{
         controller::{
@@ -74,7 +75,7 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::AccountMaps,
-            relay_harness::{resolve_into, StagedCall},
+            relay_harness::{resolve_into, Resolution},
             route_direction, FillerTerms, RouteFill, RouteMark, RouteRequest, RoutedOrder,
         },
         load, load_mut,
@@ -168,6 +169,27 @@ pub struct CrankCrossMatch<'info> {
     pub instructions_sysvar: UncheckedAccount<'info>,
 }
 
+/// The crossed market, which the accounts struct names, and then the maps
+/// section's other perp markets. A user's margin check reads every perp market
+/// it holds.
+fn load_perp_markets<'a, 'c: 'a>(
+    crossed: &'c AccountInfo<'a>,
+    remaining_accounts: &mut std::iter::Peekable<std::slice::Iter<'a, AccountInfo<'a>>>,
+    market_index: u16,
+) -> Result<crate::state::perp_market_map::PerpMarketMap<'a>> {
+    let mut markets = crate::state::perp_market_map::PerpMarketMap::load_one(crossed, true)?;
+    let others =
+        crate::state::perp_market_map::PerpMarketMap::load(&MarketSet::new(), remaining_accounts)?;
+    validate!(
+        !others.0.contains_key(&market_index),
+        ErrorCode::InvalidMarketAccount,
+        "the maps section must not repeat the crossed market"
+    )?;
+
+    markets.0.extend(others.0);
+    Ok(markets)
+}
+
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
@@ -190,9 +212,10 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &MarketSet::new(),
         remaining_accounts_iter,
     )?;
-    let perp_market_map = crate::state::perp_market_map::PerpMarketMap::load_one(
+    let perp_market_map = load_perp_markets(
         ctx.accounts.perp_market.as_ref(),
-        true,
+        remaining_accounts_iter,
+        market_index,
     )?;
 
     crate::instructions::optional_accounts::update_prelaunch_oracle(
@@ -914,42 +937,52 @@ fn cross_payment(
 /// the book has one, otherwise a maker-against-maker cross worth taking. A
 /// taker-origin cross that stalled gives way to a maker cross. The module doc
 /// states the order and the reason for it.
-pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
+pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Resolution> {
     let taker_origin = match stage_taker_origin_cross(ctx)? {
         Some(TakerOriginStage {
             call,
             yields_to_maker_cross: false,
-        }) => return Ok(Some(call)),
+        }) => return Ok(call),
         stage => stage,
     };
 
-    if let Some(call) = stage_maker_cross(ctx)? {
-        return Ok(Some(call));
+    match stage_maker_cross(ctx)? {
+        Resolution::NoWork => Ok(taker_origin.map_or(Resolution::NoWork, |stage| stage.call)),
+        maker_cross @ (Resolution::Call(_) | Resolution::MoreAccounts(_)) => Ok(maker_cross),
     }
-
-    Ok(taker_origin.map(|stage| stage.call))
 }
 
 /// Stage `crank_cross_match` for the book's own crossing prefix, if it clears
 /// the fee gulf at the tier-0 taker fee. The executor measures the real
 /// figure. A PropAMM that crosses the book is the quoter-cross resolver's work.
-fn stage_maker_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
+fn stage_maker_cross(ctx: &Context<ResolveClobCrank>) -> Result<Resolution> {
     let cross = find_clob_cross(ctx)?;
     let state = ctx.accounts.state.load()?;
     if cross.size == 0 || cross.estimated_surplus(&state.perp_fee_structure.fee_tiers[0]) == 0 {
-        return Ok(None);
+        return Ok(Resolution::NoWork);
     }
 
-    let (market_index, oracle, quote_oracle, quote_spot_market_index) = {
+    let crossed = {
         let conditions = ctx.accounts.crank_conditions.load()?;
-        (
-            conditions.market_index,
-            conditions.oracle,
-            conditions.quote_oracle,
-            conditions.quote_spot_market_index,
-        )
+        CrossedMarket {
+            perp_market_index: conditions.market_index,
+            oracle: conditions.oracle,
+            quote_spot_market_index: conditions.quote_spot_market_index,
+            quote_oracle: conditions.quote_oracle,
+        }
     };
+    let market_index = crossed.perp_market_index;
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    let users = protocol_and_makers(protocol_user, &cross.makers);
+    let section = match margin_accounts(
+        ctx.remaining_accounts,
+        &users,
+        &crossed,
+        state.sol_spot_market_index,
+    )? {
+        MarginAccounts::Missing(accounts) => return Ok(Resolution::MoreAccounts(accounts)),
+        MarginAccounts::Ready(section) => section,
+    };
 
     // The named accounts go through the executor's own client struct, which
     // checks their shape at compile time. The remaining sections follow: maps,
@@ -964,10 +997,9 @@ fn stage_maker_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCal
         quoter_slab: ctx.accounts.quoter_slab.key(),
         instructions_sysvar: IX_ID,
     })
-    .map_section_named_perp(oracle, quote_oracle, quote_spot_market_index);
-    let call = with_sol_spot_market(call, &state, quote_spot_market_index)
-        .maker_refs(cross.makers.iter().copied());
-    Ok(Some(
+    .map_section(&section, unnamed_perp_markets(&section))
+    .maker_refs(cross.makers.iter().copied());
+    Ok(Resolution::Call(
         // The slab rides the tail as well as being named. Each leg assembles
         // its route from the tail, as every router fill does, and a route
         // without the slab consults nothing external.
@@ -981,19 +1013,27 @@ fn stage_maker_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCal
     ))
 }
 
-/// Add the SOL spot market to the maps section, after the quote spot market.
-/// The executor prices the keeper payment off it, and a resolver can derive
-/// it where it cannot name the SOL oracle.
-pub(super) fn with_sol_spot_market(
-    call: StagedCall,
-    state: &State,
-    quote_spot_market_index: u16,
-) -> StagedCall {
-    match state.sol_spot_market_index {
-        0 => call,
-        index if index == quote_spot_market_index => call,
-        index => call.account(pdas::spot_market(index), false),
+/// The users a cross match settles: the protocol taker, then each maker
+/// once.
+fn protocol_and_makers(
+    protocol_user: Pubkey,
+    makers: &[crate::state::prop_amm::UserRefV0],
+) -> Vec<Pubkey> {
+    let mut users = vec![protocol_user];
+    for maker in makers {
+        let user = pdas::user(&maker.authority, maker.sub_account_id);
+        if !users.contains(&user) {
+            users.push(user);
+        }
     }
+
+    users
+}
+
+/// The perp markets `crank_cross_match` reads from its maps section. It names
+/// the crossed market itself, so only the others ride here, as readonly.
+fn unnamed_perp_markets(section: &MarginSection) -> impl Iterator<Item = (Pubkey, bool)> + '_ {
+    section.perp_markets.iter().map(|market| (*market, false))
 }
 
 /// How deep either side of the crossing prefix is read.
@@ -1131,7 +1171,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         let Some(quoter_slot_index) =
             cross_entry_slot(&slots, &quoter_entry_key, ctx.accounts.user.key())?
         else {
-            return Ok(None);
+            return Ok(Resolution::NoWork);
         };
 
         let quoter = &slots[quoter_slot_index];
@@ -1191,11 +1231,12 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                         ask: quoter_asks.first().map(|level| level.price),
                     },
                     quoter_user: maker_ref,
+                    available: &accounts,
                 },
                 &mut cpi_scratch,
             )?
         };
-        if remainder.is_some() {
+        if let Some(remainder) = remainder {
             return Ok(remainder);
         }
 
@@ -1204,7 +1245,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         // legs never cross. Report no work rather than stage a call that always
         // fails.
         if slots[book_slot].config.book_default_activation_delay_slots > 0 {
-            return Ok(None);
+            return Ok(Resolution::NoWork);
         }
 
         let Some(book) = book_l3_sides(
@@ -1218,7 +1259,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             |row| *row,
         )?
         else {
-            return Ok(None);
+            return Ok(Resolution::NoWork);
         };
         let book = BookSides {
             bids: crossable_levels(&book.bids),
@@ -1252,16 +1293,10 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         };
 
         if cross.size == 0 || cross.estimated_surplus(&fee_tier) == 0 {
-            return Ok(None);
+            return Ok(Resolution::NoWork);
         }
 
-        Ok(Some(stage_quoter_cross(
-            &ctx,
-            &quoter.config,
-            &cross,
-            maker_ref,
-            market_index,
-        )?))
+        stage_quoter_cross(&ctx, &quoter.config, &cross, maker_ref, market_index)
     })
 }
 
@@ -1358,17 +1393,37 @@ fn stage_quoter_cross<'info>(
     cross: &CrossPrefix,
     maker_ref: crate::state::prop_amm::UserRefV0,
     market_index: u16,
-) -> Result<StagedCall> {
-    let (oracle, quote_oracle, quote_spot_market_index, clob_program) = {
+) -> Result<Resolution> {
+    let (crossed, clob_program) = {
         let conditions = ctx.accounts.cross_conditions.load()?;
         (
-            conditions.oracle,
-            conditions.quote_oracle,
-            conditions.quote_spot_market_index,
+            CrossedMarket {
+                perp_market_index: market_index,
+                oracle: conditions.oracle,
+                quote_spot_market_index: conditions.quote_spot_market_index,
+                quote_oracle: conditions.quote_oracle,
+            },
             conditions.clob_program,
         )
     };
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    // Maker pairs: the quoter's user first, then the CLOB-side makers.
+    let mut staged = vec![maker_ref];
+    for maker in &cross.makers {
+        if !staged.contains(maker) {
+            staged.push(*maker);
+        }
+    }
+
+    let section = match margin_accounts(
+        ctx.remaining_accounts,
+        &protocol_and_makers(protocol_user, &staged),
+        &crossed,
+        ctx.accounts.state.load()?.sol_spot_market_index,
+    )? {
+        MarginAccounts::Missing(accounts) => return Ok(Resolution::MoreAccounts(accounts)),
+        MarginAccounts::Ready(section) => section,
+    };
 
     let call = crate::staged_call!(CrankCrossMatch {
         state: ctx.accounts.state.key(),
@@ -1380,15 +1435,7 @@ fn stage_quoter_cross<'info>(
         quoter_slab: ctx.accounts.quoter_slab.key(),
         instructions_sysvar: IX_ID,
     })
-    .map_section_named_perp(oracle, quote_oracle, quote_spot_market_index);
-    let call = with_sol_spot_market(call, &*ctx.accounts.state.load()?, quote_spot_market_index);
-    // Maker pairs: the quoter's user first, then the CLOB-side makers.
-    let mut staged = vec![maker_ref];
-    for maker in &cross.makers {
-        if !staged.contains(maker) {
-            staged.push(*maker);
-        }
-    }
+    .map_section(&section, unnamed_perp_markets(&section));
 
     // The union of every source's surfaces: the market's slab, the CLOB's book,
     // and everything the quoter registered, programs included. Each leg
@@ -1409,8 +1456,8 @@ fn stage_quoter_cross<'info>(
         call = call.account(*key, *writable);
     }
 
-    call.arg(CrankCrossMatchArgs {
+    Ok(Resolution::Call(call.arg(CrankCrossMatchArgs {
         market_index,
         size: cross.size,
-    })
+    })?))
 }

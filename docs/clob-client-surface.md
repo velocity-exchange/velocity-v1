@@ -67,7 +67,8 @@ Each record carries a synthesized `Order`: `order_id` is the client order id, `o
 | `force_cancel_clob_orders` | `OrderActionRecord`, explanation `InsufficientFreeCollateral` |
 | sub-min cull on the execute wire | `OrderActionRecord`, explanation `ClobRemainderCulled` |
 
-`ClobOrderEvicted` and `ClobRemainderCulled` are appended to the bottom of `OrderActionExplanation`.
+`ClobOrderEvicted`, `ClobRemainderCulled` and `OrderFilledWithClob` are appended to the bottom of
+`OrderActionExplanation`.
 
 `cancel_orders_v1` is the exception, and it has to be. A sweep removes up to 128 orders and an
 `OrderActionRecord` is 480 bytes, so per-order records would need 60 KB of logs against a 10 KB
@@ -79,7 +80,8 @@ reader of order history has to decode that one CLOB event.
 its record is stamped with. It is not an oracle account, because a maker pulling orders off a book
 must not be able to fail on a stale feed.
 
-Fills already emit `OrderActionRecord` with `OrderFilledWithExternalQuoter`. Two fields are missing
+A fill against a book order emits `OrderActionRecord` with `OrderFilledWithClob`. A fill against a
+PropAMM quote uses `OrderFilledWithExternalQuoter`. Two fields are missing
 on the maker half, and both are filled from the wire.
 
 - `maker_order_id` and `maker_order_direction` come from the client order id the book echoes on

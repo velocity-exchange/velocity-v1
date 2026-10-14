@@ -5,6 +5,8 @@
 //! `size_of` slice on first touch. `extend_account` grows such an account to
 //! the size the deployed program compiles in for its type. The payer tops up
 //! the rent, the runtime zero-fills the new tail, and the account loads again.
+//! A `User` in the layout before `open_orders` became a `u16` is the one
+//! exception. Its fields move, so the handler rewrites it as it grows.
 //!
 //! The `AccountExtension` hot role gates the crank, and the warm and cold
 //! admins are also accepted. A larger account raises fetch bandwidth and any

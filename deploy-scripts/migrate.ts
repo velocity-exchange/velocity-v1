@@ -49,7 +49,9 @@
  * Steps:
  *   1. resize: grow every velocity-owned zero-copy account whose struct gained fields.
  *      `extend_account` resolves the target size from the discriminator, so this step covers
- *      past and future growth the same way. Then create the singletons and the per-market
+ *      past and future growth the same way. A 4496-byte `User` predates the `u16` open-order
+ *      counts, which moved its fields, and `extend_account` rewrites it into the current
+ *      layout as it grows it. Then create the singletons and the per-market
  *      accounts the new code loads: the SOL spot market that prices the liquidation
  *      reimbursement, the relay scratch, the crank treasury, the default sync terms a new
  *      user's conditions are armed with, the protocol User

@@ -206,6 +206,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for CrankClobCancelOutsideBand {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct CrankClobCancelUncoveredReduceOnly {
+        pub args: CrankClobCancelUncoveredReduceOnlyArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CrankClobCancelUncoveredReduceOnly {
+        const DISCRIMINATOR: &[u8] = &[36, 59, 33, 226, 31, 17, 43, 197];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CrankClobCancelUncoveredReduceOnly {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CrankClobEvict {
         pub args: CrankClobEvictArgs,
     }
@@ -3727,6 +3737,23 @@ pub mod types {
         PartialEq,
     )]
     pub struct CrankClobCancelOutsideBandArgs {
+        pub market_index: u16,
+        pub order_ref: ClobOrderRefV0,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct CrankClobCancelUncoveredReduceOnlyArgs {
         pub market_index: u16,
         pub order_ref: ClobOrderRefV0,
     }
@@ -10627,6 +10654,124 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for CrankClobCancelOutsideBand {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct CrankClobCancelUncoveredReduceOnly {
+        pub state: Pubkey,
+        pub authority: Pubkey,
+        pub filler: Pubkey,
+        pub filler_stats: Pubkey,
+        pub user: Pubkey,
+        pub perp_market: Pubkey,
+        pub quoter_slab: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub crank_conditions: Pubkey,
+        pub sol_spot_market: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CrankClobCancelUncoveredReduceOnly {
+        const DISCRIMINATOR: &[u8] = &[19, 32, 44, 62, 68, 166, 190, 37];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for CrankClobCancelUncoveredReduceOnly {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for CrankClobCancelUncoveredReduceOnly {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for CrankClobCancelUncoveredReduceOnly {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CrankClobCancelUncoveredReduceOnly {}
+    #[automatically_derived]
+    impl ToAccountMetas for CrankClobCancelUncoveredReduceOnly {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.sol_spot_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for CrankClobCancelUncoveredReduceOnly {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for CrankClobCancelUncoveredReduceOnly {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -33340,6 +33485,10 @@ pub mod errors {
             "Only the user's authority, its delegate or the admin sets or clears a paid self-sync"
         )]
         SelfSyncTermsNeedUserAuthority,
+        #[msg("The CLOB order is not reduce-only, so no keeper may cancel it as uncovered")]
+        ClobOrderNotReduceOnly,
+        # [msg ("The owner's position still covers the reduce-only CLOB order, so no keeper may cancel it")]
+        ReduceOnlyOrderStillCovered,
     }
 }
 pub mod events {

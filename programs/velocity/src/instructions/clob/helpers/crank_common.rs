@@ -251,14 +251,17 @@ pub(crate) fn keeper_crank_fee(
 
 /// Which removal a crank runs. They differ in the CLOB call they make, the
 /// explanation they record, and what happens to a placed trigger's shadow
-/// slot. Eviction re-arms the slot in the same transaction. Expiry and a band
-/// cancel free it.
+/// slot. Eviction re-arms the slot in the same transaction. Expiry and both
+/// cancels free it.
 pub enum ClobRemoval {
     Evict(EvictWorstArgsV0),
     Expire(RemoveExpiredArgsV0),
     /// An order resting outside the maker oracle band. The caller judged the
     /// band before the crank runs.
     OutsideBand(CancelOrderArgsV0),
+    /// A reduce-only order that no part of its owner's position covers. The
+    /// caller judged the cover before the crank runs.
+    UncoveredReduceOnly(CancelOrderArgsV0),
 }
 
 impl ClobRemoval {
@@ -266,7 +269,9 @@ impl ClobRemoval {
         match self {
             ClobRemoval::Evict(args) => clob.evict(args),
             ClobRemoval::Expire(args) => clob.remove_expired(args),
-            ClobRemoval::OutsideBand(args) => clob.cancel(args),
+            ClobRemoval::OutsideBand(args) | ClobRemoval::UncoveredReduceOnly(args) => {
+                clob.cancel(args)
+            }
         }
     }
 
@@ -279,6 +284,9 @@ impl ClobRemoval {
             ClobRemoval::Evict(_) => OrderActionExplanation::ClobOrderEvicted,
             ClobRemoval::Expire(_) => OrderActionExplanation::OrderExpired,
             ClobRemoval::OutsideBand(_) => OrderActionExplanation::OraclePriceBreachedLimitPrice,
+            ClobRemoval::UncoveredReduceOnly(_) => {
+                OrderActionExplanation::ReduceOnlyOrderIncreasedPosition
+            }
         }
     }
 }

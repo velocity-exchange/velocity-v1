@@ -15278,3 +15278,290 @@ fn the_bid_ask_twap_crank_reads_no_reduce_only_bid() {
 
     assert_eq!(logged_estimated_bid(&meta.logs), Some(99 * PRICE));
 }
+/// Rest a reduce-only maker bid for `party`, which holds a short of `size`
+/// while the order is placed.
+fn rest_reduce_only_maker_bid(
+    fixture: &mut Fixture,
+    party: &Party,
+    price: u64,
+    size: u64,
+) -> ClobOrderRefV0 {
+    set_position_base(fixture, party, -(size as i64));
+    let mut ix = place_clob_order_ix(
+        party.user,
+        &party.authority,
+        fixture.quoter_slab,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Long,
+            price,
+            base_asset_amount: size,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+            reject_if_crossed: false,
+        },
+    );
+    ix.data = velocity::instruction::PlaceAndMakePerpOrderV1 {
+        args: PlaceAndMakePerpOrderV1Args {
+            params: OrderParams {
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Long,
+                base_asset_amount: size,
+                price,
+                market_index: 0,
+                reduce_only: true,
+                activation_delay_slots: Some(0),
+                ..OrderParams::default()
+            },
+        },
+    }
+    .data();
+
+    let authority = party.authority.insecure_clone();
+    let meta = send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+    let data = &meta.return_data.data;
+    ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
+    }
+}
+
+/// A signed-keeper `crank_clob_cancel_uncovered_reduce_only` of `owner`'s
+/// order `order_ref`.
+fn crank_cancel_uncovered_reduce_only(
+    fixture: &mut Fixture,
+    keeper: &Party,
+    owner: &Party,
+    order_ref: ClobOrderRefV0,
+) -> Result<(), litesvm::types::FailedTransactionMetadata> {
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CrankClobCancelUncoveredReduceOnly {
+            state: state_pda(),
+            authority: keeper.authority.pubkey(),
+            filler: keeper.user,
+            filler_stats: keeper.stats,
+            user: owner.user,
+            perp_market: perp_market_pda(0),
+            quoter_slab: fixture.quoter_slab,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            crank_conditions: None,
+            sol_spot_market: None,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CrankClobCancelUncoveredReduceOnly {
+            args: velocity::instructions::CrankClobCancelUncoveredReduceOnlyArgs {
+                market_index: 0,
+                order_ref,
+            },
+        }
+        .data(),
+    };
+    let authority = keeper.authority.insecure_clone();
+    send(&mut fixture.svm, &authority, ix, &[]).map(|_| ())
+}
+
+/// A reduce-only bid whose owner closed its short elsewhere can never fill.
+/// The crank refuses it while any short covers it, then cancels it once the
+/// short is gone. The owner pays the keeper, and its aggregates unwind.
+#[test]
+fn the_uncovered_reduce_only_crank_cancels_a_bid_after_its_short_closes() {
+    let mut fixture = setup();
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    let order_ref = rest_reduce_only_maker_bid(&mut fixture, &owner, 99 * PRICE, UNIT);
+    let rested: User = read_zero_copy(&fixture.svm, &owner.user);
+    assert_eq!(rested.perp_positions[0].reduce_only_clob_orders, 1);
+    assert_eq!(clob_bid_count(&fixture), 1);
+
+    set_position_base(&mut fixture, &owner, -((UNIT / 2) as i64));
+    let covered = crank_cancel_uncovered_reduce_only(&mut fixture, &keeper, &owner, order_ref)
+        .expect_err("a partial short still covers the bid");
+    assert_velocity_error(&covered, ErrorCode::ReduceOnlyOrderStillCovered);
+
+    set_position_base(&mut fixture, &owner, 0);
+    crank_cancel_uncovered_reduce_only(&mut fixture, &keeper, &owner, order_ref)
+        .expect("the uncovered bid is cancelled");
+
+    let owner_after: User = read_zero_copy(&fixture.svm, &owner.user);
+    let position = owner_after.perp_positions[0];
+    assert_eq!(clob_bid_count(&fixture), 0);
+    assert_eq!(position.open_bids, 0);
+    assert_eq!(position.open_orders, 0);
+    assert_eq!(position.reduce_only_clob_orders, 0);
+    assert_eq!(owner_after.open_orders, 0);
+    assert!(position.quote_asset_amount < 0, "the owner paid the fee");
+
+    let keeper_after: User = read_zero_copy(&fixture.svm, &keeper.user);
+    assert!(keeper_after.perp_positions[0].quote_asset_amount > 0);
+}
+
+/// The crank leaves an ordinary bid, which can still fill.
+#[test]
+fn the_uncovered_reduce_only_crank_refuses_an_ordinary_bid() {
+    let mut fixture = setup();
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    let order_ref = place_clob_order_for(
+        &mut fixture,
+        &owner,
+        PositionDirection::Long,
+        99 * PRICE,
+        UNIT,
+    );
+    let refused = crank_cancel_uncovered_reduce_only(&mut fixture, &keeper, &owner, order_ref)
+        .expect_err("an ordinary bid stays");
+    assert_velocity_error(&refused, ErrorCode::ClobOrderNotReduceOnly);
+    assert_eq!(clob_bid_count(&fixture), 1);
+}
+
+/// A healthy flat account that still rests a reduce-only bid keeps its
+/// liveness poll armed. The liquidation resolver stages the uncovered
+/// reduce-only cancel, which removes the bid and pays the poll's floor.
+#[test]
+fn the_liq_resolver_stages_the_cancel_of_an_uncovered_reduce_only_bid() {
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, FIX4_TRIG_SOL_PRICE);
+
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let order_ref = rest_reduce_only_maker_bid(&mut fixture, &owner, 99 * PRICE, UNIT);
+    set_position_base(&mut fixture, &owner, 0);
+    let conditions = sync_liq_conditions(
+        &mut fixture,
+        owner.user,
+        market_conditions,
+        ANY_SYNC_COST_UNITS,
+    );
+
+    let resolved =
+        run_liq_resolver(&mut fixture, owner.user).expect("an uncovered reduce-only bid is work");
+    let args = velocity::instructions::CrankClobCancelUncoveredReduceOnlyArgs::deserialize(
+        &mut &resolved.data[..],
+    )
+    .unwrap();
+    assert_eq!(args.order_ref, order_ref);
+
+    let poll_payment = read_zero_copy::<velocity::state::user_conditions::UserConditionsV0>(
+        &fixture.svm,
+        &conditions,
+    )
+    .liveness_min_payment();
+    assert!(poll_payment > 0);
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobCancelUncoveredReduceOnly::DISCRIMINATOR,
+        payout,
+    );
+
+    assert_eq!(clob_bid_count(&fixture), 0);
+    let paid = fixture.svm.get_account(&payout).unwrap().lamports - 1_000_000_000;
+    assert!(
+        paid >= poll_payment,
+        "paid {paid}, the poll asks {poll_payment}"
+    );
+    assert!(run_liq_resolver(&mut fixture, owner.user).is_none());
+}
+
+/// The cross fallback poll finds no cross, then stages the band cancel of an
+/// ask the oracle left outside the band. The crank removes the ask and pays at
+/// least the poll's floor.
+#[test]
+fn the_cross_fallback_stages_the_band_cancel_of_an_ask_outside_the_band() {
+    let mut fixture = setup();
+    let conditions = init_crank_conditions(&mut fixture, 50_000);
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, FIX4_TRIG_SOL_PRICE);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
+    let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    // A band of half a percent puts the ask at 99 outside it. The AMM requires
+    // its spreads under the initial margin.
+    let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    market.margin_ratio_initial = 50;
+    market.margin_ratio_maintenance = 25;
+    market.amm.base_spread = 2_000;
+    market.amm.max_spread = 4_000;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::ResolveClobCrank {
+            scratch: relay_scratch_pda(),
+            crank_conditions: conditions,
+            clob_market: fixture.clob_market,
+            quoter_slab: fixture.quoter_slab,
+            state: state_pda(),
+            clob_program: clob_id(),
+            treasury: crank_treasury_pda(),
+        }
+        .to_account_metas(None)
+        .into_iter()
+        .chain([AccountMeta::new_readonly(perp_market_pda(0), false)])
+        .collect(),
+        data: velocity::instruction::ResolveClobCrank {
+            fired: fired_condition(
+                conditions,
+                velocity::state::clob_crank::CLOB_CRANK_BLOCK_OFFSET as u32,
+                velocity::state::clob_crank::CLOB_CRANK_CROSS_FALLBACK as u8,
+            ),
+        }
+        .data(),
+    };
+    let resolved = resolve_in_rounds(&mut fixture, ix).expect("an ask outside the band is work");
+    let args = velocity::instructions::CrankClobCancelOutsideBandArgs::deserialize(
+        &mut &resolved.data[..],
+    )
+    .unwrap();
+    assert_eq!(args.order_ref, order_ref);
+
+    let stored: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &conditions);
+    let floor = velocity::relay_spec::ConditionBlock::read_condition(
+        &stored.relay,
+        velocity::state::clob_crank::CLOB_CRANK_CROSS_FALLBACK,
+    )
+    .unwrap()
+    .min_payment();
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobCancelOutsideBand::DISCRIMINATOR,
+        payout,
+    );
+
+    assert_eq!(clob_ask_count(&fixture), 0);
+    let paid = fixture.svm.get_account(&payout).unwrap().lamports - 1_000_000_000;
+    assert!(paid >= floor, "paid {paid}, the poll asks {floor}");
+}

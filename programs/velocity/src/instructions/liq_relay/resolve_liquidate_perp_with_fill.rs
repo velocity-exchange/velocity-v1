@@ -9,9 +9,10 @@
 //! A force cancel runs when no liquidation can. It answers to the initial
 //! margin requirement, so it reaches an account before the account fails
 //! maintenance, and it takes only the side of a book that adds risk. A latched
-//! account skips it. An account with no work returns NoWork, and the poll
-//! wakes the resolver again later. So does an account that holds a market the
-//! stored list lacks. A pause that refuses the liquidation skips that stage.
+//! account skips it. Last, the resolver cancels a reduce-only book order that
+//! no part of the position covers, through `uncovered_reduce_only`. An account
+//! with no work returns NoWork, and the poll wakes the resolver again later. So
+//! does an account that holds a market the stored list lacks. A pause that refuses the liquidation skips that stage.
 
 use {
     crate::{
@@ -147,6 +148,16 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
                     stored,
                 );
             }
+        }
+
+        let reduce_only_cancel = super::uncovered_reduce_only::stage_uncovered_reduce_only_cancel(
+            &state,
+            ctx.accounts.state.key(),
+            &ctx.accounts.user,
+            ctx.remaining_accounts,
+        )?;
+        if reduce_only_cancel.is_some() {
+            return Ok(reduce_only_cancel);
         }
 
         // No failing scope holds a perp position. The account is healthy, or its distress is
@@ -381,7 +392,7 @@ fn liquidation_can_pay_the_crank(
     // The executor latches the account before it sizes the order, and the
     // latch resets the pace of an account that was not latched. A copy takes
     // the same step.
-    let mut projected = heap_copy(&user);
+    let mut projected = heap_copy(&*user);
     drop(user);
     let liquidation_mode = get_perp_liquidation_mode(&projected, market_index)?;
     liquidation_mode.enter_liquidation(&mut projected, slot)?;
@@ -410,17 +421,21 @@ fn liquidation_can_pay_the_crank(
     Ok(fill_notional >= u128::from(LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE))
 }
 
-/// A copy of `user` that never passes through the stack.
+/// A copy of `account` that never passes through the stack.
 ///
 /// `Box::new(*user)` builds the copy in the caller's frame first. A `User` is
 /// larger than the 4 KB SBF frame, so that overruns the frame, and the program
 /// faults at run time with a bad call target rather than an error.
-fn heap_copy(user: &User) -> Box<User> {
-    // SAFETY: `User` is a zero-copy `Pod` account, so all-zero bytes are a
-    // valid value.
-    let mut copy = unsafe { Box::<User>::new_zeroed().assume_init() };
-    bytemuck::bytes_of_mut(&mut *copy).copy_from_slice(bytemuck::bytes_of(user));
+pub(crate) fn heap_copy<T: bytemuck::Pod>(account: &T) -> Box<T> {
+    let mut copy = heap_zeroed::<T>();
+    bytemuck::bytes_of_mut(&mut *copy).copy_from_slice(bytemuck::bytes_of(account));
     copy
+}
+
+/// An all-zero `T` built on the heap, for the reason [`heap_copy`] states.
+pub(crate) fn heap_zeroed<T: bytemuck::Pod>() -> Box<T> {
+    // SAFETY: `T` is `Pod`, so all-zero bytes are a valid value.
+    unsafe { Box::<T>::new_zeroed().assume_init() }
 }
 
 /// Whether a liquidation of `market_index` takes book orders off a book. The
@@ -592,55 +607,19 @@ fn book_makers<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
     market_index: u16,
 ) -> Result<Vec<crate::state::prop_amm::UserRefV0>> {
-    use crate::state::prop_amm::{
-        clob_slot_index, find_account, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
-    };
-
     let Some(direction) = sweep_direction(user_loader, market_index)? else {
         return Ok(Vec::new());
     };
-    let slab_key = crate::state::pdas::quoter_slab(market_index);
-    let Some(slab_info) = find_account(remaining_accounts, &slab_key) else {
-        return Ok(Vec::new());
-    };
-    let slab = AccountLoader::<QuoterSlabV0>::try_from(slab_info)?;
-    // Copied out so no slab borrow lives across the book CPI.
-    let book_slot = {
-        let slots = slab.slots()?;
-        let Some(index) = clob_slot_index(&slots) else {
-            return Ok(Vec::new());
-        };
-
-        if !slots[index].quotes() {
-            return Ok(Vec::new());
-        }
-
-        slots[index]
-    };
-    let (Some(book), Some(program)) = (
-        find_account(remaining_accounts, &book_slot.config.response_account),
-        find_account(remaining_accounts, &book_slot.config.program_id),
-    ) else {
+    let Some(book) = StoredBook::find(remaining_accounts, market_index)? else {
         return Ok(Vec::new());
     };
 
     let taker = crate::load!(user_loader)?.clob_user_ref();
-    let accounts = [book.clone(), program.clone()];
-    let mut scratch = QuoterCpiScratch::new();
-    let owners = crate::instructions::clob::helpers::crank_common::book_l3_side(
-        &book_slot,
-        &slab,
-        market_index,
-        direction,
-        BOOK_MAKER_ROWS,
-        &accounts,
-        &mut scratch,
-        // The cover a crossing remainder claims is not depth this fill may
-        // take, so the owners behind it are not owners it has to carry.
-        false,
-        |row| row.user,
-    )?
-    .unwrap_or_default();
+    // The cover a crossing remainder claims is not depth this fill may take,
+    // so the owners behind it are not owners it has to carry.
+    let owners = book
+        .read_side(market_index, direction, BOOK_MAKER_ROWS, |row| row.user)?
+        .unwrap_or_default();
 
     Ok(owners
         .into_iter()
@@ -652,6 +631,83 @@ fn book_makers<'info>(
 
             makers
         }))
+}
+
+/// A market's quoting book, found in the stored list.
+pub(super) struct StoredBook<'info> {
+    slab: AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
+    /// Copied out so no slab borrow lives across the book CPI.
+    slot: crate::state::prop_amm::QuoterSlotV0,
+    /// The book and its program, the accounts a `quote_l3_v0` read takes.
+    accounts: [AccountInfo<'info>; 2],
+}
+
+impl<'info> StoredBook<'info> {
+    /// `None` when the stored list lacks the slab, the book or its program,
+    /// or when the slab holds no book that quotes.
+    pub(super) fn find(
+        remaining_accounts: &'info [AccountInfo<'info>],
+        market_index: u16,
+    ) -> Result<Option<Self>> {
+        use crate::state::prop_amm::{clob_slot_index, find_account, QuoterSlabExt};
+
+        let slab_key = crate::state::pdas::quoter_slab(market_index);
+        let Some(slab_info) = find_account(remaining_accounts, &slab_key) else {
+            return Ok(None);
+        };
+
+        let slab = AccountLoader::try_from(slab_info)?;
+        let slot = {
+            let slots = slab.slots()?;
+            match clob_slot_index(&slots) {
+                Some(index) if slots[index].quotes() => slots[index],
+                _ => return Ok(None),
+            }
+        };
+        let (Some(book), Some(program)) = (
+            find_account(remaining_accounts, &slot.config.response_account),
+            find_account(remaining_accounts, &slot.config.program_id),
+        ) else {
+            return Ok(None);
+        };
+
+        Ok(Some(Self {
+            slab,
+            slot,
+            accounts: [book.clone(), program.clone()],
+        }))
+    }
+
+    /// The first `max_rows` rows of the side a taker of `direction` sweeps,
+    /// with the size a crossing remainder claims left out.
+    pub(super) fn read_side<T>(
+        &self,
+        market_index: u16,
+        direction: crate::state::prop_amm::DirectionV0,
+        max_rows: u16,
+        map: impl Fn(&crate::state::prop_amm::L3RowV0) -> T,
+    ) -> Result<Option<Vec<T>>> {
+        let mut scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+        crate::instructions::clob::helpers::crank_common::book_l3_side(
+            &self.slot,
+            &self.slab,
+            market_index,
+            direction,
+            max_rows,
+            &self.accounts,
+            &mut scratch,
+            false,
+            map,
+        )
+    }
+
+    pub(super) fn slab_key(&self) -> Pubkey {
+        self.slab.key()
+    }
+
+    pub(super) fn book_key(&self) -> Pubkey {
+        *self.accounts[0].key
+    }
 }
 
 /// The side a liquidation of `market_index` sweeps, as the taker direction

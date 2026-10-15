@@ -821,7 +821,7 @@ fn rests_ordinary_clob_orders(maker: &crate::state::user::User, market_index: u1
 
 /// The base a fill of the orders on `resting_side` can take before it grows
 /// the maker's position.
-fn position_cover(
+pub(crate) fn position_cover(
     maker: &crate::state::user::User,
     market_index: u16,
     resting_side: SideV0,

@@ -8,6 +8,9 @@
  *     [--extend-authority <pk>] [--watch-creators <pk,pk>] \
  *     [--clob-hash <sha256> | --clob-so <path>] [--expect-hot]
  *
+ * It fails when a market's cross fallback floor differs from the floor its stored crank payments
+ * give, because relay then refuses the band cancels that poll stages.
+ *
  * A user's relay watch counts only when the keypair, or a key `--watch-creators` names, created it
  * at the block offset. Pass the migration payer there when it is not the keypair.
  *
@@ -50,6 +53,12 @@ import {
 	parseWatchCreators,
 	watchesOnTarget,
 } from './relay-watch';
+import {
+	armedCrossFallbackFloor,
+	CrankPayments,
+	crossFallbackFloor,
+	crossFallbackFloorIsStale,
+} from './crank-floor';
 import {
 	deployedProgramHash,
 	expectedClobHash,
@@ -497,10 +506,22 @@ async function requireMarketWatches(
 		`market ${market.marketIndex} crank conditions`,
 		conditions
 	);
-	const { clobBlockOffset } = program.coder.accounts.decode(
+	const { clobBlockOffset, crankPayments } = program.coder.accounts.decode(
 		'clobCrankConditionsV0',
 		info.data
-	) as { clobBlockOffset: number };
+	) as { clobBlockOffset: number; crankPayments: CrankPayments };
+	if (crossFallbackFloorIsStale(info.data, crankPayments)) {
+		verifier.failures.push(
+			`market ${
+				market.marketIndex
+			} cross fallback floor is ${armedCrossFallbackFloor(
+				info.data
+			)}, not ${crossFallbackFloor(
+				crankPayments
+			)}; run migrate.ts to attach the book again`
+		);
+	}
+
 	const book = await program.provider.connection.getAccountInfo(
 		market.clobMarket
 	);

@@ -20,12 +20,15 @@
 //! pays the lamports only when that TWAP priced them. The book refuses to cancel a taker remainder whose claim still
 //! holds, so a crossing remainder keeps its window for the cross crank.
 //!
-//! No relay condition wakes this crank. A resolver needs the market oracle,
-//! and the resolver account list does not carry it, so signed keepers run it.
+//! The market's cross fallback poll wakes this crank. When the poll finds no
+//! cross, [`stage_band_cancel`] reads the top rows of each side and stages the
+//! cancel of the first order outside the band, in program-keeper mode. The
+//! oracle is not in the resolver list, so the resolver asks relay for it.
 
 use {
     super::helpers::crank_common::{
-        crank_clob_removal, payment_sol_price, program_keeper_mode, ClobRemoval, RemovalAccounts,
+        book_l3_sides, crank_clob_removal, payment_sol_price, program_keeper_mode,
+        sol_spot_market_ref, ClobRemoval, RemovalAccounts, ResolveClobCrank,
     },
     crate::{
         controller::{
@@ -33,18 +36,25 @@ use {
             position::PositionDirection,
         },
         error::ErrorCode,
-        instructions::{constraints::*, optional_accounts::AccountMaps},
+        instructions::{
+            constraints::*,
+            liq_relay::resolve_liquidate_perp_with_fill::heap_zeroed,
+            optional_accounts::AccountMaps,
+            relay_harness::{Resolution, StagedCall},
+        },
         load_mut,
         math::orders::limit_price_breaches_maker_oracle_price_bands,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             oracle_map::OracleMap,
+            pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                CancelOrderArgsV0, ClobOrderRefV0, ClobReader, QuoterSlabExt, QuoterSlabV0,
+                find_account, CancelOrderArgsV0, ClobOrderRefV0, ClobReader, L3RowV0,
+                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, SideV0, L3_ROW_FLAG_TAKER_ORIGIN,
             },
             spot_market::SpotMarket,
-            state::State,
+            state::{ExchangeStatus, State},
             user::{User, UserStats},
         },
         validate,
@@ -188,6 +198,176 @@ pub fn handle_crank_clob_cancel_outside_band<'info>(
     )
 }
 
+/// Rows read off each side to find an order outside the band. A bid outside
+/// the band is above the oracle and an ask is below it, so such orders lead
+/// their side.
+const BAND_SCAN_ROWS: u16 = 32;
+
+/// The cross fallback poll's band answer, after the poll found no cross: the
+/// cancel of the first order on either side outside the band, in program-keeper
+/// mode. The market oracle is not in the resolver list, so the first round asks
+/// relay for it. An oracle that fails the crank's gates is no work.
+pub(super) fn stage_band_cancel(ctx: &Context<ResolveClobCrank>) -> Result<Resolution> {
+    let (market_index, oracle) = {
+        let conditions = ctx.accounts.crank_conditions.load()?;
+        (conditions.market_index, conditions.oracle)
+    };
+    let (Some(market_info), Some(oracle_info)) = (
+        find_account(ctx.remaining_accounts, &pdas::perp_market(market_index)),
+        find_account(ctx.remaining_accounts, &oracle),
+    ) else {
+        return Ok(Resolution::MoreAccounts(vec![oracle]));
+    };
+
+    let state = ctx.accounts.state.load()?;
+    if state
+        .get_exchange_status()?
+        .contains(ExchangeStatus::FillPaused)
+    {
+        return Ok(Resolution::NoWork);
+    }
+
+    let Some(band) = resolver_band(ctx, &state, market_info, oracle_info)? else {
+        return Ok(Resolution::NoWork);
+    };
+
+    let book_slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
+    if !book_slot.quotes() {
+        return Ok(Resolution::NoWork);
+    }
+
+    let accounts = [
+        ctx.accounts.clob_market.to_account_info(),
+        ctx.accounts.clob_program.to_account_info(),
+    ];
+    let mut cpi_scratch = QuoterCpiScratch::new();
+    let Some(sides) = book_l3_sides(
+        &book_slot,
+        &ctx.accounts.quoter_slab,
+        market_index,
+        BAND_SCAN_ROWS,
+        &accounts,
+        &mut cpi_scratch,
+        false,
+        |row| *row,
+    )?
+    else {
+        return Ok(Resolution::NoWork);
+    };
+
+    let found = match first_outside_band(&band, SideV0::Bid, &sides.bids)? {
+        Some(row) => Some(row),
+        None => first_outside_band(&band, SideV0::Ask, &sides.asks)?,
+    };
+    let Some(row) = found else {
+        return Ok(Resolution::NoWork);
+    };
+
+    stage_cancel(ctx, &state, market_index, oracle, &row).map(Resolution::Call)
+}
+
+/// The band at the resolver's view of the oracle, or `None` when the oracle
+/// fails the gates the crank applies. The resolver holds the market read-only,
+/// so the gates run on a copy and a prelaunch oracle is judged as it stands.
+fn resolver_band(
+    ctx: &Context<ResolveClobCrank>,
+    state: &State,
+    market_info: &AccountInfo,
+    oracle_info: &AccountInfo,
+) -> Result<Option<MakerBand>> {
+    let clock = Clock::get()?;
+    let mut market = heap_zeroed::<PerpMarket>();
+    {
+        let data = market_info.try_borrow_data()?;
+        let body = data.get(8..8 + std::mem::size_of::<PerpMarket>());
+        let Some(body) = body.filter(|_| {
+            market_info.owner == &crate::ID && data.get(..8) == Some(PerpMarket::DISCRIMINATOR)
+        }) else {
+            msg!("{} is not a velocity perp market", market_info.key);
+            return Err(ErrorCode::PerpMarketAccountMismatch.into());
+        };
+
+        bytemuck::bytes_of_mut(&mut *market).copy_from_slice(body);
+    }
+
+    let Ok(mut oracle_map) = OracleMap::load_one(
+        oracle_info,
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    ) else {
+        return Ok(None);
+    };
+
+    match MakerBand::gated(
+        &mut market,
+        state,
+        &mut oracle_map,
+        &clock,
+        &ctx.accounts.quoter_slab,
+    ) {
+        Ok(band) => Ok(Some(band)),
+        Err(error) => {
+            msg!("band cancel oracle gates refused: {:?}", error);
+            Ok(None)
+        }
+    }
+}
+
+/// The first row on `side` that the band refuses and the book lets a keeper
+/// cancel. The book refuses a plain cancel of a taker remainder whose claim
+/// still holds, so such a row is skipped.
+fn first_outside_band(band: &MakerBand, side: SideV0, rows: &[L3RowV0]) -> Result<Option<L3RowV0>> {
+    for row in rows {
+        let bound_remainder = row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0
+            && row.flags & quoter_spec::L3_ROW_FLAG_CLAIM_LAPSED == 0;
+        if !bound_remainder && band.refuses(row.price, PositionDirection::from(side))? {
+            return Ok(Some(*row));
+        }
+    }
+
+    Ok(None)
+}
+
+/// The crank in program-keeper mode. A taker-origin order adds its owner's
+/// signed-message record, so the cancel releases the entry.
+fn stage_cancel(
+    ctx: &Context<ResolveClobCrank>,
+    state: &State,
+    market_index: u16,
+    oracle: Pubkey,
+    row: &L3RowV0,
+) -> Result<StagedCall> {
+    let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    let mut call = StagedCall::new::<crate::instruction::CrankClobCancelOutsideBand>(
+        crate::accounts::CrankClobCancelOutsideBand {
+            state: ctx.accounts.state.key(),
+            authority: pdas::keeper_placeholder(),
+            filler: protocol_user,
+            filler_stats: protocol_user_stats,
+            user: pdas::user(&row.user.authority, row.user.sub_account_id),
+            perp_market: pdas::perp_market(market_index),
+            oracle,
+            quoter_slab: ctx.accounts.quoter_slab.key(),
+            clob_market: ctx.accounts.clob_market.key(),
+            clob_program: crate::ids::clob_program::id(),
+            crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+            sol_spot_market: sol_spot_market_ref(state),
+        },
+    );
+    if row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0 {
+        call = call.account(pdas::signed_msg_user_orders(&row.user.authority), true);
+    }
+
+    call.arg(CrankClobCancelOutsideBandArgs {
+        market_index,
+        order_ref: ClobOrderRefV0 {
+            node_index: row.node_index,
+            order_id: row.order_id,
+        },
+    })
+}
+
 /// The band the router holds a book's makers to, as it stands this slot.
 pub(super) struct MakerBand {
     /// The MM oracle price the router measures the band from.
@@ -234,14 +414,31 @@ impl MakerBand {
             clock.slot,
         )?;
 
-        crank_oracle_preflight(market, &state, &mut oracle_map, clock, "band cancel")?;
+        Self::gated(
+            market,
+            &state,
+            &mut oracle_map,
+            clock,
+            &accounts.quoter_slab,
+        )
+    }
+
+    /// The band behind the oracle gates, for a market whose prelaunch oracle
+    /// the caller already updated or chose not to update.
+    pub(super) fn gated(
+        market: &mut PerpMarket,
+        state: &State,
+        oracle_map: &mut OracleMap,
+        clock: &Clock,
+        quoter_slab: &AccountLoader<QuoterSlabV0>,
+    ) -> Result<Self> {
+        crank_oracle_preflight(market, state, oracle_map, clock, "band cancel")?;
 
         let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
         Ok(Self {
-            oracle_price: maker_band_oracle_price(market, &state, &oracle_price_data, clock.slot)?,
-            oracle_band: accounts
-                .quoter_slab
-                .clob_slot(market_index)?
+            oracle_price: maker_band_oracle_price(market, state, &oracle_price_data, clock.slot)?,
+            oracle_band: quoter_slab
+                .clob_slot(market.market_index)?
                 .config
                 .oracle_band(market.margin_ratio_initial),
         })
@@ -327,7 +524,13 @@ impl MakerBand {
 
 #[cfg(test)]
 mod tests {
-    use {super::MakerBand, crate::controller::position::PositionDirection};
+    use {
+        super::{first_outside_band, MakerBand},
+        crate::{
+            controller::position::PositionDirection,
+            state::prop_amm::{L3RowV0, SideV0, L3_ROW_FLAG_TAKER_ORIGIN},
+        },
+    };
 
     /// Ten percent around an oracle of 100.
     const BAND: MakerBand = MakerBand {
@@ -365,6 +568,55 @@ mod tests {
         assert!(BAND
             .validate_rest(90_000_001, PositionDirection::Short)
             .is_ok());
+    }
+
+    fn row(price: u64, order_id: u64, flags: u8) -> L3RowV0 {
+        L3RowV0 {
+            price,
+            order_id,
+            flags,
+            ..L3RowV0::default()
+        }
+    }
+
+    #[test]
+    fn the_first_bid_above_the_band_is_selected() {
+        let bids = [
+            row(115_000_000, 1, 0),
+            row(110_000_000, 2, 0),
+            row(100_000_000, 3, 0),
+        ];
+        let found = first_outside_band(&BAND, SideV0::Bid, &bids).unwrap();
+        assert_eq!(found.map(|row| row.order_id), Some(1));
+
+        let inside = [row(109_999_999, 4, 0)];
+        assert_eq!(
+            first_outside_band(&BAND, SideV0::Bid, &inside).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn an_ask_below_the_band_is_selected() {
+        let asks = [row(90_000_000, 5, 0)];
+        let found = first_outside_band(&BAND, SideV0::Ask, &asks).unwrap();
+        assert_eq!(found.map(|row| row.order_id), Some(5));
+    }
+
+    /// The book refuses a plain cancel of a remainder whose claim holds, so
+    /// the resolver stages the next row instead.
+    #[test]
+    fn a_bound_taker_remainder_is_skipped() {
+        let bids = [
+            row(120_000_000, 6, L3_ROW_FLAG_TAKER_ORIGIN),
+            row(
+                115_000_000,
+                7,
+                L3_ROW_FLAG_TAKER_ORIGIN | quoter_spec::L3_ROW_FLAG_CLAIM_LAPSED,
+            ),
+        ];
+        let found = first_outside_band(&BAND, SideV0::Bid, &bids).unwrap();
+        assert_eq!(found.map(|row| row.order_id), Some(7));
     }
 
     #[test]

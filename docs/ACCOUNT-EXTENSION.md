@@ -147,6 +147,10 @@ expected buffer length. Concretely:
   deliberately rejected by `extend_account`.
 - **Reordering, inserting, or widening existing fields.** That is a layout break, not an
   extension; existing bytes would be reinterpreted wrongly. The only safe growth is claiming
-  trailing padding and appending past the old end.
+  trailing padding and appending past the old end. A layout break needs its own rewrite of the
+  old bytes. `User` has one: widening `open_orders` to `u16` moved every field after the first
+  perp position, so `extend_account` reads a 4496-byte `User` as `LegacyUser`
+  (`state/user/legacy_layout.rs`) and writes it back in the current layout. It refuses a `User` at
+  any other short length.
 - **Shrinking.** Never supported; it truncates live data, and the rent refund would let a
   compromised signer drain lamports out of live accounts.

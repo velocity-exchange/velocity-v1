@@ -32,12 +32,12 @@ export function executableHash(bytes: Buffer): string {
 }
 
 /** The CLOB hash to require: `--clob-hash`, or the hash of the `--clob-so` artifact. */
-export function expectedClobHash(
-	clobHash: string | undefined,
-	clobSo: string | undefined
+export function expectedProgramHash(
+	hash: string | undefined,
+	so: string | undefined
 ): string | undefined {
-	if (clobHash) return clobHash.toLowerCase();
-	if (clobSo) return executableHash(fs.readFileSync(clobSo));
+	if (hash) return hash.toLowerCase();
+	if (so) return executableHash(fs.readFileSync(so));
 	return undefined;
 }
 

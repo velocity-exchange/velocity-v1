@@ -317,15 +317,20 @@ pub fn load_user_maps<'a: 'b, 'b>(
             .try_borrow_data()
             .or(Err(ErrorCode::CouldNotLoadUserData))?;
 
-        let expected_data_len = User::SIZE;
-        if data.len() < expected_data_len {
+        if data.len() < 8 || &data[..8] != user_discriminator {
             break;
         }
 
-        let account_discriminator = &data[..8];
-        if account_discriminator != user_discriminator {
-            break;
-        }
+        // A short `User` is in the legacy layout. Skipping it would move it and
+        // every later maker into the next section.
+        validate!(
+            data.len() >= User::SIZE,
+            ErrorCode::InvalidUserAccount,
+            "user {} has length {}, below {}",
+            user_key,
+            data.len(),
+            User::SIZE
+        )?;
 
         let user_account_info = account_info_iter.next().safe_unwrap()?;
 
@@ -431,4 +436,54 @@ pub fn load_user_map<'a: 'b, 'b>(
     }
 
     Ok(user_map)
+}
+
+#[cfg(test)]
+mod load_user_maps_tests {
+    use {
+        super::*,
+        crate::{state::user::LEGACY_USER_LEN, test_utils::create_account_info},
+    };
+
+    fn account_with(discriminator: &[u8], len: usize) -> Vec<u8> {
+        let mut data = vec![0u8; len];
+        data[..8].copy_from_slice(discriminator);
+        data
+    }
+
+    #[test]
+    fn a_legacy_user_fails_the_load() {
+        let key = Pubkey::new_unique();
+        let mut lamports = 0;
+        let mut data = account_with(User::DISCRIMINATOR, LEGACY_USER_LEN);
+        let infos = [create_account_info(
+            &key,
+            true,
+            &mut lamports,
+            &mut data,
+            &crate::ID,
+        )];
+
+        let result = load_user_maps(&mut infos.iter().peekable(), false);
+        assert!(matches!(result, Err(ErrorCode::InvalidUserAccount)));
+    }
+
+    #[test]
+    fn another_account_ends_the_user_section() {
+        let key = Pubkey::new_unique();
+        let mut lamports = 0;
+        let mut data = account_with(UserStats::DISCRIMINATOR, UserStats::SIZE);
+        let infos = [create_account_info(
+            &key,
+            true,
+            &mut lamports,
+            &mut data,
+            &crate::ID,
+        )];
+        let mut iter = infos.iter().peekable();
+
+        let (user_map, _) = load_user_maps(&mut iter, false).unwrap();
+        assert!(user_map.0.is_empty());
+        assert!(iter.peek().is_some());
+    }
 }

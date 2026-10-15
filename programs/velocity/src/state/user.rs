@@ -47,11 +47,15 @@ use {
 
 #[cfg(test)]
 mod isolated_transfer_tests;
+mod legacy_layout;
 mod order_reservation;
 #[cfg(test)]
 mod tests;
 
-pub use order_reservation::{OrderReservation, ReleaseCheck};
+pub use {
+    legacy_layout::{LegacyPerpPosition, LegacyUser, LEGACY_USER_LEN},
+    order_reservation::{OrderReservation, ReleaseCheck},
+};
 
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
 #[borsh(use_discriminant = true)]

@@ -10,7 +10,8 @@
  *     [--multisig <pda> [--vault-index <n>]] [--fee-rails <i,s,num,den,maxPriority>] \
  *     [--treasury-refill <target,watermark[,resyncFloor]>] [--lift-upgrade-pause] \
  *     [--watch-creators <pk,pk>] \
- *     [--clob-hash <sha256> | --clob-so <path>] [--dry-run]
+ *     [--clob-hash <sha256> | --clob-so <path>] [--vaults-hash <sha256> | --vaults-so <path>]
+ *     [--dry-run]
  *
  * The keypair is the payer and can be any funded key. The admin is the keypair, or with
  * `--multisig` the multisig's vault, and it must hold the warm or cold role. Before anything is
@@ -25,7 +26,8 @@
  * position there, fire a stop, or land a signed-message order, but a liquidation still runs.
  * The runbook pauses liquidations, settlement, withdrawals and funding for that window
  * (`UPGRADE_PAUSE_BITS`), and `--lift-upgrade-pause` clears those bits once every book attach
- * is sent or proposed.
+ * is sent or proposed and every account is at its size. The program cannot load a smaller
+ * account, so it cannot liquidate it.
  *
  * Without `--multisig`, every instruction sends directly and one run does the whole migration.
  * With it, every warm-admin instruction becomes a Squads proposal, and the vault pays that
@@ -49,7 +51,9 @@
  * Steps:
  *   1. resize: grow every velocity-owned zero-copy account whose struct gained fields.
  *      `extend_account` resolves the target size from the discriminator, so this step covers
- *      past and future growth the same way. Then create the singletons and the per-market
+ *      past and future growth the same way. A 4496-byte `User` predates the `u16` open-order
+ *      counts, which moved its fields, and `extend_account` rewrites it into the current
+ *      layout as it grows it. Then create the singletons and the per-market
  *      accounts the new code loads: the SOL spot market that prices the liquidation
  *      reimbursement, the relay scratch, the crank treasury, the default sync terms a new
  *      user's conditions are armed with, the protocol User
@@ -151,7 +155,7 @@ import {
 } from './relay-watch';
 import {
 	deployedProgramHash,
-	expectedClobHash,
+	expectedProgramHash,
 	instructionKey,
 	liftedStatus,
 	ProposedInstruction,
@@ -240,6 +244,9 @@ type Args = {
 	/** The CLOB executable hash the deployed program must have. Required under
 	 * `--multisig`. */
 	clobHash?: string;
+	/** The vaults executable hash the deployed vaults program must have before
+	 * any `User` migrates. */
+	vaultsHash?: string;
 	/** The liquidation reimbursement share written when State holds none. */
 	liqReimbursementBps: number;
 };
@@ -346,9 +353,13 @@ function parseArgs(): ParsedArgs {
 			? parseTreasuryRefill(get('--treasury-refill'))
 			: undefined,
 		liftUpgradePause: argv.includes('--lift-upgrade-pause'),
-		clobHash: expectedClobHash(
+		clobHash: expectedProgramHash(
 			argv.includes('--clob-hash') ? get('--clob-hash') : undefined,
 			argv.includes('--clob-so') ? get('--clob-so') : undefined
+		),
+		vaultsHash: expectedProgramHash(
+			argv.includes('--vaults-hash') ? get('--vaults-hash') : undefined,
+			argv.includes('--vaults-so') ? get('--vaults-so') : undefined
 		),
 		// What `initialize` writes on a new deployment.
 		liqReimbursementBps: Number.parseInt(
@@ -671,6 +682,11 @@ function ixDiscriminator(name: string): Buffer {
 	return createHash('sha256').update(`global:${name}`).digest().subarray(0, 8);
 }
 
+const VAULTS_IDL_PATH = 'packages/vaults-sdk/src/idl/vaults.json';
+
+/** `LEGACY_USER_LEN`: the one short `User` length `extend_account` migrates. */
+const LEGACY_USER_BYTES = 4496;
+
 /** Zero-copy accounts `extend_account` can grow, with their `SIZE`, which
  * includes the discriminator. An account at or past its size is skipped. The
  * unit test `the_migration_script_resizes_to_the_real_sizes` parses these
@@ -780,7 +796,7 @@ async function migrate(ctx: Migration, idl: any) {
 		idl,
 		RESIZABLE.map(({ name }) => name)
 	);
-	await resizeAccounts(ctx, statePda, stateAccount);
+	const undersized = await resizeAccounts(ctx, statePda, stateAccount);
 
 	// Every resolver names this account. Until it exists, every relay crank in
 	// the program fails simulation with an owner error. The account therefore
@@ -838,12 +854,10 @@ async function migrate(ctx: Migration, idl: any) {
 		},
 		perpMarkets
 	);
-	await liftUpgradePause(ctx, statePda, stateAccount, books);
+	await liftUpgradePause(ctx, statePda, stateAccount, books, undersized);
 
 	// 2. liquidation coverage
-	const users = await connection.getProgramAccounts(velocity, {
-		filters: [{ memcmp: { offset: 0, bytes: bs58(discriminator('User')) } }],
-	});
+	const users = await currentUsers(connection, velocity);
 	await coverUsers(
 		ctx,
 		statePda,
@@ -860,6 +874,30 @@ async function migrate(ctx: Migration, idl: any) {
 
 	// 5. vault users
 	await flagVaultUsers(provider, payer, users, program, act);
+}
+
+/** Every `User` the deployed program can load. A `User` still in the legacy
+ * layout fails the decode, so the later steps skip it until the resize lands. */
+async function currentUsers(
+	connection: Connection,
+	velocity: PublicKey
+): Promise<{ pubkey: PublicKey; account: AccountInfo<Buffer> }[]> {
+	const userSize = RESIZABLE.find(({ name }) => name === 'User')!.size;
+	const users = await connection.getProgramAccounts(velocity, {
+		filters: [{ memcmp: { offset: 0, bytes: bs58(discriminator('User')) } }],
+	});
+	const current = users.filter(
+		({ account }) => account.data.length >= userSize
+	);
+	if (current.length < users.length) {
+		console.log(
+			`\nusers: ${
+				users.length - current.length
+			} still below ${userSize}b, skipped until the resize lands`
+		);
+	}
+
+	return [...current];
 }
 
 /** Register the relay watches over each market's crank conditions, its book,
@@ -958,17 +996,18 @@ async function decodeMarkets(
 }
 
 /**
- * Grow every account whose struct gained fields. `extend_account` takes the
- * payer as its authority, so under a multisig the keypair needs the
- * `AccountExtension` hot role. A proposal per stale account would put each
- * one behind an approval.
+ * Grow every account whose struct gained fields, and return how many are
+ * still undersized after the run. `extend_account` takes the payer as its
+ * authority, so under a multisig the keypair needs the `AccountExtension` hot
+ * role. A proposal per stale account would put each one behind an approval.
  */
 async function resizeAccounts(
 	ctx: Migration,
 	statePda: PublicKey,
 	stateAccount: any
-): Promise<void> {
+): Promise<number> {
 	const { connection, program, payer, args, act } = ctx;
+	let undersized = 0;
 	for (const { name, size } of RESIZABLE) {
 		const accounts = await connection.getProgramAccounts(program.programId, {
 			filters: [{ memcmp: { offset: 0, bytes: bs58(discriminator(name)) } }],
@@ -987,8 +1026,28 @@ async function resizeAccounts(
 			`resize ${name}: ${stale.length}/${keys.length} undersized -> ${size}b`
 		);
 		assertCanExtend(stateAccount, payer.publicKey);
+		if (name === 'User')
+			await assertVaultsUpgraded(connection, args.vaultsHash);
 
-		for (const account of stale.slice(0, args.limit || stale.length)) {
+		// `extend_account` refuses a short `User` at any length but the legacy one.
+		const refused =
+			name === 'User'
+				? stale.filter(
+						(key) => infos[keys.indexOf(key)]?.data.length !== LEGACY_USER_BYTES
+				  )
+				: [];
+		for (const key of refused) {
+			console.log(
+				`resize User ${key.toBase58()}: ${infos[keys.indexOf(key)]?.data
+					.length}b is not the ${LEGACY_USER_BYTES}b legacy layout, so extend_account refuses it. The upgrade pause stays until it is closed or repaired.`
+			);
+		}
+
+		const extendable = stale.filter((key) => !refused.includes(key));
+		for (const account of extendable.slice(
+			0,
+			args.limit || extendable.length
+		)) {
 			await act(`extend ${name} ${account.toBase58()}`, [
 				await program.methods
 					.extendAccount()
@@ -1002,6 +1061,47 @@ async function resizeAccounts(
 					.instruction(),
 			]);
 		}
+
+		const after = await getMultipleAccountsChunked(connection, stale);
+		undersized += after.filter(
+			(info) => (info?.data.length ?? 0) < size
+		).length;
+	}
+
+	return undersized;
+}
+
+/**
+ * The vaults program compiles in velocity's `User`. A vaults build from before
+ * the `u16` open-order counts reads a migrated `User` at the old offsets and
+ * values the vault wrongly. No `User` migrates until the deployed vaults code
+ * hashes to the reviewed build that `--vaults-hash` or `--vaults-so` names.
+ */
+async function assertVaultsUpgraded(
+	connection: Connection,
+	expectedHash: string | undefined
+): Promise<void> {
+	const vaults = new PublicKey(
+		JSON.parse(fs.readFileSync(VAULTS_IDL_PATH, 'utf-8')).address
+	);
+	const deployed = await deployedProgramHash(connection, vaults);
+	if (deployed === undefined) {
+		console.log(`vaults ${vaults.toBase58()}: not deployed, no check`);
+		return;
+	}
+
+	if (!expectedHash) {
+		throw new Error(
+			`a User migration needs --vaults-hash <sha256> or --vaults-so <path>. The vaults build ` +
+				`at ${vaults.toBase58()} must read the migrated User layout.`
+		);
+	}
+
+	if (deployed !== expectedHash) {
+		throw new Error(
+			`vaults ${vaults.toBase58()} hashes to ${deployed}, not ${expectedHash}. ` +
+				`Upgrade vaults before the User resize, or it misreads every migrated User.`
+		);
 	}
 }
 
@@ -1654,9 +1754,7 @@ async function flagVaultUsers(
 	program: Program,
 	act: (label: string, ixs: TransactionInstruction[]) => Promise<void>
 ) {
-	const vaultsIdl = JSON.parse(
-		fs.readFileSync('packages/vaults-sdk/src/idl/vaults.json', 'utf-8')
-	);
+	const vaultsIdl = JSON.parse(fs.readFileSync(VAULTS_IDL_PATH, 'utf-8'));
 	const vaults = new Program(vaultsIdl, provider);
 	const statusByUser = new Map<string, number>(
 		users.map(({ pubkey, account }) => [
@@ -1953,7 +2051,8 @@ async function liftUpgradePause(
 	ctx: Migration,
 	statePda: PublicKey,
 	stateAccount: any,
-	books: BookStatus
+	books: BookStatus,
+	undersized: number
 ): Promise<void> {
 	const status: number = stateAccount.exchangeStatus;
 	if ((status & UPGRADE_PAUSE_BITS) === 0) return;
@@ -1968,6 +2067,14 @@ async function liftUpgradePause(
 	if (!books.allQueued) {
 		console.log(
 			'\nexchange: the upgrade pause stays until every book B is proposed'
+		);
+		return;
+	}
+
+	// The program cannot load an account below its size, so it cannot liquidate it.
+	if (undersized > 0) {
+		console.log(
+			`\nexchange: the upgrade pause stays while ${undersized} accounts are undersized`
 		);
 		return;
 	}

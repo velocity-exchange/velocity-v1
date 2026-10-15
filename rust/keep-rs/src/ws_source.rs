@@ -21,7 +21,7 @@ use {
             user::User,
         },
         types::{AccountUpdate as WsAccountUpdate, MarketId},
-        utils::{deser_zero_copy, get_ws_url},
+        utils::{get_ws_url, try_deser_zero_copy},
         Pubkey, PubsubClient, VelocityClient,
     },
 };
@@ -40,7 +40,12 @@ pub async fn setup_websocket(velocity: VelocityClient) -> tokio::sync::mpsc::Rec
     let perp_tx = tx.clone();
     velocity
         .subscribe_all_perp_markets_with_callback(move |update| {
-            let market = deser_zero_copy::<PerpMarket>(&update.data);
+            // An account below the program's size has not been extended yet.
+            let Some(market) = try_deser_zero_copy::<PerpMarket>(&update.data) else {
+                log::warn!(target: TARGET, "perp market update below its size, skipped");
+                return;
+            };
+
             forward(
                 &perp_tx,
                 GrpcEvent::PerpMarketUpdate {
@@ -55,7 +60,11 @@ pub async fn setup_websocket(velocity: VelocityClient) -> tokio::sync::mpsc::Rec
     let spot_tx = tx.clone();
     velocity
         .subscribe_all_spot_markets_with_callback(move |update| {
-            let market = deser_zero_copy::<SpotMarket>(&update.data);
+            let Some(market) = try_deser_zero_copy::<SpotMarket>(&update.data) else {
+                log::warn!(target: TARGET, "spot market update below its size, skipped");
+                return;
+            };
+
             forward(
                 &spot_tx,
                 GrpcEvent::SpotMarketUpdate {
@@ -186,7 +195,11 @@ async fn stream_users(velocity: VelocityClient, ws_url: String, tx: Sender<GrpcE
                 executable: false,
             });
 
-            let user = deser_zero_copy::<User>(&data);
+            let Some(user) = try_deser_zero_copy::<User>(&data) else {
+                log::warn!(target: TARGET, "user {pubkey} below its size, skipped");
+                continue;
+            };
+
             forward(&tx, GrpcEvent::UserUpdate { pubkey, user, slot });
         }
 

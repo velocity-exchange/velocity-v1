@@ -1467,7 +1467,11 @@ async fn setup_grpc(
                     {
                         let tx = tx.clone();
                         move |acc| {
-                            let user = velocity_rs::utils::deser_zero_copy::<User>(acc.data);
+                            let Some(user) = velocity_rs::utils::try_deser_zero_copy::<User>(acc.data) else {
+                                log::warn!(target: TARGET, "user {} below its size, skipped", acc.pubkey);
+                                return;
+                            };
+
                             if let Err(err) = tx.try_send(GrpcEvent::UserUpdate {
                                 pubkey: acc.pubkey,
                                 user,
@@ -1483,7 +1487,11 @@ async fn setup_grpc(
                     {
                         let tx = tx.clone();
                         move |acc| {
-                            let market = velocity_rs::utils::deser_zero_copy::<PerpMarket>(acc.data);
+                            let Some(market) = velocity_rs::utils::try_deser_zero_copy::<PerpMarket>(acc.data) else {
+                                log::warn!(target: TARGET, "perp market update below its size, skipped");
+                                return;
+                            };
+
                             if let Err(err) = tx.try_send(GrpcEvent::PerpMarketUpdate {
                                 market,
                                 slot: acc.slot,
@@ -1498,7 +1506,11 @@ async fn setup_grpc(
                     {
                         let tx = tx.clone();
                         move |acc| {
-                            let market = velocity_rs::utils::deser_zero_copy::<SpotMarket>(acc.data);
+                            let Some(market) = velocity_rs::utils::try_deser_zero_copy::<SpotMarket>(acc.data) else {
+                                log::warn!(target: TARGET, "spot market update below its size, skipped");
+                                return;
+                            };
+
                             if let Err(err) = tx.try_send(GrpcEvent::SpotMarketUpdate {
                                 market,
                                 slot: acc.slot,

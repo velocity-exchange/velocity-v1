@@ -17,7 +17,7 @@ use {
             revenue_share::RevenueShare,
             spot_market::SpotMarket,
             state::{HotRole, State},
-            user::{ReferrerName, User, UserStats},
+            user::{LegacyUser, ReferrerName, User, UserStats, LEGACY_USER_LEN},
             user_conditions::UserConditionsV0,
         },
         validate,
@@ -46,7 +46,9 @@ pub struct ExtendAccount<'info> {
 
 /// Grow `account` to `8 + size_of::<T>()` for its discriminator's type `T`.
 ///
-/// The growth leaves the account contents alone. A larger account still
+/// The growth leaves the account contents alone, except for a `User` at
+/// [`LEGACY_USER_LEN`]. That layout moves fields, so the handler rewrites it
+/// into the current layout in the same instruction. A larger account still
 /// raises fetch bandwidth and any future per-byte transaction cost, so the
 /// protocol gates the crank rather than opening it to the public.
 ///
@@ -76,6 +78,23 @@ pub fn handle_extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
         return Ok(());
     }
 
+    let is_user = account.try_borrow_data()?[..8] == *User::DISCRIMINATOR;
+
+    // Zeros appended to any other `User` length would not match the current layout.
+    validate!(
+        !is_user || current_len == LEGACY_USER_LEN,
+        ErrorCode::InvalidAccountExtension,
+        "user account has length {}, and only {} can migrate",
+        current_len,
+        LEGACY_USER_LEN
+    )?;
+
+    let legacy_user = if is_user {
+        Some(LegacyUser::read(&account.try_borrow_data()?))
+    } else {
+        None
+    };
+
     let required_lamports = Rent::get()?.minimum_balance(target_len);
     let shortfall = required_lamports.saturating_sub(account.lamports());
     if shortfall > 0 {
@@ -92,6 +111,10 @@ pub fn handle_extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
     }
 
     account.resize(target_len).map_err(Into::<Error>::into)?;
+
+    if let Some(legacy_user) = legacy_user {
+        legacy_user.write(&mut account.try_borrow_mut_data()?);
+    }
 
     Ok(())
 }

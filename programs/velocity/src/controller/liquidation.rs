@@ -48,7 +48,8 @@ use {
                 calculate_user_protective_asset_price, calculate_user_protective_liability_price,
                 get_liquidation_fee, get_liquidation_order_params, liquidation_fill_slippage,
                 validate_swap_within_liquidation_boundaries,
-                validate_transfer_satisfies_limit_price, LiquidationMultiplierType,
+                validate_transfer_satisfies_limit_price, vamm_fill_slippage,
+                LiquidationMultiplierType,
             },
             margin::{
                 calculate_margin_requirement_and_total_collateral_and_liability_info,
@@ -77,8 +78,10 @@ use {
             liquidation_mode::{get_perp_liquidation_mode, LiquidatePerpMode},
             margin_calculation::{MarginCalculation, MarginContext, MarketIdentifier},
             market_status::MarketStatus,
+            oracle::OraclePriceData,
             order_params::PlaceOrderOptions,
             paused_operations::{PerpOperation, SpotOperation},
+            perp_market::PerpMarket,
             perp_market_map::PerpMarketMap,
             spot_market::{SpotBalance, SpotBalanceType},
             spot_market_map::SpotMarketMap,
@@ -86,7 +89,10 @@ use {
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
         },
         validate,
-        vlp::amm::{controller::get_fee_pool_tokens, refresh::update_amm_and_check_validity},
+        vlp::amm::{
+            controller::get_fee_pool_tokens, math::amm::calculate_amm_available_liquidity,
+            refresh::update_amm_and_check_validity,
+        },
     },
     anchor_lang::prelude::*,
     std::ops::{Deref, DerefMut},
@@ -1004,6 +1010,23 @@ struct ShortageCover {
     protocol_liquidation_fee: u32,
 }
 
+/// The vAMM's marginal price after it fills `base_asset_amount` for a taker in
+/// `direction`, on the curve the fill in this slot quotes. The vAMM's available
+/// liquidity caps the size.
+fn projected_vamm_price(
+    market: &PerpMarket,
+    oracle_price_data: OraclePriceData,
+    state: &State,
+    slot: u64,
+    direction: PositionDirection,
+    base_asset_amount: u64,
+) -> VelocityResult<u64> {
+    let amm = orders::projected_amm(market, oracle_price_data, state, slot)?;
+    let available = calculate_amm_available_liquidity(&amm, &direction, market.order_step_size)?;
+
+    amm.marginal_price_after(direction, base_asset_amount.min(available))
+}
+
 /// Sizes a liquidation, cancels what blocks it, and places the forced order.
 ///
 /// The order's size follows from the margin shortage, so the order does not exist
@@ -1292,20 +1315,37 @@ pub fn place_liquidation_order<'info>(
     };
 
     let existing_direction = user.perp_positions[position_index].get_direction();
-    let maintenance_margin_ratio = maps
-        .perp_market_map
-        .get_ref(&market_index)?
-        .get_margin_ratio(
+    let fill_slippage = {
+        let market = maps.perp_market_map.get_ref(&market_index)?;
+        let maintenance_margin_ratio = market.get_margin_ratio(
             base_asset_amount.cast()?,
             MarginRequirementType::Maintenance,
         )?;
+
+        let order_direction = existing_direction.opposite();
+        let vamm_slippage = vamm_fill_slippage(
+            oracle_price,
+            projected_vamm_price(
+                &market,
+                *maps.oracle_map.get_price_data(&market.oracle_id())?,
+                state,
+                slot,
+                order_direction,
+                base_asset_amount,
+            )?,
+            order_direction,
+            market.order_tick_size,
+        )?;
+
+        liquidation_fill_slippage(liquidator_fee, vamm_slippage, maintenance_margin_ratio)?
+    };
 
     let order_params = get_liquidation_order_params(
         market_index,
         existing_direction,
         base_asset_amount,
         oracle_price,
-        liquidation_fill_slippage(liquidator_fee, maintenance_margin_ratio)?,
+        fill_slippage,
     )?;
 
     let fill_record_id = maps

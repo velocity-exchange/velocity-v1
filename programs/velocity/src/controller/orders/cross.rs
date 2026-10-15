@@ -196,20 +196,7 @@ pub fn vamm_top_price(
         return None;
     }
 
-    let inputs = crate::state::quoter::MarketQuoteInputs::load(
-        market,
-        oracle_price_data,
-        slot,
-        &state.oracle_guard_rails.validity,
-        state.slot_clock(),
-    )
-    .ok()?;
-    let mut amm = market.amm;
-    let quoter_context = inputs.ctx(slot);
-    crate::vlp::amm::quoter::AmmQuoter::for_amm(&mut amm)
-        .refresh(&quoter_context)
-        .ok()?;
-
+    let amm = projected_amm(market, oracle_price_data, state, slot).ok()?;
     let available = crate::vlp::amm::math::amm::calculate_amm_available_liquidity(
         &amm,
         &direction,
@@ -229,6 +216,27 @@ pub fn vamm_top_price(
             .bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)
             .ok(),
     }
+}
+
+/// A copy of the market's vAMM, projected to `oracle_price_data` the way a fill in `slot`
+/// projects it. The market's own curve does not move.
+pub fn projected_amm(
+    market: &PerpMarket,
+    oracle_price_data: OraclePriceData,
+    state: &State,
+    slot: u64,
+) -> VelocityResult<crate::vlp::amm::AMM> {
+    let inputs = crate::state::quoter::MarketQuoteInputs::load(
+        market,
+        oracle_price_data,
+        slot,
+        &state.oracle_guard_rails.validity,
+        state.slot_clock(),
+    )?;
+    let mut amm = market.amm;
+    crate::vlp::amm::quoter::AmmQuoter::for_amm(&mut amm).refresh(&inputs.ctx(slot))?;
+
+    Ok(amm)
 }
 
 /// Whether the vAMM fills a taker on `direction` at a better price than

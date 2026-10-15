@@ -189,9 +189,9 @@ function writeKeeperConfig(): void {
 		enabledBots: [
 			'fundingRateUpdater',
 			'userPnlSettler',
-			// The TWAP crank bundles a live Pyth Lazer update into each crank, so it needs a token.
-			// The oracle service posts every feed locally, so the Lazer cranker never runs here.
-			...(process.env.PYTH_LAZER_TOKEN ? ['markTwapCrank'] : []),
+			// The keepers get no Pyth Lazer token, so the crank posts no live price over the oracle
+			// service's local prices.
+			'markTwapCrank',
 		],
 		botConfigs: {
 			fundingRateUpdater: { botId: 'funding', dryRun: false },

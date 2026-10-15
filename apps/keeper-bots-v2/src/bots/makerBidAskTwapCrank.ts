@@ -269,9 +269,13 @@ export class MakerBidAskTwapCrank implements Bot {
 		this.ifStakeTargetQuote =
 			config.ifStakeTargetQuote ?? DEFAULT_IF_STAKE_TARGET_QUOTE;
 
-		// Pyth lazer: remember to remove devnet guard
+		// Without a Lazer token the crank sends no oracle update. Another process must then post
+		// the market oracles, as the local-stack oracle service does.
 		if (!this.globalConfig.lazerEndpoints || !this.globalConfig.lazerToken) {
-			throw new Error('Missing lazerEndpoint or lazerToken in global config');
+			logger.warn(
+				`[${this.name}] no lazerEndpoints or lazerToken, so the crank sends no Pyth Lazer updates`
+			);
+			return;
 		}
 
 		const markets = PerpMarkets[this.globalConfig.velocityEnv!].filter(

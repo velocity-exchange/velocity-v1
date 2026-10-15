@@ -26,10 +26,11 @@ import {
 	calculateUnsettledFundingPnl,
 	BlockhashSubscriber,
 	RevenueShareEscrowMap,
-	isBuilderOrderCompleted,
-	getUserAccountPublicKeySync,
-	SettlePnlMode,
 	OraclePriceData,
+	FeatureBitFlags,
+	RevenueShareEscrowAccount,
+	RevenueShareOrder,
+	isVariant,
 } from '@velocity-exchange/sdk';
 import { Mutex } from 'async-mutex';
 
@@ -69,6 +70,7 @@ const POSITIVE_PNL_SETTLE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (after initial
 const ALL_NEGATIVE_PNL_SETTLE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (after initial delay)
 const FUNDING_SETTLE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (after initial delay)
 const MIN_MARGIN_RATIO_FOR_POSITIVE_PNL = 0.1; // 10% of account value
+const MAX_REVENUE_SHARE_TXS_PER_RUN = 50;
 
 const errorCodesToSuppress = [
 	6010, // Error Code: UserHasNoPositionInMarket. Error Number: 6010. Error Message: User Has No Position In Market.
@@ -94,6 +96,86 @@ type IxsBuilder = (
 	users: UserToSettle[],
 	marketIndex: number
 ) => Promise<TransactionInstruction[]>;
+
+export interface RevenueShareSettle {
+	escrow: RevenueShareEscrowAccount;
+	marketIndex: number;
+	owed: BN;
+}
+
+export interface RevenueShareForfeit {
+	escrow: RevenueShareEscrowAccount;
+	marketIndex: number;
+	orderIndex: number;
+}
+
+type MarketStatusLookup = (marketIndex: number) => MarketStatus | undefined;
+
+function owesOnPerpMarket(order: RevenueShareOrder): boolean {
+	return isVariant(order.marketType, 'perp') && order.feesAccrued.gt(ZERO);
+}
+
+/**
+ * The escrow and market pairs that owe revenue share, largest debt first, at most `limit`.
+ * `settle_revenue_share` refuses a delisted market, so those pairs are left out.
+ */
+export function findRevenueShareSettles(
+	escrows: Iterable<RevenueShareEscrowAccount>,
+	marketStatus: MarketStatusLookup,
+	limit: number
+): RevenueShareSettle[] {
+	const settles: RevenueShareSettle[] = [];
+	for (const escrow of escrows) {
+		const owedByMarket = new Map<number, BN>();
+		for (const order of escrow.orders) {
+			if (!owesOnPerpMarket(order)) {
+				continue;
+			}
+
+			const owed = owedByMarket.get(order.marketIndex) ?? ZERO;
+			owedByMarket.set(order.marketIndex, owed.add(order.feesAccrued));
+		}
+
+		for (const [marketIndex, owed] of owedByMarket) {
+			const status = marketStatus(marketIndex);
+			if (status === undefined || isVariant(status, 'delisted')) {
+				continue;
+			}
+
+			settles.push({ escrow, marketIndex, owed });
+		}
+	}
+
+	return settles
+		.sort((a, b) => b.owed.cmp(a.owed))
+		.slice(0, Math.max(limit, 0));
+}
+
+/**
+ * The rows that still owe on a market in settlement, at most `limit`. The program forfeits only a
+ * row that it proves it cannot pay, so a payable row in this list fails its simulation.
+ */
+export function findRevenueShareForfeits(
+	escrows: Iterable<RevenueShareEscrowAccount>,
+	marketStatus: MarketStatusLookup,
+	limit: number
+): RevenueShareForfeit[] {
+	const forfeits: RevenueShareForfeit[] = [];
+	for (const escrow of escrows) {
+		escrow.orders.forEach((order, orderIndex) => {
+			const status = marketStatus(order.marketIndex);
+			if (
+				owesOnPerpMarket(order) &&
+				status !== undefined &&
+				isVariant(status, 'settlement')
+			) {
+				forfeits.push({ escrow, marketIndex: order.marketIndex, orderIndex });
+			}
+		});
+	}
+
+	return forfeits.slice(0, Math.max(limit, 0));
+}
 
 // =============================================================================
 // MAIN CLASS
@@ -226,7 +308,7 @@ export class UserPnlSettlerBot implements Bot {
 			await this.trySettleUsersWithNoPositions();
 			await this.trySettlePositivePnlForLowMargin();
 			await this.trySettleFundingForMarketThenUsers();
-			await this.trySettleBuilderFees();
+			await this.trySettleRevenueShare();
 		} else {
 			// Initial settlement on startup - only settle negative PnL
 			await this.trySettleNegativePnl();
@@ -299,13 +381,12 @@ export class UserPnlSettlerBot implements Bot {
 				}, delayUntilNextHourFirstMinute)
 			);
 
-			// Builder fees - Run around when funding runs
 			this.timeoutIds.push(
 				setTimeout(() => {
-					this.trySettleBuilderFees();
+					this.trySettleRevenueShare();
 					this.intervalIds.push(
 						setInterval(
-							this.trySettleBuilderFees.bind(this),
+							this.trySettleRevenueShare.bind(this),
 							FUNDING_SETTLE_INTERVAL_MS
 						)
 					);
@@ -392,251 +473,128 @@ export class UserPnlSettlerBot implements Bot {
 		}
 	}
 
-	private async trySettleBuilderFees() {
+	private async trySettleRevenueShare() {
 		try {
-			await this.trySettleBuilderFeesForUsers();
+			await this.settleRevenueShare();
 		} catch (err) {
-			this.handleSettlementError(err, 'trySettleBuilderFees');
+			this.handleSettlementError(err, 'trySettleRevenueShare');
 		}
 	}
 
-	private async trySettleBuilderFeesForUsers() {
-		const logPrefix = '[trySettleBuilderFeesForUsers]';
-		const start = Date.now();
+	/**
+	 * Pays builder and referrer rows with `settle_revenue_share`, then forfeits the rows that a
+	 * market in settlement cannot pay. A pnl settle pays a row only while the escrow owner has pnl
+	 * to settle. Without this pass, `pendingRevenueShare` holds pnl pool value that the fee sweep
+	 * cannot use, and the market cannot delist.
+	 */
+	private async settleRevenueShare() {
+		const logPrefix = '[settleRevenueShare]';
+		const featureBitFlags =
+			this.velocityClient.getStateAccount().featureBitFlags;
+		if ((featureBitFlags & FeatureBitFlags.BUILDER_CODES) === 0) {
+			return;
+		}
+
+		const marketStatus = (marketIndex: number) =>
+			this.velocityClient.getPerpMarketAccount(marketIndex)?.status;
+
 		await this.revenueShareEscrowMap!.sync();
+		const settles = findRevenueShareSettles(
+			this.revenueShareEscrowMap!.getAll().values(),
+			marketStatus,
+			MAX_REVENUE_SHARE_TXS_PER_RUN
+		);
 		logger.info(
-			`${logPrefix} Synced revenue share escrow map in ${
-				Date.now() - start
-			}ms, found ${this.revenueShareEscrowMap!.size()} escrows`
+			`${logPrefix} ${settles.length} escrow and market pairs owe revenue share`
 		);
 
-		// Group by user and accumulate market indexes with sweepable builder fees
-		const usersByAuthority: Map<
-			string,
-			{
-				settleeUserAccountPublicKey: PublicKey;
-				settleeUserAccount: UserAccount;
-				marketIndexes: Set<number>;
-			}
-		> = new Map();
-		for (const escrow of this.revenueShareEscrowMap!.getAll().values()) {
-			const sweepableFees = escrow.orders.filter(
-				(order) => isBuilderOrderCompleted(order) && order.feesAccrued.gt(ZERO)
+		for (const settle of settles) {
+			const ix = await this.velocityClient.getSettleRevenueShareIx(
+				settle.escrow.authority,
+				settle.escrow,
+				settle.marketIndex
 			);
-			for (const order of sweepableFees) {
-				logger.info(
-					`${logPrefix} ${escrow.authority.toBase58()} has sweepable fees for order in market: ${
-						order.marketIndex
-					}: ${order.feesAccrued.toString()}`
-				);
-				// sweeping builder feees doesn't require a user account, but we need one that exists, so just use the last one
-				// set in the RevenueShareOrder.
-				const user = getUserAccountPublicKeySync(
-					this.velocityClient.program.programId,
-					escrow.authority,
-					order.subAccountId
-				);
-				const userKey = user.toBase58();
-				if (!usersByAuthority.has(userKey)) {
-					usersByAuthority.set(userKey, {
-						settleeUserAccountPublicKey: user,
-						settleeUserAccount:
-							this.userMap!.get(userKey)!.getUserAccountOrThrow(),
-						marketIndexes: new Set<number>(),
-					});
-				}
-				usersByAuthority.get(userKey)!.marketIndexes.add(order.marketIndex);
-			}
+			await this.sendRevenueShareIx(
+				ix,
+				`${logPrefix} settle ${settle.escrow.authority.toBase58()} market ${
+					settle.marketIndex
+				} owed ${settle.owed.toString()}`
+			);
+			await sleepMs(SLEEP_MS);
 		}
 
-		await this.processBuilderFeeSettlements(usersByAuthority, logPrefix);
-	}
-
-	private async processBuilderFeeSettlements(
-		usersByAuthority: Map<
-			string,
-			{
-				settleeUserAccountPublicKey: PublicKey;
-				settleeUserAccount: UserAccount;
-				marketIndexes: Set<number>;
-			}
-		>,
-		logPrefix = ''
-	) {
-		const MAX_MARKETS_PER_IX = 4;
-		for (const [
-			userKey,
-			{ settleeUserAccountPublicKey, settleeUserAccount, marketIndexes },
-		] of usersByAuthority) {
-			const markets = Array.from(new Set(Array.from(marketIndexes)));
-			if (markets.length === 0) {
-				continue;
-			}
-
-			logger.info(
-				`${logPrefix} TRY_SETTLE builder fees for user ${userKey} across ${
-					markets.length
-				} markets: [${markets.join(', ')}]`
+		await this.revenueShareEscrowMap!.sync();
+		const forfeits = findRevenueShareForfeits(
+			this.revenueShareEscrowMap!.getAll().values(),
+			marketStatus,
+			MAX_REVENUE_SHARE_TXS_PER_RUN - settles.length
+		);
+		for (const forfeit of forfeits) {
+			const ix = await this.velocityClient.getForfeitRevenueShareOrderIx(
+				forfeit.escrow.authority,
+				forfeit.escrow,
+				forfeit.marketIndex,
+				forfeit.orderIndex
 			);
-
-			for (let i = 0; i < markets.length; i += MAX_MARKETS_PER_IX) {
-				const marketChunk = markets.slice(i, i + MAX_MARKETS_PER_IX);
-				await this.trySendBuilderSettleForMarketChunk(
-					userKey,
-					settleeUserAccountPublicKey,
-					settleeUserAccount,
-					marketChunk,
-					logPrefix
-				);
-			}
+			await this.sendRevenueShareIx(
+				ix,
+				`${logPrefix} forfeit ${forfeit.escrow.authority.toBase58()} market ${
+					forfeit.marketIndex
+				} order ${forfeit.orderIndex}`
+			);
+			await sleepMs(SLEEP_MS);
 		}
 	}
 
-	private async trySendBuilderSettleForMarketChunk(
-		userKey: string,
-		settleeUserAccountPublicKey: PublicKey,
-		settleeUserAccount: UserAccount,
-		marketChunk: number[],
-		logPrefix: string
+	/**
+	 * Sends one revenue share instruction after a simulation. The program rejects a forfeit of a
+	 * payable row, so a failed simulation is logged and the pass continues.
+	 */
+	private async sendRevenueShareIx(
+		ix: TransactionInstruction,
+		label: string
 	): Promise<void> {
-		const success = await this.sendBuilderSettleForMarketChunk(
-			userKey,
-			settleeUserAccountPublicKey,
-			settleeUserAccount,
-			marketChunk,
-			logPrefix
+		const recentBlockhash = this.blockhashSubscriber.getLatestBlockhash(5);
+		if (!recentBlockhash) {
+			throw new Error('No recent blockhash found');
+		}
+
+		const priorityFee = this.priorityFeeSubscriber!.getAvgStrategyResult();
+		const simResult = await simulateAndGetTxWithCUs({
+			ixs: [
+				ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+				ComputeBudgetProgram.setComputeUnitPrice({
+					microLamports: priorityFee ? Math.floor(priorityFee) : 10_000,
+				}),
+				ix,
+			],
+			connection: this.velocityClient.connection,
+			payerPublicKey: this.velocityClient.wallet.publicKey,
+			lookupTableAccounts: this.lookupTableAccounts!,
+			cuLimitMultiplier: CU_EST_MULTIPLIER,
+			doSimulation: true,
+			recentBlockhash: recentBlockhash.blockhash,
+		});
+		if (simResult.simError !== null) {
+			logger.warn(
+				`${label}: sim error ${JSON.stringify(simResult.simError)}\n${
+					simResult.simTxLogs ? simResult.simTxLogs.join('\n') : ''
+				}`
+			);
+			return;
+		}
+
+		if (this.dryRun) {
+			logger.info(`[DRY RUN] ${label}`);
+			return;
+		}
+
+		const txSig = await this.velocityClient.txSender.sendVersionedTransaction(
+			simResult.tx,
+			[],
+			this.velocityClient.opts
 		);
-		if (!success) {
-			const slice = Math.floor(marketChunk.length / 2);
-			if (slice < 1) {
-				return;
-			}
-			const slice0 = marketChunk.slice(0, slice);
-			const slice1 = marketChunk.slice(slice);
-			logger.info(
-				`${logPrefix} (builderSettle) Chunk failed for user ${userKey}: [${marketChunk.join(
-					', '
-				)}], retrying with\nslice0: [${slice0.join(
-					', '
-				)}]\nslice1: [${slice1.join(', ')}]`
-			);
-			await sleepMs(SLEEP_MS);
-			await this.sendBuilderSettleForMarketChunk(
-				userKey,
-				settleeUserAccountPublicKey,
-				settleeUserAccount,
-				slice0,
-				logPrefix
-			);
-			await sleepMs(SLEEP_MS);
-			await this.sendBuilderSettleForMarketChunk(
-				userKey,
-				settleeUserAccountPublicKey,
-				settleeUserAccount,
-				slice1,
-				logPrefix
-			);
-		}
-		await sleepMs(SLEEP_MS);
-	}
-
-	private async sendBuilderSettleForMarketChunk(
-		userKey: string,
-		settleeUserAccountPublicKey: PublicKey,
-		settleeUserAccount: UserAccount,
-		marketChunk: number[],
-		logPrefix: string
-	): Promise<boolean> {
-		if (marketChunk.length === 0) {
-			return true;
-		}
-		let success = false;
-		try {
-			const pfs = this.priorityFeeSubscriber!.getAvgStrategyResult();
-			let microLamports = 10_000;
-			if (pfs) {
-				microLamports = Math.floor(pfs);
-			}
-			const computeUnits = Math.min(300_000 * marketChunk.length, 1_400_000);
-
-			const ixs: TransactionInstruction[] = [
-				ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }),
-				ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
-				// Same-slot AMM crank; see `buildSettlePnlIxs`.
-				await this.velocityClient.getUpdateAMMsIx(marketChunk),
-				await this.velocityClient.settleMultiplePNLsIx(
-					settleeUserAccountPublicKey,
-					settleeUserAccount,
-					marketChunk,
-					SettlePnlMode.TRY_SETTLE,
-					undefined,
-					this.revenueShareEscrowMap
-				),
-			];
-
-			const recentBlockhash = this.blockhashSubscriber.getLatestBlockhash(5);
-			if (!recentBlockhash) {
-				logger.error(
-					`${logPrefix} (builderSettle) No recent blockhash found for user ${userKey} markets: [${marketChunk.join(
-						', '
-					)}]`
-				);
-				throw new Error('No recent blockhash found');
-			}
-
-			const simResult = await simulateAndGetTxWithCUs({
-				ixs,
-				connection: this.velocityClient.connection,
-				payerPublicKey: this.velocityClient.wallet.publicKey,
-				lookupTableAccounts: this.lookupTableAccounts!,
-				cuLimitMultiplier: CU_EST_MULTIPLIER,
-				doSimulation: true,
-				recentBlockhash: recentBlockhash.blockhash,
-			});
-			if (simResult.simError !== null) {
-				logger.error(
-					`${logPrefix} (builderSettle) Sim error for user ${userKey} markets [${marketChunk.join(
-						', '
-					)}]: ${JSON.stringify(simResult.simError)}\n${
-						simResult.simTxLogs ? simResult.simTxLogs.join('\n') : ''
-					}`
-				);
-				handleSimResultError(
-					simResult,
-					errorCodesToSuppress,
-					'(builderSettle)'
-				);
-				success = false;
-			} else {
-				if (this.dryRun) {
-					logger.info(
-						`[DRY RUN] ${logPrefix} (builderSettle) Would settle for user ${userKey} markets [${marketChunk.join(
-							', '
-						)}]`
-					);
-					success = true;
-				} else {
-					const sendTxStart = Date.now();
-					const txSig =
-						await this.velocityClient.txSender.sendVersionedTransaction(
-							simResult.tx,
-							[],
-							this.velocityClient.opts
-						);
-					logger.info(
-						`${logPrefix} (builderSettle) TRY_SETTLE for user ${userKey} markets [${marketChunk.join(
-							', '
-						)}] in ${Date.now() - sendTxStart}ms: https://solana.fm/tx/${
-							txSig.txSig
-						}`
-					);
-					success = true;
-				}
-			}
-		} catch (err) {
-			this.handleSettlementError(err, 'sendBuilderSettleForMarketChunk');
-		}
-		return success;
+		logger.info(`${label}: https://solana.fm/tx/${txSig.txSig}`);
 	}
 
 	private async trySettleFundingForMarketThenUsers() {

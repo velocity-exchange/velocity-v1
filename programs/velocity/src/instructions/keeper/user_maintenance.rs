@@ -1,7 +1,7 @@
 //! Keeper repairs to a user account.
 //!
-//! Force-cancelling a failing account's orders, flagging it idle, resyncing
-//! counters that drifted, and tripping the authority-wide equity breaker.
+//! Force-cancelling a failing account's orders, flagging it idle, and tripping
+//! the authority-wide equity breaker.
 //! Anyone may call every handler here. Each one proves its own case by
 //! calculation, so the caller's identity does not matter.
 
@@ -234,23 +234,7 @@ pub fn handle_update_user_stats_referrer_info<'c: 'info, 'info>(
     Ok(())
 }
 
-#[access_control(
-    exchange_not_paused(&ctx.accounts.state)
-)]
-pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>) -> Result<()> {
-    let mut user = load_mut!(ctx.accounts.user)?;
-
-    let counts = count_user_open_orders(&user);
-
-    user.open_orders = counts.open_orders;
-    user.has_open_order = counts.open_orders > 0;
-    user.open_auctions = counts.open_auctions;
-    user.has_open_auction = counts.open_auctions > 0;
-
-    Ok(())
-}
-
-/// The counters that `update_user_open_orders_count` writes back.
+/// An account's open-order counters, recounted from its own state.
 pub struct UserOpenOrderCounts {
     pub open_orders: u16,
     pub open_auctions: u8,

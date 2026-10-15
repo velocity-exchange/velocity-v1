@@ -24,11 +24,14 @@ validator that cannot start on an arm64 host. The TypeScript services always run
 
 No Pyth Lazer token is needed. The dump adds a local signer to the Pyth Lazer storage account, and
 the `oracle` service signs an update for every devnet feed about every 400 ms. Each price holds at
-its value in the dump until it is moved:
+its value in the dump until it is moved. With `FOLLOW_RPC_URL` set to a devnet RPC, each feed
+copies devnet's oracle price every 2 seconds. A price set by hand pins its feed until a follow
+request releases it:
 
 ```bash
 curl localhost:7070/prices
 curl -X POST localhost:7070/price -d '{"market":"SOL-PERP","price":150}'
+curl -X POST localhost:7070/follow -d '{"market":"SOL-PERP"}'
 ```
 
 Pyth's own signer stays trusted, so a live Lazer cranker would overwrite the local prices, and the

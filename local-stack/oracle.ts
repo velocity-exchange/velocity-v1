@@ -6,11 +6,15 @@
  *
  * The dump trusts the key in /state/snapshot/lazer-signer.json in the Lazer storage account, so
  * `post_pyth_lazer_oracle_update` accepts what this service signs. Each feed starts at the
- * price the dump holds and stays there until it is moved:
+ * price the dump holds and stays there until it is moved. With FOLLOW_RPC_URL set, each feed
+ * copies the price of the same oracle account on that cluster, so the stack tracks the market.
+ * A price set by hand pins its feed until a follow request releases it:
  *
  *   curl localhost:7070/prices
  *   curl -X POST localhost:7070/price -d '{"market":"SOL-PERP","price":150.25}'
  *   curl -X POST localhost:7070/price -d '{"feedId":6,"price":150.25}'
+ *   curl -X POST localhost:7070/follow -d '{"market":"SOL-PERP"}'
+ *   curl -X POST localhost:7070/follow -d '{}'
  */
 import { createPrivateKey, sign } from 'crypto';
 import * as fs from 'fs';
@@ -33,6 +37,8 @@ import {
 const RPC_URL = process.env.RPC_URL ?? 'http://rpc:8899';
 const CONTROL_PORT = Number(process.env.CONTROL_PORT ?? 7070);
 const TICK_MS = Number(process.env.TICK_MS ?? 400);
+const FOLLOW_RPC_URL = process.env.FOLLOW_RPC_URL;
+const FOLLOW_MS = Number(process.env.FOLLOW_MS ?? 2000);
 /** One tick in this many sends with preflight, so a rejected update reaches the log. */
 const PREFLIGHT_EVERY = 25;
 
@@ -62,6 +68,7 @@ type Feed = {
 	mantissa: bigint;
 	exponent: number;
 	lastTimestampUs: bigint;
+	pinned: boolean;
 };
 
 function loadKey(file: string): Keypair {
@@ -182,10 +189,63 @@ async function loadFeeds(client: VelocityClient): Promise<Map<number, Feed>> {
 			mantissa: BigInt(decoded.price.toString()),
 			exponent: decoded.exponent,
 			lastTimestampUs: BigInt(decoded.publishTime.toString()),
+			pinned: false,
 		});
 	}
 
 	return feeds;
+}
+
+type ControlRequest = {
+	market?: string;
+	feedId?: number;
+	price?: number;
+};
+
+function findFeed(
+	feeds: Map<number, Feed>,
+	body: ControlRequest
+): Feed | undefined {
+	return [...feeds.values()].find(
+		(candidate) =>
+			candidate.feedId === body.feedId ||
+			candidate.symbols.includes(body.market ?? '')
+	);
+}
+
+function setPrice(
+	feeds: Map<number, Feed>,
+	body: ControlRequest
+): Response | null {
+	const feed = findFeed(feeds, body);
+	if (!feed || !(body.price! > 0)) {
+		return new Response('name a known market or feedId and a positive price', {
+			status: 400,
+		});
+	}
+
+	feed.mantissa = BigInt(Math.round(body.price! / 10 ** feed.exponent));
+	feed.pinned = true;
+	console.log(
+		`feed ${feed.feedId} (${feed.symbols.join(', ')}) -> ${body.price}`
+	);
+	return null;
+}
+
+/** Releases the named feed, or every feed when the request names none. */
+function follow(
+	feeds: Map<number, Feed>,
+	body: ControlRequest
+): Response | null {
+	const named = body.market !== undefined || body.feedId !== undefined;
+	const feed = named ? findFeed(feeds, body) : undefined;
+	if (named && !feed) {
+		return new Response('name a known market or feedId', { status: 400 });
+	}
+
+	for (const released of feed ? [feed] : feeds.values())
+		released.pinned = false;
+	return null;
 }
 
 function serveControl(feeds: Map<number, Feed>): void {
@@ -194,6 +254,7 @@ function serveControl(feeds: Map<number, Feed>): void {
 			feedId: feed.feedId,
 			symbols: feed.symbols,
 			price: Number(feed.mantissa) * 10 ** feed.exponent,
+			pinned: feed.pinned,
 		}));
 
 	Bun.serve({
@@ -202,36 +263,47 @@ function serveControl(feeds: Map<number, Feed>): void {
 			const url = new URL(request.url);
 			if (request.method === 'GET' && url.pathname === '/prices')
 				return Response.json(view());
-			if (request.method !== 'POST' || url.pathname !== '/price') {
+
+			const handler = { '/price': setPrice, '/follow': follow }[url.pathname];
+			if (request.method !== 'POST' || !handler) {
 				return new Response(
-					'GET /prices or POST /price {market|feedId, price}',
+					'GET /prices, POST /price {market|feedId, price} or POST /follow {market|feedId}',
 					{ status: 404 }
 				);
 			}
 
-			const body = (await request.json()) as {
-				market?: string;
-				feedId?: number;
-				price: number;
-			};
-			const feed = [...feeds.values()].find(
-				(candidate) =>
-					candidate.feedId === body.feedId ||
-					candidate.symbols.includes(body.market ?? '')
+			const rejection = handler(
+				feeds,
+				(await request.json()) as ControlRequest
 			);
-			if (!feed || !(body.price > 0)) {
-				return new Response(
-					'name a known market or feedId and a positive price',
-					{ status: 400 }
-				);
-			}
-
-			feed.mantissa = BigInt(Math.round(body.price / 10 ** feed.exponent));
-			console.log(
-				`feed ${feed.feedId} (${feed.symbols.join(', ')}) -> ${body.price}`
-			);
-			return Response.json(view());
+			return rejection ?? Response.json(view());
 		},
+	});
+}
+
+/** Copies each unpinned feed's price from the oracle account of the same feed on another cluster. */
+async function followCluster(
+	client: VelocityClient,
+	source: Connection,
+	feeds: Feed[]
+): Promise<void> {
+	const followed = feeds.filter((feed) => !feed.pinned);
+	const accounts = await source.getMultipleAccountsInfo(
+		followed.map((feed) =>
+			getPythLazerOraclePublicKey(client.program.programId, feed.feedId)
+		)
+	);
+
+	followed.forEach((feed, index) => {
+		const info = accounts[index];
+		if (!info || feed.pinned) return;
+
+		const decoded: any = client.program.coder.accounts.decode(
+			'pythLazerOracle',
+			info.data
+		);
+		const price = Number(decoded.price.toString()) * 10 ** decoded.exponent;
+		feed.mantissa = BigInt(Math.round(price / 10 ** feed.exponent));
 	});
 }
 
@@ -269,6 +341,23 @@ async function tick(
 	);
 }
 
+async function followLoop(
+	client: VelocityClient,
+	source: Connection,
+	feeds: Map<number, Feed>
+): Promise<void> {
+	console.log(`following ${source.rpcEndpoint} every ${FOLLOW_MS}ms`);
+	for (;;) {
+		try {
+			await followCluster(client, source, [...feeds.values()]);
+		} catch (error) {
+			console.error(`follow: ${error}`);
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, FOLLOW_MS));
+	}
+}
+
 async function main() {
 	const connection = new Connection(RPC_URL, 'confirmed');
 	const authority = loadKey(
@@ -286,6 +375,8 @@ async function main() {
 	});
 	const feeds = await loadFeeds(client);
 	serveControl(feeds);
+	if (FOLLOW_RPC_URL)
+		void followLoop(client, new Connection(FOLLOW_RPC_URL), feeds);
 	console.log(
 		`posting ${feeds.size} feeds every ${TICK_MS}ms, control on :${CONTROL_PORT}: ` +
 			[...feeds.values()]

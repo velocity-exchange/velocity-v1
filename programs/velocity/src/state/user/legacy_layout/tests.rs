@@ -49,7 +49,7 @@ fn legacy_account() -> Vec<u64> {
         position.open_asks = -700 - i;
         position.settled_pnl = 800 + i;
         position.isolated_position_scaled_balance = 900 + i as u64;
-        position.padding = [0xAA; 2];
+        position.reduce_only_clob_orders = 40 + i as u16;
         position.max_margin_ratio = 1000 + i as u16;
         position.market_index = i as u16;
         position.open_orders = 250 - i as u8;
@@ -116,7 +116,7 @@ fn write_moves_every_perp_position_to_its_new_slot() {
             open_asks: -700 - n,
             settled_pnl: 800 + n,
             isolated_position_scaled_balance: 900 + n as u64,
-            reduce_only_clob_orders: 0,
+            reduce_only_clob_orders: 40 + i as u16,
             max_margin_ratio: 1000 + n as u16,
             market_index: i as u16,
             open_orders: 250 - i as u16,
@@ -157,7 +157,8 @@ fn write_keeps_every_other_user_field() {
     assert_eq!(user.status, 17);
     assert!(user.is_margin_trading_enabled);
     assert!(user.idle);
-    assert_eq!(user.open_orders, 240);
+    // One order row plus the book orders of eight positions, 250 down to 243.
+    assert_eq!(user.open_orders, 1 + (243..=250).sum::<u16>());
     assert!(user.has_open_order);
     assert_eq!(user.open_auctions, 0);
     assert!(!user.has_open_auction);

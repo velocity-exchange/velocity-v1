@@ -7,12 +7,17 @@ use {
         auth::check_hot,
         error::ErrorCode,
         instructions::account_extension::extension_target_len,
-        state::state::{HotRole, State},
+        state::{
+            state::{HotRole, State},
+            traits::Size,
+            user::User,
+        },
         validate,
     },
     anchor_lang::{
         prelude::*,
         system_program::{transfer, Transfer},
+        Discriminator,
     },
 };
 
@@ -46,6 +51,15 @@ pub fn handle_extend_account_devnet(ctx: Context<ExtendAccountDevnet>, new_len: 
             data.len() >= 8 && extension_target_len(&data[..8]).is_some(),
             ErrorCode::InvalidAccountExtension,
             "account is not a supported zero-copy account"
+        )?;
+
+        // Zeros appended to a short `User` would leave it in the legacy layout,
+        // and `extend_account` skips an account at full size.
+        validate!(
+            data[..8] != *User::DISCRIMINATOR || data.len() >= User::SIZE,
+            ErrorCode::InvalidAccountExtension,
+            "a user below {} bytes migrates through extend_account",
+            User::SIZE
         )?;
     }
 

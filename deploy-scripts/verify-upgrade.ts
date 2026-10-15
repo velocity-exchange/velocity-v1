@@ -115,7 +115,7 @@ class Verifier {
 			report.undecodable.push(`${pubkey.toBase58()}: ${error}`);
 		}
 
-		const grownLength = await this.simulateExtend(pubkey, data.length);
+		const grownLength = await this.simulateExtend(name, pubkey, data.length);
 		if (grownLength > data.length) {
 			report.undersized.push(
 				`${pubkey.toBase58()}: ${data.length} -> ${grownLength}`
@@ -126,6 +126,7 @@ class Verifier {
 	/** The length `extend_account` would leave the account at. A type the instruction does not
 	 * extend keeps its length. */
 	private async simulateExtend(
+		name: string,
 		account: PublicKey,
 		length: number
 	): Promise<number> {
@@ -155,8 +156,18 @@ class Verifier {
 		);
 
 		if (value.err) {
-			if (value.logs?.some((line) => line.includes('InvalidAccountExtension')))
+			if (
+				value.logs?.some((line) => line.includes('InvalidAccountExtension'))
+			) {
+				// `User` extends, so this refusal is a `User` that cannot migrate.
+				if (name === 'User') {
+					this.failures.push(
+						`${account.toBase58()}: extend_account refuses this ${length}b User`
+					);
+				}
+
 				return length;
+			}
 			this.failures.push(
 				`${account.toBase58()}: extend_account simulation failed: ${JSON.stringify(
 					value.err

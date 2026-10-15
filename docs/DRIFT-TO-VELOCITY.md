@@ -4592,7 +4592,10 @@ the withdraw bundle records both revert codes.
       so a market without them takes no order and fires no trigger.
       1. Deploy the CLOB program at `BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU`, the id
          velocity pins.
-      2. Upgrade velocity.
+      2. Upgrade velocity, then upgrade vaults. The vaults program compiles in velocity's
+         `User`. An old vaults build reads a migrated `User` at the old offsets and values each
+         vault wrongly. `migrate.ts` refuses to migrate a `User` while vaults was deployed
+         before velocity.
       3. Decide the relay crank prices. With zero rails every crank pays 0 lamports, and no
          turner takes the work. An upgrade leaves the rails at zero, and `migrate.ts` then writes
          `TransactionFeeRails::FLAT_PER_SIGNATURE`, the value `initialize` writes, or the value
@@ -4605,7 +4608,12 @@ the withdraw bundle records both revert codes.
          the market.
       5. Run `deploy-scripts/migrate.ts --dry-run`, then run it for real. Run it again until it
          sends and proposes nothing, because each step reads chain state first and skips what
-         is correct.
+         is correct. A `User` in the legacy layout cannot load until the run extends it, so it
+         cannot trade or be liquidated. The run keeps the upgrade pause until every account is
+         at its size.
+      6. Redeploy keep-rs, swift and every other service that reads `User` as soon as the run
+         extends the accounts. A build from before the upgrade reads a migrated `User` at the
+         old offsets.
     - `migrate.ts` refuses to run until the CLOB program is deployed. It writes the fee rails when
       they price every crank at zero, and under `--multisig` it proposes that write and stops
       until the proposal executes. It stops before the books while the treasury is not priced. It creates the

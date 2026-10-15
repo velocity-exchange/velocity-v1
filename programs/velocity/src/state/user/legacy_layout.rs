@@ -7,7 +7,7 @@
 
 use {
     super::{Order, PerpPosition, SpotPosition, User},
-    crate::state::traits::Size,
+    crate::{instructions::count_user_open_orders, state::traits::Size},
     anchor_lang::prelude::*,
     static_assertions::const_assert_eq,
 };
@@ -27,7 +27,9 @@ pub struct LegacyPerpPosition {
     pub open_asks: i64,
     pub settled_pnl: i64,
     pub isolated_position_scaled_balance: u64,
-    pub padding: [u8; 2],
+    /// Zero on an account that master created. A build of this branch from
+    /// before the `u16` counts already stores the count here.
+    pub reduce_only_clob_orders: u16,
     pub max_margin_ratio: u16,
     pub market_index: u16,
     pub open_orders: u8,
@@ -75,8 +77,6 @@ unsafe impl bytemuck::Pod for LegacyUser {}
 unsafe impl bytemuck::Zeroable for LegacyUser {}
 
 impl From<&LegacyPerpPosition> for PerpPosition {
-    /// `reduce_only_clob_orders` starts at zero, because a legacy account has
-    /// no order on a CLOB.
     fn from(legacy: &LegacyPerpPosition) -> Self {
         PerpPosition {
             last_cumulative_funding_rate: legacy.last_cumulative_funding_rate,
@@ -88,7 +88,7 @@ impl From<&LegacyPerpPosition> for PerpPosition {
             open_asks: legacy.open_asks,
             settled_pnl: legacy.settled_pnl,
             isolated_position_scaled_balance: legacy.isolated_position_scaled_balance,
-            reduce_only_clob_orders: 0,
+            reduce_only_clob_orders: legacy.reduce_only_clob_orders,
             max_margin_ratio: legacy.max_margin_ratio,
             market_index: legacy.market_index,
             open_orders: legacy.open_orders.into(),
@@ -113,7 +113,8 @@ impl LegacyUser {
 
     /// Overwrites the body of a `User` account at `User::SIZE` with `self` in
     /// the current layout. The auction counters become zero, because no
-    /// instruction decrements them now.
+    /// instruction decrements them now. `open_orders` is counted again,
+    /// because the `u8` counter saturated.
     pub fn write(&self, account_data: &mut [u8]) {
         let body = &mut account_data[8..User::SIZE];
         body.fill(0);
@@ -144,14 +145,15 @@ impl LegacyUser {
         user.status = self.status;
         user.is_margin_trading_enabled = self.is_margin_trading_enabled;
         user.idle = self.idle;
-        user.has_open_order = self.has_open_order;
-        user.open_orders = self.open_orders.into();
         user.open_auctions = 0;
         user.has_open_auction = false;
         user.pool_id = self.pool_id;
         user.special_user_status = self.special_user_status;
         user.equity_floor = self.equity_floor;
         user.equity_floor_buffer = self.equity_floor_buffer;
+
+        user.open_orders = count_user_open_orders(user).open_orders;
+        user.has_open_order = user.open_orders > 0;
     }
 }
 

@@ -127,15 +127,19 @@ pub fn get_referrer_and_referrer_stats<'a>(
         ErrorCode::CouldNotDeserializeReferrer
     })?;
 
-    if data.len() < User::SIZE {
+    let user_discriminator: &[u8] = User::DISCRIMINATOR;
+    if data.len() < 8 || &data[..8] != user_discriminator {
         return Ok((None, None));
     }
 
-    let user_discriminator: &[u8] = User::DISCRIMINATOR;
-    let account_discriminator = &data[..8];
-    if account_discriminator != user_discriminator {
-        return Ok((None, None));
-    }
+    // A short `User` is in the legacy layout. Skipping it would drop the referral.
+    validate!(
+        data.len() >= User::SIZE,
+        ErrorCode::CouldNotDeserializeReferrer,
+        "referrer has length {}, below {}",
+        data.len(),
+        User::SIZE
+    )?;
 
     let referrer_account_info = next_account_info(account_info_iter).safe_unwrap()?;
 

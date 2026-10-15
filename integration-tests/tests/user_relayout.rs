@@ -124,7 +124,8 @@ fn extend_account_rewrites_a_legacy_user_into_the_current_layout() {
     assert_eq!(user.orders[0].order_id, 7);
     assert_eq!(user.sub_account_id, 4);
     assert_eq!(user.status, 1);
-    assert_eq!(user.open_orders, 9);
+    // The count comes from the book orders of the eight positions, 3 up to 10.
+    assert_eq!(user.open_orders, (3..=10).sum::<u16>());
     assert!(user.has_open_order);
     assert_eq!(user.pool_id, 2);
     assert_eq!(user.equity_floor, 5_000_000);
@@ -162,5 +163,52 @@ fn extend_account_refuses_a_user_at_any_other_short_length() {
     assert_eq!(
         svm.get_account(&address).unwrap().data.len(),
         LEGACY_USER_LEN - 16
+    );
+}
+
+#[test]
+fn extend_account_devnet_refuses_a_legacy_user() {
+    let mut svm = svm();
+    let admin = Keypair::new();
+    svm.airdrop(&admin.pubkey(), 100_000_000_000).unwrap();
+    set_state(&mut svm, &admin.pubkey());
+
+    let address = Pubkey::new_unique();
+    let legacy = legacy_user(&admin.pubkey());
+    set_raw_user(
+        &mut svm,
+        address,
+        bytemuck::bytes_of(&*legacy),
+        LEGACY_USER_LEN,
+    );
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::ExtendAccountDevnet {
+            state: state_pda(),
+            payer: admin.pubkey(),
+            authority: admin.pubkey(),
+            account: address,
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
+        }
+        .to_account_metas(None)
+        .into_iter()
+        .map(|m| AccountMeta {
+            pubkey: m.pubkey,
+            is_signer: m.is_signer,
+            is_writable: m.is_writable,
+        })
+        .collect(),
+        data: velocity::instruction::ExtendAccountDevnet {
+            new_len: User::SIZE as u64,
+        }
+        .data(),
+    };
+
+    let err = send(&mut svm, &admin, ix, &[]).unwrap_err();
+    assert_velocity_error(&err, ErrorCode::InvalidAccountExtension);
+    assert_eq!(
+        svm.get_account(&address).unwrap().data.len(),
+        LEGACY_USER_LEN
     );
 }

@@ -31,9 +31,9 @@ curl localhost:7070/prices
 curl -X POST localhost:7070/price -d '{"market":"SOL-PERP","price":150}'
 ```
 
-Pyth's own signer stays trusted, so a live Lazer cranker would overwrite the local prices, and the
-keepers do not run one. Set `PYTH_LAZER_TOKEN` only to run the mark TWAP crank, which bundles a live
-Lazer update into each crank. `DEVNET_RPC_URL` picks the RPC the dump reads from.
+Pyth's own signer stays trusted, so a live Lazer cranker would overwrite the local prices. The
+keepers get no Lazer token, so they post no live price. The mark TWAP crank runs without one and
+reads the prices the oracle service posts. `DEVNET_RPC_URL` picks the RPC the dump reads from.
 
 Check the stack with a trade. The smoke test rests a CLOB bid, waits for it in `/userOrders`, and
 cancels it with the handle the feed returns:

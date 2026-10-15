@@ -124,7 +124,6 @@ services:
     environment:
       RPC_URL: http://rpc:8899
       UI_RPC_URL: http://localhost:8899
-      PYTH_LAZER_TOKEN: ${PYTH_LAZER_TOKEN:-}
     depends_on:
       rpc:
         condition: service_started
@@ -216,7 +215,6 @@ services:
       - state:/state
     environment:
       <<: *velocity-env
-      PYTH_LAZER_TOKEN: ${PYTH_LAZER_TOKEN:-}
 
   relay-turner:
     logging: *capped-logs

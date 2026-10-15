@@ -212,12 +212,27 @@ pub fn validate_terms_change(
 
 /// What one market's reservoir pays the cranks the liveness poll stages.
 ///
-/// The poll stages whichever of the two the resolver finds work for, so the
-/// figure it advertises has to be one both cranks meet.
+/// The poll stages whichever crank the resolver finds work for, so the figure
+/// it advertises has to be one every such crank meets.
 #[derive(Clone, Copy)]
 struct CrankPayment {
     liquidation: u64,
     force_cancel: u64,
+    removal: u64,
+}
+
+impl CrankPayment {
+    /// The lowest payment a crank the poll can stage on this market pays. The
+    /// uncovered reduce-only cancel pays the removal figure, and the resolver
+    /// stages it only for a user that rests reduce-only book orders here.
+    fn poll_floor(&self, rests_reduce_only: bool) -> u64 {
+        let floor = self.liquidation.min(self.force_cancel);
+        if rests_reduce_only {
+            floor.min(self.removal)
+        } else {
+            floor
+        }
+    }
 }
 
 /// One market's inputs, collected from `remaining_accounts`.
@@ -321,7 +336,8 @@ pub fn rewrite_liq_conditions<'info>(
         conditions.last_paid_sync_slot = Clock::get()?.slot;
     }
 
-    arm_liveness_poll(&mut conditions, &inputs.perps, &exposed_perps, resolvers)?;
+    let poll_payment = liveness_poll_payment(&inputs.perps, &exposed_perps, &user);
+    arm_liveness_poll(&mut conditions, poll_payment, resolvers)?;
     arm_self_maintenance(&mut conditions, user_key, args, fallback_slots, resolvers)
 }
 
@@ -459,6 +475,7 @@ fn collect_sync_inputs<'info>(
                     .crank_payment = Some(CrankPayment {
                     liquidation: u64::from(conditions.crank_payments.liquidation),
                     force_cancel: u64::from(conditions.crank_payments.force_cancel),
+                    removal: u64::from(conditions.crank_payments.removal),
                 });
 
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
@@ -760,32 +777,42 @@ fn build_sync_accounts(
     sync_accounts
 }
 
-/// Arm the poll that wakes `ResolveLiquidatePerpWithFill`.
+/// The payment the liveness poll advertises: the cheapest crank any market the
+/// user has exposure in pays.
+///
+/// Relay holds a keeper's balance growth to the floor a condition advertises,
+/// so a floor above what the market pays fails the crank it asked for. A
+/// market the caller passed that the user has no exposure in says nothing
+/// about what this account's cranks pay.
+fn liveness_poll_payment(
+    perps: &BTreeMap<u16, MarketInputs>,
+    exposed_perps: &[u16],
+    user: &User,
+) -> u64 {
+    exposed_perps
+        .iter()
+        .filter_map(|index| {
+            let payment = perps.get(index)?.crank_payment?;
+            let rests_reduce_only = user
+                .get_perp_position(*index)
+                .is_ok_and(|position| position.has_reduce_only_clob());
+            Some(payment.poll_floor(rests_reduce_only))
+        })
+        .min()
+        .unwrap_or(0)
+}
+
+/// Arm the poll that wakes `ResolveLiquidatePerpWithFill` at `poll_payment`.
 ///
 /// The poll predicts nothing. It wakes on a clock and lets the resolver run
 /// the real maintenance-margin calculation, which reports no work while the
 /// account is healthy. That calculation needs the margin map, so the watch and
 /// the fallback poll keep the stored account list current.
-///
-/// The poll is priced at the cheapest crank any market the user has exposure
-/// in pays. Relay holds a keeper's balance growth to the floor a condition
-/// advertises, so a floor above what the market pays fails the crank it asked
-/// for. A force cancel comes before a liquidation on the same ladder and pays
-/// the market's force-cancel figure, so the lower of the two figures is the
-/// floor. A market the caller passed that the user has no exposure in says
-/// nothing about what this account's liquidation pays.
 fn arm_liveness_poll(
     conditions: &mut UserConditionsV0,
-    perps: &BTreeMap<u16, MarketInputs>,
-    exposed_perps: &[u16],
+    poll_payment: u64,
     resolvers: relay_spec::ResolverListV0,
 ) -> Result<()> {
-    let poll_payment = exposed_perps
-        .iter()
-        .filter_map(|index| perps.get(index)?.crank_payment)
-        .map(|payment| payment.liquidation.min(payment.force_cancel))
-        .min()
-        .unwrap_or(0);
     if poll_payment == 0 {
         // No market the user has exposure in has a reservoir to pay from, so
         // the poll would advertise work nobody is paid for. A turner filters
@@ -967,6 +994,33 @@ mod tests {
         let conditions = new_user_conditions(0);
         assert_eq!(min_payment(&conditions, LIQ_SYNC_WATCH), 0);
         assert_eq!(min_payment(&conditions, LIQ_SYNC_FALLBACK), 0);
+    }
+
+    /// A user that rests a reduce-only book order can be staged the uncovered
+    /// reduce-only cancel, which pays only the removal figure.
+    #[test]
+    fn the_poll_floor_takes_the_removal_payment_only_for_reduce_only_orders() {
+        let perps = BTreeMap::from([(
+            0,
+            super::MarketInputs {
+                crank_payment: Some(super::CrankPayment {
+                    liquidation: 9_000,
+                    force_cancel: 7_000,
+                    removal: 5_000,
+                }),
+                ..super::MarketInputs::default()
+            },
+        )]);
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            open_orders: 1,
+            ..PerpPosition::default()
+        };
+        assert_eq!(super::liveness_poll_payment(&perps, &[0], &user), 7_000);
+
+        user.perp_positions[0].reduce_only_clob_orders = 1;
+        assert_eq!(super::liveness_poll_payment(&perps, &[0], &user), 5_000);
     }
 
     /// A user long on perp market 0, and the coverage of a call that carried

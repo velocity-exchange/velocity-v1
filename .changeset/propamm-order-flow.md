@@ -224,8 +224,9 @@ crank. It cancels a reduce-only CLOB order when the owner holds no position that
 Such an order can never fill, and force cancel cannot remove it while the account passes margin.
 A partly covered order stays. The crank takes the band crank's accounts without `oracle`, and
 charges the owner the same fee. It fails with `ClobOrderNotReduceOnly` (6463) for an ordinary order
-and `ReduceOnlyOrderStillCovered` (6464) while any position covers the order. No relay condition
-wakes this crank, and the SDK has no wrapper for it.
+and `ReduceOnlyOrderStillCovered` (6464) while any position covers the order. The liquidation
+resolver stages it on the owner's liveness poll when it finds no other work, and the poll then
+advertises at most the market's removal payment. The SDK has no wrapper for it.
 
 `initialize_quoter_cross_conditions` bounds `expireFallbackSlots` at 9,000 slots. The endpoint is
 permissionless and re-prices in place. A longer interval delays cross discovery for the maker's

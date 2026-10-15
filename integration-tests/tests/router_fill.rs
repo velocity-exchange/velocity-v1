@@ -15294,3 +15294,60 @@ fn the_uncovered_reduce_only_crank_refuses_an_ordinary_bid() {
     assert_velocity_error(&refused, ErrorCode::ClobOrderNotReduceOnly);
     assert_eq!(clob_bid_count(&fixture), 1);
 }
+
+/// A healthy flat account that still rests a reduce-only bid keeps its
+/// liveness poll armed. The liquidation resolver stages the uncovered
+/// reduce-only cancel, which removes the bid and pays the poll's floor.
+#[test]
+fn the_liq_resolver_stages_the_cancel_of_an_uncovered_reduce_only_bid() {
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, FIX4_TRIG_SOL_PRICE);
+
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let order_ref = rest_reduce_only_maker_bid(&mut fixture, &owner, 99 * PRICE, UNIT);
+    set_position_base(&mut fixture, &owner, 0);
+    let conditions = sync_liq_conditions(
+        &mut fixture,
+        owner.user,
+        market_conditions,
+        ANY_SYNC_COST_UNITS,
+    );
+
+    let resolved =
+        run_liq_resolver(&mut fixture, owner.user).expect("an uncovered reduce-only bid is work");
+    let args = velocity::instructions::CrankClobCancelUncoveredReduceOnlyArgs::deserialize(
+        &mut &resolved.data[..],
+    )
+    .unwrap();
+    assert_eq!(args.order_ref, order_ref);
+
+    let poll_payment = read_zero_copy::<velocity::state::user_conditions::UserConditionsV0>(
+        &fixture.svm,
+        &conditions,
+    )
+    .liveness_min_payment();
+    assert!(poll_payment > 0);
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobCancelUncoveredReduceOnly::DISCRIMINATOR,
+        payout,
+    );
+
+    assert_eq!(clob_bid_count(&fixture), 0);
+    let paid = fixture.svm.get_account(&payout).unwrap().lamports - 1_000_000_000;
+    assert!(
+        paid >= poll_payment,
+        "paid {paid}, the poll asks {poll_payment}"
+    );
+    assert!(run_liq_resolver(&mut fixture, owner.user).is_none());
+}

@@ -11,8 +11,9 @@
 //! close leaves a larger reduce-only order that still fills in part.
 //!
 //! The crank removes the order the way the band crank does. The owner pays the
-//! removal fee, and a placed trigger's shadow is freed. No relay condition
-//! wakes this crank, so signed keepers run it.
+//! removal fee, and a placed trigger's shadow is freed. The owner's liveness
+//! poll stays armed while the order rests, and the liquidation resolver stages
+//! this crank in program-keeper mode when it finds no other work.
 
 use {
     super::helpers::crank_common::{

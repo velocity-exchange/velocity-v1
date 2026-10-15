@@ -219,6 +219,14 @@ TWAP, and pays reservoir lamports only while that TWAP is live. An order inside 
 `ClobOrderInsideOracleBand` (6461). No relay condition wakes this crank, and the SDK has no wrapper
 for it.
 
+`crank_clob_cancel_uncovered_reduce_only({ market_index, order_ref })` is a permissionless keeper
+crank. It cancels a reduce-only CLOB order when the owner holds no position that the order reduces.
+Such an order can never fill, and force cancel cannot remove it while the account passes margin.
+A partly covered order stays. The crank takes the band crank's accounts without `oracle`, and
+charges the owner the same fee. It fails with `ClobOrderNotReduceOnly` (6463) for an ordinary order
+and `ReduceOnlyOrderStillCovered` (6464) while any position covers the order. No relay condition
+wakes this crank, and the SDK has no wrapper for it.
+
 `initialize_quoter_cross_conditions` bounds `expireFallbackSlots` at 9,000 slots. The endpoint is
 permissionless and re-prices in place. A longer interval delays cross discovery for the maker's
 quotes, so only the maker's authority chooses the value. Any other payer must pass

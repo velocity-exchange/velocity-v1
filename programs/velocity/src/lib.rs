@@ -2343,6 +2343,16 @@ pub mod velocity {
         handle_crank_clob_cancel_outside_band(ctx, args)
     }
 
+    /// Cancel a reduce-only CLOB order whose owner holds no position that the
+    /// order reduces, so the order can never fill. The call is
+    /// permissionless, and the keeper earns the flat reward from the owner.
+    pub fn crank_clob_cancel_uncovered_reduce_only<'info>(
+        ctx: Context<'info, CrankClobCancelUncoveredReduceOnly<'info>>,
+        args: CrankClobCancelUncoveredReduceOnlyArgs,
+    ) -> Result<()> {
+        handle_crank_clob_cancel_uncovered_reduce_only(ctx, args)
+    }
+
     /// Crank an armed trigger-limit order onto the market's CLOB once its
     /// trigger condition is met. The call is permissionless, and the keeper
     /// earns the flat reward from the user. A stop-market goes through

@@ -15151,3 +15151,146 @@ fn fix4_taker_two_lapsed_remainders_settle_as_a_pair() {
         late_position.quote_asset_amount
     );
 }
+
+/// Rest a reduce-only maker bid for `party`, which holds a short of `size`
+/// while the order is placed.
+fn rest_reduce_only_maker_bid(
+    fixture: &mut Fixture,
+    party: &Party,
+    price: u64,
+    size: u64,
+) -> ClobOrderRefV0 {
+    set_position_base(fixture, party, -(size as i64));
+    let mut ix = place_clob_order_ix(
+        party.user,
+        &party.authority,
+        fixture.quoter_slab,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Long,
+            price,
+            base_asset_amount: size,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+            reject_if_crossed: false,
+        },
+    );
+    ix.data = velocity::instruction::PlaceAndMakePerpOrderV1 {
+        args: PlaceAndMakePerpOrderV1Args {
+            params: OrderParams {
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Long,
+                base_asset_amount: size,
+                price,
+                market_index: 0,
+                reduce_only: true,
+                activation_delay_slots: Some(0),
+                ..OrderParams::default()
+            },
+        },
+    }
+    .data();
+
+    let authority = party.authority.insecure_clone();
+    let meta = send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+    let data = &meta.return_data.data;
+    ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
+    }
+}
+
+/// A signed-keeper `crank_clob_cancel_uncovered_reduce_only` of `owner`'s
+/// order `order_ref`.
+fn crank_cancel_uncovered_reduce_only(
+    fixture: &mut Fixture,
+    keeper: &Party,
+    owner: &Party,
+    order_ref: ClobOrderRefV0,
+) -> Result<(), litesvm::types::FailedTransactionMetadata> {
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CrankClobCancelUncoveredReduceOnly {
+            state: state_pda(),
+            authority: keeper.authority.pubkey(),
+            filler: keeper.user,
+            filler_stats: keeper.stats,
+            user: owner.user,
+            perp_market: perp_market_pda(0),
+            quoter_slab: fixture.quoter_slab,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            crank_conditions: None,
+            sol_spot_market: None,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CrankClobCancelUncoveredReduceOnly {
+            args: velocity::instructions::CrankClobCancelUncoveredReduceOnlyArgs {
+                market_index: 0,
+                order_ref,
+            },
+        }
+        .data(),
+    };
+    let authority = keeper.authority.insecure_clone();
+    send(&mut fixture.svm, &authority, ix, &[]).map(|_| ())
+}
+
+/// A reduce-only bid whose owner closed its short elsewhere can never fill.
+/// The crank refuses it while any short covers it, then cancels it once the
+/// short is gone. The owner pays the keeper, and its aggregates unwind.
+#[test]
+fn the_uncovered_reduce_only_crank_cancels_a_bid_after_its_short_closes() {
+    let mut fixture = setup();
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    let order_ref = rest_reduce_only_maker_bid(&mut fixture, &owner, 99 * PRICE, UNIT);
+    let rested: User = read_zero_copy(&fixture.svm, &owner.user);
+    assert_eq!(rested.perp_positions[0].reduce_only_clob_orders, 1);
+    assert_eq!(clob_bid_count(&fixture), 1);
+
+    set_position_base(&mut fixture, &owner, -((UNIT / 2) as i64));
+    let covered = crank_cancel_uncovered_reduce_only(&mut fixture, &keeper, &owner, order_ref)
+        .expect_err("a partial short still covers the bid");
+    assert_velocity_error(&covered, ErrorCode::ReduceOnlyOrderStillCovered);
+
+    set_position_base(&mut fixture, &owner, 0);
+    crank_cancel_uncovered_reduce_only(&mut fixture, &keeper, &owner, order_ref)
+        .expect("the uncovered bid is cancelled");
+
+    let owner_after: User = read_zero_copy(&fixture.svm, &owner.user);
+    let position = owner_after.perp_positions[0];
+    assert_eq!(clob_bid_count(&fixture), 0);
+    assert_eq!(position.open_bids, 0);
+    assert_eq!(position.open_orders, 0);
+    assert_eq!(position.reduce_only_clob_orders, 0);
+    assert_eq!(owner_after.open_orders, 0);
+    assert!(position.quote_asset_amount < 0, "the owner paid the fee");
+
+    let keeper_after: User = read_zero_copy(&fixture.svm, &keeper.user);
+    assert!(keeper_after.perp_positions[0].quote_asset_amount > 0);
+}
+
+/// The crank leaves an ordinary bid, which can still fill.
+#[test]
+fn the_uncovered_reduce_only_crank_refuses_an_ordinary_bid() {
+    let mut fixture = setup();
+    let owner = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    let order_ref = place_clob_order_for(
+        &mut fixture,
+        &owner,
+        PositionDirection::Long,
+        99 * PRICE,
+        UNIT,
+    );
+    let refused = crank_cancel_uncovered_reduce_only(&mut fixture, &keeper, &owner, order_ref)
+        .expect_err("an ordinary bid stays");
+    assert_velocity_error(&refused, ErrorCode::ClobOrderNotReduceOnly);
+    assert_eq!(clob_bid_count(&fixture), 1);
+}

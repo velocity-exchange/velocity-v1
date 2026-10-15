@@ -997,6 +997,12 @@ pub enum ErrorCode {
     ClobOrderInsideOracleBand,
     #[msg("Only the user's authority, its delegate or the admin sets or clears a paid self-sync")]
     SelfSyncTermsNeedUserAuthority,
+    #[msg("The CLOB order is not reduce-only, so no keeper may cancel it as uncovered")]
+    ClobOrderNotReduceOnly,
+    #[msg(
+        "The owner's position still covers the reduce-only CLOB order, so no keeper may cancel it"
+    )]
+    ReduceOnlyOrderStillCovered,
 }
 
 #[macro_export]

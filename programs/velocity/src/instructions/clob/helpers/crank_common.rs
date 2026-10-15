@@ -42,6 +42,7 @@ use {
                 CancelOrderArgsV0, ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0,
                 L3RowV0, OrderRulesV0, OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
                 QuoterSlotV0, QuoterType, RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
+                L3_ROW_FLAG_REDUCE_ONLY,
             },
             signed_msg_user::release_removed_remainders,
             spot_market::SpotMarket,
@@ -1232,13 +1233,25 @@ pub(crate) fn book_side_rested<'info>(
                         tail,
                         cpi_scratch,
                         false,
-                        |row| (row.size, row.placed_slot),
+                        rested_depth_row,
                     )?
                     .unwrap_or_default();
                     Ok(served && rows_rested(&rows, size, slot))
                 }
             }
         })
+}
+
+/// The `(size, placed_slot)` pair [`rows_rested`] reads. A reduce-only order may
+/// fill nothing, so its size is not depth, but it must still have rested.
+fn rested_depth_row(row: &L3RowV0) -> (u64, u64) {
+    let size = if row.flags & L3_ROW_FLAG_REDUCE_ONLY == 0 {
+        row.size
+    } else {
+        0
+    };
+
+    (size, row.placed_slot)
 }
 
 /// Whether the first `size` base of one side has measurably rested, over the
@@ -1577,7 +1590,10 @@ mod keeper_fee_tests {
 
 #[cfg(test)]
 mod rows_rested_tests {
-    use super::{rows_rested, RESTED_ROWS_PER_SIDE};
+    use {
+        super::{rested_depth_row, rows_rested, RESTED_ROWS_PER_SIDE},
+        crate::state::prop_amm::{L3RowV0, L3_ROW_FLAG_REDUCE_ONLY},
+    };
 
     /// A row rests once `SERVED_WINDOW_MIN_SLOTS` have passed since it was
     /// placed. Slot 100 against slot 0 is rested. Against slot 100 it is not.
@@ -1616,6 +1632,25 @@ mod rows_rested_tests {
         // The read came back under its window, so the side holds nothing more.
         let rows = vec![(1u64, 0u64); RESTED_ROWS_PER_SIDE as usize - 1];
         assert!(rows_rested(&rows, 1_000, NOW));
+    }
+
+    #[test]
+    fn a_reduce_only_row_does_not_cover_a_fresh_row_behind_it() {
+        // The fill can cap the reduce-only order at nothing and take the fresh
+        // row instead.
+        let reduce_only = L3RowV0 {
+            size: 100,
+            flags: L3_ROW_FLAG_REDUCE_ONLY,
+            ..L3RowV0::default()
+        };
+        let fresh = L3RowV0 {
+            size: 100,
+            placed_slot: NOW,
+            ..L3RowV0::default()
+        };
+        let rows: Vec<_> = [reduce_only, fresh].iter().map(rested_depth_row).collect();
+
+        assert!(!rows_rested(&rows, 100, NOW));
     }
 
     #[test]

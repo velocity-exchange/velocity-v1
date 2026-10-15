@@ -589,11 +589,6 @@ fn place_clob_order_ix(
     oracle: Pubkey,
     params: PlaceClobOrderParams,
 ) -> Instruction {
-    let user_stats = Pubkey::find_program_address(
-        &[b"user_stats", authority.pubkey().as_ref()],
-        &velocity_id(),
-    )
-    .0;
     let order_params = OrderParams {
         order_type: OrderType::Limit,
         market_type: MarketType::Perp,
@@ -614,6 +609,29 @@ fn place_clob_order_ix(
         activation_delay_slots: params.activation_delay_slots,
         ..Default::default()
     };
+    place_and_make_ix(
+        user,
+        authority,
+        quoter_slab,
+        clob_market,
+        oracle,
+        order_params,
+    )
+}
+
+fn place_and_make_ix(
+    user: Pubkey,
+    authority: &Keypair,
+    quoter_slab: Pubkey,
+    clob_market: Pubkey,
+    oracle: Pubkey,
+    order_params: OrderParams,
+) -> Instruction {
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
     let mut accounts = velocity::accounts::PlaceAndMakeV1 {
         state: state_pda(),
         user,
@@ -15150,4 +15168,113 @@ fn fix4_taker_two_lapsed_remainders_settle_as_a_pair() {
         "sold at the earlier order's 101 less fees: {}",
         late_position.quote_asset_amount
     );
+}
+
+/// The bid `update_perp_bid_ask_twap` logged for its estimate.
+fn logged_estimated_bid(logs: &[String]) -> Option<u64> {
+    let line = logs.iter().find(|line| line.contains("estimated_bid = "))?;
+    let value = line.split("estimated_bid = Some(").nth(1)?;
+    value.split(')').next()?.parse().ok()
+}
+
+#[test]
+fn the_bid_ask_twap_crank_reads_no_reduce_only_bid() {
+    let mut fixture = setup();
+    place_clob_bid(&mut fixture, 99 * PRICE, UNIT);
+
+    // A short rests a reduce-only bid just under the ask, then closes the
+    // short somewhere else. The bid can no longer fill.
+    let maker = add_clob_maker(&mut fixture);
+    let mut user: User = read_zero_copy(&fixture.svm, &maker.user);
+    user.perp_positions[0].base_asset_amount = -(UNIT as i64);
+    user.perp_positions[0].quote_asset_amount = 100 * QUOTE_PRECISION_I64;
+    set_user_account(&mut fixture.svm, maker.user, &user);
+
+    let reduce_only_bid = OrderParams {
+        order_type: OrderType::Limit,
+        market_type: MarketType::Perp,
+        direction: PositionDirection::Long,
+        base_asset_amount: UNIT,
+        price: 99_900_000,
+        market_index: 0,
+        reduce_only: true,
+        activation_delay_slots: Some(0),
+        ..Default::default()
+    };
+    let ix = place_and_make_ix(
+        maker.user,
+        &maker.authority,
+        fixture.quoter_slab,
+        fixture.clob_market,
+        fixture.oracle,
+        reduce_only_bid,
+    );
+    send(&mut fixture.svm, &maker.authority, ix, &[]).unwrap();
+    assert_eq!(clob_best_bid_price(&fixture), Some(99_900_000));
+
+    let mut user: User = read_zero_copy(&fixture.svm, &maker.user);
+    user.perp_positions[0].base_asset_amount = 0;
+    user.perp_positions[0].quote_asset_amount = 0;
+    set_user_account(&mut fixture.svm, maker.user, &user);
+
+    // The funding depth is 100 minimum orders, so the estimate reads one
+    // `UNIT` of the best bid it counts.
+    let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    market.market_stats.min_order_size = UNIT / 100;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+
+    // Both bids rest past the window the crank requires.
+    let mut clock = fixture.svm.get_sysvar::<solana_clock::Clock>();
+    clock.slot += 100;
+    clock.unix_timestamp += 3_600;
+    let slot = clock.slot;
+    fixture.svm.set_sysvar(&clock);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        slot,
+    );
+
+    let keeper_stats = Pubkey::find_program_address(
+        &[b"user_stats", fixture.keeper.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    let mut stats: UserStats = Zeroable::zeroed();
+    stats.authority =
+        anchor_lang::prelude::Pubkey::new_from_array(*fixture.keeper.pubkey().as_array());
+    stats.if_staked_quote_asset_amount = 1_000 * QUOTE_PRECISION_I64 as u64;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        keeper_stats,
+        UserStats::DISCRIMINATOR,
+        &stats,
+        UserStats::SIZE,
+    );
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdatePerpBidAskTwap {
+            state: state_pda(),
+            perp_market: perp_market_pda(0),
+            oracle: fixture.oracle,
+            keeper_stats,
+            authority: fixture.keeper.pubkey(),
+            quoter_slab: Some(fixture.quoter_slab),
+            clob_market: Some(fixture.clob_market),
+            clob_program: Some(clob_id()),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdatePerpBidAskTwap {}.data(),
+    };
+    let meta = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap();
+
+    assert_eq!(logged_estimated_bid(&meta.logs), Some(99 * PRICE));
 }

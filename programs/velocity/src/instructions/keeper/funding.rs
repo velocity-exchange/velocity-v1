@@ -254,18 +254,31 @@ impl<'info> BookSource<'_, 'info> {
             // crank. Reading it here would not take it, but it is not depth
             // this mark can claim either.
             false,
-            |row| (row.price, row.size, row.placed_slot),
+            |row| *row,
         )?
         .unwrap_or_default();
-        Ok(rows
-            .into_iter()
-            .filter(|(_, _, placed_slot)| quote_has_rested(*placed_slot, clock.slot, slot_clock))
-            .map(|(price, size, _)| Level {
-                price,
-                base_asset_amount: size,
-            })
-            .collect())
+        Ok(twap_levels(&rows, clock.slot, slot_clock))
     }
+}
+
+/// The rows a taker can fill, as levels.
+///
+/// A reduce-only order fills only up to its owner's live position, which this
+/// crank does not load. Its owner can close the position elsewhere and leave
+/// an order that never fills, so its size is not depth.
+fn twap_levels(
+    rows: &[crate::state::prop_amm::L3RowV0],
+    now_slot: u64,
+    slot_clock: crate::math::time::SlotClock,
+) -> Vec<Level> {
+    rows.iter()
+        .filter(|row| row.flags & crate::state::prop_amm::L3_ROW_FLAG_REDUCE_ONLY == 0)
+        .filter(|row| quote_has_rested(row.placed_slot, now_slot, slot_clock))
+        .map(|row| Level {
+            price: row.price,
+            base_asset_amount: row.size,
+        })
+        .collect()
 }
 
 /// The best bid and ask the market stands behind, to the depth the market's
@@ -538,6 +551,46 @@ fn quote_has_rested(
 ) -> bool {
     slot_clock.elapsed_slot_delta(now_slot.saturating_sub(placed_slot), now_slot)
         >= BID_ASK_TWAP_MIN_QUOTE_REST
+}
+
+#[cfg(test)]
+mod twap_level_tests {
+    use {
+        super::twap_levels,
+        crate::{
+            math::time::SlotClock,
+            state::prop_amm::{L3RowV0, L3_ROW_FLAG_REDUCE_ONLY},
+        },
+    };
+
+    const NOW: u64 = 1_000;
+
+    fn row(price: u64, flags: u8) -> L3RowV0 {
+        L3RowV0 {
+            price,
+            size: 5,
+            flags,
+            placed_slot: 1,
+            ..L3RowV0::default()
+        }
+    }
+
+    #[test]
+    fn a_reduce_only_row_is_not_depth() {
+        let rows = [row(101, L3_ROW_FLAG_REDUCE_ONLY), row(100, 0)];
+        let levels = twap_levels(&rows, NOW, SlotClock::baseline());
+
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].price, 100);
+    }
+
+    #[test]
+    fn a_row_that_has_not_rested_is_not_depth() {
+        let mut fresh = row(100, 0);
+        fresh.placed_slot = NOW;
+
+        assert!(twap_levels(&[fresh], NOW, SlotClock::baseline()).is_empty());
+    }
 }
 
 #[cfg(test)]

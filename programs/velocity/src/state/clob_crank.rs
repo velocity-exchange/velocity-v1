@@ -15,7 +15,8 @@
 //!
 //! There are two such wakes per market. [`CLOB_CRANK_CROSS_FALLBACK`] is a
 //! periodic poll. It catches a cross that a PropAMM created by repricing,
-//! which changes nothing on the book and so fires no watch.
+//! which changes nothing on the book and so fires no watch. With no cross, it
+//! catches an order that an oracle move left outside the maker band.
 //! [`CLOB_CRANK_REFILL`] wakes when this account's reservoir drains to its
 //! watermark.
 //!

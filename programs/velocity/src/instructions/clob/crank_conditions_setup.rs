@@ -97,6 +97,18 @@ impl ClobCrankConditionKeys {
     }
 }
 
+/// The cross fallback poll's `min_payment`. The poll stages a cross, or a band
+/// cancel when it finds none, and each pays its own figure. So the floor is the
+/// cheapest of the two crosses and the removal.
+fn cross_fallback_floor(payments: &CrankPaymentsV0) -> u64 {
+    u64::from(
+        payments
+            .cross
+            .min(payments.taker_origin_cross)
+            .min(payments.removal),
+    )
+}
+
 fn disc8(disc: &[u8]) -> Result<[u8; 8]> {
     disc.try_into()
         .map_err(|_| error!(ErrorCode::CastingFailure))
@@ -192,7 +204,7 @@ impl ClobCrankConditionsV0 {
                 CrankSpecV0 {
                     resolver_program: crate::ID.to_bytes(),
                     resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
-                    min_payment: u64::from(payments.cross.min(payments.taker_origin_cross)),
+                    min_payment: cross_fallback_floor(&payments),
                 },
                 resolvers,
             ),
@@ -236,5 +248,29 @@ impl ClobCrankConditionsV0 {
         // funds its own reservoir from the treasury, and no operator seeds it by
         // hand.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {super::cross_fallback_floor, crate::state::clob_crank::CrankPaymentsV0};
+
+    /// The fallback poll can stage a band cancel, which pays the removal
+    /// figure. A floor above it would fail every staged band cancel.
+    #[test]
+    fn the_cross_fallback_floor_covers_the_band_cancel() {
+        let payments = CrankPaymentsV0 {
+            removal: 3_000,
+            cross: 9_000,
+            taker_origin_cross: 8_000,
+            ..CrankPaymentsV0::default()
+        };
+        assert_eq!(cross_fallback_floor(&payments), 3_000);
+
+        let cheap_cross = CrankPaymentsV0 {
+            cross: 2_000,
+            ..payments
+        };
+        assert_eq!(cross_fallback_floor(&cheap_cross), 2_000);
     }
 }

@@ -216,8 +216,9 @@ oracle price the fill uses, with the band of the book's quoter entry, and behind
 the crossed-book cranks. It takes an optional `solSpotMarket` after `crankConditions`. A
 program-keeper cancel charges the maker `max(flat_filler_fee, payment value)` at the SOL 5-minute
 TWAP, and pays reservoir lamports only while that TWAP is live. An order inside the band fails with
-`ClobOrderInsideOracleBand` (6461). No relay condition wakes this crank, and the SDK has no wrapper
-for it.
+`ClobOrderInsideOracleBand` (6461). The market's cross fallback poll stages this crank when it finds
+no cross, and the poll's floor is the lowest of the cross, taker-origin cross and removal payments.
+The SDK has no wrapper for it.
 
 `crank_clob_cancel_uncovered_reduce_only({ market_index, order_ref })` is a permissionless keeper
 crank. It cancels a reduce-only CLOB order when the owner holds no position that the order reduces.

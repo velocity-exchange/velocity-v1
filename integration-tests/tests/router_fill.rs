@@ -15351,3 +15351,91 @@ fn the_liq_resolver_stages_the_cancel_of_an_uncovered_reduce_only_bid() {
     );
     assert!(run_liq_resolver(&mut fixture, owner.user).is_none());
 }
+
+/// The cross fallback poll finds no cross, then stages the band cancel of an
+/// ask the oracle left outside the band. The crank removes the ask and pays at
+/// least the poll's floor.
+#[test]
+fn the_cross_fallback_stages_the_band_cancel_of_an_ask_outside_the_band() {
+    let mut fixture = setup();
+    let conditions = init_crank_conditions(&mut fixture, 50_000);
+    set_protocol_user(&mut fixture.svm);
+    set_sol_spot_market(&mut fixture.svm, FIX4_TRIG_SOL_PRICE);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
+    let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    // A band of half a percent puts the ask at 99 outside it. The AMM requires
+    // its spreads under the initial margin.
+    let mut market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    market.margin_ratio_initial = 50;
+    market.margin_ratio_maintenance = 25;
+    market.amm.base_spread = 2_000;
+    market.amm.max_spread = 4_000;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::ResolveClobCrank {
+            scratch: relay_scratch_pda(),
+            crank_conditions: conditions,
+            clob_market: fixture.clob_market,
+            quoter_slab: fixture.quoter_slab,
+            state: state_pda(),
+            clob_program: clob_id(),
+            treasury: crank_treasury_pda(),
+        }
+        .to_account_metas(None)
+        .into_iter()
+        .chain([AccountMeta::new_readonly(perp_market_pda(0), false)])
+        .collect(),
+        data: velocity::instruction::ResolveClobCrank {
+            fired: fired_condition(
+                conditions,
+                velocity::state::clob_crank::CLOB_CRANK_BLOCK_OFFSET as u32,
+                velocity::state::clob_crank::CLOB_CRANK_CROSS_FALLBACK as u8,
+            ),
+        }
+        .data(),
+    };
+    let resolved = resolve_in_rounds(&mut fixture, ix).expect("an ask outside the band is work");
+    let args = velocity::instructions::CrankClobCancelOutsideBandArgs::deserialize(
+        &mut &resolved.data[..],
+    )
+    .unwrap();
+    assert_eq!(args.order_ref, order_ref);
+
+    let stored: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &conditions);
+    let floor = velocity::relay_spec::ConditionBlock::read_condition(
+        &stored.relay,
+        velocity::state::clob_crank::CLOB_CRANK_CROSS_FALLBACK,
+    )
+    .unwrap()
+    .min_payment();
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobCancelOutsideBand::DISCRIMINATOR,
+        payout,
+    );
+
+    assert_eq!(clob_ask_count(&fixture), 0);
+    let paid = fixture.svm.get_account(&payout).unwrap().lamports - 1_000_000_000;
+    assert!(paid >= floor, "paid {paid}, the poll asks {floor}");
+}

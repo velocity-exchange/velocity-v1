@@ -392,7 +392,7 @@ fn liquidation_can_pay_the_crank(
     // The executor latches the account before it sizes the order, and the
     // latch resets the pace of an account that was not latched. A copy takes
     // the same step.
-    let mut projected = heap_copy(&user);
+    let mut projected = heap_copy(&*user);
     drop(user);
     let liquidation_mode = get_perp_liquidation_mode(&projected, market_index)?;
     liquidation_mode.enter_liquidation(&mut projected, slot)?;
@@ -421,17 +421,21 @@ fn liquidation_can_pay_the_crank(
     Ok(fill_notional >= u128::from(LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE))
 }
 
-/// A copy of `user` that never passes through the stack.
+/// A copy of `account` that never passes through the stack.
 ///
 /// `Box::new(*user)` builds the copy in the caller's frame first. A `User` is
 /// larger than the 4 KB SBF frame, so that overruns the frame, and the program
 /// faults at run time with a bad call target rather than an error.
-pub(super) fn heap_copy(user: &User) -> Box<User> {
-    // SAFETY: `User` is a zero-copy `Pod` account, so all-zero bytes are a
-    // valid value.
-    let mut copy = unsafe { Box::<User>::new_zeroed().assume_init() };
-    bytemuck::bytes_of_mut(&mut *copy).copy_from_slice(bytemuck::bytes_of(user));
+pub(crate) fn heap_copy<T: bytemuck::Pod>(account: &T) -> Box<T> {
+    let mut copy = heap_zeroed::<T>();
+    bytemuck::bytes_of_mut(&mut *copy).copy_from_slice(bytemuck::bytes_of(account));
     copy
+}
+
+/// An all-zero `T` built on the heap, for the reason [`heap_copy`] states.
+pub(crate) fn heap_zeroed<T: bytemuck::Pod>() -> Box<T> {
+    // SAFETY: `T` is `Pod`, so all-zero bytes are a valid value.
+    unsafe { Box::<T>::new_zeroed().assume_init() }
 }
 
 /// Whether a liquidation of `market_index` takes book orders off a book. The

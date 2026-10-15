@@ -62,7 +62,8 @@
  *      creates the book, registers and approves its quoter entry, and attaches it, which
  *      creates the market's crank conditions. It stops when the crank treasury is not
  *      priced and no proposal prices it, because the attach stores the treasury's refill
- *      watermark on the market.
+ *      watermark on the market. A market whose crank conditions lack the quote oracle, or hold
+ *      a cross fallback floor other than its stored payments give, is attached again in place.
  *      This comes before step 2, so a trigger that step 2 arms has a book to fire into.
  *   2. liq coverage: create and sync relay liquidation conditions for every user with exposure,
  *      backfilling users that predate `initialize_user` creating them automatically. The same
@@ -149,6 +150,7 @@ import {
 	WATCH_V0_LEN,
 	watchesOnTarget,
 } from './relay-watch';
+import { crossFallbackFloorIsStale } from './crank-floor';
 import {
 	deployedProgramHash,
 	expectedClobHash,
@@ -2086,7 +2088,7 @@ async function bringUpBook(
 	);
 	const attached =
 		conditionsInfo !== null &&
-		(await carriesQuoteOracle(ctx, market, conditionsInfo.data));
+		(await attachIsCurrent(ctx, market, conditionsInfo.data));
 	if (approved && attached) {
 		console.log(`book market ${marketIndex}: attached`);
 		return 'attached';
@@ -2524,12 +2526,14 @@ async function attachBookIx(
 }
 
 /**
- * Whether a market's crank conditions store its quote spot market's oracle. An
- * attach written before `quote_oracle` existed reads it as the default pubkey,
- * and a staged cross then fails with `OracleNotFound`. The caller attaches again
- * in place to write it.
+ * Whether a market's crank conditions hold what the current attach writes. The
+ * caller attaches again in place when they do not. An attach written before
+ * `quote_oracle` existed reads it as the default pubkey, and a staged cross then
+ * fails with `OracleNotFound`. An attach written before the band cancel holds a
+ * cross fallback floor above the removal payment, and relay then refuses every
+ * band cancel the poll stages.
  */
-async function carriesQuoteOracle(
+async function attachIsCurrent(
 	ctx: BookBringUp,
 	market: any,
 	conditionsData: Buffer
@@ -2556,7 +2560,10 @@ async function carriesQuoteOracle(
 		'clobCrankConditionsV0',
 		conditionsData
 	);
-	return conditions.quoteOracle.equals(expected);
+	return (
+		conditions.quoteOracle.equals(expected) &&
+		!crossFallbackFloorIsStale(conditionsData, conditions.crankPayments)
+	);
 }
 
 /**

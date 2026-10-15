@@ -255,6 +255,42 @@ impl ClobCrankConditionsV0 {
 mod tests {
     use {super::cross_fallback_floor, crate::state::clob_crank::CrankPaymentsV0};
 
+    /// The deploy scripts read the stored fallback floor at a fixed account
+    /// offset to find a market whose attach predates the band cancel.
+    #[test]
+    fn the_scripts_read_the_fallback_floor_at_its_offset() {
+        use crate::state::clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CROSS_FALLBACK};
+
+        let script = include_str!("../../../../../deploy-scripts/crank-floor.ts");
+        let entry = "CROSS_FALLBACK_MIN_PAYMENT_OFFSET = ";
+        let start = script.find(entry).unwrap() + entry.len();
+        let end = start + script[start..].find(';').unwrap();
+        let offset: usize = script[start..end].parse().unwrap();
+
+        let mut conditions = ClobCrankConditionsV0::default();
+        conditions.init_block().unwrap();
+        let resolvers = conditions.write_resolvers(&[]).unwrap();
+        let condition = relay_spec::ConditionV0::every_slots(
+            10,
+            relay_spec::CrankSpecV0 {
+                resolver_program: [1; 32],
+                resolver_disc: [2; 8],
+                min_payment: 0x0102_0304_0506_0708,
+            },
+            resolvers,
+        );
+        conditions
+            .set_condition(CLOB_CRANK_CROSS_FALLBACK, &condition)
+            .unwrap();
+
+        let account_bytes = bytemuck::bytes_of(&conditions);
+        let stored = &account_bytes[offset - 8..offset];
+        assert_eq!(
+            u64::from_le_bytes(std::convert::TryInto::try_into(stored).unwrap()),
+            0x0102_0304_0506_0708
+        );
+    }
+
     /// The fallback poll can stage a band cancel, which pays the removal
     /// figure. A floor above it would fail every staged band cancel.
     #[test]

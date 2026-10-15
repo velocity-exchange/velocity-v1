@@ -52,7 +52,7 @@ import {
 } from './relay-watch';
 import {
 	deployedProgramHash,
-	expectedClobHash,
+	expectedProgramHash,
 	UPGRADE_PAUSE_BITS,
 } from './upgrade-guards';
 
@@ -284,7 +284,7 @@ async function main() {
 	await requireWatchesOnExposedUsers(verifier, program, accounts);
 	await requireUpgradeFinished(verifier, program, accounts, {
 		expectHot: argv.includes('--expect-hot'),
-		clobHash: expectedClobHash(
+		clobHash: expectedProgramHash(
 			argv.includes('--clob-hash') ? flag('--clob-hash', '') : undefined,
 			argv.includes('--clob-so') ? flag('--clob-so', '') : undefined
 		),

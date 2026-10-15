@@ -4594,8 +4594,8 @@ the withdraw bundle records both revert codes.
          velocity pins.
       2. Upgrade velocity, then upgrade vaults. The vaults program compiles in velocity's
          `User`. An old vaults build reads a migrated `User` at the old offsets and values each
-         vault wrongly. `migrate.ts` refuses to migrate a `User` while vaults was deployed
-         before velocity.
+         vault wrongly. `migrate.ts` refuses to migrate a `User` until the deployed vaults
+         code hashes to `--vaults-hash`, or to the `--vaults-so` build.
       3. Decide the relay crank prices. With zero rails every crank pays 0 lamports, and no
          turner takes the work. An upgrade leaves the rails at zero, and `migrate.ts` then writes
          `TransactionFeeRails::FLAT_PER_SIGNATURE`, the value `initialize` writes, or the value

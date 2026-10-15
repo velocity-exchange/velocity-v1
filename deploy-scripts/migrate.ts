@@ -10,7 +10,8 @@
  *     [--multisig <pda> [--vault-index <n>]] [--fee-rails <i,s,num,den,maxPriority>] \
  *     [--treasury-refill <target,watermark[,resyncFloor]>] [--lift-upgrade-pause] \
  *     [--watch-creators <pk,pk>] \
- *     [--clob-hash <sha256> | --clob-so <path>] [--dry-run]
+ *     [--clob-hash <sha256> | --clob-so <path>] [--vaults-hash <sha256> | --vaults-so <path>]
+ *     [--dry-run]
  *
  * The keypair is the payer and can be any funded key. The admin is the keypair, or with
  * `--multisig` the multisig's vault, and it must hold the warm or cold role. Before anything is
@@ -154,7 +155,7 @@ import {
 } from './relay-watch';
 import {
 	deployedProgramHash,
-	expectedClobHash,
+	expectedProgramHash,
 	instructionKey,
 	liftedStatus,
 	ProposedInstruction,
@@ -243,6 +244,9 @@ type Args = {
 	/** The CLOB executable hash the deployed program must have. Required under
 	 * `--multisig`. */
 	clobHash?: string;
+	/** The vaults executable hash the deployed vaults program must have before
+	 * any `User` migrates. */
+	vaultsHash?: string;
 	/** The liquidation reimbursement share written when State holds none. */
 	liqReimbursementBps: number;
 };
@@ -349,9 +353,13 @@ function parseArgs(): ParsedArgs {
 			? parseTreasuryRefill(get('--treasury-refill'))
 			: undefined,
 		liftUpgradePause: argv.includes('--lift-upgrade-pause'),
-		clobHash: expectedClobHash(
+		clobHash: expectedProgramHash(
 			argv.includes('--clob-hash') ? get('--clob-hash') : undefined,
 			argv.includes('--clob-so') ? get('--clob-so') : undefined
+		),
+		vaultsHash: expectedProgramHash(
+			argv.includes('--vaults-hash') ? get('--vaults-hash') : undefined,
+			argv.includes('--vaults-so') ? get('--vaults-so') : undefined
 		),
 		// What `initialize` writes on a new deployment.
 		liqReimbursementBps: Number.parseInt(
@@ -675,6 +683,9 @@ function ixDiscriminator(name: string): Buffer {
 }
 
 const VAULTS_IDL_PATH = 'packages/vaults-sdk/src/idl/vaults.json';
+
+/** `LEGACY_USER_LEN`: the one short `User` length `extend_account` migrates. */
+const LEGACY_USER_BYTES = 4496;
 
 /** Zero-copy accounts `extend_account` can grow, with their `SIZE`, which
  * includes the discriminator. An account at or past its size is skipped. The
@@ -1016,9 +1027,27 @@ async function resizeAccounts(
 		);
 		assertCanExtend(stateAccount, payer.publicKey);
 		if (name === 'User')
-			await assertVaultsUpgraded(connection, program.programId);
+			await assertVaultsUpgraded(connection, args.vaultsHash);
 
-		for (const account of stale.slice(0, args.limit || stale.length)) {
+		// `extend_account` refuses a short `User` at any length but the legacy one.
+		const refused =
+			name === 'User'
+				? stale.filter(
+						(key) => infos[keys.indexOf(key)]?.data.length !== LEGACY_USER_BYTES
+				  )
+				: [];
+		for (const key of refused) {
+			console.log(
+				`resize User ${key.toBase58()}: ${infos[keys.indexOf(key)]?.data
+					.length}b is not the ${LEGACY_USER_BYTES}b legacy layout, so extend_account refuses it. The upgrade pause stays until it is closed or repaired.`
+			);
+		}
+
+		const extendable = stale.filter((key) => !refused.includes(key));
+		for (const account of extendable.slice(
+			0,
+			args.limit || extendable.length
+		)) {
 			await act(`extend ${name} ${account.toBase58()}`, [
 				await program.methods
 					.extendAccount()
@@ -1043,41 +1072,37 @@ async function resizeAccounts(
 }
 
 /**
- * The vaults program compiles in velocity's `User`. A vaults build older than
- * the velocity upgrade reads a migrated `User` at the old offsets and values
- * the vault wrongly, so no `User` migrates until vaults is upgraded too.
+ * The vaults program compiles in velocity's `User`. A vaults build from before
+ * the `u16` open-order counts reads a migrated `User` at the old offsets and
+ * values the vault wrongly. No `User` migrates until the deployed vaults code
+ * hashes to the reviewed build that `--vaults-hash` or `--vaults-so` names.
  */
 async function assertVaultsUpgraded(
 	connection: Connection,
-	velocity: PublicKey
+	expectedHash: string | undefined
 ): Promise<void> {
 	const vaults = new PublicKey(
 		JSON.parse(fs.readFileSync(VAULTS_IDL_PATH, 'utf-8')).address
 	);
-	const vaultsSlot = await deploySlot(connection, vaults);
-	if (vaultsSlot === undefined) {
+	const deployed = await deployedProgramHash(connection, vaults);
+	if (deployed === undefined) {
 		console.log(`vaults ${vaults.toBase58()}: not deployed, no check`);
 		return;
 	}
 
-	const velocitySlot = await deploySlot(connection, velocity);
-	if (velocitySlot === undefined || vaultsSlot < velocitySlot) {
+	if (!expectedHash) {
 		throw new Error(
-			`vaults ${vaults.toBase58()} was deployed at slot ${vaultsSlot}, before velocity at slot ` +
-				`${velocitySlot}. Upgrade vaults before the User resize, or it misreads every migrated User.`
+			`a User migration needs --vaults-hash <sha256> or --vaults-so <path>. The vaults build ` +
+				`at ${vaults.toBase58()} must read the migrated User layout.`
 		);
 	}
-}
 
-/** `UpgradeableLoaderState::ProgramData` holds the deploy slot after its u32 tag. */
-async function deploySlot(
-	connection: Connection,
-	program: PublicKey
-): Promise<bigint | undefined> {
-	const programData = await connection.getAccountInfo(
-		getProgramDataAddress(program)
-	);
-	return programData?.data.readBigUInt64LE(4);
+	if (deployed !== expectedHash) {
+		throw new Error(
+			`vaults ${vaults.toBase58()} hashes to ${deployed}, not ${expectedHash}. ` +
+				`Upgrade vaults before the User resize, or it misreads every migrated User.`
+		);
+	}
 }
 
 /** Mirrors `State::is_hot` for `HotRole::AccountExtension`. */

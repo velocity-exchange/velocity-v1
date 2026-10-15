@@ -62,7 +62,8 @@
  *      creates the book, registers and approves its quoter entry, and attaches it, which
  *      creates the market's crank conditions. It stops when the crank treasury is not
  *      priced and no proposal prices it, because the attach stores the treasury's refill
- *      watermark on the market.
+ *      watermark on the market. Under `--multisig`, the cross attaches of the market's active,
+ *      approved Custom quoters are proposed behind the book attach.
  *      This comes before step 2, so a trigger that step 2 arms has a book to fire into.
  *   2. liq coverage: create and sync relay liquidation conditions for every user with exposure,
  *      backfilling users that predate `initialize_user` creating them automatically. The same
@@ -2160,7 +2161,39 @@ async function bringUpBook(
 			attach: !attached,
 		})
 	);
-	return outcome === 'sent' ? 'attached' : 'queued';
+	if (outcome === 'sent') return 'attached';
+
+	await proposeCrossAttaches(ctx, marketIndex);
+	return 'queued';
+}
+
+/**
+ * Propose the cross attaches of the market's active, approved Custom entries
+ * behind a proposed book attach. Proposals execute in ascending index order,
+ * so each attach runs after the book's. A direct run sends them in step 3.
+ */
+async function proposeCrossAttaches(
+	ctx: BookBringUp,
+	marketIndex: number
+): Promise<void> {
+	const slab = await ctx.connection.getAccountInfo(
+		getQuoterSlabPublicKey(ctx.program.programId, marketIndex)
+	);
+	if (!slab) return;
+
+	const ixs = await Promise.all(
+		quotingCustomEntries(slab.data).map((quoter) =>
+			getInitializeQuoterCrossConditionsIx(ctx.program, {
+				payer: ctx.admin.key,
+				quoter,
+				marketIndex,
+			})
+		)
+	);
+	const memo = `migrate: cross conditions market ${marketIndex}`;
+	for (const batch of ixs.length > 0 ? await ctx.admin.pack(ixs, memo) : []) {
+		await ctx.admin.run(memo, batch);
+	}
 }
 
 /**
@@ -2225,6 +2258,7 @@ async function queueBookB(
 			attach: true,
 		})
 	);
+	await proposeCrossAttaches(ctx, marketIndex);
 	return 'queued';
 }
 

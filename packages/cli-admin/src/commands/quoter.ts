@@ -1,18 +1,10 @@
 import { Command } from 'commander';
-import { PublicKey, TransactionInstruction } from '@solana/web3.js';
-import { AnchorProvider, BN } from '@coral-xyz/anchor';
+import { PublicKey } from '@solana/web3.js';
+import { BN } from '@coral-xyz/anchor';
 import {
-	getClobCrankConditionsPublicKey,
-	getInitializeQuoterCrossConditionsIx,
-	getQuoterCrossConditionsPublicKey,
 	getQuoterPublicKey,
 	getQuoterSlabPublicKey,
-	getRegisterWatchIxs,
-	QUOTER_CROSS_BLOCK_OFFSET,
-	QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS,
 	QuoterType,
-	RELAY_WATCH_V0_LEN,
-	VelocityProgram,
 } from '@velocity-exchange/sdk';
 import { parseEnable } from '../lib/args';
 import {
@@ -21,6 +13,13 @@ import {
 } from '../lib/crankCostUnits';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import {
+	crossAttachIxs,
+	entryCrossIxs,
+	isCustomEntry,
+	marketCrossGroups,
+	sendMarketCrossGroups,
+} from '../lib/quoterCross';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
 
 function parseQuoterType(value: string): QuoterType {
@@ -43,107 +42,6 @@ function isClobEntry(quoterType: unknown): boolean {
 	return Boolean(
 		quoterType && 'clob' in (quoterType as Record<string, unknown>)
 	);
-}
-
-function isCustomEntry(quoterType: unknown): boolean {
-	return Boolean(
-		quoterType && 'custom' in (quoterType as Record<string, unknown>)
-	);
-}
-
-/** Why `initialize_quoter_cross_conditions` would refuse the approved entry,
- * or null when it would accept it. */
-async function crossAttachBlocker(
-	program: VelocityProgram,
-	entryConfig: { market: number; isActive: boolean }
-): Promise<string | null> {
-	if (!entryConfig.isActive) return 'the entry is inactive';
-	const marketConditions = await (
-		program.account as any
-	).clobCrankConditionsV0.fetchNullable(
-		getClobCrankConditionsPublicKey(program.programId, entryConfig.market)
-	);
-	if (!marketConditions || marketConditions.topOfBookLen === 0) {
-		return "the market's CLOB is not attached";
-	}
-
-	return null;
-}
-
-type CrossAttach = {
-	crossConditions: PublicKey;
-	watch: PublicKey;
-	attach: TransactionInstruction;
-	/** Empty when the payer already registered the watch. */
-	registerWatch: TransactionInstruction[];
-};
-
-async function crossAttachIxs(
-	provider: AnchorProvider,
-	program: VelocityProgram,
-	quoter: PublicKey,
-	marketIndex: number,
-	payer: PublicKey,
-	expireFallbackSlots: number
-): Promise<CrossAttach> {
-	const crossConditions = getQuoterCrossConditionsPublicKey(
-		program.programId,
-		quoter
-	);
-	const attach = await getInitializeQuoterCrossConditionsIx(program, {
-		payer,
-		quoter,
-		marketIndex,
-		expireFallbackSlots,
-	});
-	const { watch, ixs } = await getRegisterWatchIxs({
-		payer,
-		target: crossConditions,
-		blockOffset: QUOTER_CROSS_BLOCK_OFFSET,
-		seed: `cross-${quoter.toBase58().slice(0, 26)}`,
-		rentLamports: await provider.connection.getMinimumBalanceForRentExemption(
-			RELAY_WATCH_V0_LEN
-		),
-	});
-	const watched = !!(await provider.connection.getAccountInfo(watch));
-	return { crossConditions, watch, attach, registerWatch: watched ? [] : ixs };
-}
-
-/**
- * The cross attach that rides a Custom approval, so relay cranks the entry's
- * crosses from the moment it quotes. A proposal leaves out the watch.
- * `migrate.ts` counts only a watch that its own payer made.
- */
-async function approvalCrossIxs(
-	provider: AnchorProvider,
-	program: VelocityProgram,
-	quoter: PublicKey,
-	entryConfig: { market: number; isActive: boolean },
-	admin: PublicKey,
-	registerWatch: boolean
-): Promise<TransactionInstruction[]> {
-	const blocker = await crossAttachBlocker(program, entryConfig);
-	if (blocker) {
-		console.log(
-			`cross conditions not attached: ${blocker}. Run \`quoter attach-cross\` or migrate.ts once it can attach.`
-		);
-		return [];
-	}
-
-	const cross = await crossAttachIxs(
-		provider,
-		program,
-		quoter,
-		entryConfig.market,
-		admin,
-		QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS
-	);
-	console.log(
-		`cross conditions ${cross.crossConditions.toBase58()}: attaching`
-	);
-	return registerWatch
-		? [cross.attach, ...cross.registerWatch]
-		: [cross.attach];
 }
 
 /** Parse a comma-separated list of indexes into the unified account list. */
@@ -515,7 +413,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-active <quoter> <active>')
 			.description(
-				"The maker's own kill switch. Enable or disable the entry. The value is written through to the market's slab slot when one exists, so the change takes effect without a new approval. The entry authority can always run this. For a Custom quoter that authority is the quoted user's authority. <active> = true|false."
+				"The maker's own kill switch. Enable or disable the entry. The value is written through to the market's slab slot when one exists, so the change takes effect without a new approval. The entry authority can always run this. For a Custom quoter that authority is the quoted user's authority. Activation of an approved Custom entry on a market with an attached CLOB also creates or re-prices its relay cross conditions in the same transaction, paid by the authority. <active> = true|false."
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -534,13 +432,14 @@ export function registerQuoter(parent: Command): void {
 			const client = await buildAdminClient(opts, false);
 			try {
 				const quoterKey = new PublicKey(quoterArg);
+				const authority = flags.authority
+					? new PublicKey(flags.authority)
+					: provider.wallet.publicKey;
 				const ix = client.program.instruction.updateQuoterActive(
 					{ active: on },
 					{
 						accounts: {
-							authority: flags.authority
-								? new PublicKey(flags.authority)
-								: provider.wallet.publicKey,
+							authority,
 							quoter: quoterKey,
 							quoterSlab: await liveSlabFor(
 								client,
@@ -555,9 +454,27 @@ export function registerQuoter(parent: Command): void {
 						},
 					}
 				);
+				const entry = await (client.program.account as any).quoterV0.fetch(
+					quoterKey
+				);
+				const cross =
+					on && isCustomEntry(entry.config.quoterType)
+						? await entryCrossIxs(
+								provider,
+								client.program,
+								{
+									quoter: quoterKey,
+									market: entry.config.market,
+									isActive: true,
+									mustHoldSlot: true,
+								},
+								authority,
+								!opts.multisig
+						  )
+						: [];
 				const result = await sendOrPropose(
 					provider,
-					[ix],
+					[ix, ...cross],
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-active'
 				);
@@ -639,11 +556,15 @@ export function registerQuoter(parent: Command): void {
 					: provider.wallet.publicKey;
 				const cross =
 					on && isCustomEntry(entry.config.quoterType)
-						? await approvalCrossIxs(
+						? await entryCrossIxs(
 								provider,
 								client.program,
-								quoterKey,
-								entry.config,
+								{
+									quoter: quoterKey,
+									market: entry.config.market,
+									isActive: entry.config.isActive,
+									mustHoldSlot: false,
+								},
 								admin,
 								!opts.multisig
 						  )
@@ -736,7 +657,7 @@ export function registerQuoter(parent: Command): void {
 					'set-market-clob <market> <quoter> <clobMarket> [expireFallbackSlots]'
 				)
 				.description(
-					"Name a perp market's canonical CLOB quoter entry. The warm or cold admin signs. Once set, every router fill must carry that entry. The same instruction also creates or re-prices the market's cranks: the lamport reservoir that pays relay keepers, and the registration that tells the book which resolver answers each of its own conditions. Those conditions are an expired order, a side at its cap, a crossed book, and an order reaching its activation slot. Each crank's payment is derived here from the cost units it requests and State.transactionFeeRails, so running this again is how a market is re-priced after the network's fee model changes. Add lamports to the reservoir with a plain transfer to the conditions PDA. [expireFallbackSlots] is the cross fallback poll interval, default 1500 slots or about 10 minutes. It is the liveness floor for a cross that a PropAMM created by repricing."
+					"Name a perp market's canonical CLOB quoter entry. The warm or cold admin signs. Once set, every router fill must carry that entry. The same instruction also creates or re-prices the market's cranks: the lamport reservoir that pays relay keepers, and the registration that tells the book which resolver answers each of its own conditions. Those conditions are an expired order, a side at its cap, a crossed book, and an order reaching its activation slot. Each crank's payment is derived here from the cost units it requests and State.transactionFeeRails, so running this again is how a market is re-priced after the network's fee model changes. Add lamports to the reservoir with a plain transfer to the conditions PDA. [expireFallbackSlots] is the cross fallback poll interval, default 1500 slots or about 10 minutes. It is the liveness floor for a cross that a PropAMM created by repricing. The command also creates or re-prices the relay cross conditions of every active, approved Custom quoter on the market."
 				)
 		)
 			.option(
@@ -798,12 +719,26 @@ export function registerQuoter(parent: Command): void {
 
 					flags.admin ? new PublicKey(flags.admin) : undefined
 				);
+				// A proposal carries the cross attaches behind the book attach. A
+				// direct send follows the attach with one transaction per entry.
+				const crossGroups = await marketCrossGroups(
+					provider,
+					client.program,
+					marketIndex,
+					flags.admin ? new PublicKey(flags.admin) : provider.wallet.publicKey,
+					!opts.multisig
+				);
 				const result = await sendOrPropose(
 					provider,
-					[ix],
+					opts.multisig
+						? [ix, ...crossGroups.flatMap((group) => group.ixs)]
+						: [ix],
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-market-clob'
 				);
+				if (!opts.multisig) {
+					await sendMarketCrossGroups(provider, crossGroups, marketIndex);
+				}
 
 				reportDispatch(
 					`perp-market[${market}] clob_quoter = ${quoterArg}, cranks priced from ${JSON.stringify(

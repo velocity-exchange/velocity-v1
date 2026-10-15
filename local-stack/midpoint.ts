@@ -23,15 +23,13 @@ import {
 	PublicKey,
 	sendAndConfirmTransaction,
 	SystemProgram,
-	SYSVAR_RENT_PUBKEY,
 	Transaction,
 	TransactionInstruction,
 } from '@solana/web3.js';
 import {
 	AdminClient,
 	BulkAccountLoader,
-	getClobCrankConditionsPublicKey,
-	getPerpMarketPublicKeySync,
+	getInitializeQuoterCrossConditionsIx,
 	getQuoterCrossConditionsPublicKey,
 	getQuoterPublicKey,
 	getQuoterSlabPublicKey,
@@ -278,25 +276,12 @@ async function attachCrossConditions(
 ): Promise<void> {
 	const makerAdmin = adminClient(connection, maker);
 	const programId = makerAdmin.program.programId;
-	const ix = makerAdmin.program.instruction.initializeQuoterCrossConditions(
-		{ expireFallbackSlots: new BN(CROSS_FALLBACK_SLOTS) },
-		{
-			accounts: {
-				payer: maker.publicKey,
-				state: await makerAdmin.getStatePublicKey(),
-				quoter: entry,
-				perpMarket: getPerpMarketPublicKeySync(programId, MARKET_INDEX),
-				quoterSlab: getQuoterSlabPublicKey(programId, MARKET_INDEX),
-				marketConditions: getClobCrankConditionsPublicKey(
-					programId,
-					MARKET_INDEX
-				),
-				crossConditions: getQuoterCrossConditionsPublicKey(programId, entry),
-				rent: SYSVAR_RENT_PUBKEY,
-				systemProgram: SystemProgram.programId,
-			},
-		}
-	);
+	const ix = await getInitializeQuoterCrossConditionsIx(makerAdmin.program, {
+		payer: maker.publicKey,
+		quoter: entry,
+		marketIndex: MARKET_INDEX,
+		expireFallbackSlots: CROSS_FALLBACK_SLOTS,
+	});
 	await send(connection, [ix], [maker]);
 
 	const { watch, ixs: register } = await getRegisterWatchIxs({

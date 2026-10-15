@@ -126,6 +126,7 @@ export * from './velocityClientConfig';
 export * from './clob/topMakersClient';
 export * from './clob/userOrdersClient';
 export * from './relay/watch';
+export * from './relay/quoterCross';
 export * from './clob/orderRef';
 export * from './orderBookLevels';
 export * from './userMap/userMap';

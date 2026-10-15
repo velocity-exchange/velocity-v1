@@ -153,3 +153,16 @@ export function decodeQuoterSlab(data: Buffer): {
 
 	return { header, slots };
 }
+
+/** The entries of every slot that holds an active, approved `Custom` quoter.
+ * Each one needs its relay cross conditions. */
+export function quotingCustomEntries(data: Buffer): PublicKey[] {
+	return decodeQuoterSlab(data)
+		.slots.filter(
+			(slot) =>
+				!slot.suspended &&
+				slot.config.isActive &&
+				'custom' in slot.config.quoterType
+		)
+		.map((slot) => slot.entry);
+}

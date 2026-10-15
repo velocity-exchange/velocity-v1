@@ -1,16 +1,18 @@
 import { Command } from 'commander';
-import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
-import { BN } from '@coral-xyz/anchor';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
+import { AnchorProvider, BN } from '@coral-xyz/anchor';
 import {
 	getClobCrankConditionsPublicKey,
-	getPerpMarketPublicKeySync,
+	getInitializeQuoterCrossConditionsIx,
 	getQuoterCrossConditionsPublicKey,
 	getQuoterPublicKey,
 	getQuoterSlabPublicKey,
 	getRegisterWatchIxs,
 	QUOTER_CROSS_BLOCK_OFFSET,
+	QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS,
 	QuoterType,
 	RELAY_WATCH_V0_LEN,
+	VelocityProgram,
 } from '@velocity-exchange/sdk';
 import { parseEnable } from '../lib/args';
 import {
@@ -41,6 +43,107 @@ function isClobEntry(quoterType: unknown): boolean {
 	return Boolean(
 		quoterType && 'clob' in (quoterType as Record<string, unknown>)
 	);
+}
+
+function isCustomEntry(quoterType: unknown): boolean {
+	return Boolean(
+		quoterType && 'custom' in (quoterType as Record<string, unknown>)
+	);
+}
+
+/** Why `initialize_quoter_cross_conditions` would refuse the approved entry,
+ * or null when it would accept it. */
+async function crossAttachBlocker(
+	program: VelocityProgram,
+	entryConfig: { market: number; isActive: boolean }
+): Promise<string | null> {
+	if (!entryConfig.isActive) return 'the entry is inactive';
+	const marketConditions = await (
+		program.account as any
+	).clobCrankConditionsV0.fetchNullable(
+		getClobCrankConditionsPublicKey(program.programId, entryConfig.market)
+	);
+	if (!marketConditions || marketConditions.topOfBookLen === 0) {
+		return "the market's CLOB is not attached";
+	}
+
+	return null;
+}
+
+type CrossAttach = {
+	crossConditions: PublicKey;
+	watch: PublicKey;
+	attach: TransactionInstruction;
+	/** Empty when the payer already registered the watch. */
+	registerWatch: TransactionInstruction[];
+};
+
+async function crossAttachIxs(
+	provider: AnchorProvider,
+	program: VelocityProgram,
+	quoter: PublicKey,
+	marketIndex: number,
+	payer: PublicKey,
+	expireFallbackSlots: number
+): Promise<CrossAttach> {
+	const crossConditions = getQuoterCrossConditionsPublicKey(
+		program.programId,
+		quoter
+	);
+	const attach = await getInitializeQuoterCrossConditionsIx(program, {
+		payer,
+		quoter,
+		marketIndex,
+		expireFallbackSlots,
+	});
+	const { watch, ixs } = await getRegisterWatchIxs({
+		payer,
+		target: crossConditions,
+		blockOffset: QUOTER_CROSS_BLOCK_OFFSET,
+		seed: `cross-${quoter.toBase58().slice(0, 26)}`,
+		rentLamports: await provider.connection.getMinimumBalanceForRentExemption(
+			RELAY_WATCH_V0_LEN
+		),
+	});
+	const watched = !!(await provider.connection.getAccountInfo(watch));
+	return { crossConditions, watch, attach, registerWatch: watched ? [] : ixs };
+}
+
+/**
+ * The cross attach that rides a Custom approval, so relay cranks the entry's
+ * crosses from the moment it quotes. A proposal leaves out the watch.
+ * `migrate.ts` counts only a watch that its own payer made.
+ */
+async function approvalCrossIxs(
+	provider: AnchorProvider,
+	program: VelocityProgram,
+	quoter: PublicKey,
+	entryConfig: { market: number; isActive: boolean },
+	admin: PublicKey,
+	registerWatch: boolean
+): Promise<TransactionInstruction[]> {
+	const blocker = await crossAttachBlocker(program, entryConfig);
+	if (blocker) {
+		console.log(
+			`cross conditions not attached: ${blocker}. Run \`quoter attach-cross\` or migrate.ts once it can attach.`
+		);
+		return [];
+	}
+
+	const cross = await crossAttachIxs(
+		provider,
+		program,
+		quoter,
+		entryConfig.market,
+		admin,
+		QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS
+	);
+	console.log(
+		`cross conditions ${cross.crossConditions.toBase58()}: attaching`
+	);
+	return registerWatch
+		? [cross.attach, ...cross.registerWatch]
+		: [cross.attach];
 }
 
 /** Parse a comma-separated list of indexes into the unified account list. */
@@ -475,7 +578,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-approved <quoter> <approved>')
 			.description(
-				"Admin vetting gate for the warm or cold admin. Copies the staging config into the market's slab slot, or revokes that slot. Approval requires a non-empty account list on both legs, and each list must contain the response account, which the quoter program must own. Fills read only the slab copy, so a staged edit serves nothing until it is approved here. Approval carries the hash of the staged config, and the program refuses the approval if the maker edits the entry before it lands. <approved> = true|false."
+				"Admin vetting gate for the warm or cold admin. Copies the staging config into the market's slab slot, or revokes that slot. Approval requires a non-empty account list on both legs, and each list must contain the response account, which the quoter program must own. Fills read only the slab copy, so a staged edit serves nothing until it is approved here. Approval carries the hash of the staged config, and the program refuses the approval if the maker edits the entry before it lands. Approval of an active Custom entry on a market with an attached CLOB also creates or re-prices the entry's relay cross conditions in the same transaction, paid by the admin. A direct send also registers their relay watch. <approved> = true|false."
 			)
 			.option(
 				'--admin <pubkey>',
@@ -531,9 +634,23 @@ export function registerQuoter(parent: Command): void {
 					new PublicKey(entry.config.responseAccount),
 					stagedHash
 				);
+				const admin = flags.admin
+					? new PublicKey(flags.admin)
+					: provider.wallet.publicKey;
+				const cross =
+					on && isCustomEntry(entry.config.quoterType)
+						? await approvalCrossIxs(
+								provider,
+								client.program,
+								quoterKey,
+								entry.config,
+								admin,
+								!opts.multisig
+						  )
+						: [];
 				const result = await sendOrPropose(
 					provider,
-					[ix],
+					[ix, ...cross],
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-approved'
 				);
@@ -880,57 +997,22 @@ export function registerQuoter(parent: Command): void {
 				const entry = await (client.program.account as any).quoterV0.fetch(
 					quoterKey
 				);
-				const perpMarket = getPerpMarketPublicKeySync(
-					client.program.programId,
-					entry.config.market
+				const cross = await crossAttachIxs(
+					provider,
+					client.program,
+					quoterKey,
+					entry.config.market,
+					provider.wallet.publicKey,
+					Number.parseInt(flags.fallbackSlots, 10)
 				);
-				const marketConditions = getClobCrankConditionsPublicKey(
-					client.program.programId,
-					entry.config.market
-				);
-				const crossConditions = getQuoterCrossConditionsPublicKey(
-					client.program.programId,
-					quoterKey
-				);
-				const ix = client.program.instruction.initializeQuoterCrossConditions(
-					{ expireFallbackSlots: new BN(flags.fallbackSlots) },
-					{
-						accounts: {
-							payer: provider.wallet.publicKey,
-							state: await client.getStatePublicKey(),
-							quoter: quoterKey,
-							perpMarket,
-							quoterSlab: getQuoterSlabPublicKey(
-								client.program.programId,
-								entry.config.market
-							),
-
-							marketConditions,
-							crossConditions,
-							rent: SYSVAR_RENT_PUBKEY,
-							systemProgram: SystemProgram.programId,
-						},
-					}
-				);
-				const { watch, ixs: register } = await getRegisterWatchIxs({
-					payer: provider.wallet.publicKey,
-					target: crossConditions,
-					blockOffset: QUOTER_CROSS_BLOCK_OFFSET,
-					seed: `cross-${quoterKey.toBase58().slice(0, 26)}`,
-					rentLamports:
-						await provider.connection.getMinimumBalanceForRentExemption(
-							RELAY_WATCH_V0_LEN
-						),
-				});
-				const watched = !!(await provider.connection.getAccountInfo(watch));
 				const result = await sendOrPropose(
 					provider,
-					watched ? [ix] : [ix, ...register],
+					[cross.attach, ...cross.registerWatch],
 					undefined,
 					''
 				);
 				reportDispatch(
-					`cross conditions ${crossConditions.toBase58()} attached for quoter ${quoterArg}, relay watch ${watch.toBase58()}`,
+					`cross conditions ${cross.crossConditions.toBase58()} attached for quoter ${quoterArg}, relay watch ${cross.watch.toBase58()}`,
 					result
 				);
 			} finally {

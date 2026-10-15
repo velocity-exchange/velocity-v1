@@ -70,11 +70,14 @@
  *      executor that fires one. A sync too large for a legacy transaction goes as v0 through a
  *      lookup table the run creates. A user whose sync fails is reported, the run continues,
  *      and it exits non-zero.
- *   3. watches: register the relay `WatchV0` records that make the blocks from steps 1 and 2
- *      discoverable: the market crank conditions, the per-quoter cross conditions, and the
- *      per-user liquidation conditions. Anyone can register a watch on a known PDA, so an
- *      existing watch counts only when the payer, or a key `--watch-creators` names, made it at
- *      the block offset. The run registers its own watch beside any other and reports it.
+ *   3. watches: create the cross conditions of every active, approved Custom quoter on a market
+ *      whose book is attached, when the quoter has none. The payer sends this directly, because
+ *      the instruction is permissionless. Then register the relay `WatchV0` records that make
+ *      the blocks from steps 1 and 2 and these cross conditions discoverable: the market crank
+ *      conditions, the per-quoter cross conditions, and the per-user liquidation conditions.
+ *      Anyone can register a watch on a known PDA, so an existing watch counts only when the
+ *      payer, or a key `--watch-creators` names, made it at the block offset. The run registers
+ *      its own watch beside any other and reports it.
  *   4. legacy orders: report every order still resting in a `User.orders` slot that is not an
  *      unfired trigger and not a book shadow. These are orders from the removed matching venue.
  *      Each still holds an `open_bids`/`open_asks` reservation against its owner's margin, so
@@ -119,7 +122,9 @@ import {
 	decodeQuoterSlab,
 	getClobCrankConditionsPublicKey,
 	getCrankTreasuryPublicKey,
+	getInitializeQuoterCrossConditionsIx,
 	getProgramDataAddress,
+	getQuoterCrossConditionsPublicKey,
 	getQuoterPublicKey,
 	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
@@ -133,6 +138,7 @@ import {
 	quoterConfigHash,
 	UserStatus,
 	positionIsAvailable,
+	quotingCustomEntries,
 	Wallet,
 } from '@velocity-exchange/sdk';
 import {
@@ -852,7 +858,8 @@ async function migrate(ctx: Migration, idl: any) {
 		holdsConditionsSync(stateAccount, payer.publicKey)
 	);
 
-	// 3. watches for the market and quoter conditions
+	// 3. quoter cross conditions and the watches over every conditions block
+	await attachMissingCrossConditions(ctx, perpMarkets);
 	await watchMarketsAndQuoters(ctx, perpMarkets, clobProgram);
 
 	// 4. legacy orders
@@ -860,6 +867,52 @@ async function migrate(ctx: Migration, idl: any) {
 
 	// 5. vault users
 	await flagVaultUsers(provider, payer, users, program, act);
+}
+
+/** Create the cross conditions of every quoting Custom entry on a market whose
+ * book is attached. Approval attaches them only when the entry is active and
+ * the book is attached at that moment. */
+async function attachMissingCrossConditions(
+	ctx: Migration,
+	perpMarkets: Map<number, any>
+): Promise<void> {
+	const { connection, program, payer, act, report } = ctx;
+	const velocity = program.programId;
+	for (const [marketIndex] of perpMarkets) {
+		const [conditions, slab] = await connection.getMultipleAccountsInfo([
+			getClobCrankConditionsPublicKey(velocity, marketIndex),
+			getQuoterSlabPublicKey(velocity, marketIndex),
+		]);
+		if (!conditions || !slab) continue;
+
+		const { topOfBookLen } = program.coder.accounts.decode(
+			'clobCrankConditionsV0',
+			conditions.data
+		) as { topOfBookLen: number };
+		if (topOfBookLen === 0) continue;
+
+		for (const quoter of quotingCustomEntries(slab.data)) {
+			const crossConditions = getQuoterCrossConditionsPublicKey(
+				velocity,
+				quoter
+			);
+			if (await connection.getAccountInfo(crossConditions)) continue;
+
+			const label = `attach cross conditions for quoter ${quoter.toBase58()}`;
+			try {
+				await act(label, [
+					await getInitializeQuoterCrossConditionsIx(program, {
+						payer: payer.publicKey,
+						quoter,
+						marketIndex,
+					}),
+				]);
+			} catch (error) {
+				console.log(`${label} failed: ${error}`);
+				report.failed.push(`${label}: ${error}`);
+			}
+		}
+	}
 }
 
 /** Register the relay watches over each market's crank conditions, its book,

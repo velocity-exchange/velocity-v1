@@ -1027,8 +1027,10 @@ value other than 1500 only from the maker's authority. `quoter attach-cross` als
 watch over the conditions, which a turner needs to wake them. `QUOTER_CROSS_BLOCK_OFFSET` is the offset
 that watch registers at.
 `quoter set-approved` of an active Custom entry on a market with an attached book also attaches its
-cross conditions in the same transaction, and so does `quoter set-active` of an approved one. A direct
-send also registers their watch. `quoter set-market-clob` and `clob-market init` attach or re-price the
+cross conditions in the same transaction. A direct send also registers their watch. `update_quoter_active`
+creates or re-prices the cross conditions itself when it activates an approved Custom entry on a market
+with an attached book. It takes `perp_market`, `market_conditions`, `cross_conditions` and
+`system_program` for that, and `quoter set-active` passes them. `quoter set-market-clob` and `clob-market init` attach or re-price the
 cross conditions of every active, approved Custom entry on the market after the book attach.
 `getInitializeQuoterCrossConditionsIx` builds the attach, and `quotingCustomEntries` lists the
 entries of a slab that need one.

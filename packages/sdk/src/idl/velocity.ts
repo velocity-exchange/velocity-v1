@@ -15691,6 +15691,10 @@ export type Velocity = {
       "accounts": [
         {
           "name": "authority",
+          "docs": [
+            "Mutable, because it pays the cross conditions' rent on first arming."
+          ],
+          "writable": true,
           "signer": true
         },
         {
@@ -15740,6 +15744,124 @@ export type Velocity = {
             "entry answers to its own stored authority and omits this account."
           ],
           "optional": true
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "The rest arm the entry's cross conditions. Activation of a `Custom`",
+            "entry that holds a slot requires `market_conditions`. It requires the",
+            "rest when that account shows the book attached, and refuses them when",
+            "it does not."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "marketConditions",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "crossConditions",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  99,
+                  114,
+                  111,
+                  115,
+                  115,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "optional": true,
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [

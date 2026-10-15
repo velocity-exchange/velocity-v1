@@ -14,9 +14,11 @@ import {
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import {
+	activationCrossArming,
 	crossAttachIxs,
 	entryCrossIxs,
 	isCustomEntry,
+	NO_CROSS_ARMING,
 	marketCrossGroups,
 	sendMarketCrossGroups,
 } from '../lib/quoterCross';
@@ -413,7 +415,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-active <quoter> <active>')
 			.description(
-				"The maker's own kill switch. Enable or disable the entry. The value is written through to the market's slab slot when one exists, so the change takes effect without a new approval. The entry authority can always run this. For a Custom quoter that authority is the quoted user's authority. Activation of an approved Custom entry on a market with an attached CLOB also creates or re-prices its relay cross conditions in the same transaction, paid by the authority. <active> = true|false."
+				"The maker's own kill switch. Enable or disable the entry. The value is written through to the market's slab slot when one exists, so the change takes effect without a new approval. The entry authority can always run this. For a Custom quoter that authority is the quoted user's authority. Activation of an approved Custom entry on a market with an attached CLOB also creates or re-prices its relay cross conditions in the same instruction, paid by the authority, and a direct send registers their relay watch. <active> = true|false."
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -435,6 +437,19 @@ export function registerQuoter(parent: Command): void {
 				const authority = flags.authority
 					? new PublicKey(flags.authority)
 					: provider.wallet.publicKey;
+				const entry = await (client.program.account as any).quoterV0.fetch(
+					quoterKey
+				);
+				const arming =
+					on && isCustomEntry(entry.config.quoterType)
+						? await activationCrossArming(
+								provider,
+								client.program,
+								quoterKey,
+								entry.config.market,
+								authority
+						  )
+						: NO_CROSS_ARMING;
 				const ix = client.program.instruction.updateQuoterActive(
 					{ active: on },
 					{
@@ -451,30 +466,15 @@ export function registerQuoter(parent: Command): void {
 							// than to the key that registered it. A Custom entry
 							// answers to its own stored authority and ignores this.
 							state: await client.getStatePublicKey(),
+							...arming.accounts,
 						},
 					}
 				);
-				const entry = await (client.program.account as any).quoterV0.fetch(
-					quoterKey
-				);
-				const cross =
-					on && isCustomEntry(entry.config.quoterType)
-						? await entryCrossIxs(
-								provider,
-								client.program,
-								{
-									quoter: quoterKey,
-									market: entry.config.market,
-									isActive: true,
-									mustHoldSlot: true,
-								},
-								authority,
-								!opts.multisig
-						  )
-						: [];
+				// A proposal leaves out the watch. `migrate.ts` counts only a
+				// watch that its own payer made.
 				const result = await sendOrPropose(
 					provider,
-					[ix, ...cross],
+					opts.multisig ? [ix] : [ix, ...arming.registerWatch],
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-active'
 				);
@@ -563,7 +563,6 @@ export function registerQuoter(parent: Command): void {
 									quoter: quoterKey,
 									market: entry.config.market,
 									isActive: entry.config.isActive,
-									mustHoldSlot: false,
 								},
 								admin,
 								!opts.multisig

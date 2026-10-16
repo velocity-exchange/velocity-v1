@@ -331,20 +331,36 @@ fn quoter_registry_lifecycle() {
 
     // The maker's kill switch writes through to the live copy when the slab
     // is passed, and only to staging when it is not.
-    let set_active = |authority: Pubkey, active: bool, slab: Option<Pubkey>| Instruction {
-        program_id: velocity_id(),
-        accounts: velocity::accounts::UpdateQuoterActive {
-            authority,
-            quoter,
-            quoter_slab: slab,
-            // A Custom entry answers to its own stored authority.
-            state: None,
-        }
-        .to_account_metas(None),
-        data: velocity::instruction::UpdateQuoterActive {
-            args: UpdateQuoterActiveArgs { active },
-        }
-        .data(),
+    let market_conditions = Pubkey::find_program_address(
+        &[b"clob_crank_conditions", 0u16.to_le_bytes().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    let set_active_with =
+        |authority: Pubkey,
+         active: bool,
+         slab: Option<Pubkey>,
+         market_conditions: Option<Pubkey>| Instruction {
+            program_id: velocity_id(),
+            accounts: velocity::accounts::UpdateQuoterActive {
+                authority,
+                quoter,
+                quoter_slab: slab,
+                // A Custom entry answers to its own stored authority.
+                state: None,
+                perp_market: None,
+                market_conditions,
+                cross_conditions: None,
+                system_program: None,
+            }
+            .to_account_metas(None),
+            data: velocity::instruction::UpdateQuoterActive {
+                args: UpdateQuoterActiveArgs { active },
+            }
+            .data(),
+        };
+    let set_active = |authority: Pubkey, active: bool, slab: Option<Pubkey>| {
+        set_active_with(authority, active, slab, Some(market_conditions))
     };
 
     assert!(send(
@@ -380,6 +396,18 @@ fn quoter_registry_lifecycle() {
         "with the slab the kill lands on the live copy at once"
     );
 
+    // Activating an approved Custom entry needs the market's crank
+    // conditions, so the program can tell whether to arm cross discovery.
+    let err = send(
+        &mut svm,
+        &maker,
+        set_active_with(maker.pubkey(), true, Some(quoter_slab_pda(0)), None),
+        &[],
+    )
+    .unwrap_err();
+    assert_velocity_error(&err, ErrorCode::InvalidQuoterConfig);
+
+    // The market has no attached book, so activation arms nothing.
     send(
         &mut svm,
         &maker,

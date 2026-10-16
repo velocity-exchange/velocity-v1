@@ -8,6 +8,9 @@
  *     [--extend-authority <pk>] [--watch-creators <pk,pk>] \
  *     [--clob-hash <sha256> | --clob-so <path>] [--expect-hot]
  *
+ * Every active, approved Custom quoter on a market with a book needs cross conditions and a relay
+ * watch on them.
+ *
  * A user's relay watch counts only when the keypair, or a key `--watch-creators` names, created it
  * at the block offset. Pass the migration payer there when it is not the keypair.
  *
@@ -36,6 +39,7 @@ import {
 	getClobCrankConditionsPublicKey,
 	getUserConditionsPublicKey,
 	getCrankTreasuryPublicKey,
+	getQuoterCrossConditionsPublicKey,
 	getQuoterSlabPublicKey,
 	getRelayScratchPublicKey,
 	getUserAccountPublicKeySync,
@@ -43,6 +47,7 @@ import {
 	getVelocitySignerPublicKey,
 	getVelocityStateAccountPublicKey,
 	positionIsAvailable,
+	quotingCustomEntries,
 	Wallet,
 } from '@velocity-exchange/sdk';
 import {
@@ -268,6 +273,7 @@ async function main() {
 		}
 
 		await requireMarketWatches(verifier, program, market);
+		await requireQuoterCrossConditions(verifier, program, market.marketIndex);
 	}
 
 	await requireWatchesOnExposedUsers(verifier, program, accounts);
@@ -510,6 +516,38 @@ async function requireMarketWatches(
 			market.clobMarket,
 			book.owner,
 			clobBlockOffset
+		);
+	}
+}
+
+/** Relay cranks no cross against a Custom quoter without its cross
+ * conditions and a watch on them. */
+async function requireQuoterCrossConditions(
+	verifier: Verifier,
+	program: Program,
+	marketIndex: number
+): Promise<void> {
+	const connection = program.provider.connection;
+	const slab = await connection.getAccountInfo(
+		getQuoterSlabPublicKey(program.programId, marketIndex)
+	);
+	if (!slab) return;
+
+	for (const quoter of quotingCustomEntries(slab.data)) {
+		const crossConditions = getQuoterCrossConditionsPublicKey(
+			program.programId,
+			quoter
+		);
+		if (!(await connection.getAccountInfo(crossConditions))) {
+			verifier.failures.push(
+				`market ${marketIndex} quoter ${quoter.toBase58()} is approved and active and has no cross conditions ${crossConditions.toBase58()}`
+			);
+			continue;
+		}
+
+		await verifier.requireWatch(
+			`quoter ${quoter.toBase58()} cross conditions`,
+			crossConditions
 		);
 	}
 }

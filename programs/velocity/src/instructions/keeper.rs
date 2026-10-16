@@ -5,12 +5,10 @@
 //! imports the subjects share and re-exports each of them, so a caller names
 //! `instructions::keeper` and not the module a handler sits in.
 //!
-//! * [`fill`] fills a resting order through the router.
 //! * [`signed_msg`] places a signed-message taker order, routes it, and rests
 //!   the remainder on the book.
-//! * [`trigger`] fires a trigger order and stages the relay crank for it.
-//! * [`user_maintenance`] repairs a user account: force-cancel, idle flag,
-//!   counter resync, and the equity breaker.
+//! * [`user_maintenance`] repairs a user account: force-cancel, idle flag, and
+//!   the equity breaker.
 //! * [`force_delete`] retires a dormant, near-empty subaccount.
 //! * [`settle_pnl`] settles perp pnl and funding for a user.
 //! * [`liquidation`] holds the direct liquidation entrypoints.

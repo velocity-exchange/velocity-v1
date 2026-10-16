@@ -130,6 +130,10 @@ export function setDryRun(value: boolean): void {
 	DRY_RUN = value;
 }
 
+export function isDryRun(): boolean {
+	return DRY_RUN;
+}
+
 /**
  * Dispatch admin instructions either directly (signed by the wallet) or via a
  * Squads V4 multisig vault transaction + proposal. Mirrors helium-admin-cli's

@@ -1,7 +1,20 @@
 import { expect } from 'chai';
-import { BN, QUOTE_PRECISION, ZERO } from '@velocity-exchange/sdk';
+import {
+	BN,
+	MarketStatus,
+	MarketType,
+	PublicKey,
+	QUOTE_PRECISION,
+	RevenueShareEscrowAccount,
+	RevenueShareOrder,
+	ZERO,
+} from '@velocity-exchange/sdk';
 
-import { UserPnlSettlerBot } from './userPnlSettler';
+import {
+	findRevenueShareForfeits,
+	findRevenueShareSettles,
+	UserPnlSettlerBot,
+} from './userPnlSettler';
 
 const HEALTHY_MARKET = 1;
 const DEAD_MARKET = 2; // oracle unavailable, e.g. a stale devnet test market
@@ -112,5 +125,78 @@ describe('UserPnlSettlerBot missing-oracle resilience', () => {
 		// Warns/records only once even across repeated calls.
 		(bot as any).getOracleDataForPerpMarketSafe(DEAD_MARKET);
 		expect((bot as any).missingOracleWarned.size).to.equal(1);
+	});
+});
+
+function revenueShareRow(marketIndex: number, feesAccrued: number) {
+	return {
+		marketIndex,
+		marketType: MarketType.PERP,
+		feesAccrued: new BN(feesAccrued),
+	} as unknown as RevenueShareOrder;
+}
+
+function escrowWith(rows: RevenueShareOrder[]): RevenueShareEscrowAccount {
+	return {
+		authority: PublicKey.unique(),
+		orders: rows,
+	} as unknown as RevenueShareEscrowAccount;
+}
+
+describe('revenue share work lists', () => {
+	const statuses = new Map<number, MarketStatus>([
+		[0, MarketStatus.ACTIVE],
+		[1, MarketStatus.SETTLEMENT],
+		[2, MarketStatus.DELISTED],
+	]);
+	const marketStatus = (marketIndex: number) => statuses.get(marketIndex);
+
+	it('settles each owing market once, largest debt first, and skips delisted markets', () => {
+		const small = escrowWith([revenueShareRow(0, 5), revenueShareRow(0, 0)]);
+		const large = escrowWith([
+			revenueShareRow(0, 40),
+			revenueShareRow(0, 10),
+			revenueShareRow(1, 20),
+			revenueShareRow(2, 99),
+			revenueShareRow(7, 99),
+		]);
+
+		const settles = findRevenueShareSettles([small, large], marketStatus, 10);
+
+		expect(
+			settles.map((s) => [s.escrow, s.marketIndex, s.owed.toNumber()])
+		).to.deep.equal([
+			[large, 0, 50],
+			[large, 1, 20],
+			[small, 0, 5],
+		]);
+	});
+
+	it('stops at the limit', () => {
+		const escrows = [0, 1, 2].map(() => escrowWith([revenueShareRow(0, 1)]));
+
+		expect(findRevenueShareSettles(escrows, marketStatus, 2)).to.have.length(2);
+		expect(findRevenueShareSettles(escrows, marketStatus, -1)).to.have.length(
+			0
+		);
+	});
+
+	it('forfeits only owing rows on a market in settlement', () => {
+		const escrow = escrowWith([
+			revenueShareRow(0, 10),
+			revenueShareRow(1, 10),
+			revenueShareRow(1, 0),
+			revenueShareRow(1, 3),
+		]);
+
+		const forfeits = findRevenueShareForfeits([escrow], marketStatus, 10);
+
+		expect(forfeits.map((f) => [f.marketIndex, f.orderIndex])).to.deep.equal([
+			[1, 1],
+			[1, 3],
+		]);
+		expect(findRevenueShareForfeits([escrow], marketStatus, 1)).to.have.length(
+			1
+		);
 	});
 });

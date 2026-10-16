@@ -523,10 +523,6 @@ pub mod velocity {
         handle_update_user_stats_referrer_info(ctx)
     }
 
-    // pub fn update_user_open_orders_count(ctx: Context<UpdateUserIdle>) -> Result<()> {
-    //     handle_update_user_open_orders_count(ctx)
-    // }
-
     pub fn admin_update_user_stats_paused_operations(
         ctx: Context<PauseAdminUpdateUserStats>,
         paused_operations: u8,
@@ -2466,7 +2462,7 @@ pub mod velocity {
     }
 
     /// Relay's unsigned self-maintenance path. It rewrites an existing block
-    /// and pays the keeper from the block's own lamports. It names no signer,
+    /// and pays the keeper from the crank treasury. It names no signer,
     /// because a staged executor is submitted unsigned.
     pub fn resync_liq_conditions<'c: 'info, 'info>(
         ctx: Context<'info, ResyncLiqConditions<'info>>,

@@ -27,7 +27,7 @@ use {
             InitializeRouterQuoteBufferArgs, PlaceAndMakePerpOrderV1Args,
             PlaceAndTakePerpOrderV1Args, QuoterAccountMetaArg, RefillCrankReservoirArgs,
             TriggerLimitOrderV1Args, TriggerMarketOrderV1Args, UpdatePerpMarketClobQuoterArgs,
-            UpdateQuoterAccountsArgs, UpdateQuoterApprovedArgs,
+            UpdateQuoterAccountsArgs, UpdateQuoterActiveArgs, UpdateQuoterApprovedArgs,
         },
         math::constants::{
             AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION_I64,
@@ -6450,6 +6450,156 @@ fn attach_quoter_cross(fixture: &mut Fixture, maker: &MidpointMaker) -> Pubkey {
     let keeper = fixture.keeper.insecure_clone();
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     cross_conditions
+}
+
+fn quoter_cross_conditions_pda(entry: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"quoter_cross_conditions", entry.as_ref()],
+        &velocity_id(),
+    )
+    .0
+}
+
+/// The cross-arming accounts `update_quoter_active` takes after `state`.
+struct CrossArming {
+    market_conditions: bool,
+    cross_conditions: bool,
+}
+
+const ARM_CROSS: CrossArming = CrossArming {
+    market_conditions: true,
+    cross_conditions: true,
+};
+
+const NO_CROSS: CrossArming = CrossArming {
+    market_conditions: false,
+    cross_conditions: false,
+};
+
+fn update_quoter_active_ix(
+    authority: Pubkey,
+    entry: Pubkey,
+    state: Option<Pubkey>,
+    active: bool,
+    arming: CrossArming,
+) -> Instruction {
+    let cross = arming.cross_conditions;
+    Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateQuoterActive {
+            authority,
+            quoter: entry,
+            quoter_slab: Some(quoter_slab_pda(0)),
+            state,
+            perp_market: cross.then(|| perp_market_pda(0)),
+            market_conditions: arming.market_conditions.then(|| {
+                Pubkey::find_program_address(
+                    &[b"clob_crank_conditions", 0u16.to_le_bytes().as_ref()],
+                    &velocity_id(),
+                )
+                .0
+            }),
+            cross_conditions: cross.then(|| quoter_cross_conditions_pda(&entry)),
+            system_program: cross.then(|| "11111111111111111111111111111111".parse().unwrap()),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateQuoterActive {
+            args: UpdateQuoterActiveArgs { active },
+        }
+        .data(),
+    }
+}
+
+/// Activation of an approved Custom entry on an attached market arms its
+/// cross conditions, paid by the entry authority, at the default interval.
+/// Deactivation needs none of the arming accounts.
+#[test]
+fn activating_an_approved_custom_quoter_arms_its_cross_conditions() {
+    use velocity::state::quoter_cross::{QuoterCrossConditionsV0, QUOTER_CROSS_CLOB};
+
+    let mut fixture = setup();
+    init_crank_conditions(&mut fixture, 10_000);
+    let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT);
+    let cross_conditions = quoter_cross_conditions_pda(&maker.entry);
+    let authority = maker.authority.insecure_clone();
+
+    let ix = update_quoter_active_ix(authority.pubkey(), maker.entry, None, false, NO_CROSS);
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+    assert!(fixture.svm.get_account(&cross_conditions).is_none());
+
+    let ix = update_quoter_active_ix(authority.pubkey(), maker.entry, None, true, ARM_CROSS);
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+    assert!(read_slab_slot(&fixture.svm, 0, 1).quotes());
+
+    let acct: QuoterCrossConditionsV0 = read_zero_copy(&fixture.svm, &cross_conditions);
+    assert_eq!(acct.quoter, maker.entry);
+    assert_eq!(acct.fallback_slots(), Some(1_500));
+    let (header, conditions) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
+    assert_eq!(header.num_conditions, 3);
+    assert_eq!(
+        account_change(&conditions[QUOTER_CROSS_CLOB]).0,
+        fixture.clob_market.to_bytes()
+    );
+}
+
+/// No client activates a Custom entry on an attached market without arming
+/// its cross discovery.
+#[test]
+fn activating_a_custom_quoter_on_an_attached_market_requires_the_cross_accounts() {
+    let mut fixture = setup();
+    init_crank_conditions(&mut fixture, 10_000);
+    let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT);
+    let authority = maker.authority.insecure_clone();
+    let ix = update_quoter_active_ix(authority.pubkey(), maker.entry, None, false, NO_CROSS);
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+
+    for arming in [
+        NO_CROSS,
+        CrossArming {
+            market_conditions: true,
+            cross_conditions: false,
+        },
+    ] {
+        let ix = update_quoter_active_ix(authority.pubkey(), maker.entry, None, true, arming);
+        let err = send(&mut fixture.svm, &authority, ix, &[]).unwrap_err();
+        assert_velocity_error(&err, ErrorCode::InvalidQuoterConfig);
+    }
+}
+
+/// The book's entry has no cross conditions, so its switch needs none of the
+/// arming accounts in either direction.
+#[test]
+fn the_book_entry_switch_needs_no_cross_accounts() {
+    let mut fixture = setup();
+    init_crank_conditions(&mut fixture, 10_000);
+    let admin = fixture.admin.insecure_clone();
+    for active in [false, true] {
+        let ix = update_quoter_active_ix(
+            admin.pubkey(),
+            fixture.quoter,
+            Some(state_pda()),
+            active,
+            NO_CROSS,
+        );
+        send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+    }
+
+    assert!(fixture
+        .svm
+        .get_account(&quoter_cross_conditions_pda(&fixture.quoter))
+        .is_none());
+
+    // A call that arms nothing refuses `cross_conditions`, which Anchor would
+    // otherwise create empty.
+    let ix = update_quoter_active_ix(
+        admin.pubkey(),
+        fixture.quoter,
+        Some(state_pda()),
+        true,
+        ARM_CROSS,
+    );
+    let err = send(&mut fixture.svm, &admin, ix, &[]).unwrap_err();
+    assert_velocity_error(&err, ErrorCode::InvalidQuoterConfig);
 }
 
 /// Run the generic resolver the way a turner does. Its account list is

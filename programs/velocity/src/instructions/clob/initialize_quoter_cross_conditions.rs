@@ -18,7 +18,8 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             perp_market::PerpMarket,
             prop_amm::{
-                clob_slot_index, slot_for_entry, QuoterSlabExt, QuoterSlabV0, QuoterType, QuoterV0,
+                clob_slot_index, slot_for_entry, QuoterConfigV0, QuoterSlabExt, QuoterSlabV0,
+                QuoterType, QuoterV0,
             },
             quoter_cross::{
                 QuoterCrossConditionsV0, QUOTER_CROSS_CLOB, QUOTER_CROSS_CONDITIONS_PDA_SEED,
@@ -96,125 +97,180 @@ pub fn handle_initialize_quoter_cross_conditions(
     ctx: Context<InitializeQuoterCrossConditions>,
     args: InitializeQuoterCrossConditionsArgs,
 ) -> Result<()> {
-    let slots = ctx.accounts.quoter_slab.slots()?;
-    let quoter_slot = slot_for_entry(&slots, &ctx.accounts.quoter.key()).ok_or_else(|| {
-        msg!("quoter holds no slab slot; approve it first");
-        error!(ErrorCode::QuoterNotOnSlab)
-    })?;
-    let quoter = &slots[quoter_slot].config;
-    validate!(
-        quoter.quoter_type == QuoterType::Custom,
-        ErrorCode::InvalidQuoterConfig,
-        "cross conditions are for Custom quoters (the CLOB's are on the market conditions)"
-    )?;
-    validate!(
-        slots[quoter_slot].quotes(),
-        ErrorCode::InvalidQuoterConfig,
-        "quoter must be active and approved to attach cross discovery"
-    )?;
+    CrossConditionsWrite {
+        state: ctx.accounts.state.key(),
+        quoter: ctx.accounts.quoter.key(),
+        caller: ctx.accounts.payer.key(),
+        perp_market: &ctx.accounts.perp_market,
+        quoter_slab: &ctx.accounts.quoter_slab,
+        market: MarketCrossTerms::from_conditions(&*ctx.accounts.market_conditions.load()?)?,
+        cross_conditions: &ctx.accounts.cross_conditions,
+    }
+    .write(Some(args.expire_fallback_slots))
+}
 
-    let book_slot = clob_slot_index(&slots).ok_or_else(|| {
-        msg!("quoter slab holds no book slot");
-        error!(ErrorCode::QuoterNotOnSlab)
-    })?;
-    let clob = &slots[book_slot].config;
-    validate!(
-        ctx.accounts.perp_market.load()?.clob_market == clob.response_account,
-        ErrorCode::InvalidQuoterConfig,
-        "the slab's book is not the market's canonical book"
-    )?;
+/// The accounts that create or re-price one entry's cross conditions. The
+/// caller binds each one to the entry's market and to the entry key.
+pub struct CrossConditionsWrite<'a, 'info> {
+    pub state: Pubkey,
+    pub quoter: Pubkey,
+    pub caller: Pubkey,
+    pub perp_market: &'a AccountLoader<'info, PerpMarket>,
+    pub quoter_slab: &'a AccountLoader<'info, QuoterSlabV0>,
+    pub market: MarketCrossTerms,
+    pub cross_conditions: &'a AccountLoader<'info, QuoterCrossConditionsV0>,
+}
 
-    // The resolver stages `crank_cross_match` and nothing else, so the floor
-    // is that crank's payment out of the market's reservoir. The watched region
-    // comes from the same account. The book reported it when the market
-    // attached, so nothing here derives where the book's heads sit.
-    let (keeper_payment_lamports, top_of_book_offset, top_of_book_len, quote_oracle) = {
-        let market_conditions = ctx.accounts.market_conditions.load()?;
-        (
-            u64::from(market_conditions.crank_payments.cross),
-            market_conditions.top_of_book_offset,
-            market_conditions.top_of_book_len,
-            market_conditions.quote_oracle,
+/// What the market's crank conditions give every cross condition.
+pub struct MarketCrossTerms {
+    keeper_payment_lamports: u64,
+    top_of_book_offset: u32,
+    top_of_book_len: u32,
+    quote_oracle: Pubkey,
+}
+
+impl MarketCrossTerms {
+    /// The resolver stages `crank_cross_match` and nothing else, so the floor
+    /// is that crank's payment out of the market's reservoir. The book
+    /// reported its top-of-book region when the market attached.
+    pub fn from_conditions(market_conditions: &ClobCrankConditionsV0) -> Result<Self> {
+        validate!(
+            market_conditions.top_of_book_len > 0,
+            ErrorCode::InvalidQuoterConfig,
+            "market conditions carry no top-of-book region; re-run the market's attach"
+        )?;
+
+        Ok(Self {
+            keeper_payment_lamports: u64::from(market_conditions.crank_payments.cross),
+            top_of_book_offset: market_conditions.top_of_book_offset,
+            top_of_book_len: market_conditions.top_of_book_len,
+            quote_oracle: market_conditions.quote_oracle,
+        })
+    }
+}
+
+impl CrossConditionsWrite<'_, '_> {
+    /// Write the block. `requested_fallback_slots` is `None` when the caller
+    /// asks for no interval, and the block then keeps its stored one.
+    pub fn write(&self, requested_fallback_slots: Option<u64>) -> Result<()> {
+        let slots = self.quoter_slab.slots()?;
+        let quoter_slot = slot_for_entry(&slots, &self.quoter).ok_or_else(|| {
+            msg!("quoter holds no slab slot; approve it first");
+            error!(ErrorCode::QuoterNotOnSlab)
+        })?;
+        let quoter = &slots[quoter_slot].config;
+        validate!(
+            quoter.quoter_type == QuoterType::Custom,
+            ErrorCode::InvalidQuoterConfig,
+            "cross conditions are for Custom quoters (the CLOB's are on the market conditions)"
+        )?;
+        validate!(
+            slots[quoter_slot].quotes(),
+            ErrorCode::InvalidQuoterConfig,
+            "quoter must be active and approved to attach cross discovery"
+        )?;
+
+        let book_slot = clob_slot_index(&slots).ok_or_else(|| {
+            msg!("quoter slab holds no book slot");
+            error!(ErrorCode::QuoterNotOnSlab)
+        })?;
+        let clob = &slots[book_slot].config;
+        validate!(
+            self.perp_market.load()?.clob_market == clob.response_account,
+            ErrorCode::InvalidQuoterConfig,
+            "the slab's book is not the market's canonical book"
+        )?;
+
+        let terms = &self.market;
+        let resolver_accounts = self.resolver_accounts(quoter, clob)?;
+        let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
+            disc.try_into()
+                .map_err(|_| error!(ErrorCode::CastingFailure))
+        };
+        let spec = CrankSpecV0 {
+            resolver_program: crate::ID.to_bytes(),
+            resolver_disc: disc8(crate::instruction::ResolveCrankCrossMatchQuoter::DISCRIMINATOR)?,
+            min_payment: terms.keeper_payment_lamports,
+        };
+
+        let mut conditions = match self.cross_conditions.load_init() {
+            Ok(conditions) => conditions,
+            // The account already exists on a re-attach, so re-price in place.
+            Err(_) => self.cross_conditions.load_mut()?,
+        };
+        let expire_fallback_slots = fallback_interval(
+            requested_fallback_slots,
+            self.caller == quoter.authority,
+            conditions.fallback_slots(),
+        )?;
+
+        let (oracle, quote_spot_market_index) = {
+            let market = self.perp_market.load()?;
+            (market.oracle, market.quote_spot_market_index)
+        };
+        conditions.quoter = self.quoter;
+        conditions.clob_market = clob.response_account;
+        conditions.clob_program = clob.program_id;
+        conditions.oracle = oracle;
+        conditions.market_index = quoter.market;
+        conditions.quote_spot_market_index = quote_spot_market_index;
+        conditions.quote_oracle = terms.quote_oracle;
+        conditions.init_block()?;
+        let resolvers = conditions.write_resolver_list(&resolver_accounts)?;
+
+        set_cross_conditions(
+            &mut conditions,
+            quoter,
+            &clob.response_account,
+            terms,
+            spec,
+            resolvers,
+            expire_fallback_slots,
         )
-    };
-
-    validate!(
-        top_of_book_len > 0,
-        ErrorCode::InvalidQuoterConfig,
-        "market conditions carry no top-of-book region; re-run the market's attach"
-    )?;
-
-    let (oracle, quote_spot_market_index) = {
-        let market = ctx.accounts.perp_market.load()?;
-        (market.oracle, market.quote_spot_market_index)
-    };
-    let clob_market = clob.response_account;
-
-    // The resolver's account list, in order: the shared scratch at index 0
-    // (where the response pointer says the payload lives), the conditions,
-    // the CLOB book, the state, the market's quoter slab (both legs'
-    // approved configs), the entry's quoted user, the CLOB program, then the
-    // entry's registered quote surface and its program. That is everything
-    // the two generic quote CPIs need, stored once and pointed at by each
-    // condition through relay's resolver-list indirection. The book is
-    // writable because the resolver streams its quote into the market's own response tail through `quote_l3_v0`; nothing it sends lands.
-    let mut resolver_accounts = vec![
-        AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
-        AccountRefV0::readonly(ctx.accounts.cross_conditions.key().to_bytes()),
-        AccountRefV0::writable(clob_market.to_bytes()),
-        AccountRefV0::readonly(ctx.accounts.state.key().to_bytes()),
-        AccountRefV0::readonly(ctx.accounts.quoter_slab.key().to_bytes()),
-        AccountRefV0::readonly(quoter.user.to_bytes()),
-        AccountRefV0::readonly(clob.program_id.to_bytes()),
-    ];
-
-    for meta in quoter.leg_metas(quoter.quote_leg_indexes())? {
-        resolver_accounts.push(if meta.is_writable {
-            AccountRefV0::writable(meta.pubkey.to_bytes())
-        } else {
-            AccountRefV0::readonly(meta.pubkey.to_bytes())
-        });
     }
 
-    resolver_accounts.push(AccountRefV0::readonly(quoter.program_id.to_bytes()));
+    /// The resolver's account list, in order: the shared scratch, the
+    /// conditions, the book, the state, the slab, the entry's quoted user, the
+    /// CLOB program, then the entry's registered quote accounts and its
+    /// program. Each condition points at this one list. The book is writable
+    /// because the resolver streams its quote into the book's response tail.
+    fn resolver_accounts(
+        &self,
+        quoter: &QuoterConfigV0,
+        clob: &QuoterConfigV0,
+    ) -> Result<Vec<AccountRefV0>> {
+        let mut resolver_accounts = vec![
+            AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
+            AccountRefV0::readonly(self.cross_conditions.key().to_bytes()),
+            AccountRefV0::writable(clob.response_account.to_bytes()),
+            AccountRefV0::readonly(self.state.to_bytes()),
+            AccountRefV0::readonly(self.quoter_slab.key().to_bytes()),
+            AccountRefV0::readonly(quoter.user.to_bytes()),
+            AccountRefV0::readonly(clob.program_id.to_bytes()),
+        ];
 
-    let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
-        disc.try_into()
-            .map_err(|_| error!(ErrorCode::CastingFailure))
-    };
-    let spec = CrankSpecV0 {
-        resolver_program: crate::ID.to_bytes(),
-        resolver_disc: disc8(crate::instruction::ResolveCrankCrossMatchQuoter::DISCRIMINATOR)?,
-        min_payment: keeper_payment_lamports,
-    };
-
-    let caller_is_maker = ctx.accounts.payer.key() == quoter.authority;
-    let (mut conditions, stored_fallback_slots) = match ctx.accounts.cross_conditions.load_init() {
-        Ok(conditions) => (conditions, None),
-        // The account already exists on a re-attach, so re-price in place.
-        Err(_) => {
-            let conditions = ctx.accounts.cross_conditions.load_mut()?;
-            let stored = conditions.fallback_slots();
-            (conditions, stored)
+        for meta in quoter.leg_metas(quoter.quote_leg_indexes())? {
+            resolver_accounts.push(if meta.is_writable {
+                AccountRefV0::writable(meta.pubkey.to_bytes())
+            } else {
+                AccountRefV0::readonly(meta.pubkey.to_bytes())
+            });
         }
-    };
 
-    let expire_fallback_slots = fallback_interval(
-        args.expire_fallback_slots,
-        caller_is_maker,
-        stored_fallback_slots,
-    )?;
+        resolver_accounts.push(AccountRefV0::readonly(quoter.program_id.to_bytes()));
+        Ok(resolver_accounts)
+    }
+}
 
-    conditions.quoter = ctx.accounts.quoter.key();
-    conditions.clob_market = clob_market;
-    conditions.clob_program = clob.program_id;
-    conditions.oracle = oracle;
-    conditions.market_index = quoter.market;
-    conditions.quote_spot_market_index = quote_spot_market_index;
-    conditions.quote_oracle = quote_oracle;
-    conditions.init_block()?;
-    let resolvers = conditions.write_resolver_list(&resolver_accounts)?;
-
+fn set_cross_conditions(
+    conditions: &mut QuoterCrossConditionsV0,
+    quoter: &QuoterConfigV0,
+    clob_market: &Pubkey,
+    terms: &MarketCrossTerms,
+    spec: CrankSpecV0,
+    resolvers: relay_spec::ResolverListV0,
+    expire_fallback_slots: u64,
+) -> Result<()> {
     // The maker-declared reprice watch. It stays inactive when the maker
     // declares nothing. The fallback poll is then the only wake for this
     // side.
@@ -245,8 +301,8 @@ pub fn handle_initialize_quoter_cross_conditions(
         &(ConditionV0::on_account_change(
             relay_spec::WatchedRegion::new(
                 clob_market.to_bytes(),
-                top_of_book_offset,
-                top_of_book_len,
+                terms.top_of_book_offset,
+                terms.top_of_book_len,
             ),
             spec,
             resolvers,
@@ -255,17 +311,24 @@ pub fn handle_initialize_quoter_cross_conditions(
     conditions.set_condition(
         QUOTER_CROSS_FALLBACK,
         &(ConditionV0::every_slots(expire_fallback_slots, spec, resolvers)),
-    )?;
-
-    Ok(())
+    )
 }
 
 /// The fallback interval an attach writes.
 ///
 /// A longer interval delays cross discovery for the maker's quotes, so only
 /// the maker's authority chooses one. Any other caller must ask for the
-/// default. On a re-attach it keeps whatever interval the block already holds.
-fn fallback_interval(requested: u64, caller_is_maker: bool, stored: Option<u64>) -> Result<u64> {
+/// default. No request keeps whatever interval the block already holds, and
+/// so does a re-attach by another caller.
+fn fallback_interval(
+    requested: Option<u64>,
+    caller_is_maker: bool,
+    stored: Option<u64>,
+) -> Result<u64> {
+    let Some(requested) = requested else {
+        return Ok(stored.unwrap_or(QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS));
+    };
+
     validate!(
         requested > 0,
         ErrorCode::InvalidQuoterConfig,
@@ -302,9 +365,9 @@ mod tests {
     /// A third party cannot widen a maker's poll interval up to the ceiling.
     #[test]
     fn a_third_party_cannot_choose_the_interval() {
-        assert!(fallback_interval(QUOTER_CROSS_FALLBACK_MAX_SLOTS, false, None).is_err());
+        assert!(fallback_interval(Some(QUOTER_CROSS_FALLBACK_MAX_SLOTS), false, None).is_err());
         assert_eq!(
-            fallback_interval(QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS, false, None).unwrap(),
+            fallback_interval(Some(QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS), false, None).unwrap(),
             QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS
         );
     }
@@ -313,15 +376,29 @@ mod tests {
     #[test]
     fn a_third_party_reattach_keeps_the_stored_interval() {
         assert_eq!(
-            fallback_interval(QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS, false, Some(300)).unwrap(),
+            fallback_interval(Some(QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS), false, Some(300)).unwrap(),
             300
+        );
+    }
+
+    /// An attach that asks for no interval keeps the stored one, and a new
+    /// block starts at the default.
+    #[test]
+    fn no_request_keeps_the_stored_interval() {
+        assert_eq!(fallback_interval(None, true, Some(300)).unwrap(), 300);
+        assert_eq!(
+            fallback_interval(None, false, None).unwrap(),
+            QUOTER_CROSS_FALLBACK_DEFAULT_SLOTS
         );
     }
 
     #[test]
     fn the_maker_chooses_any_interval_up_to_the_ceiling() {
-        assert_eq!(fallback_interval(300, true, Some(9_000)).unwrap(), 300);
-        assert!(fallback_interval(QUOTER_CROSS_FALLBACK_MAX_SLOTS + 1, true, None).is_err());
-        assert!(fallback_interval(0, true, None).is_err());
+        assert_eq!(
+            fallback_interval(Some(300), true, Some(9_000)).unwrap(),
+            300
+        );
+        assert!(fallback_interval(Some(QUOTER_CROSS_FALLBACK_MAX_SLOTS + 1), true, None).is_err());
+        assert!(fallback_interval(Some(0), true, None).is_err());
     }
 }

@@ -27535,6 +27535,10 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub quoter_slab: Pubkey,
         pub state: Pubkey,
+        pub perp_market: Pubkey,
+        pub market_conditions: Pubkey,
+        pub cross_conditions: Pubkey,
+        pub system_program: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterActive {
@@ -27555,7 +27559,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.authority,
                     is_signer: true,
-                    is_writable: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.quoter,
@@ -27569,6 +27573,26 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.market_conditions,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.cross_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
                     is_signer: false,
                     is_writable: false,
                 },

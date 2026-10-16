@@ -90,7 +90,8 @@ export async function buildTriggerMarketOrderV1Instruction(
 
 /**
  * Builds a `syncTriggerConditions` instruction, which arms a relay watch for each trigger
- * order of `user`. Relay is the only executor that fires a trigger.
+ * order of `user`. Relay fires each trigger. keep-rs `--trigger` fires one that relay
+ * leaves armed after the price crosses it.
  * @param args.remainingAccounts the user's margin map, then the crank conditions and
  *   quoter slab of each exposed perp market that has a CLOB.
  */

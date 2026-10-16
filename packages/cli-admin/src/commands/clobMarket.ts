@@ -22,6 +22,7 @@ import {
 	withCrankCostUnitOptions,
 } from '../lib/crankCostUnits';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
+import { marketCrossGroups, sendMarketCrossGroups } from '../lib/quoterCross';
 
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import {
@@ -640,6 +641,20 @@ export function registerClobMarket(parent: Command): void {
 							`${watches[1].publicKey.toBase58()} -> book`
 					);
 				}
+
+				// A Custom entry approved before this attach has no cross
+				// conditions yet.
+				await sendMarketCrossGroups(
+					provider,
+					await marketCrossGroups(
+						provider,
+						client.program,
+						marketIndex,
+						wallet,
+						flags.relayProgram.toLowerCase() !== 'none'
+					),
+					marketIndex
+				);
 			} finally {
 				if ((client as any).isSubscribed) {
 					await client.unsubscribe();

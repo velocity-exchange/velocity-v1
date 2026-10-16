@@ -11,15 +11,15 @@ use {
     crate::{
         error::ErrorCode,
         instructions::{
-            clob::helpers::crank_common::sol_spot_market_ref, router::user_caps::position_cover,
+            clob::helpers::crank_common::{
+                is_bound_remainder, row_order_ref, sol_spot_market_ref, staged_row_cancel,
+            },
+            router::user_caps::position_cover,
             CrankClobCancelUncoveredReduceOnlyArgs, StagedCall,
         },
         state::{
             pdas,
-            prop_amm::{
-                ClobOrderRefV0, DirectionV0, L3RowV0, SideV0, L3_ROW_FLAG_REDUCE_ONLY,
-                L3_ROW_FLAG_TAKER_ORIGIN,
-            },
+            prop_amm::{DirectionV0, L3RowV0, SideV0, L3_ROW_FLAG_REDUCE_ONLY},
             state::{ExchangeStatus, State},
             user::User,
         },
@@ -67,7 +67,7 @@ pub(super) fn stage_uncovered_reduce_only_cancel<'info>(
                 |row| *row,
             )?
             .unwrap_or_default();
-        if let Some(row) = uncovered_reduce_only_row(&user, market_index, side, &rows) {
+        if let Some(row) = uncovered_reduce_only_row(&user, &rows) {
             return stage_cancel(
                 state,
                 state_key,
@@ -99,21 +99,16 @@ fn uncovered_sides(user: &User) -> Vec<UncoveredSide> {
         .collect()
 }
 
-/// The first reduce-only row of `user` in `rows`, when its position covers
-/// nothing on `side`. It applies the rule the crank applies.
-fn uncovered_reduce_only_row(
-    user: &User,
-    market_index: u16,
-    side: SideV0,
-    rows: &[L3RowV0],
-) -> Option<L3RowV0> {
-    if position_cover(user, market_index, side) != 0 {
-        return None;
-    }
-
+/// The first reduce-only row of `user` in `rows` that a keeper may cancel. The
+/// caller passes only a side that [`uncovered_sides`] returned.
+fn uncovered_reduce_only_row(user: &User, rows: &[L3RowV0]) -> Option<L3RowV0> {
     let owner = user.clob_user_ref();
     rows.iter()
-        .find(|row| row.user == owner && row.flags & L3_ROW_FLAG_REDUCE_ONLY != 0)
+        .find(|row| {
+            row.user == owner
+                && row.flags & L3_ROW_FLAG_REDUCE_ONLY != 0
+                && !is_bound_remainder(row)
+        })
         .copied()
 }
 
@@ -126,8 +121,7 @@ fn sweeping_direction(side: SideV0) -> DirectionV0 {
     }
 }
 
-/// The crank in program-keeper mode. A taker-origin order adds its owner's
-/// signed-message record, so the cancel releases the entry.
+/// The crank in program-keeper mode.
 fn stage_cancel(
     state: &State,
     state_key: Pubkey,
@@ -137,7 +131,7 @@ fn stage_cancel(
     row: &L3RowV0,
 ) -> Result<StagedCall> {
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
-    let mut call = StagedCall::new::<crate::instruction::CrankClobCancelUncoveredReduceOnly>(
+    staged_row_cancel::<crate::instruction::CrankClobCancelUncoveredReduceOnly>(
         crate::accounts::CrankClobCancelUncoveredReduceOnly {
             state: state_key,
             authority: pdas::keeper_placeholder(),
@@ -151,17 +145,11 @@ fn stage_cancel(
             crank_conditions: Some(pdas::clob_crank_conditions(market_index)),
             sol_spot_market: sol_spot_market_ref(state),
         },
-    );
-    if row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0 {
-        call = call.account(pdas::signed_msg_user_orders(&row.user.authority), true);
-    }
-
-    call.arg(CrankClobCancelUncoveredReduceOnlyArgs {
+        row,
+    )
+    .arg(CrankClobCancelUncoveredReduceOnlyArgs {
         market_index,
-        order_ref: ClobOrderRefV0 {
-            node_index: row.node_index,
-            order_id: row.order_id,
-        },
+        order_ref: row_order_ref(row),
     })
 }
 
@@ -170,10 +158,11 @@ mod tests {
     use {
         super::{uncovered_reduce_only_row, uncovered_sides},
         crate::state::{
-            prop_amm::{L3RowV0, SideV0, L3_ROW_FLAG_REDUCE_ONLY},
+            prop_amm::{L3RowV0, SideV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN},
             user::{PerpPosition, User},
         },
         anchor_lang::prelude::Pubkey,
+        quoter_spec::L3_ROW_FLAG_CLAIM_LAPSED,
     };
 
     fn user_with_position(base_asset_amount: i64) -> User {
@@ -211,18 +200,21 @@ mod tests {
             row(&user, 4, L3_ROW_FLAG_REDUCE_ONLY),
         ];
 
-        let found = uncovered_reduce_only_row(&user, 0, SideV0::Bid, &rows);
+        let found = uncovered_reduce_only_row(&user, &rows);
         assert_eq!(found.map(|row| row.order_id), Some(3));
     }
 
     #[test]
-    fn a_covered_side_finds_nothing() {
-        let user = user_with_position(-1);
-        let rows = [row(&user, 1, L3_ROW_FLAG_REDUCE_ONLY)];
-        assert_eq!(
-            uncovered_reduce_only_row(&user, 0, SideV0::Bid, &rows),
-            None
-        );
+    fn a_bound_taker_remainder_is_skipped() {
+        let user = user_with_position(0);
+        let bound = L3_ROW_FLAG_REDUCE_ONLY | L3_ROW_FLAG_TAKER_ORIGIN;
+        let rows = [
+            row(&user, 1, bound),
+            row(&user, 2, bound | L3_ROW_FLAG_CLAIM_LAPSED),
+        ];
+
+        let found = uncovered_reduce_only_row(&user, &rows);
+        assert_eq!(found.map(|row| row.order_id), Some(2));
     }
 
     #[test]
@@ -230,10 +222,7 @@ mod tests {
         let user = user_with_position(0);
         let other = user_with_position(0);
         let rows = [row(&other, 1, L3_ROW_FLAG_REDUCE_ONLY), row(&user, 2, 0)];
-        assert_eq!(
-            uncovered_reduce_only_row(&user, 0, SideV0::Bid, &rows),
-            None
-        );
+        assert_eq!(uncovered_reduce_only_row(&user, &rows), None);
     }
 
     /// A long covers the asks, so only the bid side is read.

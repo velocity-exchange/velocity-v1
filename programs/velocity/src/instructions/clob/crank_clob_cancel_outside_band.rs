@@ -27,8 +27,9 @@
 
 use {
     super::helpers::crank_common::{
-        book_l3_sides, crank_clob_removal, payment_sol_price, program_keeper_mode,
-        sol_spot_market_ref, ClobRemoval, RemovalAccounts, ResolveClobCrank,
+        book_l3_sides, crank_clob_removal, is_bound_remainder, payment_sol_price,
+        program_keeper_mode, row_order_ref, sol_spot_market_ref, staged_row_cancel, ClobRemoval,
+        RemovalAccounts, ResolveClobCrank,
     },
     crate::{
         controller::{
@@ -51,7 +52,7 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 find_account, CancelOrderArgsV0, ClobOrderRefV0, ClobReader, L3RowV0,
-                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, SideV0, L3_ROW_FLAG_TAKER_ORIGIN,
+                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, SideV0,
             },
             spot_market::SpotMarket,
             state::{ExchangeStatus, State},
@@ -325,9 +326,7 @@ fn resolver_band(
 /// still holds, so such a row is skipped.
 fn first_outside_band(band: &MakerBand, side: SideV0, rows: &[L3RowV0]) -> Result<Option<L3RowV0>> {
     for row in rows {
-        let bound_remainder = row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0
-            && row.flags & quoter_spec::L3_ROW_FLAG_CLAIM_LAPSED == 0;
-        if !bound_remainder && band.refuses(row.price, PositionDirection::from(side))? {
+        if !is_bound_remainder(row) && band.refuses(row.price, PositionDirection::from(side))? {
             return Ok(Some(*row));
         }
     }
@@ -345,7 +344,7 @@ fn stage_cancel(
     row: &L3RowV0,
 ) -> Result<StagedCall> {
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
-    let mut call = StagedCall::new::<crate::instruction::CrankClobCancelOutsideBand>(
+    staged_row_cancel::<crate::instruction::CrankClobCancelOutsideBand>(
         crate::accounts::CrankClobCancelOutsideBand {
             state: ctx.accounts.state.key(),
             authority: pdas::keeper_placeholder(),
@@ -360,17 +359,11 @@ fn stage_cancel(
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
             sol_spot_market: sol_spot_market_ref(state),
         },
-    );
-    if row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0 {
-        call = call.account(pdas::signed_msg_user_orders(&row.user.authority), true);
-    }
-
-    call.arg(CrankClobCancelOutsideBandArgs {
+        row,
+    )
+    .arg(CrankClobCancelOutsideBandArgs {
         market_index,
-        order_ref: ClobOrderRefV0 {
-            node_index: row.node_index,
-            order_id: row.order_id,
-        },
+        order_ref: row_order_ref(row),
     })
 }
 

@@ -39,10 +39,10 @@ use {
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                CancelOrderArgsV0, ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0,
-                L3RowV0, OrderRulesV0, OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
-                QuoterSlotV0, QuoterType, RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
-                L3_ROW_FLAG_REDUCE_ONLY,
+                CancelOrderArgsV0, ClobMarket, ClobOrderRefV0, ClobReader, DirectionV0,
+                EvictWorstArgsV0, L3ArgsV0, L3RowV0, OrderRulesV0, OrderViewV0, QuoterCpiScratch,
+                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, RemoveExpiredArgsV0,
+                RemovedOrderV0, UserRefV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
             },
             signed_msg_user::release_removed_remainders,
             spot_market::SpotMarket,
@@ -728,6 +728,34 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
 /// names one.
 pub fn sol_spot_market_ref(state: &State) -> Option<Pubkey> {
     (state.sol_spot_market_index != 0).then(|| pdas::spot_market(state.sol_spot_market_index))
+}
+
+/// Whether `row` is a taker remainder whose claim still holds. The book refuses
+/// a plain cancel of such a row, so no keeper crank may stage one.
+pub(crate) fn is_bound_remainder(row: &L3RowV0) -> bool {
+    row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0
+        && row.flags & quoter_spec::L3_ROW_FLAG_CLAIM_LAPSED == 0
+}
+
+/// A program-keeper cancel of a book `row`, before its args. A taker-origin row
+/// passes its owner's signed-message record, so the cancel releases the entry.
+pub(crate) fn staged_row_cancel<I: anchor_lang::Discriminator>(
+    accounts: impl ToAccountMetas,
+    row: &L3RowV0,
+) -> StagedCall {
+    let call = StagedCall::new::<I>(accounts);
+    if row.flags & L3_ROW_FLAG_TAKER_ORIGIN == 0 {
+        return call;
+    }
+
+    call.account(pdas::signed_msg_user_orders(&row.user.authority), true)
+}
+
+pub(crate) fn row_order_ref(row: &L3RowV0) -> ClobOrderRefV0 {
+    ClobOrderRefV0 {
+        node_index: row.node_index,
+        order_id: row.order_id,
+    }
 }
 
 /// The trigger a crank acted on, and the reward it collected from the owner.

@@ -89,10 +89,7 @@ use {
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
         },
         validate,
-        vlp::amm::{
-            controller::get_fee_pool_tokens, math::amm::calculate_amm_available_liquidity,
-            refresh::update_amm_and_check_validity,
-        },
+        vlp::amm::{controller::get_fee_pool_tokens, refresh::update_amm_and_check_validity},
     },
     anchor_lang::prelude::*,
     std::ops::{Deref, DerefMut},
@@ -1012,7 +1009,7 @@ struct ShortageCover {
 
 /// The vAMM's marginal price after it fills `base_asset_amount` for a taker in
 /// `direction`, on the curve the fill in this slot quotes. The vAMM's available
-/// liquidity caps the size.
+/// liquidity caps the size. `None` when the vAMM cannot fill that side.
 fn projected_vamm_price(
     market: &PerpMarket,
     oracle_price_data: OraclePriceData,
@@ -1020,11 +1017,12 @@ fn projected_vamm_price(
     slot: u64,
     direction: PositionDirection,
     base_asset_amount: u64,
-) -> VelocityResult<u64> {
-    let amm = orders::projected_amm(market, oracle_price_data, state, slot)?;
-    let available = calculate_amm_available_liquidity(&amm, &direction, market.order_step_size)?;
+) -> Option<u64> {
+    let vamm = orders::fillable_vamm(market, oracle_price_data, state, slot, direction)?;
 
-    amm.marginal_price_after(direction, base_asset_amount.min(available))
+    vamm.amm
+        .marginal_price_after(direction, base_asset_amount.min(vamm.available))
+        .ok()
 }
 
 /// Sizes a liquidation, cancels what blocks it, and places the forced order.
@@ -1323,8 +1321,9 @@ pub fn place_liquidation_order<'info>(
         )?;
 
         let order_direction = existing_direction.opposite();
-        let vamm_slippage = vamm_fill_slippage(
-            oracle_price,
+        // A Settlement market's limit is set from the expiry price, which the live vAMM does
+        // not quote around.
+        let vamm_slippage = if liquidator_fee == 0 && market.status != MarketStatus::Settlement {
             projected_vamm_price(
                 &market,
                 *maps.oracle_map.get_price_data(&market.oracle_id())?,
@@ -1332,10 +1331,19 @@ pub fn place_liquidation_order<'info>(
                 slot,
                 order_direction,
                 base_asset_amount,
-            )?,
-            order_direction,
-            market.order_tick_size,
-        )?;
+            )
+            .map(|vamm_price| {
+                vamm_fill_slippage(
+                    oracle_price,
+                    vamm_price,
+                    order_direction,
+                    market.order_tick_size,
+                )
+            })
+            .transpose()?
+        } else {
+            None
+        };
 
         liquidation_fill_slippage(liquidator_fee, vamm_slippage, maintenance_margin_ratio)?
     };

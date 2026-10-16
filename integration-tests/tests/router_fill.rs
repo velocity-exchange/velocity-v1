@@ -8051,12 +8051,11 @@ fn long_ten_units_at_100(fixture: &mut Fixture, collateral_dollars: u64) -> Pubk
     user
 }
 
-/// A liquidation's limit sits one tick past the vAMM's price for the order, not at the
-/// maintenance margin. The vAMM here is deep and tight but paused for fills, so a book
-/// bid three percent below the oracle is the only liquidity. It is inside the 5% margin
-/// but outside the vAMM's band, so the liquidation fills nothing.
+/// A zero-fee liquidation on a market whose vAMM cannot fill reaches the maintenance margin.
+/// The tight vAMM curve does not narrow the limit. A book bid three percent below the
+/// oracle is the only liquidity, and it is inside the 5% margin.
 #[test]
-fn a_liquidation_limit_sits_at_the_vamm_band_not_the_maintenance_margin() {
+fn a_liquidation_past_a_paused_vamm_reaches_the_maintenance_margin() {
     let mut fixture = setup();
     arm_liquidation_throttle(&mut fixture.svm);
     let market_conditions = init_crank_conditions(&mut fixture, 10_000);
@@ -8093,33 +8092,29 @@ fn a_liquidation_limit_sits_at_the_vamm_band_not_the_maintenance_margin() {
         .collect();
     assert!(
         accounts.contains(&fixture.clob_maker_user),
-        "the book's owner is loaded, so only the limit keeps the fill off its bid"
+        "the book's resting owner is loaded, or the book quotes it nothing"
     );
 
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
-    let keeper = fixture.keeper.insecure_clone();
-    let err = send_with_ixs(
-        &mut fixture.svm,
-        &keeper,
-        &[
-            compute_unit_limit_ix(1_400_000),
-            staged_executor_ix(&resolved, payout),
-        ],
-        &[],
-    )
-    .expect_err("no liquidity sits inside the vAMM's band");
-    assert_velocity_error(&err, ErrorCode::LiquidationOrderFailedToFill);
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+        payout,
+    );
 
     let after: User = read_zero_copy(&fixture.svm, &user);
-    assert_eq!(
-        after.perp_positions[0].base_asset_amount,
-        (10 * UNIT) as i64
+    assert!(
+        after.perp_positions[0].base_asset_amount < (10 * UNIT) as i64,
+        "the liquidation closed part of the position"
     );
+
     let maker_after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
-    assert_eq!(
-        maker_after.perp_positions[0].base_asset_amount,
-        maker_before.perp_positions[0].base_asset_amount
+    assert!(
+        maker_after.perp_positions[0].base_asset_amount
+            > maker_before.perp_positions[0].base_asset_amount,
+        "the book's bid took the other side"
     );
 }
 

@@ -1365,9 +1365,22 @@ mod liquidation_fill_limit {
     #[test]
     fn a_fee_above_the_vamm_slippage_keeps_the_fee() {
         assert_eq!(
-            liquidation_fill_slippage(80_000, 2_001, 500).unwrap(),
+            liquidation_fill_slippage(80_000, Some(2_001), 500).unwrap(),
             80_000
         );
+    }
+
+    #[test]
+    fn a_fee_below_the_vamm_slippage_keeps_the_fee() {
+        assert_eq!(
+            liquidation_fill_slippage(1_000, Some(2_001), 500).unwrap(),
+            1_000
+        );
+    }
+
+    #[test]
+    fn a_zero_fee_with_no_fillable_vamm_reaches_the_maintenance_margin() {
+        assert_eq!(liquidation_fill_slippage(0, None, 500).unwrap(), 50_000);
     }
 
     /// A zero fee fills one tick past the vAMM's price, not at the maintenance margin.
@@ -1382,8 +1395,8 @@ mod liquidation_fill_limit {
         assert_eq!(sell_slippage, 2_001);
         assert_eq!(buy_slippage, 2_001);
 
-        let sell_band = liquidation_fill_slippage(0, sell_slippage, 500).unwrap();
-        let buy_band = liquidation_fill_slippage(0, buy_slippage, 500).unwrap();
+        let sell_band = liquidation_fill_slippage(0, Some(sell_slippage), 500).unwrap();
+        let buy_band = liquidation_fill_slippage(0, Some(buy_slippage), 500).unwrap();
         let sell =
             get_liquidation_order_params(0, PositionDirection::Long, 1, ORACLE, sell_band).unwrap();
         let buy =
@@ -1398,7 +1411,10 @@ mod liquidation_fill_limit {
         let slippage =
             vamm_fill_slippage(ORACLE, wide_bid, PositionDirection::Short, TICK).unwrap();
         assert!(slippage > 50_000);
-        assert_eq!(liquidation_fill_slippage(0, slippage, 500).unwrap(), 50_000);
+        assert_eq!(
+            liquidation_fill_slippage(0, Some(slippage), 500).unwrap(),
+            50_000
+        );
     }
 
     #[test]
@@ -1445,7 +1461,7 @@ mod liquidation_fill_limit {
         let slippage = vamm_fill_slippage(ORACLE, vamm_price, PositionDirection::Short, 1).unwrap();
         assert!(slippage < 50_000);
 
-        let band = liquidation_fill_slippage(0, slippage, 500).unwrap();
+        let band = liquidation_fill_slippage(0, Some(slippage), 500).unwrap();
         let sell =
             get_liquidation_order_params(0, PositionDirection::Long, size, ORACLE, band).unwrap();
         let (reach, direction) = calculate_base_asset_amount_to_trade_to_price(

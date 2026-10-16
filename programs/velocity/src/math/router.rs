@@ -64,7 +64,8 @@ pub struct FillerObligation {
     /// Zero when the order signed no route, because the taker named no entries and none
     /// is uninvited. A taker that wants this test signs a route.
     pub unrouted_quoters: usize,
-    /// The fill is a liquidation, so the program wrote the order and its limit price.
+    /// The fill is a liquidation. The program wrote its limit price, which bounds the fill
+    /// in place of the withheld-maker test.
     pub liquidation: bool,
     /// The caller stages a fixed number of makers, and a book can hold more owners than
     /// that. The program-keeper taker-origin crank sets this. Its fill is bound by the
@@ -73,9 +74,10 @@ pub struct FillerObligation {
 }
 
 /// Whether a filler that left a book short of an owner met its obligation. A taker that
-/// signed owes itself nothing. A liquidation stops short at the makers it carries, because
-/// its limit price already holds the liquidated user to the liquidator fee, which a
-/// takeover also charges. A fill that sets `stops_at_carried_makers` stops short too.
+/// signed owes itself nothing. A liquidation stops short at the makers it carries. Its limit
+/// price then bounds what a liquidator that leaves out a better maker can take, and
+/// [`crate::math::liquidation::liquidation_fill_slippage`] sets that limit.
+/// A fill that sets `stops_at_carried_makers` stops short too.
 /// Otherwise there are four outcomes, and only the last one fills.
 ///
 /// - The transaction had room for another maker, so the filler owed that maker.

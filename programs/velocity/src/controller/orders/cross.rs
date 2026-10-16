@@ -168,21 +168,27 @@ pub fn price_taker_origin_cross(
     })
 }
 
-/// The vAMM's best price for a taker on `direction`, on a copy of the curve
-/// projected to `oracle_price_data` the way a fill projects it.
+/// A copy of the market's vAMM, projected for a fill in a slot, and the base it can fill on
+/// one side.
+pub struct FillableVamm {
+    pub amm: crate::vlp::amm::AMM,
+    pub available: u64,
+}
+
+/// The vAMM projected to `oracle_price_data` the way a fill projects it.
 ///
 /// `None` when the vAMM cannot fill that side, or when the projection fails.
 /// The fill gates are the router's own, so a cascade that stops vAMM fills
-/// also stops this price. The order-timing gate is left out, because this
-/// price has no order. A caller uses this only to choose a path, and the
-/// fill it chooses applies every vAMM gate again.
-pub fn vamm_top_price(
+/// also stops this result. The order-timing gate is left out, because there is
+/// no order. A caller uses this only to choose a path or a bound, and the
+/// fill applies every vAMM gate again.
+pub fn fillable_vamm(
     market: &PerpMarket,
     oracle_price_data: OraclePriceData,
     state: &State,
     slot: u64,
     direction: PositionDirection,
-) -> Option<u64> {
+) -> Option<FillableVamm> {
     if state.amm_paused().ok()? {
         return None;
     }
@@ -196,20 +202,7 @@ pub fn vamm_top_price(
         return None;
     }
 
-    let inputs = crate::state::quoter::MarketQuoteInputs::load(
-        market,
-        oracle_price_data,
-        slot,
-        &state.oracle_guard_rails.validity,
-        state.slot_clock(),
-    )
-    .ok()?;
-    let mut amm = market.amm;
-    let quoter_context = inputs.ctx(slot);
-    crate::vlp::amm::quoter::AmmQuoter::for_amm(&mut amm)
-        .refresh(&quoter_context)
-        .ok()?;
-
+    let amm = projected_amm(market, oracle_price_data, state, slot).ok()?;
     let available = crate::vlp::amm::math::amm::calculate_amm_available_liquidity(
         &amm,
         &direction,
@@ -220,6 +213,20 @@ pub fn vamm_top_price(
         return None;
     }
 
+    Some(FillableVamm { amm, available })
+}
+
+/// The vAMM's best price for a taker on `direction`. `None` where [`fillable_vamm`] is.
+pub fn vamm_top_price(
+    market: &PerpMarket,
+    oracle_price_data: OraclePriceData,
+    state: &State,
+    slot: u64,
+    direction: PositionDirection,
+) -> Option<u64> {
+    let FillableVamm { amm, .. } =
+        fillable_vamm(market, oracle_price_data, state, slot, direction)?;
+
     let reserve_price = amm.reserve_price().ok()?;
     match direction {
         PositionDirection::Long => amm
@@ -229,6 +236,27 @@ pub fn vamm_top_price(
             .bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)
             .ok(),
     }
+}
+
+/// A copy of the market's vAMM, projected to `oracle_price_data` the way a fill in `slot`
+/// projects it. The market's own curve does not move.
+fn projected_amm(
+    market: &PerpMarket,
+    oracle_price_data: OraclePriceData,
+    state: &State,
+    slot: u64,
+) -> VelocityResult<crate::vlp::amm::AMM> {
+    let inputs = crate::state::quoter::MarketQuoteInputs::load(
+        market,
+        oracle_price_data,
+        slot,
+        &state.oracle_guard_rails.validity,
+        state.slot_clock(),
+    )?;
+    let mut amm = market.amm;
+    crate::vlp::amm::quoter::AmmQuoter::for_amm(&mut amm).refresh(&inputs.ctx(slot))?;
+
+    Ok(amm)
 }
 
 /// Whether the vAMM fills a taker on `direction` at a better price than

@@ -8002,6 +8002,122 @@ fn a_liquidation_fills_through_the_book() {
     );
 }
 
+/// A vAMM 100 times deeper than the fixture's, with a 0.2% base spread.
+fn set_deep_tight_vamm(svm: &mut litesvm::LiteSVM) {
+    let mut market: PerpMarket = read_zero_copy(svm, &perp_market_pda(0));
+    market.amm.base_asset_reserve = 10_000 * AMM_RESERVE_PRECISION;
+    market.amm.quote_asset_reserve = 10_000 * AMM_RESERVE_PRECISION;
+    market.amm.sqrt_k = 10_000 * AMM_RESERVE_PRECISION;
+    market.amm.terminal_quote_asset_reserve = 10_000 * AMM_RESERVE_PRECISION;
+    market.amm.base_spread = 2_000;
+    market.amm.max_spread = 4_000;
+    set_zero_copy_account(
+        svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+}
+
+/// A user 10 units long, entered at $100, with `collateral_dollars` of deposits.
+fn long_ten_units_at_100(fixture: &mut Fixture, collateral_dollars: u64) -> Pubkey {
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut account = trading_user(
+        &authority.pubkey(),
+        collateral_dollars * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    account.perp_positions[0].market_index = 0;
+    account.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    set_user_account(&mut fixture.svm, user, &account);
+
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+    user
+}
+
+/// A zero-fee liquidation on a market whose vAMM cannot fill reaches the maintenance margin.
+/// The tight vAMM curve does not narrow the limit. A book bid three percent below the
+/// oracle is the only liquidity, and it is inside the 5% margin.
+#[test]
+fn a_liquidation_past_a_paused_vamm_reaches_the_maintenance_margin() {
+    let mut fixture = setup();
+    arm_liquidation_throttle(&mut fixture.svm);
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+
+    set_deep_tight_vamm(&mut fixture.svm);
+    pause_amm_fill(&mut fixture.svm);
+
+    place_clob_bid(&mut fixture, 97 * PRICE, 10 * UNIT);
+    let maker_before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+
+    // $40 of collateral is under the $50 maintenance requirement.
+    let user = long_ten_units_at_100(&mut fixture, 40);
+    sync_liq_conditions(&mut fixture, user, market_conditions, 0);
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let resolved =
+        run_liq_resolver(&mut fixture, user).expect("an underwater account stages a liquidation");
+    let accounts: Vec<Pubkey> = resolved
+        .accounts
+        .iter()
+        .map(|a| Pubkey::new_from_array(a.address))
+        .collect();
+    assert!(
+        accounts.contains(&fixture.clob_maker_user),
+        "the book's resting owner is loaded, or the book quotes it nothing"
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+        payout,
+    );
+
+    let after: User = read_zero_copy(&fixture.svm, &user);
+    assert!(
+        after.perp_positions[0].base_asset_amount < (10 * UNIT) as i64,
+        "the liquidation closed part of the position"
+    );
+
+    let maker_after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert!(
+        maker_after.perp_positions[0].base_asset_amount
+            > maker_before.perp_positions[0].base_asset_amount,
+        "the book's bid took the other side"
+    );
+}
+
 /// The plain (position-acquiring) liquidation refuses the protocol User:
 /// relay must never leave the protocol warehousing inventory — that path
 /// stays with keeper bots that have a balance sheet.

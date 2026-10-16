@@ -679,6 +679,30 @@ impl AMM {
         )
     }
 
+    /// The marginal price a taker in `taker_direction` meets after the vAMM fills
+    /// `base_asset_amount`. It runs on the cached spread reserves and the invariant, as
+    /// the fill's limit reach does.
+    pub fn marginal_price_after(
+        &self,
+        taker_direction: PositionDirection,
+        base_asset_amount: u64,
+    ) -> VelocityResult<u64> {
+        use crate::vlp::amm::controller::SwapDirection;
+
+        let (base_asset_reserve, swap_direction) = match taker_direction {
+            PositionDirection::Long => (self.ask_base_asset_reserve, SwapDirection::Remove),
+            PositionDirection::Short => (self.bid_base_asset_reserve, SwapDirection::Add),
+        };
+        let (quote_asset_reserve, base_asset_reserve) = amm::calculate_swap_output(
+            base_asset_amount.cast()?,
+            base_asset_reserve,
+            swap_direction,
+            self.sqrt_k,
+        )?;
+
+        amm::calculate_price(quote_asset_reserve, base_asset_reserve, self.peg_multiplier)
+    }
+
     /// Test helper: reset the cached spread state to a balanced no-spread
     /// snapshot — zero spreads / reference offset and ask/bid reserves equal
     /// to the underlying reserves. Mirrors the legacy `AmmQuoteState::no_spread`

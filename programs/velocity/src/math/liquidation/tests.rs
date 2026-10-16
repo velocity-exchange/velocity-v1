@@ -1349,29 +1349,128 @@ mod liquidation_fill_limit {
     use crate::{
         controller::position::PositionDirection,
         math::{
-            constants::PRICE_PRECISION_U64,
-            liquidation::{get_liquidation_order_params, liquidation_fill_slippage},
+            constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION, PRICE_PRECISION_U64,
+            },
+            liquidation::{
+                get_liquidation_order_params, liquidation_fill_slippage, vamm_fill_slippage,
+            },
         },
+        vlp::amm::{math::spread::calculate_base_asset_amount_to_trade_to_price, AMM},
     };
 
-    /// A zero liquidator fee left the fill at the oracle, where no source
-    /// quotes, so a 5% maintenance margin now sets the bound.
-    #[test]
-    fn a_zero_fee_market_fills_inside_its_maintenance_margin() {
-        let slippage = liquidation_fill_slippage(0, 500).unwrap();
-        assert_eq!(slippage, 50_000);
+    const ORACLE: i64 = 100 * PRICE_PRECISION_U64 as i64;
+    const TICK: u64 = 100;
 
-        let oracle = 100 * PRICE_PRECISION_U64 as i64;
-        let sell =
-            get_liquidation_order_params(0, PositionDirection::Long, 1, oracle, slippage).unwrap();
-        let buy =
-            get_liquidation_order_params(0, PositionDirection::Short, 1, oracle, slippage).unwrap();
-        assert_eq!(sell.price, 95 * PRICE_PRECISION_U64);
-        assert_eq!(buy.price, 105 * PRICE_PRECISION_U64);
+    #[test]
+    fn a_fee_above_the_vamm_slippage_keeps_the_fee() {
+        assert_eq!(
+            liquidation_fill_slippage(80_000, Some(2_001), 500).unwrap(),
+            80_000
+        );
     }
 
     #[test]
-    fn a_fee_above_the_margin_keeps_the_fee() {
-        assert_eq!(liquidation_fill_slippage(80_000, 500).unwrap(), 80_000);
+    fn a_fee_below_the_vamm_slippage_keeps_the_fee() {
+        assert_eq!(
+            liquidation_fill_slippage(1_000, Some(2_001), 500).unwrap(),
+            1_000
+        );
+    }
+
+    #[test]
+    fn a_zero_fee_with_no_fillable_vamm_reaches_the_maintenance_margin() {
+        assert_eq!(liquidation_fill_slippage(0, None, 500).unwrap(), 50_000);
+    }
+
+    /// A zero fee fills one tick past the vAMM's price, not at the maintenance margin.
+    #[test]
+    fn a_zero_fee_market_fills_just_past_the_vamm_price() {
+        let vamm_bid = 99_800_000;
+        let vamm_ask = 100_200_000;
+        let sell_slippage =
+            vamm_fill_slippage(ORACLE, vamm_bid, PositionDirection::Short, TICK).unwrap();
+        let buy_slippage =
+            vamm_fill_slippage(ORACLE, vamm_ask, PositionDirection::Long, TICK).unwrap();
+        assert_eq!(sell_slippage, 2_001);
+        assert_eq!(buy_slippage, 2_001);
+
+        let sell_band = liquidation_fill_slippage(0, Some(sell_slippage), 500).unwrap();
+        let buy_band = liquidation_fill_slippage(0, Some(buy_slippage), 500).unwrap();
+        let sell =
+            get_liquidation_order_params(0, PositionDirection::Long, 1, ORACLE, sell_band).unwrap();
+        let buy =
+            get_liquidation_order_params(0, PositionDirection::Short, 1, ORACLE, buy_band).unwrap();
+        assert_eq!(sell.price, vamm_bid - TICK);
+        assert_eq!(buy.price, vamm_ask + TICK);
+    }
+
+    #[test]
+    fn the_maintenance_margin_caps_the_vamm_slippage() {
+        let wide_bid = 80 * PRICE_PRECISION_U64;
+        let slippage =
+            vamm_fill_slippage(ORACLE, wide_bid, PositionDirection::Short, TICK).unwrap();
+        assert!(slippage > 50_000);
+        assert_eq!(
+            liquidation_fill_slippage(0, Some(slippage), 500).unwrap(),
+            50_000
+        );
+    }
+
+    #[test]
+    fn a_vamm_better_than_the_oracle_adds_no_slippage() {
+        let bid_above_oracle = 101 * PRICE_PRECISION_U64;
+        assert_eq!(
+            vamm_fill_slippage(ORACLE, bid_above_oracle, PositionDirection::Short, TICK).unwrap(),
+            0
+        );
+    }
+
+    /// A vAMM price off the tick grid still gets a limit on the far side of it.
+    #[test]
+    fn an_off_tick_vamm_price_rounds_away_from_the_oracle() {
+        let vamm_bid = 99_800_050;
+        let slippage =
+            vamm_fill_slippage(ORACLE, vamm_bid, PositionDirection::Short, TICK).unwrap();
+        let sell =
+            get_liquidation_order_params(0, PositionDirection::Long, 1, ORACLE, slippage).unwrap();
+        assert_eq!(sell.price, 99_800_000);
+    }
+
+    /// A $100 vAMM whose bid sits half a unit of reserve below its mid.
+    fn spread_amm() -> AMM {
+        let mut amm = AMM {
+            base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            sqrt_k: 100 * AMM_RESERVE_PRECISION,
+            peg_multiplier: 100 * PEG_PRECISION,
+            ..AMM::default()
+        };
+        amm.seed_no_spread_quote_state();
+        amm.bid_base_asset_reserve = 100 * AMM_RESERVE_PRECISION + AMM_RESERVE_PRECISION / 2;
+        amm
+    }
+
+    #[test]
+    fn the_limit_reaches_the_vamm_for_the_whole_order() {
+        let amm = spread_amm();
+        let size = BASE_PRECISION_U64;
+        let vamm_price = amm
+            .marginal_price_after(PositionDirection::Short, size)
+            .unwrap();
+        let slippage = vamm_fill_slippage(ORACLE, vamm_price, PositionDirection::Short, 1).unwrap();
+        assert!(slippage < 50_000);
+
+        let band = liquidation_fill_slippage(0, Some(slippage), 500).unwrap();
+        let sell =
+            get_liquidation_order_params(0, PositionDirection::Long, size, ORACLE, band).unwrap();
+        let (reach, direction) = calculate_base_asset_amount_to_trade_to_price(
+            &amm,
+            sell.price,
+            PositionDirection::Short,
+        )
+        .unwrap();
+        assert_eq!(direction, PositionDirection::Short);
+        assert!(reach >= size);
     }
 }

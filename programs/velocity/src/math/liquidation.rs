@@ -566,17 +566,59 @@ pub fn calculate_spot_if_fee(
     Ok(max_if_fee.min(implied_if_fee))
 }
 
-/// How far from the oracle a liquidation fill may execute, in
-/// `LIQUIDATION_FEE_PRECISION`. The liquidator fee alone can be zero, and no
-/// source quotes at the oracle, so the fill would find nothing. The liquidatee
-/// may lose up to its maintenance margin to slippage, which is what that
-/// margin is for.
+/// How far from the oracle a liquidation fill may execute, in `LIQUIDATION_FEE_PRECISION`.
+/// A liquidation owes no withheld maker, so this limit is the only bound on its price.
+/// A nonzero liquidator fee is the bound. No source quotes at the oracle, so a zero fee
+/// alone finds no fill. A zero fee reaches the vAMM's price for the order, and the
+/// maintenance margin caps it. `None` for the vAMM means it cannot fill, and then the
+/// maintenance margin is the bound.
+/// allow-verbose: a security bound whose reason a reader cannot get from the code.
 pub fn liquidation_fill_slippage(
     liquidator_fee: u32,
+    vamm_slippage: Option<u32>,
     maintenance_margin_ratio: u32,
 ) -> VelocityResult<u32> {
-    Ok(liquidator_fee
-        .max(maintenance_margin_ratio.safe_mul(LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO)?))
+    if liquidator_fee > 0 {
+        return Ok(liquidator_fee);
+    }
+
+    let margin_slippage =
+        maintenance_margin_ratio.safe_mul(LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO)?;
+
+    Ok(vamm_slippage.map_or(margin_slippage, |slippage| slippage.min(margin_slippage)))
+}
+
+/// The slippage from the oracle, in `LIQUIDATION_FEE_PRECISION`, that reaches the first
+/// tick past `vamm_price` for an order in `direction`. The result rounds up, so the
+/// tick-rounded limit still reaches that tick.
+pub fn vamm_fill_slippage(
+    oracle_price: i64,
+    vamm_price: u64,
+    direction: PositionDirection,
+    tick_size: u64,
+) -> VelocityResult<u32> {
+    let tick_size = tick_size.max(1);
+    let oracle_price = oracle_price.unsigned_abs();
+    let distance = match direction {
+        PositionDirection::Long => vamm_price
+            .safe_div(tick_size)?
+            .safe_add(1)?
+            .safe_mul(tick_size)?
+            .saturating_sub(oracle_price),
+        PositionDirection::Short => oracle_price.saturating_sub(
+            vamm_price
+                .saturating_sub(1)
+                .safe_div(tick_size)?
+                .safe_mul(tick_size)?,
+        ),
+    };
+
+    Ok(distance
+        .cast::<u128>()?
+        .safe_mul(LIQUIDATION_FEE_PRECISION_U128)?
+        .safe_div_ceil(oracle_price.cast()?)?
+        .cast::<u32>()
+        .unwrap_or(u32::MAX))
 }
 
 pub fn get_liquidation_order_params(

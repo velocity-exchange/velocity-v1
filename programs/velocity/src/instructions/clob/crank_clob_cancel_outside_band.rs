@@ -212,11 +212,17 @@ pub(super) fn stage_band_cancel(ctx: &Context<ResolveClobCrank>) -> Result<Resol
         let conditions = ctx.accounts.crank_conditions.load()?;
         (conditions.market_index, conditions.oracle)
     };
+    let market_key = pdas::perp_market(market_index);
     let (Some(market_info), Some(oracle_info)) = (
-        find_account(ctx.remaining_accounts, &pdas::perp_market(market_index)),
+        find_account(ctx.remaining_accounts, &market_key),
         find_account(ctx.remaining_accounts, &oracle),
     ) else {
-        return Ok(Resolution::MoreAccounts(vec![oracle]));
+        let missing = [market_key, oracle]
+            .iter()
+            .copied()
+            .filter(|key| find_account(ctx.remaining_accounts, key).is_none())
+            .collect();
+        return Ok(Resolution::MoreAccounts(missing));
     };
 
     let state = ctx.accounts.state.load()?;

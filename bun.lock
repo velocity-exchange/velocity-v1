@@ -18,6 +18,7 @@
       },
       "devDependencies": {
         "@anchor-lang/core": "1.0.1",
+        "@aws-sdk/client-sns": "3.1065.0",
         "@changesets/changelog-github": "0.5.2",
         "@changesets/cli": "2.31.0",
         "@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
@@ -55,7 +56,7 @@
     },
     "apps/dlob-server": {
       "name": "@velocity-exchange/dlob-server",
-      "version": "0.1.39",
+      "version": "0.1.40",
       "dependencies": {
         "@aws-sdk/client-athena": "3.1065.0",
         "@aws-sdk/client-kinesis": "3.1065.0",
@@ -113,7 +114,7 @@
     },
     "apps/keeper-bots-v2": {
       "name": "@velocity-exchange/keeper-bots-v2",
-      "version": "0.2.24",
+      "version": "0.2.25",
       "dependencies": {
         "@coral-xyz/anchor": "0.29.0",
         "@noble/hashes": "1.7.1",
@@ -175,7 +176,7 @@
     },
     "apps/usermap-server": {
       "name": "@velocity-exchange/usermap-server",
-      "version": "0.1.28",
+      "version": "0.1.29",
       "dependencies": {
         "@coral-xyz/anchor": "0.29.0",
         "@grpc/grpc-js": "1.14.4",
@@ -216,7 +217,7 @@
     },
     "packages/cli-admin": {
       "name": "@velocity-exchange/admin-cli",
-      "version": "0.16.0",
+      "version": "0.17.0",
       "bin": {
         "velocity-admin": "lib/index.js",
       },
@@ -240,7 +241,7 @@
     },
     "packages/revenue-router-sdk": {
       "name": "@velocity-exchange/revenue-router-sdk",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
         "@types/bn.js": "5.1.6",
@@ -254,7 +255,7 @@
     },
     "packages/sdk": {
       "name": "@velocity-exchange/sdk",
-      "version": "0.25.0",
+      "version": "0.26.0",
       "dependencies": {
         "@anchor-lang/core": "1.0.1",
         "@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
@@ -324,7 +325,7 @@
     },
     "packages/vaults-sdk": {
       "name": "@velocity-exchange/vaults-sdk",
-      "version": "0.1.32",
+      "version": "0.1.33",
       "dependencies": {
         "@metaplex-foundation/js": "0.20.1",
         "@velocity-exchange/sdk": "workspace:*",
@@ -394,6 +395,8 @@
     "@aws-sdk/client-athena": ["@aws-sdk/client-athena@3.1065.0", "", { "dependencies": { "@aws-crypto/sha256-browser": "5.2.0", "@aws-crypto/sha256-js": "5.2.0", "@aws-sdk/core": "^3.974.20", "@aws-sdk/credential-provider-node": "^3.972.54", "@aws-sdk/types": "^3.973.12", "@smithy/core": "^3.24.6", "@smithy/fetch-http-handler": "^5.4.6", "@smithy/node-http-handler": "^4.7.6", "@smithy/types": "^4.14.3", "tslib": "^2.6.2" } }, "sha512-RvYYVn33YuG/vE7bF+61qVYkepClWD1UsUOSvER88tEW9p8huQngfxKpdX3e4nauCMtDuZKOu4OKEhBOmNMWBg=="],
 
     "@aws-sdk/client-kinesis": ["@aws-sdk/client-kinesis@3.1065.0", "", { "dependencies": { "@aws-crypto/sha256-browser": "5.2.0", "@aws-crypto/sha256-js": "5.2.0", "@aws-sdk/core": "^3.974.20", "@aws-sdk/credential-provider-node": "^3.972.54", "@aws-sdk/types": "^3.973.12", "@smithy/core": "^3.24.6", "@smithy/fetch-http-handler": "^5.4.6", "@smithy/node-http-handler": "^4.7.6", "@smithy/types": "^4.14.3", "tslib": "^2.6.2" } }, "sha512-l1Spnj/Ooi8QtoN2HgAthht/2JAyAfJGWUZ9CDcgafClPeu9H1yqc2+q3BJNuqeQZMthKHxwYr10bPffsnFL5w=="],
+
+    "@aws-sdk/client-sns": ["@aws-sdk/client-sns@3.1065.0", "", { "dependencies": { "@aws-crypto/sha256-browser": "5.2.0", "@aws-crypto/sha256-js": "5.2.0", "@aws-sdk/core": "^3.974.20", "@aws-sdk/credential-provider-node": "^3.972.54", "@aws-sdk/types": "^3.973.12", "@smithy/core": "^3.24.6", "@smithy/fetch-http-handler": "^5.4.6", "@smithy/node-http-handler": "^4.7.6", "@smithy/types": "^4.14.3", "tslib": "^2.6.2" } }, "sha512-UpPCclPYk1zKD+RF1hH02309YNKvUKbPjfmvGQpXQF5czcgfVxnZp0/S31XMjhF8S7fO82Z69f/RYXTTnP1bRA=="],
 
     "@aws-sdk/core": ["@aws-sdk/core@3.974.20", "", { "dependencies": { "@aws-sdk/types": "^3.973.12", "@aws-sdk/xml-builder": "^3.972.29", "@aws/lambda-invoke-store": "^0.2.2", "@smithy/core": "^3.24.6", "@smithy/signature-v4": "^5.4.6", "@smithy/types": "^4.14.3", "bowser": "^2.11.0", "tslib": "^2.6.2" } }, "sha512-7sDi2B2N3mc3nf1nz6FyEx/FCrJ1N1QnBmraHHQNabFaeAh2IaOOLml48/rHOD1bICHgTRkbBgNTvUzEr5Z35g=="],
 

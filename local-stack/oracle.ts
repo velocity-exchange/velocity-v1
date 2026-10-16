@@ -8,7 +8,9 @@
  * `post_pyth_lazer_oracle_update` accepts what this service signs. Each feed starts at the
  * price the dump holds and stays there until it is moved. With FOLLOW_RPC_URL set, each feed
  * copies the price of the same oracle account on that cluster, so the stack tracks the market.
- * A price set by hand pins its feed until a follow request releases it:
+ * With PRICE_ALERT_TOPIC_ARN set, the service also publishes each price to that SNS FIFO topic
+ * every PRICE_ALERT_MS, for the candle processor. A price set by hand pins its feed until a
+ * follow request releases it:
  *
  *   curl localhost:7070/prices
  *   curl -X POST localhost:7070/price -d '{"market":"SOL-PERP","price":150.25}'
@@ -33,12 +35,15 @@ import {
 	VelocityClient,
 	Wallet,
 } from '@velocity-exchange/sdk';
+import { OraclePrice, PriceAlertPublisher } from './price-alerts';
 
 const RPC_URL = process.env.RPC_URL ?? 'http://rpc:8899';
 const CONTROL_PORT = Number(process.env.CONTROL_PORT ?? 7070);
 const TICK_MS = Number(process.env.TICK_MS ?? 400);
 const FOLLOW_RPC_URL = process.env.FOLLOW_RPC_URL;
 const FOLLOW_MS = Number(process.env.FOLLOW_MS ?? 2000);
+const PRICE_ALERT_TOPIC_ARN = process.env.PRICE_ALERT_TOPIC_ARN;
+const PRICE_ALERT_MS = Number(process.env.PRICE_ALERT_MS ?? 5000);
 /** One tick in this many sends with preflight, so a rejected update reaches the log. */
 const PREFLIGHT_EVERY = 25;
 
@@ -358,6 +363,41 @@ async function followLoop(
 	}
 }
 
+/** Every market symbol of every feed, at the price the feed posts. */
+function oraclePrices(client: VelocityClient, feeds: Feed[]): OraclePrice[] {
+	return feeds.flatMap((feed) => {
+		const price = Number(feed.mantissa) * 10 ** feed.exponent;
+		const oracle = getPythLazerOraclePublicKey(
+			client.program.programId,
+			feed.feedId
+		).toBase58();
+		return feed.symbols.map((symbol) => ({
+			symbol,
+			oracle,
+			price,
+			confidence: price * HALF_SPREAD,
+		}));
+	});
+}
+
+async function priceAlertLoop(
+	client: VelocityClient,
+	publisher: PriceAlertPublisher,
+	feeds: Map<number, Feed>
+): Promise<void> {
+	console.log(`publishing price alerts every ${PRICE_ALERT_MS}ms`);
+	for (;;) {
+		try {
+			const slot = await client.connection.getSlot();
+			await publisher.publish(oraclePrices(client, [...feeds.values()]), slot);
+		} catch (error) {
+			console.error(`price alert: ${error}`);
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, PRICE_ALERT_MS));
+	}
+}
+
 async function main() {
 	const connection = new Connection(RPC_URL, 'confirmed');
 	const authority = loadKey(
@@ -377,6 +417,10 @@ async function main() {
 	serveControl(feeds);
 	if (FOLLOW_RPC_URL)
 		void followLoop(client, new Connection(FOLLOW_RPC_URL), feeds);
+	if (PRICE_ALERT_TOPIC_ARN) {
+		const publisher = new PriceAlertPublisher(PRICE_ALERT_TOPIC_ARN);
+		void priceAlertLoop(client, publisher, feeds);
+	}
 	console.log(
 		`posting ${feeds.size} feeds every ${TICK_MS}ms, control on :${CONTROL_PORT}: ` +
 			[...feeds.values()]

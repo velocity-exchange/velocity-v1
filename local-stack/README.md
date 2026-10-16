@@ -34,6 +34,10 @@ curl -X POST localhost:7070/price -d '{"market":"SOL-PERP","price":150}'
 curl -X POST localhost:7070/follow -d '{"market":"SOL-PERP"}'
 ```
 
+With `PRICE_ALERT_TOPIC_ARN` set to an SNS FIFO topic, the service also publishes every price to
+it as a `PRICE_ALERT` every 5 seconds. A deployed stack's candle processor reads these alerts, so
+its oracle candles move between fills. The compose stack leaves it unset.
+
 Pyth's own signer stays trusted, so a live Lazer cranker would overwrite the local prices. The
 keepers get no Lazer token, so they post no live price. The mark TWAP crank runs without one and
 reads the prices the oracle service posts. `DEVNET_RPC_URL` picks the RPC the dump reads from.

@@ -8,6 +8,7 @@
 	"license": "ISC",
 	"devDependencies": {
 		"@anchor-lang/core": "1.0.1",
+		"@aws-sdk/client-sns": "3.1065.0",
 		"@changesets/changelog-github": "0.5.2",
 		"@changesets/cli": "2.31.0",
 		"@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",

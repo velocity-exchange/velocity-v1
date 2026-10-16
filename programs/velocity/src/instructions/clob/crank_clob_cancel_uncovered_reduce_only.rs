@@ -65,7 +65,13 @@ pub struct CrankClobCancelUncoveredReduceOnly<'info> {
     /// The owner of the order. The crank reads its position for the cover.
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
-    #[account(mut, has_one = quoter_slab, has_one = clob_market)]
+    #[account(
+        mut,
+        has_one = quoter_slab,
+        has_one = clob_market,
+        constraint = perp_market.load()?.market_index == args.market_index
+            @ ErrorCode::PerpMarketAccountMismatch
+    )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: the perp market's `has_one` binds it to the book the market

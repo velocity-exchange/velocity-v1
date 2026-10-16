@@ -1010,7 +1010,7 @@ struct ShortageCover {
 /// The vAMM's marginal price after it fills `base_asset_amount` for a taker in
 /// `direction`, on the curve the fill in this slot quotes. The vAMM's available
 /// liquidity caps the size. `None` when the vAMM cannot fill that side. A curve error on a
-/// vAMM that can fill fails the call, because the fill would hit the same math.
+/// vAMM that can fill fails the call rather than widen the limit to the maintenance margin.
 fn projected_vamm_price(
     market: &PerpMarket,
     oracle_price_data: OraclePriceData,

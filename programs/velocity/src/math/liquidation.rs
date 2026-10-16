@@ -569,7 +569,7 @@ pub fn calculate_spot_if_fee(
 /// How far from the oracle a liquidation fill may execute, in `LIQUIDATION_FEE_PRECISION`.
 /// A liquidation owes no withheld maker, so this limit is the only bound on its price.
 /// A nonzero liquidator fee is the bound. No source quotes at the oracle, so a zero fee
-/// alone finds no fill. A zero fee reaches the vAMM's price for the whole order, and the
+/// alone finds no fill. A zero fee reaches the vAMM's price for the order, and the
 /// maintenance margin caps it. `None` for the vAMM means it cannot fill, and then the
 /// maintenance margin is the bound.
 /// allow-verbose: a security bound whose reason a reader cannot get from the code.

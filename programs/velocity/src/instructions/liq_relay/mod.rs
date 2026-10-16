@@ -11,5 +11,6 @@
 pub mod resolve_liquidate_perp_with_fill;
 pub mod resync_liq_conditions;
 pub mod sync_liq_conditions;
+mod uncovered_reduce_only;
 
 pub use {resolve_liquidate_perp_with_fill::*, resync_liq_conditions::*, sync_liq_conditions::*};

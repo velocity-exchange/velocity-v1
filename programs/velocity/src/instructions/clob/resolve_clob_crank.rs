@@ -9,7 +9,8 @@
 //! Each condition keeps its own `min_payment`, because the payment floor lives
 //! on the condition rather than on the resolver. Expiry and capacity are held
 //! to a removal's payment. A cross is held to the cheaper of the two crosses
-//! its answer can stage. A shared resolver costs nothing there.
+//! its answer can stage. The cross fallback poll can also stage a band cancel,
+//! so it is held to the cheapest of the crosses and the removal.
 //!
 //! The fired condition tells the resolver where to look, so a wake on the
 //! book's side counts does not search for a cross.
@@ -24,6 +25,7 @@
 
 use {
     super::{
+        crank_clob_cancel_outside_band::stage_band_cancel,
         crank_clob_evict::stage_eviction,
         crank_clob_remove_expired::stage_expired_removal,
         crank_common::{validate_linkage, ResolveClobCrank},
@@ -68,9 +70,12 @@ enum ClobCrankWork {
     /// An order past its expiry, or a side that grew to its eviction
     /// threshold. Both are the book's own removals.
     Removal(Removal),
-    /// The book crossing itself, whether by a new best, an order reaching its
-    /// activation slot, or a PropAMM repricing into it.
+    /// The book crossing itself, whether by a new best or an order reaching
+    /// its activation slot.
     Cross,
+    /// The periodic poll. It catches a PropAMM that repriced into a cross,
+    /// and after that an order the oracle left outside the maker band.
+    CrossFallback,
     /// The reservoir that pays this market's cranks has fallen to its
     /// watermark and is due a refill from the protocol treasury.
     Refill,
@@ -118,7 +123,7 @@ impl FiredConditionArgV0 {
         )?;
 
         match usize::from(self.index) {
-            CLOB_CRANK_CROSS_FALLBACK => Ok(ClobCrankWork::Cross),
+            CLOB_CRANK_CROSS_FALLBACK => Ok(ClobCrankWork::CrossFallback),
             CLOB_CRANK_REFILL => Ok(ClobCrankWork::Refill),
             other => {
                 msg!("conditions slot {} is not a crank velocity serves", other);
@@ -149,6 +154,10 @@ pub fn handle_resolve_clob_crank(
         }
         ClobCrankWork::Removal(Removal::Evictable) => stage_eviction(&ctx).map(Resolution::from),
         ClobCrankWork::Cross => stage_cross(&ctx),
+        ClobCrankWork::CrossFallback => match stage_cross(&ctx)? {
+            Resolution::NoWork => stage_band_cancel(&ctx),
+            cross @ (Resolution::Call(_) | Resolution::MoreAccounts(_)) => Ok(cross),
+        },
         ClobCrankWork::Refill => stage_refill(&ctx).map(Resolution::from),
     })
 }

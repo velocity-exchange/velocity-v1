@@ -39,9 +39,10 @@ use {
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                CancelOrderArgsV0, ClobMarket, ClobReader, DirectionV0, EvictWorstArgsV0, L3ArgsV0,
-                L3RowV0, OrderRulesV0, OrderViewV0, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
-                QuoterSlotV0, QuoterType, RemoveExpiredArgsV0, RemovedOrderV0, UserRefV0,
+                CancelOrderArgsV0, ClobMarket, ClobOrderRefV0, ClobReader, DirectionV0,
+                EvictWorstArgsV0, L3ArgsV0, L3RowV0, OrderRulesV0, OrderViewV0, QuoterCpiScratch,
+                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, RemoveExpiredArgsV0,
+                RemovedOrderV0, UserRefV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
             },
             signed_msg_user::release_removed_remainders,
             spot_market::SpotMarket,
@@ -250,14 +251,17 @@ pub(crate) fn keeper_crank_fee(
 
 /// Which removal a crank runs. They differ in the CLOB call they make, the
 /// explanation they record, and what happens to a placed trigger's shadow
-/// slot. Eviction re-arms the slot in the same transaction. Expiry and a band
-/// cancel free it.
+/// slot. Eviction re-arms the slot in the same transaction. Expiry and both
+/// cancels free it.
 pub enum ClobRemoval {
     Evict(EvictWorstArgsV0),
     Expire(RemoveExpiredArgsV0),
     /// An order resting outside the maker oracle band. The caller judged the
     /// band before the crank runs.
     OutsideBand(CancelOrderArgsV0),
+    /// A reduce-only order that no part of its owner's position covers. The
+    /// caller judged the cover before the crank runs.
+    UncoveredReduceOnly(CancelOrderArgsV0),
 }
 
 impl ClobRemoval {
@@ -265,7 +269,9 @@ impl ClobRemoval {
         match self {
             ClobRemoval::Evict(args) => clob.evict(args),
             ClobRemoval::Expire(args) => clob.remove_expired(args),
-            ClobRemoval::OutsideBand(args) => clob.cancel(args),
+            ClobRemoval::OutsideBand(args) | ClobRemoval::UncoveredReduceOnly(args) => {
+                clob.cancel(args)
+            }
         }
     }
 
@@ -278,6 +284,9 @@ impl ClobRemoval {
             ClobRemoval::Evict(_) => OrderActionExplanation::ClobOrderEvicted,
             ClobRemoval::Expire(_) => OrderActionExplanation::OrderExpired,
             ClobRemoval::OutsideBand(_) => OrderActionExplanation::OraclePriceBreachedLimitPrice,
+            ClobRemoval::UncoveredReduceOnly(_) => {
+                OrderActionExplanation::ReduceOnlyOrderIncreasedPosition
+            }
         }
     }
 }
@@ -719,6 +728,34 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
 /// names one.
 pub fn sol_spot_market_ref(state: &State) -> Option<Pubkey> {
     (state.sol_spot_market_index != 0).then(|| pdas::spot_market(state.sol_spot_market_index))
+}
+
+/// Whether `row` is a taker remainder whose claim still holds. The book refuses
+/// a plain cancel of such a row, so no keeper crank may stage one.
+pub(crate) fn is_bound_remainder(row: &L3RowV0) -> bool {
+    row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0
+        && row.flags & quoter_spec::L3_ROW_FLAG_CLAIM_LAPSED == 0
+}
+
+/// A program-keeper cancel of a book `row`, before its args. A taker-origin row
+/// passes its owner's signed-message record, so the cancel releases the entry.
+pub(crate) fn staged_row_cancel<I: anchor_lang::Discriminator>(
+    accounts: impl ToAccountMetas,
+    row: &L3RowV0,
+) -> StagedCall {
+    let call = StagedCall::new::<I>(accounts);
+    if row.flags & L3_ROW_FLAG_TAKER_ORIGIN == 0 {
+        return call;
+    }
+
+    call.account(pdas::signed_msg_user_orders(&row.user.authority), true)
+}
+
+pub(crate) fn row_order_ref(row: &L3RowV0) -> ClobOrderRefV0 {
+    ClobOrderRefV0 {
+        node_index: row.node_index,
+        order_id: row.order_id,
+    }
 }
 
 /// The trigger a crank acted on, and the reward it collected from the owner.
@@ -1232,13 +1269,25 @@ pub(crate) fn book_side_rested<'info>(
                         tail,
                         cpi_scratch,
                         false,
-                        |row| (row.size, row.placed_slot),
+                        rested_depth_row,
                     )?
                     .unwrap_or_default();
                     Ok(served && rows_rested(&rows, size, slot))
                 }
             }
         })
+}
+
+/// The `(size, placed_slot)` pair [`rows_rested`] reads. A reduce-only order may
+/// fill nothing, so its size is not depth, but it must still have rested.
+fn rested_depth_row(row: &L3RowV0) -> (u64, u64) {
+    let size = if row.flags & L3_ROW_FLAG_REDUCE_ONLY == 0 {
+        row.size
+    } else {
+        0
+    };
+
+    (size, row.placed_slot)
 }
 
 /// Whether the first `size` base of one side has measurably rested, over the
@@ -1577,7 +1626,10 @@ mod keeper_fee_tests {
 
 #[cfg(test)]
 mod rows_rested_tests {
-    use super::{rows_rested, RESTED_ROWS_PER_SIDE};
+    use {
+        super::{rested_depth_row, rows_rested, RESTED_ROWS_PER_SIDE},
+        crate::state::prop_amm::{L3RowV0, L3_ROW_FLAG_REDUCE_ONLY},
+    };
 
     /// A row rests once `SERVED_WINDOW_MIN_SLOTS` have passed since it was
     /// placed. Slot 100 against slot 0 is rested. Against slot 100 it is not.
@@ -1616,6 +1668,25 @@ mod rows_rested_tests {
         // The read came back under its window, so the side holds nothing more.
         let rows = vec![(1u64, 0u64); RESTED_ROWS_PER_SIDE as usize - 1];
         assert!(rows_rested(&rows, 1_000, NOW));
+    }
+
+    #[test]
+    fn a_reduce_only_row_does_not_cover_a_fresh_row_behind_it() {
+        // The fill can cap the reduce-only order at nothing and take the fresh
+        // row instead.
+        let reduce_only = L3RowV0 {
+            size: 100,
+            flags: L3_ROW_FLAG_REDUCE_ONLY,
+            ..L3RowV0::default()
+        };
+        let fresh = L3RowV0 {
+            size: 100,
+            placed_slot: NOW,
+            ..L3RowV0::default()
+        };
+        let rows: Vec<_> = [reduce_only, fresh].iter().map(rested_depth_row).collect();
+
+        assert!(!rows_rested(&rows, 100, NOW));
     }
 
     #[test]

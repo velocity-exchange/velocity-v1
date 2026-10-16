@@ -1447,6 +1447,163 @@ export type Velocity = {
       ]
     },
     {
+      "name": "crankClobCancelUncoveredReduceOnly",
+      "docs": [
+        "Cancel a reduce-only CLOB order whose owner holds no position that the",
+        "order reduces, so the order can never fill. The call is",
+        "permissionless, and the keeper earns the flat reward from the owner."
+      ],
+      "discriminator": [
+        36,
+        59,
+        33,
+        226,
+        31,
+        17,
+        43,
+        197
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "constraint below enforces. In program-keeper mode it is only the lamport",
+            "payout target, and no signature is required."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the order. The crank reads its position for the cover."
+          ],
+          "writable": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "designated."
+          ],
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration. The handler checks it again through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's lamport reservoir. Program-keeper mode requires it."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "solSpotMarket",
+          "docs": [
+            "The SOL spot market, whose TWAP values the reservoir payment in quote.",
+            "Program-keeper mode requires it when `State` names a SOL market."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "crankClobCancelUncoveredReduceOnlyArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "crankClobEvict",
       "discriminator": [
         151,
@@ -22266,6 +22423,16 @@ export type Velocity = {
       "code": 6462,
       "name": "selfSyncTermsNeedUserAuthority",
       "msg": "Only the user's authority, its delegate or the admin sets or clears a paid self-sync"
+    },
+    {
+      "code": 6463,
+      "name": "clobOrderNotReduceOnly",
+      "msg": "The CLOB order is not reduce-only, so no keeper may cancel it as uncovered"
+    },
+    {
+      "code": 6464,
+      "name": "reduceOnlyOrderStillCovered",
+      "msg": "The owner's position still covers the reduce-only CLOB order, so no keeper may cancel it"
     }
   ],
   "types": [
@@ -23828,6 +23995,29 @@ export type Velocity = {
             "name": "orderRef",
             "docs": [
               "The order outside the band. The crank reads it back from the book."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankClobCancelUncoveredReduceOnlyArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "The reduce-only order. The crank reads it back from the book."
             ],
             "type": {
               "defined": {

@@ -7,11 +7,11 @@
 //! cancel cannot remove it while the account passes margin. Such orders fill the
 //! row windows that the bid/ask TWAP crank and `book_side_rested` read, so a
 //! stack of them hides the real book. The crank cancels only at zero cover,
-//! because a partial close leaves an order that still fills in part. The owner
-//! pays the removal fee, and a placed trigger's shadow is freed, as in the band
-//! crank. The owner's liveness poll stays armed while the order rests, and the
-//! liquidation resolver stages this crank in program-keeper mode when it finds
-//! no other work.
+//! because a partial close leaves a larger reduce-only order that still fills in
+//! part. The owner pays the removal fee, and a placed trigger's shadow is freed,
+//! as in the band crank. The owner's liveness poll stays armed while the order
+//! rests, and the liquidation resolver stages this crank in program-keeper mode
+//! for an account that passes maintenance and has no other work.
 
 use {
     super::helpers::crank_common::{

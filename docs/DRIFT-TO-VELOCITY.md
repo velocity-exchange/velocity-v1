@@ -1784,10 +1784,12 @@ true` on every emitted record must re-check the field's value rather than treati
   level it floors, so every allocation is a prefix that the quoter's `execute_v0` fills at the
   quoted prices. The withheld-depth obligation excuses a loaded user only as the taker, the
   filler, or the user a consulted quoter fills for. A subaccount of the taker's referrer holds
-  no role. The obligation does not bind a liquidation fill. The program writes that order at the
-  oracle price less the liquidator fee. At a zero fee, the order reaches one tick past the vAMM's
-  price for the whole order, capped by the maintenance margin. The fill stops at the makers the
-  transaction carries, and a later call liquidates the rest. The `FillerCarriedUnroutedQuoter` count reads only the
+  no role. The obligation does not bind a liquidation fill. The program writes that order's limit
+  the liquidator fee away from the oracle, on the side that is worse for the liquidated user. At a
+  zero fee, the limit reaches one tick past the vAMM's price for the whole order, capped by the
+  maintenance margin. The maintenance margin is the limit when the vAMM cannot fill or the market
+  is in `Settlement`. The fill stops at the makers the transaction carries, and a later call
+  liquidates the rest. The `FillerCarriedUnroutedQuoter` count reads only the
   consulted slots that quoted, and it leaves out the market's baseline CLOB book.
   `quote_router` applies the fill's oracle gate, band trim, CLOB-run drop, and the fill's
   Custom ladder cut at the market step and the quoter room, split over the same sibling slots.
@@ -3623,10 +3625,11 @@ taker's referrer holds no role, because the fill pays the referrer through its e
 that filled nothing spent locks the missing maker needed, which is how a filler forces a
 withhold and takes the flow on a worse-priced source of its own. A liquidation fill is exempt. A
 staged liquidation carries at most four makers, so it cannot meet the lock count, and the
-program writes its order at the oracle price less the liquidator fee. The liquidated user thus
-pays at most that fee on any fill. At a zero fee, the order reaches one tick past the vAMM's price
-for the whole order, capped by the maintenance margin. When the vAMM cannot fill, the maintenance
-margin is the limit. The fill stops at the makers the transaction carries, and relay
+program writes its order's limit the liquidator fee away from the oracle, on the side that is
+worse for the liquidated user. The liquidated user thus pays at most that fee on any fill. At a
+zero fee, the limit reaches one tick past the vAMM's price for the whole order, capped by the
+maintenance margin. The maintenance margin is the limit when the vAMM cannot fill or the market is
+in `Settlement`. The fill stops at the makers the transaction carries, and relay
 wakes the account again while it still qualifies. A route that names only a custom quoter does
 not count the market's baseline book, or a consulted slot that did not quote, toward
 `FillerCarriedUnroutedQuoter`.

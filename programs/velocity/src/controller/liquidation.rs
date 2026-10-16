@@ -1009,7 +1009,8 @@ struct ShortageCover {
 
 /// The vAMM's marginal price after it fills `base_asset_amount` for a taker in
 /// `direction`, on the curve the fill in this slot quotes. The vAMM's available
-/// liquidity caps the size. `None` when the vAMM cannot fill that side.
+/// liquidity caps the size. `None` when the vAMM cannot fill that side. A curve error on a
+/// vAMM that can fill fails the call, because the fill would hit the same math.
 fn projected_vamm_price(
     market: &PerpMarket,
     oracle_price_data: OraclePriceData,
@@ -1017,12 +1018,15 @@ fn projected_vamm_price(
     slot: u64,
     direction: PositionDirection,
     base_asset_amount: u64,
-) -> Option<u64> {
-    let vamm = orders::fillable_vamm(market, oracle_price_data, state, slot, direction)?;
+) -> VelocityResult<Option<u64>> {
+    let Some(vamm) = orders::fillable_vamm(market, oracle_price_data, state, slot, direction)
+    else {
+        return Ok(None);
+    };
 
     vamm.amm
         .marginal_price_after(direction, base_asset_amount.min(vamm.available))
-        .ok()
+        .map(Some)
 }
 
 /// Sizes a liquidation, cancels what blocks it, and places the forced order.
@@ -1331,7 +1335,7 @@ pub fn place_liquidation_order<'info>(
                 slot,
                 order_direction,
                 base_asset_amount,
-            )
+            )?
             .map(|vamm_price| {
                 vamm_fill_slippage(
                     oracle_price,

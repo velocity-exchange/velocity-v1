@@ -9,8 +9,9 @@
 //! A force cancel runs when no liquidation can. It answers to the initial
 //! margin requirement, so it reaches an account before the account fails
 //! maintenance, and it takes only the side of a book that adds risk. A latched
-//! account skips it. Last, the resolver cancels a reduce-only book order that
-//! no part of the position covers, through `uncovered_reduce_only`. An account
+//! account skips it. Last, for an account that passes maintenance, the resolver
+//! cancels a reduce-only book order that no part of the position covers,
+//! through `uncovered_reduce_only`. An account
 //! with no work returns NoWork, and the poll wakes the resolver again later. So
 //! does an account that holds a market the stored list lacks. A pause that refuses the liquidation skips that stage.
 
@@ -150,14 +151,19 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             }
         }
 
-        let reduce_only_cancel = super::uncovered_reduce_only::stage_uncovered_reduce_only_cancel(
-            &state,
-            ctx.accounts.state.key(),
-            &ctx.accounts.user,
-            ctx.remaining_accounts,
-        )?;
-        if reduce_only_cancel.is_some() {
-            return Ok(reduce_only_cancel);
+        // The cancel charges the owner a removal fee, so an account that fails
+        // maintenance keeps its collateral for the liquidation.
+        if failing_market.is_none() {
+            let reduce_only_cancel =
+                super::uncovered_reduce_only::stage_uncovered_reduce_only_cancel(
+                    &state,
+                    ctx.accounts.state.key(),
+                    &ctx.accounts.user,
+                    ctx.remaining_accounts,
+                )?;
+            if reduce_only_cancel.is_some() {
+                return Ok(reduce_only_cancel);
+            }
         }
 
         // No failing scope holds a perp position. The account is healthy, or its distress is

@@ -64,6 +64,11 @@ const CONCURRENCY_LIMIT = 3;
 const MIN_IF_STAKE_QUOTE_WHOLE = 1000;
 const DEFAULT_IF_STAKE_TARGET_QUOTE = 1500;
 
+// The program values a stake by its shares rounded down, so one extra quote token covers that loss.
+export function ifStakeTopUp(stakeTarget: BN, currentStake: BN): BN {
+	return stakeTarget.add(QUOTE_PRECISION).sub(currentStake);
+}
+
 // Timeouts and watchdog thresholds
 const SIM_TIMEOUT_MS = 10_000;
 const TX_SEND_TIMEOUT_MS = 20_000;
@@ -342,7 +347,7 @@ export class MakerBidAskTwapCrank implements Bot {
 			return;
 		}
 
-		const amountToStake = stakeTarget.sub(currentStake);
+		const amountToStake = ifStakeTopUp(stakeTarget, currentStake);
 		const authority = this.velocityClient.wallet.publicKey;
 		const collateralAccount =
 			await this.velocityClient.getAssociatedTokenAccount(

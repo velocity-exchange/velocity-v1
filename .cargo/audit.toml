@@ -9,6 +9,12 @@ ignore = [
 	# optional deps unconditionally, which is all cargo-audit sees. No upgrade
 	# path: rust_decimal supports rkyv ^0.7 only, the fix is >=0.8.17.
 	"RUSTSEC-2026-0235",
+	# crypto-bigint 0.5.5 timing variability: reached through k256 0.13, which
+	# solana-secp256k1-recover depends on only off the solana target. Programs
+	# use the secp256k1_recover syscall, so it never compiles into a .so, and
+	# nothing here signs with secp256k1 off chain. No upgrade path:
+	# elliptic-curve 0.13 pins crypto-bigint 0.5, the fix is >=0.7.6.
+	"RUSTSEC-2026-0387",
 ]
 informational_warnings = ["unmaintained"] # warn for categories of informational advisories
 severity_threshold = "high" # CVSS severity ("none", "low", "medium", "high", "critical")

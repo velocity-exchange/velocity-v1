@@ -803,12 +803,12 @@ pub enum ErrorCode {
     RevenueShareOrderNotForfeitable,
     #[msg("vAMM quote management value is outside the hot role bounds")]
     VammQuoteManagementValueOutOfBounds,
+    #[msg("Perp market status, expiry or pending bankruptcy claims block a fee pool withdrawal")]
+    FeePoolWithdrawMarketNotEligible,
     #[msg(
-        "Perp market status, expiry or pending bankruptcy claims block an AMM capital withdrawal"
+        "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity"
     )]
-    AmmCapitalWithdrawMarketNotEligible,
-    #[msg("AMM capital withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity")]
-    AmmCapitalWithdrawInsufficientCapital,
+    FeePoolWithdrawInsufficientBalance,
 }
 
 #[macro_export]

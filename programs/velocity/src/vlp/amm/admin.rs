@@ -34,7 +34,7 @@ use {
         msg,
         state::{
             events::{
-                AmmCapitalWithdrawRecord, TransferFeeAndPnlPoolDirection,
+                PerpFeePoolWithdrawRecord, TransferFeeAndPnlPoolDirection,
                 TransferFeeAndPnlPoolRecord,
             },
             oracle::{get_oracle_price, OraclePriceData},
@@ -49,7 +49,7 @@ use {
         validation::perp_market::validate_perp_market,
         vlp::{
             amm::{
-                controller::withdraw_amm_capital,
+                controller::withdraw_from_fee_pool,
                 math::{amm, cp_curve::get_update_k_result},
             },
             amm_cache::{AmmCache, CacheInfo, AMM_POSITIONS_CACHE},
@@ -623,11 +623,11 @@ pub fn handle_deposit_into_perp_market_fee_pool<'c: 'info, 'info>(
     Ok(())
 }
 
-/// Withdraws exactly `amount` of AMM capital from a live perp market's fee pool to the
+/// Withdraws exactly `amount` from a live perp market's fee pool to the
 /// protocol fee recipient.
 ///
 /// Fails if the fee pool would drop below the tokenized bankruptcy provision, or if stored
-/// or recomputed AMM equity would reach zero. It does not check the remaining capital
+/// or recomputed AMM equity would reach zero. It does not check the remaining fee pool
 /// against open interest.
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
@@ -665,9 +665,9 @@ pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
     let oracle_price = oracle_price_data.price;
 
     validate!(
-        is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::WithdrawAmmCapital))?,
+        is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::WithdrawFeePool))?,
         ErrorCode::InvalidOracle,
-        "oracle validity {:?} blocks an AMM capital withdrawal",
+        "oracle validity {:?} blocks a fee pool withdrawal",
         oracle_validity
     )?;
     validate_market_within_price_band(perp_market, &state, oracle_price)?;
@@ -685,7 +685,7 @@ pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
         state.funding_paused()?,
     )?;
 
-    let withdrawal = withdraw_amm_capital(perp_market, spot_market, amount, oracle_price, now)?;
+    let withdrawal = withdraw_from_fee_pool(perp_market, spot_market, amount, oracle_price, now)?;
 
     let mint = Some(ctx.accounts.mint.clone());
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
@@ -707,7 +707,7 @@ pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
     ctx.accounts.spot_market_vault.reload()?;
     validate_spot_market_vault_amount(spot_market, ctx.accounts.spot_market_vault.amount)?;
 
-    emit!(AmmCapitalWithdrawRecord {
+    emit!(PerpFeePoolWithdrawRecord {
         ts: now,
         perp_market_index: perp_market.market_index,
         amount,

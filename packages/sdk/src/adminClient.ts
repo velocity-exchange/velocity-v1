@@ -5749,7 +5749,7 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Withdraws exactly `amount` of AMM capital from a perp market's `amm.feePool` to
+	 * Withdraws exactly `amount` from a perp market's `amm.feePool` to
 	 * `state.protocolFeeRecipientPerp`'s ATA. Requires cold admin. The program rejects the
 	 * whole withdrawal unless the market is Active or ReduceOnly, is before its expiry, has no
 	 * pending bankruptcy claim and has a usable oracle, and unless the fee pool keeps the

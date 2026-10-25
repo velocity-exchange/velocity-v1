@@ -229,7 +229,7 @@ test_files=(
   # whitelist.ts
   transferFeeAndPnlPool.ts
   protocolFees.ts
-  ammCapitalWithdraw.ts
+  perpFeePoolWithdraw.ts
   recenterAmmCrankOracle.ts
   specialUserAccount.ts
 )

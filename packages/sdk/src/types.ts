@@ -2435,8 +2435,8 @@ export type ProtocolFeeWithdrawRecord = {
 	recipientTokenAccount: PublicKey;
 };
 
-/** Emitted when `coldAdmin` withdraws AMM capital from a perp market's fee pool to the protocol fee recipient. */
-export type AmmCapitalWithdrawRecord = {
+/** Emitted when `coldAdmin` withdraws from a perp market's fee pool to the protocol fee recipient. */
+export type PerpFeePoolWithdrawRecord = {
 	ts: BN;
 	perpMarketIndex: number;
 	/** quote token sent to the recipient, QUOTE_PRECISION (1e6) */

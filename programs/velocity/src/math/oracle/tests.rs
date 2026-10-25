@@ -411,7 +411,7 @@ fn fill_order_match_admits_the_same_set_as_margin_calc() {
 }
 
 #[test]
-fn withdraw_amm_capital_oracle_acceptance() {
+fn withdraw_fee_pool_oracle_acceptance() {
     let stale = |immediate, low_risk| OracleValidity::StaleForAMM {
         immediate,
         low_risk,
@@ -430,7 +430,7 @@ fn withdraw_amm_capital_oracle_acceptance() {
         (OracleValidity::NonPositive, false),
     ] {
         assert_eq!(
-            is_oracle_valid_for_action(validity, Some(VelocityAction::WithdrawAmmCapital)).unwrap(),
+            is_oracle_valid_for_action(validity, Some(VelocityAction::WithdrawFeePool)).unwrap(),
             accepted,
             "{:?}",
             validity

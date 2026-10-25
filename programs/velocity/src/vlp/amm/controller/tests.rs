@@ -1941,7 +1941,7 @@ pub fn perp_market_transfer_fee_and_pnl_pool() {
     }
 }
 
-mod withdraw_amm_capital {
+mod withdraw_from_fee_pool {
     use crate::{
         error::ErrorCode,
         math::{
@@ -1957,7 +1957,7 @@ mod withdraw_amm_capital {
             perp_market::{PerpMarket, PoolBalance},
             spot_market::{SpotBalanceType, SpotMarket},
         },
-        vlp::amm::controller::withdraw_amm_capital,
+        vlp::amm::controller::withdraw_from_fee_pool,
     };
 
     const NOW: i64 = 1_000_000;
@@ -2007,7 +2007,7 @@ mod withdraw_amm_capital {
         market.amm.net_revenue_since_last_funding = 7;
         let deposits_before = spot_market.deposit_balance;
 
-        let result = withdraw_amm_capital(
+        let result = withdraw_from_fee_pool(
             &mut market,
             &mut spot_market,
             40 * QUOTE_PRECISION as u64,
@@ -2043,7 +2043,7 @@ mod withdraw_amm_capital {
         let (mut market, mut spot_market) =
             setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
         for _ in 0..3 {
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 20 * QUOTE_PRECISION as u64,
@@ -2067,18 +2067,18 @@ mod withdraw_amm_capital {
         let (mut market, mut spot_market) =
             setup(100 * QUOTE_PRECISION, 500 * QUOTE_PRECISION_I128);
         assert_eq!(
-            withdraw_amm_capital(&mut market, &mut spot_market, 0, ORACLE_PRICE, NOW),
+            withdraw_from_fee_pool(&mut market, &mut spot_market, 0, ORACLE_PRICE, NOW),
             Err(ErrorCode::DefaultError)
         );
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 100 * QUOTE_PRECISION as u64 + 1,
                 ORACLE_PRICE,
                 NOW
             ),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
     }
 
@@ -2088,34 +2088,34 @@ mod withdraw_amm_capital {
         let (mut market, mut spot_market) =
             setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 100 * QUOTE_PRECISION as u64,
                 ORACLE_PRICE,
                 NOW
             ),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
 
         // one raw unit short of the pool still fails, because the round-up leaves the pool at 0
         let (mut market, mut spot_market) =
             setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 100 * QUOTE_PRECISION as u64 - 1,
                 ORACLE_PRICE,
                 NOW
             ),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
 
         // two short leaves one raw unit of pool and equity, which passes
         let (mut market, mut spot_market) =
             setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
-        let result = withdraw_amm_capital(
+        let result = withdraw_from_fee_pool(
             &mut market,
             &mut spot_market,
             100 * QUOTE_PRECISION as u64 - 2,
@@ -2133,17 +2133,17 @@ mod withdraw_amm_capital {
         // pools say equity is 100, but the stored ledger only has 30
         let (mut market, mut spot_market) = setup(100 * QUOTE_PRECISION, 30 * QUOTE_PRECISION_I128);
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 30 * QUOTE_PRECISION as u64,
                 ORACLE_PRICE,
                 NOW
             ),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
         let (mut market, mut spot_market) = setup(100 * QUOTE_PRECISION, 30 * QUOTE_PRECISION_I128);
-        withdraw_amm_capital(
+        withdraw_from_fee_pool(
             &mut market,
             &mut spot_market,
             29 * QUOTE_PRECISION as u64,
@@ -2169,18 +2169,18 @@ mod withdraw_amm_capital {
 
         let (mut market, mut spot_market) = setup_owed();
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 45 * QUOTE_PRECISION as u64,
                 ORACLE_PRICE,
                 NOW
             ),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
 
         let (mut market, mut spot_market) = setup_owed();
-        let result = withdraw_amm_capital(
+        let result = withdraw_from_fee_pool(
             &mut market,
             &mut spot_market,
             44 * QUOTE_PRECISION as u64,
@@ -2199,14 +2199,14 @@ mod withdraw_amm_capital {
             setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
         market.quote_asset_amount = -50 * QUOTE_PRECISION_I128;
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 100 * QUOTE_PRECISION as u64,
                 ORACLE_PRICE,
                 NOW
             ),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
     }
 
@@ -2224,18 +2224,18 @@ mod withdraw_amm_capital {
 
         let (mut market, mut spot_market) = setup_provision();
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 80 * QUOTE_PRECISION as u64,
                 ORACLE_PRICE,
                 NOW
             ),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
 
         let (mut market, mut spot_market) = setup_provision();
-        let result = withdraw_amm_capital(
+        let result = withdraw_from_fee_pool(
             &mut market,
             &mut spot_market,
             80 * QUOTE_PRECISION as u64 - 1,
@@ -2253,7 +2253,7 @@ mod withdraw_amm_capital {
             setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
         market.fee_ledger.amm_protocol_fees_received = 30 * QUOTE_PRECISION;
         market.fee_ledger.pending_amm_provision = 30 * QUOTE_PRECISION;
-        let result = withdraw_amm_capital(
+        let result = withdraw_from_fee_pool(
             &mut market,
             &mut spot_market,
             90 * QUOTE_PRECISION as u64,
@@ -2271,8 +2271,8 @@ mod withdraw_amm_capital {
         market.fee_ledger.amm_protocol_fees_received = 30 * QUOTE_PRECISION;
         market.fee_ledger.pending_amm_provision = 10 * QUOTE_PRECISION;
         assert_eq!(
-            withdraw_amm_capital(&mut market, &mut spot_market, 1, ORACLE_PRICE, NOW),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            withdraw_from_fee_pool(&mut market, &mut spot_market, 1, ORACLE_PRICE, NOW),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
     }
 
@@ -2283,7 +2283,7 @@ mod withdraw_amm_capital {
         market.fee_ledger.amm_protocol_fees_received = 20 * QUOTE_PRECISION;
         market.fee_ledger.pending_amm_provision = 30 * QUOTE_PRECISION;
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 QUOTE_PRECISION as u64,
@@ -2308,13 +2308,13 @@ mod withdraw_amm_capital {
                 setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
             market.status = status;
             let result =
-                withdraw_amm_capital(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW);
+                withdraw_from_fee_pool(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW);
             if allowed {
                 assert!(result.is_ok(), "{:?}", status);
             } else {
                 assert_eq!(
                     result,
-                    Err(ErrorCode::AmmCapitalWithdrawMarketNotEligible),
+                    Err(ErrorCode::FeePoolWithdrawMarketNotEligible),
                     "{:?}",
                     status
                 );
@@ -2329,7 +2329,7 @@ mod withdraw_amm_capital {
             market.status = MarketStatus::ReduceOnly;
             market.expiry_ts = expiry_ts;
             let result =
-                withdraw_amm_capital(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW);
+                withdraw_from_fee_pool(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW);
             assert_eq!(result.is_ok(), allowed, "expiry_ts {}", expiry_ts);
         }
     }
@@ -2340,17 +2340,17 @@ mod withdraw_amm_capital {
             setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
         market.increment_pending_bankruptcy_claims();
         assert_eq!(
-            withdraw_amm_capital(
+            withdraw_from_fee_pool(
                 &mut market,
                 &mut spot_market,
                 QUOTE_PRECISION as u64,
                 ORACLE_PRICE,
                 NOW
             ),
-            Err(ErrorCode::AmmCapitalWithdrawMarketNotEligible)
+            Err(ErrorCode::FeePoolWithdrawMarketNotEligible)
         );
         market.decrement_pending_bankruptcy_claims();
-        withdraw_amm_capital(
+        withdraw_from_fee_pool(
             &mut market,
             &mut spot_market,
             QUOTE_PRECISION as u64,
@@ -2373,8 +2373,8 @@ mod withdraw_amm_capital {
             20 * QUOTE_PRECISION
         );
         assert_eq!(
-            withdraw_amm_capital(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW),
-            Err(ErrorCode::AmmCapitalWithdrawInsufficientCapital)
+            withdraw_from_fee_pool(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
     }
 }

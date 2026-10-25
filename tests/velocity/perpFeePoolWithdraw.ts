@@ -32,11 +32,11 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 
-// AmmCapitalWithdrawMarketNotEligible (6375) and AmmCapitalWithdrawInsufficientCapital (6376).
+// FeePoolWithdrawMarketNotEligible (6375) and FeePoolWithdrawInsufficientBalance (6376).
 const NOT_ELIGIBLE = '0x18e7';
-const INSUFFICIENT_CAPITAL = '0x18e8';
+const INSUFFICIENT_BALANCE = '0x18e8';
 
-describe('amm capital withdraw', () => {
+describe('perp fee pool withdraw', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
 	let velocityClient: TestClient;
@@ -245,7 +245,7 @@ describe('amm capital withdraw', () => {
 		await velocityClient.unsubscribe();
 	});
 
-	it('withdraws the exact amount and books it as capital, not a trading loss', async () => {
+	it('withdraws the exact amount and keeps it out of the drawdown window', async () => {
 		const before = velocityClient.getPerpMarketAccount(MARKET_INDEX);
 		const feePoolBefore = readFeePool();
 		const amount = new BN(40 * 10 ** 6);
@@ -303,7 +303,7 @@ describe('amm capital withdraw', () => {
 					MARKET_INDEX,
 					readFeePool().addn(1)
 				),
-			INSUFFICIENT_CAPITAL
+			INSUFFICIENT_BALANCE
 		);
 	});
 
@@ -412,7 +412,7 @@ describe('amm capital withdraw', () => {
 					MARKET_INDEX,
 					readFeePool().sub(reserve).addn(1)
 				),
-			INSUFFICIENT_CAPITAL
+			INSUFFICIENT_BALANCE
 		);
 
 		// one raw unit above it passes, even after the round-up takes its extra unit
@@ -496,7 +496,7 @@ describe('amm capital withdraw', () => {
 		} catch (e) {
 			threw = true;
 		}
-		assert(threw, 'a non-cold signer withdrew capital');
+		assert(threw, 'a non-cold signer withdrew from the fee pool');
 	});
 
 	it('allows ReduceOnly', async () => {

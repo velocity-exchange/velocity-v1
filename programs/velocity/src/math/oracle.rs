@@ -161,7 +161,7 @@ pub enum VelocityAction {
     UpdateAmmCache,
     UpdateLpPoolAum,
     LpPoolSwap,
-    WithdrawAmmCapital,
+    WithdrawFeePool,
 }
 
 pub fn is_oracle_valid_for_action(
@@ -254,8 +254,8 @@ pub fn is_oracle_valid_for_action(
                 !matches!(oracle_validity, OracleValidity::NonPositive)
             }
             // The low-risk freshness window decides, and the immediate flag is ignored, so a
-            // market that disables immediate AMM fills can still withdraw AMM capital.
-            VelocityAction::WithdrawAmmCapital => matches!(
+            // market that disables immediate AMM fills can still withdraw from the fee pool.
+            VelocityAction::WithdrawFeePool => matches!(
                 oracle_validity,
                 OracleValidity::Valid
                     | OracleValidity::StaleForAMM {

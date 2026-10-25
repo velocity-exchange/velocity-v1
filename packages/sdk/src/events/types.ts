@@ -23,6 +23,7 @@ import {
 	LPBorrowLendDepositRecord,
 	PerpMarketFeeSweepRecord,
 	ProtocolFeeWithdrawRecord,
+	AmmCapitalWithdrawRecord,
 	RevenueShareSettleRecord,
 	TransferFeeAndPnlPoolRecord,
 } from '../types';
@@ -83,6 +84,7 @@ export const DefaultEventSubscriptionOptions: EventSubscriptionOptions = {
 		'LPBorrowLendDepositRecord',
 		'PerpMarketFeeSweepRecord',
 		'ProtocolFeeWithdrawRecord',
+		'AmmCapitalWithdrawRecord',
 		'RevenueShareSettleRecord',
 		'TransferFeeAndPnlPoolRecord',
 		'AcceleratedReferralStatusChangedRecord',
@@ -170,6 +172,8 @@ export type EventMap = {
 	PerpMarketFeeSweepRecord: Event<PerpMarketFeeSweepRecord>;
 	/** Admin withdrawal from a perp or spot market's protocol fee pool to a recipient token account. */
 	ProtocolFeeWithdrawRecord: Event<ProtocolFeeWithdrawRecord>;
+	/** Cold-admin withdrawal of AMM capital from a perp market's fee pool. Amounts are quote-token, `QUOTE_PRECISION` (1e6). */
+	AmmCapitalWithdrawRecord: Event<AmmCapitalWithdrawRecord>;
 	/** Builder/referrer fee revenue-share settlement for a market. Fee amounts are quote-token, `QUOTE_PRECISION` (1e6). */
 	RevenueShareSettleRecord: Event<RevenueShareSettleRecord>;
 	/** Internal transfer of quote token between a perp market's fee pool and pnl pool. */
@@ -209,6 +213,7 @@ export type VelocityEvent =
 	| Event<LPBorrowLendDepositRecord>
 	| Event<PerpMarketFeeSweepRecord>
 	| Event<ProtocolFeeWithdrawRecord>
+	| Event<AmmCapitalWithdrawRecord>
 	| Event<RevenueShareSettleRecord>
 	| Event<TransferFeeAndPnlPoolRecord>
 	| Event<AcceleratedReferralStatusChangedRecord>

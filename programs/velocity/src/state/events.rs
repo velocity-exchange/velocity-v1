@@ -892,6 +892,25 @@ pub struct ProtocolFeeWithdrawRecord {
     pub recipient_token_account: Pubkey,
 }
 
+#[event]
+pub struct AmmCapitalWithdrawRecord {
+    /// unix_timestamp of action
+    pub ts: i64,
+    pub perp_market_index: u16,
+    /// quote token amount sent to the protocol fee recipient
+    pub amount: u64,
+    /// amm.fee_pool token amount before and after the debit
+    pub fee_pool_before: u128,
+    pub fee_pool_after: u128,
+    /// fee pool tokens the bankruptcy clawback can still claim, kept in the pool
+    pub protected_reserve: u128,
+    pub total_fee_minus_distributions_after: i128,
+    /// AMM equity recomputed from the pools at the oracle price after the debit
+    pub amm_equity_after: i128,
+    pub oracle_price: i64,
+    pub recipient_token_account: Pubkey,
+}
+
 /// Emitted by the streaming fee sweep (`sweep_market_fees`) when it
 /// materializes pending fee carveouts out of a perp market's pnl pool.
 #[event]

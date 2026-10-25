@@ -5749,6 +5749,98 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
+	 * Withdraws exactly `amount` of AMM capital from a perp market's `amm.feePool` to
+	 * `state.protocolFeeRecipientPerp`'s ATA. Requires cold admin. The program rejects the
+	 * whole withdrawal unless the market is Active or ReduceOnly, is before its expiry, has no
+	 * pending bankruptcy claim and has a usable oracle, and unless the fee pool keeps the
+	 * tokenized AMM provision the bankruptcy clawback can claim and both the stored and the
+	 * recomputed AMM equity stay above zero.
+	 * @param marketIndex - Perp market to withdraw from.
+	 * @param amount - Exact amount, QUOTE_PRECISION (1e6).
+	 * @param txParams - Optional transaction-building overrides.
+	 * @returns Transaction signature.
+	 */
+	public async withdrawFromPerpMarketFeePool(
+		marketIndex: number,
+		amount: BN,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getWithdrawFromPerpMarketFeePoolIx(
+			marketIndex,
+			amount
+		);
+		const tx = await this.buildTransaction(ix, txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `withdrawFromPerpMarketFeePool` instruction without sending it. Also wires
+	 * up transfer-hook remaining accounts if the quote market's mint requires them. See
+	 * `withdrawFromPerpMarketFeePool`.
+	 * @param marketIndex - Perp market to withdraw from.
+	 * @param amount - Exact amount, QUOTE_PRECISION (1e6).
+	 * @param admin - Cold admin signer. Defaults to the wallet; pass the Squads vault for a proposal.
+	 * @param payer - Pays for the recipient ATA if it does not exist yet. Defaults to `admin`.
+	 * @returns The unsigned `withdrawFromPerpMarketFeePool` instruction.
+	 */
+	public async getWithdrawFromPerpMarketFeePoolIx(
+		marketIndex: number,
+		amount: BN,
+		admin: PublicKey = this.wallet.publicKey,
+		payer: PublicKey = admin
+	): Promise<TransactionInstruction> {
+		const perpMarket = this.getPerpMarketAccountOrThrow(marketIndex);
+		const quoteSpotMarket = this.getSpotMarketAccountOrThrow(
+			perpMarket.quoteSpotMarketIndex
+		);
+		const tokenProgramId = this.getTokenProgramForSpotMarket(quoteSpotMarket);
+		const recipient = this.getStateAccount().protocolFeeRecipientPerp;
+		const recipientTokenAccount = getAssociatedTokenAddressSync(
+			quoteSpotMarket.mint,
+			recipient,
+			true,
+			tokenProgramId
+		);
+
+		const remainingAccounts: {
+			pubkey: PublicKey;
+			isSigner: boolean;
+			isWritable: boolean;
+		}[] = [];
+		if (this.isTransferHook(quoteSpotMarket)) {
+			await this.addExtraAccountMetasToRemainingAccounts(
+				quoteSpotMarket.mint,
+				remainingAccounts
+			);
+		}
+
+		return await this.program.instruction.withdrawFromPerpMarketFeePool(
+			marketIndex,
+			amount,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					payer,
+					admin,
+					perpMarket: perpMarket.pubkey,
+					quoteSpotMarket: quoteSpotMarket.pubkey,
+					spotMarketVault: quoteSpotMarket.vault,
+					mint: quoteSpotMarket.mint,
+					oracle: perpMarket.oracle,
+					recipient,
+					recipientTokenAccount,
+					tokenProgram: tokenProgramId,
+					velocitySigner: this.getSignerPublicKey(),
+					systemProgram: SystemProgram.programId,
+					associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+				},
+				remainingAccounts,
+			}
+		);
+	}
+
+	/**
 	 * Creates a market-local synthetic "oracle" account (`PrelaunchOracle`) for a perp market
 	 * that has no real price feed yet (e.g. a pre-launch/pre-listing market), seeded with an
 	 * admin-supplied price. Requires warm admin (`check_warm`). Set the market's `oracle` to

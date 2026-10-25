@@ -2521,6 +2521,17 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for WithdrawFromIsolatedPerpPosition {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct WithdrawFromPerpMarketFeePool {
+        pub market_index: u16,
+        pub amount: u64,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for WithdrawFromPerpMarketFeePool {
+        const DISCRIMINATOR: &[u8] = &[141, 51, 59, 51, 169, 240, 46, 71];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for WithdrawFromPerpMarketFeePool {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct WithdrawFromProgramVault {
         pub amount: u64,
     }
@@ -2785,6 +2796,31 @@ pub mod types {
         #[serde(skip)]
         pub _padding: Padding<3>,
         pub cache: Vec<CacheInfo>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct AmmCapitalWithdrawRecord {
+        pub ts: i64,
+        pub perp_market_index: u16,
+        pub amount: u64,
+        pub fee_pool_before: u128,
+        pub fee_pool_after: u128,
+        pub protected_reserve: u128,
+        pub total_fee_minus_distributions_after: i128,
+        pub amm_equity_after: i128,
+        pub oracle_price: i64,
+        pub recipient_token_account: Pubkey,
     }
     #[repr(C)]
     #[derive(
@@ -25874,6 +25910,142 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct WithdrawFromPerpMarketFeePool {
+        pub state: Pubkey,
+        pub payer: Pubkey,
+        pub admin: Pubkey,
+        pub perp_market: Pubkey,
+        pub quote_spot_market: Pubkey,
+        pub spot_market_vault: Pubkey,
+        pub mint: Pubkey,
+        pub oracle: Pubkey,
+        pub recipient: Pubkey,
+        pub recipient_token_account: Pubkey,
+        pub token_program: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub system_program: Pubkey,
+        pub associated_token_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for WithdrawFromPerpMarketFeePool {
+        const DISCRIMINATOR: &[u8] = &[251, 37, 3, 175, 52, 86, 45, 51];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for WithdrawFromPerpMarketFeePool {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for WithdrawFromPerpMarketFeePool {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for WithdrawFromPerpMarketFeePool {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for WithdrawFromPerpMarketFeePool {}
+    #[automatically_derived]
+    impl ToAccountMetas for WithdrawFromPerpMarketFeePool {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.payer,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quote_spot_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.mint,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.oracle,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.recipient,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.recipient_token_account,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.token_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.associated_token_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for WithdrawFromPerpMarketFeePool {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for WithdrawFromPerpMarketFeePool {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct WithdrawFromProgramVault {
         pub state: Pubkey,
         pub admin: Pubkey,
@@ -27065,6 +27237,10 @@ pub mod errors {
         RevenueShareOrderNotForfeitable,
         #[msg("vAMM quote management value is outside the hot role bounds")]
         VammQuoteManagementValueOutOfBounds,
+        # [msg ("Perp market status, expiry or pending bankruptcy claims block an AMM capital withdrawal")]
+        AmmCapitalWithdrawMarketNotEligible,
+        # [msg ("AMM capital withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity")]
+        AmmCapitalWithdrawInsufficientCapital,
     }
 }
 pub mod events {
@@ -27078,6 +27254,20 @@ pub mod events {
         pub previous_status: u8,
         pub new_status: u8,
         pub action: AcceleratedReferralStatusChange,
+    }
+    #[derive(Clone, Debug, PartialEq, Default)]
+    #[event]
+    pub struct AmmCapitalWithdrawRecord {
+        pub ts: i64,
+        pub perp_market_index: u16,
+        pub amount: u64,
+        pub fee_pool_before: u128,
+        pub fee_pool_after: u128,
+        pub protected_reserve: u128,
+        pub total_fee_minus_distributions_after: i128,
+        pub amm_equity_after: i128,
+        pub oracle_price: i64,
+        pub recipient_token_account: Pubkey,
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]

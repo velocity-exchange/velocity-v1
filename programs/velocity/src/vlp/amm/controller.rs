@@ -1,18 +1,25 @@
 #[cfg(test)]
 use crate::state::oracle::OraclePriceData;
 #[cfg(test)]
-use crate::state::perp_market::{MarketConfigFlag, PerpMarket};
+use crate::state::perp_market::MarketConfigFlag;
 use {
     crate::{
-        error::VelocityResult,
+        controller::spot_balance::update_spot_balances,
+        error::{ErrorCode, VelocityResult},
         math::{
             casting::Cast, quote_asset::*, safe_math::SafeMath, spot_balance::get_token_amount,
         },
+        msg,
         state::{
-            perp_market::AMM,
-            spot_market::{SpotBalance, SpotMarket},
+            market_status::MarketStatus,
+            perp_market::{PerpMarket, AMM},
+            spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
         },
-        vlp::amm::math::{amm, amm::calculate_quote_asset_amount_swapped},
+        validate,
+        vlp::amm::{
+            math::{amm, amm::calculate_quote_asset_amount_swapped},
+            quoter::AmmContract,
+        },
     },
     anchor_lang::prelude::*,
 };
@@ -200,3 +207,135 @@ pub use crate::controller::perp_pools::{
 // Cross-cutting AMM ↔ PerpMarket summary stat — lives in `math::perp_market`
 // because it spans both. Re-exported here so star-imports still resolve.
 pub use crate::math::perp_market::calculate_perp_market_amm_summary_stats;
+
+/// The balances an AMM capital withdrawal left behind, for the event and the logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AmmCapitalWithdrawal {
+    pub fee_pool_before: u128,
+    pub fee_pool_after: u128,
+    pub protected_reserve: u128,
+    pub total_fee_minus_distributions_after: i128,
+    pub amm_equity_after: i128,
+}
+
+/// Debits exactly `amount` of AMM capital from the market's fee pool. Moves no tokens.
+///
+/// Fails unless the market is Active or ReduceOnly, before expiry, and has no pending
+/// bankruptcy claim. After the debit the fee pool must still hold the tokenized bankruptcy
+/// provision, and stored and recomputed AMM equity must stay above zero. The caller must
+/// validate the oracle and accrue quote interest first.
+pub fn withdraw_amm_capital(
+    market: &mut PerpMarket,
+    spot_market: &mut SpotMarket,
+    amount: u64,
+    oracle_price: i64,
+    now: i64,
+) -> VelocityResult<AmmCapitalWithdrawal> {
+    validate!(
+        amount > 0,
+        ErrorCode::DefaultError,
+        "amount must be positive"
+    )?;
+
+    validate!(
+        matches!(
+            market.status,
+            MarketStatus::Active | MarketStatus::ReduceOnly
+        ) && !market.is_in_settlement(now),
+        ErrorCode::AmmCapitalWithdrawMarketNotEligible,
+        "perp market {} status={:?} expiry_ts={} now={}",
+        market.market_index,
+        market.status,
+        market.expiry_ts,
+        now
+    )?;
+
+    validate!(
+        !market.has_pending_bankruptcy_claim(),
+        ErrorCode::AmmCapitalWithdrawMarketNotEligible,
+        "perp market {} has {} pending bankruptcy claims",
+        market.market_index,
+        market.pending_bankruptcy_claims
+    )?;
+
+    validate!(
+        market.amm.fee_pool.market_index == spot_market.market_index,
+        ErrorCode::DefaultError,
+        "fee_pool market mismatch: pool.market={} spot={}",
+        market.amm.fee_pool.market_index,
+        spot_market.market_index
+    )?;
+
+    let fee_pool_before = market.amm.fee_pool_token_amount(spot_market)?;
+
+    // The bankruptcy clawback takes `pending_amm_provision` from the pnl pool first and only
+    // the tokenized remainder from the fee pool, so the tokenized remainder must stay here.
+    let tokenized_provision = market
+        .fee_ledger
+        .amm_protocol_fees_received
+        .safe_sub(market.fee_ledger.pending_amm_provision)?;
+    let protected_reserve = tokenized_provision.min(fee_pool_before);
+
+    validate!(
+        amount.cast::<u128>()? <= fee_pool_before,
+        ErrorCode::AmmCapitalWithdrawInsufficientCapital,
+        "amount {} exceeds fee pool {}",
+        amount,
+        fee_pool_before
+    )?;
+
+    update_spot_balances(
+        amount.cast::<u128>()?,
+        &SpotBalanceType::Borrow,
+        spot_market,
+        &mut market.amm.fee_pool,
+        true,
+    )?;
+    market.amm.record_capital_withdrawal(amount)?;
+
+    // Check the balances the debit actually left, because the scaled debit rounds up.
+    let fee_pool_after = market.amm.fee_pool_token_amount(spot_market)?;
+    let total_fee_minus_distributions_after = market.amm.total_fee_minus_distributions;
+    let amm_equity_after =
+        calculate_perp_market_amm_summary_stats(market, spot_market, oracle_price)?;
+
+    msg!(
+        "perp market {} amm capital withdraw {}: fee_pool {} -> {}, protected_reserve {}, tfmd_after {}, amm_equity_after {}, oracle_price {}",
+        market.market_index,
+        amount,
+        fee_pool_before,
+        fee_pool_after,
+        protected_reserve,
+        total_fee_minus_distributions_after,
+        amm_equity_after,
+        oracle_price
+    );
+
+    validate!(
+        fee_pool_after >= protected_reserve,
+        ErrorCode::AmmCapitalWithdrawInsufficientCapital,
+        "fee pool {} would fall below the bankruptcy reserve {}",
+        fee_pool_after,
+        protected_reserve
+    )?;
+    validate!(
+        total_fee_minus_distributions_after > 0,
+        ErrorCode::AmmCapitalWithdrawInsufficientCapital,
+        "total_fee_minus_distributions would be {}",
+        total_fee_minus_distributions_after
+    )?;
+    validate!(
+        amm_equity_after > 0,
+        ErrorCode::AmmCapitalWithdrawInsufficientCapital,
+        "recomputed amm equity would be {}",
+        amm_equity_after
+    )?;
+
+    Ok(AmmCapitalWithdrawal {
+        fee_pool_before,
+        fee_pool_after,
+        protected_reserve,
+        total_fee_minus_distributions_after,
+        amm_equity_after,
+    })
+}

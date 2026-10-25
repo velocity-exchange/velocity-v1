@@ -934,6 +934,14 @@ pub mod velocity {
         handle_deposit_into_perp_market_fee_pool(ctx, amount)
     }
 
+    pub fn withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
+        ctx: Context<'info, WithdrawFromPerpMarketFeePool<'info>>,
+        market_index: u16,
+        amount: u64,
+    ) -> Result<()> {
+        handle_withdraw_from_perp_market_fee_pool(ctx, market_index, amount)
+    }
+
     pub fn deposit_into_perp_market_pnl_pool<'c: 'info, 'info>(
         ctx: Context<'info, DepositIntoMarketPnlPool<'info>>,
         amount: u64,

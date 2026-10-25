@@ -80,6 +80,7 @@ velocity-admin perp-market set-spread-adjustment <markets> <spreadAdjustment> <i
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin perp-market deposit-fee-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); funds amm.fee_pool + total_fee_minus_distributions, raw quote base units
+velocity-admin perp-market withdraw-fee-pool <market> <amount> [--dry-run]  # cold admin; withdraws exactly <amount> raw quote base units of vAMM capital from amm.fee_pool to the protocol fee recipient, or fails. --dry-run simulates as the signer
 velocity-admin perp-market deposit-pnl-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); transfers raw quote base units into the quote spot vault and credits perp_market.pnl_pool by the same amount in one ix. Prefer over `call updatePerpMarketPnlPool`, which credits without moving tokens
 velocity-admin perp-market sync-amm-summary-stats <market> [--net-unsettled-funding-pnl <amount>]  # AmmCrank hot key (or warm/cold); recompute total_fee_minus_distributions from live state
 velocity-admin spot-market set-status <market> <status>
@@ -189,6 +190,21 @@ drifted from the pools' real balances, since it recomputes rather than funds. Re
 separate operation: `recenterPerpMarketAmm` sets peg and sqrt_k in one instruction, takes warm or
 cold, and wants values re-derived at the live oracle price. Reserves never adjust themselves to new
 capital.
+
+**Withdraw vAMM capital**: `perp-market withdraw-fee-pool <market> <amount> -p <cold profile> --multisig <pda>`
+sends exactly `<amount>` from `amm.fee_pool` to the ATA of `state.protocol_fee_recipient_perp`
+and lowers `total_fee_minus_distributions` by the same amount. The program rejects the whole
+withdrawal if the market is not Active or ReduceOnly, has reached its expiry, has a pending
+bankruptcy claim, or has an oracle outside the low-risk freshness window or the price band. It
+also rejects it if the fee pool would drop below the tokenized AMM provision
+(`amm_protocol_fees_received - pending_amm_provision`), which the bankruptcy clawback takes from
+the fee pool, or if the stored or recomputed AMM equity would reach zero. These are accounting
+checks. They do not size what remains against open interest or price risk, and a smaller tfmd
+widens the loaded side's spread. Run it with `--dry-run` first. That prints the raw pool and
+ledger values and simulates the instruction as the vault, and the simulation logs show the reserve
+and equity the program computed. The checks run again at execution, so a proposal that simulated
+clean can still fail if the market moved in between. Withdrawing capital does not resize the curve,
+so run `recenterPerpMarketAmm` separately if you want a smaller sqrt_k.
 
 **List a new market**: `market payloads <symbol>` derives every payload from the reviewed entry in
 `deploy-scripts/params` and computes the PDAs, so nothing is typed by hand. Propose the oracle

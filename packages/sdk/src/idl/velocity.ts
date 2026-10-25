@@ -15093,19 +15093,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "ammCapitalWithdrawRecord",
-      "discriminator": [
-        132,
-        38,
-        89,
-        207,
-        111,
-        18,
-        160,
-        154
-      ]
-    },
-    {
       "name": "ammCurveChanged",
       "discriminator": [
         116,
@@ -15298,6 +15285,19 @@ export type Velocity = {
         21,
         2,
         90
+      ]
+    },
+    {
+      "name": "perpFeePoolWithdrawRecord",
+      "discriminator": [
+        154,
+        27,
+        73,
+        173,
+        225,
+        243,
+        234,
+        153
       ]
     },
     {
@@ -17309,13 +17309,13 @@ export type Velocity = {
     },
     {
       "code": 6375,
-      "name": "ammCapitalWithdrawMarketNotEligible",
-      "msg": "Perp market status, expiry or pending bankruptcy claims block an AMM capital withdrawal"
+      "name": "feePoolWithdrawMarketNotEligible",
+      "msg": "Perp market status, expiry or pending bankruptcy claims block a fee pool withdrawal"
     },
     {
       "code": 6376,
-      "name": "ammCapitalWithdrawInsufficientCapital",
-      "msg": "AMM capital withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity"
+      "name": "feePoolWithdrawInsufficientBalance",
+      "msg": "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity"
     }
   ],
   "types": [
@@ -17761,69 +17761,6 @@ export type Velocity = {
                 }
               }
             }
-          }
-        ]
-      }
-    },
-    {
-      "name": "ammCapitalWithdrawRecord",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "ts",
-            "docs": [
-              "unix_timestamp of action"
-            ],
-            "type": "i64"
-          },
-          {
-            "name": "perpMarketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "amount",
-            "docs": [
-              "quote token amount sent to the protocol fee recipient"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "feePoolBefore",
-            "docs": [
-              "amm.fee_pool token amount before and after the debit"
-            ],
-            "type": "u128"
-          },
-          {
-            "name": "feePoolAfter",
-            "type": "u128"
-          },
-          {
-            "name": "protectedReserve",
-            "docs": [
-              "fee pool tokens the bankruptcy clawback can still claim, kept in the pool"
-            ],
-            "type": "u128"
-          },
-          {
-            "name": "totalFeeMinusDistributionsAfter",
-            "type": "i128"
-          },
-          {
-            "name": "ammEquityAfter",
-            "docs": [
-              "AMM equity recomputed from the pools at the oracle price after the debit"
-            ],
-            "type": "i128"
-          },
-          {
-            "name": "oraclePrice",
-            "type": "i64"
-          },
-          {
-            "name": "recipientTokenAccount",
-            "type": "pubkey"
           }
         ]
       }
@@ -22184,6 +22121,69 @@ export type Velocity = {
           {
             "name": "cumulativeFundingRateDelta",
             "type": "i128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "perpFeePoolWithdrawRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "perpMarketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "docs": [
+              "quote token amount sent to the protocol fee recipient"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "feePoolBefore",
+            "docs": [
+              "amm.fee_pool token amount before and after the debit"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "feePoolAfter",
+            "type": "u128"
+          },
+          {
+            "name": "protectedReserve",
+            "docs": [
+              "fee pool tokens the bankruptcy clawback can still claim, kept in the pool"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "totalFeeMinusDistributionsAfter",
+            "type": "i128"
+          },
+          {
+            "name": "ammEquityAfter",
+            "docs": [
+              "AMM equity recomputed from the pools at the oracle price after the debit"
+            ],
+            "type": "i128"
+          },
+          {
+            "name": "oraclePrice",
+            "type": "i64"
+          },
+          {
+            "name": "recipientTokenAccount",
+            "type": "pubkey"
           }
         ]
       }

@@ -2810,31 +2810,6 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct AmmCapitalWithdrawRecord {
-        pub ts: i64,
-        pub perp_market_index: u16,
-        pub amount: u64,
-        pub fee_pool_before: u128,
-        pub fee_pool_after: u128,
-        pub protected_reserve: u128,
-        pub total_fee_minus_distributions_after: i128,
-        pub amm_equity_after: i128,
-        pub oracle_price: i64,
-        pub recipient_token_account: Pubkey,
-    }
-    #[repr(C)]
-    #[derive(
-        AnchorSerialize,
-        AnchorDeserialize,
-        InitSpace,
-        Serialize,
-        Deserialize,
-        Copy,
-        Clone,
-        Default,
-        Debug,
-        PartialEq,
-    )]
     pub struct AmmConstituentDatum {
         pub perp_market_index: u16,
         pub constituent_index: u16,
@@ -4429,6 +4404,31 @@ pub mod types {
         pub clawback_user: Option<Pubkey>,
         pub clawback_user_payment: Option<u128>,
         pub cumulative_funding_rate_delta: i128,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct PerpFeePoolWithdrawRecord {
+        pub ts: i64,
+        pub perp_market_index: u16,
+        pub amount: u64,
+        pub fee_pool_before: u128,
+        pub fee_pool_after: u128,
+        pub protected_reserve: u128,
+        pub total_fee_minus_distributions_after: i128,
+        pub amm_equity_after: i128,
+        pub oracle_price: i64,
+        pub recipient_token_account: Pubkey,
     }
     #[repr(C)]
     #[derive(
@@ -27237,10 +27237,12 @@ pub mod errors {
         RevenueShareOrderNotForfeitable,
         #[msg("vAMM quote management value is outside the hot role bounds")]
         VammQuoteManagementValueOutOfBounds,
-        # [msg ("Perp market status, expiry or pending bankruptcy claims block an AMM capital withdrawal")]
-        AmmCapitalWithdrawMarketNotEligible,
-        # [msg ("AMM capital withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity")]
-        AmmCapitalWithdrawInsufficientCapital,
+        #[msg(
+            "Perp market status, expiry or pending bankruptcy claims block a fee pool withdrawal"
+        )]
+        FeePoolWithdrawMarketNotEligible,
+        # [msg ("Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity")]
+        FeePoolWithdrawInsufficientBalance,
     }
 }
 pub mod events {
@@ -27254,20 +27256,6 @@ pub mod events {
         pub previous_status: u8,
         pub new_status: u8,
         pub action: AcceleratedReferralStatusChange,
-    }
-    #[derive(Clone, Debug, PartialEq, Default)]
-    #[event]
-    pub struct AmmCapitalWithdrawRecord {
-        pub ts: i64,
-        pub perp_market_index: u16,
-        pub amount: u64,
-        pub fee_pool_before: u128,
-        pub fee_pool_after: u128,
-        pub protected_reserve: u128,
-        pub total_fee_minus_distributions_after: i128,
-        pub amm_equity_after: i128,
-        pub oracle_price: i64,
-        pub recipient_token_account: Pubkey,
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]
@@ -27531,6 +27519,20 @@ pub mod events {
         pub ts: i64,
         pub user: Pubkey,
         pub order: Order,
+    }
+    #[derive(Clone, Debug, PartialEq, Default)]
+    #[event]
+    pub struct PerpFeePoolWithdrawRecord {
+        pub ts: i64,
+        pub perp_market_index: u16,
+        pub amount: u64,
+        pub fee_pool_before: u128,
+        pub fee_pool_after: u128,
+        pub protected_reserve: u128,
+        pub total_fee_minus_distributions_after: i128,
+        pub amm_equity_after: i128,
+        pub oracle_price: i64,
+        pub recipient_token_account: Pubkey,
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]

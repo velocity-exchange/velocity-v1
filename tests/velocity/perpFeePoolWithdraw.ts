@@ -318,7 +318,6 @@ describe('perp fee pool withdraw', () => {
 		const clock = svmContextWrapper.context.getClock();
 		try {
 			market.amm.curveUpdateIntensity = 0;
-			market.oracleSlotDelayOverride = 0;
 			await writeMarket(market);
 			svmContextWrapper.context.warpToSlot(clock.slot + BigInt(100000));
 			await expectRollback(withdrawOne, errorCode('InvalidOracle'));
@@ -340,7 +339,6 @@ describe('perp fee pool withdraw', () => {
 				marketInfo.data
 			);
 			updated.amm.curveUpdateIntensity = original.amm.curveUpdateIntensity;
-			updated.oracleSlotDelayOverride = original.oracleSlotDelayOverride;
 			await writeMarket(updated);
 			await velocityClient.fetchAccounts();
 		}
@@ -489,14 +487,11 @@ describe('perp fee pool withdraw', () => {
 			outsider.publicKey,
 			velocityClient.wallet.publicKey
 		);
-		let threw = false;
-		try {
+		// Anchor ConstraintRaw (2003), raised by the check_cold constraint.
+		await expectRollback(async () => {
 			const tx = await velocityClient.buildTransaction(ix);
 			await velocityClient.sendTransaction(tx, [outsider], velocityClient.opts);
-		} catch (e) {
-			threw = true;
-		}
-		assert(threw, 'a non-cold signer withdrew from the fee pool');
+		}, '0x7d3');
 	});
 
 	it('allows ReduceOnly', async () => {

@@ -184,8 +184,9 @@ AMM on its way out.
    waterfall can still reach. An unswept insurance carveout even upgrades
    coverage, because market-local tranche-1 forgiveness is uncapped while the
    shared vault is capped. Drains 1 and 2 never touch the AMM's books or pools.
-   Undrained remainders wait for the next sweep. This is the only fee routing
-   out of a perp market.
+   Undrained remainders wait for the next sweep. This is the only automatic
+   fee routing out of a perp market. The cold admin can also move AMM equity
+   out of `amm.fee_pool`, as described under "AMM fee pool withdrawal" below.
 
    The sweep runs inline on every pnl settle (`update_pool_balances`, after the
    user's settle so the sweep cannot starve it) and on demand through the
@@ -329,6 +330,28 @@ balance, and `validate_spot_market_vault_amount` re-checks afterwards that the
 vault still covers every remaining claim. A withdrawal can never reach user
 deposits. Each one emits `ProtocolFeeWithdrawRecord`.
 
+### AMM fee pool withdrawal
+
+`withdraw_from_perp_market_fee_pool(market_index, amount)` sends the AMM's
+retained equity from `amm.fee_pool` to the ATA of
+`State.protocol_fee_recipient_perp`. Only `cold_admin` can sign it. It lowers
+`total_fee_minus_distributions` by the same amount and leaves
+`net_revenue_since_last_funding` alone, so the drawdown breaker does not count
+it as a trading loss. The market must be Active or ReduceOnly, before
+`expiry_ts`, with no pending bankruptcy claim, and the oracle must pass the
+same validity, price band and divergence checks as `settle_pnl`.
+
+After the debit the fee pool must still hold the tokenized carveout,
+`amm_protocol_fees_received - pending_amm_provision`, capped at the pool's
+balance before the withdrawal, so the bankruptcy clawback in tranche 3 can
+still reach it. Stored and recomputed AMM equity must both stay above zero.
+Nothing checks the remaining pool against open interest. A lower
+`total_fee_minus_distributions` widens spreads on the loaded side and shrinks
+the funding, repeg and k budgets, and once it goes negative the insurance fund
+covers the AMM's deficit through `resolve_perp_pnl_deficit`. The admin decides
+how much equity to leave per market. Each withdrawal emits
+`PerpFeePoolWithdrawRecord`.
+
 ## Flow diagram
 
 ```mermaid
@@ -359,6 +382,7 @@ flowchart LR
     PNL -->|"2. IF (above buffer)"| RP
     PNL -->|"3. AMM carveout tokenized (above buffer)"| FP
     FP -->|"bankruptcy clawback (capped at carveout received)"| PNL
+    FP ==>|"withdraw_from_perp_market_fee_pool (cold admin, keeps tokenized carveout)"| WALLET
     LIQ -->|"spot (direct)"| RP
     LIQ -->|"spot (direct)"| PFP
     LEND -->|if_fee_factor| RP
@@ -388,8 +412,9 @@ flowchart LR
 | Lending carveouts | `controller/spot_balance.rs:update_spot_market_cumulative_interest`; `InsuranceFund.if_fee_factor`, `SpotMarket.protocol_fee_factor`; `split_deposit_interest` |
 | IF bootstrap | `controller/insurance.rs` (`settle_revenue_to_insurance_fund`, `add_insurance_fund_stake`) |
 | Withdrawal | `instructions/protocol_fees/`; `State.protocol_fee_recipient_perp`/`_spot` + `hot_fee_withdraw`; `HotRole::FeeWithdraw` |
+| AMM fee pool withdrawal | `handle_withdraw_from_perp_market_fee_pool` (`vlp/amm/admin.rs`, cold admin); `withdraw_from_fee_pool` (`vlp/amm/controller.rs`) |
 | Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target`, `update_perp_market_bankruptcy_if_floor_pct`, `update_user_accelerated_referral_status` |
-| Event | `ProtocolFeeWithdrawRecord`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
+| Event | `ProtocolFeeWithdrawRecord`, `PerpFeePoolWithdrawRecord`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
 
 ---
 

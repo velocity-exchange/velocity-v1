@@ -54,7 +54,7 @@ export async function fetchUserAccountsUsingKeys(
 ): Promise<(UserAccount | undefined)[]> {
 	const accountInfos = await connection.getMultipleAccountsInfo(
 		userAccountPublicKeys,
-		'confirmed'
+		'finalized'
 	);
 
 	return accountInfos.map((accountInfo) => {
@@ -86,7 +86,7 @@ export async function fetchUserStatsAccount(
 	);
 	const accountInfo = await connection.getAccountInfo(
 		userStatsPublicKey,
-		'confirmed'
+		'finalized'
 	);
 
 	return accountInfo

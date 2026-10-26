@@ -4274,7 +4274,7 @@ export class VelocityClient {
 		const mintAccount = await getMint(
 			this.connection,
 			mint,
-			'confirmed',
+			'finalized',
 			TOKEN_2022_PROGRAM_ID
 		);
 		const hookAccount = getTransferHook(mintAccount)!;

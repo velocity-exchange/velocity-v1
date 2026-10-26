@@ -194,7 +194,7 @@ export class WebsocketCacheProgramAccountSubscriber {
 			const rpcRequestArgs = [
 				this.program.programId,
 				{
-					commitment: 'confirmed',
+					commitment: 'finalized',
 					filters,
 					encoding: 'base64+zstd',
 					withContext: true,
@@ -481,7 +481,7 @@ class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubs
 			blocks: {},
 			blocksMeta: {},
 			accountsDataSlice: [],
-			commitment: CommitmentLevel.CONFIRMED,
+			commitment: CommitmentLevel.FINALIZED,
 			entry: {},
 			transactionsStatus: {},
 		};
@@ -646,7 +646,7 @@ async function main() {
 	const syncFileName = 'sync' + (isTsRuntime() ? '.ts' : '.js');
 	fork(path.join(__dirname, syncFileName));
 
-	const connection = new Connection(endpoint, 'confirmed');
+	const connection = new Connection(endpoint, 'finalized');
 	const wallet = new Wallet(new Keypair());
 	const velocityClient = new VelocityClient({
 		connection,
@@ -677,14 +677,14 @@ async function main() {
 				token!,
 				program,
 				redisClient,
-				{ filters, commitment: 'confirmed' },
+				{ filters, commitment: 'finalized' },
 				30_000
 		  )
 		: // Same TS2589 escape as the grpc branch above.
 		  new (WebsocketCacheProgramAccountSubscriber as any)(
 				program,
 				redisClient,
-				{ filters, commitment: 'confirmed' },
+				{ filters, commitment: 'finalized' },
 				30_000
 		  );
 

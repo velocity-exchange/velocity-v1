@@ -337,7 +337,7 @@ export class SpotFillerMultithreaded {
 			this.velocityClient,
 			new BulkAccountLoader(
 				new Connection(this.velocityClient.connection.rpcEndpoint),
-				'confirmed',
+				'finalized',
 				0
 			)
 		);
@@ -1297,7 +1297,7 @@ export class SpotFillerMultithreaded {
 
 		const recentBlockhash =
 			await this.velocityClient.connection.getLatestBlockhash({
-				commitment: 'confirmed',
+				commitment: 'finalized',
 			});
 
 		return recentBlockhash.blockhash;
@@ -1473,7 +1473,7 @@ export class SpotFillerMultithreaded {
 				const txs = await this.txConfirmationConnection?.getTransactions(
 					txSigsBatch.map((tx) => tx[0]),
 					{
-						commitment: 'confirmed',
+						commitment: 'finalized',
 						maxSupportedTransactionVersion: 1,
 					}
 				);
@@ -1664,7 +1664,7 @@ export class SpotFillerMultithreaded {
 				`(fillTxId: ${fillTxId}) waiting for https://solscan.io/tx/${txSig} to be confirmed`
 			);
 			txResp = await this.velocityClient.connection.getTransaction(txSig, {
-				commitment: 'confirmed',
+				commitment: 'finalized',
 				maxSupportedTransactionVersion: 1,
 			});
 

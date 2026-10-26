@@ -107,7 +107,7 @@ export async function getOrCreateAssociatedTokenAccount(
 				blockhash: latestBlock.blockhash,
 				lastValidBlockHeight: latestBlock.lastValidBlockHeight,
 			},
-			'confirmed'
+			'finalized'
 		);
 	}
 
@@ -1104,7 +1104,7 @@ export async function swapFillerHardEarnedUSDCForSOL(
 			buildTx(1_400_000),
 			{
 				replaceRecentBlockhash: true,
-				commitment: 'confirmed',
+				commitment: 'finalized',
 			}
 		);
 

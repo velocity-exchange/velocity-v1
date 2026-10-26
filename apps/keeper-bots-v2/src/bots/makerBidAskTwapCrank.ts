@@ -692,7 +692,7 @@ export class MakerBidAskTwapCrank implements Bot {
 		console.log('getting recent blockhash from rpc...');
 		const recentBlockhash =
 			await this.velocityClient.connection.getLatestBlockhash({
-				commitment: 'confirmed',
+				commitment: 'finalized',
 			});
 		return recentBlockhash.blockhash;
 	}

@@ -142,7 +142,7 @@ export class RevenueShareEscrowMap {
 					this.velocityClient.program.programId,
 					new PublicKey(authority)
 				),
-				'confirmed'
+				'finalized'
 			);
 			if (accountInfo === null) {
 				throw new Error(

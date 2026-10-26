@@ -50,7 +50,7 @@ program
 	)
 	.addOption(
 		new Option('--commitment <commitment>', 'State commitment to use').default(
-			'confirmed'
+			'finalized'
 		)
 	)
 	.addOption(

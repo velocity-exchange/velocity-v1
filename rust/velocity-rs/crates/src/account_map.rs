@@ -310,10 +310,7 @@ impl AccountMap {
 
     pub async fn sync_stats_accounts(&self) -> SdkResult<()> {
         // TODO: rust sdk does not surface with_context slot on GPA
-        let slot = self
-            .rpc
-            .get_slot_with_commitment(CommitmentConfig::confirmed())
-            .await?;
+        let slot = self.rpc.get_slot().await?;
         let stats_sync_result = self
             .rpc
             .get_program_ui_accounts_with_config(
@@ -346,10 +343,7 @@ impl AccountMap {
 
     pub async fn sync_user_accounts(&self, mut filters: Vec<RpcFilterType>) -> SdkResult<()> {
         // TODO: rust sdk does not surface with_context slot on GPA
-        let slot = self
-            .rpc
-            .get_slot_with_commitment(CommitmentConfig::confirmed())
-            .await?;
+        let slot = self.rpc.get_slot().await?;
         filters.insert(0, crate::memcmp::get_user_filter());
 
         let sync_result = self
@@ -727,7 +721,7 @@ mod tests {
                 .expect("ws connects"),
         );
         let rpc = Arc::new(RpcClient::new(mainnet_endpoint()));
-        let account_map = AccountMap::new(pubsub, rpc, CommitmentConfig::confirmed());
+        let account_map = AccountMap::new(pubsub, rpc, CommitmentConfig::finalized());
         let user_1 = Wallet::derive_user_account(
             &solana_pubkey::pubkey!("DxoRJ4f5XRMvXU9SGuM4ZziBFUxbhB3ubur5sVZEvue2"),
             0,

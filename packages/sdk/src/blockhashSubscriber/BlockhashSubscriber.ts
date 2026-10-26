@@ -35,7 +35,7 @@ export class BlockhashSubscriber {
 	private updateIntervalMs: number;
 
 	/**
-	 * @param config Either `connection` or `rpcUrl` must be provided (a `Connection` is created from `rpcUrl` if `connection` is omitted). `commitment` defaults to `'confirmed'`; `updateIntervalMs` defaults to 1000ms.
+	 * @param config Either `connection` or `rpcUrl` must be provided (a `Connection` is created from `rpcUrl` if `connection` is omitted). `commitment` defaults to `'finalized'`; `updateIntervalMs` defaults to 1000ms.
 	 * @throws If neither `config.connection` nor `config.rpcUrl` is provided.
 	 */
 	constructor(config: BlockhashSubscriberConfig) {
@@ -45,7 +45,7 @@ export class BlockhashSubscriber {
 			);
 		}
 		this.connection = config.connection || new Connection(config.rpcUrl!);
-		this.commitment = config.commitment ?? 'confirmed';
+		this.commitment = config.commitment ?? 'finalized';
 		this.updateIntervalMs = config.updateIntervalMs ?? 1000;
 	}
 

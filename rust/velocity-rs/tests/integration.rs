@@ -485,7 +485,7 @@ async fn place_order_sim_via_privy_account() {
             RpcSimulateTransactionConfig {
                 sig_verify: false,
                 replace_recent_blockhash: true,
-                commitment: Some(CommitmentConfig::confirmed()),
+                commitment: Some(CommitmentConfig::finalized()),
                 min_context_slot: Some(slot.saturating_sub(30)),
                 ..Default::default()
             },

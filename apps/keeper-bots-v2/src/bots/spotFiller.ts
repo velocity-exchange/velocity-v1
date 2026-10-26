@@ -862,7 +862,7 @@ export class SpotFillerBot implements Bot {
 				const txs = await this.txConfirmationConnection?.getTransactions(
 					txSigsBatch.map((tx) => tx[0]),
 					{
-						commitment: 'confirmed',
+						commitment: 'finalized',
 						maxSupportedTransactionVersion: 1,
 					}
 				);
@@ -1367,7 +1367,7 @@ export class SpotFillerBot implements Bot {
 				`(fillTxId: ${fillTxId}) waiting for https://solscan.io/tx/${txSig} to be confirmed`
 			);
 			txResp = await this.velocityClient.connection.getTransaction(txSig, {
-				commitment: 'confirmed',
+				commitment: 'finalized',
 				maxSupportedTransactionVersion: 1,
 			});
 
@@ -1503,7 +1503,7 @@ export class SpotFillerBot implements Bot {
 
 		const recentBlockhash =
 			await this.velocityClient.connection.getLatestBlockhash({
-				commitment: 'confirmed',
+				commitment: 'finalized',
 			});
 
 		return recentBlockhash.blockhash;

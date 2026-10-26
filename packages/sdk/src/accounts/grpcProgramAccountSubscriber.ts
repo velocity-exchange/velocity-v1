@@ -95,7 +95,7 @@ export class grpcProgramAccountSubscriber<
 		);
 		const commitmentLevel =
 			// @ts-ignore :: isomorphic exported enum fails typescript but will work at runtime
-			grpcConfigs.commitmentLevel ?? CommitmentLevel.CONFIRMED;
+			grpcConfigs.commitmentLevel ?? CommitmentLevel.FINALIZED;
 
 		return new grpcProgramAccountSubscriber(
 			client,

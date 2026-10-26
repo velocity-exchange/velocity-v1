@@ -32,7 +32,7 @@ function commitmentLevelToCommitment(
 		case CommitmentLevel.FINALIZED:
 			return 'finalized';
 		default:
-			return 'confirmed';
+			return 'finalized';
 	}
 }
 
@@ -140,7 +140,7 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 			  );
 		const commitmentLevel =
 			// @ts-ignore :: isomorphic exported enum fails typescript but will work at runtime
-			grpcConfigs.commitmentLevel ?? CommitmentLevel.CONFIRMED;
+			grpcConfigs.commitmentLevel ?? CommitmentLevel.FINALIZED;
 
 		return new grpcMultiAccountSubscriber(
 			client,

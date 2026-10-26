@@ -68,7 +68,7 @@ export class SignedMsgUserOrdersAccountSubscriber {
 		decodeFn,
 		resyncIntervalMs,
 	}: SignedMsgUserOrdersAccountSubscriberConfig) {
-		this.commitment = commitment ?? 'confirmed';
+		this.commitment = commitment ?? 'finalized';
 		this.resubOpts = resubOpts;
 		// Type-system guarantees at least one of the two is supplied.
 		this.velocityClient = velocityClient!;

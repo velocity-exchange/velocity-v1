@@ -55,7 +55,7 @@ const wsEndpoint = process.env.WS_ENDPOINT;
 //@ts-ignore
 const sdkConfig = initialize({ env: process.env.ENV });
 
-const stateCommitment: Commitment = 'confirmed';
+const stateCommitment: Commitment = 'finalized';
 const serverPort = process.env.PORT || 6969;
 const metricsPort = process.env.METRICS_PORT
 	? parseInt(process.env.METRICS_PORT)

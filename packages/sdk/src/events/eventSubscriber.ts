@@ -123,7 +123,7 @@ export class EventSubscriber {
 				// @ts-ignore
 				this.connection,
 				this.address,
-				this.options.commitment ?? 'confirmed',
+				this.options.commitment ?? 'finalized',
 				(logProviderConfig as WebSocketLogProviderConfig).resubTimeoutMs
 			);
 		} else if (this._currentProviderType === 'polling') {
@@ -140,7 +140,7 @@ export class EventSubscriber {
 				// @ts-ignore
 				this.connection,
 				this.address,
-				this.options.commitment ?? 'confirmed',
+				this.options.commitment ?? 'finalized',
 				frequency,
 				batchSize
 			);

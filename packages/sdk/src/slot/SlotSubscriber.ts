@@ -53,7 +53,7 @@ export class SlotSubscriber {
 			return;
 		}
 
-		const newSlot = await this.connection.getSlot('confirmed');
+		const newSlot = await this.connection.getSlot('finalized');
 		this.updateCurrentSlot(newSlot);
 
 		this.subscriptionId = this.connection.onSlotChange((slotInfo) => {

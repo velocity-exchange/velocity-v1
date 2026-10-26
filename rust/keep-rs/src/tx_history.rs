@@ -31,7 +31,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let client = RpcClient::new_with_commitment(args.rpc_url, CommitmentConfig::confirmed());
+    let client = RpcClient::new_with_commitment(args.rpc_url, CommitmentConfig::finalized());
     let signatures = match client
         .get_signatures_for_address_with_config(
             &pubkey,

@@ -110,7 +110,7 @@ pub struct GrpcSubscribeOpts {
 impl Default for GrpcSubscribeOpts {
     fn default() -> Self {
         Self {
-            commitment: Some(CommitmentLevel::Confirmed),
+            commitment: Some(CommitmentLevel::Finalized),
             usermap: false,
             user_stats_map: false,
             oraclemap: true,
@@ -130,7 +130,7 @@ impl Default for GrpcSubscribeOpts {
 }
 
 impl GrpcSubscribeOpts {
-    /// Set the gRPC subscription's commitment level (default: 'confirmed')
+    /// Set the gRPC subscription's commitment level (default: finalized)
     pub fn commitment(mut self, commitment: CommitmentLevel) -> Self {
         self.commitment = Some(commitment);
         self

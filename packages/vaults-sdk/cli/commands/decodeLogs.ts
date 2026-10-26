@@ -22,7 +22,7 @@ export const decodeLogs = async (program: Command, cmdOpts: OptionValues) => {
 	);
 
 	const tx = await velocityClient.connection.getParsedTransaction(txId, {
-		commitment: 'confirmed',
+		commitment: 'finalized',
 		maxSupportedTransactionVersion: 1,
 	});
 

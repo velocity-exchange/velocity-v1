@@ -26,7 +26,7 @@ variables, in a `.env` file, or as command line flags.
 | `RPC_URL`            | `--url`      | The RPC node to connect to for transactions. Required                                                                        |
 | `KEYPAIR_PATH`       | `--keypair`  | Path to a keypair, as a file or a base58 string. A ledger path also works, for example `usb://ledger/<wallet_id>?key=0/0`     |
 | `ENV`                | `--env`      | `devnet` or `mainnet-beta`. Defaults to `mainnet-beta`                                                                       |
-| none                 | `--commitment` | State commitment to use. Defaults to `confirmed`                                                                           |
+| none                 | `--commitment` | State commitment to use. Defaults to `finalized`                                                                           |
 
 ## Manager commands
 

@@ -90,7 +90,7 @@ export const DefaultEventSubscriptionOptions: EventSubscriptionOptions = {
 	maxEventsPerType: 4096,
 	orderBy: 'blockchain',
 	orderDir: 'asc',
-	commitment: 'confirmed',
+	commitment: 'finalized',
 	maxTx: 4096,
 	logProviderConfig: {
 		type: 'websocket',

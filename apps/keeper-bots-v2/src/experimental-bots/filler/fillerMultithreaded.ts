@@ -1368,7 +1368,7 @@ export class FillerMultithreaded {
 				const txs = await this.txConfirmationConnection?.getTransactions(
 					txSigsBatch.map((tx) => tx[0]),
 					{
-						commitment: 'confirmed',
+						commitment: 'finalized',
 						maxSupportedTransactionVersion: 1,
 					}
 				);
@@ -1599,7 +1599,7 @@ export class FillerMultithreaded {
 
 		const recentBlockhash =
 			await this.velocityClient.connection.getLatestBlockhash({
-				commitment: 'confirmed',
+				commitment: 'finalized',
 			});
 
 		return recentBlockhash.blockhash;

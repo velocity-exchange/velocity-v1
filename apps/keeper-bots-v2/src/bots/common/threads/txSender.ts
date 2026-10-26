@@ -90,7 +90,7 @@ export class TxSender {
 		this.resendInterval = config.resendInterval ?? 2000;
 		this.additionalSendTxConnections = []; // TODO: pass in additional RPCs to send txs to
 		this.sendTxOpts = {
-			commitment: 'confirmed',
+			commitment: 'finalized',
 			maxRetries: 0,
 			skipPreflight: true,
 		};
@@ -182,7 +182,7 @@ export class TxSender {
 					);
 				}
 			},
-			'confirmed'
+			'finalized'
 		);
 	}
 
@@ -212,7 +212,7 @@ export class TxSender {
 				const txs = await this.txConfirmationConnection.getTransactions(
 					txSigsBatch.map((tx) => tx[0]),
 					{
-						commitment: 'confirmed',
+						commitment: 'finalized',
 						maxSupportedTransactionVersion: 1,
 					}
 				);

@@ -36,7 +36,7 @@ async fn main() {
 
     let velocity_client = VelocityClient::new(
         Context::MainNet,
-        RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::confirmed()),
+        RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::finalized()),
         wallet,
     )
     .await

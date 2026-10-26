@@ -59,7 +59,7 @@ async function main() {
 	const { perpMarketIndexes, spotMarketIndexes, oracleInfos } =
 		getMarketsAndOraclesForSubscription('mainnet-beta');
 
-		const accountLoader = new BulkAccountLoader(connection, 'confirmed', 60_000);
+		const accountLoader = new BulkAccountLoader(connection, 'finalized', 60_000);
 
 	const clientConfig: VelocityClientConfig = {
 		connection,
@@ -83,7 +83,7 @@ async function main() {
 		subscriptionConfig: {
 			type: 'polling',
 			frequency: 60_000,
-			commitment: 'confirmed',
+			commitment: 'finalized',
 		},
 		includeIdle: false,
 		syncConfig: { type: 'paginated' },

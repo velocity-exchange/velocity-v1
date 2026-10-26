@@ -32,7 +32,7 @@ async function main() {
 
 	const connection = new Connection(
 		process.env.RPC_URL ?? 'https://api.devnet.solana.com',
-		'confirmed'
+		'finalized'
 	);
 
 	const client = new VelocityClient({
@@ -41,7 +41,7 @@ async function main() {
 		env,
 		accountSubscription: {
 			type: 'polling',
-			accountLoader: new BulkAccountLoader(connection, 'confirmed', 1000),
+			accountLoader: new BulkAccountLoader(connection, 'finalized', 1000),
 		},
 	});
 	// subscribe() resolves false rather than throwing when a subscription fails.

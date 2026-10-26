@@ -86,7 +86,7 @@ require('dotenv').config();
 const commitHash = process.env.COMMIT ?? '';
 
 const stateCommitment = (process.env.STATE_COMMITMENT ??
-	'confirmed') as Commitment;
+	'finalized') as Commitment;
 const healthCheckPort = process.env.HEALTH_CHECK_PORT || 8888;
 
 program

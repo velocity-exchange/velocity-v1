@@ -21,7 +21,7 @@ export class OneShotUserAccountSubscriber
 	 * @param userAccountPublicKey Address of the `UserAccount` to fetch.
 	 * @param data Optional pre-fetched account data to seed with, skipping the RPC call entirely.
 	 * @param slot Slot `data` was observed at, if provided.
-	 * @param commitment Commitment for the fetch; defaults to `'confirmed'`.
+	 * @param commitment Commitment for the fetch; defaults to `'finalized'`.
 	 */
 	public constructor(
 		program: VelocityProgram,
@@ -32,7 +32,7 @@ export class OneShotUserAccountSubscriber
 	) {
 		super(userAccountPublicKey, data, slot);
 		this.program = program;
-		this.commitment = commitment ?? 'confirmed';
+		this.commitment = commitment ?? 'finalized';
 	}
 
 	/**

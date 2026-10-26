@@ -343,7 +343,7 @@ async fn log_stream(ws: Arc<PubsubClient>, sub_account: Pubkey) -> SdkResult<Vel
             cache: Arc::clone(&cache),
             sub_account,
             event_tx: event_tx.clone(),
-            commitment: CommitmentConfig::confirmed(),
+            commitment: CommitmentConfig::finalized(),
         }
         .stream_fn()
         .await;
@@ -371,7 +371,7 @@ async fn grpc_log_stream(
             grpc_x_token: x_token.clone(),
             sub_account,
             event_tx: event_tx.clone(),
-            commitment: CommitmentConfig::confirmed(),
+            commitment: CommitmentConfig::finalized(),
         }
         .stream_fn()
         .await;
@@ -1028,7 +1028,7 @@ mod test {
                 .try_into()
                 .unwrap(),
             event_tx,
-            commitment: CommitmentConfig::confirmed(),
+            commitment: CommitmentConfig::finalized(),
         };
 
         // Captured on devnet, where the program is deployed under a different

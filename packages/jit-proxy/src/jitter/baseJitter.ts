@@ -90,7 +90,7 @@ export abstract class BaseJitter {
 			userStatsMap ||
 			new UserStatsMap(
 				this.velocityClient,
-				new BulkAccountLoader(this.velocityClient.connection, 'confirmed', 0)
+				new BulkAccountLoader(this.velocityClient.connection, 'finalized', 0)
 			);
 		this.slotSubscriber = slotSubscriber;
 		this.swiftOrderSubscriber = swiftOrderSubscriber;

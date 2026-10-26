@@ -133,14 +133,14 @@ export function registerConfig(parent: Command): void {
 				}
 			}
 			s.start('checking RPC genesis hash');
-			const cluster = await detectCluster(new Connection(url, 'confirmed'));
+			const cluster = await detectCluster(new Connection(url, 'finalized'));
 			if (cluster === 'unknown') {
 				// Re-fetch without the silent catch so the actual failure is shown.
 				let reason = 'unrecognized genesis hash';
 				try {
 					reason = `unrecognized genesis hash ${await new Connection(
 						url,
-						'confirmed'
+						'finalized'
 					).getGenesisHash()}`;
 				} catch (e) {
 					reason = (e as Error).message;
@@ -201,7 +201,7 @@ export function registerConfig(parent: Command): void {
 					})
 				);
 				s.start('verifying multisig against on-chain State admins');
-				const connection = new Connection(url, 'confirmed');
+				const connection = new Connection(url, 'finalized');
 				const multisigPda = new PublicKey(multisig);
 				try {
 					await multisigSdk.accounts.Multisig.fromAccountAddress(
@@ -309,7 +309,7 @@ export function registerConfig(parent: Command): void {
 					`unknown env "${env}" (expected mainnet-beta or devnet)`
 				);
 			}
-			const cluster = await detectCluster(new Connection(url, 'confirmed'));
+			const cluster = await detectCluster(new Connection(url, 'finalized'));
 			if (cluster !== env) {
 				throw new Error(
 					`RPC genesis hash says ${cluster}, not ${env}; nothing saved`

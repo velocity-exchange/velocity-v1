@@ -82,7 +82,7 @@ const commitHash = process.env.COMMIT;
 //@ts-ignore
 const sdkConfig = initialize({ env: process.env.ENV });
 
-const stateCommitment: Commitment = 'confirmed';
+const stateCommitment: Commitment = 'finalized';
 const serverPort = process.env.PORT || 6969;
 export const ORDERBOOK_UPDATE_INTERVAL =
 	parseInt(process.env.ORDERBOOK_UPDATE_INTERVAL) || 400;

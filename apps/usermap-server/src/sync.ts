@@ -33,7 +33,7 @@ const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL || '90000');
 const SYNC_ON_STARTUP = process.env.SYNC_ON_STARTUP === 'true';
 const EXPIRY_MULTIPLIER = 4;
 const sdkConfig = getConfig();
-const connection = new Connection(endpoint, 'confirmed');
+const connection = new Connection(endpoint, 'finalized');
 
 const redisClient = USE_ELASTICACHE
 	? new RedisClient({
@@ -65,7 +65,7 @@ async function sync(): Promise<void> {
 		const rpcRequestArgs = [
 			new PublicKey(sdkConfig.VELOCITY_PROGRAM_ID),
 			{
-				commitment: 'confirmed',
+				commitment: 'finalized',
 				filters,
 				encoding: 'base64+zstd',
 				withContext: true,

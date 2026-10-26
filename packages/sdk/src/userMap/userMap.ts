@@ -144,7 +144,7 @@ export class UserMap implements UserMapInterface {
 			config.subscriptionConfig.type === 'polling'
 				? config.subscriptionConfig.commitment ??
 				  this.velocityClient.opts?.commitment
-				: this.velocityClient.opts?.commitment) ?? 'confirmed';
+				: this.velocityClient.opts?.commitment) ?? 'finalized';
 		this.includeIdle = config.includeIdle ?? false;
 		this.filterByPoolId = config.filterByPoolId;
 		this.additionalFilters = config.additionalFilters;

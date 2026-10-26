@@ -240,7 +240,7 @@ async fn main() {
             grpc_url,
             grpc_x_token,
             GrpcSubscribeOpts::default()
-                .commitment(CommitmentLevel::Confirmed)
+                .commitment(CommitmentLevel::Finalized)
                 .usermap_on()
                 .on_user_account(dlob_builder.account_update_handler(account_map))
                 .on_slot(dlob_builder.slot_update_handler(velocity.clone(), perp_markets)),

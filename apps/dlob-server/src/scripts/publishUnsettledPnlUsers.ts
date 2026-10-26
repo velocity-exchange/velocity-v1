@@ -48,7 +48,7 @@ const sleepTimeMs = Number(process.env.SLEEP_TIME_MS) || 500;
 const delayMs = Number(process.env.DEFAULT_DELAY_MS) || 100;
 
 const connection = new Connection(endpoint, {
-	commitment: 'confirmed',
+	commitment: 'finalized',
 	wsEndpoint: wsEndpoint,
 });
 

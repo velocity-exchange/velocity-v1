@@ -143,7 +143,7 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe() {
         let filters = vec![get_user_filter(), get_non_idle_user_filter()];
-        let commitment = CommitmentConfig::confirmed();
+        let commitment = CommitmentConfig::finalized();
         let options = WebsocketProgramAccountOptions {
             filters,
             commitment,

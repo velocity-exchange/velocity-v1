@@ -54,7 +54,7 @@ setGlobalDispatcher(
 );
 
 require('dotenv').config();
-const stateCommitment: Commitment = 'confirmed';
+const stateCommitment: Commitment = 'finalized';
 const velocityEnv = (process.env.ENV || 'devnet') as VelocityEnv;
 const commitHash = process.env.COMMIT;
 const metricsPort = process.env.METRICS_PORT
@@ -465,7 +465,7 @@ const main = async () => {
 				grpcConfigs: {
 					endpoint: grpcEndpoint,
 					token: token,
-					commitmentLevel: CommitmentLevel.CONFIRMED,
+					commitmentLevel: CommitmentLevel.FINALIZED,
 					channelOptions: {
 						grpcKeepAliveTimeout: 1_000,
 						grpcTcpKeepalive: 10_000,

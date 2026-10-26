@@ -452,7 +452,7 @@ mod tests {
                     .await
                     .expect("ws connects"),
             ),
-            CommitmentConfig::confirmed(),
+            CommitmentConfig::finalized(),
         );
 
         assert!(map

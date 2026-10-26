@@ -126,14 +126,14 @@ export class TxHandler {
 	) => void;
 
 	private blockhashCommitment: Commitment =
-		DEFAULT_CONFIRMATION_OPTS.commitment ?? 'confirmed';
+		DEFAULT_CONFIRMATION_OPTS.commitment ?? 'finalized';
 	private blockHashFetcher: BlockhashFetcher;
 
 	/**
 	 * @param props.connection - RPC connection used for blockhash fetches and (indirectly) sends.
 	 * @param props.wallet - Default wallet used to sign transactions when a call doesn't pass its own.
 	 * @param props.confirmationOptions - Default confirm options; `preflightCommitment` (falling
-	 * back to `connection.commitment`, then `'confirmed'`) sets the commitment used for blockhash fetches.
+	 * back to `connection.commitment`, then `'finalized'`) sets the commitment used for blockhash fetches.
 	 * @param props.opts.returnBlockHeightsWithSignedTxCallbackData - If `true`, `onSignedCb` receives each signed tx's `lastValidBlockHeight` alongside its signature/blockhash.
 	 * @param props.opts.onSignedCb - Callback invoked with signed-transaction metadata whenever this handler signs one or more transactions.
 	 * @param props.opts.preSignedCb - Callback invoked immediately before wallet signing occurs.
@@ -157,7 +157,7 @@ export class TxHandler {
 			props.confirmationOptions?.preflightCommitment ??
 			props?.connection?.commitment ??
 			this.blockhashCommitment ??
-			'confirmed';
+			'finalized';
 
 		// Cache by default: only opt out when a consumer explicitly disables it. This
 		// collapses per-build `getLatestBlockhash` RPC calls (crankers dominate these)

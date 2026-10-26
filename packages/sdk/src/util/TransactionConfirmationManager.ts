@@ -59,7 +59,7 @@ export class TransactionConfirmationManager {
 	 * @param txSig - Transaction signature to confirm.
 	 * @param timeout - Milliseconds to wait before giving up; defaults to 30000 (30s).
 	 * @param desiredConfirmationStatus - Confirmation level to wait for (`'processed'` <
-	 * `'confirmed'` < `'finalized'`); defaults to `DEFAULT_CONFIRMATION_OPTS.commitment` (`'confirmed'`).
+	 * `'confirmed'` < `'finalized'`); defaults to `DEFAULT_CONFIRMATION_OPTS.commitment` (`'finalized'`).
 	 * @returns The RPC response once `txSig` reaches (or exceeds) `desiredConfirmationStatus`.
 	 * @throws Error via `throwTransactionError` if the one-shot status check finds the transaction
 	 * already failed on-chain; `TxSendError` (code `NOT_CONFIRMED_ERROR_CODE`) if neither the
@@ -179,7 +179,7 @@ export class TransactionConfirmationManager {
 	 * isn't already running.
 	 * @param txSig - Transaction signature to confirm.
 	 * @param desiredConfirmationStatus - Confirmation level to wait for; defaults to
-	 * `DEFAULT_CONFIRMATION_OPTS.commitment` (`'confirmed'`).
+	 * `DEFAULT_CONFIRMATION_OPTS.commitment` (`'finalized'`).
 	 * @param timeout - Milliseconds to wait before rejecting; defaults to 30000 (30s).
 	 * @param pollInterval - How often (ms) to actually check this transaction's status against the
 	 * shared 100ms tick; must be at least 400 and a multiple of 100. Defaults to 1000 (1s).

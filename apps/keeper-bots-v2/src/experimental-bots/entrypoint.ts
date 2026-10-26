@@ -50,7 +50,7 @@ setGlobalDispatcher(
 require('dotenv').config();
 
 const preflightCommitment: Commitment = 'processed';
-const stateCommitment: Commitment = 'confirmed';
+const stateCommitment: Commitment = 'finalized';
 const healthCheckPort = process.env.HEALTH_CHECK_PORT || 8888;
 
 program

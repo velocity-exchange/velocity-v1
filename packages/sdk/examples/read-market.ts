@@ -21,7 +21,7 @@ const env: VelocityEnv = 'mainnet-beta';
 async function main() {
 	const connection = new Connection(
 		process.env.RPC_URL ?? 'https://api.mainnet-beta.solana.com',
-		'confirmed'
+		'finalized'
 	);
 
 	// VelocityClient always requires a wallet, even on a read-only path. This
@@ -34,7 +34,7 @@ async function main() {
 		env,
 		accountSubscription: {
 			type: 'polling',
-			accountLoader: new BulkAccountLoader(connection, 'confirmed', 1000),
+			accountLoader: new BulkAccountLoader(connection, 'finalized', 1000),
 		},
 	});
 	// subscribe() resolves false rather than throwing when a subscription fails.

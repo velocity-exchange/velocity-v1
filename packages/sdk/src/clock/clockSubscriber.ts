@@ -49,7 +49,7 @@ export class ClockSubscriber {
 
 	/**
 	 * @param connection RPC connection to subscribe on.
-	 * @param config.commitment Commitment for the account-change subscription; defaults to `'confirmed'`.
+	 * @param config.commitment Commitment for the account-change subscription; defaults to `'finalized'`.
 	 * @param config.resubTimeoutMs If set to a positive value, resubscribe when no update arrives for this many ms; `0` (or unset) disables the resubscribe watchdog. Positive values below 1000ms log a warning but are still honored.
 	 */
 	public constructor(
@@ -58,7 +58,7 @@ export class ClockSubscriber {
 	) {
 		this.eventEmitter = new EventEmitter();
 		this.resubTimeoutMs = config?.resubTimeoutMs;
-		this.commitment = config?.commitment || 'confirmed';
+		this.commitment = config?.commitment || 'finalized';
 		if (this.resubTimeoutMs !== undefined && this.resubTimeoutMs < 1000) {
 			console.log(
 				'resubTimeoutMs should be at least 1000ms to avoid spamming resub'

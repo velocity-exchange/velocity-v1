@@ -463,7 +463,7 @@ export class BundleSender {
 				logger.info(`${logPrefix} no txs to check...`);
 			} else {
 				const resps = await this.connection.getTransactions(txs, {
-					commitment: 'confirmed',
+					commitment: 'finalized',
 					maxSupportedTransactionVersion: 1,
 				});
 				const droppedTxs = resps.filter((tx) => tx === null);

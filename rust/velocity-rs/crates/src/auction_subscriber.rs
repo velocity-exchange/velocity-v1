@@ -87,7 +87,7 @@ mod tests {
         let _ = env_logger::try_init();
 
         let config = AuctionSubscriberConfig {
-            commitment: CommitmentConfig::confirmed(),
+            commitment: CommitmentConfig::finalized(),
             resub_timeout_ms: None,
             url: get_ws_url(&mainnet_endpoint()).unwrap(),
         };

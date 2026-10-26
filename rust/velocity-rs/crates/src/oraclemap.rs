@@ -652,7 +652,7 @@ mod tests {
                 .await
                 .expect("ws connects"),
         );
-        let map = OracleMap::new(pubsub, &all_oracles, CommitmentConfig::confirmed());
+        let map = OracleMap::new(pubsub, &all_oracles, CommitmentConfig::finalized());
 
         let markets = [MarketId::perp(0), MarketId::spot(32), MarketId::perp(4)];
         map.subscribe(&markets).await.expect("subd");
@@ -679,7 +679,7 @@ mod tests {
                 .await
                 .expect("ws connects"),
         );
-        let map = OracleMap::new(pubsub, &all_oracles, CommitmentConfig::confirmed());
+        let map = OracleMap::new(pubsub, &all_oracles, CommitmentConfig::finalized());
 
         // - dups ignored
         // - markets with same oracle pubkey, make at most 1 sub
@@ -725,7 +725,7 @@ mod tests {
                     .expect("ws connects"),
             ),
             &all_oracles,
-            CommitmentConfig::confirmed(),
+            CommitmentConfig::finalized(),
         );
         map.subscribe(&[MarketId::spot(0), MarketId::perp(1)])
             .await

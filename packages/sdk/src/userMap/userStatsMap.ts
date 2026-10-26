@@ -55,7 +55,7 @@ export class UserStatsMap {
 		if (!bulkAccountLoader) {
 			bulkAccountLoader = new BulkAccountLoader(
 				velocityClient.connection,
-				velocityClient.opts?.commitment ?? 'confirmed',
+				velocityClient.opts?.commitment ?? 'finalized',
 				0
 			);
 		}

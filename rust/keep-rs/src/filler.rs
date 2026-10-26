@@ -2653,9 +2653,9 @@ impl TxWorker {
             let simulation_tx = simulation_tx.unwrap_or_else(|| signed_tx.message.clone());
             // simulate first, against processed state: the tx was built from the
             // processed-commitment gRPC view, so a default-commitment (finalized)
-            // preflight lags ~32 slots and rejects valid fills for the whole
-            // finalization window (e.g. `OrderMustBeTriggeredFirst` on fills of a
-            // just-triggered order)
+            // preflight lags it by a slot or more and rejects valid fills in that
+            // window (e.g. `OrderMustBeTriggeredFirst` on fills of a just-triggered
+            // order)
             match velocity
                 .simulate_tx_with_commitment(
                     simulation_tx,
@@ -2866,7 +2866,7 @@ impl TxWorker {
                     &tx,
                     RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Base64),
-                        commitment: Some(CommitmentConfig::confirmed()),
+                        commitment: Some(CommitmentConfig::finalized()),
                         max_supported_transaction_version: Some(1),
                     },
                 )

@@ -144,7 +144,7 @@ export class IFRevenueSettlerBot implements Bot {
 			);
 
 			const recentBlockhash =
-				await this.velocityClient.connection.getLatestBlockhash('confirmed');
+				await this.velocityClient.connection.getLatestBlockhash('finalized');
 			const simResult = await simulateAndGetTxWithCUs({
 				ixs,
 				connection: this.velocityClient.connection,

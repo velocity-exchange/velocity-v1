@@ -74,7 +74,7 @@ export abstract class BaseTxSender implements TxSender {
 	/**
 	 * @param props.connection - Primary RPC connection used for sending and confirming transactions.
 	 * @param props.wallet - Wallet used to sign transactions that aren't already `preSigned`.
-	 * @param props.opts - Default `ConfirmOptions` used when a call site doesn't pass its own; defaults to `DEFAULT_CONFIRMATION_OPTS` (`'confirmed'`).
+	 * @param props.opts - Default `ConfirmOptions` used when a call site doesn't pass its own; defaults to `DEFAULT_CONFIRMATION_OPTS` (`'finalized'`).
 	 * @param props.timeout - Confirmation timeout in milliseconds; defaults to 35000 (35s).
 	 * @param props.additionalConnections - Extra connections to also broadcast raw transactions to.
 	 * @param props.confirmationStrategy - How to wait for confirmation; defaults to `ConfirmationStrategy.Combo`.

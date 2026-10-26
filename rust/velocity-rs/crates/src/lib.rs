@@ -727,10 +727,10 @@ impl VelocityClient {
     /// Simulate the tx on remote RPC node at the given commitment level
     ///
     /// `None` falls back to the RPC client's default commitment (typically finalized,
-    /// ~32 slots stale). Latency-sensitive callers whose tx was built from a
-    /// processed-commitment view (e.g. keeper fills of a just-triggered order) should
-    /// pass `CommitmentConfig::processed()` so preflight doesn't reject valid txs for
-    /// the entire finalization window.
+    /// a slot or more behind processed). Latency-sensitive callers whose tx was built
+    /// from a processed-commitment view (e.g. keeper fills of a just-triggered order)
+    /// should pass `CommitmentConfig::processed()` so preflight doesn't reject valid txs
+    /// before finalization catches up.
     pub async fn simulate_tx_with_commitment(
         &self,
         tx: VersionedMessage,
@@ -1630,7 +1630,7 @@ impl VelocityClientBackend {
         }
 
         // start subscription
-        let commitment = opts.commitment.unwrap_or(CommitmentLevel::Confirmed);
+        let commitment = opts.commitment.unwrap_or(CommitmentLevel::Finalized);
         let grpc_unsub = grpc
             .subscribe(
                 commitment,

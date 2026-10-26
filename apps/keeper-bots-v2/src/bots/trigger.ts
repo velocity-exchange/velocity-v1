@@ -342,7 +342,7 @@ export class TriggerBot implements Bot {
 
 		const recentBlockhash =
 			await this.velocityClient.connection.getLatestBlockhash({
-				commitment: 'confirmed',
+				commitment: 'finalized',
 			});
 
 		return recentBlockhash.blockhash;

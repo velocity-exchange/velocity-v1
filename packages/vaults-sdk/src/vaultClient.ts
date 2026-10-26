@@ -2888,7 +2888,7 @@ export class VaultClient {
 			connection: this.velocityClient.connection,
 			instructions: ixs,
 			lookupTables: txParams?.lookupTables ?? [],
-			preFlightCommitment: 'confirmed',
+			preFlightCommitment: 'finalized',
 			forceVersionedTransaction: true,
 			txVersion: 0,
 			fetchAllMarketLookupTableAccounts:

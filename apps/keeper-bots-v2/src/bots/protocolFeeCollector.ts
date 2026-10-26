@@ -186,7 +186,7 @@ export class ProtocolFeeCollectorBot implements Bot {
 			];
 
 			const recentBlockhash =
-				await this.adminClient.connection.getLatestBlockhash('confirmed');
+				await this.adminClient.connection.getLatestBlockhash('finalized');
 			const simResult = await simulateAndGetTxWithCUs({
 				ixs,
 				connection: this.adminClient.connection,

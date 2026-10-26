@@ -47,7 +47,7 @@ const levelsToPrint = 10;
 //@ts-ignore
 const sdkConfig = initialize({ env: velocityEnv });
 
-const stateCommitment = 'confirmed';
+const stateCommitment = 'finalized';
 const keypair = Keypair.fromSecretKey(Uint8Array.from(initializedKey));
 const wallet = new Wallet(keypair);
 const connection = new Connection(rpcEndpoint, stateCommitment);

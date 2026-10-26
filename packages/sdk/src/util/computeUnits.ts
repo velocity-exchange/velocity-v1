@@ -14,7 +14,7 @@ import {
  * @param programId - Program whose compute-unit consumption to extract.
  * @param connection - RPC connection used to fetch the transaction.
  * @param txSignature - Signature of the transaction to inspect.
- * @param commitment - Finality level to fetch the transaction at; defaults to `'confirmed'`.
+ * @param commitment - Finality level to fetch the transaction at; defaults to `'finalized'`.
  * @returns The consumed-compute-unit counts (as strings, parsed straight from the log text) for
  * each invocation of `programId` found in the transaction's logs; empty if the transaction has no
  * log messages (e.g. not yet available at the requested commitment).
@@ -23,7 +23,7 @@ export async function findComputeUnitConsumption(
 	programId: PublicKey,
 	connection: Connection,
 	txSignature: string,
-	commitment: Finality = 'confirmed'
+	commitment: Finality = 'finalized'
 ): Promise<string[]> {
 	const tx = await connection.getTransaction(txSignature, {
 		commitment,

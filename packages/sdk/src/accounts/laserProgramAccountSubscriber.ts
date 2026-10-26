@@ -108,7 +108,7 @@ export class LaserstreamProgramAccountSubscriber<
 		};
 
 		const commitmentLevel =
-			grpcConfigs.commitmentLevel ?? CommitmentLevel.CONFIRMED;
+			grpcConfigs.commitmentLevel ?? CommitmentLevel.FINALIZED;
 
 		return new LaserstreamProgramAccountSubscriber<U>(
 			laserConfig,
@@ -251,16 +251,16 @@ export class LaserstreamProgramAccountSubscriber<
 		}
 	}
 
-	/** Coerces a commitment level (string name, numeric enum value, or undefined) into a LaserStream `LaserCommitmentLevel`, defaulting to `CONFIRMED`. */
+	/** Coerces a commitment level (string name, numeric enum value, or undefined) into a LaserStream `LaserCommitmentLevel`, defaulting to `FINALIZED`. */
 	public toLaserCommitment(
 		level: string | number | undefined
 	): LaserCommitment {
 		if (typeof level === 'string') {
 			return (
 				(this.laserCommitmentLevel as any)[level.toUpperCase()] ??
-				this.laserCommitmentLevel.CONFIRMED
+				this.laserCommitmentLevel.FINALIZED
 			);
 		}
-		return (level as LaserCommitment) ?? this.laserCommitmentLevel.CONFIRMED;
+		return (level as LaserCommitment) ?? this.laserCommitmentLevel.FINALIZED;
 	}
 }

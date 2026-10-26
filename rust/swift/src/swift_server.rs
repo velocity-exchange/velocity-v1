@@ -834,17 +834,14 @@ pub async fn start_server() {
         _ => panic!("Invalid velocity environment: {velocity_env}"),
     };
     let wallet = Wallet::new(Keypair::new());
-    // Commitment must be set explicitly. `RpcClient::new` defaults to
-    // `CommitmentConfig::default()`, which is *finalized*, and the client's
-    // commitment is inherited by every account subscription it opens (markets,
-    // oracles, users). Finalized state runs ~32 slots (~13s) behind head, which
-    // is far past the 10-slot tolerance of the auction oracle-band guard below,
-    // so that guard would fail open on every order. Confirmed matches the TS
-    // SDK's `DEFAULT_CONFIRMATION_OPTS` and the commitment this server already
-    // passes explicitly to `simulateTransaction`.
+    // The client's commitment is inherited by every account subscription it opens
+    // (markets, oracles, users), so it bounds how stale they are. Under Alpenglow
+    // finalized trails the tip by a slot or two, well inside the 10-slot tolerance
+    // of the auction oracle-band guard below. Confirmed now means the same thing
+    // and is slated for removal.
     let client = VelocityClient::new(
         context,
-        RpcClient::new_with_commitment(rpc_endpoint, CommitmentConfig::confirmed()),
+        RpcClient::new_with_commitment(rpc_endpoint, CommitmentConfig::finalized()),
         wallet,
     )
     .await
@@ -1372,7 +1369,7 @@ impl ServerParams {
                 RpcSimulateTransactionConfig {
                     sig_verify: false,
                     replace_recent_blockhash: true,
-                    commitment: Some(CommitmentConfig::confirmed()),
+                    commitment: Some(CommitmentConfig::finalized()),
                     min_context_slot: Some(slot - 30), // allow tx sim on up to 30 slots stale context
                     ..Default::default()
                 },
@@ -2708,7 +2705,7 @@ mod tests {
             velocity_rs::Context::DevNet,
             RpcClient::new_with_commitment(
                 "https://api.devnet.solana.com".to_string(),
-                CommitmentConfig::confirmed(),
+                CommitmentConfig::finalized(),
             ),
             Keypair::new().into(),
         )

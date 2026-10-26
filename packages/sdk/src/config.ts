@@ -87,10 +87,10 @@ export const PYTH_LAZER_STORAGE_ACCOUNT_KEY = new PublicKey(
 	'3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL'
 );
 
-/** Default `ConfirmOptions` (both preflight and confirmation at `'confirmed'` commitment) used across the SDK's tx senders unless overridden. */
+/** Default `ConfirmOptions` (both preflight and confirmation at `'finalized'` commitment) used across the SDK's tx senders unless overridden. */
 export const DEFAULT_CONFIRMATION_OPTS: ConfirmOptions = {
-	preflightCommitment: 'confirmed',
-	commitment: 'confirmed',
+	preflightCommitment: 'finalized',
+	commitment: 'finalized',
 };
 
 /** Built-in `VelocityConfig` presets for each supported environment. */

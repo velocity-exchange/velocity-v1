@@ -163,7 +163,7 @@ export class LiquidatorDerisk {
 		let resp: SimulateAndGetTxWithCUsResponse;
 		try {
 			const recentBlockhash =
-				await this.velocityClient.connection.getLatestBlockhash('confirmed');
+				await this.velocityClient.connection.getLatestBlockhash('finalized');
 			resp = await simulateAndGetTxWithCUs({
 				ixs: fullIxs,
 				connection: this.velocityClient.connection,

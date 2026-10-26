@@ -58,7 +58,7 @@ const redisClientPrefix = RedisClientPrefix[REDIS_CLIENT];
 //@ts-ignore
 const sdkConfig = initialize({ env: process.env.ENV });
 
-const stateCommitment: Commitment = 'confirmed';
+const stateCommitment: Commitment = 'finalized';
 let velocityClient: VelocityClient;
 
 const metricsV2 = new Metrics('trades-publisher', undefined, metricsPort);
@@ -266,7 +266,7 @@ const main = async () => {
 			maxTx: 8192,
 			maxEventsPerType: 4096,
 			orderBy: 'client',
-			commitment: 'confirmed',
+			commitment: 'finalized',
 			logProviderConfig: {
 				type: 'polling',
 				frequency: 1000,

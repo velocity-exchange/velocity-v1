@@ -532,7 +532,7 @@ export class FillerBot extends TxThreaded implements Bot {
 		// sync userstats once
 		const userStatsLoader = new BulkAccountLoader(
 			new Connection(this.velocityClient.connection.rpcEndpoint),
-			'confirmed',
+			'finalized',
 			0
 		);
 		this.userStatsMap = new UserStatsMap(this.velocityClient, userStatsLoader);
@@ -1426,7 +1426,7 @@ export class FillerBot extends TxThreaded implements Bot {
 
 		const recentBlockhash =
 			await this.velocityClient.connection.getLatestBlockhash({
-				commitment: 'confirmed',
+				commitment: 'finalized',
 			});
 
 		return recentBlockhash.blockhash;

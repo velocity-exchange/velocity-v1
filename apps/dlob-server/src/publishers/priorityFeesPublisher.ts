@@ -28,7 +28,7 @@ setGlobalDispatcher(
 );
 
 require('dotenv').config();
-const stateCommitment: Commitment = 'confirmed';
+const stateCommitment: Commitment = 'finalized';
 const velocityEnv = (process.env.ENV || 'devnet') as VelocityEnv;
 const commitHash = process.env.COMMIT;
 const redisClientPrefix = RedisClientPrefix.DLOB_HELIUS;

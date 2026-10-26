@@ -321,9 +321,8 @@ impl VelocityGrpcClient {
     ) -> Result<UnsubHandle, GrpcError> {
         let request = subscribe_opts.to_subscribe_request(commitment);
         let slot_status = subscribe_opts
-            .slot_commitment
-            .filter(|c| *c != commitment)
-            .map(|c| to_geyser_commitment(c) as i32);
+            .split_slot_commitment(commitment)
+            .map(to_slot_status);
         info!(target: "grpc", "gRPC subscribing: {request:?}");
 
         let (unsub_tx, mut unsub_rx) = tokio::sync::oneshot::channel::<()>();
@@ -390,7 +389,7 @@ impl VelocityGrpcClient {
         x_token: String,
         grpc_opts: Option<GrpcConnectionOpts>,
         request: SubscribeRequest,
-        slot_status: Option<i32>,
+        slot_status: Option<SlotStatus>,
         on_account: Hooks,
         on_transaction: TransactionHooks,
         on_slot: impl Fn(Slot),
@@ -570,6 +569,11 @@ impl VelocityGrpcClient {
 }
 
 impl GeyserSubscribeOpts {
+    /// The slot commitment, if it differs from the request commitment
+    fn split_slot_commitment(&self, commitment: CommitmentLevel) -> Option<CommitmentLevel> {
+        self.slot_commitment.filter(|c| *c != commitment)
+    }
+
     fn to_subscribe_request(&self, commitment: CommitmentLevel) -> SubscribeRequest {
         let mut accounts = AccountFilterMap::default();
         let mut filters = vec![];
@@ -608,8 +612,8 @@ impl GeyserSubscribeOpts {
             "client".to_owned(),
             SubscribeRequestFilterSlots {
                 // with a separate slot commitment the stream carries every slot status,
-                // and `is_slot_tick` keeps the wanted one
-                filter_by_commitment: Some(self.slot_commitment.is_none_or(|c| c == commitment)),
+                // and `is_slot_tick` filters them client-side
+                filter_by_commitment: Some(self.split_slot_commitment(commitment).is_none()),
                 interslot_updates: self.interslot_updates,
             },
         );
@@ -660,19 +664,23 @@ fn to_geyser_commitment(commitment: CommitmentLevel) -> GeyserCommitmentLevel {
     }
 }
 
-/// Whether a slot update advances the slot clock. `want` is the slot commitment as a
-/// `SlotStatus` value, set only when the stream is unfiltered. Dead slots never count.
-fn is_slot_tick(status: i32, want: Option<i32>) -> bool {
+fn to_slot_status(commitment: CommitmentLevel) -> SlotStatus {
+    match commitment {
+        CommitmentLevel::Processed => SlotStatus::SlotProcessed,
+        CommitmentLevel::Confirmed => SlotStatus::SlotConfirmed,
+        CommitmentLevel::Finalized => SlotStatus::SlotFinalized,
+    }
+}
+
+/// Whether a slot update may advance the slot clock. `want` is set only when the stream
+/// is unfiltered. Any commitment status at least as final as `want` counts, so a provider
+/// that keeps filtering by the request commitment slows the clock instead of stopping it.
+/// Lifecycle and dead-slot statuses never count.
+fn is_slot_tick(status: i32, want: Option<SlotStatus>) -> bool {
     let Some(want) = want else {
         return true;
     };
-    status == want
-        || matches!(
-            SlotStatus::try_from(status),
-            Ok(SlotStatus::SlotFirstShredReceived
-                | SlotStatus::SlotCompleted
-                | SlotStatus::SlotCreatedBank)
-        )
+    status <= SlotStatus::SlotFinalized as i32 && status >= want as i32
 }
 
 /// Connect to gRPC endpoint
@@ -752,6 +760,7 @@ mod test {
     #[test]
     fn slot_tick_filters_only_unfiltered_streams() {
         let processed = SlotStatus::SlotProcessed as i32;
+        let confirmed = SlotStatus::SlotConfirmed as i32;
         let finalized = SlotStatus::SlotFinalized as i32;
         let dead = SlotStatus::SlotDead as i32;
         let created_bank = SlotStatus::SlotCreatedBank as i32;
@@ -759,12 +768,20 @@ mod test {
         // filtered stream: the provider already sent only the request commitment
         assert!(is_slot_tick(finalized, None));
 
-        let want = Some(GeyserCommitmentLevel::Processed as i32);
+        // processed clock: every commitment status may tick, and the `latest_slot` gate
+        // keeps the clock at the tip
+        let want = Some(SlotStatus::SlotProcessed);
         assert!(is_slot_tick(processed, want));
-        assert!(is_slot_tick(created_bank, want));
-        assert!(!is_slot_tick(finalized, want));
-        assert!(!is_slot_tick(SlotStatus::SlotConfirmed as i32, want));
+        assert!(is_slot_tick(confirmed, want));
+        assert!(is_slot_tick(finalized, want));
+        assert!(!is_slot_tick(created_bank, want));
         assert!(!is_slot_tick(dead, want));
+
+        // finalized clock: a processed status must not pull it to the tip
+        let want = Some(SlotStatus::SlotFinalized);
+        assert!(!is_slot_tick(processed, want));
+        assert!(!is_slot_tick(confirmed, want));
+        assert!(is_slot_tick(finalized, want));
     }
 
     #[test]

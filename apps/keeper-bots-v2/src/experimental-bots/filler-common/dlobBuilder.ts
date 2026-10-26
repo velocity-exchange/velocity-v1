@@ -102,7 +102,7 @@ class DLOBBuilder {
 		this.velocityClient = velocityClient;
 
 		this.clockSubscriber = new ClockSubscriber(velocityClient.connection, {
-			commitment: 'confirmed',
+			commitment: 'finalized',
 			resubTimeoutMs: 5_000,
 		});
 	}

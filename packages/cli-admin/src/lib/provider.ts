@@ -40,11 +40,11 @@ export function loadKeypair(path: string): Keypair {
 }
 
 export function buildProvider(opts: GlobalOpts): AnchorProvider {
-	const connection = new Connection(opts.url, 'confirmed');
+	const connection = new Connection(opts.url, 'finalized');
 	const wallet = new Wallet(loadKeypair(opts.keypair));
 	const provider = new AnchorProvider(connection, wallet, {
-		commitment: 'confirmed',
-		preflightCommitment: 'confirmed',
+		commitment: 'finalized',
+		preflightCommitment: 'finalized',
 	});
 	anchor.setProvider(provider);
 	return provider;
@@ -83,7 +83,7 @@ export async function buildAdminClient(
 		wallet: provider.wallet,
 		programID: programId,
 		env,
-		opts: { commitment: 'confirmed', preflightCommitment: 'confirmed' },
+		opts: { commitment: 'finalized', preflightCommitment: 'finalized' },
 		authority: user?.authority,
 		activeSubAccountId: user?.subAccountId,
 		subAccountIds: user ? [user.subAccountId ?? 0] : undefined,
@@ -92,7 +92,7 @@ export async function buildAdminClient(
 					type: 'polling',
 					accountLoader: new BulkAccountLoader(
 						provider.connection,
-						'confirmed',
+						'finalized',
 						1000
 					),
 			  }

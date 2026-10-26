@@ -312,7 +312,7 @@ impl AccountMap {
         // TODO: rust sdk does not surface with_context slot on GPA
         let slot = self
             .rpc
-            .get_slot_with_commitment(CommitmentConfig::finalized())
+            .get_slot()
             .await?;
         let stats_sync_result = self
             .rpc
@@ -348,7 +348,7 @@ impl AccountMap {
         // TODO: rust sdk does not surface with_context slot on GPA
         let slot = self
             .rpc
-            .get_slot_with_commitment(CommitmentConfig::finalized())
+            .get_slot()
             .await?;
         filters.insert(0, crate::memcmp::get_user_filter());
 

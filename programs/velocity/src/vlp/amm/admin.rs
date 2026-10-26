@@ -629,6 +629,9 @@ pub fn handle_deposit_into_perp_market_fee_pool<'c: 'info, 'info>(
 /// Fails if the fee pool would drop below the tokenized bankruptcy provision, or if stored
 /// or recomputed AMM equity would reach zero. It does not check the remaining fee pool
 /// against open interest.
+///
+/// It skips the exchange and market pause flags and the spot market withdraw limits on
+/// purpose, so the cold admin can still withdraw while trading or withdrawals are paused.
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
 )]
@@ -706,6 +709,7 @@ pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
 
     ctx.accounts.spot_market_vault.reload()?;
     validate_spot_market_vault_amount(spot_market, ctx.accounts.spot_market_vault.amount)?;
+    validate_perp_market(perp_market)?;
 
     emit!(PerpFeePoolWithdrawRecord {
         ts: now,

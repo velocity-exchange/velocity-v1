@@ -902,7 +902,7 @@ pub struct PerpFeePoolWithdrawRecordV0 {
     /// amm.fee_pool token amount before and after the debit
     pub fee_pool_before: u128,
     pub fee_pool_after: u128,
-    /// fee pool tokens the bankruptcy clawback can still claim, kept in the pool
+    /// fee pool tokens kept for the bankruptcy clawback and the LP pool settle
     pub protected_reserve: u128,
     pub total_fee_minus_distributions_after: i128,
     /// AMM equity recomputed from the pools at the oracle price after the debit

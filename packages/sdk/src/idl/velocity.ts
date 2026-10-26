@@ -22189,7 +22189,7 @@ export type Velocity = {
           {
             "name": "protectedReserve",
             "docs": [
-              "fee pool tokens the bankruptcy clawback can still claim, kept in the pool"
+              "fee pool tokens kept for the bankruptcy clawback and the LP pool settle"
             ],
             "type": "u128"
           },

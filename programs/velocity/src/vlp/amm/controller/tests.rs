@@ -2011,6 +2011,7 @@ mod withdraw_from_fee_pool {
             &mut market,
             &mut spot_market,
             40 * QUOTE_PRECISION as u64,
+            0,
             ORACLE_PRICE,
             NOW,
         )
@@ -2047,6 +2048,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 20 * QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW,
             )
@@ -2067,7 +2069,7 @@ mod withdraw_from_fee_pool {
         let (mut market, mut spot_market) =
             setup(100 * QUOTE_PRECISION, 500 * QUOTE_PRECISION_I128);
         assert_eq!(
-            withdraw_from_fee_pool(&mut market, &mut spot_market, 0, ORACLE_PRICE, NOW),
+            withdraw_from_fee_pool(&mut market, &mut spot_market, 0, 0, ORACLE_PRICE, NOW),
             Err(ErrorCode::DefaultError)
         );
         assert_eq!(
@@ -2075,6 +2077,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 100 * QUOTE_PRECISION as u64 + 1,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2092,6 +2095,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 100 * QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2106,6 +2110,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 100 * QUOTE_PRECISION as u64 - 1,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2119,6 +2124,7 @@ mod withdraw_from_fee_pool {
             &mut market,
             &mut spot_market,
             100 * QUOTE_PRECISION as u64 - 2,
+            0,
             ORACLE_PRICE,
             NOW,
         )
@@ -2137,6 +2143,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 30 * QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2147,6 +2154,7 @@ mod withdraw_from_fee_pool {
             &mut market,
             &mut spot_market,
             29 * QUOTE_PRECISION as u64,
+            0,
             ORACLE_PRICE,
             NOW,
         )
@@ -2173,6 +2181,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 45 * QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2184,6 +2193,7 @@ mod withdraw_from_fee_pool {
             &mut market,
             &mut spot_market,
             44 * QUOTE_PRECISION as u64,
+            0,
             ORACLE_PRICE,
             NOW,
         )
@@ -2203,6 +2213,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 100 * QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2228,6 +2239,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 80 * QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2239,6 +2251,7 @@ mod withdraw_from_fee_pool {
             &mut market,
             &mut spot_market,
             80 * QUOTE_PRECISION as u64 - 1,
+            0,
             ORACLE_PRICE,
             NOW,
         )
@@ -2257,6 +2270,7 @@ mod withdraw_from_fee_pool {
             &mut market,
             &mut spot_market,
             90 * QUOTE_PRECISION as u64,
+            0,
             ORACLE_PRICE,
             NOW,
         )
@@ -2271,7 +2285,7 @@ mod withdraw_from_fee_pool {
         market.fee_ledger.amm_protocol_fees_received = 30 * QUOTE_PRECISION;
         market.fee_ledger.pending_amm_provision = 10 * QUOTE_PRECISION;
         assert_eq!(
-            withdraw_from_fee_pool(&mut market, &mut spot_market, 1, ORACLE_PRICE, NOW),
+            withdraw_from_fee_pool(&mut market, &mut spot_market, 1, 0, ORACLE_PRICE, NOW),
             Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
     }
@@ -2287,6 +2301,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2308,7 +2323,7 @@ mod withdraw_from_fee_pool {
                 setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
             market.status = status;
             let result =
-                withdraw_from_fee_pool(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW);
+                withdraw_from_fee_pool(&mut market, &mut spot_market, amount, 0, ORACLE_PRICE, NOW);
             if allowed {
                 assert!(result.is_ok(), "{:?}", status);
             } else {
@@ -2329,7 +2344,7 @@ mod withdraw_from_fee_pool {
             market.status = MarketStatus::ReduceOnly;
             market.expiry_ts = expiry_ts;
             let result =
-                withdraw_from_fee_pool(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW);
+                withdraw_from_fee_pool(&mut market, &mut spot_market, amount, 0, ORACLE_PRICE, NOW);
             assert_eq!(result.is_ok(), allowed, "expiry_ts {}", expiry_ts);
         }
     }
@@ -2344,6 +2359,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW
             ),
@@ -2354,6 +2370,7 @@ mod withdraw_from_fee_pool {
             &mut market,
             &mut spot_market,
             QUOTE_PRECISION as u64,
+            0,
             ORACLE_PRICE,
             NOW,
         )
@@ -2373,7 +2390,7 @@ mod withdraw_from_fee_pool {
             20 * QUOTE_PRECISION
         );
         assert_eq!(
-            withdraw_from_fee_pool(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW),
+            withdraw_from_fee_pool(&mut market, &mut spot_market, amount, 0, ORACLE_PRICE, NOW),
             Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
     }
@@ -2399,6 +2416,7 @@ mod withdraw_from_fee_pool {
                 &mut market,
                 &mut spot_market,
                 400_000 * QUOTE_PRECISION as u64,
+                0,
                 ORACLE_PRICE,
                 NOW,
             ),
@@ -2410,6 +2428,7 @@ mod withdraw_from_fee_pool {
             &mut market,
             &mut spot_market,
             200_000 * QUOTE_PRECISION as u64,
+            0,
             ORACLE_PRICE,
             NOW,
         )
@@ -2444,5 +2463,36 @@ mod withdraw_from_fee_pool {
         cache_info.record_fee_pool_withdrawal(40).unwrap();
         assert_eq!(cache_info.last_fee_pool_token_amount, 0);
         assert_eq!(cache_info.last_net_pnl_pool_token_amount, 0);
+    }
+
+    #[test]
+    fn keeps_what_the_market_owes_the_lp_pool() {
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        let owed_to_lp_pool = 30 * QUOTE_PRECISION;
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                71 * QUOTE_PRECISION as u64,
+                owed_to_lp_pool,
+                ORACLE_PRICE,
+                NOW,
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        let result = withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            69 * QUOTE_PRECISION as u64,
+            owed_to_lp_pool,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(result.protected_reserve, owed_to_lp_pool);
     }
 }

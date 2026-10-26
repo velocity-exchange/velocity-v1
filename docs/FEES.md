@@ -351,9 +351,10 @@ stricter than `settle_pnl`, which has no low-risk window. The AMM does not have
 to be updated in the same slot.
 
 After the debit the fee pool must still hold the tokenized carveout,
-`amm_protocol_fees_received - pending_amm_provision`, capped at the pool's
-balance before the withdrawal, so the bankruptcy clawback in tranche 3 can
-still reach it. Stored and recomputed AMM equity must both stay above zero.
+`amm_protocol_fees_received - pending_amm_provision`, plus the quote that the
+`AmmCache` says the market owes the LP pool. The sum is capped at the pool's
+balance before the withdrawal. The bankruptcy clawback in tranche 3 and the LP
+pool settle both take from the fee pool first. Stored and recomputed AMM equity must both stay above zero.
 Nothing checks the remaining pool against open interest. A lower
 `total_fee_minus_distributions` widens spreads on the loaded side and shrinks
 the funding, repeg and k budgets, and once it goes negative the insurance fund
@@ -391,7 +392,7 @@ flowchart LR
     PNL -->|"2. IF (above buffer)"| RP
     PNL -->|"3. AMM carveout tokenized (above buffer)"| FP
     FP -->|"bankruptcy clawback (capped at carveout received)"| PNL
-    FP ==>|"withdraw_from_perp_market_fee_pool (cold admin, keeps tokenized carveout)"| WALLET
+    FP ==>|"withdraw_from_perp_market_fee_pool (cold admin, keeps tokenized carveout and LP pool debt)"| WALLET
     LIQ -->|"spot (direct)"| RP
     LIQ -->|"spot (direct)"| PFP
     LEND -->|if_fee_factor| RP

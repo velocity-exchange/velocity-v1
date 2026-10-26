@@ -688,7 +688,18 @@ pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
         state.funding_paused()?,
     )?;
 
-    let withdrawal = withdraw_from_fee_pool(perp_market, spot_market, amount, oracle_price, now)?;
+    let owed_to_lp_pool = ctx
+        .accounts
+        .amm_cache
+        .owed_to_lp_pool(perp_market.market_index);
+    let withdrawal = withdraw_from_fee_pool(
+        perp_market,
+        spot_market,
+        amount,
+        owed_to_lp_pool,
+        oracle_price,
+        now,
+    )?;
     ctx.accounts.amm_cache.record_fee_pool_withdrawal(
         perp_market.market_index,
         withdrawal

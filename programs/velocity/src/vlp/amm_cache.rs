@@ -233,6 +233,19 @@ impl AmmCache {
         Ok(())
     }
 
+    /// The quote the market owes the LP pool, which is a negative `quote_owed_from_lp_pool`.
+    pub fn owed_to_lp_pool(&self, market_index: u16) -> u128 {
+        self.cache
+            .get(market_index as usize)
+            .map_or(0, |cache_info| {
+                cache_info
+                    .quote_owed_from_lp_pool
+                    .min(0)
+                    .unsigned_abs()
+                    .into()
+            })
+    }
+
     /// Looks the entry up by position, as `update_amount_owed_from_lp_pool` does. A market with
     /// no cache entry has nothing to adjust.
     pub fn record_fee_pool_withdrawal(

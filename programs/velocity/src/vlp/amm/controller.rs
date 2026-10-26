@@ -222,13 +222,14 @@ pub struct FeePoolWithdrawal {
 ///
 /// Fails unless the market is Active or ReduceOnly, before expiry, and has no pending
 /// bankruptcy claim. After the debit the fee pool must still hold the tokenized bankruptcy
-/// provision, stored and recomputed AMM equity must stay above zero, and the lower
+/// provision and the amount the AMM cache says the market owes the LP pool, stored and recomputed AMM equity must stay above zero, and the lower
 /// `total_fee_minus_distributions` must not trip the drawdown breaker. The caller must
 /// validate the oracle and accrue quote interest first.
 pub fn withdraw_from_fee_pool(
     market: &mut PerpMarket,
     spot_market: &mut SpotMarket,
     amount: u64,
+    owed_to_lp_pool: u128,
     oracle_price: i64,
     now: i64,
 ) -> VelocityResult<FeePoolWithdrawal> {
@@ -271,11 +272,14 @@ pub fn withdraw_from_fee_pool(
 
     // The bankruptcy clawback takes `pending_amm_provision` from the pnl pool first and only
     // the tokenized remainder from the fee pool, so the tokenized remainder must stay here.
+    // The LP pool settle also takes from the fee pool first.
     let tokenized_provision = market
         .fee_ledger
         .amm_protocol_fees_received
         .safe_sub(market.fee_ledger.pending_amm_provision)?;
-    let protected_reserve = tokenized_provision.min(fee_pool_before);
+    let protected_reserve = tokenized_provision
+        .safe_add(owed_to_lp_pool)?
+        .min(fee_pool_before);
 
     validate!(
         amount.cast::<u128>()? <= fee_pool_before,
@@ -315,7 +319,7 @@ pub fn withdraw_from_fee_pool(
     validate!(
         fee_pool_after >= protected_reserve,
         ErrorCode::FeePoolWithdrawInsufficientBalance,
-        "fee pool {} would fall below the bankruptcy reserve {}",
+        "fee pool {} would fall below the bankruptcy and LP pool reserve {}",
         fee_pool_after,
         protected_reserve
     )?;

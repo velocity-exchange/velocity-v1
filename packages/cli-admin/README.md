@@ -198,7 +198,7 @@ withdrawal if the market is not Active or ReduceOnly, has reached its expiry, ha
 bankruptcy claim, or has an oracle outside the low-risk freshness window or the price band. It
 also rejects it if the fee pool would drop below the tokenized AMM provision
 (`amm_protocol_fees_received - pending_amm_provision`), which the bankruptcy clawback takes from
-the fee pool, or if the stored or recomputed AMM equity would reach zero. These are accounting
+the fee pool, plus the quote the market owes the LP pool, or if the stored or recomputed AMM equity would reach zero. These are accounting
 checks. They do not size what remains against open interest or price risk, and a smaller tfmd
 widens the loaded side's spread. Run it with `--dry-run` first. That prints the raw pool and
 ledger values and simulates the instruction as the vault, and the simulation logs show the reserve

@@ -233,17 +233,14 @@ impl AmmCache {
         Ok(())
     }
 
-    /// A market with no cache entry has nothing to adjust.
+    /// Looks the entry up by position, as `update_amount_owed_from_lp_pool` does. A market with
+    /// no cache entry has nothing to adjust.
     pub fn record_fee_pool_withdrawal(
         &mut self,
         market_index: u16,
         amount: u128,
     ) -> VelocityResult<()> {
-        let cache_info = self
-            .cache
-            .iter_mut()
-            .find(|cache_info| cache_info.market_index == market_index);
-        if let Some(cache_info) = cache_info {
+        if let Some(cache_info) = self.cache.get_mut(market_index as usize) {
             cache_info.record_fee_pool_withdrawal(amount)?;
         }
 

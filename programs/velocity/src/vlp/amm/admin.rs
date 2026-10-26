@@ -34,7 +34,7 @@ use {
         msg,
         state::{
             events::{
-                PerpFeePoolWithdrawRecord, TransferFeeAndPnlPoolDirection,
+                PerpFeePoolWithdrawRecordV0, TransferFeeAndPnlPoolDirection,
                 TransferFeeAndPnlPoolRecord,
             },
             oracle::{get_oracle_price, OraclePriceData},
@@ -689,6 +689,12 @@ pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
     )?;
 
     let withdrawal = withdraw_from_fee_pool(perp_market, spot_market, amount, oracle_price, now)?;
+    ctx.accounts.amm_cache.record_fee_pool_withdrawal(
+        perp_market.market_index,
+        withdrawal
+            .fee_pool_before
+            .safe_sub(withdrawal.fee_pool_after)?,
+    )?;
 
     let mint = Some(ctx.accounts.mint.clone());
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
@@ -711,7 +717,7 @@ pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
     validate_spot_market_vault_amount(spot_market, ctx.accounts.spot_market_vault.amount)?;
     validate_perp_market(perp_market)?;
 
-    emit!(PerpFeePoolWithdrawRecord {
+    emit!(PerpFeePoolWithdrawRecordV0 {
         ts: now,
         perp_market_index: perp_market.market_index,
         amount,
@@ -1862,6 +1868,12 @@ pub struct WithdrawFromPerpMarketFeePool<'info> {
     pub velocity_signer: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    #[account(
+        mut,
+        seeds = [AMM_POSITIONS_CACHE.as_bytes()],
+        bump = amm_cache.bump,
+    )]
+    pub amm_cache: Box<Account<'info, AmmCache>>,
 }
 
 #[derive(Accounts)]

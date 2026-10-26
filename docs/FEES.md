@@ -336,10 +336,19 @@ deposits. Each one emits `ProtocolFeeWithdrawRecord`.
 retained equity from `amm.fee_pool` to the ATA of
 `State.protocol_fee_recipient_perp`. Only `cold_admin` can sign it. It lowers
 `total_fee_minus_distributions` by the same amount and leaves
-`net_revenue_since_last_funding` alone, so the drawdown breaker does not count
-it as a trading loss. The market must be Active or ReduceOnly, before
-`expiry_ts`, with no pending bankruptcy claim, and the oracle must pass the
-same validity, price band and divergence checks as `settle_pnl`.
+`net_revenue_since_last_funding` alone, so the withdrawal is not a trading
+loss. The drawdown breaker divides that loss by
+`total_fee_minus_distributions`, so after a withdrawal it trips at a smaller
+loss. The instruction fails if the lower total would trip the breaker at once.
+It also lowers the market's `AmmCache` snapshot by the same amount, so the LP
+pool does not owe the market for the withdrawn tokens.
+
+The market must be Active or ReduceOnly, before `expiry_ts`, with no pending
+bankruptcy claim. The oracle must pass the price band check and the
+`settle_pnl` divergence check. Its validity must be `Valid`, or stale for
+immediate AMM fills only, inside the low-risk freshness window. This is
+stricter than `settle_pnl`, which has no low-risk window. The AMM does not have
+to be updated in the same slot.
 
 After the debit the fee pool must still hold the tokenized carveout,
 `amm_protocol_fees_received - pending_amm_provision`, capped at the pool's
@@ -350,7 +359,7 @@ Nothing checks the remaining pool against open interest. A lower
 the funding, repeg and k budgets, and once it goes negative the insurance fund
 covers the AMM's deficit through `resolve_perp_pnl_deficit`. The admin decides
 how much equity to leave per market. Each withdrawal emits
-`PerpFeePoolWithdrawRecord`.
+`PerpFeePoolWithdrawRecordV0`.
 
 ## Flow diagram
 
@@ -414,7 +423,7 @@ flowchart LR
 | Withdrawal | `instructions/protocol_fees/`; `State.protocol_fee_recipient_perp`/`_spot` + `hot_fee_withdraw`; `HotRole::FeeWithdraw` |
 | AMM fee pool withdrawal | `handle_withdraw_from_perp_market_fee_pool` (`vlp/amm/admin.rs`, cold admin); `withdraw_from_fee_pool` (`vlp/amm/controller.rs`) |
 | Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target`, `update_perp_market_bankruptcy_if_floor_pct`, `update_user_accelerated_referral_status` |
-| Event | `ProtocolFeeWithdrawRecord`, `PerpFeePoolWithdrawRecord`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
+| Event | `ProtocolFeeWithdrawRecord`, `PerpFeePoolWithdrawRecordV0`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
 
 ---
 

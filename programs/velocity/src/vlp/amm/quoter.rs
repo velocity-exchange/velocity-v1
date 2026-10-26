@@ -63,8 +63,8 @@ pub trait AmmContract {
     fn record_credit(&mut self, amount: u64) -> VelocityResult<()>;
 
     /// Debit the AMM's books for a fee pool withdrawal to treasury. It lowers
-    /// `total_fee_minus_distributions` only, so the drawdown breaker does not read the
-    /// withdrawal as a trading loss.
+    /// `total_fee_minus_distributions` only, so the withdrawal is not a trading loss. The
+    /// drawdown breaker divides by that total, so the breaker trips at a smaller loss after it.
     fn record_fee_pool_withdrawal(&mut self, amount: u64) -> VelocityResult<()>;
 
     /// Apply a forced position change to the AMM's net counterparty

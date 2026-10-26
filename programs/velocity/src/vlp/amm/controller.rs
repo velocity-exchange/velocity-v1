@@ -222,7 +222,8 @@ pub struct FeePoolWithdrawal {
 ///
 /// Fails unless the market is Active or ReduceOnly, before expiry, and has no pending
 /// bankruptcy claim. After the debit the fee pool must still hold the tokenized bankruptcy
-/// provision, and stored and recomputed AMM equity must stay above zero. The caller must
+/// provision, stored and recomputed AMM equity must stay above zero, and the lower
+/// `total_fee_minus_distributions` must not trip the drawdown breaker. The caller must
 /// validate the oracle and accrue quote interest first.
 pub fn withdraw_from_fee_pool(
     market: &mut PerpMarket,
@@ -329,6 +330,13 @@ pub fn withdraw_from_fee_pool(
         ErrorCode::FeePoolWithdrawInsufficientBalance,
         "recomputed amm equity would be {}",
         amm_equity_after
+    )?;
+    validate!(
+        !market.has_too_much_drawdown()?,
+        ErrorCode::FeePoolWithdrawInsufficientBalance,
+        "perp market {} drawdown breaker would trip at total_fee_minus_distributions {}",
+        market.market_index,
+        total_fee_minus_distributions_after
     )?;
 
     Ok(FeePoolWithdrawal {

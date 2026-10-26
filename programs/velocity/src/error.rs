@@ -806,7 +806,7 @@ pub enum ErrorCode {
     #[msg("Perp market status, expiry or pending bankruptcy claims block a fee pool withdrawal")]
     FeePoolWithdrawMarketNotEligible,
     #[msg(
-        "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity"
+        "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve, AMM equity or drawdown limit"
     )]
     FeePoolWithdrawInsufficientBalance,
 }

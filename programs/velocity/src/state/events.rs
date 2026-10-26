@@ -893,7 +893,7 @@ pub struct ProtocolFeeWithdrawRecord {
 }
 
 #[event]
-pub struct PerpFeePoolWithdrawRecord {
+pub struct PerpFeePoolWithdrawRecordV0 {
     /// unix_timestamp of action
     pub ts: i64,
     pub perp_market_index: u16,

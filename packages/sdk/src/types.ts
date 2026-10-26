@@ -2436,7 +2436,7 @@ export type ProtocolFeeWithdrawRecord = {
 };
 
 /** Emitted when `coldAdmin` withdraws from a perp market's fee pool to the protocol fee recipient. */
-export type PerpFeePoolWithdrawRecord = {
+export type PerpFeePoolWithdrawRecordV0 = {
 	ts: BN;
 	perpMarketIndex: number;
 	/** quote token sent to the recipient, QUOTE_PRECISION (1e6) */

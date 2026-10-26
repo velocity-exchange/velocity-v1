@@ -14337,6 +14337,33 @@ export type Velocity = {
         {
           "name": "associatedTokenProgram",
           "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "ammCache",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  109,
+                  109,
+                  95,
+                  99,
+                  97,
+                  99,
+                  104,
+                  101,
+                  95,
+                  115,
+                  101,
+                  101,
+                  100
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -15288,16 +15315,16 @@ export type Velocity = {
       ]
     },
     {
-      "name": "perpFeePoolWithdrawRecord",
+      "name": "perpFeePoolWithdrawRecordV0",
       "discriminator": [
-        154,
-        27,
-        73,
-        173,
-        225,
-        243,
-        234,
-        153
+        105,
+        65,
+        82,
+        183,
+        39,
+        208,
+        82,
+        28
       ]
     },
     {
@@ -17315,7 +17342,7 @@ export type Velocity = {
     {
       "code": 6376,
       "name": "feePoolWithdrawInsufficientBalance",
-      "msg": "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity"
+      "msg": "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve, AMM equity or drawdown limit"
     }
   ],
   "types": [
@@ -22126,7 +22153,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "perpFeePoolWithdrawRecord",
+      "name": "perpFeePoolWithdrawRecordV0",
       "type": {
         "kind": "struct",
         "fields": [

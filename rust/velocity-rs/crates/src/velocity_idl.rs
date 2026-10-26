@@ -4418,7 +4418,7 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct PerpFeePoolWithdrawRecord {
+    pub struct PerpFeePoolWithdrawRecordV0 {
         pub ts: i64,
         pub perp_market_index: u16,
         pub amount: u64,
@@ -25925,6 +25925,7 @@ pub mod accounts {
         pub velocity_signer: Pubkey,
         pub system_program: Pubkey,
         pub associated_token_program: Pubkey,
+        pub amm_cache: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for WithdrawFromPerpMarketFeePool {
@@ -26011,6 +26012,11 @@ pub mod accounts {
                     pubkey: self.associated_token_program,
                     is_signer: false,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.amm_cache,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }
@@ -27241,7 +27247,7 @@ pub mod errors {
             "Perp market status, expiry or pending bankruptcy claims block a fee pool withdrawal"
         )]
         FeePoolWithdrawMarketNotEligible,
-        # [msg ("Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity")]
+        # [msg ("Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve, AMM equity or drawdown limit")]
         FeePoolWithdrawInsufficientBalance,
     }
 }
@@ -27522,7 +27528,7 @@ pub mod events {
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]
-    pub struct PerpFeePoolWithdrawRecord {
+    pub struct PerpFeePoolWithdrawRecordV0 {
         pub ts: i64,
         pub perp_market_index: u16,
         pub amount: u64,

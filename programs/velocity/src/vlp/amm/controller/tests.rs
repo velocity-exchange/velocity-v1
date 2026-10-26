@@ -1954,10 +1954,10 @@ mod withdraw_from_fee_pool {
         },
         state::{
             market_status::MarketStatus,
-            perp_market::{PerpMarket, PoolBalance},
+            perp_market::{ContractTier, PerpMarket, PoolBalance},
             spot_market::{SpotBalanceType, SpotMarket},
         },
-        vlp::amm::controller::withdraw_from_fee_pool,
+        vlp::{amm::controller::withdraw_from_fee_pool, amm_cache::CacheInfo},
     };
 
     const NOW: i64 = 1_000_000;
@@ -2376,5 +2376,73 @@ mod withdraw_from_fee_pool {
             withdraw_from_fee_pool(&mut market, &mut spot_market, amount, ORACLE_PRICE, NOW),
             Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
         );
+    }
+
+    #[test]
+    fn rejects_a_withdrawal_that_trips_the_drawdown_breaker() {
+        let setup_in_drawdown = || {
+            let (mut market, mut spot_market) = setup(
+                1_000_000 * QUOTE_PRECISION,
+                1_000_000 * QUOTE_PRECISION_I128,
+            );
+            spot_market.deposit_balance = 10_000_000 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION;
+            market.contract_tier = ContractTier::A;
+            market.amm.net_revenue_since_last_funding = -15_000 * QUOTE_PRECISION as i64;
+            assert!(!market.has_too_much_drawdown().unwrap());
+            (market, spot_market)
+        };
+
+        // -15k against 600k is -2.5%, past the 2% tier A limit.
+        let (mut market, mut spot_market) = setup_in_drawdown();
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                400_000 * QUOTE_PRECISION as u64,
+                ORACLE_PRICE,
+                NOW,
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+
+        let (mut market, mut spot_market) = setup_in_drawdown();
+        withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            200_000 * QUOTE_PRECISION as u64,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn amm_cache_snapshot_drops_by_the_withdrawal() {
+        let mut cache_info = CacheInfo {
+            last_fee_pool_token_amount: 50,
+            last_net_pnl_pool_token_amount: 30,
+            ..CacheInfo::default()
+        };
+
+        cache_info.record_fee_pool_withdrawal(40).unwrap();
+        assert_eq!(cache_info.last_fee_pool_token_amount, 10);
+        assert_eq!(cache_info.last_net_pnl_pool_token_amount, 30);
+
+        // The fee pool grew after the snapshot, so the withdrawal exceeds the fee pool part.
+        cache_info.record_fee_pool_withdrawal(25).unwrap();
+        assert_eq!(cache_info.last_fee_pool_token_amount, 0);
+        assert_eq!(cache_info.last_net_pnl_pool_token_amount, 15);
+        assert_eq!(
+            cache_info.get_last_available_amm_token_amount().unwrap(),
+            15
+        );
+    }
+
+    #[test]
+    fn amm_cache_without_a_snapshot_is_unchanged() {
+        let mut cache_info = CacheInfo::default();
+        cache_info.record_fee_pool_withdrawal(40).unwrap();
+        assert_eq!(cache_info.last_fee_pool_token_amount, 0);
+        assert_eq!(cache_info.last_net_pnl_pool_token_amount, 0);
     }
 }

@@ -198,6 +198,9 @@ describe('perp fee pool withdraw', () => {
 			new BN(60 * 60)
 		);
 
+		await velocityClient.initializeAmmCache();
+		await velocityClient.addMarketToAmmCache(MARKET_INDEX);
+
 		const feeStructure = velocityClient.getStateAccount().perpFeeStructure;
 		feeStructure.ammFeeNumerator = 10;
 		feeStructure.ifFeeNumerator = 50;

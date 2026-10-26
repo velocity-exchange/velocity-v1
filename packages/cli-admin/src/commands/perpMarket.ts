@@ -379,7 +379,7 @@ export function registerPerpMarket(parent: Command): void {
 		pm
 			.command('withdraw-fee-pool <market> <amount>')
 			.description(
-				'Withdraw exactly <amount> (raw quote base units, QUOTE_PRECISION) from amm.fee_pool to the protocol fee recipient, and lower amm.total_fee_minus_distributions by the same amount. The program rejects the whole withdrawal unless the market is Active or ReduceOnly, is before its expiry, has no pending bankruptcy claim and has a usable oracle, and unless the fee pool keeps the tokenized AMM provision and both stored and recomputed AMM equity stay above zero. Those checks are accounting checks, not a risk sizing of what remains. Requires cold admin. --dry-run prints the market state and simulates the instruction as the signer, sending nothing.'
+				'Withdraw exactly <amount> (raw quote base units, QUOTE_PRECISION) from amm.fee_pool to the protocol fee recipient, and lower amm.total_fee_minus_distributions by the same amount. The program rejects the whole withdrawal unless the market is Active or ReduceOnly, is before its expiry, has no pending bankruptcy claim and has a usable oracle, and unless the fee pool keeps the tokenized AMM provision both stored and recomputed AMM equity stay above zero and the drawdown breaker stays untripped. Those checks are accounting checks, not a risk sizing of what remains. Requires cold admin. --dry-run prints the market state and simulates the instruction as the signer, sending nothing.'
 			)
 	).action(async (market: string, amount: string, _flags, cmd: Command) => {
 		const marketIndex = parseMarketIndex(market);

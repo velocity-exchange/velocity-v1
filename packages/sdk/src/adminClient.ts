@@ -5753,8 +5753,8 @@ export class AdminClient extends VelocityClient {
 	 * `state.protocolFeeRecipientPerp`'s ATA. Requires cold admin. The program rejects the
 	 * whole withdrawal unless the market is Active or ReduceOnly, is before its expiry, has no
 	 * pending bankruptcy claim and has a usable oracle, and unless the fee pool keeps the
-	 * tokenized AMM provision the bankruptcy clawback can claim and both the stored and the
-	 * recomputed AMM equity stay above zero.
+	 * tokenized AMM provision the bankruptcy clawback can claim, both the stored and the
+	 * recomputed AMM equity stay above zero, and the drawdown breaker stays untripped.
 	 * @param marketIndex - Perp market to withdraw from.
 	 * @param amount - Exact amount, QUOTE_PRECISION (1e6).
 	 * @param txParams - Optional transaction-building overrides.
@@ -5834,6 +5834,7 @@ export class AdminClient extends VelocityClient {
 					velocitySigner: this.getSignerPublicKey(),
 					systemProgram: SystemProgram.programId,
 					associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+					ammCache: getAmmCachePublicKey(this.program.programId),
 				},
 				remainingAccounts,
 			}

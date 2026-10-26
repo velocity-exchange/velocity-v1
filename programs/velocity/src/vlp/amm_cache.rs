@@ -108,6 +108,30 @@ impl CacheInfo {
         Ok((self.oracle, oracle_source))
     }
 
+    fn has_amm_snapshot(&self) -> bool {
+        self.last_net_pnl_pool_token_amount != 0
+            || self.last_fee_pool_token_amount != 0
+            || self.last_exchange_fees != 0
+    }
+
+    /// Takes a fee pool withdrawal out of the last snapshot, so the next
+    /// `update_amount_owed_from_lp_pool` does not read it as an AMM loss. Only the sum of the
+    /// two pool amounts enters that delta, so a withdrawal larger than the fee pool snapshot
+    /// takes the rest from the pnl pool snapshot.
+    pub fn record_fee_pool_withdrawal(&mut self, amount: u128) -> VelocityResult<()> {
+        if !self.has_amm_snapshot() {
+            return Ok(());
+        }
+
+        let from_fee_pool = amount.min(self.last_fee_pool_token_amount);
+        self.last_fee_pool_token_amount =
+            self.last_fee_pool_token_amount.safe_sub(from_fee_pool)?;
+        self.last_net_pnl_pool_token_amount = self
+            .last_net_pnl_pool_token_amount
+            .safe_sub(amount.safe_sub(from_fee_pool)?.cast()?)?;
+        Ok(())
+    }
+
     pub fn get_last_available_amm_token_amount(&self) -> VelocityResult<i128> {
         let last_available_balance = self
             .last_fee_pool_token_amount
@@ -204,6 +228,23 @@ impl AmmCache {
                 perp_market.market_index
             );
             return Err(ErrorCode::DefaultError);
+        }
+
+        Ok(())
+    }
+
+    /// A market with no cache entry has nothing to adjust.
+    pub fn record_fee_pool_withdrawal(
+        &mut self,
+        market_index: u16,
+        amount: u128,
+    ) -> VelocityResult<()> {
+        let cache_info = self
+            .cache
+            .iter_mut()
+            .find(|cache_info| cache_info.market_index == market_index);
+        if let Some(cache_info) = cache_info {
+            cache_info.record_fee_pool_withdrawal(amount)?;
         }
 
         Ok(())
@@ -350,10 +391,7 @@ impl<'a> AccountZeroCopyMut<'a, CacheInfo, AmmCacheFixed> {
         let amm_amount_available =
             net_pnl_pool_token_amount.safe_add(fee_pool_token_amount.cast::<i128>()?)?;
 
-        if cached_info.last_net_pnl_pool_token_amount == 0
-            && cached_info.last_fee_pool_token_amount == 0
-            && cached_info.last_exchange_fees == 0
-        {
+        if !cached_info.has_amm_snapshot() {
             cached_info.last_fee_pool_token_amount = fee_pool_token_amount;
             cached_info.last_net_pnl_pool_token_amount = net_pnl_pool_token_amount;
             cached_info.last_exchange_fees = perp_market.fee_ledger.total_exchange_fee;

@@ -14331,6 +14331,33 @@
         {
           "name": "associated_token_program",
           "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "amm_cache",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  109,
+                  109,
+                  95,
+                  99,
+                  97,
+                  99,
+                  104,
+                  101,
+                  95,
+                  115,
+                  101,
+                  101,
+                  100
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -15282,16 +15309,16 @@
       ]
     },
     {
-      "name": "PerpFeePoolWithdrawRecord",
+      "name": "PerpFeePoolWithdrawRecordV0",
       "discriminator": [
-        154,
-        27,
-        73,
-        173,
-        225,
-        243,
-        234,
-        153
+        105,
+        65,
+        82,
+        183,
+        39,
+        208,
+        82,
+        28
       ]
     },
     {
@@ -17309,7 +17336,7 @@
     {
       "code": 6376,
       "name": "FeePoolWithdrawInsufficientBalance",
-      "msg": "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve or AMM equity"
+      "msg": "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve, AMM equity or drawdown limit"
     }
   ],
   "types": [
@@ -22120,7 +22147,7 @@
       }
     },
     {
-      "name": "PerpFeePoolWithdrawRecord",
+      "name": "PerpFeePoolWithdrawRecordV0",
       "type": {
         "kind": "struct",
         "fields": [

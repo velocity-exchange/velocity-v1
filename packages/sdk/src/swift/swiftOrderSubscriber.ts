@@ -17,8 +17,8 @@ import {
 	UserAccount,
 } from '../types';
 import { Keypair, PublicKey, TransactionInstruction } from '@solana/web3.js';
-import nacl from 'tweetnacl';
 import { decodeUTF8 } from 'tweetnacl-util';
+import { isValidChallengeNonce, signChallengeNonce } from './challengeNonce';
 import WebSocket from 'ws';
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -150,19 +150,24 @@ export class SwiftOrderSubscriber {
 		return markets[marketIndex].symbol;
 	}
 
-	generateChallengeResponse(nonce: string): string {
-		const messageBytes = decodeUTF8(nonce);
-		const signature = nacl.sign.detached(
-			messageBytes,
-			this.config.keypair.secretKey
-		);
-		const signatureBase64 = Buffer.from(signature).toString('base64');
-		return signatureBase64;
+	generateChallengeResponse(nonce: string, authDomain?: unknown): string {
+		return signChallengeNonce(nonce, this.config.keypair, authDomain);
 	}
 
 	handleAuthMessage(message: any): void {
 		if (message['channel'] === 'auth' && message['nonce'] != null) {
-			const signatureBase64 = this.generateChallengeResponse(message['nonce']);
+			if (!isValidChallengeNonce(message['nonce'])) {
+				console.error(
+					'swift ws-server sent a malformed auth nonce; not signing it, reconnecting'
+				);
+				this.scheduleReconnect();
+				return;
+			}
+
+			const signatureBase64 = this.generateChallengeResponse(
+				message['nonce'],
+				message['auth_domain']
+			);
 			this.ws?.send(
 				JSON.stringify({
 					pubkey: this.config.keypair.publicKey.toBase58(),

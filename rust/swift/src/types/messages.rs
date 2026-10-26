@@ -204,6 +204,7 @@ pub struct WsMessage<'a> {
     deposit: Option<&'a str>,
     order: Option<&'a OrderMetadataAndMessage>,
     nonce: Option<&'a str>,
+    auth_domain: Option<&'a str>,
     message: Option<&'a str>,
     error: Option<&'a str>,
 }
@@ -227,6 +228,7 @@ impl<'a> WsMessage<'a> {
             deposit: None,
             order: None,
             nonce: None,
+            auth_domain: None,
             message: None,
             error: None,
         }
@@ -244,6 +246,11 @@ impl<'a> WsMessage<'a> {
 
     pub fn set_nonce(mut self, nonce: &'a str) -> Self {
         self.nonce = Some(nonce);
+        self
+    }
+
+    pub fn set_auth_domain(mut self, auth_domain: &'a str) -> Self {
+        self.auth_domain = Some(auth_domain);
         self
     }
 
@@ -268,6 +275,10 @@ impl<'a> WsMessage<'a> {
 
         if let Some(nonce) = self.nonce {
             message["nonce"] = json!(nonce);
+        }
+
+        if let Some(auth_domain) = self.auth_domain {
+            message["auth_domain"] = json!(auth_domain);
         }
 
         if let Some(msg) = self.message {

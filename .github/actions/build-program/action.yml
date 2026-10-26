@@ -73,6 +73,7 @@ runs:
       # main.yml and deploy-scripts/verify-buffer.sh. Without them solana-verify
       # emits SBPFv0, which SIMD-0500 stops accepting for upgrades, and the
       # buffer hash never matches verify-buffer.sh.
+      # The verify PDA export in .github/actions/buffer-deploy records the same flags.
       run: |
         set -euo pipefail
         SBF_ARGS=(--arch v3 --cargo-build-sbf-args=--tools-version=v1.57)
@@ -86,6 +87,11 @@ runs:
     - name: Artifact is SBPFv3
       shell: bash
       run: bash deploy-scripts/assert-sbpf-version.sh "target/deploy/${{ inputs.program }}.so"
+
+    - name: Mainnet artifact has no devnet-only instructions
+      if: inputs.program == 'velocity' && inputs.devnet != 'true'
+      shell: bash
+      run: bash deploy-scripts/assert-mainnet-flavor.sh target/deploy/velocity.so
 
     - name: Upload .so artifact
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

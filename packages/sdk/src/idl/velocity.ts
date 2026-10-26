@@ -2678,8 +2678,33 @@ export type Velocity = {
         {
           "name": "state",
           "docs": [
-            "(cold-)admin pubkey at offset 8..40."
-          ]
+            "(cold-)admin pubkey at offset 8..40. The seeds lock the account to the",
+            "State PDA. Without them, any account with the signer at 8..40, such as",
+            "the signer's own `UserStats`, passes the admin gate."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "velocitySigner",

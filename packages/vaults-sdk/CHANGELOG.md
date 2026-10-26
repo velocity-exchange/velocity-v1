@@ -1,5 +1,45 @@
 # @velocity-exchange/vaults-sdk
 
+## 0.1.34
+
+### Patch Changes
+
+- [#569](https://github.com/velocity-exchange/velocity-v1/pull/569) [`8bf64e8`](https://github.com/velocity-exchange/velocity-v1/commit/8bf64e894a8eac04287b34ce7dc6a9aa88c64921) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Default commitment is now `finalized` instead of `confirmed`. This covers `DEFAULT_CONFIRMATION_OPTS`
+  (preflight and confirmation), the fallback commitment in the account subscribers, user maps, event
+  subscriber, blockhash and slot subscribers, one-shot fetches, and the gRPC and Laserstream
+  subscribers' default `commitmentLevel`. Under Alpenglow (mainnet since 2026-10-21) `confirmed` is
+  only signalled once a slot is finalized, so the two levels return the same slot on devnet and
+  mainnet, and Anza plans to remove `confirmed`. Callers that pass a commitment explicitly are
+  unaffected. On a local validator without Alpenglow, `finalized` still lags about 32 slots, so pass
+  `'confirmed'` there if tests need the old speed.
+
+- [#549](https://github.com/velocity-exchange/velocity-v1/pull/549) [`baacae3`](https://github.com/velocity-exchange/velocity-v1/commit/baacae3386c7a299f216098272f5879bc9148de8) Thanks [@ChesterSim](https://github.com/ChesterSim)! - The vaults IDL gains `TokenizedVaultDepositor.issuedSupply`, carved from padding, so the account
+  size is unchanged. The program now prices `tokenizeShares` and `redeemTokens` from this counter
+  rather than the mint's supply, so a holder who burns tokens directly through the SPL Token program
+  can no longer reprice the wrapper for everyone else. Tokens burned that way are no longer
+  redeemable for the shares behind them. When the last live token is redeemed, those shares go back
+  to all vault depositors pro rata.
+
+  The same IDL regeneration also picks up `UserStats.acceleratedReferralStatus`, which the velocity
+  program already had, and refreshes a few doc strings on shared velocity types.
+
+- [#550](https://github.com/velocity-exchange/velocity-v1/pull/550) [`1fc99b8`](https://github.com/velocity-exchange/velocity-v1/commit/1fc99b8b28aa0494e9056919d3b84a0e5c1afa82) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Add the `DepositNotFullySettled` (6029) vaults error. `deposit`, `manager_deposit` and
+  `manager_repay` now revert with it when Velocity accepts less than the full amount, which
+  happens when the market being deposited into is `ReduceOnly` and the amount is larger than the
+  vault's outstanding borrow there. For `deposit` and `manager_deposit` that is the denomination
+  market; for `manager_repay` it is the repay market. Previously the excess stayed in the
+  vault's transit token account with no claim on it.
+
+  The same IDL regeneration also picks up `UserStats.acceleratedReferralStatus`, which the velocity
+  program already had, and refreshes a few doc strings on shared velocity types.
+
+- [#555](https://github.com/velocity-exchange/velocity-v1/pull/555) [`73a5091`](https://github.com/velocity-exchange/velocity-v1/commit/73a5091ca866b5732ea07033fcb4a2fc95f9b35a) Thanks [@0xahzam](https://github.com/0xahzam)! - Regenerated the vaults IDL and its types against the current velocity program. The embedded
+  `UserStats` type now exposes `accelerated_referral_status`, which the program carved out of former
+  padding, so every other field decodes the same as before. Several doc comments also match the
+  program again.
+- Updated dependencies [[`2e8caee`](https://github.com/velocity-exchange/velocity-v1/commit/2e8caeeed123b99e59edc60bcc14f985494769f6), [`4aa7170`](https://github.com/velocity-exchange/velocity-v1/commit/4aa71708fff4fd437f32458590e9ddffc74a3aa6), [`8bf64e8`](https://github.com/velocity-exchange/velocity-v1/commit/8bf64e894a8eac04287b34ce7dc6a9aa88c64921), [`c906ea1`](https://github.com/velocity-exchange/velocity-v1/commit/c906ea1e591635da8a336ca02e2f6a2ae101ecae)]:
+  - @velocity-exchange/sdk@0.27.0
+
 ## 0.1.33
 
 ### Patch Changes

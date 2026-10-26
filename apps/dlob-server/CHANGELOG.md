@@ -1,5 +1,12 @@
 # @velocity-exchange/dlob-server
 
+## 0.1.41
+
+### Patch Changes
+
+- Updated dependencies [[`2e8caee`](https://github.com/velocity-exchange/velocity-v1/commit/2e8caeeed123b99e59edc60bcc14f985494769f6), [`4aa7170`](https://github.com/velocity-exchange/velocity-v1/commit/4aa71708fff4fd437f32458590e9ddffc74a3aa6), [`8bf64e8`](https://github.com/velocity-exchange/velocity-v1/commit/8bf64e894a8eac04287b34ce7dc6a9aa88c64921), [`c906ea1`](https://github.com/velocity-exchange/velocity-v1/commit/c906ea1e591635da8a336ca02e2f6a2ae101ecae)]:
+  - @velocity-exchange/sdk@0.27.0
+
 ## 0.1.40
 
 ### Patch Changes

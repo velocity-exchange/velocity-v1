@@ -1,5 +1,20 @@
 # @velocity-exchange/admin-cli
 
+## 0.17.1
+
+### Patch Changes
+
+- [#569](https://github.com/velocity-exchange/velocity-v1/pull/569) [`8bf64e8`](https://github.com/velocity-exchange/velocity-v1/commit/8bf64e894a8eac04287b34ce7dc6a9aa88c64921) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Default commitment is now `finalized` instead of `confirmed`. This covers `DEFAULT_CONFIRMATION_OPTS`
+  (preflight and confirmation), the fallback commitment in the account subscribers, user maps, event
+  subscriber, blockhash and slot subscribers, one-shot fetches, and the gRPC and Laserstream
+  subscribers' default `commitmentLevel`. Under Alpenglow (mainnet since 2026-10-21) `confirmed` is
+  only signalled once a slot is finalized, so the two levels return the same slot on devnet and
+  mainnet, and Anza plans to remove `confirmed`. Callers that pass a commitment explicitly are
+  unaffected. On a local validator without Alpenglow, `finalized` still lags about 32 slots, so pass
+  `'confirmed'` there if tests need the old speed.
+- Updated dependencies [[`2e8caee`](https://github.com/velocity-exchange/velocity-v1/commit/2e8caeeed123b99e59edc60bcc14f985494769f6), [`4aa7170`](https://github.com/velocity-exchange/velocity-v1/commit/4aa71708fff4fd437f32458590e9ddffc74a3aa6), [`8bf64e8`](https://github.com/velocity-exchange/velocity-v1/commit/8bf64e894a8eac04287b34ce7dc6a9aa88c64921), [`c906ea1`](https://github.com/velocity-exchange/velocity-v1/commit/c906ea1e591635da8a336ca02e2f6a2ae101ecae)]:
+  - @velocity-exchange/sdk@0.27.0
+
 ## 0.17.0
 
 ### Minor Changes

@@ -105,6 +105,8 @@ pub struct GrpcSubscribeOpts {
     pub on_block_meta: Option<Box<OnBlockMetaFn>>,
     /// Subscribe to slot updates
     pub subscribe_slot_updates: bool,
+    /// Commitment for `on_slot` ticks when it differs from `commitment` (default: same)
+    pub slot_commitment: Option<CommitmentLevel>,
 }
 
 impl Default for GrpcSubscribeOpts {
@@ -125,6 +127,7 @@ impl Default for GrpcSubscribeOpts {
             subscribe_block_meta_updates: false,
             subscribe_slot_updates: true,
             on_block_meta: None,
+            slot_commitment: None,
         }
     }
 }
@@ -133,6 +136,14 @@ impl GrpcSubscribeOpts {
     /// Set the gRPC subscription's commitment level (default: 'confirmed')
     pub fn commitment(mut self, commitment: CommitmentLevel) -> Self {
         self.commitment = Some(commitment);
+        self
+    }
+    /// Drive `on_slot` from a different commitment than accounts and transactions
+    ///
+    /// e.g. accounts at `Finalized` so a dropped block version never reaches the
+    /// caches, with slot ticks at `Processed` so the slot clock stays at the tip
+    pub fn slot_commitment(mut self, commitment: CommitmentLevel) -> Self {
+        self.slot_commitment = Some(commitment);
         self
     }
     /// Enables the subscription to receive updates for changes within a slot,  

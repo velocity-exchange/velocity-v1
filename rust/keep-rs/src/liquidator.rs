@@ -1396,7 +1396,10 @@ async fn setup_grpc(
             std::env::var("GRPC_X_TOKEN").expect("GRPC_X_TOKEN set"),
             GrpcSubscribeOpts::default()
                 .connection_opts(GrpcConnectionOpts::default().enable_compression())
-                .commitment(solana_commitment_config::CommitmentLevel::Processed)
+                // accounts and txs at finalized so a dropped block version never enters the
+                // caches; the slot clock stays at processed for auction timing
+                .commitment(solana_commitment_config::CommitmentLevel::Finalized)
+                .slot_commitment(solana_commitment_config::CommitmentLevel::Processed)
                 .transaction_include_accounts(vec![velocity.wallet().default_sub_account()])
                 .on_transaction(on_transaction_update_fn(transaction_tx.clone()))
                 .on_slot(on_slot_update_fn(

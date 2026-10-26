@@ -13,7 +13,7 @@ use yellowstone_grpc_client::{
 };
 use yellowstone_grpc_proto::{
     geyser::{
-        CommitmentLevel as GeyserCommitmentLevel, SubscribeRequestFilterBlocksMeta,
+        CommitmentLevel as GeyserCommitmentLevel, SlotStatus, SubscribeRequestFilterBlocksMeta,
         SubscribeUpdateAccountInfo, SubscribeUpdateBlockMeta,
     },
     prelude::{
@@ -217,6 +217,8 @@ pub struct GeyserSubscribeOpts {
     pub blocks_meta: bool,
     /// subscribe to slot updates
     pub slot_updates: bool,
+    /// Commitment that drives `on_slot`, when it differs from the request commitment
+    pub slot_commitment: Option<CommitmentLevel>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -318,6 +320,10 @@ impl VelocityGrpcClient {
         subscribe_opts: GeyserSubscribeOpts,
     ) -> Result<UnsubHandle, GrpcError> {
         let request = subscribe_opts.to_subscribe_request(commitment);
+        let slot_status = subscribe_opts
+            .slot_commitment
+            .filter(|c| *c != commitment)
+            .map(|c| to_geyser_commitment(c) as i32);
         info!(target: "grpc", "gRPC subscribing: {request:?}");
 
         let (unsub_tx, mut unsub_rx) = tokio::sync::oneshot::channel::<()>();
@@ -345,6 +351,7 @@ impl VelocityGrpcClient {
                 x_token,
                 grpc_opts,
                 request,
+                slot_status,
                 on_account_hooks,
                 on_transaction_hooks,
                 on_slot,
@@ -383,6 +390,7 @@ impl VelocityGrpcClient {
         x_token: String,
         grpc_opts: Option<GrpcConnectionOpts>,
         request: SubscribeRequest,
+        slot_status: Option<i32>,
         on_account: Hooks,
         on_transaction: TransactionHooks,
         on_slot: impl Fn(Slot),
@@ -507,7 +515,7 @@ impl VelocityGrpcClient {
                                 if msg.status() as u8 > 2 {
                                     log::debug!(target: "grpc", "slot: {}, {}", msg.slot, msg.status);
                                 }
-                                if msg.slot > latest_slot {
+                                if msg.slot > latest_slot && is_slot_tick(msg.status, slot_status) {
                                     latest_slot = msg.slot;
                                     on_slot(latest_slot);
                                 }
@@ -599,7 +607,9 @@ impl GeyserSubscribeOpts {
         slots.insert(
             "client".to_owned(),
             SubscribeRequestFilterSlots {
-                filter_by_commitment: Some(true),
+                // with a separate slot commitment the stream carries every slot status,
+                // and `is_slot_tick` keeps the wanted one
+                filter_by_commitment: Some(self.slot_commitment.is_none_or(|c| c == commitment)),
                 interslot_updates: self.interslot_updates,
             },
         );
@@ -633,17 +643,36 @@ impl GeyserSubscribeOpts {
             slots,
             accounts,
             transactions,
-            commitment: Some(match commitment {
-                CommitmentLevel::Confirmed => GeyserCommitmentLevel::Confirmed,
-                CommitmentLevel::Processed => GeyserCommitmentLevel::Processed,
-                CommitmentLevel::Finalized => GeyserCommitmentLevel::Finalized,
-            } as i32),
+            commitment: Some(to_geyser_commitment(commitment) as i32),
             ping,
             from_slot: self.from_slot,
             blocks_meta,
             ..Default::default()
         }
     }
+}
+
+fn to_geyser_commitment(commitment: CommitmentLevel) -> GeyserCommitmentLevel {
+    match commitment {
+        CommitmentLevel::Confirmed => GeyserCommitmentLevel::Confirmed,
+        CommitmentLevel::Processed => GeyserCommitmentLevel::Processed,
+        CommitmentLevel::Finalized => GeyserCommitmentLevel::Finalized,
+    }
+}
+
+/// Whether a slot update advances the slot clock. `want` is the slot commitment as a
+/// `SlotStatus` value, set only when the stream is unfiltered. Dead slots never count.
+fn is_slot_tick(status: i32, want: Option<i32>) -> bool {
+    let Some(want) = want else {
+        return true;
+    };
+    status == want
+        || matches!(
+            SlotStatus::try_from(status),
+            Ok(SlotStatus::SlotFirstShredReceived
+                | SlotStatus::SlotCompleted
+                | SlotStatus::SlotCreatedBank)
+        )
 }
 
 /// Connect to gRPC endpoint
@@ -718,6 +747,48 @@ mod test {
             data,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn slot_tick_filters_only_unfiltered_streams() {
+        let processed = SlotStatus::SlotProcessed as i32;
+        let finalized = SlotStatus::SlotFinalized as i32;
+        let dead = SlotStatus::SlotDead as i32;
+        let created_bank = SlotStatus::SlotCreatedBank as i32;
+
+        // filtered stream: the provider already sent only the request commitment
+        assert!(is_slot_tick(finalized, None));
+
+        let want = Some(GeyserCommitmentLevel::Processed as i32);
+        assert!(is_slot_tick(processed, want));
+        assert!(is_slot_tick(created_bank, want));
+        assert!(!is_slot_tick(finalized, want));
+        assert!(!is_slot_tick(SlotStatus::SlotConfirmed as i32, want));
+        assert!(!is_slot_tick(dead, want));
+    }
+
+    #[test]
+    fn slot_commitment_unfilters_slot_stream() {
+        let request = |slot_commitment| {
+            GeyserSubscribeOpts {
+                slot_commitment,
+                ..Default::default()
+            }
+            .to_subscribe_request(CommitmentLevel::Finalized)
+        };
+        let filtered = |r: SubscribeRequest| r.slots["client"].filter_by_commitment;
+
+        assert_eq!(filtered(request(None)), Some(true));
+        assert_eq!(
+            filtered(request(Some(CommitmentLevel::Finalized))),
+            Some(true)
+        );
+        let split = request(Some(CommitmentLevel::Processed));
+        assert_eq!(
+            split.commitment,
+            Some(GeyserCommitmentLevel::Finalized as i32)
+        );
+        assert_eq!(filtered(split), Some(false));
     }
 
     #[test]

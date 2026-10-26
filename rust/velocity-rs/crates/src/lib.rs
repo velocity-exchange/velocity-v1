@@ -1640,6 +1640,7 @@ impl VelocityClientBackend {
                     transactions_accounts_include,
                     blocks_meta: opts.subscribe_block_meta_updates,
                     slot_updates: opts.subscribe_slot_updates,
+                    slot_commitment: opts.slot_commitment,
                     ..Default::default()
                 },
             )

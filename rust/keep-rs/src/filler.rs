@@ -2523,7 +2523,10 @@ async fn subscribe_grpc(
                 .unwrap_or_else(|_| "https://api.rpcpool.com".to_string()),
             std::env::var("GRPC_X_TOKEN").expect("GRPC_X_TOKEN set"),
             GrpcSubscribeOpts::default()
-                .commitment(solana_commitment_config::CommitmentLevel::Processed)
+                // accounts and txs at finalized so a dropped block version never enters the
+                // caches; the slot clock stays at processed for auction timing
+                .commitment(solana_commitment_config::CommitmentLevel::Finalized)
+                .slot_commitment(solana_commitment_config::CommitmentLevel::Processed)
                 .connection_opts(GrpcConnectionOpts::default().enable_compression())
                 .usermap_on()
                 .statsmap_on()

@@ -58,23 +58,38 @@ app cannot slip into the gate unnoticed.
 ```bash
 cargo test -p velocity                    # velocity program only
 cargo test -p velocity -- --show-output  # with stdout
+cargo test -p vaults --lib                # vaults program (the crate is `vaults`)
 ```
 
 ## TypeScript integration tests
 
 ```bash
-ts-mocha -t 300000 ./tests/<test_file>.ts          # one file
 bash test-scripts/run-anchor-tests.sh              # build, then every velocity test file
 bash test-scripts/run-anchor-tests.sh --skip-build # reuse the built .so
 SINGLE_PROCESS=1 bash test-scripts/run-anchor-tests.sh --skip-build  # one mocha process: 53s -> 19s
+bash test-scripts/run-vault-tests.sh [--skip-build] # vaults suite (tests/vaults/)
 ```
 
 `bash test-scripts/run-anchor-tests.sh --help` lists the flags and the environment variables.
+`run-vault-tests.sh` lists its files in `test_files` instead of globbing, so add a new vaults test
+there.
+
+One file:
+
+```bash
+export PATH="$PWD/node_modules/.bin:$PATH" ANCHOR_WALLET=~/.config/solana/id.json
+ts-mocha --exit -t 300000 tests/velocity/<test_file>.ts
+```
+
+A fresh worktree has no `target/deploy` or `target/idl`, and LiteSVM loads all five programs from
+`target/deploy`. Run `bun install`, `bun run program:build` and `cd packages/sdk && bun run build`
+once before a single-file run. The suite runners do this for you.
 
 Nearly all files in `tests/` run in-process on LiteSVM through
 `packages/sdk/src/litesvm/litesvmConnection.ts`, which presents the SVM to the SDK as a web3.js
-`Connection`. A handful use Anchor's local validator instead. The tests import the SDK by relative
-path (`../packages/sdk/src/...`) and resolve `@coral-xyz/anchor` and friends from the repo-root
+`Connection`. A handful use Anchor's local validator instead. The tests import the SDK both from
+source (`../../packages/sdk/src/...`) and from the package root (`../../packages/sdk`, which
+resolves to the built `packages/sdk/lib/`), and resolve `@coral-xyz/anchor` and friends from the repo-root
 `node_modules`. The single root `bun install` provides both. If deps are missing, run
 `bun install` at the repo root.
 

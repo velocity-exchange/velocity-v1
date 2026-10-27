@@ -4418,7 +4418,7 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct PerpFeePoolWithdrawRecordV0 {
+    pub struct PerpFeePoolWithdrawRecord {
         pub ts: i64,
         pub perp_market_index: u16,
         pub amount: u64,
@@ -27528,7 +27528,7 @@ pub mod events {
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]
-    pub struct PerpFeePoolWithdrawRecordV0 {
+    pub struct PerpFeePoolWithdrawRecord {
         pub ts: i64,
         pub perp_market_index: u16,
         pub amount: u64,

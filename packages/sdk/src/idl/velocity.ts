@@ -15315,16 +15315,16 @@ export type Velocity = {
       ]
     },
     {
-      "name": "perpFeePoolWithdrawRecordV0",
+      "name": "perpFeePoolWithdrawRecord",
       "discriminator": [
-        105,
-        65,
-        82,
-        183,
-        39,
-        208,
-        82,
-        28
+        154,
+        27,
+        73,
+        173,
+        225,
+        243,
+        234,
+        153
       ]
     },
     {
@@ -22153,7 +22153,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "perpFeePoolWithdrawRecordV0",
+      "name": "perpFeePoolWithdrawRecord",
       "type": {
         "kind": "struct",
         "fields": [

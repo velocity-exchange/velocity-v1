@@ -15309,16 +15309,16 @@
       ]
     },
     {
-      "name": "PerpFeePoolWithdrawRecordV0",
+      "name": "PerpFeePoolWithdrawRecord",
       "discriminator": [
-        105,
-        65,
-        82,
-        183,
-        39,
-        208,
-        82,
-        28
+        154,
+        27,
+        73,
+        173,
+        225,
+        243,
+        234,
+        153
       ]
     },
     {
@@ -22147,7 +22147,7 @@
       }
     },
     {
-      "name": "PerpFeePoolWithdrawRecordV0",
+      "name": "PerpFeePoolWithdrawRecord",
       "type": {
         "kind": "struct",
         "fields": [

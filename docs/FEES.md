@@ -364,7 +364,7 @@ Nothing checks the remaining pool against open interest. A lower
 the funding, repeg and k budgets, and once it goes negative the insurance fund
 covers the AMM's deficit through `resolve_perp_pnl_deficit`. The admin decides
 how much equity to leave per market. Each withdrawal emits
-`PerpFeePoolWithdrawRecordV0`.
+`PerpFeePoolWithdrawRecord`.
 
 ## Flow diagram
 
@@ -429,7 +429,7 @@ flowchart LR
 | Withdrawal | `instructions/protocol_fees/`; `State.protocol_fee_recipient_perp`/`_spot` + `hot_fee_withdraw`; `HotRole::FeeWithdraw` |
 | AMM fee pool withdrawal | `handle_withdraw_from_perp_market_fee_pool` (`vlp/amm/admin.rs`, cold admin); `withdraw_from_fee_pool` (`vlp/amm/controller.rs`) |
 | Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target`, `update_perp_market_bankruptcy_if_floor_pct`, `update_user_accelerated_referral_status` |
-| Event | `ProtocolFeeWithdrawRecord`, `PerpFeePoolWithdrawRecordV0`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
+| Event | `ProtocolFeeWithdrawRecord`, `PerpFeePoolWithdrawRecord`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
 
 ---
 

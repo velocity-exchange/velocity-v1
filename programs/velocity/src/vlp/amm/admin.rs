@@ -34,7 +34,7 @@ use {
         msg,
         state::{
             events::{
-                PerpFeePoolWithdrawRecordV0, TransferFeeAndPnlPoolDirection,
+                PerpFeePoolWithdrawRecord, TransferFeeAndPnlPoolDirection,
                 TransferFeeAndPnlPoolRecord,
             },
             oracle::{get_oracle_price, OraclePriceData},
@@ -729,7 +729,7 @@ pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
     validate_spot_market_vault_amount(spot_market, ctx.accounts.spot_market_vault.amount)?;
     validate_perp_market(perp_market)?;
 
-    emit!(PerpFeePoolWithdrawRecordV0 {
+    emit!(PerpFeePoolWithdrawRecord {
         ts: now,
         perp_market_index: perp_market.market_index,
         amount,

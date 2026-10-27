@@ -333,8 +333,12 @@ deposits. Each one emits `ProtocolFeeWithdrawRecord`.
 ### AMM fee pool withdrawal
 
 `withdraw_from_perp_market_fee_pool(market_index, amount)` sends the AMM's
-retained equity from `amm.fee_pool` to the ATA of
-`State.protocol_fee_recipient_perp`. Only `cold_admin` can sign it. It lowers
+retained equity from `amm.fee_pool` to the ATA of a `recipient` wallet that
+the cold admin picks per call, created on demand. Only `cold_admin` can sign
+it. The program does not lock the recipient to a state field. This money is
+AMM capital, not protocol revenue, so it goes to the treasury and not to
+`State.protocol_fee_recipient_perp`, which points at the revenue router. The
+admin CLI refuses that address. It lowers
 `total_fee_minus_distributions` by the same amount and leaves
 `net_revenue_since_last_funding` alone, so the withdrawal is not a trading
 loss. The drawdown breaker divides that loss by
@@ -383,6 +387,7 @@ flowchart LR
     RP["SpotMarket.revenue_pool (IF staging only)"]:::pool
     IFV["IF vault (100% staker-owned backstop)"]:::liability
     WALLET["State.protocol_fee_recipient_perp / _spot"]:::revenue
+    TREASURY["Treasury wallet the cold admin picks per withdrawal"]:::pool
     STK["IF stakers"]:::passthru
 
     TK -->|"split by AMM%/IF%/protocol-residual at fill"| PEND
@@ -392,7 +397,7 @@ flowchart LR
     PNL -->|"2. IF (above buffer)"| RP
     PNL -->|"3. AMM carveout tokenized (above buffer)"| FP
     FP -->|"bankruptcy clawback (capped at carveout received)"| PNL
-    FP ==>|"withdraw_from_perp_market_fee_pool (cold admin, keeps tokenized carveout and LP pool debt)"| WALLET
+    FP ==>|"withdraw_from_perp_market_fee_pool (cold admin, keeps tokenized carveout and LP pool debt)"| TREASURY
     LIQ -->|"spot (direct)"| RP
     LIQ -->|"spot (direct)"| PFP
     LEND -->|if_fee_factor| RP

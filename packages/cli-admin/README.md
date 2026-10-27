@@ -80,7 +80,7 @@ velocity-admin perp-market set-spread-adjustment <markets> <spreadAdjustment> <i
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin perp-market deposit-fee-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); funds amm.fee_pool + total_fee_minus_distributions, raw quote base units
-velocity-admin perp-market withdraw-fee-pool <market> <amount> [--dry-run]  # cold admin; withdraws exactly <amount> raw quote base units from amm.fee_pool to the protocol fee recipient, or fails. --dry-run simulates as the signer
+velocity-admin perp-market withdraw-fee-pool <market> <amount> --recipient <pubkey> [--dry-run]  # cold admin; withdraws exactly <amount> raw quote base units from amm.fee_pool to the quote ATA of --recipient, or fails. --dry-run simulates as the signer
 velocity-admin perp-market deposit-pnl-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); transfers raw quote base units into the quote spot vault and credits perp_market.pnl_pool by the same amount in one ix. Prefer over `call updatePerpMarketPnlPool`, which credits without moving tokens
 velocity-admin perp-market sync-amm-summary-stats <market> [--net-unsettled-funding-pnl <amount>]  # AmmCrank hot key (or warm/cold); recompute total_fee_minus_distributions from live state
 velocity-admin spot-market set-status <market> <status>
@@ -191,8 +191,8 @@ separate operation: `recenterPerpMarketAmm` sets peg and sqrt_k in one instructi
 cold, and wants values re-derived at the live oracle price. Reserves never adjust themselves to new
 capital.
 
-**Withdraw from a fee pool**: `perp-market withdraw-fee-pool <market> <amount> -p <cold profile> --multisig <pda>`
-sends exactly `<amount>` from `amm.fee_pool` to the ATA of `state.protocol_fee_recipient_perp`
+**Withdraw from a fee pool**: `perp-market withdraw-fee-pool <market> <amount> --recipient <treasury> -p <cold profile> --multisig <pda>`
+sends exactly `<amount>` from `amm.fee_pool` to the quote ATA of `--recipient`, created on demand,
 and lowers `total_fee_minus_distributions` by the same amount. The program rejects the whole
 withdrawal if the market is not Active or ReduceOnly, has reached its expiry, has a pending
 bankruptcy claim, or has an oracle outside the low-risk freshness window or the price band. It

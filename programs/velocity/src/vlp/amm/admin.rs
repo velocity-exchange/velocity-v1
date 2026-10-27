@@ -623,8 +623,9 @@ pub fn handle_deposit_into_perp_market_fee_pool<'c: 'info, 'info>(
     Ok(())
 }
 
-/// Withdraws exactly `amount` from a live perp market's fee pool to the
-/// protocol fee recipient.
+/// Withdraws exactly `amount` from a live perp market's fee pool to the ATA of
+/// `recipient`, a wallet the cold admin picks per call. The funds are AMM capital, not
+/// protocol revenue, so the recipient should be the treasury, not `protocol_fee_recipient_perp`.
 ///
 /// Fails if the fee pool would drop below the tokenized bankruptcy provision, or if stored
 /// or recomputed AMM equity would reach zero. It does not check the remaining fee pool
@@ -1859,11 +1860,8 @@ pub struct WithdrawFromPerpMarketFeePool<'info> {
     pub mint: InterfaceAccount<'info, Mint>,
     /// CHECK: must be `perp_market.oracle` (enforced by `has_one` above)
     pub oracle: UncheckedAccount<'info>,
-    /// CHECK: locked to the cold-admin-set treasury and only used as the ATA wallet
-    #[account(
-        constraint = recipient.key() != Pubkey::default(),
-        address = state.load()?.protocol_fee_recipient_perp @ ErrorCode::InvalidProtocolFeeRecipient
-    )]
+    /// CHECK: any wallet the cold admin chooses, only used as the ATA authority
+    #[account(constraint = recipient.key() != Pubkey::default())]
     pub recipient: UncheckedAccount<'info>,
     #[account(
         init_if_needed,

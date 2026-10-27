@@ -2,7 +2,7 @@ import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { IdlCoder } from '@coral-xyz/anchor/dist/cjs/coder/borsh/idl';
 import { assert } from 'chai';
-import { Keypair } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import {
 	BANKRUPTCY_IF_FLOOR_DISABLED,
@@ -46,7 +46,9 @@ describe('perp fee pool withdraw', () => {
 	let usdcMint: Keypair;
 	let userUSDCAccount: Keypair;
 	let solUsd;
+	// The withdrawal pays a wallet the caller picks, never the protocol fee recipient.
 	const recipient = Keypair.generate();
+	const protocolFeeRecipient = Keypair.generate();
 	let recipientTokenAccount;
 
 	const MARKET_INDEX = 0;
@@ -141,7 +143,11 @@ describe('perp fee pool withdraw', () => {
 	};
 
 	const withdrawOne = () =>
-		velocityClient.withdrawFromPerpMarketFeePool(MARKET_INDEX, new BN(10 ** 6));
+		velocityClient.withdrawFromPerpMarketFeePool(
+			MARKET_INDEX,
+			new BN(10 ** 6),
+			recipient.publicKey
+		);
 
 	before(async () => {
 		const context = startLiteSVM();
@@ -215,7 +221,7 @@ describe('perp fee pool withdraw', () => {
 		);
 
 		await velocityClient.updateProtocolFeeRecipient(
-			recipient.publicKey,
+			protocolFeeRecipient.publicKey,
 			MarketType.PERP
 		);
 		recipientTokenAccount = getAssociatedTokenAddressSync(
@@ -253,11 +259,25 @@ describe('perp fee pool withdraw', () => {
 		const feePoolBefore = readFeePool();
 		const amount = new BN(40 * 10 ** 6);
 
-		await velocityClient.withdrawFromPerpMarketFeePool(MARKET_INDEX, amount);
+		await velocityClient.withdrawFromPerpMarketFeePool(
+			MARKET_INDEX,
+			amount,
+			recipient.publicKey
+		);
 		await velocityClient.fetchAccounts();
 
 		const after = velocityClient.getPerpMarketAccount(MARKET_INDEX);
 		assert((await readRecipient()).eq(amount), 'recipient balance');
+		const protocolFeeAta = getAssociatedTokenAddressSync(
+			usdcMint.publicKey,
+			protocolFeeRecipient.publicKey,
+			true
+		);
+		assert(
+			(await svmContextWrapper.connection.getAccountInfo(protocolFeeAta)) ===
+				null,
+			'the protocol fee recipient must not receive AMM capital'
+		);
 		// the scaled debit rounds up, so the floored pool can read one raw unit lower
 		const feePoolDrop = feePoolBefore.sub(readFeePool());
 		assert(
@@ -304,7 +324,8 @@ describe('perp fee pool withdraw', () => {
 			() =>
 				velocityClient.withdrawFromPerpMarketFeePool(
 					MARKET_INDEX,
-					readFeePool().addn(1)
+					readFeePool().addn(1),
+					recipient.publicKey
 				),
 			INSUFFICIENT_BALANCE
 		);
@@ -411,7 +432,8 @@ describe('perp fee pool withdraw', () => {
 			() =>
 				velocityClient.withdrawFromPerpMarketFeePool(
 					MARKET_INDEX,
-					readFeePool().sub(reserve).addn(1)
+					readFeePool().sub(reserve).addn(1),
+					recipient.publicKey
 				),
 			INSUFFICIENT_BALANCE
 		);
@@ -419,7 +441,8 @@ describe('perp fee pool withdraw', () => {
 		// one raw unit above it passes, even after the round-up takes its extra unit
 		await velocityClient.withdrawFromPerpMarketFeePool(
 			MARKET_INDEX,
-			readFeePool().sub(reserve).subn(1)
+			readFeePool().sub(reserve).subn(1),
+			recipient.publicKey
 		);
 		await velocityClient.fetchAccounts();
 		assert(
@@ -487,6 +510,7 @@ describe('perp fee pool withdraw', () => {
 		const ix = await velocityClient.getWithdrawFromPerpMarketFeePoolIx(
 			MARKET_INDEX,
 			new BN(1 * 10 ** 6),
+			recipient.publicKey,
 			outsider.publicKey,
 			velocityClient.wallet.publicKey
 		);
@@ -497,6 +521,19 @@ describe('perp fee pool withdraw', () => {
 		}, '0x7d3');
 	});
 
+	it('rejects the default pubkey as recipient', async () => {
+		// Anchor ConstraintRaw (2003), raised by the recipient constraint.
+		await expectRollback(
+			() =>
+				velocityClient.withdrawFromPerpMarketFeePool(
+					MARKET_INDEX,
+					new BN(1 * 10 ** 6),
+					PublicKey.default
+				),
+			'0x7d3'
+		);
+	});
+
 	it('allows ReduceOnly', async () => {
 		await velocityClient.updatePerpMarketStatus(
 			MARKET_INDEX,
@@ -504,7 +541,8 @@ describe('perp fee pool withdraw', () => {
 		);
 		await velocityClient.withdrawFromPerpMarketFeePool(
 			MARKET_INDEX,
-			new BN(1 * 10 ** 6)
+			new BN(1 * 10 ** 6),
+			recipient.publicKey
 		);
 		await velocityClient.updatePerpMarketStatus(
 			MARKET_INDEX,
@@ -519,7 +557,8 @@ describe('perp fee pool withdraw', () => {
 		// the expiry ix sets ReduceOnly, which is still an allowed status
 		await velocityClient.withdrawFromPerpMarketFeePool(
 			MARKET_INDEX,
-			new BN(1 * 10 ** 6)
+			new BN(1 * 10 ** 6),
+			recipient.publicKey
 		);
 
 		// move wall-clock time only, so the oracle slot stays fresh
@@ -528,7 +567,8 @@ describe('perp fee pool withdraw', () => {
 			() =>
 				velocityClient.withdrawFromPerpMarketFeePool(
 					MARKET_INDEX,
-					new BN(1 * 10 ** 6)
+					new BN(1 * 10 ** 6),
+					recipient.publicKey
 				),
 			NOT_ELIGIBLE
 		);

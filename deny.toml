@@ -79,6 +79,16 @@ ignore = [
 	# nothing here signs with secp256k1 offchain. No upgrade path:
 	# elliptic-curve 0.13 pins crypto-bigint 0.5, the fix is >=0.7.6.
 	"RUSTSEC-2026-0387",
+	# zstd 0.13.3 and zstd-safe 7.3.0: reached through solana-account-decoder and
+	# swift's own zstd dependency. Solana 4.2 and 4.3 pin zstd ^0.13, and the fixes
+	# are zstd >=0.14.3 and zstd-safe >=8.2.0. None of the three is reachable here.
+	# 0391 needs the `with_context` stream constructors, which nothing calls. 0398
+	# needs the `seekable` feature, which is off. 0403 needs `stream::write::Decoder`,
+	# and solana decodes with `stream::read::Decoder`, which the advisory excludes.
+	# Drop these once solana moves to zstd 0.14.
+	"RUSTSEC-2026-0391",
+	"RUSTSEC-2026-0398",
+	"RUSTSEC-2026-0403",
 	# Informational advisories. cargo-audit filters both out on its own
 	# (`severity_threshold = "high"` drops advisories with no CVSS score, and
 	# `informational_warnings = ["unmaintained"]` makes the bincode one a warning

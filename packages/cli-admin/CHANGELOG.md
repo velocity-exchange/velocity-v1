@@ -1,5 +1,21 @@
 # @velocity-exchange/admin-cli
 
+## 0.18.0
+
+### Minor Changes
+
+- [#568](https://github.com/velocity-exchange/velocity-v1/pull/568) [`bf7aae7`](https://github.com/velocity-exchange/velocity-v1/commit/bf7aae75fdaf56efe290b5f5f588c80bc52c1178) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `AdminClient.withdrawFromPerpMarketFeePool` and `getWithdrawFromPerpMarketFeePoolIx` for the
+  new cold-admin `withdraw_from_perp_market_fee_pool` instruction. It sends an exact amount from a
+  perp market's fee pool to the quote ATA of a recipient wallet the caller passes, and fails if the market,
+  oracle, bankruptcy reserve or AMM equity checks do not pass. Add the `PerpFeePoolWithdrawRecord`
+  event type. The admin CLI gains `perp-market withdraw-fee-pool <market> <amount> --recipient <pubkey>`, whose
+  `--dry-run` prints the pool and ledger values and simulates the instruction as the signer.
+
+### Patch Changes
+
+- Updated dependencies [[`bf7aae7`](https://github.com/velocity-exchange/velocity-v1/commit/bf7aae75fdaf56efe290b5f5f588c80bc52c1178)]:
+  - @velocity-exchange/sdk@0.28.0
+
 ## 0.17.1
 
 ### Patch Changes

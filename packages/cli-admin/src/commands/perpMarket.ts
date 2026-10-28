@@ -1,6 +1,15 @@
 import { Command } from 'commander';
-import { PublicKey } from '@solana/web3.js';
-import { BANKRUPTCY_IF_FLOOR_DISABLED } from '@velocity-exchange/sdk';
+import {
+	PublicKey,
+	TransactionMessage,
+	VersionedTransaction,
+} from '@solana/web3.js';
+import {
+	BANKRUPTCY_IF_FLOOR_DISABLED,
+	getTokenAmount,
+	SpotBalanceType,
+} from '@velocity-exchange/sdk';
+import pc from 'picocolors';
 import {
 	parseBnArg,
 	parseIntArg,
@@ -14,6 +23,7 @@ import {
 	resolveAdminAuthority,
 	sendOrPropose,
 } from '../lib/squads';
+import * as ui from '../lib/ui';
 import { deriveAssociatedTokenAccount } from '../lib/userOps';
 
 export function registerPerpMarket(parent: Command): void {
@@ -358,6 +368,154 @@ export function registerPerpMarket(parent: Command): void {
 			);
 			reportDispatch(
 				`perp-market[${marketIndex}] fee pool += ${amountValue.toString()} (from ${sourceVault.toBase58()})`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		pm
+			.command('withdraw-fee-pool <market> <amount>')
+			.description(
+				'Withdraw exactly <amount> (raw quote base units, QUOTE_PRECISION) from amm.fee_pool to the quote ATA of --recipient, and lower amm.total_fee_minus_distributions by the same amount. The program rejects the whole withdrawal unless the market is Active or ReduceOnly, is before its expiry, has no pending bankruptcy claim and has a usable oracle, and unless the fee pool keeps the tokenized AMM provision and the quote owed to the LP pool, both stored and recomputed AMM equity stay above zero and the drawdown breaker stays untripped. Those checks are accounting checks, not a risk sizing of what remains. Requires cold admin. --dry-run prints the market state and simulates the instruction as the signer, sending nothing.'
+			)
+			.requiredOption(
+				'--recipient <pubkey>',
+				'wallet whose quote ATA receives the funds, such as the treasury multisig vault. Not the protocol fee recipient, which receives protocol revenue'
+			)
+	).action(async (market: string, amount: string, _flags, cmd: Command) => {
+		const marketIndex = parseMarketIndex(market);
+		const amountValue = parseBnArg('amount', amount);
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { recipient: string };
+		const recipient = new PublicKey(local.recipient);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const admin = resolveAdminAuthority(provider, multisigPda);
+			const perpMarket = client.getPerpMarketAccount(marketIndex);
+			if (!perpMarket) {
+				throw new Error(`perp market ${marketIndex} not found`);
+			}
+			const quoteSpot = client.getSpotMarketAccount(
+				perpMarket.quoteSpotMarketIndex
+			);
+			if (!quoteSpot) {
+				throw new Error(
+					`quote spot market ${perpMarket.quoteSpotMarketIndex} not found`
+				);
+			}
+
+			// Raw values only. The program computes the reserve and the equity, and the
+			// simulation below prints what it computed.
+			ui.header(
+				`perp-market[${marketIndex}] fee pool`,
+				pc.dim('current state')
+			);
+			ui.kv('status', Object.keys(perpMarket.status)[0] ?? 'unknown');
+			ui.kv('expiry_ts', perpMarket.expiryTs.toString());
+			ui.kv(
+				'fee_pool',
+				getTokenAmount(
+					perpMarket.amm.feePool.scaledBalance,
+					quoteSpot,
+					SpotBalanceType.DEPOSIT
+				).toString()
+			);
+			ui.kv(
+				'pnl_pool',
+				getTokenAmount(
+					perpMarket.pnlPool.scaledBalance,
+					quoteSpot,
+					SpotBalanceType.DEPOSIT
+				).toString()
+			);
+			ui.kv(
+				'total_fee_minus_distributions',
+				perpMarket.amm.totalFeeMinusDistributions.toString()
+			);
+			ui.kv(
+				'amm_protocol_fees_received',
+				perpMarket.feeLedger.ammProtocolFeesReceived.toString()
+			);
+			ui.kv(
+				'pending_amm_provision',
+				perpMarket.feeLedger.pendingAmmProvision.toString()
+			);
+			ui.kv(
+				'pending_bankruptcy_claims',
+				String(perpMarket.pendingBankruptcyClaims)
+			);
+			ui.kv('withdraw', amountValue.toString());
+			ui.kv('signer', admin.toBase58());
+			ui.kv('recipient', recipient.toBase58());
+			ui.kv(
+				'recipient ata',
+				deriveAssociatedTokenAccount(
+					quoteSpot.mint,
+					recipient,
+					(client as any).getTokenProgramForSpotMarket(quoteSpot)
+				).toBase58()
+			);
+			if (recipient.equals(client.getStateAccount().protocolFeeRecipientPerp)) {
+				throw new Error(
+					'--recipient is the protocol fee recipient, which receives protocol revenue; pass the treasury wallet'
+				);
+			}
+
+			const ix = await client.getWithdrawFromPerpMarketFeePoolIx(
+				marketIndex,
+				amountValue,
+				recipient,
+				admin
+			);
+
+			if (opts.dryRun) {
+				// Simulate as the signer that will execute, the vault under --multisig. The
+				// wallet only pays the simulated fee, and sigVerify is off, so nothing needs a
+				// signature and nothing lands onchain.
+				const { blockhash } = await provider.connection.getLatestBlockhash();
+				const sim = await provider.connection.simulateTransaction(
+					new VersionedTransaction(
+						new TransactionMessage({
+							payerKey: provider.wallet.publicKey,
+							recentBlockhash: blockhash,
+							instructions: [ix],
+						}).compileToV0Message()
+					),
+					{ sigVerify: false, replaceRecentBlockhash: true }
+				);
+				ui.header('simulation', pc.dim(`as ${admin.toBase58()}, nothing sent`));
+				for (const log of sim.value.logs ?? []) {
+					ui.line(ui.safe(log));
+				}
+				ui.kv(
+					'result',
+					sim.value.err
+						? ui.bad(ui.safe(JSON.stringify(sim.value.err)))
+						: ui.ok('would succeed')
+				);
+				if (sim.value.err) {
+					throw new Error(
+						`Withdrawal simulation failed: ${JSON.stringify(sim.value.err)}`
+					);
+				}
+				return;
+			}
+
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				multisigPda,
+				'velocity-admin perp-market withdraw-fee-pool'
+			);
+			reportDispatch(
+				`perp-market[${marketIndex}] fee pool -= ${amountValue.toString()}`,
 				result
 			);
 		} finally {

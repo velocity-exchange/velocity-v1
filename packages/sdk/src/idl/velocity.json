@@ -14132,6 +14132,246 @@
       ]
     },
     {
+      "name": "withdraw_from_perp_market_fee_pool",
+      "discriminator": [
+        141,
+        51,
+        59,
+        51,
+        169,
+        240,
+        46,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "perp_market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quote_spot_market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perp_market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perp_market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "spot_market_vault"
+          ]
+        },
+        {
+          "name": "oracle",
+          "relations": [
+            "perp_market"
+          ]
+        },
+        {
+          "name": "recipient"
+        },
+        {
+          "name": "recipient_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "recipient"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "amm_cache",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  109,
+                  109,
+                  95,
+                  99,
+                  97,
+                  99,
+                  104,
+                  101,
+                  95,
+                  115,
+                  101,
+                  101,
+                  100
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "withdraw_from_program_vault",
       "discriminator": [
         120,
@@ -15066,6 +15306,19 @@
         21,
         2,
         90
+      ]
+    },
+    {
+      "name": "PerpFeePoolWithdrawRecord",
+      "discriminator": [
+        154,
+        27,
+        73,
+        173,
+        225,
+        243,
+        234,
+        153
       ]
     },
     {
@@ -17074,6 +17327,16 @@
       "code": 6374,
       "name": "VammQuoteManagementValueOutOfBounds",
       "msg": "vAMM quote management value is outside the hot role bounds"
+    },
+    {
+      "code": 6375,
+      "name": "FeePoolWithdrawMarketNotEligible",
+      "msg": "Perp market status, expiry or pending bankruptcy claims block a fee pool withdrawal"
+    },
+    {
+      "code": 6376,
+      "name": "FeePoolWithdrawInsufficientBalance",
+      "msg": "Fee pool withdrawal would breach the fee pool balance, bankruptcy reserve, AMM equity or drawdown limit"
     }
   ],
   "types": [
@@ -21879,6 +22142,69 @@
           {
             "name": "cumulative_funding_rate_delta",
             "type": "i128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PerpFeePoolWithdrawRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "perp_market_index",
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "docs": [
+              "quote token amount sent to the protocol fee recipient"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fee_pool_before",
+            "docs": [
+              "amm.fee_pool token amount before and after the debit"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "fee_pool_after",
+            "type": "u128"
+          },
+          {
+            "name": "protected_reserve",
+            "docs": [
+              "fee pool tokens kept for the bankruptcy clawback and the LP pool settle"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "total_fee_minus_distributions_after",
+            "type": "i128"
+          },
+          {
+            "name": "amm_equity_after",
+            "docs": [
+              "AMM equity recomputed from the pools at the oracle price after the debit"
+            ],
+            "type": "i128"
+          },
+          {
+            "name": "oracle_price",
+            "type": "i64"
+          },
+          {
+            "name": "recipient_token_account",
+            "type": "pubkey"
           }
         ]
       }

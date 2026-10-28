@@ -2435,6 +2435,26 @@ export type ProtocolFeeWithdrawRecord = {
 	recipientTokenAccount: PublicKey;
 };
 
+/** Emitted when `coldAdmin` withdraws from a perp market's fee pool to the protocol fee recipient. */
+export type PerpFeePoolWithdrawRecord = {
+	ts: BN;
+	perpMarketIndex: number;
+	/** quote token sent to the recipient, QUOTE_PRECISION (1e6) */
+	amount: BN;
+	/** `AMM.feePool` token amount before and after the debit, QUOTE_PRECISION (1e6) */
+	feePoolBefore: BN;
+	feePoolAfter: BN;
+	/** fee pool tokens the bankruptcy clawback can still claim, kept in the pool, QUOTE_PRECISION (1e6) */
+	protectedReserve: BN;
+	/** QUOTE_PRECISION (1e6) */
+	totalFeeMinusDistributionsAfter: BN;
+	/** AMM equity recomputed from the pools at the oracle price after the debit, QUOTE_PRECISION (1e6) */
+	ammEquityAfter: BN;
+	/** PRICE_PRECISION (1e6) */
+	oraclePrice: BN;
+	recipientTokenAccount: PublicKey;
+};
+
 /** Emitted when a builder's/referrer's accrued `RevenueShareOrder` fees are settled into their `RevenueShareAccount`. */
 export type RevenueShareSettleRecord = {
 	ts: BN;

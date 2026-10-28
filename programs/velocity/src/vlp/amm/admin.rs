@@ -9,8 +9,11 @@
 
 use {
     crate::{
-        auth::{check_hot, check_warm},
-        controller::{self, spot_balance::execute_transfer_between_pools},
+        auth::{check_cold, check_hot, check_warm},
+        controller::{
+            self, orders::validate_market_within_price_band,
+            spot_balance::execute_transfer_between_pools,
+        },
         error::ErrorCode,
         instructions::{
             optional_accounts::{get_token_mint, load_maps, AccountMaps},
@@ -24,26 +27,39 @@ use {
                 AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO, MAX_SQRT_K, MAX_UPDATE_K_PRICE_CHANGE,
             },
             helpers::get_proportion_u128,
+            oracle::{is_oracle_valid_for_action, VelocityAction},
             safe_math::SafeMath,
+            spot_withdraw::validate_spot_market_vault_amount,
         },
         msg,
         state::{
-            events::{TransferFeeAndPnlPoolDirection, TransferFeeAndPnlPoolRecord},
+            events::{
+                PerpFeePoolWithdrawRecord, TransferFeeAndPnlPoolDirection,
+                TransferFeeAndPnlPoolRecord,
+            },
             oracle::{get_oracle_price, OraclePriceData},
+            oracle_map::OracleMap,
             perp_market::{PerpMarket, PoolBalance},
             perp_market_map::MarketSet,
             spot_market::{SpotBalanceType, SpotMarket},
             state::{HotRole, State},
+            user::MarketType,
         },
         validate,
         validation::perp_market::validate_perp_market,
         vlp::{
-            amm::math::{amm, cp_curve::get_update_k_result},
+            amm::{
+                controller::withdraw_from_fee_pool,
+                math::{amm, cp_curve::get_update_k_result},
+            },
             amm_cache::{AmmCache, CacheInfo, AMM_POSITIONS_CACHE},
         },
     },
     anchor_lang::{prelude::*, Discriminator},
-    anchor_spl::token_interface::{TokenAccount, TokenInterface},
+    anchor_spl::{
+        associated_token::AssociatedToken,
+        token_interface::{Mint, TokenAccount, TokenInterface},
+    },
     std::fmt::Display,
 };
 
@@ -603,6 +619,128 @@ pub fn handle_deposit_into_perp_market_fee_pool<'c: 'info, 'info>(
             None
         },
     )?;
+
+    Ok(())
+}
+
+/// Withdraws exactly `amount` from a live perp market's fee pool to the ATA of
+/// `recipient`, a wallet the cold admin picks per call. The funds are AMM capital, not
+/// protocol revenue, so the recipient should be the treasury, not `protocol_fee_recipient_perp`.
+///
+/// Fails if the fee pool would drop below the tokenized bankruptcy provision, or if stored
+/// or recomputed AMM equity would reach zero. It does not check the remaining fee pool
+/// against open interest.
+///
+/// It skips the exchange and market pause flags and the spot market withdraw limits on
+/// purpose, so the cold admin can still withdraw while trading or withdrawals are paused.
+#[access_control(
+    perp_market_valid(&ctx.accounts.perp_market)
+)]
+pub fn handle_withdraw_from_perp_market_fee_pool<'c: 'info, 'info>(
+    ctx: Context<'info, WithdrawFromPerpMarketFeePool<'info>>,
+    _market_index: u16,
+    amount: u64,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
+    let state = ctx.accounts.state.load()?;
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    let spot_market = &mut load_mut!(ctx.accounts.quote_spot_market)?;
+
+    let mut oracle_map = OracleMap::load_one(
+        &ctx.accounts.oracle,
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+    let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Perp,
+        perp_market.market_index,
+        &perp_market.oracle_id(),
+        perp_market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap,
+        perp_market.get_max_confidence_interval_multiplier()?,
+        0,
+        0,
+        None,
+    )?;
+    let oracle_price = oracle_price_data.price;
+
+    validate!(
+        is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::WithdrawFeePool))?,
+        ErrorCode::InvalidOracle,
+        "oracle validity {:?} blocks a fee pool withdrawal",
+        oracle_validity
+    )?;
+    validate_market_within_price_band(perp_market, &state, oracle_price)?;
+    validate!(
+        perp_market.is_price_divergence_ok_for_settle_pnl(oracle_price)?,
+        ErrorCode::InvalidOracle,
+        "oracle price {} diverges too far from the 5 minute twap",
+        oracle_price
+    )?;
+
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        now,
+        state.funding_paused()?,
+    )?;
+
+    let owed_to_lp_pool = ctx
+        .accounts
+        .amm_cache
+        .owed_to_lp_pool(perp_market.market_index);
+    let withdrawal = withdraw_from_fee_pool(
+        perp_market,
+        spot_market,
+        amount,
+        owed_to_lp_pool,
+        oracle_price,
+        now,
+    )?;
+    ctx.accounts.amm_cache.record_fee_pool_withdrawal(
+        perp_market.market_index,
+        withdrawal
+            .fee_pool_before
+            .safe_sub(withdrawal.fee_pool_after)?,
+    )?;
+
+    let mint = Some(ctx.accounts.mint.clone());
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    controller::token::send_from_program_vault(
+        &ctx.accounts.token_program,
+        &ctx.accounts.spot_market_vault,
+        &ctx.accounts.recipient_token_account,
+        &ctx.accounts.velocity_signer,
+        state.signer_nonce,
+        amount,
+        &mint,
+        if spot_market.has_transfer_hook() {
+            Some(remaining_accounts_iter)
+        } else {
+            None
+        },
+    )?;
+
+    ctx.accounts.spot_market_vault.reload()?;
+    validate_spot_market_vault_amount(spot_market, ctx.accounts.spot_market_vault.amount)?;
+    validate_perp_market(perp_market)?;
+
+    emit!(PerpFeePoolWithdrawRecord {
+        ts: now,
+        perp_market_index: perp_market.market_index,
+        amount,
+        fee_pool_before: withdrawal.fee_pool_before,
+        fee_pool_after: withdrawal.fee_pool_after,
+        protected_reserve: withdrawal.protected_reserve,
+        total_fee_minus_distributions_after: withdrawal.total_fee_minus_distributions_after,
+        amm_equity_after: withdrawal.amm_equity_after,
+        oracle_price,
+        recipient_token_account: ctx.accounts.recipient_token_account.key(),
+    });
 
     Ok(())
 }
@@ -1689,6 +1827,62 @@ pub struct DepositIntoMarketFeePool<'info> {
     )]
     pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+#[instruction(market_index: u16)]
+pub struct WithdrawFromPerpMarketFeePool<'info> {
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(constraint = check_cold(&admin.key(), &state)?)]
+    pub admin: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"perp_market", market_index.to_le_bytes().as_ref()],
+        bump,
+        has_one = oracle @ ErrorCode::InvalidOracle,
+    )]
+    pub perp_market: AccountLoader<'info, PerpMarket>,
+    #[account(
+        mut,
+        seeds = [b"spot_market", perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub quote_spot_market: AccountLoader<'info, SpotMarket>,
+    #[account(
+        mut,
+        seeds = [b"spot_market_vault".as_ref(), perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
+        has_one = mint,
+        bump,
+    )]
+    pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    /// CHECK: must be `perp_market.oracle` (enforced by `has_one` above)
+    pub oracle: UncheckedAccount<'info>,
+    /// CHECK: any wallet the cold admin chooses, only used as the ATA authority
+    #[account(constraint = recipient.key() != Pubkey::default())]
+    pub recipient: UncheckedAccount<'info>,
+    #[account(
+        init_if_needed,
+        payer = payer,
+        associated_token::mint = mint,
+        associated_token::authority = recipient,
+        associated_token::token_program = token_program,
+    )]
+    pub recipient_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    #[account(address = state.load()?.signer)]
+    /// CHECK: forced velocity_signer
+    pub velocity_signer: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    #[account(
+        mut,
+        seeds = [AMM_POSITIONS_CACHE.as_bytes()],
+        bump = amm_cache.bump,
+    )]
+    pub amm_cache: Box<Account<'info, AmmCache>>,
 }
 
 #[derive(Accounts)]

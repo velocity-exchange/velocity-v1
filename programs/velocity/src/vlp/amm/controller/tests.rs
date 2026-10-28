@@ -1940,3 +1940,559 @@ pub fn perp_market_transfer_fee_and_pnl_pool() {
         );
     }
 }
+
+mod withdraw_from_fee_pool {
+    use crate::{
+        error::ErrorCode,
+        math::{
+            constants::{
+                PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128,
+                QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+                SPOT_CUMULATIVE_INTEREST_PRECISION,
+            },
+            spot_balance::get_token_amount,
+        },
+        state::{
+            market_status::MarketStatus,
+            perp_market::{ContractTier, PerpMarket, PoolBalance},
+            spot_market::{SpotBalanceType, SpotMarket},
+        },
+        vlp::{amm::controller::withdraw_from_fee_pool, amm_cache::CacheInfo},
+    };
+
+    const NOW: i64 = 1_000_000;
+    const ORACLE_PRICE: i64 = PRICE_PRECISION_I64;
+
+    /// A market with no positions, so net_user_pnl is `quote_asset_amount` and the recomputed
+    /// equity is the fee pool plus the pnl pool minus that.
+    fn setup(fee_pool: u128, tfmd: i128) -> (PerpMarket, SpotMarket) {
+        let mut market = PerpMarket {
+            status: MarketStatus::Active,
+            pnl_pool: PoolBalance {
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            ..PerpMarket::default()
+        };
+        market.amm.fee_pool = PoolBalance {
+            scaled_balance: fee_pool * SPOT_BALANCE_PRECISION,
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            ..PoolBalance::default()
+        };
+        market.amm.total_fee_minus_distributions = tfmd;
+
+        let spot_market = SpotMarket {
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            deposit_balance: 10_000 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            ..SpotMarket::default()
+        };
+        (market, spot_market)
+    }
+
+    fn fee_pool_tokens(market: &PerpMarket, spot_market: &SpotMarket) -> u128 {
+        get_token_amount(
+            market.amm.fee_pool.scaled_balance,
+            spot_market,
+            &SpotBalanceType::Deposit,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn debits_fee_pool_and_tfmd_only() {
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        market.amm.net_revenue_since_last_funding = 7;
+        let deposits_before = spot_market.deposit_balance;
+
+        let result = withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            40 * QUOTE_PRECISION as u64,
+            0,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+
+        assert_eq!(result.fee_pool_before, 100 * QUOTE_PRECISION);
+        // the scaled debit rounds up by one unit, so the floored pool reads one raw unit low
+        assert_eq!(result.fee_pool_after, 60 * QUOTE_PRECISION - 1);
+        assert_eq!(result.protected_reserve, 0);
+        assert_eq!(
+            result.total_fee_minus_distributions_after,
+            60 * QUOTE_PRECISION_I128
+        );
+        assert_eq!(result.amm_equity_after, 60 * QUOTE_PRECISION_I128 - 1);
+        assert_eq!(
+            fee_pool_tokens(&market, &spot_market),
+            60 * QUOTE_PRECISION - 1
+        );
+        // the breaker's window counter must not see the withdrawal as a trading loss
+        assert_eq!(market.amm.net_revenue_since_last_funding, 7);
+        assert_eq!(
+            spot_market.deposit_balance,
+            deposits_before - 40 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION - 1
+        );
+        assert_eq!(market.pnl_pool.scaled_balance, 0);
+    }
+
+    #[test]
+    fn repeated_withdrawals_accumulate() {
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        for _ in 0..3 {
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                20 * QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            fee_pool_tokens(&market, &spot_market),
+            40 * QUOTE_PRECISION - 1
+        );
+        assert_eq!(
+            market.amm.total_fee_minus_distributions,
+            40 * QUOTE_PRECISION_I128
+        );
+    }
+
+    #[test]
+    fn rejects_zero_and_more_than_the_fee_pool() {
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 500 * QUOTE_PRECISION_I128);
+        assert_eq!(
+            withdraw_from_fee_pool(&mut market, &mut spot_market, 0, 0, ORACLE_PRICE, NOW),
+            Err(ErrorCode::DefaultError)
+        );
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                100 * QUOTE_PRECISION as u64 + 1,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+    }
+
+    #[test]
+    fn equity_must_stay_strictly_positive() {
+        // the whole pool would leave tfmd and equity at zero
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                100 * QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+
+        // one raw unit short of the pool still fails, because the round-up leaves the pool at 0
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                100 * QUOTE_PRECISION as u64 - 1,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+
+        // two short leaves one raw unit of pool and equity, which passes
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        let result = withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            100 * QUOTE_PRECISION as u64 - 2,
+            0,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(result.fee_pool_after, 1);
+        assert_eq!(result.total_fee_minus_distributions_after, 2);
+        assert_eq!(result.amm_equity_after, 1);
+    }
+
+    #[test]
+    fn stored_tfmd_below_recomputed_equity_binds() {
+        // pools say equity is 100, but the stored ledger only has 30
+        let (mut market, mut spot_market) = setup(100 * QUOTE_PRECISION, 30 * QUOTE_PRECISION_I128);
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                30 * QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+        let (mut market, mut spot_market) = setup(100 * QUOTE_PRECISION, 30 * QUOTE_PRECISION_I128);
+        withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            29 * QUOTE_PRECISION as u64,
+            0,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn user_claims_and_liabilities_reduce_recomputed_equity() {
+        // users are owed 50 and 5 of revenue share is pending, so equity is 100 - 50 - 5 = 45
+        // while the stored ledger still says 100
+        let setup_owed = || {
+            let (mut market, spot_market) =
+                setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+            market.quote_asset_amount = 50 * QUOTE_PRECISION_I128;
+            market
+                .accrue_pending_revenue_share(5 * QUOTE_PRECISION as u64)
+                .unwrap();
+            (market, spot_market)
+        };
+
+        let (mut market, mut spot_market) = setup_owed();
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                45 * QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+
+        let (mut market, mut spot_market) = setup_owed();
+        let result = withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            44 * QUOTE_PRECISION as u64,
+            0,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(result.amm_equity_after, QUOTE_PRECISION_I128 - 1);
+    }
+
+    #[test]
+    fn negative_net_user_pnl_raises_equity_but_not_the_stored_bound() {
+        // users owe the market 50 in unsettled losses: recomputed equity is 150, but the stored
+        // tfmd of 100 still caps the withdrawal
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        market.quote_asset_amount = -50 * QUOTE_PRECISION_I128;
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                100 * QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+    }
+
+    #[test]
+    fn keeps_tokenized_bankruptcy_provision() {
+        // 30 of provision booked, 10 of it still pending in the pnl pool, so 20 is tokenized
+        // in the fee pool and must stay
+        let setup_provision = || {
+            let (mut market, spot_market) =
+                setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+            market.fee_ledger.amm_protocol_fees_received = 30 * QUOTE_PRECISION;
+            market.fee_ledger.pending_amm_provision = 10 * QUOTE_PRECISION;
+            (market, spot_market)
+        };
+
+        let (mut market, mut spot_market) = setup_provision();
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                80 * QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+
+        let (mut market, mut spot_market) = setup_provision();
+        let result = withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            80 * QUOTE_PRECISION as u64 - 1,
+            0,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(result.protected_reserve, 20 * QUOTE_PRECISION);
+        assert_eq!(result.fee_pool_after, 20 * QUOTE_PRECISION);
+    }
+
+    #[test]
+    fn fully_pending_provision_protects_nothing() {
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        market.fee_ledger.amm_protocol_fees_received = 30 * QUOTE_PRECISION;
+        market.fee_ledger.pending_amm_provision = 30 * QUOTE_PRECISION;
+        let result = withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            90 * QUOTE_PRECISION as u64,
+            0,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(result.protected_reserve, 0);
+    }
+
+    #[test]
+    fn underfunded_backstop_blocks_any_withdrawal() {
+        // the tokenized provision is larger than the fee pool, so the whole pool is protected
+        let (mut market, mut spot_market) = setup(15 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        market.fee_ledger.amm_protocol_fees_received = 30 * QUOTE_PRECISION;
+        market.fee_ledger.pending_amm_provision = 10 * QUOTE_PRECISION;
+        assert_eq!(
+            withdraw_from_fee_pool(&mut market, &mut spot_market, 1, 0, ORACLE_PRICE, NOW),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+    }
+
+    #[test]
+    fn rejects_inconsistent_provision_counters() {
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        market.fee_ledger.amm_protocol_fees_received = 20 * QUOTE_PRECISION;
+        market.fee_ledger.pending_amm_provision = 30 * QUOTE_PRECISION;
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::MathError)
+        );
+    }
+
+    #[test]
+    fn market_lifecycle_gates() {
+        let amount = QUOTE_PRECISION as u64;
+        for (status, allowed) in [
+            (MarketStatus::Initialized, false),
+            (MarketStatus::Active, true),
+            (MarketStatus::ReduceOnly, true),
+            (MarketStatus::Settlement, false),
+            (MarketStatus::Delisted, false),
+        ] {
+            let (mut market, mut spot_market) =
+                setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+            market.status = status;
+            let result =
+                withdraw_from_fee_pool(&mut market, &mut spot_market, amount, 0, ORACLE_PRICE, NOW);
+            if allowed {
+                assert!(result.is_ok(), "{:?}", status);
+            } else {
+                assert_eq!(
+                    result,
+                    Err(ErrorCode::FeePoolWithdrawMarketNotEligible),
+                    "{:?}",
+                    status
+                );
+            }
+        }
+
+        // a scheduled expiry in the future is fine, a reached one is not, even before the
+        // settle instruction flips the status
+        for (expiry_ts, allowed) in [(NOW + 1, true), (NOW, false), (NOW - 1, false)] {
+            let (mut market, mut spot_market) =
+                setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+            market.status = MarketStatus::ReduceOnly;
+            market.expiry_ts = expiry_ts;
+            let result =
+                withdraw_from_fee_pool(&mut market, &mut spot_market, amount, 0, ORACLE_PRICE, NOW);
+            assert_eq!(result.is_ok(), allowed, "expiry_ts {}", expiry_ts);
+        }
+    }
+
+    #[test]
+    fn pending_bankruptcy_claim_blocks() {
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        market.increment_pending_bankruptcy_claims();
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW
+            ),
+            Err(ErrorCode::FeePoolWithdrawMarketNotEligible)
+        );
+        market.decrement_pending_bankruptcy_claims();
+        withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            QUOTE_PRECISION as u64,
+            0,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn reserve_check_uses_the_rounded_post_debit_balance() {
+        // `before - amount` equals the reserve exactly, so a check on the subtraction would
+        // pass. The round-up leaves the real pool one raw unit below the reserve.
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        market.fee_ledger.amm_protocol_fees_received = 20 * QUOTE_PRECISION;
+        let amount = 80 * QUOTE_PRECISION as u64;
+        assert_eq!(
+            fee_pool_tokens(&market, &spot_market) - amount as u128,
+            20 * QUOTE_PRECISION
+        );
+        assert_eq!(
+            withdraw_from_fee_pool(&mut market, &mut spot_market, amount, 0, ORACLE_PRICE, NOW),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+    }
+
+    #[test]
+    fn rejects_a_withdrawal_that_trips_the_drawdown_breaker() {
+        let setup_in_drawdown = || {
+            let (mut market, mut spot_market) = setup(
+                1_000_000 * QUOTE_PRECISION,
+                1_000_000 * QUOTE_PRECISION_I128,
+            );
+            spot_market.deposit_balance = 10_000_000 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION;
+            market.contract_tier = ContractTier::A;
+            market.amm.net_revenue_since_last_funding = -15_000 * QUOTE_PRECISION as i64;
+            assert!(!market.has_too_much_drawdown().unwrap());
+            (market, spot_market)
+        };
+
+        // -15k against 600k is -2.5%, past the 2% tier A limit.
+        let (mut market, mut spot_market) = setup_in_drawdown();
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                400_000 * QUOTE_PRECISION as u64,
+                0,
+                ORACLE_PRICE,
+                NOW,
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+
+        let (mut market, mut spot_market) = setup_in_drawdown();
+        withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            200_000 * QUOTE_PRECISION as u64,
+            0,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn amm_cache_snapshot_drops_by_the_withdrawal() {
+        let mut cache_info = CacheInfo {
+            last_fee_pool_token_amount: 50,
+            last_net_pnl_pool_token_amount: 30,
+            ..CacheInfo::default()
+        };
+
+        cache_info.record_fee_pool_withdrawal(40).unwrap();
+        assert_eq!(cache_info.last_fee_pool_token_amount, 10);
+        assert_eq!(cache_info.last_net_pnl_pool_token_amount, 30);
+
+        // The fee pool grew after the snapshot, so the withdrawal exceeds the fee pool part.
+        cache_info.record_fee_pool_withdrawal(25).unwrap();
+        assert_eq!(cache_info.last_fee_pool_token_amount, 0);
+        assert_eq!(cache_info.last_net_pnl_pool_token_amount, 15);
+        assert_eq!(
+            cache_info.get_last_available_amm_token_amount().unwrap(),
+            15
+        );
+    }
+
+    #[test]
+    fn amm_cache_without_a_snapshot_is_unchanged() {
+        let mut cache_info = CacheInfo::default();
+        cache_info.record_fee_pool_withdrawal(40).unwrap();
+        assert_eq!(cache_info.last_fee_pool_token_amount, 0);
+        assert_eq!(cache_info.last_net_pnl_pool_token_amount, 0);
+    }
+
+    #[test]
+    fn keeps_what_the_market_owes_the_lp_pool() {
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        let owed_to_lp_pool = 30 * QUOTE_PRECISION;
+        assert_eq!(
+            withdraw_from_fee_pool(
+                &mut market,
+                &mut spot_market,
+                71 * QUOTE_PRECISION as u64,
+                owed_to_lp_pool,
+                ORACLE_PRICE,
+                NOW,
+            ),
+            Err(ErrorCode::FeePoolWithdrawInsufficientBalance)
+        );
+
+        let (mut market, mut spot_market) =
+            setup(100 * QUOTE_PRECISION, 100 * QUOTE_PRECISION_I128);
+        let result = withdraw_from_fee_pool(
+            &mut market,
+            &mut spot_market,
+            69 * QUOTE_PRECISION as u64,
+            owed_to_lp_pool,
+            ORACLE_PRICE,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(result.protected_reserve, owed_to_lp_pool);
+    }
+}

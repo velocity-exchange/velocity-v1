@@ -62,6 +62,11 @@ pub trait AmmContract {
     /// the spot-market layer; this records the AMM-side bookkeeping.
     fn record_credit(&mut self, amount: u64) -> VelocityResult<()>;
 
+    /// Debit the AMM's books for a fee pool withdrawal to treasury. It lowers
+    /// `total_fee_minus_distributions` only, so the withdrawal is not a trading loss. The
+    /// drawdown breaker divides by that total, so the breaker trips at a smaller loss after it.
+    fn record_fee_pool_withdrawal(&mut self, amount: u64) -> VelocityResult<()>;
+
     /// Apply a forced position change to the AMM's net counterparty
     /// position. Used when expired user positions are settled and the AMM
     /// becomes counterparty to the remaining size.
@@ -127,6 +132,13 @@ impl AmmContract for AMM {
         self.total_fee_minus_distributions = self
             .total_fee_minus_distributions
             .safe_add(amount.cast::<i128>()?)?;
+        Ok(())
+    }
+
+    fn record_fee_pool_withdrawal(&mut self, amount: u64) -> VelocityResult<()> {
+        self.total_fee_minus_distributions = self
+            .total_fee_minus_distributions
+            .safe_sub(amount.cast::<i128>()?)?;
         Ok(())
     }
 

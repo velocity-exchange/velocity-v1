@@ -127,6 +127,7 @@ velocity-admin user close-positions [--sub-accounts <csv>]       # signer = acco
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>
 velocity-admin user deposit <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
 velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
+velocity-admin user withdraw-batch <market>:<amount|max>... [--vault-index <i>] [--sub-account <id>] [--dry-run]  # needs --multisig; one Squads batch, one reduce-only withdrawal per market
 
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 

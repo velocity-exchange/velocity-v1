@@ -12,6 +12,22 @@ import {
 function fmtQuote(value: BN): string {
 	return (Number(value.toString()) / 1e6).toFixed(2);
 }
+
+const U64_MAX = new BN('18446744073709551615');
+
+/** Parses `<market>:<amount>`; amount `max` returns no amount, meaning the whole deposit. */
+function parseWithdrawal(arg: string): { marketIndex: number; amount?: BN } {
+	const match = /^(\d+):(\d+|max)$/.exec(arg.trim());
+	if (!match) {
+		throw new Error(
+			`withdrawal "${arg}" must be <market>:<raw amount> or <market>:max`
+		);
+	}
+	return {
+		marketIndex: Number.parseInt(match[1], 10),
+		amount: match[2] === 'max' ? undefined : new BN(match[2]),
+	};
+}
 import {
 	parseBoolean,
 	readGlobalOpts,
@@ -19,10 +35,12 @@ import {
 } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import {
+	InstructionGroup,
 	reportDispatch,
 	reportDryRun,
 	resolveAdminAuthority,
 	sendOrPropose,
+	sendOrProposeBatch,
 } from '../lib/squads';
 import { deriveAssociatedTokenAccount, resolveAuthority } from '../lib/userOps';
 
@@ -527,6 +545,105 @@ export function registerUser(parent: Command): void {
 				vaultIndex
 			);
 			reportDispatch(label, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		user
+			.command('withdraw-batch <withdrawals...>')
+			.description(
+				'Withdraw from several spot markets as a multisig vault in ONE Squads batch proposal ' +
+					'(one approval round, one timelock). Each <withdrawal> is <market>:<amount>, where amount ' +
+					'is raw token units or "max" for the whole deposit including accrued interest. Every ' +
+					'withdrawal is reduce-only, so it can never open a borrow. Each market becomes its own ' +
+					'inner transaction, executed in the order given and not atomic with the others. The ' +
+					"destination is the vault's ATA for each mint, which must already exist. Requires --multisig."
+			)
+			.option(
+				'--vault-index <index>',
+				'vault index whose PDA is the user authority',
+				'0'
+			)
+			.option('--sub-account <id>', 'user sub-account id', '0')
+	).action(async (withdrawals: string[], _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { vaultIndex: string; subAccount: string };
+		if (!opts.multisig) {
+			throw new Error(
+				'withdraw-batch builds a Squads batch, so it needs --multisig (or a profile that sets one). ' +
+					'For a single market without a multisig use `user withdraw`.'
+			);
+		}
+		const vaultIndex = Number.parseInt(local.vaultIndex, 10);
+		const subAccountId = Number.parseInt(local.subAccount, 10);
+		const parsed = withdrawals.map(parseWithdrawal);
+		const markets = parsed.map((w) => w.marketIndex);
+		if (new Set(markets).size !== markets.length) {
+			throw new Error(`each market may appear once, got ${markets.join(', ')}`);
+		}
+		const authority = resolveAuthority(opts, undefined, vaultIndex);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts, true, {
+			authority,
+			subAccountId,
+		});
+		try {
+			const groups: InstructionGroup[] = [];
+			const tokenAccounts: PublicKey[] = [];
+			for (const { marketIndex, amount } of parsed) {
+				const spotMarket = client.getSpotMarketAccountOrThrow(marketIndex);
+				const userTokenAccount = deriveAssociatedTokenAccount(
+					spotMarket.mint,
+					authority,
+					client.getTokenProgramForSpotMarket(spotMarket)
+				);
+				tokenAccounts.push(userTokenAccount);
+				const ix = await client.getWithdrawIx(
+					amount ?? U64_MAX,
+					marketIndex,
+					userTokenAccount,
+					true,
+					subAccountId,
+					{ authority }
+				);
+				groups.push({
+					label: `withdraw spot[${marketIndex}] ${
+						amount ? amount.toString() : 'max'
+					}`,
+					instructions: [ix],
+				});
+			}
+
+			const infos = await provider.connection.getMultipleAccountsInfo(
+				tokenAccounts
+			);
+			const missing = tokenAccounts.filter((_, i) => infos[i] === null);
+			if (missing.length > 0) {
+				throw new Error(
+					`destination token account(s) missing for ${authority.toBase58()}: ` +
+						`${missing
+							.map((k) => k.toBase58())
+							.join(', ')}. Create the ATAs first.`
+				);
+			}
+
+			const result = await sendOrProposeBatch(
+				provider,
+				groups,
+				new PublicKey(opts.multisig),
+				`velocity-admin user withdraw-batch: ${groups
+					.map((g) => g.label)
+					.join(', ')}`,
+				vaultIndex
+			);
+			reportDispatch(
+				`withdraw-batch ${
+					groups.length
+				} market(s) authority=${authority.toBase58()} sub=${subAccountId}`,
+				result
+			);
 		} finally {
 			await client.unsubscribe();
 		}

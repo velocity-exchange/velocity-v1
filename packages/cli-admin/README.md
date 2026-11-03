@@ -81,6 +81,7 @@ velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin perp-market deposit-fee-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); funds amm.fee_pool + total_fee_minus_distributions, raw quote base units
 velocity-admin perp-market withdraw-fee-pool <market> <amount> --recipient <pubkey> [--dry-run]  # cold admin; withdraws exactly <amount> raw quote base units from amm.fee_pool to the quote ATA of --recipient, or fails. --dry-run simulates as the signer
+velocity-admin perp-market withdraw-fee-pool-batch <market>:<amount>... --recipient <pubkey> [--dry-run]  # needs --multisig; one Squads batch, one fee pool withdrawal per market
 velocity-admin perp-market deposit-pnl-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); transfers raw quote base units into the quote spot vault and credits perp_market.pnl_pool by the same amount in one ix. Prefer over `call updatePerpMarketPnlPool`, which credits without moving tokens
 velocity-admin perp-market sync-amm-summary-stats <market> [--net-unsettled-funding-pnl <amount>]  # AmmCrank hot key (or warm/cold); recompute total_fee_minus_distributions from live state
 velocity-admin spot-market set-status <market> <status>

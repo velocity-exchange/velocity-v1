@@ -1,3 +1,4 @@
+import { BN } from '@coral-xyz/anchor';
 import { Command } from 'commander';
 import {
 	PublicKey,
@@ -19,9 +20,11 @@ import {
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import {
+	InstructionGroup,
 	reportDispatch,
 	resolveAdminAuthority,
 	sendOrPropose,
+	sendOrProposeBatch,
 } from '../lib/squads';
 import * as ui from '../lib/ui';
 import { deriveAssociatedTokenAccount } from '../lib/userOps';
@@ -516,6 +519,94 @@ export function registerPerpMarket(parent: Command): void {
 			);
 			reportDispatch(
 				`perp-market[${marketIndex}] fee pool -= ${amountValue.toString()}`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		pm
+			.command('withdraw-fee-pool-batch <withdrawals...>')
+			.description(
+				'Withdraw from several perp fee pools in ONE Squads batch proposal (one approval round, ' +
+					'one timelock). Each <withdrawal> is <market>:<amount>, amount in raw quote base units. ' +
+					'Each market becomes its own inner transaction, executed in the order given and not ' +
+					'atomic with the others. Every withdrawal goes to the quote ATA of --recipient, which the ' +
+					'first inner transaction creates if missing. Same program checks as `withdraw-fee-pool`. ' +
+					'Requires cold admin and --multisig. --dry-run sizes and simulates each inner transaction.'
+			)
+			.requiredOption(
+				'--recipient <pubkey>',
+				'wallet whose quote ATA receives the funds, such as a treasury multisig vault'
+			)
+	).action(async (withdrawals: string[], _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		if (!opts.multisig) {
+			throw new Error(
+				'withdraw-fee-pool-batch builds a Squads batch, so it needs --multisig (or a profile that sets one). ' +
+					'For a single market use `perp-market withdraw-fee-pool`.'
+			);
+		}
+		const parsed = withdrawals.map((arg) => {
+			const match = /^(\d+):(\d+)$/.exec(arg.trim());
+			if (!match) {
+				throw new Error(`withdrawal "${arg}" must be <market>:<raw amount>`);
+			}
+			return {
+				marketIndex: parseMarketIndex(match[1]),
+				amount: parseBnArg('amount', match[2]),
+			};
+		});
+		const markets = parsed.map((w) => w.marketIndex);
+		if (new Set(markets).size !== markets.length) {
+			throw new Error(`each market may appear once, got ${markets.join(', ')}`);
+		}
+		const recipient = new PublicKey(
+			(cmd.opts() as { recipient: string }).recipient
+		);
+		const multisigPda = new PublicKey(opts.multisig);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			if (recipient.equals(client.getStateAccount().protocolFeeRecipientPerp)) {
+				throw new Error(
+					'--recipient is the protocol fee recipient, which receives protocol revenue; pass the treasury wallet'
+				);
+			}
+			const admin = resolveAdminAuthority(provider, multisigPda);
+			const groups: InstructionGroup[] = [];
+			let total = new BN(0);
+			for (const { marketIndex, amount } of parsed) {
+				groups.push({
+					label: `perp[${marketIndex}] fee pool -${amount.toString()}`,
+					instructions: [
+						await client.getWithdrawFromPerpMarketFeePoolIx(
+							marketIndex,
+							amount,
+							recipient,
+							admin
+						),
+					],
+				});
+				total = total.add(amount);
+			}
+			ui.kv('recipient', recipient.toBase58());
+			ui.kv('total', total.toString());
+
+			const result = await sendOrProposeBatch(
+				provider,
+				groups,
+				multisigPda,
+				`velocity-admin perp-market withdraw-fee-pool-batch to ${recipient.toBase58()}: ${groups
+					.map((g) => g.label)
+					.join(', ')}`
+			);
+			reportDispatch(
+				`withdraw-fee-pool-batch ${
+					groups.length
+				} market(s) total=${total.toString()} recipient=${recipient.toBase58()}`,
 				result
 			);
 		} finally {

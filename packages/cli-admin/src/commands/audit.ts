@@ -1,9 +1,8 @@
 import { Command } from 'commander';
 import { PublicKey } from '@solana/web3.js';
-import { BN, BorshInstructionCoder, utils } from '@coral-xyz/anchor';
+import { BorshInstructionCoder, utils } from '@coral-xyz/anchor';
 import {
 	SpotBalanceType,
-	calculateWithdrawLimit,
 	decodeName,
 	getTokenAmount,
 	getUserStatsAccountPublicKey,
@@ -11,6 +10,7 @@ import {
 import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import * as ui from '../lib/ui';
+import { breakerState } from '../lib/breaker';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 
 /**
@@ -24,36 +24,12 @@ import { buildAdminClient, buildProvider } from '../lib/provider';
  * decides.
  */
 
-/**
- * Percent of the withdraw circuit breaker consumed, matching the Grafana rule
- * `Spot Withdraw Breaker {25,50,75}% Consumed` bit for bit:
- *
- *   clamp((twap - current) / clamp_min(twap - min_deposit, 1e-9), 0, 1) * 100
- *
- * The asymmetry is deliberate and load-bearing: market-stats-bot emits
- * `spot_deposit_token_twap` from the RAW `depositTokenTwap` field, while
- * `spot_min_deposit_amount` / `spot_current_deposit_amount` come out of
- * `calculateWithdrawLimit`, which projects the TWAP forward to `now`. Using the
- * live TWAP for all three here would produce a number that quietly disagrees
- * with the alert that fired.
- */
+/** Breaker state plus utilization, for the per-market table. */
 function breakerConsumed(market: any) {
-	const div = 10 ** market.decimals;
-	const { minDepositAmount, currentDepositAmount, currentBorrowAmount } =
-		calculateWithdrawLimit(market, new BN(Math.floor(Date.now() / 1000)));
-	const twap = Number(market.depositTokenTwap.toString()) / div;
-	const current = Number(currentDepositAmount.toString()) / div;
-	const minDeposit = Number(minDepositAmount.toString()) / div;
-	const borrows = Number(currentBorrowAmount.toString()) / div;
-	const denom = Math.max(twap - minDeposit, 1e-9);
+	const state = breakerState(market, Math.floor(Date.now() / 1000));
 	return {
-		consumedPct: Math.min(Math.max((twap - current) / denom, 0), 1) * 100,
-		twap,
-		current,
-		minDeposit,
-		borrows,
-		headroom: current - minDeposit,
-		utilPct: current > 0 ? (borrows / current) * 100 : 0,
+		...state,
+		utilPct: state.current > 0 ? (state.borrows / state.current) * 100 : 0,
 	};
 }
 

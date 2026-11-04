@@ -1,10 +1,17 @@
 import { Command } from 'commander';
 import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
-import { getSpotMarketPublicKey } from '@velocity-exchange/sdk';
+import {
+	PRICE_PRECISION,
+	decodeName,
+	getSpotMarketPublicKey,
+} from '@velocity-exchange/sdk';
+import { parseIntArg, parseMarketIndex } from '../lib/args';
+import { DEFAULT_WITHDRAW_BREAKER_BPS, breakerState } from '../lib/breaker';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
+import * as ui from '../lib/ui';
 import { resolveAuthority } from '../lib/userOps';
 
 export function registerSpotMarket(parent: Command): void {
@@ -174,29 +181,82 @@ export function registerSpotMarket(parent: Command): void {
 
 	withGlobalOptions(
 		sm
-			.command('set-withdraw-breaker <market> <pct>')
+			.command('set-withdraw-breaker <changes...>')
 			.description(
-				'Per-market daily withdraw circuit-breaker size: the max fraction of ' +
-					'the 24h deposit TWAP withdrawable per 24h window ' +
-					'(basis points, 10000 = 100%, e.g. 2500 = 25%). 0 => default 25%.'
+				'Set the daily withdraw circuit breaker on one or more spot markets in ONE transaction ' +
+					'or proposal. Each <change> is <market>:<bps>, the max fraction of the 24h deposit TWAP ' +
+					'withdrawable per 24h window (10000 = 100%, 2500 = 25%, 0 = the 25% default). Warm ' +
+					"admin may only set up to 25%. Prints each market's withdraw headroom and Grafana " +
+					'breaker consumption before and after, using the TWAP the next transaction will see.'
 			)
-	).action(async (market: string, pct: string, _flags, cmd: Command) => {
+	).action(async (changes: string[], _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
+		const parsed = changes.map((arg) => {
+			const match = /^(\d+):(\d+)$/.exec(arg.trim());
+			if (!match) {
+				throw new Error(`change "${arg}" must be <market>:<bps>`);
+			}
+			return {
+				marketIndex: parseMarketIndex(match[1]),
+				bps: parseIntArg('bps', match[2], 0, 10000),
+			};
+		});
+		const markets = parsed.map((c) => c.marketIndex);
+		if (new Set(markets).size !== markets.length) {
+			throw new Error(`each market may appear once, got ${markets.join(', ')}`);
+		}
 		const provider = buildProvider(opts);
 		const client = await buildAdminClient(opts);
 		try {
-			const ix = await client.getUpdateSpotMarketWithdrawCircuitBreakerIx(
-				Number.parseInt(market, 10),
-				Number.parseInt(pct, 10)
+			const now = Math.floor(Date.now() / 1000);
+			const pct = (bps: number) =>
+				`${((bps || DEFAULT_WITHDRAW_BREAKER_BPS) / 100).toFixed(0)}%${
+					bps === 0 ? ' (0)' : ''
+				}`;
+			const rows = [['market', 'breaker', 'headroom', 'usd', 'consumed']];
+			const ixs = [];
+			for (const { marketIndex, bps } of parsed) {
+				const market = client.getSpotMarketAccount(marketIndex);
+				if (!market) {
+					throw new Error(`spot market ${marketIndex} not found`);
+				}
+				const price =
+					client.getOracleDataForSpotMarket(marketIndex).price.toNumber() /
+					PRICE_PRECISION.toNumber();
+				const before = breakerState(market, now);
+				const after = breakerState(market, now, bps);
+				const usd = (x: number) =>
+					`$${Math.round(x * price).toLocaleString('en-US')}`;
+				rows.push([
+					`${marketIndex} ${decodeName(market.name)}`,
+					ui.change(pct(market.withdrawCircuitBreakerBps), pct(bps)),
+					ui.change(before.headroom.toFixed(4), after.headroom.toFixed(4)),
+					ui.change(usd(before.headroom), usd(after.headroom)),
+					ui.change(
+						`${before.consumedPct.toFixed(1)}%`,
+						`${after.consumedPct.toFixed(1)}%`
+					),
+				]);
+				ixs.push(
+					await client.getUpdateSpotMarketWithdrawCircuitBreakerIx(
+						marketIndex,
+						bps
+					)
+				);
+			}
+			ui.header('withdraw breakers');
+			ui.table(rows);
+			ui.note(
+				'headroom is what users can withdraw before the breaker blocks; negative means blocked now'
 			);
 			const result = await sendOrPropose(
 				provider,
-				[ix],
+				ixs,
 				opts.multisig ? new PublicKey(opts.multisig) : undefined,
-				'velocity-admin spot-market set-withdraw-breaker'
+				`velocity-admin spot-market set-withdraw-breaker ${changes.join(' ')}`
 			);
 			reportDispatch(
-				`spot-market[${market}] withdraw_circuit_breaker_bps = ${pct}`,
+				`spot-market withdraw_circuit_breaker_bps ${changes.join(' ')}`,
 				result
 			);
 		} finally {

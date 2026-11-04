@@ -1,5 +1,38 @@
 # @velocity-exchange/admin-cli
 
+## 0.18.0
+
+### Minor Changes
+
+- [#575](https://github.com/velocity-exchange/velocity-v1/pull/575) [`9ed5291`](https://github.com/velocity-exchange/velocity-v1/commit/9ed5291105b8e490180d6d772cc0cc6663622ad2) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `perp-market withdraw-fee-pool-batch <market>:<amount>... --recipient <pubkey>`. It proposes
+  fee pool withdrawals from several perp markets as one Squads batch, with one approval round and one
+  timelock, and one inner transaction per market. `--dry-run` sizes and simulates each inner
+  transaction as the vault.
+
+- [#568](https://github.com/velocity-exchange/velocity-v1/pull/568) [`bf7aae7`](https://github.com/velocity-exchange/velocity-v1/commit/bf7aae75fdaf56efe290b5f5f588c80bc52c1178) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `AdminClient.withdrawFromPerpMarketFeePool` and `getWithdrawFromPerpMarketFeePoolIx` for the
+  new cold-admin `withdraw_from_perp_market_fee_pool` instruction. It sends an exact amount from a
+  perp market's fee pool to the quote ATA of a recipient wallet the caller passes, and fails if the market,
+  oracle, bankruptcy reserve or AMM equity checks do not pass. Add the `PerpFeePoolWithdrawRecord`
+  event type. The admin CLI gains `perp-market withdraw-fee-pool <market> <amount> --recipient <pubkey>`, whose
+  `--dry-run` prints the pool and ledger values and simulates the instruction as the signer.
+
+- [#573](https://github.com/velocity-exchange/velocity-v1/pull/573) [`df4709f`](https://github.com/velocity-exchange/velocity-v1/commit/df4709ff8729cd087d43cedf1cc692a4b98cf96e) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `user withdraw-batch <market>:<amount|max>...`. It proposes reduce-only withdrawals from several
+  spot markets as one Squads batch, with one approval round and one timelock, and one inner
+  transaction per market. `max` withdraws the whole deposit. The command checks that the vault's
+  destination ATAs exist before it proposes, and `--dry-run` sizes and simulates each inner
+  transaction as the vault.
+
+- [#576](https://github.com/velocity-exchange/velocity-v1/pull/576) [`70df3eb`](https://github.com/velocity-exchange/velocity-v1/commit/70df3eba40ee2e698134c14125d5b783f44e48f2) Thanks [@0xahzam](https://github.com/0xahzam)! - `spot-market set-withdraw-breaker` now takes one or more `<market>:<bps>` pairs and sets them all
+  in one transaction or proposal. The old `<market> <pct>` form is gone. Before it sends, the command
+  prints each market's withdraw headroom and Grafana breaker consumption under the current and the new
+  setting. `audit withdrawals` now computes breaker consumption from the TWAP the next transaction
+  will see, which matches market-stats-bot v0.1.37 and the Grafana alert.
+
+### Patch Changes
+
+- Updated dependencies [[`bf7aae7`](https://github.com/velocity-exchange/velocity-v1/commit/bf7aae75fdaf56efe290b5f5f588c80bc52c1178)]:
+  - @velocity-exchange/sdk@0.28.0
+
 ## 0.17.1
 
 ### Patch Changes

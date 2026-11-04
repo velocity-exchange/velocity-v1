@@ -88,7 +88,7 @@ velocity-admin spot-market set-status <market> <status>
 velocity-admin spot-market set-guard-threshold <market> <threshold>
 velocity-admin spot-market set-scale-initial-asset-weight-start <market> <start>  # warm/cold admin; QUOTE_PRECISION (1e6); 0 disables
 velocity-admin spot-market set-fee-factors <market> <ifFeeFactor> <protocolFeeFactor>
-velocity-admin spot-market set-withdraw-breaker <market> <pct>
+velocity-admin spot-market set-withdraw-breaker <market>:<bps>... [--dry-run]  # one tx or proposal for all markets; 0 = the 25% default; prints headroom and breaker consumption before and after
 velocity-admin spot-market set-max-token-deposits <market> <amount>  # warm/cold admin; hard deposit cap, raw token base units, 0 = uncapped
 velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 

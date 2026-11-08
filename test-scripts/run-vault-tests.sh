@@ -20,6 +20,8 @@
 set -e
 trap 'echo -e "\nStopped by SIGINT"; exit 130' INT
 
+export PATH="$PWD/node_modules/.bin:$PATH"
+
 MODE="${1:-}"
 
 build_programs() {

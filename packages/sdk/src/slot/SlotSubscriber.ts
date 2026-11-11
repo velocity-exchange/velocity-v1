@@ -1,6 +1,11 @@
 import { Connection } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types/types/src';
+import { promiseTimeout } from '../util/promiseTimeout';
+
+// A half-open websocket never answers the unsubscribe, so the teardown promise
+// can pend forever. Abandon it rather than let the resubscribe chain wait.
+const UNSUBSCRIBE_TIMEOUT_MS = 10_000;
 
 // eslint-disable-next-line @typescript-eslint/ban-types
 type SlotSubscriberConfig = {
@@ -87,13 +92,27 @@ export class SlotSubscriber {
 				return;
 			}
 
-			if (this.receivingData) {
-				console.log(
-					`No new slot in ${this.resubTimeoutMs}ms, slot subscriber resubscribing`
-				);
+			if (!this.receivingData) {
+				return;
+			}
+
+			console.log(
+				`No new slot in ${this.resubTimeoutMs}ms, slot subscriber resubscribing`
+			);
+			try {
 				await this.unsubscribe(true);
 				this.receivingData = false;
 				await this.subscribe();
+			} catch (e) {
+				console.error('Slot subscriber resubscribe failed', e);
+			} finally {
+				// subscribe() arms the next timeout on success. If anything above
+				// threw, nothing is armed and receivingData is false, so the
+				// watchdog chain would silently end here.
+				if (this.resubTimeoutMs && this.timeoutId === undefined) {
+					this.receivingData = true;
+					this.setTimeout();
+				}
 			}
 		}, this.resubTimeoutMs);
 	}
@@ -116,11 +135,23 @@ export class SlotSubscriber {
 		this.timeoutId = undefined;
 
 		if (this.subscriptionId != null) {
-			await this.connection.removeSlotChangeListener(this.subscriptionId);
+			try {
+				const removed = await promiseTimeout(
+					this.connection
+						.removeSlotChangeListener(this.subscriptionId)
+						.then(() => true),
+					UNSUBSCRIBE_TIMEOUT_MS
+				);
+				if (!removed) {
+					console.error(
+						`Slot subscriber unsubscribe timed out after ${UNSUBSCRIBE_TIMEOUT_MS}ms, forcing cleanup`
+					);
+				}
+			} catch (e) {
+				console.error('Slot subscriber unsubscribe failed, forcing cleanup', e);
+			}
 			this.subscriptionId = undefined;
-			this.isUnsubscribing = false;
-		} else {
-			this.isUnsubscribing = false;
 		}
+		this.isUnsubscribing = false;
 	}
 }

@@ -44,6 +44,7 @@ use {
     solana_rpc_client_api::{
         client_error,
         config::{RpcSimulateTransactionAccountsConfig, RpcSimulateTransactionConfig},
+        request::RpcError,
         response::RpcSimulateTransactionResult,
     },
     solana_signature::Signature,
@@ -61,7 +62,7 @@ use {
     },
     tower_http::cors::{Any, CorsLayer},
     velocity_rs::{
-        constants::state_account,
+        constants::{state_account, ProgramData},
         event_subscriber::PubsubClient,
         math::{
             account_list_builder::AccountsListBuilder,
@@ -349,6 +350,8 @@ pub async fn process_order(
         delegate_signer,
     );
 
+    validate_known_perp_market(server_params.velocity.program_data(), &order_params)?;
+
     // check the order is valid for execution by program
     let market = server_params
         .velocity
@@ -560,6 +563,12 @@ pub async fn deposit_trade(
         Ok((_info, max_margin_ratio, _is_isolated)) => max_margin_ratio,
         Err((_status, err)) => return (StatusCode::BAD_REQUEST, Json(err)),
     };
+    if let Err((status, err)) = validate_known_perp_market(
+        server_params.velocity.program_data(),
+        &signed_order_info.order_params,
+    ) {
+        return (status, Json(err));
+    }
 
     log::info!(
         target: "server",
@@ -635,6 +644,26 @@ pub async fn deposit_trade(
                     .and_then(|a| a.data.decode())
                     .and_then(|data| User::try_deserialize(&mut data.as_slice()).ok());
             }
+        }
+        // JSON-RPC invalid params (such as an oversized tx) means the request itself is bad.
+        Err(SdkError::Rpc(err))
+            if matches!(
+                err.kind(),
+                client_error::ErrorKind::RpcError(RpcError::RpcResponseError { code: -32602, .. })
+            ) =>
+        {
+            log::info!(
+                target: "server",
+                "{} deposit sim rejected: {err:?}",
+                context.log_prefix,
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ProcessOrderResponse {
+                    message: "",
+                    error: Some("invalid deposit tx".into()),
+                }),
+            );
         }
         Err(err) => {
             log::info!(
@@ -1017,6 +1046,31 @@ pub async fn start_server() {
         metrics_server,
         send_heartbeat_loop
     );
+}
+
+/// Rejects markets not loaded at startup, since no ws-server subscribes to their topic.
+fn validate_known_perp_market(
+    program_data: &ProgramData,
+    order_params: &OrderParams,
+) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
+    if matches!(order_params.market_type, MarketType::Perp)
+        && program_data
+            .perp_market_config_by_index(order_params.market_index)
+            .is_some()
+    {
+        return Ok(());
+    }
+    Err((
+        axum::http::StatusCode::BAD_REQUEST,
+        ProcessOrderResponse {
+            message: PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER,
+            error: Some(format!(
+                "unknown market {}-{}",
+                order_params.market_type.as_str(),
+                order_params.market_index
+            )),
+        },
+    ))
 }
 
 /// Simple validation from program's `handle_signed_order_ix`
@@ -2162,6 +2216,33 @@ mod tests {
             validate_signed_order_params(&params, min_order_size),
             Err(ErrorCode::InvalidOrderMarketType)
         );
+    }
+
+    #[test]
+    fn test_validate_known_perp_market() {
+        let program_data = ProgramData::new(
+            vec![],
+            vec![velocity_rs::types::accounts::PerpMarket::default()],
+            vec![],
+            Default::default(),
+        );
+        let mut params = create_test_order_params(
+            OrderType::Market,
+            MarketType::Perp,
+            LAMPORTS_PER_SOL,
+            PositionDirection::Long,
+            Some((1, 99, 100)),
+        );
+        assert!(validate_known_perp_market(&program_data, &params).is_ok());
+
+        params.market_index = u16::MAX;
+        let (status, resp) = validate_known_perp_market(&program_data, &params).unwrap_err();
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(resp.error.as_deref(), Some("unknown market perp-65535"));
+
+        params.market_index = 0;
+        params.market_type = MarketType::Spot;
+        assert!(validate_known_perp_market(&program_data, &params).is_err());
     }
 
     #[test]

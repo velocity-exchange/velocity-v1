@@ -14,7 +14,7 @@ use {
                 PROCESS_ORDER_RESPONSE_IGNORE_PUBKEY, PROCESS_ORDER_RESPONSE_INVALID_UUID_UTF8,
                 PROCESS_ORDER_RESPONSE_MESSAGE_SUCCESS,
             },
-            types::{unix_now_ms, RequestContext},
+            types::{is_bet_market, unix_now_ms, RequestContext},
         },
         user_account_fetcher::UserAccountFetcher,
         util::{
@@ -44,7 +44,6 @@ use {
     solana_rpc_client_api::{
         client_error,
         config::{RpcSimulateTransactionAccountsConfig, RpcSimulateTransactionConfig},
-        request::RpcError,
         response::RpcSimulateTransactionResult,
     },
     solana_signature::Signature,
@@ -612,6 +611,17 @@ pub async fn deposit_trade(
         );
     }
 
+    if !fits_in_packet(&req.deposit_tx) {
+        log::info!(target: "server", "{} deposit tx too large", context.log_prefix);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ProcessOrderResponse {
+                message: "",
+                error: Some("deposit tx too large".into()),
+            }),
+        );
+    }
+
     // ensure deposit tx is valid
     let mut user_after_deposit = None;
     match simulate_tx(
@@ -644,26 +654,6 @@ pub async fn deposit_trade(
                     .and_then(|a| a.data.decode())
                     .and_then(|data| User::try_deserialize(&mut data.as_slice()).ok());
             }
-        }
-        // JSON-RPC invalid params (such as an oversized tx) means the request itself is bad.
-        Err(SdkError::Rpc(err))
-            if matches!(
-                err.kind(),
-                client_error::ErrorKind::RpcError(RpcError::RpcResponseError { code: -32602, .. })
-            ) =>
-        {
-            log::info!(
-                target: "server",
-                "{} deposit sim rejected: {err:?}",
-                context.log_prefix,
-            );
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ProcessOrderResponse {
-                    message: "",
-                    error: Some("invalid deposit tx".into()),
-                }),
-            );
         }
         Err(err) => {
             log::info!(
@@ -1048,16 +1038,23 @@ pub async fn start_server() {
     );
 }
 
-/// Rejects markets not loaded at startup, since no ws-server subscribes to their topic.
+/// Solana's max serialized tx size, mirrored here because no crate in this workspace exports it.
+const PACKET_DATA_SIZE: u64 = 1232;
+
+fn fits_in_packet(tx: &VersionedTransaction) -> bool {
+    bincode::serialized_size(tx).is_ok_and(|size| size <= PACKET_DATA_SIZE)
+}
+
+/// Rejects unknown, delisted and BET markets, which swift-server or ws-server never subscribes to.
 fn validate_known_perp_market(
     program_data: &ProgramData,
     order_params: &OrderParams,
 ) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
-    if matches!(order_params.market_type, MarketType::Perp)
-        && program_data
-            .perp_market_config_by_index(order_params.market_index)
-            .is_some()
-    {
+    let market = match order_params.market_type {
+        MarketType::Perp => program_data.perp_market_config_by_index(order_params.market_index),
+        MarketType::Spot => None,
+    };
+    if market.is_some_and(|m| m.status != MarketStatus::Delisted && !is_bet_market(m)) {
         return Ok(());
     }
     Err((
@@ -1065,7 +1062,7 @@ fn validate_known_perp_market(
         ProcessOrderResponse {
             message: PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER,
             error: Some(format!(
-                "unknown market {}-{}",
+                "unsupported market {}-{}",
                 order_params.market_type.as_str(),
                 order_params.market_index
             )),
@@ -2220,9 +2217,24 @@ mod tests {
 
     #[test]
     fn test_validate_known_perp_market() {
+        use velocity_rs::types::accounts::PerpMarket;
+        let mut bet_name = [b' '; 32];
+        bet_name[..18].copy_from_slice(b"TRUMP-WIN-2028-BET");
         let program_data = ProgramData::new(
             vec![],
-            vec![velocity_rs::types::accounts::PerpMarket::default()],
+            vec![
+                PerpMarket::default(),
+                PerpMarket {
+                    market_index: 1,
+                    name: bet_name,
+                    ..Default::default()
+                },
+                PerpMarket {
+                    market_index: 2,
+                    status: MarketStatus::Delisted,
+                    ..Default::default()
+                },
+            ],
             vec![],
             Default::default(),
         );
@@ -2238,11 +2250,27 @@ mod tests {
         params.market_index = u16::MAX;
         let (status, resp) = validate_known_perp_market(&program_data, &params).unwrap_err();
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
-        assert_eq!(resp.error.as_deref(), Some("unknown market perp-65535"));
+        assert_eq!(resp.error.as_deref(), Some("unsupported market perp-65535"));
+
+        for market_index in [1, 2] {
+            params.market_index = market_index;
+            assert!(validate_known_perp_market(&program_data, &params).is_err());
+        }
 
         params.market_index = 0;
         params.market_type = MarketType::Spot;
         assert!(validate_known_perp_market(&program_data, &params).is_err());
+    }
+
+    #[test]
+    fn test_fits_in_packet() {
+        let tx = |signatures| VersionedTransaction {
+            signatures: vec![Signature::default(); signatures],
+            message: VersionedMessage::default(),
+        };
+        assert!(fits_in_packet(&tx(1)));
+        // 20 signatures alone are 1280 bytes.
+        assert!(!fits_in_packet(&tx(20)));
     }
 
     #[test]

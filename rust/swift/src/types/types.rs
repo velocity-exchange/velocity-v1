@@ -1,6 +1,11 @@
 use {
-    crate::types::messages::IncomingSignedMessage, solana_pubkey::Pubkey, std::time::UNIX_EPOCH,
-    velocity_rs::types::MarketType,
+    crate::types::messages::IncomingSignedMessage,
+    solana_pubkey::Pubkey,
+    std::time::UNIX_EPOCH,
+    velocity_rs::{
+        constants::MarketExt,
+        types::{accounts::PerpMarket, MarketType},
+    },
 };
 
 #[derive(PartialEq, Debug, strum_macros::AsRefStr)]
@@ -34,6 +39,11 @@ pub fn unix_now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
+}
+
+/// BET markets get no ws-server topic, so swift-server must not accept orders for them.
+pub fn is_bet_market(market: &PerpMarket) -> bool {
+    market.symbol().contains("BET")
 }
 
 #[derive(Clone)]

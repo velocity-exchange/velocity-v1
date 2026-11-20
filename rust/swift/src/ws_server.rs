@@ -5,7 +5,7 @@ use {
                 OrderMetadataAndMessage, SubscribeActions, WsAuthMessage, WsClientMessage,
                 WsMessage, WsSubscribeMessage,
             },
-            types::{unix_now_ms, WsError},
+            types::{is_bet_market, unix_now_ms, WsError},
         },
         util::{
             metrics::{metrics_handler, MetricsServerParams, WsServerMetrics},
@@ -845,7 +845,7 @@ pub async fn start_server() {
     let perp_market_accounts: Vec<PerpMarket> = perp_market_accounts
         .into_iter()
         .filter(|m| {
-            if m.symbol().contains("BET") {
+            if is_bet_market(m) {
                 log::info!("Skipping BET market: {}", m.market_index);
                 false
             } else {

@@ -14,7 +14,7 @@ use {
                 PROCESS_ORDER_RESPONSE_IGNORE_PUBKEY, PROCESS_ORDER_RESPONSE_INVALID_UUID_UTF8,
                 PROCESS_ORDER_RESPONSE_MESSAGE_SUCCESS,
             },
-            types::{unix_now_ms, RequestContext},
+            types::{is_bet_market, unix_now_ms, RequestContext},
         },
         user_account_fetcher::UserAccountFetcher,
         util::{
@@ -61,7 +61,7 @@ use {
     },
     tower_http::cors::{Any, CorsLayer},
     velocity_rs::{
-        constants::state_account,
+        constants::{state_account, ProgramData},
         event_subscriber::PubsubClient,
         math::{
             account_list_builder::AccountsListBuilder,
@@ -349,6 +349,8 @@ pub async fn process_order(
         delegate_signer,
     );
 
+    validate_known_perp_market(server_params.velocity.program_data(), &order_params)?;
+
     // check the order is valid for execution by program
     let market = server_params
         .velocity
@@ -560,6 +562,12 @@ pub async fn deposit_trade(
         Ok((_info, max_margin_ratio, _is_isolated)) => max_margin_ratio,
         Err((_status, err)) => return (StatusCode::BAD_REQUEST, Json(err)),
     };
+    if let Err((status, err)) = validate_known_perp_market(
+        server_params.velocity.program_data(),
+        &signed_order_info.order_params,
+    ) {
+        return (status, Json(err));
+    }
 
     log::info!(
         target: "server",
@@ -599,6 +607,17 @@ pub async fn deposit_trade(
             Json(ProcessOrderResponse {
                 message: "",
                 error: Some("missing placeSignedMsgTakerOrder ix".into()),
+            }),
+        );
+    }
+
+    if !fits_in_packet(&req.deposit_tx) {
+        log::info!(target: "server", "{} deposit tx too large", context.log_prefix);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ProcessOrderResponse {
+                message: "",
+                error: Some("deposit tx too large".into()),
             }),
         );
     }
@@ -1017,6 +1036,38 @@ pub async fn start_server() {
         metrics_server,
         send_heartbeat_loop
     );
+}
+
+/// Solana's max serialized tx size, mirrored here because no crate in this workspace exports it.
+const PACKET_DATA_SIZE: u64 = 1232;
+
+fn fits_in_packet(tx: &VersionedTransaction) -> bool {
+    bincode::serialized_size(tx).is_ok_and(|size| size <= PACKET_DATA_SIZE)
+}
+
+/// Rejects unknown, delisted and BET markets, which swift-server or ws-server never subscribes to.
+fn validate_known_perp_market(
+    program_data: &ProgramData,
+    order_params: &OrderParams,
+) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
+    let market = match order_params.market_type {
+        MarketType::Perp => program_data.perp_market_config_by_index(order_params.market_index),
+        MarketType::Spot => None,
+    };
+    if market.is_some_and(|m| m.status != MarketStatus::Delisted && !is_bet_market(m)) {
+        return Ok(());
+    }
+    Err((
+        axum::http::StatusCode::BAD_REQUEST,
+        ProcessOrderResponse {
+            message: PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER,
+            error: Some(format!(
+                "unsupported market {}-{}",
+                order_params.market_type.as_str(),
+                order_params.market_index
+            )),
+        },
+    ))
 }
 
 /// Simple validation from program's `handle_signed_order_ix`
@@ -2162,6 +2213,64 @@ mod tests {
             validate_signed_order_params(&params, min_order_size),
             Err(ErrorCode::InvalidOrderMarketType)
         );
+    }
+
+    #[test]
+    fn test_validate_known_perp_market() {
+        use velocity_rs::types::accounts::PerpMarket;
+        let mut bet_name = [b' '; 32];
+        bet_name[..18].copy_from_slice(b"TRUMP-WIN-2028-BET");
+        let program_data = ProgramData::new(
+            vec![],
+            vec![
+                PerpMarket::default(),
+                PerpMarket {
+                    market_index: 1,
+                    name: bet_name,
+                    ..Default::default()
+                },
+                PerpMarket {
+                    market_index: 2,
+                    status: MarketStatus::Delisted,
+                    ..Default::default()
+                },
+            ],
+            vec![],
+            Default::default(),
+        );
+        let mut params = create_test_order_params(
+            OrderType::Market,
+            MarketType::Perp,
+            LAMPORTS_PER_SOL,
+            PositionDirection::Long,
+            Some((1, 99, 100)),
+        );
+        assert!(validate_known_perp_market(&program_data, &params).is_ok());
+
+        params.market_index = u16::MAX;
+        let (status, resp) = validate_known_perp_market(&program_data, &params).unwrap_err();
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(resp.error.as_deref(), Some("unsupported market perp-65535"));
+
+        for market_index in [1, 2] {
+            params.market_index = market_index;
+            assert!(validate_known_perp_market(&program_data, &params).is_err());
+        }
+
+        params.market_index = 0;
+        params.market_type = MarketType::Spot;
+        assert!(validate_known_perp_market(&program_data, &params).is_err());
+    }
+
+    #[test]
+    fn test_fits_in_packet() {
+        let tx = |signatures| VersionedTransaction {
+            signatures: vec![Signature::default(); signatures],
+            message: VersionedMessage::default(),
+        };
+        assert!(fits_in_packet(&tx(1)));
+        // 20 signatures alone are 1280 bytes.
+        assert!(!fits_in_packet(&tx(20)));
     }
 
     #[test]

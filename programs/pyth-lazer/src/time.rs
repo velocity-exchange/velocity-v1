@@ -170,34 +170,6 @@ impl TryFrom<TimestampUs> for SystemTime {
     }
 }
 
-impl TryFrom<&chrono::DateTime<chrono::Utc>> for TimestampUs {
-    type Error = anyhow::Error;
-
-    #[inline]
-    fn try_from(value: &chrono::DateTime<chrono::Utc>) -> Result<Self, Self::Error> {
-        Ok(Self(value.timestamp_micros().try_into()?))
-    }
-}
-
-impl TryFrom<chrono::DateTime<chrono::Utc>> for TimestampUs {
-    type Error = anyhow::Error;
-
-    #[inline]
-    fn try_from(value: chrono::DateTime<chrono::Utc>) -> Result<Self, Self::Error> {
-        TryFrom::<&chrono::DateTime<chrono::Utc>>::try_from(&value)
-    }
-}
-
-impl TryFrom<TimestampUs> for chrono::DateTime<chrono::Utc> {
-    type Error = anyhow::Error;
-
-    #[inline]
-    fn try_from(value: TimestampUs) -> Result<Self, Self::Error> {
-        chrono::DateTime::<chrono::Utc>::from_timestamp_micros(value.as_micros().try_into()?)
-            .with_context(|| format!("cannot convert timestamp to datetime: {value:?}"))
-    }
-}
-
 /// Non-negative duration with microsecond resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DurationUs(u64);
@@ -337,29 +309,6 @@ impl TryFrom<Duration> for DurationUs {
     #[inline]
     fn try_from(value: Duration) -> Result<Self, Self::Error> {
         Ok(Self(value.as_micros().try_into()?))
-    }
-}
-
-pub mod duration_us_serde_humantime {
-    use {
-        crate::time::DurationUs,
-        serde::{de::Error, Deserialize, Serialize},
-        std::time::Duration,
-    };
-
-    pub fn serialize<S>(value: &DurationUs, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        humantime_serde::Serde::from(Duration::from(*value)).serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<DurationUs, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = humantime_serde::Serde::<Duration>::deserialize(deserializer)?;
-        value.into_inner().try_into().map_err(D::Error::custom)
     }
 }
 
